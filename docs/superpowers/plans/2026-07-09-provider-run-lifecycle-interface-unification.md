@@ -902,6 +902,20 @@ recoverStaleProviderRuns(input): Promise<{
 - [x] 每个 run 使用独立短事务与 try/catch；一个 run 恢复失败写 typed failure 并继续后续 run，返回 `recovered[]` 与 `failed[]`，health 不得把部分失败报告为全成功。
 - [x] 恢复后重新计算 action contract，并验证 change detail GET、events GET、SSE initial snapshot 都不再暴露旧 running；UI 对应 action 回到 retry/合法前置 gate。
 
+**矩阵第 2 行修订（2026-07-20 事故后）：**
+
+第 2 行原文写「provider 已 terminal，**立即处理**」，`completed` 分支据此零宽限地按证据完整性直接定论。这一条对 `failed/stopped/orphaned` 成立，对 `completed` 不成立，并在生产上以 `provider_completed_business_incomplete` 杀掉过健康 run。
+
+原因是本节自己那条「`provider completed` 只表示 provider/SDK 调用结束，不等于业务阶段提交完成」的推论方向被用反了。业务证据全部由 worker 在 provider 进程退出**之后**才写入（`createProviderLifecycleSink.onTerminal` 一收到进程结束就 `finishProviderRun(completed)`，此后才轮到 artifact/snapshot、Spec 蓝方与报告提交、Review report、Build adoption）。因此「provider completed + 证据不全」是**每个阶段健康运行时都会经过的正常中间态**，不是故障信号；它只有在「已经没有人会来完成这次提交」之后才构成故障。Spec 阶段只是这个窗口最宽的一个——红方（`spec`）退出到蓝方（`spec_critic`）登记之间隔着整整一条蓝方腿，事故当天实测交接窗口 101ms，而扫描周期 15s。
+
+**修订后的第 2 行判据：** provider terminal 时，`failed/stopped/orphaned` 仍一律立即令 job/run CAS -> failed；`completed` 分支必须先判定该 job 是否仍被活着的 worker 持有——job 状态仍在 `leased/running` 且 `heartbeat_at` 未超过 `providerHeartbeatStaleMs`（默认 45s）。持有则本次扫描不做任何结论（既不判成功也不判失败），留给 worker 自己收尾；不再持有才按原有证据规则对账。
+
+这个中间态的判据是**「worker 是否仍持有这个 job」，不是「这个 run 是否还有后续 provider」**——后者会把它写成 Spec 专属特例，而 TechSpec/Review/Build 的提交窗口有同一条竞态，只是更窄。判据落在 job heartbeat 上有两个理由：worker 在整个 `runPipelineJob` 期间每 10s 续一次（跨 Spec 两条腿），且该续约是 fenced 的，一旦 worker 失去 job 就立即停止。同一函数里 `pid_missing` 与 identity probe 失败早已享有同样的豁免，而那两者都是比「provider 按设计正常退出」强得多的负面信号。
+
+反向代价必须一并记账：抢在活 worker 前面写 terminal job 状态并非只是结论写错——所有 job CAS 都以 `status='running'` 为 fence，因此一旦抢写，worker 自己的 heartbeat/complete/fail 全部 fence 失败并当场抛错（事故日志中蓝方的 `StaleLeaseFenceError` 即由此而来）。豁免的代价只是真正搁浅的 run 最多晚一个 heartbeat stale 窗口才被对账。
+
+实现落在 `server/services/stale-provider-run-recovery-service.ts` 的 `decideProviderRecovery`；回归测试见 `stale-provider-run-recovery-service.test.ts` 中 "Row 2 is only reachable once the worker is gone" 一组，含活 worker 豁免、心跳转陈旧后仍照常对账、以及 job 已终态时不看时间戳立即对账三个方向。
+
 **测试与完成证据：**
 
 - 表驱动测试逐项覆盖上述八行状态；第 6 行必须拆成 `ppid_dead` 与 `ppid_mismatch` 两个子用例，并断言 mismatch 时不误杀 observed parent/child。另加“第一个 run 写失败、第二个 run 仍恢复”和“重复 recovery 返回 already_reconciled 且不重复 event”的隔离/幂等测试。
