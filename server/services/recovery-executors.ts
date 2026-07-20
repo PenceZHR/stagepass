@@ -902,11 +902,17 @@ export function recoverExistingProvider(input: {
 
       if (ownsChange) {
         if (effectivePhase === "spec" || effectivePhase === "spec_critic") {
-          const runningRoundStatus = effectivePhase === "spec_critic" ? "blue_running" : "red_running";
+          // Match on whichever half is actually outstanding rather than deriving
+          // it from the provider phase. One round spans two providers, so the
+          // round routinely sits at blue_running while the provider being
+          // reconciled is the red one that just finished. Deriving the status
+          // from the phase looked for red_running, found nothing, and left the
+          // round claiming to run forever -- and a round stuck that way blocks
+          // run_spec with spec_round_running and has no other way back.
           const currentRound = tx.select().from(battleRounds).where(and(
             eq(battleRounds.changeId, run.changeId),
             inArray(battleRounds.phase, ["Spec", "spec"]),
-            eq(battleRounds.status, runningRoundStatus),
+            inArray(battleRounds.status, ["red_running", "blue_running"]),
           )).get() ?? null;
           if (currentRound) {
             const roundCas = tx.update(battleRounds)
@@ -917,7 +923,7 @@ export function recoverExistingProvider(input: {
             })
             .where(and(
               eq(battleRounds.id, currentRound.id),
-              eq(battleRounds.status, runningRoundStatus),
+              eq(battleRounds.status, currentRound.status),
             ))
             .run();
             if (roundCas.changes !== 1) throw new RecoveryCasMissError();
@@ -1165,4 +1171,55 @@ export function recoverProviderAfterTerminalRun(input: {
     reason: decision.reasonCode,
     reasonCode: decision.reasonCode,
   } : null;
+}
+
+/**
+ * A Spec round claims to be running until the run behind it ends it. When that
+ * run is already terminal the round is stranded, and nothing will ever settle
+ * it: `run_spec` stays blocked on `spec_round_running`, and the battlefield
+ * hides every button behind the same claim, so the panel has no way out at all.
+ *
+ * Failing the round is what the rest of the system already expects -- `run_spec`
+ * then reports `spec_round_failed_retry_required` and the retry path opens. The
+ * liveness guard is the one the document stages use in recoverStrandedRunningStatus:
+ * a round is only stranded when no Spec run for its change is still in flight.
+ */
+export function recoverStrandedBattleRounds(observedAt: Date = new Date()): string[] {
+  const recoveredAt = observedAt.toISOString();
+  const stranded = db.select().from(battleRounds)
+    .where(inArray(battleRounds.status, ["red_running", "blue_running"])).all();
+  const recovered: string[] = [];
+  for (const round of stranded) {
+    const liveRun = db.select({ id: runs.id }).from(runs).where(and(
+      eq(runs.changeId, round.changeId),
+      inArray(runs.phase, ["spec", "spec_critic"]),
+      eq(runs.status, "running"),
+    )).get();
+    if (liveRun) continue;
+    // CAS on the status we read, so a round that starts running between the
+    // read and the write is left alone rather than failed out from under it.
+    const cas = db.update(battleRounds)
+      .set({ status: "failed", endedAt: recoveredAt, updatedAt: recoveredAt })
+      .where(and(eq(battleRounds.id, round.id), eq(battleRounds.status, round.status)))
+      .run();
+    if (cas.changes !== 1) continue;
+    recovered.push(round.id);
+    db.insert(events).values({
+      id: `EVT-RECOVERY-stranded_battle_round-${round.id}`,
+      changeId: round.changeId,
+      runId: null,
+      type: "stranded_battle_round_recovered",
+      message: "Recovered a Spec round stranded at a running status with no run in flight",
+      rawJson: JSON.stringify({
+        schemaVersion: "stranded_battle_round/v1",
+        roundId: round.id,
+        roundNo: round.roundNo,
+        from: round.status,
+        to: "failed",
+        observedAt: recoveredAt,
+      }),
+      createdAt: recoveredAt,
+    }).onConflictDoNothing().run();
+  }
+  return recovered;
 }

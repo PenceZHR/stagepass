@@ -25,6 +25,7 @@ import {
 } from "../server/services/supervisor-health-service";
 import { recoverStaleProviderRunsBestEffort } from "../server/services/stale-provider-run-recovery-service";
 import { startPipelineWorkerRecoveryScheduler } from "../server/services/pipeline-worker-recovery-service";
+import { recoverStrandedBattleRounds } from "../server/services/recovery-executors";
 import { closeDatabaseHandle, migrateDatabase } from "../server/db/index";
 
 const LOG_DIR = path.join(process.cwd(), "logs");
@@ -247,7 +248,13 @@ export async function runPipelineWorker(): Promise<void> {
 
   const stopRecovery = startPipelineWorkerRecoveryScheduler({
     intervalMs: RECOVERY_SWEEP_MS,
-    recover: () => recoverStaleProviderRunsBestEffort(),
+    recover: async () => {
+      const report = await recoverStaleProviderRunsBestEffort();
+      // A stranded round has no running run behind it, so it never becomes a
+      // candidate for the sweep above and nothing else would ever clear it.
+      recoverStrandedBattleRounds();
+      return report;
+    },
     log,
   });
   const removeSignalHandlers = installPipelineWorkerSignalHandlers(workerId, stopRecovery);
