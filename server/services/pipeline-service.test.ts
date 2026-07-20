@@ -990,6 +990,37 @@ function validTestPlanLineProtocolText() {
   ].join("\n");
 }
 
+/**
+ * Line-protocol form of the tech_spec reply. tech_spec was the last document
+ * stage still asking the model for a JSON object and the only one with no
+ * outputSchema at all, so mocked engines used to return `structuredOutput`
+ * directly; with the stage on the line protocol that is refused by
+ * guardLineProtocolSchema and the protocol text in `summary` is the only input.
+ *
+ * `includeApi: false` writes no API_* line, which is the shape that exercises
+ * deriveApiContractFromTechSpec -- the branch every real change has taken so
+ * far (CHG-001's api_snapshots.contract_json is byte-identical to its
+ * techspec_snapshots.content_json).
+ */
+function validTechSpecLineProtocolText({ includeApi = true }: { includeApi?: boolean } = {}) {
+  const lines = [
+    "INTERFACE: GET /api/projects/:id | http | Preserve the response shape and keep actions present",
+    "CONTRACT: ProjectResponse | actions | actions 至少一项",
+    "MIGRATION: No destructive migration required.",
+    "BUILD: Use DB design snapshot.",
+    "REVIEW: Review DB design snapshot.",
+  ];
+  if (includeApi) {
+    lines.push(
+      "API_INTERFACE: GET /api/projects/:id | http | Keep the actions response field",
+      "API_CONTRACT: ProjectResponse | actions | actions 至少一项",
+      "API_BUILD: Keep actions response field.",
+      "API_REVIEW: Verify actions response field.",
+    );
+  }
+  return lines.join("\n");
+}
+
 function validStructuredTestPlan() {
   return {
     testIntent: "Verify pipeline QA uses DB TestPlan commands.",
@@ -1768,29 +1799,18 @@ describe("pipeline-service v2 stages", () => {
             items: [],
           };
         }
-        if (input.prompt.includes("interfaces") && input.prompt.includes("dataContracts")) {
+        // Keyed on the stage banner, not on the words "interfaces"/
+        // "dataContracts": those were section names in the old JSON-authoring
+        // prompt, so rewording the template silently dropped every tech_spec
+        // test into the generic free-text branch below.
+        if (input.prompt.includes("当前阶段是 tech_spec")) {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
-            summary: "structured techspec/api candidate",
+            summary: validTechSpecLineProtocolText(),
             success: true,
             changedFiles: [],
-            structuredOutput: {
-              techSpec: {
-                interfaces: [{ endpoint: "/api/projects/:id" }],
-                dataContracts: [{ response: "ProjectResponse" }],
-                migrationNotes: [],
-                buildInputs: ["Use DB design snapshot."],
-                reviewInputs: ["Review DB design snapshot."],
-              },
-              apiContract: {
-                interfaces: [{ endpoint: "/api/projects/:id" }],
-                dataContracts: [{ requiredFields: ["actions"] }],
-                migrationNotes: [],
-                buildInputs: ["Keep actions response field."],
-                reviewInputs: ["Verify actions response field."],
-              },
-            },
+            structuredOutput: undefined,
             items: [],
           };
         }
@@ -2131,16 +2151,12 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: "TechSpec candidate",
+          // No API_* line: this is the deriveApiContractFromTechSpec path, the
+          // one every real change has taken.
+          summary: validTechSpecLineProtocolText({ includeApi: false }),
           success: true,
           changedFiles: [],
-          structuredOutput: {
-            interfaces: [{ method: "GET", endpoint: "/api/projects/:id" }],
-            dataContracts: [{ response: "ProjectResponse", requiredFields: ["actions"] }],
-            migrationNotes: [],
-            buildInputs: ["Preserve /api/projects/:id"],
-            reviewInputs: ["Verify actions in response"],
-          },
+          structuredOutput: undefined,
           items: [],
         };
       },
@@ -2156,6 +2172,9 @@ describe("pipeline-service v2 stages", () => {
     assert.ok(api?.contractJson);
     assert.match(techSpec.contentJson, /\/api\/projects\/:id/);
     assert.match(api.contractJson, /actions/);
+    // With no API_* line the contract is derived from the tech spec, so the two
+    // payloads must be identical -- exactly what production CHG-001 shows.
+    assert.equal(api.contractJson, techSpec.contentJson);
     assert.equal(currentStatus(), "TECHSPEC_READY");
     assert.equal(artifactExists(repoPath, "tech-spec-delta.md"), true);
     assert.equal(artifactExists(repoPath, "api-spec-delta.md"), true);
@@ -2376,10 +2395,21 @@ describe("pipeline-service v2 stages", () => {
       async *runStreamed() {},
     }));
 
-    await assert.rejects(
-      () => runTechSpec(CHANGE_ID, makeTestJobExecutionContext("tech-spec-invalid-api-contract")),
-      /Design snapshot missing section/,
-    );
+    // Before the line protocol this reached normalizeDesignSections and failed
+    // with "Design snapshot missing section: dataContracts" -- i.e. the
+    // model-authored apiContract was carried all the way to the DB door and
+    // only rejected there, after the provider had gone terminal and with no raw
+    // capture to diff against. It is now refused at the parser: the reply text
+    // carries no protocol line, so there is no payload, and the model's JSON is
+    // never consulted. Asserting the *absence* of the old message is the point
+    // -- reaching it again would mean model-authored JSON had been readmitted.
+    const rejection = await runTechSpec(
+      CHANGE_ID,
+      makeTestJobExecutionContext("tech-spec-invalid-api-contract"),
+    ).then(() => null, (error: Error) => error);
+    assert.ok(rejection);
+    assert.match(rejection.message, /tech-spec line protocol rejected/);
+    assert.doesNotMatch(rejection.message, /Design snapshot missing section/);
     assert.equal(currentStatus(), "SPEC_READY");
     assert.equal(
       db.select().from(techspecSnapshots).where(eq(techspecSnapshots.changeId, CHANGE_ID)).all()
@@ -2390,6 +2420,151 @@ describe("pipeline-service v2 stages", () => {
       db.select().from(apiSnapshots).where(eq(apiSnapshots.changeId, CHANGE_ID)).all().length,
       0,
     );
+  });
+
+  /**
+   * The defect this stage was migrated for: runTechSpec set no `outputSchema`,
+   * so runDocumentStage skipped its whole `if (config.outputSchema)` block --
+   * no ingestion, no schema check, and no raw capture. A reply that was not
+   * parseable JSON therefore blew up inside normalizeDesignSections AFTER the
+   * provider had gone terminal, and there was nothing on disk to diff the
+   * drift against. Both halves are asserted here.
+   */
+  it("captures raw output when the TechSpec reply carries no protocol lines", async () => {
+    seedChange(repoPath, "INTAKE_READY");
+    seedClosedSpecBattle();
+    setPipelineEngineFactoryForTest(() => ({
+      async run(input) {
+        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+          return {
+            threadId: `${CHANGE_ID}-thread`,
+            runId: "ENGINE-RUN",
+            summary: blueCritiqueLineProtocolText(),
+            success: true,
+            changedFiles: [],
+            structuredOutput: undefined,
+            items: [],
+          };
+        }
+        return {
+          threadId: `${CHANGE_ID}-thread`,
+          runId: "ENGINE-RUN",
+          summary: "这个改动我建议直接照着现有实现改，不需要额外的接口设计。",
+          success: true,
+          changedFiles: [],
+          structuredOutput: undefined,
+          items: [],
+        };
+      },
+      async *runStreamed() {},
+    }));
+
+    const rejection = await runTechSpec(
+      CHANGE_ID,
+      makeTestJobExecutionContext("tech-spec-prose-reply"),
+    ).then(() => null, (error: Error) => error);
+
+    assert.ok(rejection);
+    // The failure names the output contract, not a DB-door exception.
+    assert.match(rejection.message, /tech-spec line protocol rejected/);
+    assert.doesNotMatch(rejection.message, /Design snapshot candidate must be/);
+    assert.equal(currentStatus(), "SPEC_READY");
+    assert.equal(
+      db.select().from(techspecSnapshots).where(eq(techspecSnapshots.changeId, CHANGE_ID)).all().length,
+      0,
+    );
+
+    const run = db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all()
+      .find((row) => row.phase === "tech_spec");
+    assert.equal(run?.status, "failed");
+    const rawCaptureArtifact = db.select().from(artifacts).where(eq(artifacts.changeId, CHANGE_ID)).all()
+      .find((artifact) => artifact.type === "stage_raw_output" && artifact.runId === run?.id);
+    assert.ok(rawCaptureArtifact, "tech_spec must write a stage_raw_output artifact");
+    assert.equal(fs.existsSync(rawCaptureArtifact.path), true);
+    const rawCapture = JSON.parse(fs.readFileSync(rawCaptureArtifact.path, "utf-8"));
+    assert.equal(rawCapture.phase, "tech_spec");
+    assert.equal(rawCapture.errorCode, "invalid_stage_output");
+    // The reply the model actually wrote is recoverable verbatim -- that is the
+    // whole point of the capture, and exactly what was missing before.
+    assert.equal(
+      rawCapture.rawText,
+      "这个改动我建议直接照着现有实现改，不需要额外的接口设计。",
+    );
+    assert.equal(rawCapture.rawTextHash, sha256Text(rawCapture.rawText));
+
+    const rawCaptureEvent = db.select().from(events).where(eq(events.changeId, CHANGE_ID)).all()
+      .find((event) =>
+        event.type === "stage_raw_output"
+        && event.runId === run?.id
+        && event.rawJson?.includes("\"phase\":\"tech_spec\""));
+    assert.ok(rawCaptureEvent);
+  });
+
+  it("takes TechSpec snapshots from the protocol lines, never from model-authored JSON", async () => {
+    seedChange(repoPath, "INTAKE_READY");
+    seedClosedSpecBattle();
+    setPipelineEngineFactoryForTest(() => ({
+      async run(input) {
+        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+          return {
+            threadId: `${CHANGE_ID}-thread`,
+            runId: "ENGINE-RUN",
+            summary: blueCritiqueLineProtocolText(),
+            success: true,
+            changedFiles: [],
+            structuredOutput: undefined,
+            items: [],
+          };
+        }
+        return {
+          threadId: `${CHANGE_ID}-thread`,
+          runId: "ENGINE-RUN",
+          // Protocol lines AND a hand-authored JSON object that is itself
+          // perfectly well-formed. Only the protocol lines may reach the DB.
+          summary: [
+            validTechSpecLineProtocolText({ includeApi: false }),
+            "",
+            "```json",
+            JSON.stringify({
+              techSpec: {
+                interfaces: [{ name: "MODEL_AUTHORED", type: "http", change: "smuggled" }],
+                dataContracts: [],
+                migrationNotes: [],
+                buildInputs: ["smuggled build input"],
+                reviewInputs: ["smuggled review input"],
+              },
+            }),
+            "```",
+          ].join("\n"),
+          success: true,
+          changedFiles: [],
+          structuredOutput: {
+            techSpec: {
+              interfaces: [{ name: "MODEL_AUTHORED", type: "http", change: "smuggled" }],
+              dataContracts: [],
+              migrationNotes: [],
+              buildInputs: ["smuggled build input"],
+              reviewInputs: ["smuggled review input"],
+            },
+          },
+          items: [],
+        };
+      },
+      async *runStreamed() {},
+    }));
+
+    await runTechSpec(CHANGE_ID, makeTestJobExecutionContext("tech-spec-refuses-model-json"));
+
+    const techSpec = db.select().from(techspecSnapshots).where(eq(techspecSnapshots.changeId, CHANGE_ID)).get();
+    const api = db.select().from(apiSnapshots).where(eq(apiSnapshots.changeId, CHANGE_ID)).get();
+    assert.ok(techSpec?.contentJson);
+    assert.ok(api?.contractJson);
+    // Neither the provider-native structuredOutput nor the fenced JSON in the
+    // reply text may contribute a single byte.
+    assert.doesNotMatch(techSpec.contentJson, /MODEL_AUTHORED|smuggled/);
+    assert.doesNotMatch(api.contractJson, /MODEL_AUTHORED|smuggled/);
+    assert.match(techSpec.contentJson, /Use DB design snapshot\./);
+    assert.equal(currentStatus(), "TECHSPEC_READY");
   });
 
   it("blocks Build before workspace creation when DB design snapshots are missing", async () => {
@@ -10962,7 +11137,7 @@ describe("pipeline-service v2 stages", () => {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
           summary: isDesignSnapshotPrompt
-            ? "structured techspec/api candidate"
+            ? validTechSpecLineProtocolText()
             : isTestPlanPrompt
             ? validTestPlanLineProtocolText()
             : isPlanPrompt
@@ -10983,24 +11158,9 @@ describe("pipeline-service v2 stages", () => {
             : `summary for ${input.changeId}`,
           success: true,
           changedFiles: [],
-          structuredOutput: isDesignSnapshotPrompt
-            ? {
-              techSpec: {
-                interfaces: [{ endpoint: "/api/projects/:id" }],
-                dataContracts: [{ response: "ProjectResponse" }],
-                migrationNotes: [],
-                buildInputs: ["Use DB design snapshot."],
-                reviewInputs: ["Review DB design snapshot."],
-              },
-              apiContract: {
-                interfaces: [{ endpoint: "/api/projects/:id" }],
-                dataContracts: [{ requiredFields: ["actions"] }],
-                migrationNotes: [],
-                buildInputs: ["Keep actions response field."],
-                reviewInputs: ["Verify actions response field."],
-              },
-            }
-            : undefined,
+          // tech_spec is on the line protocol: the payload comes from the
+          // protocol lines in `summary`, never from model-authored JSON.
+          structuredOutput: undefined,
           items: [],
         };
       },

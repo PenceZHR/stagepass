@@ -168,7 +168,62 @@ describe("refine.md template", () => {
   it("contains read-only requirements boundary", () => {
     assert.match(content, /当前阶段是 refine/);
     assert.match(content, /禁止创建、修改、删除任何文件/);
-    assert.match(content, /requirements JSON/);
+    // Was `/requirements JSON/`, which pinned the instruction to emit a
+    // ```requirements fenced JSON array -- i.e. it pinned the model authoring
+    // JSON, the exact thing the project rule forbids. The boundary this test
+    // cares about (refine outputs requirements and never writes spec) is now
+    // expressed by the REQ line protocol.
+    assert.match(content, /REQ 需求行|REQ 行/);
     assert.match(content, /spec 文件只能由系统/);
+  });
+
+  it("teaches the line protocol and never JSON output", () => {
+    assert.match(
+      content,
+      /REQ: id \| functional\/non-functional\/constraint \| confirmed\/uncertain\/new \| 标题 \| 详细描述/,
+    );
+    assert.match(content, /不要输出 JSON/);
+    assert.doesNotMatch(content, /```requirements/);
+    assert.doesNotMatch(content, /```json/);
+  });
+});
+
+describe("tech-spec.md template", () => {
+  const content = fs.readFileSync(path.join(TEMPLATES_DIR, "tech-spec.md"), "utf-8");
+
+  it("teaches the line protocol and never JSON output", () => {
+    assert.match(content, /INTERFACE: 名称 \| 类型/);
+    assert.match(content, /CONTRACT: 名称 \| 必填字段/);
+    assert.match(content, /MIGRATION:/);
+    assert.match(content, /BUILD:/);
+    assert.match(content, /REVIEW:/);
+    assert.match(content, /不要输出 JSON/);
+    // The old template asked for "一个 JSON object" and modelled it with a
+    // ```json fence -- the invitation to author JSON by hand.
+    assert.doesNotMatch(content, /```json/);
+    assert.doesNotMatch(content, /只输出一个 JSON object/);
+  });
+
+  it("preserves the stage boundary and changeId placeholder", () => {
+    assert.match(content, /当前阶段是 tech_spec/);
+    assert.match(content, /禁止创建、修改、删除源码文件/);
+    assert.match(content, /\{changeId\}/);
+  });
+});
+
+describe("api-spec.md template", () => {
+  const content = fs.readFileSync(path.join(TEMPLATES_DIR, "api-spec.md"), "utf-8");
+
+  it("teaches the API_ line protocol and never JSON output", () => {
+    assert.match(content, /API_INTERFACE: 名称 \| 类型/);
+    assert.match(content, /API_CONTRACT: 名称 \| 必填字段/);
+    assert.match(content, /不要输出 JSON/);
+    assert.doesNotMatch(content, /```json/);
+    assert.doesNotMatch(content, /只输出一个 JSON object/);
+  });
+
+  it("documents that the API_ group is optional and derives when omitted", () => {
+    assert.match(content, /API_ 行整体是可选的/);
+    assert.match(content, /至少有一条 API_INTERFACE/);
   });
 });

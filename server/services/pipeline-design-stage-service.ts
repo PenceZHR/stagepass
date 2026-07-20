@@ -13,6 +13,7 @@ import { runDocumentStage } from "./pipeline-document-stage-runner-service";
 import { nowISO, writeRunOnlyArtifactBestEffort } from "./pipeline-run-ledger-service";
 import { getSpecBattleState } from "./spec-battle-service";
 import { recomputeStageGate } from "./stage-authority-service";
+import { parseTechSpecLineProtocol } from "./techspec-line-protocol";
 import { parseTestPlanLineProtocol } from "./testplan-line-protocol";
 import {
   createTechSpecAndApiSnapshots,
@@ -28,6 +29,68 @@ import {
 } from "./testplan-snapshot-service";
 
 const log = createChildLogger("pipeline-design-stage-service");
+
+/**
+ * One design-sections group (a TechSpec content or an API contract), as the
+ * line protocol assembles it. Sections stay `unknown[]` in
+ * NormalizedDesignSections, so this schema is the only place the record shape
+ * is pinned -- and it is pinned as the SECOND gate over stagepass's own
+ * assembly, never handed to the provider (runDocumentStage suppresses
+ * outputSchema whenever lineProtocol is set).
+ */
+const DESIGN_SECTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    interfaces: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          type: { type: "string" },
+          change: { type: "string" },
+        },
+        required: ["name", "type", "change"],
+        additionalProperties: false,
+      },
+    },
+    dataContracts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          requiredFields: { type: "array", items: { type: "string" } },
+          constraints: { type: "array", items: { type: "string" } },
+        },
+        required: ["name", "requiredFields", "constraints"],
+        additionalProperties: false,
+      },
+    },
+    migrationNotes: { type: "array", items: { type: "string" } },
+    buildInputs: { type: "array", items: { type: "string" } },
+    reviewInputs: { type: "array", items: { type: "string" } },
+  },
+  required: ["interfaces", "dataContracts", "migrationNotes", "buildInputs", "reviewInputs"],
+  additionalProperties: false,
+};
+
+/**
+ * `apiContract` is optional on purpose: a reply with no API_* line omits it, and
+ * persistTechSpecAndApiSnapshots then derives the API contract from the tech
+ * spec exactly as it does today (deriveApiContractFromTechSpec). Making it
+ * required would have quietly retired the derive path that every existing
+ * change actually used.
+ */
+export const TECH_SPEC_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    techSpec: DESIGN_SECTIONS_SCHEMA,
+    apiContract: DESIGN_SECTIONS_SCHEMA,
+  },
+  required: ["techSpec"],
+  additionalProperties: false,
+};
 
 const TESTPLAN_OUTPUT_SCHEMA = {
   type: "object",
@@ -175,6 +238,27 @@ function candidateObject(candidate: unknown): Record<string, unknown> | null {
   return candidate as Record<string, unknown>;
 }
 
+/**
+ * The stage's structuredOutput is now mandatory.
+ *
+ * This used to read `input.result.structuredOutput ?? input.result.summary`.
+ * With no `outputSchema` on the stage, runDocumentStage skipped ingestion
+ * entirely, so `structuredOutput` was ALWAYS undefined and the fallback was the
+ * only live branch: the raw reply text went to normalizeDesignSections, which
+ * throws DesignSnapshotValidationError for anything that is not a JSON object.
+ * The stage therefore could not fail cleanly -- the throw happened after the
+ * provider was terminal, and because ingestion never ran there was no raw
+ * capture to diff the drift against. Refusing a non-object here keeps the
+ * failure inside the ingestion path, which writes the capture first.
+ */
+function requireTechSpecStructuredOutput(value: unknown): Record<string, unknown> {
+  const record = candidateObject(value);
+  if (!record) {
+    throw new Error("TechSpec generation requires AI structuredOutput");
+  }
+  return record;
+}
+
 function selectTechSpecCandidate(candidate: unknown): unknown {
   const record = candidateObject(candidate);
   return record?.techSpec ?? record?.techspec ?? record?.technicalSpec ?? candidate;
@@ -203,7 +287,7 @@ async function persistTechSpecAndApiSnapshots(input: {
   result: AiRunResult;
 }): Promise<{ skipDefaultArtifactWrite: true }> {
   const reviewedAt = nowISO();
-  const candidate = input.result.structuredOutput ?? input.result.summary;
+  const candidate = requireTechSpecStructuredOutput(input.result.structuredOutput);
   const techSpecCandidate = selectTechSpecCandidate(candidate);
   const normalizedTechSpec = normalizeDesignSections(techSpecCandidate);
   const apiCandidate = selectApiCandidate(candidate) ?? deriveApiContractFromTechSpec(normalizedTechSpec);
@@ -322,6 +406,20 @@ export async function runTechSpec(
     provider,
     sessionKind: "general",
     additionalPromptFileName: "api-spec.md",
+    outputSchema: TECH_SPEC_OUTPUT_SCHEMA,
+    // The model writes protocol lines, never JSON; the schema above stays as
+    // the second gate over the deterministically assembled payload. Setting
+    // either one alone is not enough: without outputSchema runDocumentStage
+    // skips the whole ingest/validate/raw-capture block, which is how this
+    // stage ended up with no raw capture at all.
+    lineProtocol: {
+      parse: (rawText) => {
+        const parsed = parseTechSpecLineProtocol(rawText);
+        return parsed.ok
+          ? { ok: true, payload: parsed.payload as unknown as Record<string, unknown> }
+          : parsed;
+      },
+    },
     afterSuccessfulResult: persistTechSpecAndApiSnapshots,
   });
 }

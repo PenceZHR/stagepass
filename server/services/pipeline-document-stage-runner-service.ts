@@ -33,6 +33,7 @@ import {
   writeRunArtifactBestEffort,
 } from "./pipeline-run-ledger-service";
 import { markdownArtifactContentFromResult } from "./markdown-artifact-content-service";
+import { validateOutputSchema } from "./output-schema-validator";
 import { assemblePrompt, type PromptPhase } from "./prompt-service";
 import { transitionChangeStatus } from "./change-status-service";
 import { runStageWithLedger } from "./stage-orchestrator-service";
@@ -234,84 +235,6 @@ function assertChangeNotBlocked(changeId: string, phase: RunPhase): void {
   }
 }
 
-type SchemaValidationResult = true | { ok: false; message: string };
-
-function validateDocumentOutputSchema(schema: unknown, value: unknown): SchemaValidationResult {
-  const failure = validateSchemaNode(schema, value, "$");
-  return failure ? { ok: false, message: failure } : true;
-}
-
-function validateSchemaNode(schema: unknown, value: unknown, location: string): string | null {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    return null;
-  }
-
-  const record = schema as {
-    type?: string | string[];
-    enum?: unknown[];
-    properties?: Record<string, unknown>;
-    required?: unknown;
-    items?: unknown;
-    additionalProperties?: unknown;
-  };
-
-  if (record.enum && !record.enum.some((item) => JSON.stringify(item) === JSON.stringify(value))) {
-    return `${location} must be one of the allowed enum values`;
-  }
-
-  if (record.type !== undefined && !schemaTypeMatches(record.type, value)) {
-    return `${location} must be ${Array.isArray(record.type) ? record.type.join(" or ") : record.type}`;
-  }
-
-  if (isPlainObject(value)) {
-    const properties = record.properties ?? {};
-    const required = Array.isArray(record.required) ? record.required : [];
-    for (const key of required) {
-      if (typeof key === "string" && !(key in value)) {
-        return `${location}.${key} is required`;
-      }
-    }
-    for (const [key, childSchema] of Object.entries(properties)) {
-      if (key in value) {
-        const failure = validateSchemaNode(childSchema, value[key], `${location}.${key}`);
-        if (failure) return failure;
-      }
-    }
-    if (record.additionalProperties === false) {
-      const allowed = new Set(Object.keys(properties));
-      for (const key of Object.keys(value)) {
-        if (!allowed.has(key)) {
-          return `${location}.${key} is not allowed`;
-        }
-      }
-    }
-  }
-
-  if (Array.isArray(value) && record.items !== undefined) {
-    for (let index = 0; index < value.length; index += 1) {
-      const failure = validateSchemaNode(record.items, value[index], `${location}[${index}]`);
-      if (failure) return failure;
-    }
-  }
-
-  return null;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function schemaTypeMatches(type: string | string[], value: unknown): boolean {
-  const allowed = Array.isArray(type) ? type : [type];
-  return allowed.some((item) => {
-    if (item === "null") return value === null;
-    if (item === "array") return Array.isArray(value);
-    if (item === "object") return isPlainObject(value);
-    if (item === "integer") return Number.isInteger(value);
-    return typeof value === item;
-  });
-}
-
 async function validateStructuredDocumentOutput(input: {
   changeId: string;
   project: Project;
@@ -357,7 +280,7 @@ async function validateStructuredDocumentOutput(input: {
               || `${input.phase} provider failed`,
           };
         }
-        const base = (candidate: unknown) => validateDocumentOutputSchema(input.outputSchema, candidate);
+        const base = (candidate: unknown) => validateOutputSchema(input.outputSchema, candidate);
         if (input.lineProtocol) {
           return guardLineProtocolSchema(input.lineProtocol, base, input.phase)(value);
         }
