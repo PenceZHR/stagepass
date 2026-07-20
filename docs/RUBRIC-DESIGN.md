@@ -146,7 +146,11 @@ rubric_assessments id, change_id, run_id, round_id(null), rubric_id,
 这正是本会话反复在治的那类病（死路 + 没有出口），不能再造一个。
 
 **要求：**
-- `rubric_criteria` 补 `criterion_key`（跨版本稳定，正文未变则沿用）
+- `rubric_criteria` 补 `criterion_key`（跨版本稳定）
+- **「正文未变则沿用」这条按字面实现是不够的**（第 4 批实测）：只按正文匹配的话，
+  改一次错别字仍会孤立已开的 gap，病一样只是触发条件变窄。**编辑器回传 key 必须是
+  第一优先级规则，文本匹配只做后备**；且不属于本 scope 的 key 一律不信任 —— 信了
+  就等于允许一个请求把新 criterion 绑到已开的 gap 上
 - rubric 派生的 gap id **必须绑在 `criterion_key` 上**，不是版本内的行 id
 - **criterion 正文必须快照进 gap，永不回溯派生** —— 否则改一次措辞就会移动
   `specSourceDbHash`，§4.3 与 §4.4 在这个边界上是冲突的
@@ -172,12 +176,22 @@ RUBRIC <criterionId> yes|no <evidence>
 ## 7. UI
 
 1. **rubric 编辑器**：每个阶段面板都有入口，三个 tab（正方 / 反方 / 裁决），
-   没有 critic 的阶段隐藏中间 tab
+   没有 critic 的阶段隐藏中间 tab。
+   **注意 §3 的阶段表与 UI 的 `ReviewPhase` 对不上**：UI 有 13 个阶段面板，而 §3 里
+   `Review` 根本不是一个 phase（它是 Build 的 critic）。照 §3 直译会让 Review 阶段
+   没有抽屉 —— 而它恰恰是产出 critic 判定的那个界面。**`Review` 面板映射到 `Build`
+   rubric，且抽屉标题必须写明当前编辑的是哪个 phase**，避免误编辑。
 2. 每个 tab 是可编辑清单：criterion 文本 + `blocking` 开关 + 增删改排序
 3. **编辑入口显式可见，不藏进「高级详情」**
    —— 这一轮已经栽过两次「后端能做但 UI 藏起来」（`retry_spec` 无按钮、git 面板在 4.7 屏之下）
 4. 跑完后同区域按 tab 显示本次判定：`✓ 是` / `✗ 否` / `— 未评估`
-5. **`not_assessed` 视觉上必须和 `no` 一样刺眼** —— 它同样阻断
+   **「同区域」不等于「看得见」**：第 4 批实测，放在 children 之后时 Plan 阶段会被顶到
+   ~3900px，正是本会话批评过的「git 面板在 4.7 屏之下」。**必须在 stage header 之后、
+   主内容之前**，并用断言钉住相对位置。
+5. **`not_assessed` 视觉上必须和 `no` 一样刺眼** —— 它同样阻断。
+   与上一条的 `—` 字形是互相拉扯的（破折号在任何视觉体系里都读作「这里没东西」）。
+   调和办法：**字形照旧，色彩/边框/阻断标签与 `no` 共用同一常量**，并把「两者 class
+   逐字相等」写成断言，而不是"碰巧现在长得像"。
 6. 判定来自旧版本 rubric 时**显式标注**（沿用 `reportFresh` / 战报过期那套语言）
 7. 项目级默认与 change 级覆盖要能一眼看出当前用的是哪个
 
@@ -196,7 +210,9 @@ RUBRIC <criterionId> yes|no <evidence>
 - **双向变异验证**：还原方向转红；**过度放宽方向也必须转红**
   （漏答被当成通过、未知 id 被忽略、`no` 不阻断、rubric 正文进了哈希）
 - 改/删任何既有断言，逐条说明「原本钉住什么、为什么那个行为是错的」
-- 完整 `pnpm test` + `tsc --noEmit` + `pnpm lint`
+- **完整全量测试** —— worktree 里用 `npx tsx scripts/run-tests-isolated.ts` 和 `npx eslint`，
+  **不要用 `pnpm test` / `pnpm lint`**（见 §10，会删掉 node_modules 软链）
+- `npx tsc --noEmit`
 - 新增生产 DB 写 → 登记 `db-write-policy.json` + 重算快照
 - **真浏览器验证，不是只有测试绿** —— 但**第 1–3 批没有 UI 可点**（UI 是第 4 批），
   这几批用「生产库副本 + 真实服务函数重算」代替：先复现真实盖章的哈希以证明重算函数
