@@ -4,6 +4,11 @@
 >
 > *A local-first Stage-Gate pipeline that walks you — and your AI — through real software delivery. You approve every gate.*
 
+![Spec 对抗：反方挑出 3 个 P1 风险，Spec 闸口拒绝放行，是否接受风险由你决定](docs/images/spec-battle.png)
+
+<p align="center"><em>Spec 阶段的对抗回合：我方补需求、反方挑漏洞、战报确定性结算。<br>
+存在 P1 风险时闸口直接拒绝放行 —— 继续对抗还是接受风险，是你的决定，不是 AI 的。</em></p>
+
 ---
 
 ## 这是给谁的
