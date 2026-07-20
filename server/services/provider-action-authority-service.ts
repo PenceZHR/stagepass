@@ -454,14 +454,16 @@ export function resolveBriefingActionAuthority(
   const draft = db.select().from(prdDrafts).where(eq(prdDrafts.changeId, changeId))
     .orderBy(desc(prdDrafts.version), desc(prdDrafts.createdAt)).get();
 
-  // assertQuestionsCanBeReplaced: regenerating the card set would destroy
-  // recorded human answers, so it is refused once any card has been acted on.
-  if (actionId === "run_prd_briefing_questions"
-    && questions.some((question) => question.status !== "open")) {
-    return disabled(actionId, "prd_questions_have_human_actions");
-  }
+  // run_prd_briefing_questions has no precondition of its own beyond the three
+  // above. It used to be disabled with prd_questions_have_human_actions once
+  // any card was acted on, mirroring assertQuestionsCanBeReplaced; generation
+  // now appends a round instead of replacing the set, so an answered card no
+  // longer stands in the way of asking again -- and reporting it disabled here
+  // would be a phantom-DISABLED verdict against a POST that accepts.
   if (actionId === "run_prd_briefing_draft") {
-    // assertQuestionsGenerated / assertCriticalQuestionsHandled
+    // assertQuestionsGenerated / assertCriticalQuestionsHandled. Both read the
+    // whole card set, so an open critical card from ANY round still blocks --
+    // opening a new round cannot be used to walk past an unanswered one.
     if (questions.length === 0) return disabled(actionId, "prd_questions_missing");
     if (questions.some((question) => question.severity === "critical" && question.status === "open")) {
       return disabled(actionId, "prd_critical_questions_open");

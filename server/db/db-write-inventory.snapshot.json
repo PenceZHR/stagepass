@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "37f8a9cf2a8418398d8f04ccd69b24f0adb309be41c497dfd2104ef456fa93d8",
+  "policySha256": "5842566b7e495f194751b15af33de315e4ac391da729d12a76bfeb64245aebec",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -644,25 +644,9 @@
     },
     {
       "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.delete",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
       "symbol": "db.insert",
       "nodeKind": "CallExpression",
       "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },
@@ -711,6 +695,14 @@
       "symbol": "db.update",
       "nodeKind": "CallExpression",
       "table": "prdBriefings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },
@@ -924,11 +916,27 @@
     },
     {
       "file": "server/services/recovery-executors.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 11",
+      "reason": "stranded Spec round recovery records its recovery event"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
       "symbol": "db.transaction",
       "nodeKind": "CallExpression",
       "table": null,
       "owner": "Task 11",
       "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 11",
+      "reason": "stranded Spec round recovery fails the round through a status CAS"
     },
     {
       "file": "server/services/recovery-executors.ts",

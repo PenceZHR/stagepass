@@ -10,6 +10,15 @@ Change ID: {changeId}
 - 作战意图：{prdIntentPath}
 - 疑点卡与用户处理结果：{briefingQuestionsPath}
 
+## 疑点卡是多轮累积的
+
+{briefingQuestionsPath} 里每张卡都带 `roundNo`，并按轮次从小到大排列。追问是一轮一轮追加的：
+旧轮次的卡不会被删除，也不会因为出现新一轮而失效。你必须把**所有轮次**里已处理的卡
+（answered / assumption_accepted / deferred）全部纳入 PRD 草案，而不是只看最后一轮。
+
+当两张卡讲的是同一件事、结论却不一致时，以 **roundNo 更大的那张为准**：较早的结论视为已被更新，
+不要把它当成矛盾写进 PRD，也不要把两种结论并列。若较新的卡只是补充细节而非推翻，则两者合并。
+
 PRD 草案必须包含以下章节：
 - 背景
 - 目标

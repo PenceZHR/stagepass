@@ -322,6 +322,7 @@ describe("migration runner", () => {
       "suggested_default",
       "status",
       "answer",
+      "round_no",
     ]) {
       assert.ok(
         columnNames(sqlite, "briefing_questions").includes(column),
@@ -438,7 +439,7 @@ describe("migration runner", () => {
     const migrationRows = sqlite.prepare("SELECT tag FROM __migrations").all();
 
     assert.deepEqual(second.applied, []);
-    assert.equal(migrationRows.length, 22);
+    assert.equal(migrationRows.length, 23);
   });
 
   it("records a migration whose columns were already applied manually", () => {

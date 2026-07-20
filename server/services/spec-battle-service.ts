@@ -46,6 +46,7 @@ import {
   validateBlueCritiqueOutput,
   type ParsedBlueCritiqueOutput,
 } from "./spec-battle-ledger";
+import { prdStageHashQuestionRows } from "./prd-briefing-ledger";
 import {
   completeStageRun,
   computeSourceDbHash,
@@ -249,12 +250,19 @@ function latestPrdDraft(changeId: string): typeof prdDrafts.$inferSelect | null 
 
 function prdAuthorityRows(changeId: string) {
   const briefing = db.select().from(prdBriefings).where(eq(prdBriefings.changeId, changeId)).get() ?? null;
+  // Same key as prd-briefing-service.getQuestions: oldest round first. The PRD
+  // stage hash no longer depends on this (prdStageHashQuestionRows normalizes
+  // its own order), but `deferredQuestions` below is handed to Spec Battle as a
+  // list, and it should reach it in the order the briefing room shows it.
   const questions = db
     .select()
     .from(briefingQuestions)
     .where(eq(briefingQuestions.changeId, changeId))
     .all()
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    .sort((a, b) =>
+      a.roundNo - b.roundNo
+      || a.createdAt.localeCompare(b.createdAt)
+      || a.id.localeCompare(b.id));
   return {
     briefing,
     questions,
@@ -269,7 +277,7 @@ function prdSourceDbHash(changeId: string): string {
     phase: "PRD",
     rows: [
       { table: "prd_briefings", row: rows.briefing },
-      { table: "briefing_questions", rows: rows.questions },
+      { table: "briefing_questions", rows: prdStageHashQuestionRows(rows.questions) },
       { table: "prd_drafts.latest", row: rows.latestDraft },
     ],
   });
@@ -352,7 +360,7 @@ function readDbAuthoritySnapshot(changeId: string) {
       { table: "stage_gates.PRD", id: prd.prdGate.id, sourceDbHash: prd.prdGate.sourceDbHash },
       { table: "prd_briefings.locked", row: prd.briefing },
       { table: "prd_drafts.latest", row: prd.latestDraft },
-      { table: "briefing_questions.deferred", rows: deferredQuestions },
+      { table: "briefing_questions.deferred", rows: prdStageHashQuestionRows(deferredQuestions) },
       { table: "battle_rounds", rows: rows.rounds },
       { table: "requirement_gaps", rows: rows.gaps },
       { table: "red_fix_claims", rows: rows.fixClaims },

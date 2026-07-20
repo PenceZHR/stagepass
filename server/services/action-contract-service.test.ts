@@ -2258,16 +2258,22 @@ describe("action-contract-service", () => {
   });
 
   /**
-   * Same class, different precondition: assertQuestionsCanBeReplaced refuses to
-   * regenerate the card set once any card carries a recorded human action,
-   * because regeneration would destroy those answers. A /gate that reports the
-   * step enabled invites the user into a guaranteed 409.
+   * Same class, opposite verdict since rounds landed. /gate used to disable the
+   * questions step with prd_questions_have_human_actions once any card carried
+   * a recorded action, mirroring assertQuestionsCanBeReplaced: regeneration
+   * replaced the card set, so it would have destroyed those answers.
    *
-   * Deliberately asserts the questions step only, so it fails for its own reason
-   * rather than sharing a cause with the staleness test above: re-running the
-   * DRAFT is still legitimate in this state, and is asserted to stay enabled.
+   * Generation appends a round now. Nothing is overwritten, the dispatch path
+   * accepts, and a /gate that still reported the step disabled would be the
+   * phantom-DISABLED defect -- it would tell the user the interrogation is over
+   * when a POST would happily open another round. Asserts the agreement, not
+   * the reason string, in both directions.
+   *
+   * Deliberately asserts the questions step only, so it stands on its own cause
+   * rather than sharing one with the staleness test above: re-running the DRAFT
+   * is legitimate in this state too, and is asserted to stay enabled.
    */
-  it("disables briefing question regeneration once a card has a human action", () => {
+  it("keeps briefing question rounds available once a card has a human action", () => {
     db.update(changes)
       .set({ status: "INTAKE_PENDING", gateState: null })
       .where(eq(changes.id, CHANGE_ID))
@@ -2282,15 +2288,13 @@ describe("action-contract-service", () => {
     const actions = getActions(CHANGE_ID);
     const questions = actions.find((entry) => entry.actionId === "run_prd_briefing_questions");
     assert.ok(questions);
-    assert.equal(questions.enabled, false, "regeneration would destroy a recorded answer");
-    assert.equal(questions.reasonCode, "prd_questions_have_human_actions");
+    assert.equal(questions.enabled, true, "an answered card must not end the interrogation");
+    assert.equal(questions.reasonCode, null);
     assert.deepEqual(questions.blockers, []);
 
-    assert.throws(
+    assert.doesNotThrow(
       () => assertCanStartPrdBriefingQuestions(CHANGE_ID),
-      (error: unknown) =>
-        error instanceof PrdBriefingError && error.code === "questions_have_human_actions",
-      "the dispatch path must refuse the same state /gate reported disabled",
+      "the dispatch path must accept the same state /gate reported enabled",
     );
 
     // The answered card does not disable the rest of the briefing.

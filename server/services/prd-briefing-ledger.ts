@@ -112,6 +112,88 @@ export interface PrdBriefingInputSource {
 }
 
 /**
+ * The question-card shape that feeds the PRD *stage* source hash
+ * (computeSourceDbHash over `briefing_questions`), as opposed to the briefing
+ * *input* hash above. Both PRD callers -- prd-briefing-service, which stamps
+ * the gate, and spec-battle-service, which re-derives it and refuses a stale
+ * PRD baseline -- must project rows through here so they cannot drift.
+ *
+ * `roundNo` is deliberately NOT projected, for the same reason `createdAt` is
+ * excluded from prdBriefingInputHash: it is immutable for the life of a card
+ * and carries no state the hash does not already see. A new round only ever
+ * ADDS rows, and those rows move the digest on their own; an existing card's
+ * round never changes, so there is nothing for the hash to detect. Including
+ * it would have re-digested every card already on disk and invalidated every
+ * stamped gate -- measured, not assumed: on the production database the stored
+ * PRD gate for the locked change is 0ab2ffe4..., which this projection still
+ * reproduces exactly, while hashing roundNo alongside it yields 2c39ab40... .
+ * That gate belongs to a locked PRD with a Spec battle already in flight, and
+ * assertLockedPrdDbBaseline turns any mismatch into prd_gate_stale, so the
+ * difference is the difference between a working pipeline and a wedged one.
+ *
+ * Row ORDER is normalized here rather than trusted from the caller, exactly as
+ * prdBriefingInputHash does and for the same reason -- computeSourceDbHash sorts
+ * only its OUTER row list; `sortForStableJson` maps over an inner array and
+ * keeps its order, so the sequence a caller hands in lands in the digest. The
+ * two callers did not agree on one: prd-briefing-service reads cards through
+ * getQuestions, ordered by (roundNo, createdAt, id), while spec-battle-service
+ * ordered by (createdAt, id). Cards are written with a single hoisted
+ * `createdAt` per round, so two rounds generated inside the same millisecond
+ * share it and the tie-break falls to ids ending in random bytes -- the two
+ * orders then differ, the same rows hash to two digests, and
+ * assertLockedPrdDbBaseline reports prd_gate_stale against a PRD nothing
+ * touched. Sorting here makes ordering a property of the hash instead of an
+ * invariant each caller has to remember. Legacy rows are uniformly round 1,
+ * where (roundNo, createdAt, id) and (createdAt, id) coincide, so every digest
+ * already stamped on disk is reproduced byte for byte.
+ */
+export interface PrdStageHashQuestion {
+  id: string;
+  changeId: string;
+  category: string;
+  severity: string;
+  question: string;
+  whyItMatters: string;
+  suggestedDefault: string | null;
+  status: string;
+  answer: string | null;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * What the callers read out of `briefing_questions`: the projected shape plus
+ * the `roundNo` that orders it. Wider than the output on purpose -- the round
+ * decides the sequence but is not itself hashed.
+ */
+export type PrdStageHashQuestionSource = PrdStageHashQuestion & { roundNo: number };
+
+export function prdStageHashQuestionRows(
+  questions: PrdStageHashQuestionSource[],
+): PrdStageHashQuestion[] {
+  return [...questions].sort(
+    (a, b) =>
+      a.roundNo - b.roundNo
+      || a.createdAt.localeCompare(b.createdAt)
+      || a.id.localeCompare(b.id),
+  ).map((question) => ({
+    id: question.id,
+    changeId: question.changeId,
+    category: question.category,
+    severity: question.severity,
+    question: question.question,
+    whyItMatters: question.whyItMatters,
+    suggestedDefault: question.suggestedDefault,
+    status: question.status,
+    answer: question.answer,
+    source: question.source,
+    createdAt: question.createdAt,
+    updatedAt: question.updatedAt,
+  }));
+}
+
+/**
  * The single definition of "what a PRD briefing step consumed": the human intent
  * plus every question card, content and status included. Answering a question
  * moves this hash, which is what makes an already-generated draft stale.

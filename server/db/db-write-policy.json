@@ -643,25 +643,9 @@
     },
     {
       "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.delete",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
       "symbol": "db.insert",
       "nodeKind": "CallExpression",
       "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },
@@ -710,6 +694,14 @@
       "symbol": "db.update",
       "nodeKind": "CallExpression",
       "table": "prdBriefings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },
@@ -923,11 +915,27 @@
     },
     {
       "file": "server/services/recovery-executors.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 11",
+      "reason": "stranded Spec round recovery records its recovery event"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
       "symbol": "db.transaction",
       "nodeKind": "CallExpression",
       "table": null,
       "owner": "Task 11",
       "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 11",
+      "reason": "stranded Spec round recovery fails the round through a status CAS"
     },
     {
       "file": "server/services/recovery-executors.ts",
@@ -1818,6 +1826,11 @@
     },
     {
       "file": "server/services/static-analyzer.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/stranded-battle-round-recovery.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },

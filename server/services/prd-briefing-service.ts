@@ -23,6 +23,7 @@ import {
   parseBriefingQuestionsOutput,
   parseFinalReviewOutput,
   prdBriefingInputHash,
+  prdStageHashQuestionRows,
   readPrdBriefingSourceHashes,
   type BriefingQuestionsOutput,
   type FinalReviewOutput,
@@ -116,7 +117,7 @@ function prdSourceDbHash(changeId: string): string {
     phase: "PRD",
     rows: [
       { table: "prd_briefings", row: rows.briefing },
-      { table: "briefing_questions", rows: rows.questions },
+      { table: "briefing_questions", rows: prdStageHashQuestionRows(rows.questions) },
       { table: "prd_drafts.latest", row: rows.latestDraft },
     ],
   });
@@ -175,9 +176,28 @@ async function ensureBriefing(changeId: string, status = "intent_captured"): Pro
   })();
 }
 
+/**
+ * Every card of every round, oldest round first. There is deliberately no
+ * "current round only" reader: each gate below asks its question of the whole
+ * accumulated set, because an unanswered card from round 1 is exactly as
+ * blocking as one from round 3.
+ *
+ * Round leads the sort, then the pre-existing (createdAt, id) key. For rows
+ * written before rounds existed the round is uniformly 1, so the order -- and
+ * therefore every already-stamped digest -- is unchanged.
+ */
 function getQuestions(changeId: string): Array<typeof briefingQuestions.$inferSelect> {
   return db.select().from(briefingQuestions).where(eq(briefingQuestions.changeId, changeId)).all()
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    .sort((a, b) =>
+      a.roundNo - b.roundNo
+      || a.createdAt.localeCompare(b.createdAt)
+      || a.id.localeCompare(b.id));
+}
+
+/** Rounds are dense and 1-based; the first generation for a change opens round 1. */
+function nextQuestionRoundNo(changeId: string): number {
+  const rounds = getQuestions(changeId).map((question) => question.roundNo);
+  return rounds.length === 0 ? 1 : Math.max(...rounds) + 1;
 }
 
 function latestIntakeRun(changeId: string): typeof runs.$inferSelect | null {
@@ -247,13 +267,67 @@ function finalReviewIsFresh(input: {
   );
 }
 
-function assertQuestionsCanBeReplaced(changeId: string): void {
-  const actedQuestions = getQuestions(changeId).filter((question) => question.status !== "open");
-  if (actedQuestions.length > 0) {
-    throw new PrdBriefingError(
-      "questions_have_human_actions",
-      "Question regeneration would replace cards with recorded human actions. Reset or create a new briefing first.",
-    );
+export interface RecordedDecision {
+  id: string;
+  status: string;
+  answer: string | null;
+}
+
+function recordedDecisions(changeId: string): RecordedDecision[] {
+  return getQuestions(changeId)
+    .filter((question) => question.status !== "open")
+    .map((question) => ({ id: question.id, status: question.status, answer: question.answer }));
+}
+
+/**
+ * What `assertQuestionsCanBeReplaced` became.
+ *
+ * The old guard was a PRE-condition: it refused to generate questions at all
+ * once any card carried a human action, because generation replaced the whole
+ * set and would have destroyed those answers. That was the correct defence of
+ * the wrong model -- it also meant one answer ended the interrogation, since
+ * the only way to ask again was to discard what had been decided.
+ *
+ * Generation now appends a round, so nothing is overwritten and there is no
+ * longer anything to refuse. The protection does not disappear with the
+ * refusal, though; it moves and gets stricter. It is now a POST-condition,
+ * checked inside the same transaction as the append: every card that carried a
+ * recorded decision before must still exist afterwards with the same status and
+ * the same answer. A precondition can only refuse what it was told to look for,
+ * and stops protecting the moment someone reintroduces a delete; this rejects
+ * the write itself, whatever caused it, and rolls the round back.
+ *
+ * The error code is unchanged so the /gate reason vocabulary and the dispatch
+ * path keep naming the same failure.
+ *
+ * Exported only so its own tests can reach it. Nothing else calls it, and the
+ * reason is worth stating: the append cannot currently produce a state this
+ * rejects, and the transaction is synchronous, so no interleaving write can
+ * either -- there is no route to it through the public API. Left unexported it
+ * was a guard no test could kill: deleting the call outright kept the suite
+ * green, which is the same evidence one would get if it did nothing at all. A
+ * post-condition guarding against a future regression has to be tested
+ * directly, or the protection it claims to carry is only a comment.
+ */
+export function assertRecordedDecisionsPreserved(
+  before: RecordedDecision[],
+  after: Array<typeof briefingQuestions.$inferSelect>,
+): void {
+  const byId = new Map(after.map((question) => [question.id, question]));
+  for (const decision of before) {
+    const current = byId.get(decision.id);
+    if (!current) {
+      throw new PrdBriefingError(
+        "questions_have_human_actions",
+        `Question generation destroyed a card with a recorded human action: ${decision.id}`,
+      );
+    }
+    if (current.status !== decision.status || current.answer !== decision.answer) {
+      throw new PrdBriefingError(
+        "questions_have_human_actions",
+        `Question generation overwrote a recorded human action: ${decision.id}`,
+      );
+    }
   }
 }
 
@@ -540,7 +614,8 @@ export function assertCanStartPrdBriefingQuestions(changeId: string): void {
   getProjectForChange(changeId);
   assertIntentCaptured(changeId);
   assertNoRunningPrdBriefingRun(changeId);
-  assertQuestionsCanBeReplaced(changeId);
+  // No replace guard: a new round appends, so recorded answers are never at
+  // risk here. assertRecordedDecisionsPreserved enforces that at write time.
 }
 
 export function assertCanStartPrdBriefingDraft(changeId: string): void {
@@ -615,7 +690,6 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
   assertIntentCaptured(input.changeId);
   const briefing = await ensureBriefing(input.changeId, "questions_ready");
   assertMutable(briefing);
-  assertQuestionsCanBeReplaced(input.changeId);
 
   let parsed: ReturnType<typeof parseBriefingQuestionsOutput>;
   try {
@@ -624,13 +698,18 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
     throw new PrdBriefingError("invalid_briefing_questions", error instanceof Error ? error.message : undefined);
   }
 
-  db.delete(briefingQuestions).where(eq(briefingQuestions.changeId, input.changeId)).run();
+  // Snapshot before writing: this is what the post-condition holds the append
+  // to. Ids are minted up front because nextId is async and the append runs
+  // inside a synchronous better-sqlite3 transaction.
+  const preservedDecisions = recordedDecisions(input.changeId);
+  const roundNo = nextQuestionRoundNo(input.changeId);
   const now = nowISO();
+  const appended: Array<typeof briefingQuestions.$inferInsert> = [];
   for (const item of parsed.questions) {
-    const id = await nextId(briefingQuestions, "BQ");
-    db.insert(briefingQuestions).values({
-      id,
+    appended.push({
+      id: await nextId(briefingQuestions, "BQ"),
       changeId: input.changeId,
+      roundNo,
       category: item.category,
       severity: item.severity,
       question: item.question,
@@ -641,13 +720,25 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
       source: "ai_blue",
       createdAt: now,
       updatedAt: now,
-    }).run();
+    });
   }
 
-  db.update(prdBriefings)
-    .set({ status: "questions_ready", updatedAt: nowISO() })
-    .where(eq(prdBriefings.changeId, input.changeId))
-    .run();
+  withSqliteWriteRetry("prd-briefing.append-question-round", () =>
+    db.transaction((tx) => {
+      for (const row of appended) {
+        tx.insert(briefingQuestions).values(row).run();
+      }
+      assertRecordedDecisionsPreserved(
+        preservedDecisions,
+        tx.select().from(briefingQuestions)
+          .where(eq(briefingQuestions.changeId, input.changeId)).all(),
+      );
+      tx.update(prdBriefings)
+        .set({ status: "questions_ready", updatedAt: nowISO() })
+        .where(eq(prdBriefings.changeId, input.changeId))
+        .run();
+    })
+  );
   updateSourceHashes(input.changeId);
   syncPrdStageAuthority(input.changeId, input.provider);
   await refreshPrdBriefingMirrors(input.changeId);

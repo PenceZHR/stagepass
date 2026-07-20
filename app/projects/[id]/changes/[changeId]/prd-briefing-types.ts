@@ -23,6 +23,8 @@ export interface PrdBriefing {
 export interface BriefingQuestion {
   id: string;
   changeId: string;
+  /** 1-based interrogation round. Generation appends a round; earlier ones stay. */
+  roundNo: number;
   category: string;
   severity: BriefingQuestionSeverity;
   question: string;

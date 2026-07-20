@@ -32,6 +32,7 @@ import {
   applyBriefingQuestionAction,
   assertCanStartPrdBriefingDraft,
   assertCanStartPrdBriefingQuestions,
+  assertRecordedDecisionsPreserved,
   completeFinalReview,
   completePrdDraft,
   completeQuestionGeneration,
@@ -277,7 +278,19 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     assert.equal(state.gate.deferredQuestionIds.length, 1);
   });
 
-  it("does not replace questions after a human action has been recorded", async () => {
+  /**
+   * The defect this whole round dimension exists for. The briefing is meant to
+   * be interrogated over many rounds, but generation used to DELETE the card
+   * set and re-insert it, so assertQuestionsCanBeReplaced had to refuse the
+   * moment any card carried a recorded human action -- otherwise regeneration
+   * would have destroyed the user's decisions. Answering one card therefore
+   * ended the interrogation at exactly one round.
+   *
+   * Generation now appends. Asserted together with the answer surviving,
+   * because "a second round is possible" is only the fix if the first round's
+   * recorded decision is still there afterwards.
+   */
+  it("appends a second round instead of refusing once a card has been answered", async () => {
     const criticalId = await seedQuestion("critical");
     await applyBriefingQuestionAction({
       changeId: CHANGE_ID,
@@ -286,18 +299,249 @@ describe("prd-briefing-service", { concurrency: false }, () => {
       value: "由 owner 审批。",
     });
 
-    await assert.rejects(
-      () => completeQuestionGeneration({
-        changeId: CHANGE_ID,
-        blueJson: JSON.stringify({ questions: [question("important")] }),
-      }),
-      (error) => error instanceof PrdBriefingError && error.code === "questions_have_human_actions",
-    );
+    await completeQuestionGeneration({
+      changeId: CHANGE_ID,
+      blueJson: JSON.stringify({ questions: [question("important")] }),
+    });
 
     const state = getPrdBriefingState(CHANGE_ID);
-    assert.equal(state.questions.length, 1);
-    assert.equal(state.questions[0].id, criticalId);
+    assert.equal(state.questions.length, 2, "the second round must be added, not swapped in");
+    assert.deepEqual(state.questions.map((row) => row.roundNo), [1, 2]);
+
+    const round1 = state.questions[0];
+    assert.equal(round1.id, criticalId);
+    assert.equal(round1.status, "answered");
+    assert.equal(round1.answer, "由 owner 审批。", "the round 1 answer must survive round 2");
+    assert.equal(state.questions[1].status, "open");
+  });
+
+  /**
+   * The protection assertQuestionsCanBeReplaced used to provide, restated as a
+   * post-condition. Every card carrying a decision -- answered, assumption
+   * accepted, or deferred -- must come through a new round byte-identical.
+   * Appending cannot destroy them, and if a future change makes it able to,
+   * this rejects the write rather than reporting success over lost decisions.
+   */
+  it("preserves every recorded human decision across a new round", async () => {
+    await savePrdIntent({ changeId: CHANGE_ID, rawText: "我要做一个战前会议室。" });
+    const generated = await completeQuestionGeneration({
+      changeId: CHANGE_ID,
+      blueJson: JSON.stringify({ questions: [question("critical"), question("important"), question("optional")] }),
+    });
+    const [answeredId, assumedId, deferredId] = generated.questions.map((row) => row.id);
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID, questionId: answeredId, action: "answer", value: "由 owner 审批。",
+    });
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID, questionId: assumedId, action: "accept_assumption", value: "默认 owner 审批。",
+    });
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID, questionId: deferredId, action: "defer", value: "进入 Spec Battle 再确认。",
+    });
+    const before = getPrdBriefingState(CHANGE_ID).questions
+      .map((row) => ({ id: row.id, status: row.status, answer: row.answer, roundNo: row.roundNo }));
+
+    await completeQuestionGeneration({
+      changeId: CHANGE_ID,
+      blueJson: JSON.stringify({ questions: [question("important")] }),
+    });
+
+    const after = getPrdBriefingState(CHANGE_ID).questions;
+    assert.equal(after.length, 4);
+    assert.deepEqual(
+      after.slice(0, 3).map((row) => ({
+        id: row.id, status: row.status, answer: row.answer, roundNo: row.roundNo,
+      })),
+      before,
+      "a new round must not touch any recorded decision",
+    );
+  });
+
+  /**
+   * The post-condition itself, driven directly.
+   *
+   * The test above proves a correct append leaves decisions alone, but it
+   * cannot prove the guard is what would stop an incorrect one: deleting the
+   * assertRecordedDecisionsPreserved call and changing nothing else leaves the
+   * whole suite green, because the append has no route to a state it rejects.
+   * That is exactly the evidence a no-op guard would produce. Since the guard
+   * exists to catch a regression that does not exist yet, the only way to hold
+   * it to its claim is to hand it the bad state on purpose.
+   */
+  describe("assertRecordedDecisionsPreserved", () => {
+    const decided = (overrides: Partial<typeof briefingQuestions.$inferSelect> = {}) => ({
+      id: "BQ-DECIDED",
+      changeId: CHANGE_ID,
+      roundNo: 1,
+      category: "goal",
+      severity: "critical",
+      question: "谁批准？",
+      whyItMatters: "验收标准不可判断。",
+      suggestedDefault: null,
+      status: "answered",
+      answer: "由 owner 审批。",
+      source: "ai_blue",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      ...overrides,
+    } as typeof briefingQuestions.$inferSelect);
+    const before = [{ id: "BQ-DECIDED", status: "answered", answer: "由 owner 审批。" }];
+
+    it("accepts a round that only adds cards", () => {
+      assert.doesNotThrow(() => assertRecordedDecisionsPreserved(before, [
+        decided(),
+        decided({ id: "BQ-NEW", roundNo: 2, status: "open", answer: null }),
+      ]));
+    });
+
+    it("rejects a round that destroyed a decided card", () => {
+      assert.throws(
+        () => assertRecordedDecisionsPreserved(before, [
+          decided({ id: "BQ-NEW", roundNo: 2, status: "open", answer: null }),
+        ]),
+        (error) => error instanceof PrdBriefingError
+          && error.code === "questions_have_human_actions"
+          && /destroyed/.test(error.message),
+      );
+    });
+
+    it("rejects a round that reopened a decided card", () => {
+      assert.throws(
+        () => assertRecordedDecisionsPreserved(before, [
+          decided({ status: "open", answer: null }),
+        ]),
+        (error) => error instanceof PrdBriefingError
+          && error.code === "questions_have_human_actions"
+          && /overwrote/.test(error.message),
+      );
+    });
+
+    it("rejects a round that rewrote the answer text while keeping the status", () => {
+      assert.throws(
+        () => assertRecordedDecisionsPreserved(before, [
+          decided({ answer: "由 AI 代答。" }),
+        ]),
+        (error) => error instanceof PrdBriefingError
+          && error.code === "questions_have_human_actions"
+          && /overwrote/.test(error.message),
+      );
+    });
+  });
+
+  it("numbers each generated round in order", async () => {
+    await savePrdIntent({ changeId: CHANGE_ID, rawText: "我要做一个战前会议室。" });
+    for (const severity of ["optional", "optional", "optional"] as const) {
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        blueJson: JSON.stringify({ questions: [question(severity)] }),
+      });
+    }
+
+    assert.deepEqual(getPrdBriefingState(CHANGE_ID).questions.map((row) => row.roundNo), [1, 2, 3]);
+  });
+
+  /**
+   * The semantic judgement: an open card from an earlier round is NOT
+   * superseded by a later round. It stays open, stays answerable, and keeps
+   * blocking. If a new round retired the old one, generating questions would be
+   * a way to walk past an unanswered critical card -- the draft gate would be
+   * satisfied by asking a different question rather than by answering the one
+   * that was asked.
+   */
+  it("keeps an earlier round's open critical card blocking after a new round", async () => {
+    await seedQuestion("critical");
+    await completeQuestionGeneration({
+      changeId: CHANGE_ID,
+      blueJson: JSON.stringify({ questions: [question("optional")] }),
+    });
+
+    const state = getPrdBriefingState(CHANGE_ID);
+    assert.equal(state.questions[0].roundNo, 1);
+    assert.equal(state.questions[0].status, "open", "a new round must not retire an older card");
+    assert.deepEqual(state.gate.blockingQuestionIds, [state.questions[0].id]);
+
+    await assert.rejects(
+      async () => assertCanStartPrdBriefingDraft(CHANGE_ID),
+      (error) => error instanceof PrdBriefingError && error.code === "critical_questions_open",
+      "opening a new round must not unblock a draft the older round blocks",
+    );
+    await assert.rejects(
+      () => completePrdDraft({ changeId: CHANGE_ID, markdown: "# PRD\n\n## 目标\n做战前会议室。" }),
+      (error) => error instanceof PrdBriefingError && error.code === "critical_questions_open",
+    );
+  });
+
+  it("still lets an earlier round's open card be answered after a new round exists", async () => {
+    const criticalId = await seedQuestion("critical");
+    await completeQuestionGeneration({
+      changeId: CHANGE_ID,
+      blueJson: JSON.stringify({ questions: [question("optional")] }),
+    });
+
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID,
+      questionId: criticalId,
+      action: "answer",
+      value: "由 owner 审批。",
+    });
+
+    const state = getPrdBriefingState(CHANGE_ID);
     assert.equal(state.questions[0].status, "answered");
+    assert.deepEqual(state.gate.blockingQuestionIds, []);
+    assert.doesNotThrow(() => assertCanStartPrdBriefingDraft(CHANGE_ID));
+  });
+
+  it("no longer refuses a question round because a card carries a human action", async () => {
+    const criticalId = await seedQuestion("critical");
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID,
+      questionId: criticalId,
+      action: "answer",
+      value: "由 owner 审批。",
+    });
+
+    assert.doesNotThrow(() => assertCanStartPrdBriefingQuestions(CHANGE_ID));
+  });
+
+  /**
+   * The draft consumes the accumulated card set, not just the newest round:
+   * every round's processed cards are its source, and every round's unresolved
+   * cards are carried as unresolved.
+   */
+  it("draws the PRD draft from the processed cards of every round", async () => {
+    const criticalId = await seedQuestion("critical");
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID, questionId: criticalId, action: "answer", value: "由 owner 审批。",
+    });
+    await completeQuestionGeneration({
+      changeId: CHANGE_ID,
+      blueJson: JSON.stringify({ questions: [question("important"), question("optional")] }),
+    });
+    const round2 = getPrdBriefingState(CHANGE_ID).questions.filter((row) => row.roundNo === 2);
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID, questionId: round2[0].id, action: "accept_assumption", value: "默认 owner 审批。",
+    });
+
+    await completePrdDraft({ changeId: CHANGE_ID, markdown: "# PRD\n\n## 目标\n做战前会议室。" });
+
+    const state = getPrdBriefingState(CHANGE_ID);
+    const sourceIds = JSON.parse(state.latestDraft?.sourceQuestionIdsJson ?? "[]") as string[];
+    const unresolvedIds = JSON.parse(state.latestDraft?.unresolvedQuestionIdsJson ?? "[]") as string[];
+
+    assert.deepEqual(
+      sourceIds,
+      [criticalId, round2[0].id, round2[1].id],
+      "the draft's source must span both rounds, oldest round first",
+    );
+    assert.deepEqual(unresolvedIds, [round2[1].id], "the still-open round 2 card stays unresolved");
+
+    // The draft reads the card set through this mirror, so the round each card
+    // belongs to has to reach it for later-round-wins to be decidable at all.
+    const mirror = JSON.parse(
+      fs.readFileSync(changeFile(repoPath, "briefing-questions.json"), "utf-8"),
+    ) as Array<{ id: string; roundNo: number }>;
+    assert.deepEqual(mirror.map((row) => row.roundNo), [1, 2, 2]);
+    assert.deepEqual(mirror.map((row) => row.id), sourceIds);
   });
 
   it("blocks draft while critical question is open", async () => {

@@ -139,6 +139,39 @@ function stageProgressNotice(state: PrdBriefingState | null): { tone: "info" | "
   return { tone: "info", text };
 }
 
+interface QuestionRound {
+  roundNo: number;
+  questions: BriefingQuestion[];
+  openCount: number;
+  isLatest: boolean;
+}
+
+/**
+ * Cards are grouped by the round that produced them, oldest first. Generating
+ * questions appends a round rather than replacing the set, so earlier rounds --
+ * and every decision recorded on them -- stay on the page.
+ */
+function groupQuestionsByRound(questions: BriefingQuestion[]): QuestionRound[] {
+  const byRound = new Map<number, BriefingQuestion[]>();
+  for (const question of questions) {
+    const roundNo = question.roundNo ?? 1;
+    const bucket = byRound.get(roundNo);
+    if (bucket) bucket.push(question);
+    else byRound.set(roundNo, [question]);
+  }
+  const roundNumbers = [...byRound.keys()].sort((a, b) => a - b);
+  const latest = roundNumbers[roundNumbers.length - 1];
+  return roundNumbers.map((roundNo) => {
+    const roundQuestions = byRound.get(roundNo) ?? [];
+    return {
+      roundNo,
+      questions: roundQuestions,
+      openCount: roundQuestions.filter((question) => question.status === "open").length,
+      isLatest: roundNo === latest,
+    };
+  });
+}
+
 function QuestionCard({
   question,
   value,
@@ -164,6 +197,9 @@ function QuestionCard({
         </span>
         <span className="rounded bg-background/70 px-2 py-0.5 text-[11px]">
           {STATUS_LABELS[question.status]}
+        </span>
+        <span className="rounded bg-background/70 px-2 py-0.5 text-[11px]">
+          第 {question.roundNo ?? 1} 轮
         </span>
         <span className="font-mono text-[11px] opacity-70">{question.category}</span>
       </div>
@@ -468,8 +504,11 @@ export function PrdBriefingRoom({
     0,
     STEP_LABELS.findIndex((step) => step.key === activeStep),
   );
-  const groupedQuestions = state?.questions ?? [];
+  const questions = state?.questions;
+  const groupedQuestions = useMemo(() => questions ?? [], [questions]);
   const answeredQuestionCount = groupedQuestions.filter((question) => question.status !== "open").length;
+  const questionRounds = useMemo(() => groupQuestionsByRound(groupedQuestions), [groupedQuestions]);
+  const latestRoundNo = questionRounds.length > 0 ? questionRounds[questionRounds.length - 1].roundNo : 0;
   const progressNotice = stageProgressNotice(state);
   const lockDisabledReason = isLocked
     ? "PRD 已锁定"
@@ -600,7 +639,9 @@ export function PrdBriefingRoom({
               disabled={!canAskQuestions || actionLocked}
               onClick={() => startAiJob("questions")}
             >
-              {busyAction === "questions" || pollingAction === "questions" ? "追问中..." : "生成追问"}
+              {busyAction === "questions" || pollingAction === "questions"
+                ? "追问中..."
+                : hasQuestions ? `追加第 ${latestRoundNo + 1} 轮追问` : "生成追问"}
             </Button>
           </div>
         )}
@@ -612,7 +653,7 @@ export function PrdBriefingRoom({
             <h3 className="text-sm font-semibold">反方追问卡</h3>
             <p className="mt-1 text-xs text-muted-foreground">
               {groupedQuestions.length > 0
-                ? `${answeredQuestionCount}/${groupedQuestions.length} 已处理`
+                ? `共 ${latestRoundNo} 轮 · ${answeredQuestionCount}/${groupedQuestions.length} 已处理`
                 : "保存意图后生成第一批追问。"}
             </p>
           </div>
@@ -625,16 +666,40 @@ export function PrdBriefingRoom({
             保存意图后，让反方生成第一批追问。
           </div>
         ) : (
-          <div className="mt-3 grid gap-3 xl:grid-cols-2">
-            {groupedQuestions.map((question) => (
-              <QuestionCard
-                key={question.id}
-                question={question}
-                value={answers[question.id] ?? ""}
-                busy={actionLocked}
-                onChange={(value) => setAnswers((prev) => ({ ...prev, [question.id]: value }))}
-                onAction={(action, value) => handleQuestionAction(question.id, action, value)}
-              />
+          <div className="mt-3 space-y-3">
+            {questionRounds.map((round) => (
+              /*
+               * An earlier round collapses only once every card in it is
+               * handled. A round still holding an open card stays expanded --
+               * those cards remain answerable and still block the gate, so
+               * hiding them would hide the reason the draft is refused.
+               */
+              <details
+                key={round.roundNo}
+                open={round.isLatest || round.openCount > 0}
+                className="rounded-md border bg-muted/10"
+                data-prd-question-round={round.roundNo}
+              >
+                <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+                  第 {round.roundNo} 轮
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    {round.questions.length - round.openCount}/{round.questions.length} 已处理
+                    {round.openCount > 0 ? ` · ${round.openCount} 个待处理` : ""}
+                  </span>
+                </summary>
+                <div className="grid gap-3 p-3 pt-0 xl:grid-cols-2">
+                  {round.questions.map((question) => (
+                    <QuestionCard
+                      key={question.id}
+                      question={question}
+                      value={answers[question.id] ?? ""}
+                      busy={actionLocked}
+                      onChange={(value) => setAnswers((prev) => ({ ...prev, [question.id]: value }))}
+                      onAction={(action, value) => handleQuestionAction(question.id, action, value)}
+                    />
+                  ))}
+                </div>
+              </details>
             ))}
           </div>
         )}

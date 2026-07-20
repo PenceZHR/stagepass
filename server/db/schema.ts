@@ -1136,6 +1136,13 @@ export const briefingQuestions = sqliteTable("briefing_questions", {
   changeId: text("change_id")
     .notNull()
     .references(() => changes.id),
+  /**
+   * Which interrogation round produced this card. Generation APPENDS a round;
+   * it never replaces the set, so a card's round is fixed at insert and every
+   * earlier round stays readable and answerable. Defaults to 1 so pre-round
+   * rows (and fixtures that predate the column) read as the first round.
+   */
+  roundNo: integer("round_no").notNull().default(1),
   category: text("category").notNull(),
   severity: text("severity").notNull(),
   question: text("question").notNull(),
