@@ -469,12 +469,38 @@ async function decideProviderRecovery(input: {
   if (provider.status !== "running") {
     const completed = provider.status === "completed";
     if (completed) {
+      // A clean provider exit is not, on its own, a business outcome. The
+      // lifecycle sink marks the provider `completed` the instant the process
+      // ends (createProviderLifecycleSink.onTerminal -> finishProviderRun), and
+      // EVERY phase writes its business evidence after that point: artifacts and
+      // snapshots, the Spec battle's blue leg plus its report commit, the Review
+      // report, the Build adoption. "provider completed + evidence incomplete"
+      // is therefore the normal mid-flight state of a healthy run, not a fault.
+      // It only becomes a fault once nobody is left to finish the commit.
+      //
+      // The owning worker heartbeats its job every 10s for the whole of
+      // runPipelineJob -- across both legs of a Spec battle -- and that renewal
+      // is fenced, so it stops the moment the worker loses the job. A fresh job
+      // heartbeat is thus a positive proof that the commit is still coming, and
+      // it is the same reprieve a failed identity probe and a missing pid
+      // already get below. Both of those are strictly stronger negative signals
+      // than a provider exiting exactly as designed, so withholding recovery
+      // here is the weaker, safer claim.
+      //
+      // Reconciling anyway does not merely mis-report: it steals the job from a
+      // live worker. Every job CAS is fenced on `status='running'`, so writing a
+      // terminal job status makes the worker's own heartbeat/complete/fail calls
+      // fail their fence and blow up mid-flight. Withholding costs at most one
+      // heartbeat-stale window of delay before a genuinely stranded run is
+      // reconciled.
+      if (jobHeartbeatIsFresh(job, observedAt, heartbeatStaleMs)) return null;
       return {
         reasonCode: "business_run_reconciled",
         providerStatus: "completed",
         runStatus: "completed",
         jobStatus: "succeeded",
         requiresBusinessEvidence: true,
+        observation: observe(),
       };
     }
     return {
@@ -881,9 +907,16 @@ export async function recoverStaleProviderRuns(
           runId: run.id,
           changeId: run.changeId,
           phase: run.phase,
-          reason: provider.provider === "codex" && provider.pid === null
-            ? "external_ref_heartbeat_fresh"
-            : "identity_valid",
+          // A terminal provider never reaches the identity probe, so reporting
+          // "identity_valid" for one would be a claim nothing checked. The only
+          // way a terminal provider yields no decision is the live-worker
+          // reprieve, so name that instead -- an operator asking why a completed
+          // provider was left alone gets the actual answer.
+          reason: provider.status !== "running"
+            ? "provider_terminal_business_commit_pending"
+            : provider.provider === "codex" && provider.pid === null
+              ? "external_ref_heartbeat_fresh"
+              : "identity_valid",
         });
         continue;
       }

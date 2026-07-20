@@ -76,6 +76,7 @@ import {
   ABSOLUTE_MAX_RECOVERY_CANDIDATES,
   ABSOLUTE_MAX_RECOVERY_TIME_BUDGET_MS,
   ABSOLUTE_MAX_REVIEW_FINDINGS,
+  DEFAULT_PROVIDER_HEARTBEAT_STALE_MS,
   RecoveryOptionValidationError,
   recoverStaleProviderRuns,
   recoverStaleProviderRunsBestEffort,
@@ -262,6 +263,20 @@ function seedStageRun(runId = "STG-RUN-STALE"): void {
 }
 
 const RECOVERY_OBSERVED_AT = new Date("2026-07-10T00:02:00.000Z");
+
+/**
+ * A job heartbeat stale enough (90s before RECOVERY_OBSERVED_AT, twice the 45s
+ * default threshold) to prove the owning worker is gone.
+ *
+ * Business evidence is written by the worker AFTER the provider process exits,
+ * so "provider completed + evidence incomplete" is the normal mid-flight state
+ * of a healthy run. Reconciling a completed provider is only meaningful once
+ * nobody is left to finish that commit, which is precisely what a stale job
+ * heartbeat says. Fixtures that expect the sweep to reconcile a completed
+ * provider must therefore model a worker that stopped heartbeating; leaving the
+ * heartbeat fresh describes a live run the sweep must not touch.
+ */
+const WORKER_GONE_HEARTBEAT_AT = "2026-07-10T00:00:30.000Z";
 
 function expectedIdentity(pid = 424_242): ProcessIdentity {
   return {
@@ -587,7 +602,11 @@ async function seedCompletedProviderFixture(
   phase: CompletedEvidencePhase,
   evidenceComplete: boolean,
 ): Promise<void> {
-  seedReconciliationFixture({ providerStatus: "completed", phase });
+  seedReconciliationFixture({
+    providerStatus: "completed",
+    phase,
+    heartbeatAt: WORKER_GONE_HEARTBEAT_AT,
+  });
   const now = "2026-07-10T00:01:00.000Z";
   if (phase === "tech_spec" && evidenceComplete) {
     const repoPath = createFixtureRepo();
@@ -804,7 +823,7 @@ function seedIntakeProviderFixture(
       status: "running",
       leasedBy: "worker-intake",
       leaseExpiresAt: "2026-07-10T00:10:00.000Z",
-      heartbeatAt: "2026-07-10T00:01:55.000Z",
+      heartbeatAt: WORKER_GONE_HEARTBEAT_AT,
       attemptNo: 1,
       errorCode: null,
       errorSummary: null,
@@ -1529,7 +1548,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
   }> = [
     {
       name: "row 2 fails a completed provider when business evidence is incomplete",
-      seed: { providerStatus: "completed" },
+      seed: { providerStatus: "completed", heartbeatAt: WORKER_GONE_HEARTBEAT_AT },
       validation: { ok: true, observed: expectedIdentity() },
       expectedReason: "business_run_reconciled",
       expectedRunStatus: "failed",
@@ -2771,6 +2790,162 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
       assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status, expectedChange);
     });
   }
+
+  // --- Row 2 is only reachable once the worker is gone --------------------
+  // `provider_completed_business_incomplete` killed healthy runs in production
+  // (2026-07-20). Business evidence is written by the worker AFTER the provider
+  // process exits, so every phase passes through "provider completed + evidence
+  // incomplete" while perfectly healthy. A Spec battle holds that state for the
+  // whole blue leg: red exits, blue registers ~100ms later, and a sweep tick
+  // landing in that window used to fail the run and fence the blue provider out
+  // of existence. The sweep only has authority once nobody is left to finish the
+  // commit, which is exactly what a stale job heartbeat reports.
+
+  it("leaves a completed Spec red provider alone while the worker still heartbeats the job", async () => {
+    seedReconciliationFixture({ providerStatus: "completed", phase: "spec" });
+    db.insert(battleRounds).values({
+      id: "ROUND-LIVE-HANDOFF",
+      changeId: CHANGE_ID,
+      phase: "spec",
+      template: "default",
+      roundNo: 1,
+      status: "blue_running",
+      redUnit: "red",
+      blueUnit: "blue",
+      inputSnapshotJson: "{}",
+      paramsJson: "{}",
+      redArtifactPath: ".ship/red.md",
+      redArtifactHash: "red-hash",
+      blueArtifactPath: null,
+      blueArtifactHash: null,
+      reportPath: null,
+      supersededByRoundId: null,
+      startedAt: "2026-07-10T00:01:00.000Z",
+      endedAt: null,
+      createdAt: "2026-07-10T00:01:00.000Z",
+      updatedAt: "2026-07-10T00:01:00.000Z",
+    }).run();
+
+    await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+
+    assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(providerRunProcesses).where(eq(providerRunProcesses.id, "PRP-MATRIX")).get()?.status, "completed");
+    assert.equal(db.select().from(stageRuns).where(eq(stageRuns.id, "STG-MATRIX")).get()?.status, "running");
+    // The round must stay claimed: failing it is what made the battlefield hide
+    // every button behind `spec_round_running` with no way out.
+    assert.equal(db.select().from(battleRounds).where(eq(battleRounds.id, "ROUND-LIVE-HANDOFF")).get()?.status, "blue_running");
+    assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status, "SPECCING");
+    assert.equal(db.select().from(events).where(eq(events.type, "business_run_reconciled")).all().length, 0);
+  });
+
+  it("leaves a completed TechSpec provider alone while the worker still heartbeats the job", async () => {
+    // The same window exists in every phase -- Spec is merely the widest, because
+    // a whole second provider run sits inside it. Pinning a document phase keeps
+    // the reprieve from being narrowed back into a Spec-only special case.
+    seedReconciliationFixture({ providerStatus: "completed", phase: "tech_spec" });
+
+    const result = await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+
+    // The sweep must still SEE the run -- deferring is a decision it reports,
+    // not a candidate it silently drops -- and say why in terms of the provider
+    // being terminal, not by claiming an identity probe that never ran.
+    assert.equal(result.recovered.length, 0);
+    assert.equal(result.observed.length, 1);
+    assert.equal(result.observed[0]?.reason, "provider_terminal_business_commit_pending");
+    assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(stageRuns).where(eq(stageRuns.id, "STG-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status, "TECHSPECCING");
+    assert.equal(db.select().from(events).where(eq(events.type, "business_run_reconciled")).all().length, 0);
+  });
+
+  it("reconciles the same completed Spec red provider once the job heartbeat goes stale", async () => {
+    // The reprieve is a deferral, not an amnesty: the identical state with a dead
+    // worker must still be failed, or a genuinely stranded run would never
+    // recover and the fix would just be recovery switched off.
+    seedReconciliationFixture({
+      providerStatus: "completed",
+      phase: "spec",
+      heartbeatAt: WORKER_GONE_HEARTBEAT_AT,
+    });
+    seedPrdSourceAuthority();
+    db.insert(battleRounds).values({
+      id: "ROUND-LIVE-HANDOFF",
+      changeId: CHANGE_ID,
+      phase: "spec",
+      template: "default",
+      roundNo: 1,
+      status: "blue_running",
+      redUnit: "red",
+      blueUnit: "blue",
+      inputSnapshotJson: "{}",
+      paramsJson: "{}",
+      redArtifactPath: ".ship/red.md",
+      redArtifactHash: "red-hash",
+      blueArtifactPath: null,
+      blueArtifactHash: null,
+      reportPath: null,
+      supersededByRoundId: null,
+      startedAt: "2026-07-10T00:01:00.000Z",
+      endedAt: null,
+      createdAt: "2026-07-10T00:01:00.000Z",
+      updatedAt: "2026-07-10T00:01:00.000Z",
+    }).run();
+
+    await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+
+    assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
+    assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "failed");
+    assert.equal(db.select().from(battleRounds).where(eq(battleRounds.id, "ROUND-LIVE-HANDOFF")).get()?.status, "failed");
+    const event = db.select().from(events).where(eq(events.type, "business_run_reconciled")).get();
+    assert.ok(event);
+    const raw = JSON.parse(event.rawJson ?? "{}") as { businessEvidenceComplete?: boolean; missingEvidence?: string[] };
+    assert.equal(raw.businessEvidenceComplete, false);
+    assert.ok((raw.missingEvidence ?? []).includes("spec_blue_artifact"));
+  });
+
+  it("reconciles a completed provider whose job already settled, however recent its last heartbeat", async () => {
+    // The reprieve is keyed on ownership, not on a timestamp. A job that already
+    // reached a terminal status has no worker left to finish the commit no
+    // matter how recently it last beat, so its stranded run must be closed on
+    // this tick. Reading the heartbeat age alone would leave the run hanging for
+    // a full stale window with nobody coming for it.
+    seedReconciliationFixture({
+      providerStatus: "completed",
+      phase: "tech_spec",
+      jobStatus: "failed",
+    });
+    const settledJob = db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get();
+    assert.ok(
+      RECOVERY_OBSERVED_AT.getTime() - Date.parse(settledJob?.heartbeatAt ?? "")
+        < DEFAULT_PROVIDER_HEARTBEAT_STALE_MS,
+      "fixture must keep a heartbeat timestamp a pure age check would call fresh",
+    );
+
+    await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+
+    assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
+    assert.equal(db.select().from(stageRuns).where(eq(stageRuns.id, "STG-MATRIX")).get()?.status, "failed");
+    assert.equal(db.select().from(events).where(eq(events.type, "business_run_reconciled")).all().length, 1);
+  });
+
+  it("does not settle a completed provider whose evidence is already complete while the worker still owns the job", async () => {
+    // Even the success direction must wait. Every job CAS is fenced on
+    // `status='running'`, so settling the job out from under a live worker makes
+    // that worker's own heartbeat/complete/fail calls fail their fence and blow
+    // up mid-flight -- the same StaleLeaseFenceError the race produced. A live
+    // worker settles its own job; recovery settles only what was abandoned.
+    await seedCompletedProviderFixture("tech_spec", true);
+    db.update(pipelineJobs).set({ heartbeatAt: "2026-07-10T00:01:55.000Z" })
+      .where(eq(pipelineJobs.id, "JOB-MATRIX")).run();
+
+    await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+
+    assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "running");
+    assert.equal(db.select().from(events).where(eq(events.type, "business_run_reconciled")).all().length, 0);
+  });
 
   for (const phase of ["tech_spec", "spec", "review", "implement"] as const) {
     it(`rejects forged or hash-mismatched completed ${phase} evidence`, async () => {
