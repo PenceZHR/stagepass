@@ -438,6 +438,8 @@ const probeInfrastructureFailures: Record<ProcessIdentityProbeFailureReason, tru
   probe_timeout: true,
   probe_output_limit: true,
   probe_failed: true,
+  probe_command_unreadable: true,
+  probe_identity_unstable: true,
 };
 
 function probeDidNotComplete(
@@ -553,6 +555,20 @@ async function decideProviderRecovery(input: {
     // one. A timed-out or failed `ps`/`lsof` says nothing about the process, so
     // it must not be reported as a fact about the process's identity.
     if (probeDidNotComplete(validation.reason)) {
+      // ...and having produced no verdict, it is not evidence against the
+      // process either. A run that is still heartbeating on both the provider
+      // and its job is demonstrably alive, and "we could not look" must never
+      // be grounds to kill it -- this is the same reprieve pid_missing gets
+      // below, which is a strictly stronger negative signal (the pid is gone,
+      // rather than merely unobserved). Withholding recovery is the safe
+      // direction: it signals nothing, so it cannot touch a foreign process.
+      // Once the heartbeats stop, the cleanup below runs as before.
+      if (
+        !heartbeatIsStale(provider, observedAt, heartbeatStaleMs)
+        && jobHeartbeatIsFresh(job, observedAt, heartbeatStaleMs)
+      ) {
+        return null;
+      }
       return {
         reasonCode: "provider_identity_probe_failed",
         providerStatus: "orphaned",

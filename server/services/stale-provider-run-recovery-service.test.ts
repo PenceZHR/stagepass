@@ -1602,25 +1602,41 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
     // The probe shells out to `ps` (and `lsof` on darwin) under a 750ms budget.
     // Blowing that budget, the output limit, or failing to run at all says
     // nothing whatsoever about the process, so none of these may be reported as
-    // an identity fact.
+    // an identity fact. They only recover once the run has ALSO stopped
+    // heartbeating: a probe that returned no verdict is never by itself grounds
+    // to kill a run (see "leaves a live run alone ..." below).
     {
       name: "row 5b reports a probe timeout as a probe failure, not an identity mismatch",
-      seed: {},
+      seed: { heartbeatAt: "2026-07-10T00:01:00.000Z" },
       validation: { ok: false, reason: "probe_timeout" },
       expectedReason: "provider_identity_probe_failed",
       expectedSignals: 0,
     },
     {
       name: "row 5b reports a probe output-limit overflow as a probe failure",
-      seed: {},
+      seed: { heartbeatAt: "2026-07-10T00:01:00.000Z" },
       validation: { ok: false, reason: "probe_output_limit" },
       expectedReason: "provider_identity_probe_failed",
       expectedSignals: 0,
     },
     {
       name: "row 5b reports a failed probe as a probe failure",
-      seed: {},
+      seed: { heartbeatAt: "2026-07-10T00:01:00.000Z" },
       validation: { ok: false, reason: "probe_failed" },
+      expectedReason: "provider_identity_probe_failed",
+      expectedSignals: 0,
+    },
+    {
+      name: "row 5b reports an unreadable command as a probe failure",
+      seed: { heartbeatAt: "2026-07-10T00:01:00.000Z" },
+      validation: { ok: false, reason: "probe_command_unreadable" },
+      expectedReason: "provider_identity_probe_failed",
+      expectedSignals: 0,
+    },
+    {
+      name: "row 5b reports an unstable identity observation as a probe failure",
+      seed: { heartbeatAt: "2026-07-10T00:01:00.000Z" },
+      validation: { ok: false, reason: "probe_identity_unstable" },
       expectedReason: "provider_identity_probe_failed",
       expectedSignals: 0,
     },
@@ -1699,6 +1715,89 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
     assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "running");
     assert.equal(db.select().from(events).where(eq(events.type, "provider_process_orphaned")).all().length, 0);
   });
+
+  // --- The live incident --------------------------------------------------
+  // A healthy `spec` run was killed with a 5.1s-old provider heartbeat, a
+  // 5.4s-old job heartbeat and a running job, purely because `ps` had once
+  // failed to read the child's argv. "We could not observe the identity" is
+  // not evidence against the process: a probe with no verdict must be at least
+  // as forgiving as pid_missing, which is a strictly stronger negative signal
+  // and already gets this reprieve.
+  for (const reason of [
+    "probe_timeout",
+    "probe_output_limit",
+    "probe_failed",
+    "probe_command_unreadable",
+    "probe_identity_unstable",
+  ] as const) {
+    it(`leaves a live run alone when ${reason} returns no identity verdict`, async () => {
+      seedReconciliationFixture({ heartbeatAt: "2026-07-10T00:01:55.000Z" });
+
+      const result = await recoverStaleProviderRuns({
+        changeId: CHANGE_ID,
+        execute: true,
+        observedAt: RECOVERY_OBSERVED_AT,
+        processIdentityProbe: identityProbeReturning({ ok: false, reason }),
+        terminateProcess: async () => assert.fail("a heartbeating run must not be signaled"),
+      });
+
+      assert.equal(result.recovered.length, 0);
+      assert.equal(result.observed[0]?.kind, "active");
+      assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "running");
+      assert.equal(db.select().from(providerRunProcesses).where(eq(providerRunProcesses.id, "PRP-MATRIX")).get()?.status, "running");
+      assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "running");
+      assert.equal(
+        db.select().from(events).where(eq(events.type, "provider_identity_probe_failed")).all().length,
+        0,
+      );
+    });
+  }
+
+  // The reprieve is conditional on the run proving it is alive. A probe with no
+  // verdict must not become a way for a run that stopped heartbeating to hide.
+  it("still recovers a probe failure once the job heartbeat has gone stale", async () => {
+    seedReconciliationFixture({ heartbeatAt: "2026-07-10T00:01:55.000Z" });
+    db.update(pipelineJobs).set({ heartbeatAt: "2026-07-10T00:01:00.000Z" })
+      .where(eq(pipelineJobs.id, "JOB-MATRIX")).run();
+
+    const result = await recoverStaleProviderRuns({
+      changeId: CHANGE_ID,
+      execute: true,
+      observedAt: RECOVERY_OBSERVED_AT,
+      processIdentityProbe: identityProbeReturning({ ok: false, reason: "probe_command_unreadable" }),
+    });
+
+    assert.equal(result.recovered[0]?.reasonCode, "provider_identity_probe_failed");
+    assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
+  });
+
+  // THE FENCE. A probe that DID complete and disagreed is a fact about the
+  // process. Fresh heartbeats must never launder a real mismatch into "leave it
+  // alone" -- that is what stops us signalling a stranger after a pid is reused.
+  for (const reason of ["command_mismatch", "cwd_mismatch", "pid_reused", "nonce_mismatch"] as const) {
+    it(`still fails closed on ${reason} even while heartbeats are fresh`, async () => {
+      seedReconciliationFixture({ heartbeatAt: "2026-07-10T00:01:55.000Z" });
+
+      const result = await recoverStaleProviderRuns({
+        changeId: CHANGE_ID,
+        execute: true,
+        observedAt: RECOVERY_OBSERVED_AT,
+        processIdentityProbe: identityProbeReturning({
+          ok: false,
+          reason,
+          observed: { ...expectedIdentity(), cwd: "/somewhere/else" },
+        }),
+        terminateProcess: async () => assert.fail("a foreign process must never be signaled"),
+      });
+
+      assert.equal(result.recovered[0]?.reasonCode, "provider_identity_mismatch");
+      assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
+      assert.equal(
+        db.select().from(providerRunProcesses).where(eq(providerRunProcesses.id, "PRP-MATRIX")).get()?.status,
+        "orphaned",
+      );
+    });
+  }
 
   for (const scenario of matrixScenarios) {
     it(scenario.name, async () => {
@@ -1801,7 +1900,9 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
   }
 
   it("records the probe reason and heartbeat ages on the recovery event", async () => {
-    seedReconciliationFixture({});
+    // Stale on both heartbeats: a probe failure alone no longer recovers a run,
+    // so the run has to have stopped reporting for there to be an event at all.
+    seedReconciliationFixture({ heartbeatAt: "2026-07-10T00:01:00.000Z" });
     seedSpecSourceAuthority();
 
     await recoverStaleProviderRuns({
@@ -1819,8 +1920,8 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
     // The exact discriminator and the ages it was judged against, so a
     // post-mortem reads them here instead of re-deriving them from logs.
     assert.deepEqual(raw.observation, {
-      providerHeartbeatAgeMs: 5_000,
-      jobHeartbeatAgeMs: 5_000,
+      providerHeartbeatAgeMs: 60_000,
+      jobHeartbeatAgeMs: 60_000,
       heartbeatStaleMs: 45_000,
       jobStatus: "running",
       identityValidation: "probe_timeout",

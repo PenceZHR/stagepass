@@ -5,12 +5,51 @@ import { describe, it } from "node:test";
 import {
   createPlatformProcessIdentityProbe,
   decodeLsofName,
+  isUnreadableProcessCommand,
   ProcessIdentityProbeError,
   ProcessIdentityMismatchError,
   type ProcessIdentityCommandOptions,
   type ProcessIdentityCommandRunner,
   type ProcessIdentity,
 } from "./process-identity-service";
+
+/**
+ * On linux `observeLinuxCommand` reads /proc/<pid>/cmdline and takes precedence
+ * over whatever `ps` printed, so the `ps`-placeholder path these cases drive
+ * only exists on darwin/BSD. The pure `isUnreadableProcessCommand` cases below
+ * cover the shapes on every platform.
+ */
+const psPlaceholderOnly = process.platform === "linux"
+  ? { skip: "ps command output is only consulted on darwin/BSD" }
+  : {};
+
+/** One `ps -o ppid= -o pgid= -o lstart= -o command=` line. */
+function psLine(command: string, startedAt = "Mon Jul 20 02:42:00 2026"): string {
+  return `${process.ppid || 1} ${process.pid} ${startedAt} ${command}`;
+}
+
+/**
+ * Replays a scripted `ps` transcript, one line per call, so a capture can be
+ * driven through the exact reading sequence a racing child produces. `lsof` is
+ * answered with the real cwd; on darwin `observeCwd(process.pid)` short-circuits
+ * before shelling out, so this only matters if that ever changes.
+ */
+function scriptedPsRunner(lines: readonly string[]): {
+  runner: ProcessIdentityCommandRunner;
+  psCalls: () => number;
+} {
+  let psCalls = 0;
+  const runner: ProcessIdentityCommandRunner = async (file) => {
+    if (file === "ps") {
+      const line = lines[Math.min(psCalls, lines.length - 1)];
+      psCalls += 1;
+      return { stdout: `${line}\n`, stderr: "" };
+    }
+    if (file === "lsof") return { stdout: `n${process.cwd()}\n`, stderr: "" };
+    throw new Error(`unexpected probe command: ${file}`);
+  };
+  return { runner, psCalls: () => psCalls };
+}
 
 function nodeCommandRunner(script: string, onPid?: (pid: number) => void): ProcessIdentityCommandRunner {
   return (_file, _args, options) => new Promise((resolve, reject) => {
@@ -240,6 +279,135 @@ describe("process-identity-service", () => {
     assert.equal(!commandMismatch.ok && commandMismatch.reason, "command_mismatch");
     assert.equal(nonceMismatch.ok, false);
     assert.equal(!nonceMismatch.ok && nonceMismatch.reason, "nonce_mismatch");
+  });
+
+  // --- The live incident ------------------------------------------------
+  // stagepass spawns codex as `/usr/bin/env node .../codex exec ...`, so the
+  // child's accounting name is `env` and it immediately execs into `node`.
+  // Captures taken inside that window produced `["(env)"]` (argv not yet
+  // readable) or `["/usr/bin/env node ..."]` (readable but pre-exec) in the
+  // production database; every one of them was later killed with
+  // `command_mismatch` against a completely healthy, heartbeating run.
+
+  it("refuses to record a ps accounting-name placeholder as a command", psPlaceholderOnly, async () => {
+    const { runner } = scriptedPsRunner([psLine("(env)")]);
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    await assert.rejects(
+      probe.capture(process.pid),
+      (error: unknown) => {
+        assert.ok(error instanceof ProcessIdentityProbeError);
+        assert.equal(error.code, "probe_command_unreadable");
+        return true;
+      },
+    );
+  });
+
+  it("reports an unreadable command as a probe failure, not an identity fact", psPlaceholderOnly, async () => {
+    const { runner } = scriptedPsRunner([psLine("(env)")]);
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    const result = await probe.validate({
+      pid: process.pid,
+      ppid: process.ppid,
+      pgid: process.pid,
+      nonce: "expected-nonce",
+      processStartTime: "expected-start",
+      cwd: process.cwd(),
+      command: ["/usr/bin/env", "node", "codex"],
+    });
+
+    // Never `command_mismatch`: `(env)` is ps saying it could not read argv.
+    assert.deepEqual(result, { ok: false, reason: "probe_command_unreadable" });
+  });
+
+  it("settles on the post-exec command rather than recording the pre-exec one", psPlaceholderOnly, async () => {
+    // Reading 1 catches the child still as `/usr/bin/env`; by reading 2 it has
+    // exec'd into node. The disagreement must discard the capture, not persist
+    // a command line the process no longer has.
+    const preExec = "/usr/bin/env node /opt/homebrew/bin/codex exec --json";
+    const postExec = "node /opt/homebrew/bin/codex exec --json";
+    const { runner } = scriptedPsRunner([psLine(preExec), psLine(postExec), psLine(postExec)]);
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    const identity = await probe.capture(process.pid);
+
+    assert.deepEqual(identity.command, [postExec]);
+  });
+
+  it("discards a capture whose process was replaced between the ps and cwd probes", psPlaceholderOnly, async () => {
+    // Defect B: `ps` and `lsof` are separate external commands, so a pid that
+    // dies and is recycled between them yields a chimera record. The start time
+    // is the cheap anchor that proves it is no longer the same process.
+    const command = "node /opt/homebrew/bin/codex exec --json";
+    // Two interleaved processes: every confirmation round sees the pid flip, so
+    // no round ever agrees with itself and the capture is abandoned.
+    const { runner } = scriptedPsRunner(Array.from({ length: 8 }, (_unused, index) => (
+      psLine(command, index % 2 === 0 ? "Mon Jul 20 02:42:00 2026" : "Mon Jul 20 03:11:44 2026")
+    )));
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    await assert.rejects(
+      probe.capture(process.pid),
+      (error: unknown) => {
+        assert.ok(error instanceof ProcessIdentityProbeError);
+        assert.equal(error.code, "probe_identity_unstable");
+        return true;
+      },
+    );
+  });
+
+  it("still captures a stable process in a single confirmed round trip", psPlaceholderOnly, async () => {
+    const command = "node /opt/homebrew/bin/codex exec --json";
+    const { runner, psCalls } = scriptedPsRunner([psLine(command)]);
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    const identity = await probe.capture(process.pid);
+
+    assert.deepEqual(identity.command, [command]);
+    // Confirmation costs exactly one extra `ps`; it must not become a loop.
+    assert.equal(psCalls(), 2);
+  });
+});
+
+describe("isUnreadableProcessCommand", () => {
+  // Darwin's ps prints the kernel accounting name (p_comm, MAXCOMLEN = 16, and
+  // always a bare basename) in parentheses when KERN_PROCARGS2 cannot give it
+  // argv, and `<defunct>` for a zombie. Neither is a command line.
+  it("detects the parenthesised accounting-name placeholder", () => {
+    for (const field of ["(env)", "(node)", "(codex)", "(Google Chrome H)"]) {
+      assert.equal(isUnreadableProcessCommand(field), true, field);
+    }
+  });
+
+  it("detects a zombie's defunct marker on darwin and linux", () => {
+    for (const field of ["<defunct>", "[env] <defunct>"]) {
+      assert.equal(isUnreadableProcessCommand(field), true, field);
+    }
+  });
+
+  it("treats an empty command field as unreadable", () => {
+    assert.equal(isUnreadableProcessCommand(""), true);
+    assert.equal(isUnreadableProcessCommand("   "), true);
+  });
+
+  it("detects the linux bracketed placeholder", () => {
+    assert.equal(isUnreadableProcessCommand("[kthreadd]"), true);
+  });
+
+  it("does not mistake a real command containing parentheses for a placeholder", () => {
+    for (const field of [
+      // Live on macOS: launchd really does pass `(System)` as an argument.
+      "/usr/libexec/UserEventAgent (System)",
+      "/usr/bin/env node /opt/homebrew/bin/codex exec --cd /Users/dev/proj",
+      "/Users/dev/My (Project)/bin/tool --flag",
+      "(a) foo (b)",
+      // A path is never an accounting name, and MAXCOMLEN + 1 is over the cap.
+      "(/usr/bin/env)",
+      `(${"a".repeat(17)})`,
+    ]) {
+      assert.equal(isUnreadableProcessCommand(field), false, JSON.stringify(field));
+    }
   });
 });
 
