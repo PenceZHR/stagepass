@@ -176,6 +176,16 @@ async function ensureBriefing(changeId: string, status = "intent_captured"): Pro
   })();
 }
 
+type PrdBriefingDb = typeof db;
+
+/**
+ * Any handle that can read. Callers pass the module singleton for ordinary
+ * queries, or -- crucially -- their in-flight transaction handle, so a read
+ * that a write in the same transaction depends on observes that transaction's
+ * own uncommitted rows and is serialised against every other writer.
+ */
+type PrdBriefingReadConnection = Pick<PrdBriefingDb, "select">;
+
 /**
  * Every card of every round, oldest round first. There is deliberately no
  * "current round only" reader: each gate below asks its question of the whole
@@ -186,17 +196,37 @@ async function ensureBriefing(changeId: string, status = "intent_captured"): Pro
  * written before rounds existed the round is uniformly 1, so the order -- and
  * therefore every already-stamped digest -- is unchanged.
  */
-function getQuestions(changeId: string): Array<typeof briefingQuestions.$inferSelect> {
-  return db.select().from(briefingQuestions).where(eq(briefingQuestions.changeId, changeId)).all()
+function getQuestionsWithDb(
+  connection: PrdBriefingReadConnection,
+  changeId: string,
+): Array<typeof briefingQuestions.$inferSelect> {
+  return connection.select().from(briefingQuestions).where(eq(briefingQuestions.changeId, changeId)).all()
     .sort((a, b) =>
       a.roundNo - b.roundNo
       || a.createdAt.localeCompare(b.createdAt)
       || a.id.localeCompare(b.id));
 }
 
-/** Rounds are dense and 1-based; the first generation for a change opens round 1. */
-function nextQuestionRoundNo(changeId: string): number {
-  const rounds = getQuestions(changeId).map((question) => question.roundNo);
+function getQuestions(changeId: string): Array<typeof briefingQuestions.$inferSelect> {
+  return getQuestionsWithDb(db, changeId);
+}
+
+/**
+ * Rounds are dense and 1-based; the first generation for a change opens round 1.
+ *
+ * Takes a connection rather than reading the singleton because the number it
+ * returns is only valid for as long as nothing else appends: read it outside
+ * the transaction that writes it and the value is a guess about a past state.
+ * `(change_id, round_no)` is a non-unique index, so a stale guess does not
+ * fail -- it silently files a second generation's cards under the first
+ * generation's round. Callers that are about to write MUST pass the
+ * transaction handle.
+ */
+function nextQuestionRoundNoWithDb(
+  connection: PrdBriefingReadConnection,
+  changeId: string,
+): number {
+  const rounds = getQuestionsWithDb(connection, changeId).map((question) => question.roundNo);
   return rounds.length === 0 ? 1 : Math.max(...rounds) + 1;
 }
 
@@ -273,8 +303,11 @@ export interface RecordedDecision {
   answer: string | null;
 }
 
-function recordedDecisions(changeId: string): RecordedDecision[] {
-  return getQuestions(changeId)
+function recordedDecisionsWithDb(
+  connection: PrdBriefingReadConnection,
+  changeId: string,
+): RecordedDecision[] {
+  return getQuestionsWithDb(connection, changeId)
     .filter((question) => question.status !== "open")
     .map((question) => ({ id: question.id, status: question.status, answer: question.answer }));
 }
@@ -300,14 +333,20 @@ function recordedDecisions(changeId: string): RecordedDecision[] {
  * The error code is unchanged so the /gate reason vocabulary and the dispatch
  * path keep naming the same failure.
  *
- * Exported only so its own tests can reach it. Nothing else calls it, and the
- * reason is worth stating: the append cannot currently produce a state this
- * rejects, and the transaction is synchronous, so no interleaving write can
- * either -- there is no route to it through the public API. Left unexported it
- * was a guard no test could kill: deleting the call outright kept the suite
- * green, which is the same evidence one would get if it did nothing at all. A
- * post-condition guarding against a future regression has to be tested
- * directly, or the protection it claims to carry is only a comment.
+ * Exported only so its own tests can reach it. Nothing else calls it: the
+ * append cannot currently produce a state this rejects, and the snapshot it
+ * compares against is taken inside the same synchronous transaction, so no
+ * interleaving write can either. That is what makes it a guard against a
+ * regression that has not happened yet -- and what made it, until its call
+ * site got its own tests, unkillable: deleting the call outright kept the
+ * suite green, the same evidence one would get if it did nothing at all.
+ *
+ * Two things therefore have to be held down separately, and are. This function
+ * is unit-tested directly for what it rejects. Its CALL SITE is tested by
+ * injecting a SQLite trigger that corrupts a decided card from inside the
+ * append's own transaction -- proving the guard runs, runs before the commit,
+ * and takes the round back out with it. Without the second, the protection
+ * this comment claims would only be a comment.
  */
 export function assertRecordedDecisionsPreserved(
   before: RecordedDecision[],
@@ -698,36 +737,53 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
     throw new PrdBriefingError("invalid_briefing_questions", error instanceof Error ? error.message : undefined);
   }
 
-  // Snapshot before writing: this is what the post-condition holds the append
-  // to. Ids are minted up front because nextId is async and the append runs
-  // inside a synchronous better-sqlite3 transaction.
-  const preservedDecisions = recordedDecisions(input.changeId);
-  const roundNo = nextQuestionRoundNo(input.changeId);
-  const now = nowISO();
-  const appended: Array<typeof briefingQuestions.$inferInsert> = [];
-  for (const item of parsed.questions) {
-    appended.push({
-      id: await nextId(briefingQuestions, "BQ"),
-      changeId: input.changeId,
-      roundNo,
-      category: item.category,
-      severity: item.severity,
-      question: item.question,
-      whyItMatters: item.whyItMatters,
-      suggestedDefault: item.suggestedDefault,
-      status: "open",
-      answer: null,
-      source: "ai_blue",
-      createdAt: now,
-      updatedAt: now,
-    });
+  // Ids are minted out here because nextId is async and a better-sqlite3
+  // transaction body has to be synchronous. Nothing else is read out here:
+  // every value the append depends on is derived inside the transaction from
+  // the transaction's own handle.
+  //
+  // That is not tidiness. `await` is an interleaving point, and there is one
+  // between this line and the transaction below, so two generations in a
+  // single process -- never mind two processes -- both used to read the round
+  // number here, both see the same number, and both write it. The retry
+  // wrapper made it worse: it re-runs this closure, and a round number
+  // computed outside would be re-used unchanged on every attempt, which is
+  // precisely the state the retry exists to escape.
+  const mintedIds: string[] = [];
+  for (let index = 0; index < parsed.questions.length; index += 1) {
+    mintedIds.push(await nextId(briefingQuestions, "BQ"));
   }
+  const now = nowISO();
 
   withSqliteWriteRetry("prd-briefing.append-question-round", () =>
     db.transaction((tx) => {
-      for (const row of appended) {
-        tx.insert(briefingQuestions).values(row).run();
-      }
+      const readConnection = tx as unknown as PrdBriefingReadConnection;
+      // Snapshot at the start of the transaction that writes: this is what the
+      // post-condition holds the append to. Taken here rather than at function
+      // entry so it answers "did MY write damage a decision" and not "has
+      // anyone anywhere touched a decision since I started" -- the latter
+      // rejects a perfectly good round because a human answered a card while
+      // the generation was in flight, and throws the round away to protect an
+      // answer that was never in danger.
+      const preservedDecisions = recordedDecisionsWithDb(readConnection, input.changeId);
+      const roundNo = nextQuestionRoundNoWithDb(readConnection, input.changeId);
+      parsed.questions.forEach((item, index) => {
+        tx.insert(briefingQuestions).values({
+          id: mintedIds[index],
+          changeId: input.changeId,
+          roundNo,
+          category: item.category,
+          severity: item.severity,
+          question: item.question,
+          whyItMatters: item.whyItMatters,
+          suggestedDefault: item.suggestedDefault,
+          status: "open",
+          answer: null,
+          source: "ai_blue",
+          createdAt: now,
+          updatedAt: now,
+        }).run();
+      });
       assertRecordedDecisionsPreserved(
         preservedDecisions,
         tx.select().from(briefingQuestions)
