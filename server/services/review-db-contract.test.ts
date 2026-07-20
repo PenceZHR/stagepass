@@ -211,6 +211,7 @@ describe("review DB contract", () => {
       "0020_release_note_state",
       "0021_plan_model_authored_fields",
       "0022_briefing_question_rounds",
+      "0023_rubric_core",
     ]);
     assert.equal(finding.id, "FND-OLD");
     assert.equal(finding.review_attempt_id, null);

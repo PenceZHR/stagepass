@@ -51,6 +51,9 @@ describe("migration runner", () => {
       "provider_run_processes",
       "pipeline_jobs",
       "change_provider_sessions",
+      "rubrics",
+      "rubric_criteria",
+      "rubric_assessments",
       ...dbFirstPipelineTables,
       "__migrations",
     ]) {
@@ -439,7 +442,7 @@ describe("migration runner", () => {
     const migrationRows = sqlite.prepare("SELECT tag FROM __migrations").all();
 
     assert.deepEqual(second.applied, []);
-    assert.equal(migrationRows.length, 23);
+    assert.equal(migrationRows.length, 24);
   });
 
   it("records a migration whose columns were already applied manually", () => {

@@ -10,6 +10,7 @@ import type { Project, CreateProjectInput } from "../types";
 import { scaffoldShipDir } from "./template-service";
 import { initializeProjectContext } from "./context-init-service";
 import { deleteChangeRecords } from "./change-service";
+import { PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service";
 import { resolveGitState, syncProjectGitState } from "./project-git-state-service";
 import { resolveProvider } from "./ai-provider-service";
 import type { AiProvider } from "../types";
@@ -141,6 +142,15 @@ export async function deleteProject(id: string): Promise<void> {
   db.delete(events)
     .where(and(isNull(events.changeId), like(events.rawJson, `%${id}%`)))
     .run();
+  // Project-level rubrics (change_id IS NULL) belong to no change, so
+  // deleteChangeRecords above never reaches them, and rubrics.project_id
+  // references projects.id -- without this the DELETE below raises
+  // SQLITE_CONSTRAINT_FOREIGNKEY on any project that ever had a rubric.
+  // The DELETE stays a tagged template at the call site so db-write-inventory
+  // still sees it, same reason as deleteChangeRecordsWithDb.
+  for (const step of PROJECT_RUBRIC_DELETE_PLAN) {
+    db.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(id)}`);
+  }
   db.delete(projects).where(eq(projects.id, id)).run();
 
   const shipDir = path.join(project.repoPath, ".ship");

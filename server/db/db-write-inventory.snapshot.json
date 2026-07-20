@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "7514276b36c9dd0d19742c71d3174cb70a3e2277e0e1748aaf2cc4a7dccfaf6f",
+  "policySha256": "bd2a37cd57b990844094ec959941bf9e81ed3285fa1bfd862080f90435eaac1c",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -804,6 +804,14 @@
     },
     {
       "file": "server/services/project-service.ts",
+      "symbol": "db.run",
+      "nodeKind": "CallExpression",
+      "table": "__raw_sql__",
+      "owner": "Rubric core",
+      "reason": "project-level rubric cleanup so rubrics.project_id cannot block a project delete"
+    },
+    {
+      "file": "server/services/project-service.ts",
       "symbol": "db.update",
       "nodeKind": "CallExpression",
       "table": "projects",
@@ -1257,6 +1265,54 @@
       "table": "findings",
       "owner": "Task 14",
       "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/rubric-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Rubric core",
+      "reason": "rubric version and assessment writes are atomic"
+    },
+    {
+      "file": "server/services/rubric-service.ts",
+      "symbol": "tx.delete",
+      "nodeKind": "CallExpression",
+      "table": "rubricAssessments",
+      "owner": "Rubric core",
+      "reason": "clear a run's prior verdicts for this rubric before re-recording"
+    },
+    {
+      "file": "server/services/rubric-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "rubricAssessments",
+      "owner": "Rubric core",
+      "reason": "one assessment row per criterion, unanswered ones recorded as not_assessed"
+    },
+    {
+      "file": "server/services/rubric-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "rubricCriteria",
+      "owner": "Rubric core",
+      "reason": "criteria rows for the appended rubric version"
+    },
+    {
+      "file": "server/services/rubric-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "rubrics",
+      "owner": "Rubric core",
+      "reason": "append a new rubric version; rubric rows are never edited in place"
+    },
+    {
+      "file": "server/services/rubric-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "rubrics",
+      "owner": "Rubric core",
+      "reason": "demote the previous current rubric version before appending the new one"
     },
     {
       "file": "server/services/spec-battle-repair-service.ts",

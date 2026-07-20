@@ -88,6 +88,16 @@ export const CHANGE_DELETE_PLAN: readonly ChangeDeleteStep[] = [
   { table: "briefing_questions", where: byChangeId },
   { table: "prd_briefings", where: byChangeId },
 
+  // Rubrics are scoped to a project OR to one change. Only the change-scoped
+  // ones die with the change: `byChangeId` renders `change_id = ?`, which a
+  // project-level row (change_id IS NULL) never satisfies, so the project's
+  // default rubric survives -- which is the point of it being the default.
+  // Project-level rows are removed by PROJECT_RUBRIC_DELETE_PLAN when the
+  // project itself is deleted.
+  { table: "rubric_assessments", where: byChangeId },
+  { table: "rubric_criteria", where: byParent("rubric_id", "rubrics") },
+  { table: "rubrics", where: byChangeId },
+
   { table: "red_fix_claims", where: byChangeId },
   { table: "blue_gap_reviews", where: byChangeId },
   { table: "war_reports", where: byChangeId },

@@ -1,0 +1,160 @@
+import type { RubricJudgment, RubricVerdict } from "./rubric-line-protocol";
+
+/**
+ * Pure rubric semantics: turning a parsed set of RUBRIC lines into one verdict
+ * per criterion, and deciding what that set of verdicts blocks.
+ *
+ * DB-free on purpose, the same way prd-briefing-ledger.ts is DB-free next to
+ * prd-briefing-service.ts: the rules that decide whether a stage is allowed to
+ * pass should be testable without a database, and should have exactly one
+ * definition that both the persistence path and any future gate path read.
+ */
+
+export const RUBRIC_ROLES = ["producer", "critic", "verdict"] as const;
+export type RubricRole = (typeof RUBRIC_ROLES)[number];
+
+export const RUBRIC_VERDICTS = ["yes", "no", "not_assessed"] as const;
+
+/**
+ * Phases a rubric may be attached to: the union of §3's table with the
+ * spellings this repo already uses (`TechSpec`, `TestPlan`).
+ *
+ * Deliberately its own list rather than a reuse of `PipelinePhase` or
+ * `CONTENT_PHASES`: neither covers §3. `PipelinePhase` has PRD but not Refine /
+ * Fix / Retro; `Phase` in types/enums.ts has Refine / Fix / Retro but no PRD.
+ * A rubric has to reach all of them, so narrowing to either existing type would
+ * silently make some phases in §3 unrepresentable.
+ */
+export const RUBRIC_PHASES = [
+  "Refine",
+  "PRD",
+  "Spec",
+  "TechSpec",
+  "Plan",
+  "TestPlan",
+  "Build",
+  "Fix",
+  "QA",
+  "Merge",
+  "Retro",
+] as const;
+export type RubricPhase = (typeof RUBRIC_PHASES)[number];
+
+export function isRubricRole(value: string): value is RubricRole {
+  return (RUBRIC_ROLES as readonly string[]).includes(value);
+}
+
+export function isRubricPhase(value: string): value is RubricPhase {
+  return (RUBRIC_PHASES as readonly string[]).includes(value);
+}
+
+export interface RubricCriterion {
+  id: string;
+  ordinal: number;
+  text: string;
+  blocking: boolean;
+}
+
+export interface RubricAssessmentDraft {
+  criterionId: string;
+  verdict: RubricVerdict;
+  evidence: string | null;
+}
+
+/**
+ * One verdict for every criterion in the rubric, in ordinal order.
+ *
+ * A criterion the model said nothing about becomes `not_assessed` with null
+ * evidence. That is the whole point of the mechanism: silence must be recorded
+ * as silence and must not read as a pass. This mirrors review.md recording a
+ * missing PRIOR line as `not_rechecked` and keeping the old blocker open.
+ *
+ * Throws when a judgment names a criterion this rubric does not contain.
+ * parseRubricLineProtocol already refuses those, so reaching here means a
+ * caller parsed without passing the rubric's criterion ids -- fail loudly
+ * rather than drop the judgment, because dropping it is indistinguishable from
+ * the model never having answered.
+ */
+export function buildRubricAssessments(
+  criteria: readonly RubricCriterion[],
+  judgments: readonly RubricJudgment[],
+): RubricAssessmentDraft[] {
+  const known = new Set(criteria.map((criterion) => criterion.id));
+  const unknown = judgments.filter((judgment) => !known.has(judgment.criterionId));
+  if (unknown.length > 0) {
+    throw new Error(
+      "rubric judgments reference criteria that are not in this rubric: "
+      + `${[...new Set(unknown.map((judgment) => judgment.criterionId))].join(", ")}`
+      + " -- parse with this rubric's criterionIds so unknown ids void the output",
+    );
+  }
+
+  const byCriterion = new Map(judgments.map((judgment) => [judgment.criterionId, judgment]));
+  return [...criteria]
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map((criterion) => {
+      const judgment = byCriterion.get(criterion.id);
+      return judgment
+        ? { criterionId: criterion.id, verdict: judgment.verdict, evidence: judgment.evidence }
+        : { criterionId: criterion.id, verdict: "not_assessed" as const, evidence: null };
+    });
+}
+
+export interface RubricOutcome {
+  blocked: boolean;
+  /** Blocking criteria the model answered `no` on. */
+  failedCriterionIds: string[];
+  /** Criteria with no verdict at all. Always blocking. */
+  notAssessedCriterionIds: string[];
+  /** Non-blocking criteria answered `no`: recorded, not blocking. */
+  advisoryCriterionIds: string[];
+}
+
+/**
+ * What a set of assessments blocks.
+ *
+ * Three rules, straight from §4.3:
+ *  - `no` on a blocking criterion blocks;
+ *  - `no` on a non-blocking criterion is recorded only;
+ *  - ANY `not_assessed` blocks, whatever the criterion's `blocking` flag says.
+ *
+ * The asymmetry in the third rule is deliberate and worth stating: `blocking:
+ * false` is the author saying "a failure here should not stop the pipeline",
+ * which is a judgment about the CONTENT. `not_assessed` is not content -- it
+ * means the model did not answer a question it was given, so the rubric has no
+ * information about that criterion at all. Letting a non-blocking criterion
+ * absorb silence would give any model a way to skip the questions it expects to
+ * fail. Nothing here is wired to a gate yet; batch 5 owns that.
+ */
+export function rubricOutcome(
+  criteria: readonly RubricCriterion[],
+  assessments: readonly RubricAssessmentDraft[],
+): RubricOutcome {
+  const blockingById = new Map(criteria.map((criterion) => [criterion.id, criterion.blocking]));
+  const failedCriterionIds: string[] = [];
+  const notAssessedCriterionIds: string[] = [];
+  const advisoryCriterionIds: string[] = [];
+
+  for (const assessment of assessments) {
+    if (assessment.verdict === "not_assessed") {
+      notAssessedCriterionIds.push(assessment.criterionId);
+      continue;
+    }
+    if (assessment.verdict !== "no") continue;
+    if (blockingById.get(assessment.criterionId) === false) {
+      advisoryCriterionIds.push(assessment.criterionId);
+    } else {
+      // Unknown criterion ids default to blocking rather than advisory: an id
+      // with no known `blocking` flag is a bug, and the safe reading of a bug
+      // is that it blocks.
+      failedCriterionIds.push(assessment.criterionId);
+    }
+  }
+
+  return {
+    blocked: failedCriterionIds.length > 0 || notAssessedCriterionIds.length > 0,
+    failedCriterionIds,
+    notAssessedCriterionIds,
+    advisoryCriterionIds,
+  };
+}

@@ -1167,3 +1167,139 @@ export const prdDrafts = sqliteTable("prd_drafts", {
   draftHash: text("draft_hash").notNull(),
   createdAt: text("created_at").notNull(),
 });
+
+/**
+ * A user-editable yes/no checklist for one (scope, phase, role).
+ *
+ * Rubric rows are APPEND-ONLY. Editing a rubric writes a new row with
+ * `version + 1` and moves `is_current`; the old row and every criterion under it
+ * stay readable forever, because assessments reference them and a finished run
+ * must remain explainable in the terms it was actually judged by.
+ *
+ * `change_id` NULL means the project-level default; a non-NULL row overrides it
+ * for that one change. NULL is not a wildcard for the uniqueness rule, and
+ * SQLite treats NULLs as distinct in a unique index, so "one current rubric per
+ * scope" needs the two partial indexes below rather than one over all four
+ * columns -- with a single index, every project-level rubric version would read
+ * as current simultaneously.
+ */
+export const rubrics = sqliteTable(
+  "rubrics",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    /** NULL = project-level default; non-NULL = this change's override. */
+    changeId: text("change_id").references(() => changes.id),
+    phase: text("phase").notNull(),
+    /** producer | critic | verdict -- see RUBRIC_ROLES. */
+    role: text("role").notNull(),
+    version: integer("version").notNull().default(1),
+    isCurrent: integer("is_current").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_rubrics_current_change")
+      .on(table.projectId, table.changeId, table.phase, table.role)
+      .where(sql`${table.isCurrent} = 1 AND ${table.changeId} IS NOT NULL`),
+    uniqueIndex("uq_rubrics_current_project")
+      .on(table.projectId, table.phase, table.role)
+      .where(sql`${table.isCurrent} = 1 AND ${table.changeId} IS NULL`),
+    uniqueIndex("uq_rubrics_version_change")
+      .on(table.projectId, table.changeId, table.phase, table.role, table.version)
+      .where(sql`${table.changeId} IS NOT NULL`),
+    uniqueIndex("uq_rubrics_version_project")
+      .on(table.projectId, table.phase, table.role, table.version)
+      .where(sql`${table.changeId} IS NULL`),
+    index("idx_rubrics_scope_current").on(
+      table.projectId,
+      table.changeId,
+      table.phase,
+      table.role,
+      table.isCurrent,
+    ),
+  ],
+);
+
+/**
+ * One yes/no criterion. Immutable, like the rubric version that owns it: an
+ * edit produces a new rubric version carrying a fresh set of criterion rows, so
+ * a stored assessment's `criterion_id` always resolves to the exact text the
+ * model was shown.
+ */
+export const rubricCriteria = sqliteTable(
+  "rubric_criteria",
+  {
+    id: text("id").primaryKey(),
+    rubricId: text("rubric_id")
+      .notNull()
+      .references(() => rubrics.id),
+    ordinal: integer("ordinal").notNull(),
+    text: text("text").notNull(),
+    /**
+     * Defaults to blocking. A criterion someone bothered to write is assumed to
+     * matter until they say otherwise -- the fail-closed direction, matching
+     * `not_assessed` being blocking rather than ignorable.
+     */
+    blocking: integer("blocking").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_rubric_criteria_rubric_ordinal").on(table.rubricId, table.ordinal),
+    index("idx_rubric_criteria_rubric").on(table.rubricId),
+  ],
+);
+
+/**
+ * One criterion's verdict for one run (and, where the stage has them, one
+ * round).
+ *
+ * `change_id` is carried here rather than being reached through `run_id`, and
+ * that is deliberate: `run_id` names a row in whichever ledger the stage uses
+ * (`runs`, `stage_runs`, or a spec-battle round), so it cannot carry a foreign
+ * key, and without one a change deletion could not find the assessments a run
+ * made against a PROJECT-level rubric -- those rows' only other link is
+ * `rubric_id`, which points at a rubric that outlives the change. The column
+ * keeps deletion a single `change_id = ?` predicate and lets the FK graph
+ * enrol this table in CHANGE_DELETE_PLAN automatically.
+ *
+ * `verdict` may be not_assessed here even though a model may only ever write
+ * yes or no: that value is stagepass's own record of an unanswered criterion.
+ */
+export const rubricAssessments = sqliteTable(
+  "rubric_assessments",
+  {
+    id: text("id").primaryKey(),
+    changeId: text("change_id")
+      .notNull()
+      .references(() => changes.id),
+    /** Ledger row this judgment belongs to. Intentionally un-keyed; see above. */
+    runId: text("run_id").notNull(),
+    roundId: text("round_id"),
+    rubricId: text("rubric_id")
+      .notNull()
+      .references(() => rubrics.id),
+    criterionId: text("criterion_id")
+      .notNull()
+      .references(() => rubricCriteria.id),
+    /** yes | no | not_assessed -- see RUBRIC_VERDICTS. */
+    verdict: text("verdict").notNull(),
+    evidence: text("evidence"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    // One verdict per criterion per run/round. Two rows would be contradictory
+    // and which one won would depend on read order. Split in two for the same
+    // NULL-distinctness reason as `rubrics`: with one index over a nullable
+    // `round_id`, a round-less stage could store a criterion twice.
+    uniqueIndex("uq_rubric_assessments_run_round_criterion")
+      .on(table.runId, table.roundId, table.criterionId)
+      .where(sql`${table.roundId} IS NOT NULL`),
+    uniqueIndex("uq_rubric_assessments_run_criterion")
+      .on(table.runId, table.criterionId)
+      .where(sql`${table.roundId} IS NULL`),
+    index("idx_rubric_assessments_change_rubric").on(table.changeId, table.rubricId),
+    index("idx_rubric_assessments_run").on(table.runId),
+  ],
+);
