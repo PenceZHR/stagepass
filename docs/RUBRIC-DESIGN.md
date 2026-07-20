@@ -89,6 +89,37 @@ not_assessed  未评估（模型漏答）
 **理由：不新建平行的阻断机制。** gate 已经会数 open P0/P1，rubric 只负责把
 "模型没想到去看"的东西变成它数得着的东西。
 
+### 4.3.1 出口就是 criterion 本身（**第 5 批实测确立，不可省略**）
+
+上面三条通道照字面实现，**每一条都会造出无出口的死锁**：
+- Spec：`human_cannot_resolve_gap` 明文拒绝人工解 gap，`waive_p1` 只认 P1
+- Build/Fix：P0 不可豁免有**四层**；且 `source != "review"` 的 finding 永远进不了
+  `openBlockingReviewFindingIds` 冻结集 —— **没有任何模型能把它标 fixed**，而
+  `computeMergeReadiness` 按所有来源拦截 open P0/P1。三者叠加＝永久卡在 Merge
+- 文档阶段：`stage_gates` **没有审批列**，`approveGate` 没有 override 分支 ——
+  构造上就不可清除；同时 gate 是 append-only，它**又可以被静默丢掉**
+
+所以出口只能有一个，三条通道共用：
+
+> **rubric 派生的阻断项，只在它背后那条 criterion 仍被标为阻断时才活着。**
+> 取消勾选「阻断」或删掉该 criterion，它派生的阻断项随之退休。
+
+**这个出口不需要人说谎**：它不声称产物满足了标准，它撤销标准 —— 恰好落在
+`human_cannot_resolve_gap` 保护的那条界线的正确一侧。
+
+**这也是 §5.1 要求绑 `criterion_key` 的真正原因：key 不是整洁，它是出口唯一的把手。**
+
+配套两条同样必须的规则：
+1. **退休需要正面证据，缺席永远不算。** 只有「标准被撤下」或「后续判定答了 yes」
+   能退休；某轮判定缺失绝不退休 —— 一轮在 rubric 跑之前就死掉不是「标准已满足」
+   的证据。这是 §5.2 的镜像。
+2. **派生方向不对称**：开启读「判定当时那条 criterion 的正文快照」，退休读「当前
+   生效的 rubric」。因此编辑 rubric **只能关不能开**，一次编辑绝不可能让一个已盖章
+   的 change 重新被挡（§4.4）。
+
+**终态用 `resolved`，不是直觉上的 `overridden`**：`isMergeBlockingGap` 对任何
+`originalSeverity=P0` 的 overridden gap 返回 true，用它只是把死锁从 Spec 搬到 Merge。
+
 ### 4.4 可编辑 vs 哈希（**最容易翻车的一点**）
 
 **rubric 正文绝不进 `sourceDbHash`。** 只有 `rubricVersionId` 和**判定结果**进。
@@ -214,6 +245,10 @@ RUBRIC <criterionId> yes|no <evidence>
   **不要用 `pnpm test` / `pnpm lint`**（见 §10，会删掉 node_modules 软链）
 - `npx tsc --noEmit`
 - 新增生产 DB 写 → 登记 `db-write-policy.json` + 重算快照
+- **变异工具自己也会撒谎。** 第 5 批的第一个变异跑出 34/0 全绿，不是测试不敏感，
+  是变异模拟错了对象。**每批都要先验证「变异确实改变了行为」**（加 no-op 自检）。
+- **「证明已盖章 gate 摘要不变」在本库上几乎自动通过** —— 生产库根本没有 rubric 表，
+  编辑一个不存在的东西当然什么都不动。**必须证双向**：不该动时不动，**该动时要动**。
 - **真浏览器验证，不是只有测试绿** —— 但**第 1–3 批没有 UI 可点**（UI 是第 4 批），
   这几批用「生产库副本 + 真实服务函数重算」代替：先复现真实盖章的哈希以证明重算函数
   忠实，再证明改动前后哈希不变。第 4 批起才有界面可验。
