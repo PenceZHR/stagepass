@@ -11140,6 +11140,12 @@ describe("pipeline-service v2 stages", () => {
     await runRelease(CHANGE_ID, makeTestJobExecutionContext("complete-pipeline-release"));
     assert.equal(currentStatus(), "RETRO_PENDING");
 
+    // A page renders before any POST does, and GET /gate serves computeActions.
+    // This has to be measured FIRST: leading with getActions primes the very
+    // persisted merge readiness the read path reads back, which is exactly how
+    // the "first click on 运行 Retro is always 409" defect stayed invisible here.
+    const renderedRetro = computeActions(CHANGE_ID).find((action) => action.actionId === "run_retro")!;
+
     const retroContracts = [getActions(CHANGE_ID), computeActions(CHANGE_ID), getActions(CHANGE_ID)]
       .map((actions) => actions.find((action) => action.actionId === "run_retro")!);
     const retroContract = retroContracts[0]!;
@@ -11148,6 +11154,11 @@ describe("pipeline-service v2 stages", () => {
       retroContracts.map((contract) => contract.sourceDbHash),
       [retroContract.sourceDbHash, retroContract.sourceDbHash, retroContract.sourceDbHash],
       "repeated self-healing GET action computation must preserve the Retro authority hash",
+    );
+    assert.deepEqual(
+      [renderedRetro.enabled, renderedRetro.gateVersion, renderedRetro.sourceDbHash],
+      [true, retroContract.gateVersion, retroContract.sourceDbHash],
+      "the Retro contract GET /gate renders must be the one the next POST preflight compares against",
     );
     const retroJob = enqueueProviderActionAtomically({
       changeId: CHANGE_ID, phase: "retro", actionId: "run_retro",

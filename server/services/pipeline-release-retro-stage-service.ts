@@ -16,6 +16,7 @@ import {
 } from "./build-workspace-service";
 import { runDocumentStage } from "./pipeline-document-stage-runner-service";
 import { appendRetroDebtsToBacklog } from "./retro-service";
+import { getActions } from "./action-contract-service";
 import { assertCanMerge } from "./merge-readiness-service";
 import { resolveRetroActionAuthority } from "./provider-action-authority-service";
 import { resolveAdoptionCommitBranch } from "./change-service";
@@ -101,6 +102,24 @@ export async function runRelease(
     changeId,
     summary: result.summary,
   });
+
+  // Hand the change to the user with a contract that is already current.
+  //
+  // run_retro is stamped with the Merge stage gate's (gateVersion, sourceDbHash),
+  // and that gate is a cache of merge readiness that only the *write* path
+  // refreshes. Everything above just invalidated it: the patch was absorbed, the
+  // changelog moved, HEAD moved, and the status went MERGE_READY -> RETRO_PENDING.
+  // Leaving it stale means GET /gate (computeActions -- no self-heal, no persist)
+  // renders Retro against the pre-merge gate, while the first POST runs getActions,
+  // recomputes readiness, writes the corrected gate, and refuses the click it was
+  // handed with gate_version_drift. That is the "first click on 运行 Retro always
+  // 409s, reload and it works" defect: the failing POST is what refreshes the cache
+  // the next render reads.
+  //
+  // This is the same post-stage refresh approvePlan, the design stages and the
+  // TestPlan snapshot service already do, and it must run AFTER updateChangelog --
+  // the changelog write is one of the inputs the readiness hash covers.
+  getActions(changeId);
 }
 
 export async function runRetro(
