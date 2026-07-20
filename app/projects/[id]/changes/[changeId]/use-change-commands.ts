@@ -27,6 +27,51 @@ const GATE_NEXT_STAGE_ACTION_IDS: Partial<Record<GateName, string>> = {
   merge: "merge",
 };
 
+/**
+ * Start the stage that follows an approval, using a freshly issued contract.
+ *
+ * handleApproveGate does this inline, keyed on GateName -- which is why the
+ * TestPlan approval could not reuse it: TestPlan is not a gate, so there was no
+ * entry to add and the approval simply ended, leaving Build unstarted. That
+ * inline copy is left where it is; it carries merge-specific handling and an
+ * optional next action that this path does not have.
+ *
+ * The contract is re-fetched rather than carried over, because the approval just
+ * moved the change and the version issued before it is already stale. A next
+ * stage that the backend will not allow throws, so its reason reaches the
+ * operator -- an approval that quietly leads nowhere is what left three
+ * identical test-plan runs in the ledger.
+ */
+export async function startNextStage(input: {
+  projectId: string;
+  changeId: string;
+  actionId: string;
+  endpoint: string;
+  selectedProvider?: AiProvider;
+  setGateStatus: Dispatch<SetStateAction<GateStatus | null>>;
+}): Promise<void> {
+  const gateRes = await fetch(`/api/projects/${input.projectId}/changes/${input.changeId}/gate`);
+  const gateData = await gateRes.json();
+  if (!gateRes.ok) throw new Error(gateData.error || "Gate status refresh failed");
+  const latestGateStatus = gateData as GateStatus;
+  input.setGateStatus(latestGateStatus);
+
+  const nextAction = findPipelineAction(latestGateStatus.actions, input.actionId);
+  const nextDisabledReason = pipelineActionDisabledReason(nextAction);
+  if (nextDisabledReason) throw new Error(nextDisabledReason);
+
+  const payload = createPipelinePreflightPayload(nextAction);
+  if (nextAction?.requiresProvider && nextAction.providerSelectable && input.selectedProvider) {
+    payload.provider = input.selectedProvider;
+  }
+  const stageRes = await fetch(
+    `/api/projects/${input.projectId}/changes/${input.changeId}/${input.endpoint}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+  );
+  const stageData = await stageRes.json();
+  if (!stageRes.ok) throw new Error(stageData.error || "Next stage failed");
+}
+
 type SelectedPhaseState = {
   changeId: string;
   phase: ReviewPhase;
@@ -220,6 +265,15 @@ export function useChangeCommands({
       setGateError(disabledReason);
       return;
     }
+    // approve_plan serves two approvals that both land on PLAN_APPROVED, so the
+    // hand-off has to be chosen from where the change is coming FROM. Only the
+    // TestPlan one continues on its own: approving the plan itself is followed
+    // by a test plan the human asks for, while confirming the test plan is the
+    // last gate before Build and used to continue to nothing at all -- the
+    // change sat at PLAN_APPROVED with no Build enqueued, and the only enabled
+    // forward action left was running the test plan again, which is exactly the
+    // loop that produced three identical test-plan runs.
+    const chainToBuild = gateStatus?.status === "TESTPLAN_DONE";
     setGateBusy(true);
     setGateError("");
     try {
@@ -232,6 +286,16 @@ export function useChangeCommands({
       if (!res.ok) {
         throw new Error(data.action?.reason ?? data.action?.reasonCode ?? data.error ?? "Plan approval failed");
       }
+      if (chainToBuild) {
+        await startNextStage({
+          projectId,
+          changeId,
+          actionId: "run_build",
+          endpoint: "implement",
+          selectedProvider,
+          setGateStatus,
+        });
+      }
       resetPhaseReview();
     } catch (err) {
       setGateError(String(err));
@@ -242,7 +306,7 @@ export function useChangeCommands({
       loadPlanSandboxState();
       loadTestPlanSandboxState();
     }
-  }, [projectId, changeId, gateStatus?.actions, load, loadGateStatus, loadPlanSandboxState, loadTestPlanSandboxState, resetPhaseReview, setGateBusy, setGateError]);
+  }, [projectId, changeId, gateStatus?.actions, gateStatus?.status, load, loadGateStatus, loadPlanSandboxState, loadTestPlanSandboxState, resetPhaseReview, selectedProvider, setGateBusy, setGateError, setGateStatus]);
 
   return {
     handleApproveGate,
