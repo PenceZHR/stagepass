@@ -542,6 +542,23 @@ function syncSpecStageAuthority(changeId: string, provider?: Provider): void {
   });
 }
 
+/**
+ * Recomputes the Spec gate and mirrors after something OUTSIDE a round changed
+ * `requirement_gaps`.
+ *
+ * Same shape as the `waive_p1` branch of applySpecBattleDecision, which is the
+ * existing precedent for a human action that closes a gap between rounds. It
+ * deliberately does not call `markSpecBattleReportsStale`: the war report keys
+ * its freshness off `reportSourceHashes`, which hashes the gap rows, so a
+ * changed gap already reports `source_changed` on its own. Stamping the report
+ * stale as well would write to `war_reports`, which is itself inside
+ * `specSourceDbHash` -- moving a hash to record a fact the hash already implies.
+ */
+export function resyncSpecStageAfterGapChange(changeId: string): void {
+  syncSpecStageAuthority(changeId);
+  refreshMirrors(changeId);
+}
+
 function updateChangeStatus(changeId: string, status: ChangeStatus, blockedPhase?: string | null) {
   transitionChangeStatus({
     changeId,

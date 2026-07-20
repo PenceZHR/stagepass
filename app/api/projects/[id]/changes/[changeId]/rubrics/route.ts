@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/server/db";
 import { changes } from "@/server/db/schema";
 import { isRubricPhase, isRubricRole } from "@/server/services/rubric-assessment";
+import { syncRubricBlockers } from "@/server/services/rubric-gate-adapters";
 import { buildRubricPanelState } from "@/server/services/rubric-panel-service";
 import { RubricError, saveRubricVersion } from "@/server/services/rubric-service";
 
@@ -121,6 +122,23 @@ export async function PUT(
       role: payload.role,
       criteria,
     });
+    // THE HUMAN EXIT (§5.1). A rubric-derived P0 is unclearable by every
+    // ordinary route -- `human_cannot_resolve_gap` refuses a gap, a P0 finding
+    // is unwaivable four ways, and `stage_gates` has no override branch at all.
+    // Withdrawing the criterion is what closes it, so the edit that withdraws
+    // it has to be the thing that reconciles.
+    //
+    // Scoped to THIS change on purpose, even when the edit was project-level. A
+    // project rubric is shared by every change, and fanning writes out across
+    // all of them from one request would recompute gates for changes whose
+    // pipelines are mid-run. Every other change reaches the same exit through
+    // its own drawer.
+    //
+    // Reconciliation can only ever CLOSE a blocker, never open one: opening
+    // reads stored verdicts judged against the criterion as it then stood, and
+    // nothing here re-judges. That asymmetry is what keeps §4.4 true -- an edit
+    // cannot newly block a change whose gate is already stamped.
+    syncRubricBlockers(changeId, payload.phase);
   } catch (err) {
     if (err instanceof RubricError) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: 400 });

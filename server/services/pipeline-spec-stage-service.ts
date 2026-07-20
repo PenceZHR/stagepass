@@ -62,6 +62,7 @@ import {
   recordUnansweredStageRubric,
   resolveStageRubric,
 } from "./rubric-stage-service";
+import { syncSpecRubricGaps } from "./rubric-gate-adapters";
 import type { Change, RunPhase } from "../types";
 import type { Provider } from "./provider-selection-service";
 import {
@@ -409,6 +410,15 @@ export async function runSpec(
         runId: round.runId,
         provider,
       });
+      assertCurrentExecutionFence(context, round.runId);
+      assertChangeNotBlocked(changeId, "spec");
+      // §4.3: a blocking criterion answered `no`, or left unanswered, becomes a
+      // requirement gap. Deliberately AFTER all three rubrics have landed and
+      // BEFORE generateSpecReport -- the report's syncSpecReportStageAuthority
+      // is what reads requirement_gaps back out and recomputes the Spec gate,
+      // so a gap written after it would not block anything until some later
+      // event happened to resync the stage.
+      syncSpecRubricGaps(changeId);
       assertCurrentExecutionFence(context, round.runId);
       assertChangeNotBlocked(changeId, "spec");
       await generateSpecReport(changeId);

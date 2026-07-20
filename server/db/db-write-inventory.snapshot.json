@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "bd2a37cd57b990844094ec959941bf9e81ed3285fa1bfd862080f90435eaac1c",
+  "policySha256": "d008805e6c577e4a5689668715b5cec9af5f607a4b8cef0d8a163f99077c912c",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -1265,6 +1265,46 @@
       "table": "findings",
       "owner": "Task 14",
       "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Rubric core",
+      "reason": "one rubric sync opens and retires blocking records atomically"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Rubric core",
+      "reason": "a blocking Build/Fix criterion answered no becomes a P0 finding (RUBRIC-DESIGN 4.3)"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Rubric core",
+      "reason": "a blocking Spec criterion answered no becomes a P0 requirement gap (RUBRIC-DESIGN 4.3)"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Rubric core",
+      "reason": "retire or reopen a rubric-derived finding as its criterion changes"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Rubric core",
+      "reason": "retire or reopen a rubric-derived gap; withdrawing the criterion is the human exit"
     },
     {
       "file": "server/services/rubric-service.ts",

@@ -1266,6 +1266,46 @@
       "reason": "owned by Task 14"
     },
     {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Rubric core",
+      "reason": "one rubric sync opens and retires blocking records atomically"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Rubric core",
+      "reason": "a blocking Build/Fix criterion answered no becomes a P0 finding (RUBRIC-DESIGN 4.3)"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Rubric core",
+      "reason": "a blocking Spec criterion answered no becomes a P0 requirement gap (RUBRIC-DESIGN 4.3)"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Rubric core",
+      "reason": "retire or reopen a rubric-derived finding as its criterion changes"
+    },
+    {
+      "file": "server/services/rubric-gate-adapters.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Rubric core",
+      "reason": "retire or reopen a rubric-derived gap; withdrawing the criterion is the human exit"
+    },
+    {
       "file": "server/services/rubric-service.ts",
       "symbol": "db.transaction",
       "nodeKind": "CallExpression",
@@ -1862,6 +1902,11 @@
       "file": "server/services/rubric-criterion-key.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner; the migration cases additionally own a local in-memory fixture"
+    },
+    {
+      "file": "server/services/rubric-gate-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
       "file": "server/services/rubric-panel-service.test.ts",

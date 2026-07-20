@@ -36,6 +36,7 @@ import {
   saveRubricVersion,
   type RubricVersionRecord,
 } from "./rubric-service.ts";
+import { isRubricBlockerId, rubricBlockerId } from "./rubric-gate-service.ts";
 import { deleteChangeRecords } from "./change-service.ts";
 
 /**
@@ -418,8 +419,28 @@ describe("Spec battle rubric wiring", () => {
     for (const criterion of critic.criteria) assert.match(criticPrompt, new RegExp(criterion.id));
 
     // Blue's own protocol must be unaffected: the gap it reported still lands.
+    //
+    // Batch 5 note: this used to assert the gap list was EXACTLY blue's own gap,
+    // which pinned "a rubric verdict never reaches the gate". That was true of
+    // batch 3 and is precisely what batch 5 changes -- the critic's `no` on a
+    // blocking criterion now derives its own P0 gap (§4.3). What the assertion
+    // was actually protecting is that blue's gap is not disturbed by the rubric
+    // running alongside it, so that is what it now says, plus the derived gap it
+    // should be seeing.
     const gaps = db.select().from(requirementGaps).where(eq(requirementGaps.changeId, CHANGE_ID)).all();
-    assert.deepEqual(gaps.map((gap) => gap.canonicalGapId), ["gap-rubric-new"]);
+    assert.equal(
+      gaps.filter((gap) => gap.canonicalGapId === "gap-rubric-new").length,
+      1,
+      "blue's own gap must still land untouched",
+    );
+    const derived = gaps.filter((gap) => isRubricBlockerId(gap.canonicalGapId));
+    assert.deepEqual(
+      derived.map((gap) => gap.canonicalGapId),
+      [rubricBlockerId(critic.criteria[0]!.criterionKey)],
+      "the critic's blocking `no` derives exactly one gap, keyed on the criterion",
+    );
+    assert.equal(derived[0]!.severity, "P0");
+    assert.equal(derived[0]!.status, "open");
     assert.equal(currentRound()?.status, "report_ready");
   });
 
@@ -561,8 +582,19 @@ describe("rubric text stays out of stamped hashes", () => {
     // re-approve branch of applySpecBattleDecision, whose only effect is
     // syncSpecStageAuthority + generateSpecReport + refreshMirrors: the real
     // production recompute of both Spec hash definitions, over unchanged rows.
-    const producer = saveSpecRubric("producer", [{ text: "Original wording" }]);
-    const verdict = saveSpecRubric("verdict", [{ text: "Original verdict wording" }]);
+    // Batch 5 note: these two are `blocking: false`, which they did not need to
+    // be when this test was written -- a `no` reached no gate then. It does now:
+    // a blocking `no` derives a P0 requirement gap, so the approve below would
+    // throw `gate_blocked` and this test would stop measuring the hash at all.
+    // Keeping a real `no` on file, rather than flipping it to `yes`, preserves
+    // the point of the leak assertions at the end AND additionally pins §4.3's
+    // rule that a non-blocking `no` is recorded without blocking, end to end.
+    // (An OPEN derived gap's own hash stability across an edit is covered
+    // separately in rubric-gate-service.test.ts.)
+    const producer = saveSpecRubric("producer", [{ text: "Original wording", blocking: false }]);
+    const verdict = saveSpecRubric("verdict", [
+      { text: "Original verdict wording", blocking: false },
+    ]);
     installEngine({
       spec: [RED_JSON, ...rubricLines(producer, ["no"])].join("\n"),
       spec_critic: BLUE_LINES,
