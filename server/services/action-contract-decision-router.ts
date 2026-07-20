@@ -26,6 +26,7 @@ import {
   retryBuildDecision,
   reviewBuildAdoptionDecision,
 } from "./action-contract-build-policy";
+import { commitChangesDecision, initGitRepoDecision } from "./action-contract-git-policy";
 import { reviewControlDecision } from "./action-contract-review-policy";
 import { enterQaDecision, retryQaDecision } from "./action-contract-qa-policy";
 import {
@@ -252,6 +253,13 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
   ["adopt_build", buildAdopt],
   ["adopt_fix", buildAdopt],
   ["reject_build", ({ db, changeId }) => rejectBuildRunDecision(db, changeId)],
+
+  // Decided purely from the working tree; they never consult base(), because the
+  // Build stage gate has no bearing on whether a path is a repository or whether
+  // there is anything to commit. See action-contract-git-policy for why they
+  // also carry their own (gateVersion, sourceDbHash) instead of the gate's.
+  ["init_git_repo", ({ changeId, repoPath }) => initGitRepoDecision(repoPath, changeId)],
+  ["commit_changes", ({ changeId, repoPath }) => commitChangesDecision(repoPath, changeId)],
 ]);
 
 export function decideAction(

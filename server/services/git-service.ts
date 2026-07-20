@@ -102,6 +102,16 @@ export function hasUncommittedChanges(repoPath: string): boolean {
   return output.length > 0;
 }
 
+/**
+ * The commit subject used when the pipeline commits on the user's behalf --
+ * i.e. the one-click `commit_changes` stage action, which has no message box.
+ * The Git panel still sends its own message (typed or AI-suggested) and wins.
+ */
+export function defaultChangeCommitMessage(changeId: string, title: string): string {
+  const subject = title.trim().replace(/\s+/g, " ").slice(0, 72);
+  return `chore(${changeId}): ${subject || "pipeline change"}`;
+}
+
 export function generateChangeBranchName(changeId: string, title: string): string {
   const slug = title
     .toLowerCase()

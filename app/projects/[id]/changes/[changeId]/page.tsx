@@ -27,6 +27,7 @@ import { PhaseStageShell } from "./phase-stage-shell";
 import { RefineChatPanel } from "./refine-chat-panel";
 import { ProviderPicker } from "./provider-picker";
 import { StageGitPanel } from "./stage-git-panel";
+import { selectVisibleGitStageActions } from "./git-action-policy";
 import { buildUiPipelineState } from "./pipeline-ui-model";
 import type { StageActionView } from "./stage-action-bar";
 import { StageFrame, type StageBlockerView } from "./stage-frame";
@@ -718,13 +719,34 @@ export default function ChangeDetailPage() {
     handleRegeneratePlanSandboxReport,
   ]);
 
+  /**
+   * The git actions on the Build/Fix stage bar -- the "next step" after the
+   * working tree has moved. Which ones are visible is decided by
+   * selectVisibleGitStageActions; see git-action-policy for the rule.
+   */
+  const gitStageActions = useMemo<StageActionView[]>(() => {
+    return selectVisibleGitStageActions(pipelineActions).map((action) => {
+      const disabledReason = pipelineActionDisabledReason(action);
+      return {
+        id: `git-${action.actionId}`,
+        label: action.label,
+        role: "secondary" as const,
+        enabled: disabledReason === null,
+        busy: running,
+        disabledReason,
+        sourceActionId: action.actionId,
+        onAction: () => handleAction(action.actionId),
+      };
+    });
+  }, [handleAction, pipelineActions, running]);
+
   const buildOrFixStageActions = useMemo<StageActionView[]>(() => {
-    if (activeSelectedPhase !== "Fix") return buildStageActions;
+    if (activeSelectedPhase !== "Fix") return [...buildStageActions, ...gitStageActions];
 
     const fixBlockersAction = findPipelineAction(gateStatus?.actions, "fix_blockers");
     const disabledReason = pipelineActionDisabledReason(fixBlockersAction);
     const hasFixBlockerAction = disabledReason === null;
-    if (!hasFixBlockerAction) return buildStageActions;
+    if (!hasFixBlockerAction) return [...buildStageActions, ...gitStageActions];
 
     const fixBlockersStageAction: StageActionView = {
       id: "fix-fix_blockers",
@@ -737,11 +759,12 @@ export default function ChangeDetailPage() {
       onAction: () => handleAction("fix_blockers"),
     };
 
-    return [fixBlockersStageAction, ...buildStageActions];
+    return [fixBlockersStageAction, ...buildStageActions, ...gitStageActions];
   }, [
     activeSelectedPhase,
     buildStageActions,
     gateStatus?.actions,
+    gitStageActions,
     handleAction,
     running,
   ]);
@@ -1395,7 +1418,19 @@ export default function ChangeDetailPage() {
                 </div>
               </>
             )}
-        <StageGitPanel projectId={projectId} selectedPhase={activeSelectedPhase} />
+        {/*
+          Deliberately outside every stage branch: the panel is on screen for
+          every phase of the change, so committing never means leaving the stage
+          you are working on. The Build/Fix stage bar additionally carries the
+          same two actions as one-click contract actions (gitStageActions).
+        */}
+        <StageGitPanel
+          projectId={projectId}
+          changeId={changeId}
+          selectedPhase={activeSelectedPhase}
+          commitAction={findPipelineAction(pipelineActions, "commit_changes")}
+          initAction={findPipelineAction(pipelineActions, "init_git_repo")}
+        />
       </PipelinePageShell>
     </>
   );

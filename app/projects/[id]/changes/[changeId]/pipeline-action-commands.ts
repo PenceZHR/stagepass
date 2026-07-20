@@ -24,6 +24,8 @@ export const ACTION_ENDPOINTS = {
   retry_tech_spec: "tech-spec",
   regenerate_plan_report: "plan-sandbox/report",
   waive_plan_p1: "plan-sandbox/decision",
+  init_git_repo: "git",
+  commit_changes: "git",
 } as const;
 
 /**
