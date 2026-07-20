@@ -70,6 +70,13 @@ const fallbackStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
   intake: "BLOCKED",
   spec: "BLOCKED",
   spec_critic: "BLOCKED",
+  // Unlike red and blue, an interrupted verdict-rubric call must NOT block the
+  // change. It runs after completeBlueCritique has already committed the round
+  // (report_ready) and moved the change to SPEC_READY, so there is nothing left
+  // to roll back -- rolling to BLOCKED would destroy a finished round because a
+  // judging call was killed. The unanswered rubric is recorded as not_assessed
+  // instead, which is what carries the fail-closed signal forward.
+  spec_verdict: "SPEC_READY",
   tech_spec: "SPEC_READY",
   generate_plan: "TECHSPEC_READY",
   test_plan: "PLAN_APPROVED",
@@ -85,6 +92,7 @@ const completedStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
   intake: "INTAKE_READY",
   spec: "SPEC_READY",
   spec_critic: "SPEC_READY",
+  spec_verdict: "SPEC_READY",
   tech_spec: "TECHSPEC_READY",
   generate_plan: "PLAN_READY",
   test_plan: "TESTPLAN_DONE",

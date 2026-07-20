@@ -18,6 +18,7 @@ export type PromptPhase =
   | "intake"
   | "spec"
   | "spec_critic"
+  | "spec_verdict"
   | "tech_spec"
   | "test_plan"
   | "release"
@@ -82,6 +83,7 @@ const PROMPT_TEMPLATE_FILES: Record<PromptPhase, string> = {
   intake: "intake.md",
   spec: "spec.md",
   spec_critic: "spec-critic.md",
+  spec_verdict: "spec-verdict.md",
   tech_spec: "tech-spec.md",
   test_plan: "test-plan.md",
   release: "release.md",

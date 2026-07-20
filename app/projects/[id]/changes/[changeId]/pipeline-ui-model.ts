@@ -268,6 +268,7 @@ const RUN_PHASE_TO_STAGE: Record<string, UiStageId> = {
   prd_briefing_final_review: "prd",
   spec: "spec",
   spec_critic: "spec",
+  spec_verdict: "spec",
   tech_spec: "tech_spec",
   plan: "plan",
   generate_plan: "plan",

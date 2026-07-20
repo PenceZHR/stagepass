@@ -1879,6 +1879,11 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
+      "file": "server/services/spec-rubric-battle.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/stage-authority-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"

@@ -21,6 +21,9 @@ export type AiRunPhase =
   | "intake"
   | "spec"
   | "spec_critic"
+  // The Spec round's verdict-rubric judge: a third provider call inside the one
+  // `spec` business run, made after red and blue have both produced.
+  | "spec_verdict"
   | "tech_spec"
   | "test_plan"
   | "release"

@@ -119,7 +119,7 @@ export function getReviewPhaseForRunPhase(phase?: string | null): ReviewPhase | 
   if (phase === "intake" || phase === "prd_briefing_questions" || phase === "prd_briefing_draft" || phase === "prd_briefing_final_review") {
     return "Intake";
   }
-  if (phase === "spec" || phase === "spec_critic") return "Spec";
+  if (phase === "spec" || phase === "spec_critic" || phase === "spec_verdict") return "Spec";
   if (phase === "tech_spec") return "TechSpec";
   if (phase === "generate_plan") return "Plan";
   if (phase === "test_plan") return "TestPlan";

@@ -177,6 +177,38 @@ export function parseRubricLineProtocol(
   return { ok: true, payload: { judgments } };
 }
 
+/**
+ * Removes exactly the lines parseRubricLineProtocol() harvested as judgments.
+ *
+ * A rubric rides along inside a host stage's reply, and that reply is also the
+ * stage's DOCUMENT: the Spec red reply becomes prd-delta.md and the round's
+ * red artifact hash. Leaving RUBRIC lines in it does three concrete kinds of
+ * damage, all observed reachable in this repo:
+ *
+ *  - the Spec red stage parses its reply with JSON.parse (parseRedSpecOutput),
+ *    which fails on trailing protocol lines and SILENTLY degrades to
+ *    "whole reply is the markdown, zero fixClaims" -- the round loses every
+ *    prior-gap fix claim without an error;
+ *  - prd-delta.md is inside the Spec stage scope, so the NEXT round's red agent
+ *    and the blue critic would read the previous round's RUBRIC lines and can
+ *    echo criterion ids that belong to a different rubric -- an unknown id,
+ *    which voids their output;
+ *  - the document keeps protocol noise a human reviewer has to mentally strip.
+ *
+ * Deriving the line numbers from scanProtocolLines rather than re-matching
+ * means strip and parse can never disagree about what a RUBRIC line is: exactly
+ * what was taken as a judgment is what gets removed, and prose that merely
+ * mentions the protocol is left in the document untouched.
+ */
+export function stripRubricLines(rawText: string): string {
+  const harvested = new Set(scanProtocolLines(rawText, KEYWORDS).map((line) => line.lineNo));
+  if (harvested.size === 0) return rawText;
+  return (rawText ?? "")
+    .split(/\r?\n/)
+    .filter((_line, index) => !harvested.has(index + 1))
+    .join("\n");
+}
+
 export const RUBRIC_OUTPUT_SCHEMA = {
   type: "object",
   properties: {

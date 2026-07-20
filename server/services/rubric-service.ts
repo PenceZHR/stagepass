@@ -13,6 +13,7 @@ import {
   type RubricRole,
 } from "./rubric-assessment";
 import { parseRubricLineProtocol } from "./rubric-line-protocol";
+import { withCurrentExecutionFenceWrite } from "./execution-fence-service";
 import { withSqliteWriteRetry } from "../db/write-boundary";
 
 /**
@@ -273,45 +274,79 @@ export function recordRubricAssessments(
   if (!parsed.ok) return { ok: false, message: parsed.message };
 
   const assessments = buildRubricAssessments(criteria, parsed.payload.judgments);
+  persistRubricAssessments(input, assessments);
+  return { ok: true, assessments };
+}
+
+/**
+ * Records every criterion as `not_assessed` without consulting a model reply.
+ *
+ * The one legitimate way to write assessments without a parse, and deliberately
+ * incapable of writing anything but `not_assessed`: it takes no judgments, so no
+ * caller can reach a `yes` through it. It exists for the verdict rubric, which
+ * runs last in a round and therefore has no retry vehicle -- see
+ * runSpecVerdictRubric in pipeline-spec-stage-service.ts. Storing nothing there
+ * would be the one failure this whole mechanism exists to prevent: absent rows
+ * read as "this phase has no rubric", i.e. as a pass, whereas `not_assessed`
+ * rows are blocking by rubricOutcome().
+ */
+export function recordUnansweredRubric(input: {
+  changeId: string;
+  runId: string;
+  roundId?: string | null;
+  rubric: RubricVersionRecord;
+}): RubricAssessmentDraft[] {
+  const assessments = buildRubricAssessments(input.rubric.criteria, []);
+  persistRubricAssessments(input, assessments);
+  return assessments;
+}
+
+function persistRubricAssessments(
+  input: { changeId: string; runId: string; roundId?: string | null; rubric: RubricVersionRecord },
+  assessments: readonly RubricAssessmentDraft[],
+): void {
   const now = new Date().toISOString();
   const roundId = input.roundId ?? null;
 
-  withSqliteWriteRetry("rubric.recordRubricAssessments", () =>
-    db.transaction((tx) => {
-      // Re-running a stage for the same run/round replaces its verdicts rather
-      // than colliding with uq_rubric_assessments_*. Scoped to this rubric so a
-      // producer's rows are never removed by the critic's write.
-      tx.delete(rubricAssessments)
-        .where(
-          and(
-            eq(rubricAssessments.runId, input.runId),
-            eq(rubricAssessments.rubricId, input.rubric.id),
-            roundId === null
-              ? isNull(rubricAssessments.roundId)
-              : eq(rubricAssessments.roundId, roundId),
-          ),
-        )
+  // Fenced, not merely retried. These rows are written by a pipeline worker in
+  // the middle of a stage, so the same rule the run ledger follows applies: a
+  // worker whose lease has been taken over must not still be able to write a
+  // verdict for a round somebody else now owns. withCurrentExecutionFenceWrite
+  // re-checks the lease INSIDE the transaction, and is a no-op outside a strict
+  // fence (rubric editing from the UI, and unit tests), so it costs nothing
+  // where there is no execution to fence against.
+  withCurrentExecutionFenceWrite("rubric.recordRubricAssessments", input.runId, (tx) => {
+    // Re-running a stage for the same run/round replaces its verdicts rather
+    // than colliding with uq_rubric_assessments_*. Scoped to this rubric so a
+    // producer's rows are never removed by the critic's write.
+    tx.delete(rubricAssessments)
+      .where(
+        and(
+          eq(rubricAssessments.runId, input.runId),
+          eq(rubricAssessments.rubricId, input.rubric.id),
+          roundId === null
+            ? isNull(rubricAssessments.roundId)
+            : eq(rubricAssessments.roundId, roundId),
+        ),
+      )
+      .run();
+
+    for (const assessment of assessments) {
+      tx.insert(rubricAssessments)
+        .values({
+          id: `RBA-${randomUUID()}`,
+          changeId: input.changeId,
+          runId: input.runId,
+          roundId,
+          rubricId: input.rubric.id,
+          criterionId: assessment.criterionId,
+          verdict: assessment.verdict,
+          evidence: assessment.evidence,
+          createdAt: now,
+        })
         .run();
-
-      for (const assessment of assessments) {
-        tx.insert(rubricAssessments)
-          .values({
-            id: `RBA-${randomUUID()}`,
-            changeId: input.changeId,
-            runId: input.runId,
-            roundId,
-            rubricId: input.rubric.id,
-            criterionId: assessment.criterionId,
-            verdict: assessment.verdict,
-            evidence: assessment.evidence,
-            createdAt: now,
-          })
-          .run();
-      }
-    }),
-  );
-
-  return { ok: true, assessments };
+    }
+  });
 }
 
 export interface StoredRubricAssessment extends RubricAssessmentDraft {

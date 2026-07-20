@@ -56,6 +56,12 @@ import {
 } from "./spec-battle-ledger";
 import { applyLineProtocol, guardLineProtocolSchema } from "./ai-line-protocol";
 import { parseSpecCritiqueLineProtocol } from "./spec-critique-line-protocol";
+import {
+  appendRubricPromptSection,
+  harvestStageRubric,
+  recordUnansweredStageRubric,
+  resolveStageRubric,
+} from "./rubric-stage-service";
 import type { Change, RunPhase } from "../types";
 import type { Provider } from "./provider-selection-service";
 import {
@@ -309,6 +315,15 @@ export async function runSpec(
         const redChange = getChange(changeId);
         if (!redChange) throw new Error(`Change not found: ${changeId}`);
         const redProvider = provider as EngineProvider;
+        // §3: red (SPEC_WRITER) is the Spec phase's producer, so it answers the
+        // producer rubric as part of its own reply. The runner strips the
+        // RUBRIC lines back out before anything else reads the reply -- red's
+        // output is parsed as JSON and becomes prd-delta.md, neither of which
+        // may contain protocol text.
+        const redRubric = resolveStageRubric(
+          { projectId: redChange.projectId, changeId, phase: "Spec", role: "producer" },
+          { runId: round.runId, roundId: round.roundId },
+        );
         const redRetryThreadId = latestSpecRetryThread({
           role: "writer",
           changeId,
@@ -332,6 +347,19 @@ export async function runSpec(
           deferRunCompletion: true,
           resumeThread: false,
           threadId: redRetryThreadId,
+          rubric: redRubric
+            ? {
+                promptSection: redRubric.promptSection,
+                harvest: ({ runId, rawText }) =>
+                  harvestStageRubric({
+                    stageRubric: redRubric,
+                    changeId,
+                    runId,
+                    roundId: round.roundId,
+                    rawText,
+                  }),
+              }
+            : undefined,
           afterAiResult: ({ runId, result: aiResult }) => {
             if (!aiResult.success) {
               recordSpecRetrySession({
@@ -371,6 +399,18 @@ export async function runSpec(
       }
       assertCurrentExecutionFence(context, round.runId);
       assertChangeNotBlocked(changeId, "spec");
+      // §2.3: after both sides have produced, a third agent judges the verdict
+      // rubric against the two outputs. Deliberately before the reports: it
+      // judges what red and blue produced, not stagepass's summary of them.
+      await runSpecVerdictRubric({
+        changeId,
+        roundId: round.roundId,
+        context,
+        runId: round.runId,
+        provider,
+      });
+      assertCurrentExecutionFence(context, round.runId);
+      assertChangeNotBlocked(changeId, "spec");
       await generateSpecReport(changeId);
       assertCurrentExecutionFence(context, round.runId);
       assertChangeNotBlocked(changeId, "spec");
@@ -405,6 +445,122 @@ export async function runSpec(
   });
 }
 
+/**
+ * Runs the Spec round's VERDICT rubric: a third provider call whose input is
+ * what red and blue each produced (§2.3, §3).
+ *
+ * ## Why this call is never allowed to throw
+ *
+ * It runs after completeBlueCritique has already committed the round
+ * (report_ready) and moved the change to SPEC_READY. Letting a judging call
+ * fail the round would mean a rubric someone edited, or a provider hiccup,
+ * could destroy a finished round's business state -- runSpec's catch calls
+ * failSpecBattleRound and sets BLOCKED. So every failure here (provider error,
+ * empty reply, malformed protocol) is recorded as `not_assessed` on every
+ * criterion and the round continues.
+ *
+ * That is not a softening of §4.2. `not_assessed` is blocking under
+ * rubricOutcome(), and batch 5 is what turns it into a gate blocker; storing
+ * NOTHING is the only outcome that would read as a pass. It does depart from
+ * "an unknown criterion id voids the output, and void is retryable": red and
+ * blue have a retry vehicle (the round retries and re-runs them), and the
+ * verdict, running last, has none -- so for this one role void degrades to
+ * unanswered rather than to a lost round.
+ *
+ * StaleLeaseFenceError is the one exception that propagates: a worker that has
+ * lost its lease must stop, not swallow the fence and write anyway.
+ */
+async function runSpecVerdictRubric(input: {
+  changeId: string;
+  roundId: string;
+  context: JobExecutionContext;
+  runId: string;
+  provider: Provider;
+}): Promise<void> {
+  const change = getChange(input.changeId);
+  if (!change) return;
+  const stageRubric = resolveStageRubric(
+    { projectId: change.projectId, changeId: input.changeId, phase: "Spec", role: "verdict" },
+    { runId: input.runId, roundId: input.roundId },
+  );
+  // No verdict rubric, or an empty one, means this phase does no verdict judging
+  // (§4.5) and the round behaves exactly as it did before rubrics existed.
+  if (!stageRubric?.promptSection) return;
+
+  const round = getSpecBattleState(input.changeId).latestRound;
+  if (!round || round.id !== input.roundId || round.status !== "report_ready") {
+    // Both sides must actually have produced. A round that is not terminal has
+    // no pair of outputs to judge, so there is no question to leave unanswered.
+    return;
+  }
+
+  const project = getProject(change.projectId);
+  if (!project) return;
+
+  const recordUnanswered = (reason: string): void => {
+    recordUnansweredStageRubric({
+      stageRubric,
+      changeId: input.changeId,
+      runId: input.runId,
+      roundId: input.roundId,
+      reason,
+    });
+  };
+
+  try {
+    const prompt = appendRubricPromptSection(
+      assemblePrompt("spec_verdict", {
+        changeId: input.changeId,
+        repoPath: project.repoPath,
+      }, defaultScopeForPhase("spec")),
+      stageRubric,
+    );
+    const engine = await getPipelineEngine(input.provider as EngineProvider);
+    const result = await withDocumentStageWatchdog(engine.run({
+      changeId: input.changeId,
+      repoPath: project.repoPath,
+      phase: "spec_verdict",
+      prompt,
+      // No outputSchema: the model writes RUBRIC lines, never JSON.
+      sandboxMode: "read-only",
+      timeoutMs: documentStageTimeoutMs(),
+      lifecycle: createProviderLifecycleSink({
+        ...input.context,
+        changeId: input.changeId,
+        runId: input.runId,
+        phase: "spec_verdict",
+        provider: input.provider as EngineProvider,
+        roundId: input.roundId,
+        closeBusinessRunOnProviderFailure: false,
+      }),
+    }), "spec", "spec_verdict");
+    assertCurrentExecutionFence(input.context, input.runId);
+
+    if (!result.success || (result.summary ?? "").trim().length === 0) {
+      recordUnanswered(
+        result.providerErrorCode
+        || (result.success ? "provider_empty_response" : "provider_run_failed"),
+      );
+      return;
+    }
+    harvestStageRubric({
+      stageRubric,
+      changeId: input.changeId,
+      runId: input.runId,
+      roundId: input.roundId,
+      rawText: result.summary ?? "",
+    });
+  } catch (err) {
+    if (err instanceof StaleLeaseFenceError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(
+      { changeId: input.changeId, roundId: input.roundId, runId: input.runId, error: message },
+      "Spec verdict rubric did not settle; recording every criterion as not_assessed",
+    );
+    recordUnanswered(message);
+  }
+}
+
 async function runSpecCritic(
   changeId: string,
   roundId: string,
@@ -421,10 +577,16 @@ async function runSpecCritic(
     throw new Error("Spec battle round is no longer current");
   }
 
-  const prompt = assemblePrompt("spec_critic", {
+  // §3: blue (REQUIREMENT_CRITIC) is the Spec phase's critic, so it answers the
+  // critic rubric independently of whatever red claimed about the producer one.
+  const blueRubric = resolveStageRubric(
+    { projectId: change.projectId, changeId, phase: "Spec", role: "critic" },
+    { runId: dbRunId, roundId },
+  );
+  const prompt = appendRubricPromptSection(assemblePrompt("spec_critic", {
     changeId,
     repoPath: project.repoPath,
-  }, defaultScopeForPhase("spec"));
+  }, defaultScopeForPhase("spec")), blueRubric);
 
   const engine = await getPipelineEngine(provider as EngineProvider);
   const stageTimeoutMs = documentStageTimeoutMs();
@@ -473,8 +635,24 @@ async function runSpecCritic(
       result,
     });
   }
+  // Harvest before the critique protocol runs, so the assembled gap payload and
+  // the blue artifact are built from a reply with no RUBRIC lines in it. Skipped
+  // for a failed or empty reply: there is nothing to judge, and calling a
+  // silent provider "unanswered by the model" is false provenance.
+  const judgedResult = blueRubric && !providerFailed && (result.summary ?? "").trim().length > 0
+    ? {
+        ...result,
+        summary: harvestStageRubric({
+          stageRubric: blueRubric,
+          changeId,
+          runId: dbRunId,
+          roundId,
+          rawText: result.summary ?? "",
+        }).cleanedText,
+      }
+    : result;
   const lineProtocol = applyLineProtocol(
-    result,
+    judgedResult,
     (rawText) => {
       const parsed = parseSpecCritiqueLineProtocol(rawText);
       return parsed.ok

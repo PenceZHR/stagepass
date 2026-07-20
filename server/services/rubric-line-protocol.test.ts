@@ -10,6 +10,7 @@ import {
 import {
   parseRubricLineProtocol,
   RUBRIC_OUTPUT_SCHEMA,
+  stripRubricLines,
   type RubricLineProtocolOptions,
 } from "./rubric-line-protocol.ts";
 
@@ -235,5 +236,64 @@ describe("rubric assessments", () => {
       ].join("\n")).judgments,
     );
     assert.deepEqual(assessments.map((assessment) => assessment.criterionId), ["C1", "C2", "C3"]);
+  });
+});
+
+describe("stripping rubric lines from a host stage's reply", () => {
+  it("removes exactly the harvested lines and keeps the document intact", () => {
+    const reply = [
+      "# PRD delta",
+      "",
+      "The export screen gains a row cap.",
+      "RUBRIC: C1 | yes | REQ-1 carries an AC",
+      "RUBRIC: C2 | no | REQ-4 contradicts PRD §3",
+      "",
+      "## Open questions",
+    ].join("\n");
+
+    assert.equal(
+      stripRubricLines(reply),
+      [
+        "# PRD delta",
+        "",
+        "The export screen gains a row cap.",
+        "",
+        "## Open questions",
+      ].join("\n"),
+    );
+  });
+
+  it("leaves red's JSON parseable after the rubric lines are removed", () => {
+    // The concrete damage a leaked line does: parseRedSpecOutput uses
+    // JSON.parse and degrades to "the whole reply is markdown, no fix claims"
+    // the moment anything trails the object.
+    const json = JSON.stringify({ prdDeltaMarkdown: "# delta", fixClaims: [] }, null, 2);
+    const reply = `${json}\nRUBRIC: C1 | yes | judged after the JSON`;
+
+    assert.throws(() => JSON.parse(reply));
+    assert.deepEqual(JSON.parse(stripRubricLines(reply)), {
+      prdDeltaMarkdown: "# delta",
+      fixClaims: [],
+    });
+  });
+
+  it("returns the reply untouched when there is nothing to strip", () => {
+    const reply = "line one\r\nline two\r\n";
+    assert.equal(stripRubricLines(reply), reply, "line endings must survive a no-op strip");
+  });
+
+  it("strips only what the parser would have taken, leaving prose that mentions the protocol", () => {
+    // A document explaining this very protocol -- which stagepass's own PRDs do
+    // -- must keep its explanation. Only a standalone line the scanner accepts
+    // is a judgment, and only a judgment is removed.
+    const reply = [
+      "Each criterion needs a line shaped like `RUBRIC: id | yes | why`.",
+      "RUBRIC: C1 | yes | actually judged",
+    ].join("\n");
+
+    assert.equal(
+      stripRubricLines(reply),
+      "Each criterion needs a line shaped like `RUBRIC: id | yes | why`.",
+    );
   });
 });

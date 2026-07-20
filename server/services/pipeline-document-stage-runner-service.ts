@@ -92,6 +92,27 @@ export interface DocumentStageConfig {
   lineProtocol?: {
     parse: (rawText: string, ctx: LineProtocolContext) => LineProtocolParseResult;
   };
+  /**
+   * Rubric judging for this stage (docs/RUBRIC-DESIGN.md). `promptSection` is
+   * appended to the assembled prompt; `harvest` parses the RUBRIC lines out of
+   * the reply, stores one verdict per criterion, and returns the reply with
+   * those lines removed.
+   *
+   * The harvest deliberately runs BEFORE the stage's own line protocol, schema
+   * validation and artifact write, and its cleaned text replaces `result.summary`
+   * for all of them. A rubric rides inside the host stage's reply, so leaving the
+   * lines in would feed protocol text to a parser and to a document artifact that
+   * both belong to a different contract.
+   *
+   * A malformed rubric reply throws, which lands as a retryable invalid-output
+   * failure for the stage -- the same treatment every line protocol gives
+   * unattributable output. A reply with no RUBRIC lines does NOT throw; it stores
+   * `not_assessed` per criterion and continues.
+   */
+  rubric?: {
+    promptSection: string | null;
+    harvest: (input: { runId: string; rawText: string }) => { cleanedText: string };
+  };
   resumeThread?: boolean;
   threadId?: string;
   afterAiResult?: (input: { runId: string; result: AiRunResult }) => void | Promise<void>;
@@ -398,10 +419,13 @@ export async function runDocumentStage(
     deferRunCompletion: config.deferRunCompletion,
     execute: async ({ runId }) => {
       const scope = defaultScopeForPhase(config.phase);
-      const prompt = appendAdditionalPrompt(assemblePrompt(config.promptPhase, {
+      const basePrompt = appendAdditionalPrompt(assemblePrompt(config.promptPhase, {
         changeId,
         repoPath: project.repoPath,
       }, scope), config, { changeId, repoPath: project.repoPath });
+      const prompt = config.rubric?.promptSection
+        ? `${basePrompt}\n\n${config.rubric.promptSection}`
+        : basePrompt;
 
       const beforeAi = captureWorkspaceSnapshot(project.repoPath);
       const engine = await getPipelineEngine(provider as EngineProvider);
@@ -437,6 +461,16 @@ export async function runDocumentStage(
       assertRunStillRunning(runId);
       assertChangeNotBlocked(changeId, config.phase);
       await config.afterAiResult?.({ runId, result });
+      // Rubric first: its lines are not part of this stage's contract, so the
+      // stage's own parser, schema and artifact must all see the reply without
+      // them. Skipped for a failed or empty reply -- there is nothing to judge,
+      // and attributing silence to the model when the provider never spoke is
+      // the same false provenance applyLineProtocol() guards against.
+      if (config.rubric && result.success && (result.summary ?? "").trim().length > 0) {
+        const harvested = config.rubric.harvest({ runId, rawText: result.summary ?? "" });
+        assertCurrentExecutionFence(executionContext, runId);
+        result = { ...result, summary: harvested.cleanedText };
+      }
       if (config.outputSchema) {
         let lineProtocol: LineProtocolState | undefined;
         if (config.lineProtocol) {

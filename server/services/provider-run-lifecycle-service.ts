@@ -39,6 +39,7 @@ export type ProviderRunPhase =
   | "intake"
   | "spec"
   | "spec_critic"
+  | "spec_verdict"
   | "tech_spec"
   | "generate_plan"
   | "test_plan"
