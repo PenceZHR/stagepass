@@ -17,6 +17,17 @@ import {
   type ReviewCenterResponse,
   type ReviewFindingView,
 } from "./review-report-center";
+import {
+  SpecBattlefield,
+  resolveWaiveP1Gap,
+  selectWaivableP1Gaps,
+  waiveP1GapHint,
+} from "./spec-battlefield";
+import type {
+  RequirementGap,
+  SpecBattleGateState,
+  SpecBattleState,
+} from "./spec-battle-types";
 import { OperationalPhasePanel } from "./operational-phase-panel";
 import { buildGateStageActions, selectRoutableStageRunActions } from "./gate-panel";
 import { resolvePipelineActionCommand } from "./pipeline-action-commands";
@@ -134,6 +145,93 @@ function renderReviewCenter(findings: ReviewFindingView[]): string {
       onEnterQa: () => {},
       onFixBlockers: () => {},
       onBlockChange: () => {},
+    }),
+  );
+}
+
+function requirementGap(id: string, overrides: Partial<RequirementGap> = {}): RequirementGap {
+  return {
+    id,
+    canonicalGapId: `GAP-${id.toUpperCase()}`,
+    title: `gap ${id}`,
+    category: "requirement",
+    severity: "P1",
+    originalSeverity: "P1",
+    downgradedTo: null,
+    status: "open",
+    evidence: "evidence",
+    proposedSpecPatch: null,
+    ...overrides,
+  };
+}
+
+function specBattleGateState(): SpecBattleGateState {
+  return {
+    roundId: "RND-001",
+    roundStatus: "closed",
+    reportFresh: true,
+    staleReason: null,
+    counts: {
+      blockingP0: 0,
+      blockingP1: 1,
+      nonBlockingP2: 0,
+      overriddenP0: 0,
+      openRequirementGaps: 1,
+      mergeBlockingRequirementGaps: 1,
+    },
+    actions: {
+      approve: { available: false, reason: "blocked_p1" },
+      requestChanges: { available: true, reason: null },
+      returnToSpec: { available: true, reason: null },
+      waiveP1: { available: true, reason: null },
+      terminalBlock: false,
+    },
+  };
+}
+
+function specBattleState(gaps: RequirementGap[]): SpecBattleState {
+  const gate = specBattleGateState();
+  return {
+    latestRound: {
+      id: "RND-001",
+      roundNo: 1,
+      status: "closed",
+      redUnit: "red",
+      blueUnit: "blue",
+      redArtifactPath: null,
+      blueArtifactPath: null,
+      reportPath: null,
+      startedAt: "2026-07-20T00:00:00.000Z",
+      endedAt: "2026-07-20T00:01:00.000Z",
+    },
+    rounds: [],
+    gaps,
+    fixClaims: [],
+    gapReviews: [],
+    decisions: [],
+    reportFresh: true,
+    staleReason: null,
+    counts: gate.counts,
+    roundDelta: { resolvedThisRound: 0, stillOpen: gaps.length, newlyFound: 0, notRechecked: 0 },
+  };
+}
+
+function renderSpecBattlefield(gaps: RequirementGap[]): string {
+  return renderToStaticMarkup(
+    createElement(SpecBattlefield, {
+      projectId: "PRJ-001",
+      changeId: "CHG-001",
+      specBattle: specBattleGateState(),
+      battleState: specBattleState(gaps),
+      approveAction: { enabled: false, reasonCode: "blocked_p1", reason: "存在 P1" },
+      runTechSpecAction: { enabled: false, reasonCode: "blocked_p1", reason: "存在 P1" },
+      busy: false,
+      loading: false,
+      onAcceptRisk: () => {},
+      onStopBattle: () => {},
+      onBattleDecision: () => {},
+      onRestartBattle: () => {},
+      onRegenerateReport: () => {},
     }),
   );
 }
@@ -746,6 +844,108 @@ describe("phase review UI", () => {
     assert.doesNotMatch(component, /waiveUnavailableReason/);
     assert.doesNotMatch(component, /targetId.*<input/);
     assert.doesNotMatch(component, /gap id/i);
+    // The picker is a naming device before it is a choosing device, so it must
+    // not hide below two candidates: "接受风险并通过" waives one specific gap
+    // either way, and at `> 1` the lone-target case waived it unnamed.
+    assert.match(component, /\{p1Targets\.length > 0 && \(/);
+    assert.doesNotMatch(component, /p1Targets\.length > 1/);
+  });
+
+  it("offers every open or downgraded P1 gap as a waiver target, not just the first", () => {
+    const targets = selectWaivableP1Gaps([
+      requirementGap("g-p0", { severity: "P0" }),
+      requirementGap("g-a"),
+      requirementGap("g-resolved", { status: "resolved" }),
+      requirementGap("g-b"),
+      requirementGap("g-waived", { status: "waived" }),
+      requirementGap("g-p2", { severity: "P2" }),
+      // A P0 downgraded to P1 is waivable: effectiveSeverity, not the raw column,
+      // decides what the P1 waiver may land on.
+      requirementGap("g-down", { severity: "P0", downgradedTo: "P1", status: "downgraded" }),
+    ]);
+
+    assert.deepEqual(targets.map((gap) => gap.id), ["g-a", "g-b", "g-down"]);
+    assert.deepEqual(selectWaivableP1Gaps(undefined), []);
+    assert.deepEqual(selectWaivableP1Gaps(null), []);
+  });
+
+  it("waives the gap the human picked instead of whichever happens to sort first", () => {
+    const targets = selectWaivableP1Gaps([
+      requirementGap("g-a"),
+      requirementGap("g-b"),
+      requirementGap("g-c"),
+    ]);
+
+    assert.equal(resolveWaiveP1Gap(targets, "g-c")?.id, "g-c");
+    assert.equal(resolveWaiveP1Gap(targets, "g-b")?.id, "g-b");
+  });
+
+  it("defaults the waiver target to the first candidate before anything is picked", () => {
+    const targets = selectWaivableP1Gaps([requirementGap("g-a"), requirementGap("g-b")]);
+
+    assert.equal(resolveWaiveP1Gap(targets, "")?.id, "g-a");
+    assert.equal(resolveWaiveP1Gap(targets, null)?.id, "g-a");
+  });
+
+  it("drops a stale pick instead of waiving a gap that stopped being a candidate", () => {
+    const targets = selectWaivableP1Gaps([
+      requirementGap("g-a"),
+      requirementGap("g-b", { status: "resolved" }),
+      requirementGap("g-c", { severity: "P2" }),
+    ]);
+
+    // g-b was picked and then closed by a later round; g-c was never a P1.
+    assert.equal(resolveWaiveP1Gap(targets, "g-b")?.id, "g-a");
+    assert.equal(resolveWaiveP1Gap(targets, "g-c")?.id, "g-a");
+    assert.equal(resolveWaiveP1Gap([], "g-a"), null);
+  });
+
+  it("spells out that accepting the risk covers only the picked gap", () => {
+    assert.equal(waiveP1GapHint(1), "「接受风险并通过」只对这一项生效。");
+    assert.equal(waiveP1GapHint(0), "「接受风险并通过」只对这一项生效。");
+    assert.match(waiveP1GapHint(3), /只对选中的这一项生效/);
+    assert.match(waiveP1GapHint(3), /其余 2 项仍然阻断/);
+    assert.match(waiveP1GapHint(2), /其余 1 项仍然阻断/);
+  });
+
+  it("renders one option per waivable P1 gap, so the target can actually be changed", () => {
+    const html = renderSpecBattlefield([
+      // A P0 sorts ahead of both P1s: the default target must be the first
+      // *candidate*, never just the first gap in the report.
+      requirementGap("g-p0", { title: "必修", severity: "P0" }),
+      requirementGap("g-a", { canonicalGapId: "GAP-007", title: "缺少并发边界" }),
+      requirementGap("g-b", { canonicalGapId: "GAP-021", title: "回滚路径未定义" }),
+      requirementGap("g-resolved", { title: "已解决", status: "resolved" }),
+      requirementGap("g-p2", { title: "小问题", severity: "P2" }),
+    ]);
+
+    const picker = html.slice(html.indexOf('id="accept-risk-gap"'));
+    assert.match(html, /id="accept-risk-gap"/);
+    assert.match(picker, /<option value="g-a" selected="">GAP-007 · 缺少并发边界<\/option>/);
+    assert.match(picker, /<option value="g-b">GAP-021 · 回滚路径未定义<\/option>/);
+    assert.doesNotMatch(picker, /<option value="g-p0"/);
+    assert.doesNotMatch(picker, /<option value="g-resolved"/);
+    assert.doesNotMatch(picker, /<option value="g-p2"/);
+    assert.match(html, /只对选中的这一项生效/);
+    assert.match(html, /其余 1 项仍然阻断/);
+  });
+
+  it("renders the picker for a lone waivable P1 gap too, so it is named before it is waived", () => {
+    const html = renderSpecBattlefield([
+      requirementGap("g-only", { canonicalGapId: "GAP-042", title: "唯一的 P1" }),
+      requirementGap("g-resolved", { title: "已解决", status: "resolved" }),
+    ]);
+
+    assert.match(html, /id="accept-risk-gap"/);
+    assert.match(html, /<option value="g-only"[^>]*>GAP-042 · 唯一的 P1<\/option>/);
+    assert.match(html, /只对这一项生效/);
+  });
+
+  it("hides the gap picker entirely when nothing is waivable", () => {
+    const html = renderSpecBattlefield([requirementGap("g-resolved", { status: "resolved" })]);
+
+    assert.doesNotMatch(html, /accept-risk-gap/);
+    assert.doesNotMatch(html, /只对这一项生效/);
   });
 
   it("routes non-battle gate approval through the shared StageFrame action zone", () => {
@@ -1110,8 +1310,9 @@ describe("phase review UI", () => {
     assert.match(component, /const p1Targets = useMemo\(\(\) => selectWaivableP1Findings\(state\?\.findings\)/);
     assert.match(component, /resolveWaiveP1Target\(p1Targets, selectedP1FindingId\)/);
     assert.match(component, /\{p1Targets\.length > 0 && \(/);
-    // spec-battlefield gates its picker on `> 1`, so a single target gets waived
-    // without ever being named on screen. Review must not copy that.
+    // Gating the picker on `> 1` waives a lone target without ever naming it on
+    // screen. spec-battlefield shipped that trap and has since been pulled onto
+    // `> 0` as well; neither surface may drift back.
     assert.doesNotMatch(component, /p1Targets\.length > 1/);
     assert.match(component, /id="waive-review-p1-target"/);
     assert.match(component, /p1Targets\.map/);
