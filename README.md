@@ -1,162 +1,166 @@
 # stagepass
 
-> 把一句需求，押着走完一条真正的软件工程流程。本地优先，每一关都由你拍板。
+**English** · [简体中文](README.zh-CN.md)
+
+> Take one sentence of intent and walk it through a real software delivery process. Local-first. You approve every gate.
 >
-> *A local-first Stage-Gate pipeline that walks you — and your AI — through real software delivery. You approve every gate.*
+> *把一句需求，押着走完一条真正的软件工程流程。本地优先，每一关都由你拍板。*
 
-![Spec 对抗：反方挑出 3 个 P1 风险，Spec 闸口拒绝放行，是否接受风险由你决定](docs/images/spec-battle.png)
+![Spec battle: the adversary raises 3 P1 risks, the Spec gate refuses to open, and whether to accept the risk is your decision](docs/images/spec-battle.png)
 
-<p align="center"><em>Spec 阶段的对抗回合：我方补需求、反方挑漏洞、战报确定性结算。<br>
-存在 P1 风险时闸口直接拒绝放行 —— 继续对抗还是接受风险，是你的决定，不是 AI 的。</em></p>
-
----
-
-## 这是给谁的
-
-**给想用 AI 写代码、但没受过工程训练的人。**
-
-Codex 和 Claude Code 已经很能写代码了。真正的问题是：如果你没走过正规的开发流程，你**看不出它在哪里糊弄了你**——需求哪里还含糊、验收标准缺了哪条、这个技术方案埋了什么坑。你只能看着它吐出一大段代码，然后点一下"看起来不错"。
-
-stagepass 做的是另一件事：**它不替你写代码，它替你把流程走对。**
-
-你给一句需求，它押着你和 AI 一起走完 12 个阶段，在每个关键路口停下来等你拍板。走完一遍，这条流程你就学会了；而 AI 在这条流程里跑不掉、瞒不住、崩了能捞回来。
-
-> 这套"分阶段推进、每个阶段之间设一道人工决策点"的方法论叫 **Stage-Gate**，是产品开发界用了几十年的成熟流程。stagepass 没有发明什么新规矩，只是把它套在了 AI 编码上——所以你学到的是真行业流程，不是某个工具编出来的玩法。
+<p align="center"><em>An adversarial round in the Spec stage: your agent closes gaps, the adversary finds holes, and the battle report is settled deterministically.<br>
+While P1 risks remain, the gate refuses to open — keep fighting or accept the risk is your call, not the AI's.</em></p>
 
 ---
 
-## 和直接用 Codex / Claude Code 有什么不同
+## Who this is for
 
-直接用 CLI，你得到的是**一个 AI 写代码，然后告诉你它写完了**。
+**People who want to build with AI but have never been trained as engineers.**
 
-stagepass 给你的是**第二个 AI，它唯一的职责是证明第一个 AI 错了**——外加一整套不允许任何一方给自己打分的流程。
+Codex and Claude Code write good code. That isn't the problem. The problem is that if you've never been through a real development process, **you can't tell where the AI is bluffing you** — which requirement is still vague, which acceptance criterion is missing, what landmine that technical approach just buried. All you can do is stare at a wall of generated code and click "looks good."
 
-### 1. 你是红方。不是旁观者，是裁决者
+stagepass does something else: **it doesn't write your code — it makes sure you run the right process.**
 
-这不是宣传语，是写死在 prompt 里的硬约束（`server/templates/prompts/spec.md`）：
+You give it one sentence. It walks you and your AI through 12 stages, stopping at every critical junction to wait for your decision. Go through it once and you've actually learned the process — and along the way the AI can't wander off, can't hide, and can be recovered when it crashes.
 
-> 红方只指人类用户本人，也就是需求源头和最终裁决者。
-> 你不是红方本人，而是服务红方的我方执行代理。
-> 反方负责质询、挑刺和复核。
+> Advancing in stages with a human decision point between each one is called **Stage-Gate**, and product organizations have used it for decades. stagepass didn't invent new rules; it just applies them to AI coding. So what you learn is a genuine industry process, not something a tool made up.
 
-写规格的 AI（`SPEC_WRITER`）是**你的**执行代理。另有一个反方 AI（`REQUIREMENT_CRITIC`）专职挑它的刺。裁决权只在你手里——反方 AI 的 prompt 里甚至明确写死了一句：**"你不能批准 PRD；锁定只能由人类执行"**。
+---
 
-对新手来说这才是关键：你不需要自己就能看出需求里的坑，**有个 AI 专门负责把坑指给你看**，你只需要拍板。
+## How this differs from using Codex / Claude Code directly
 
-### 2. 规格要过对抗，默认 3 轮
+With the CLI, what you get is **one AI writing code and then telling you it's done**.
 
-Spec 阶段不是"AI 写完规格就下一步"，而是一轮轮打（默认 3 轮，可设 1–5 轮）：
+stagepass gives you **a second AI whose only job is to prove the first one wrong** — plus a process in which no party is allowed to grade its own work.
 
-- `SPEC_WRITER` 产出 PRD delta，并对上一轮的缺口给出"我已修复"的声明；
-- `REQUIREMENT_CRITIC` **必须先复核旧缺口，才准提新问题**，逐条给出结论（已解决 / 仍未解决 / 已降级 / 需人工决策），再输出新发现的需求缺口。
+### 1. You are the principal, not a spectator
 
-缺口分三级，规则是硬的：**P0 阻断且不可豁免**；**P1 阻断，但你可以人工豁免**；**P2 不阻断，但必须摆到你面前**。
+This isn't marketing copy. It's a hard constraint baked into the prompt (`server/templates/prompts/spec.md`, translated from the Chinese original):
 
-在这之前还有一道 **PRD Briefing（简报室）**：反方 AI 先对你的需求本身发起质询，最多 7 张"疑点卡"（critical / important / optional）。被你暂缓的问题不会消失——它们必须被写进 PRD delta 的"人工门"章节，**不允许静默忽略**。
+> The red side refers only to the human user — the source of the requirements and the final arbiter.
+> You are not the red side. You are our execution agent, serving the red side.
+> The opposing side is responsible for interrogation, criticism, and re-review.
 
-### 3. AI 不能给自己打分
+The AI that writes the spec (`SPEC_WRITER`) is **your** execution agent. A separate adversary AI (`REQUIREMENT_CRITIC`) exists purely to attack its output. Approval authority lives only with you — the adversary's own prompt spells it out: **"You cannot approve the PRD; locking can only be performed by a human."**
 
-- **战报是算出来的，不是 AI 写的。** Spec 战报（`spec-report.md` / `war-report.md`）由确定性代码依据 DB 里的对抗记录生成，不是让 AI 自评"我觉得我做得不错"。
-- **报告过期就不给批准。** 战报按源数据 hash 判新鲜度，源数据变了报告即 `stale`，批准按钮直接不可用。
-- **旧问题默认仍然有效。** Review 阶段的硬规则是 `prior blocker remains authoritative`——上一轮的阻断项如果没被显式复核，默认它**还在**。AI 没法靠"忘了提"来蒙混过关。
+For a beginner this is the whole point. You don't need to be able to spot the holes in your own requirements. **An AI is assigned to point them out to you.** You just decide.
 
-### 4. 门禁防的不只是 AI，还有你手滑
+> Naming note: in the Chinese wargame convention used throughout the code and UI, 红方 ("red side") is *your* side — you, the principal — and the adversary is the opposing side. This is the reverse of the Western security convention where red team means the attacker.
 
-每次放行，服务端都会拿你界面上那份契约快照和 DB 里重算的结果对三样东西（`server/services/preflight-service.ts`）：
+### 2. Specs have to survive an adversarial fight — 3 rounds by default
 
-| 校验 | 漂移时报错 | 防的是 |
+The Spec stage isn't "the AI writes a spec, next." It's fought round by round (3 by default, configurable 1–5):
+
+- `SPEC_WRITER` produces a PRD delta and declares, for each gap raised last round, that it has been fixed.
+- `REQUIREMENT_CRITIC` **must re-review the old gaps before it is allowed to raise new ones**, giving a verdict on each (resolved / still open / downgraded / needs human decision), and only then reports newly discovered requirement gaps.
+
+Gaps come in three severities, and the rules are hard: **P0 blocks and cannot be waived**; **P1 blocks, but you may waive it manually**; **P2 doesn't block, but it must be put in front of you.**
+
+Before all of this there's a **PRD Briefing** round: the adversary AI interrogates your requirement itself and issues up to 7 "challenge cards" (critical / important / optional). Questions you defer don't disappear — they must be written into the "human gate" section of the PRD delta. **Silently dropping them is not allowed.**
+
+### 3. No AI grades its own work
+
+- **Battle reports are computed, not written by an AI.** The Spec reports (`spec-report.md` / `war-report.md`) are generated by deterministic code from the adversarial record in the database — not an AI writing "I think I did well."
+- **A stale report blocks approval.** Report freshness is judged by a hash of its source data. If the source data changes, the report becomes `stale` and the approve button goes dead.
+- **Old problems are assumed to still be live.** The hard rule in Review is `prior blocker remains authoritative` — if last round's blocker wasn't explicitly re-reviewed, it is still open by default. An AI can't get away with "forgetting" to mention it.
+
+### 4. The gates protect against your slip-ups too, not just the AI's
+
+On every approval, the server compares the contract snapshot your page was rendered from against a fresh recomputation from the database (`server/services/preflight-service.ts`):
+
+| Check | Error on drift | What it prevents |
 |---|---|---|
-| `gateVersion` | `gate_version_drift` | 门禁判定在你点击前被重算过 |
-| `sourceDbHash` | `source_db_hash_drift` | 判定所依据的 DB 数据变了 |
-| git `HEAD` | `git_head_drift` | 界面渲染后仓库 HEAD 动过 |
+| `gateVersion` | `gate_version_drift` | The gate verdict was recomputed after your page loaded |
+| `sourceDbHash` | `source_db_hash_drift` | The DB data the verdict rests on has changed |
+| git `HEAD` | `git_head_drift` | The repository HEAD moved after the page was rendered |
 
-也就是说：**你不可能基于一个已经过期的界面状态点下放行。** 页面开着放了一小时、期间后台状态变了，点下去会被挡住，而不是默默按旧状态执行。
+In other words: **you cannot approve based on a stale screen.** Leave the page open for an hour while background state moves on, and your click gets blocked rather than silently executing against the old state.
 
-### 5. Build 不碰你的工作区
+### 5. Build never touches your working tree
 
-Build 阶段 AI 不在你的仓库里写文件，而是在**仓库的兄弟目录**：
+During Build the AI doesn't write files in your repository. It works in a sibling directory:
 
 ```text
-<你的仓库的父目录>/.stagepass-workspaces/<仓库名>/<changeId>/build-<次数>/
+<parent of your repo>/.stagepass-workspaces/<repo name>/<changeId>/build-<n>/
 ```
 
-由 `git worktree add` 基于指定基线创建独立分支，产出以 patch 回流。你的主 checkout 全程不被触碰。路径层面禁 symlink、双重 realpath 越界检查，跑飞了也逃不出隔离区。
+An isolated branch is created with `git worktree add` from a pinned baseline, and the result flows back as a patch. Your main checkout is never touched. Symlinks are refused at the path layer and escapes are checked with a double `realpath`, so even a runaway build stays inside the isolation zone.
 
-### 6. 双引擎真平级，且崩得掉、捞得回
+### 6. Two engines, genuinely equal — and both crash-recoverable
 
-Codex CLI 和 Claude Code **都是本地 spawn 的真进程**，都强制要求拿到真实 pid（拿不到就自杀并报错），都写进同一张进程表、进同一套恢复扫描。没有二等公民——这是刻意做的，代码注释里留着原因：
+Codex CLI and Claude Code are **both real locally spawned processes**. Both are required to yield a real pid (if they can't, they kill themselves and report an error), both are written into the same process table, and both go through the same recovery sweep. There are no second-class citizens — this was deliberate, and the reason is preserved in a code comment:
 
-> Codex 原先用 `@openai/codex-sdk`，那个 SDK 把子进程封死（不暴露 pid、只给 AbortSignal）。自己 spawn 才能拿到真实 pid + 身份 + 信号控制，让 codex 和 claude 进同一套生命周期/恢复机制，而不是当那个 `pid === null` 的二等公民。
+> Codex previously used `@openai/codex-sdk`, which sealed the child process away (no pid exposed, only an AbortSignal). Spawning it ourselves is the only way to get a real pid, identity, and signal control — so codex and claude share one lifecycle and recovery mechanism instead of codex being the second-class citizen with `pid === null`.
 
-崩溃恢复由流水线 worker 的定时 sweep 负责（默认 15 秒一轮）：心跳超 45 秒判定失联，探活 pid，必要时 SIGTERM → SIGKILL，**终止前会二次确认进程所有权和身份没变**，然后把 run/job 置为失败、provider 置为 orphaned。杀掉 AI 进程、关掉终端、重启机器，业务状态都能自己收敛。
+Crash recovery is handled by the pipeline worker's periodic sweep (every 15s by default): a heartbeat older than 45s is treated as lost, the pid is probed, and if necessary SIGTERM → SIGKILL follows — **with process ownership and identity re-confirmed immediately before termination**. The run/job is then marked failed and the provider orphaned. Kill the AI process, close the terminal, reboot the machine: business state converges on its own.
 
-### 7. DB 是裁判，文件只是镜像
+### 7. The database is the referee; files are only mirrors
 
-SQLite 是唯一的业务权威。`.ship/` 目录下的 JSON / Markdown 只是给你和 AI 看的镜像与审计材料——它们和 DB 不一致时，**以 DB 为准**。
+SQLite is the single source of business authority. The JSON and Markdown under `.ship/` are mirrors and audit material for you and the AI to read. **When they disagree with the database, the database wins.**
 
 ---
 
-## 12 个阶段 · 4 道正式门禁
+## 12 stages · 4 formal gates
 
 ```text
 Refine → PRD → Spec → Tech Spec → Plan → Test Plan
        → Build → Review → Fix → QA → Merge → Retro
 ```
 
-| 阶段 | AI 产出什么 | 你要做什么 |
+| Stage | What the AI produces | What you do |
 |---|---|---|
-| **Refine** | —（纯你自己描述需求） | 用大白话说清楚你想要什么 |
-| **PRD** | 追问 → 草稿 → 终审；简报室质询 | 🚦 **Intake Gate**：批准 PRD／退回 |
-| **Spec** | 红蓝对抗产出 PRD delta + 缺口清单 | 🚦 **Spec Gate**：批准／退回／再打一轮／豁免 P1 |
-| **Tech Spec** | 技术方案 delta | 🚦 **Tech Spec Gate**：批准／退回 |
-| **Plan** | 作战计划：预期改哪些文件、禁止碰哪些、分几步 | 批准作战计划 |
-| **Test Plan** | 测试用例 | 确认测试计划 |
-| **Build** | 在隔离 worktree 里写代码 | 收编本轮施工／拒绝本轮施工 |
-| **Review** | P0／P1／P2 findings，P0/P1 必须给出修复方案 | 看 findings，决定放不放 |
-| **Fix** | 修复阻断项 | 同上 |
-| **QA** | QA 记录 | 同上 |
-| **Merge** | 就绪检查（QA／Review／Docs／Requirements） | 🚦 **Merge Gate**：批准 Merge／打回 |
-| **Retro** | Release note + 复盘 | 收下 |
+| **Refine** | — (you describe the requirement yourself) | Say what you want, in plain language |
+| **PRD** | Follow-up questions → draft → final review; briefing-room interrogation | 🚦 **Intake Gate**: approve the PRD / send it back |
+| **Spec** | Adversarial rounds producing a PRD delta + gap list | 🚦 **Spec Gate**: approve / reject / fight another round / waive a P1 |
+| **Tech Spec** | Technical design delta | 🚦 **Tech Spec Gate**: approve / send back |
+| **Plan** | Battle plan: which files are expected to change, which are off-limits, how many steps | Approve the battle plan |
+| **Test Plan** | Test cases | Confirm the test plan |
+| **Build** | Writes code inside an isolated worktree | Absorb this build / reject this build |
+| **Review** | P0 / P1 / P2 findings; P0 and P1 must come with a required fix | Read the findings, decide whether to proceed |
+| **Fix** | Fixes the blockers | Same as above |
+| **QA** | QA record | Same as above |
+| **Merge** | Readiness checks (QA / Review / Docs / Requirements) | 🚦 **Merge Gate**: approve merge / send back |
+| **Retro** | Release note + retrospective | Accept |
 
-**打回重做**分两种：
+**Sending work back comes in two flavours:**
 
-- **Rework（打回本阶段重做）**只在 **Refine / Plan / Test Plan / Build / Fix** 这些产出文档的阶段可用（内部另含 `Implement` / `Check` 两个执行态）。
-- **Intake / Spec / Tech Spec / Review / Merge / Retro 没有 rework 路径**——要退回得走 gate 的驳回按钮，它会把状态退到上一个关卡。
+- **Rework (redo this stage)** is available only in the document-producing stages — **Refine / Plan / Test Plan / Build / Fix** (plus the internal `Implement` and `Check` execution states).
+- **Intake / Spec / Tech Spec / Review / Merge / Retro have no rework path.** To go back you use the gate's reject button, which rolls the state back to the previous checkpoint.
 
 ---
 
-## 环境要求
+## Requirements
 
-| 依赖 | 要求 |
+| Dependency | Requirement |
 |---|---|
-| Node.js | ≥ 20（开发于 25） |
-| pnpm | 已安装（`npm i -g pnpm`） |
-| 端口 | `3000` 空闲 |
-| **OpenAI Codex CLI** | 自行安装并登录；默认引擎 |
-| **Claude Code** | 随依赖 `@anthropic-ai/claude-code` 装好，只需配置鉴权（`ANTHROPIC_API_KEY` 或 `claude` 登录） |
+| Node.js | ≥ 20 (developed on 25) |
+| pnpm | Installed (`npm i -g pnpm`) |
+| Port | `3000` free |
+| **OpenAI Codex CLI** | Install and sign in yourself; this is the default engine |
+| **Claude Code** | Installed with the `@anthropic-ai/claude-code` dependency; you only need to configure auth (`ANTHROPIC_API_KEY` or `claude` login) |
 
-> 两个引擎**至少要有一个**可用。新建项目时可以逐项选择用哪个。
+> **At least one** of the two engines must be available. You pick which one to use per item when creating a project.
 
 ---
 
-## 快速开始
+## Quick start
 
 ```bash
 git clone https://github.com/PenceZHR/stagepass.git && cd stagepass
 pnpm install
-pnpm dev            # 启动 Next + 流水线 worker（自动跑 db 迁移）
+pnpm dev            # starts Next + the pipeline worker (runs db migrations automatically)
 ```
 
-打开 <http://localhost:3000> → 进入 **/projects** → **新建项目**：
+Open <http://localhost:3000> → go to **/projects** → **New project**:
 
-- **名称**：随意
-- **仓库路径 (repoPath)**：你要让流水线操作的**本地仓库绝对路径**。该目录必须已存在，且**还没有** `.ship/` 目录。
+- **Name**: anything you like
+- **Repository path (repoPath)**: the **absolute path to the local repository** you want the pipeline to operate on. The directory must already exist and must **not** already contain a `.ship/` directory.
 
-创建后 stagepass 会在那个仓库里 scaffold 一个 `.ship/` 目录，并用 AI 分析代码库生成 baseline 文档。
+On creation, stagepass scaffolds a `.ship/` directory inside that repository and uses AI to analyse the codebase and generate baseline documentation.
 
-> **你唯一必须"改"的东西就是把项目指向你自己的仓库路径**，其余开箱即用。
+> **Pointing the project at your own repository path is the only thing you are required to change.** Everything else works out of the box.
 
-也可以直接调 API 注册项目（适合脚本化）：
+You can also register a project through the API (handy for scripting):
 
 ```bash
 curl -X POST http://localhost:3000/api/projects \
@@ -164,89 +168,95 @@ curl -X POST http://localhost:3000/api/projects \
   -d '{"name":"my-app","repoPath":"/absolute/path/to/your/repo","gitEnabled":true}'
 ```
 
-### 不想手动配？把这段贴给 AI
+### Don't want to set it up by hand? Paste this to an AI
 
-在**克隆好的仓库目录里**，把下面这段贴给 Claude Code（或任意能跑命令的编码 agent）：
+From **inside the cloned repository**, paste the following to Claude Code (or any coding agent that can run commands):
 
 ```text
-你在帮我在本机搭建并运行 "stagepass"（一个本地 Next.js 的 AI 开发流水线控制台）。请按步骤执行，只有某步真的失败时才停下来问我：
-1. 确认 Node ≥ 20、pnpm 已安装（缺 pnpm 就 `npm i -g pnpm`）。
-2. 依次运行 `pnpm install`、`pnpm db:migrate`。
-3. 确认 AI 引擎 CLI 可用且已登录（至少一个）：
-   - Codex：跑 `codex --version`；缺失就按 OpenAI Codex CLI 文档安装并登录；若不在 PATH，提示我设置 `export STAGEPASS_CODEX_BIN=<路径>`。
-   - Claude Code：随 `@anthropic-ai/claude-code` 依赖已装好，确认鉴权（`ANTHROPIC_API_KEY` 或 `claude` 登录）。
-4. 确认 3000 端口空闲，运行 `pnpm dev`，并验证 http://localhost:3000/api/health 返回 {"ok":true}。
-5. 提示我打开 http://localhost:3000/projects 新建项目，把 repoPath 填成我要处理的仓库绝对路径。
-把你做了什么、以及还需要我手动做什么（例如给某个 CLI 登录）都清楚地告诉我。
+You are helping me set up and run "stagepass" (a local Next.js control board for an AI development pipeline) on my machine. Work through the steps below, and only stop to ask me if a step actually fails:
+1. Confirm Node >= 20 and pnpm are installed (if pnpm is missing, run `npm i -g pnpm`).
+2. Run `pnpm install`, then `pnpm db:migrate`.
+3. Confirm at least one AI engine CLI is available and signed in:
+   - Codex: run `codex --version`; if missing, install and sign in per the OpenAI Codex CLI docs; if it isn't on PATH, tell me to set `export STAGEPASS_CODEX_BIN=<path>`.
+   - Claude Code: already installed via the `@anthropic-ai/claude-code` dependency — just confirm auth (`ANTHROPIC_API_KEY` or `claude` login).
+4. Confirm port 3000 is free, run `pnpm dev`, and verify that http://localhost:3000/api/health returns {"ok":true}.
+5. Tell me to open http://localhost:3000/projects and create a project, setting repoPath to the absolute path of the repository I want to work on.
+Report clearly what you did and what I still need to do by hand (for example, signing in to a CLI).
 ```
 
 ---
 
-## 怎么用
+## How to use it
 
-1. **建项目** → 指向你的本地仓库，等 baseline 生成完。
-2. **建一个 Change**（一次改动 = 一条流水线）。
-3. **Refine**：用大白话描述你想要什么。这一步没有 AI 动作，就是你说话。
-4. **PRD**：AI 追问你、写草稿；简报室的反方 AI 会对你的需求发起质询（最多 7 张疑点卡）。看完 → 过 **Intake Gate**。
-5. **Spec**：红蓝对抗默认打 3 轮。看缺口清单：P0 必须解决，P1 你可以豁免，P2 至少得看一眼。不满意就点"继续对抗一轮"。满意 → 过 **Spec Gate**。
-6. **Tech Spec → Plan → Test Plan**：技术方案、作战计划（会明确列出预期改哪些文件、禁止碰哪些）、测试用例。逐个确认。
-7. **Build**：AI 在隔离 worktree 里施工。你可以收编，也可以拒绝本轮。
-8. **Review → Fix → QA**：findings 分 P0/P1/P2，阻断项没清干净过不了。
-9. **Merge Gate**：就绪检查全绿才放行。
-10. **Retro**：收下 release note 和复盘。
+1. **Create a project** → point it at your local repository and wait for the baseline to be generated.
+2. **Create a Change** (one change = one pipeline run).
+3. **Refine**: describe what you want in plain language. No AI action here — this step is you talking.
+4. **PRD**: the AI asks follow-up questions and writes a draft; the briefing-room adversary interrogates your requirement (up to 7 challenge cards). Read it → pass the **Intake Gate**.
+5. **Spec**: 3 adversarial rounds by default. Read the gap list: P0 must be resolved, P1 you may waive, P2 you must at least look at. Not satisfied? Click "fight another round." Satisfied → pass the **Spec Gate**.
+6. **Tech Spec → Plan → Test Plan**: technical design, battle plan (which files are expected to change and which are off-limits), test cases. Confirm each in turn.
+7. **Build**: the AI works in an isolated worktree. You can absorb the result or reject this build.
+8. **Review → Fix → QA**: findings are graded P0/P1/P2, and blockers must be cleared to proceed.
+9. **Merge Gate**: readiness checks must be fully green before it opens.
+10. **Retro**: take the release note and the retrospective.
 
-全程每个阶段的**产出文件都是可点击的**——变更文件、计划、Spec 战报、审查发现，点开即看内容，不用自己去翻目录。
+At every stage, **the produced files are clickable** — changed files, plans, Spec battle reports, review findings. Open them and read the contents inline instead of hunting through directories.
 
 ---
 
-## 配置
+## Configuration
 
-所有配置都是**可选**的环境变量，默认值开箱即用。需要时在启动前 `export`（Next 与 worker 都会继承你的 shell 环境），可参考 [`.env.example`](.env.example)：
+Every setting is an **optional** environment variable; the defaults work out of the box. Export what you need before starting (both Next and the worker inherit your shell environment) — see [`.env.example`](.env.example):
 
-| 变量 | 默认 | 用途 |
+| Variable | Default | Purpose |
 |---|---|---|
-| `STAGEPASS_CODEX_BIN` | `codex`（走 PATH） | codex 二进制路径（不在 PATH 时才需设置） |
-| `ANTHROPIC_API_KEY` | 无 | Claude Code 鉴权（或改用 `claude` 登录） |
-| `STAGEPASS_DB_PATH` | `server/db/ship.db` | 本地 SQLite 业务库位置 |
-| `STAGEPASS_LOG_DIR` | 仓库内默认日志目录 | 日志目录 |
-| `PIPELINE_WORKER_RECOVERY_SWEEP_MS` | `15000` | 崩溃恢复扫描间隔 |
+| `STAGEPASS_CODEX_BIN` | `codex` (via PATH) | Path to the codex binary (only needed if it isn't on PATH) |
+| `ANTHROPIC_API_KEY` | none | Claude Code auth (or use `claude` login instead) |
+| `STAGEPASS_DB_PATH` | `server/db/ship.db` | Location of the local SQLite business database |
+| `STAGEPASS_LOG_DIR` | default log directory in the repo | Log directory |
+| `PIPELINE_WORKER_RECOVERY_SWEEP_MS` | `15000` | Crash-recovery sweep interval |
 
-一次性导出：
+Export them all at once:
 
 ```bash
-cp .env.example .env      # 按需填写
+cp .env.example .env      # fill in what you need
 set -a && source .env && set +a && pnpm dev
 ```
 
-> 还有一批 `STAGEPASS_*` 超时/内部旋钮（见代码），正常不用动。
+> There are more `STAGEPASS_*` timeout and internal knobs (see the code). You normally shouldn't need to touch them.
 
 ---
 
-## 常用命令
+## Common commands
 
 ```bash
-pnpm dev              # 开发：Next + 流水线 worker（含自动迁移）
-pnpm build            # 生产构建
-pnpm test             # 单元测试
-pnpm test:acceptance  # 重型验收测试（会真起服务/进程）
+pnpm dev              # development: Next + pipeline worker (with automatic migrations)
+pnpm build            # production build
+pnpm test             # unit tests
+pnpm test:acceptance  # heavyweight acceptance tests (starts real services/processes)
 pnpm lint             # ESLint
 ```
 
 ---
 
-## 结构与文档
+## Layout and documentation
 
-- `app/` — Next 前端 + API 路由
-- `server/` — 服务层、SQLite + Drizzle schema、流水线执行、AI 引擎适配
-- `server/templates/prompts/` — 各阶段和红蓝双方的 prompt 模板
-- `scripts/` — 开发监督进程 / 流水线 worker / 迁移脚本
-- 架构与逐文件说明见 [`docs/ship/`](docs/ship/)（`architecture.md` · `file-guide.md` · `tech-stack.md`）
+- `app/` — Next frontend + API routes
+- `server/` — service layer, SQLite + Drizzle schema, pipeline execution, AI engine adapters
+- `server/templates/prompts/` — prompt templates for each stage and for both sides of the adversarial rounds
+- `scripts/` — dev supervisor / pipeline worker / migration scripts
+- Architecture and per-file notes live in [`docs/ship/`](docs/ship/) (`architecture.md` · `file-guide.md` · `tech-stack.md`)
 
 ---
 
-## 本地文件（勿提交）
+## Local files (don't commit these)
 
-- 运行时 SQLite 库在 `server/db/ship.db`（连同 `-wal` / `-shm` sidecar 一并忽略）。不要提交 `dev.db`、`server/db/db.sqlite`、`server/db/ship.db*`。
-- Build 隔离区在仓库的兄弟目录 `.stagepass-workspaces/`，不在版本控制内。
-- 不要提交临时截图 `tmp-review-*.png`、`tmp-user-flow-*.png`、`tmp-spec-battle-*.png`。
-- 生成的产物与本地运行态一律挡在 git 外，除非有意提升为项目文档。
+- The runtime SQLite database lives at `server/db/ship.db` (its `-wal` / `-shm` sidecars are ignored too). Never commit `dev.db`, `server/db/db.sqlite`, or `server/db/ship.db*`.
+- The Build isolation zone is `.stagepass-workspaces/`, a sibling of the repository, and is not under version control.
+- Don't commit scratch screenshots: `tmp-review-*.png`, `tmp-user-flow-*.png`, `tmp-spec-battle-*.png`.
+- Generated artifacts and local runtime state stay out of git unless deliberately promoted to project documentation.
+
+---
+
+## License
+
+[MIT](LICENSE)
