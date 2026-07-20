@@ -166,6 +166,18 @@ export interface WaivableFinding {
   status: string;
 }
 
+/**
+ * How a finding is named on screen. Shared so the target picker and the waiver
+ * dialog refer to the same finding the same way — picking "a.ts:12" and then
+ * confirming something that reads differently is how you waive the wrong one.
+ */
+export function waivableFindingLocator(
+  finding: Pick<WaivableFinding, "file" | "line" | "category">,
+): string {
+  if (!finding.file) return finding.category;
+  return finding.line ? `${finding.file}:${finding.line}` : finding.file;
+}
+
 /** Waiving a Review P1 waives exactly one finding. */
 export function selectReviewFindingWaiverContext(
   findings: WaivableFinding[] | null | undefined,
@@ -174,9 +186,7 @@ export function selectReviewFindingWaiverContext(
   if (!findingId) return null;
   const target = (findings ?? []).find((finding) => finding.id === findingId);
   if (!target) return null;
-  const location = target.file
-    ? `${target.file}${target.line ? `:${target.line}` : ""}`
-    : target.category;
+  const location = waivableFindingLocator(target);
   return {
     heading: "你正在接受的 Review P1 发现",
     summary: "只对这一项生效",

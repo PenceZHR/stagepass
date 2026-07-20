@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ActionReasonDialog } from "./action-reason-dialog";
-import { selectReviewFindingWaiverContext } from "./action-reason-context";
+import { selectReviewFindingWaiverContext, waivableFindingLocator } from "./action-reason-context";
 import { ProducedFile } from "./produced-file";
 import type { StageActionView } from "./stage-action-bar";
 import {
@@ -351,6 +351,42 @@ export function buildReviewStageActions(input: {
   ];
 }
 
+/**
+ * Every finding the P1 waiver could land on, in report order. A Review P1 is
+ * waivable only while it is still open and the finding itself allows it.
+ */
+export function selectWaivableP1Findings(
+  findings: ReviewFindingView[] | null | undefined,
+): ReviewFindingView[] {
+  return (findings ?? []).filter(
+    (finding) => finding.severity === "P1" && finding.status === "open" && finding.waivable,
+  );
+}
+
+/**
+ * The finding the waiver will actually hit. The human pick wins for as long as
+ * it is still a candidate; once it stops being one — fixed, already waived, or
+ * replaced by a fresh Review — the pick is dropped instead of being carried onto
+ * a finding nobody chose. Falling back to the first target keeps the button
+ * usable, and the picker below renders that fallback, so it is never silent.
+ */
+export function resolveWaiveP1Target(
+  targets: ReviewFindingView[],
+  selectedId: string | null | undefined,
+): ReviewFindingView | null {
+  return targets.find((finding) => finding.id === selectedId) ?? targets[0] ?? null;
+}
+
+/**
+ * Says out loud what the waiver does and does not cover. Written for one target
+ * as well as many: the picker renders whenever there is a target at all, so a
+ * lone P1 still gets named on screen before the button is pressed.
+ */
+export function waiveP1TargetHint(targetCount: number): string {
+  if (targetCount <= 1) return "「接受 P1 风险」只对这一项生效。";
+  return `「接受 P1 风险」只对选中的这一项生效，其余 ${targetCount - 1} 项仍然阻断。`;
+}
+
 export function ReviewReportCenter({
   projectId,
   changeId,
@@ -385,6 +421,7 @@ export function ReviewReportCenter({
   const [error, setError] = useState("");
   const [waiving, setWaiving] = useState(false);
   const [waiveDialogOpen, setWaiveDialogOpen] = useState(false);
+  const [selectedP1FindingId, setSelectedP1FindingId] = useState("");
 
   const loadState = useCallback(async () => {
     setLoading(true);
@@ -443,9 +480,8 @@ export function ReviewReportCenter({
       waived: all.filter((finding) => finding.severity === "P1" && finding.status === "waived").length,
     };
   }, [state]);
-  const p1Target = state?.findings.find(
-    (finding) => finding.severity === "P1" && finding.status === "open" && finding.waivable
-  )?.id ?? null;
+  const p1Targets = useMemo(() => selectWaivableP1Findings(state?.findings), [state?.findings]);
+  const p1Target = resolveWaiveP1Target(p1Targets, selectedP1FindingId)?.id ?? null;
   // The waiver is binding, so the dialog shows the finding it waives — and only that one.
   const waiverContext = useMemo(
     () => selectReviewFindingWaiverContext(state?.findings, p1Target),
@@ -501,6 +537,10 @@ export function ReviewReportCenter({
 
   const waiveP1 = useCallback(async () => {
     if (!p1Target) return;
+    // Pin the target before the dialog opens. From here it is a human choice, so
+    // a background refresh that reorders the findings must not slide the waiver
+    // onto a different one while the reason is being typed.
+    setSelectedP1FindingId(p1Target);
     setWaiveDialogOpen(true);
   }, [p1Target]);
 
@@ -607,6 +647,31 @@ export function ReviewReportCenter({
           {countLabel("P2 记录", counts.p2, "border-yellow-200 bg-yellow-50 text-yellow-900")}
           {countLabel("P1 已接受", counts.waived, "border-emerald-200 bg-emerald-50 text-emerald-900")}
         </div>
+
+        {p1Targets.length > 0 && (
+          <div>
+            <label
+              className="mb-1 block text-xs font-medium text-muted-foreground"
+              htmlFor="waive-review-p1-target"
+            >
+              接受风险目标
+            </label>
+            <select
+              id="waive-review-p1-target"
+              className="h-8 w-full rounded border bg-background px-2 text-xs"
+              value={p1Target ?? ""}
+              disabled={actionBusy || waiveReason !== null}
+              onChange={(event) => setSelectedP1FindingId(event.target.value)}
+            >
+              {p1Targets.map((finding) => (
+                <option key={finding.id} value={finding.id}>
+                  {waivableFindingLocator(finding)} · {finding.title}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">{waiveP1TargetHint(p1Targets.length)}</p>
+          </div>
+        )}
 
         <div className="space-y-2">
           {(state?.findings ?? []).length === 0 ? (

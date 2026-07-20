@@ -7,10 +7,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { StageEvidencePanel } from "./stage-evidence-panel";
 import {
+  ReviewReportCenter,
   buildReviewStageActions,
   resolveReviewRunCommand,
+  resolveWaiveP1Target,
+  selectWaivableP1Findings,
+  waiveP1TargetHint,
   type ReviewCenterAction,
   type ReviewCenterResponse,
+  type ReviewFindingView,
 } from "./review-report-center";
 import { OperationalPhasePanel } from "./operational-phase-panel";
 import { buildGateStageActions, selectRoutableStageRunActions } from "./gate-panel";
@@ -54,6 +59,79 @@ const specBattleTypes = readFileSync(resolve(__dirname, "spec-battle-types.ts"),
 const prdBriefingRoomSource = readFileSync(resolve(__dirname, "prd-briefing-room.tsx"), "utf-8");
 const stageGitPanelSource = readFileSync(resolve(__dirname, "stage-git-panel.tsx"), "utf-8");
 const gitWorkspacePanelSource = readFileSync(resolve(__dirname, "../../git-workspace-panel.tsx"), "utf-8");
+
+function reviewFinding(id: string, overrides: Partial<ReviewFindingView> = {}): ReviewFindingView {
+  return {
+    id,
+    changeId: "CHG-001",
+    runId: "RUN-001",
+    source: "review",
+    severity: "P1",
+    category: "correctness",
+    title: `finding ${id}`,
+    file: `src/${id}.ts`,
+    line: 12,
+    evidence: "evidence",
+    requiredFix: null,
+    status: "open",
+    waivable: true,
+    createdAt: "2026-07-20T00:00:00.000Z",
+    updatedAt: null,
+    isLegacyIncomplete: false,
+    isNotRechecked: false,
+    ...overrides,
+  };
+}
+
+function reviewCenterResponse(findings: ReviewFindingView[]): ReviewCenterResponse {
+  return {
+    headlineStatus: "blocked_p1",
+    qaAllowed: false,
+    latestAttempt: null,
+    latestValidReview: null,
+    counts: {
+      p0: 0,
+      p1: findings.filter((f) => f.severity === "P1" && f.status === "open").length,
+      p2: 0,
+      waived: 0,
+    },
+    gate: {
+      status: "blocked_p1",
+      canEnterQa: false,
+      reason: null,
+      sourceBuildRunId: null,
+      latestBuildRunId: "RUN-BUILD-1",
+    },
+    findings,
+    waivers: [],
+    mirrorWarnings: [],
+    actions: {
+      canRunReview: false,
+      canRetryReview: true,
+      canFixBlockers: true,
+      canWaiveP1: true,
+      canEnterQa: false,
+      canStopChange: true,
+    },
+    advancedDetails: { latestAttempt: null, latestValidReview: null },
+  };
+}
+
+function renderReviewCenter(findings: ReviewFindingView[]): string {
+  return renderToStaticMarkup(
+    createElement(ReviewReportCenter, {
+      projectId: "PRJ-001",
+      changeId: "CHG-001",
+      busy: false,
+      actions: [reviewPipelineAction("waive_review_p1", true)],
+      initialState: reviewCenterResponse(findings),
+      onRunReview: () => {},
+      onEnterQa: () => {},
+      onFixBlockers: () => {},
+      onBlockChange: () => {},
+    }),
+  );
+}
 
 function reviewCenterAction(
   id: ReviewCenterAction["id"],
@@ -896,6 +974,116 @@ describe("phase review UI", () => {
     actions[0].onAction();
     actions[1].onAction();
     assert.deepEqual(calls, ["retry_review", "waive_review_p1"]);
+  });
+
+  it("offers every waivable open P1 as a waiver target, not just the first", () => {
+    const targets = selectWaivableP1Findings([
+      reviewFinding("f-p0", { severity: "P0" }),
+      reviewFinding("f-a"),
+      reviewFinding("f-fixed", { status: "fixed" }),
+      reviewFinding("f-b"),
+      reviewFinding("f-locked", { waivable: false }),
+      reviewFinding("f-p2", { severity: "P2" }),
+      reviewFinding("f-c"),
+    ]);
+
+    assert.deepEqual(targets.map((finding) => finding.id), ["f-a", "f-b", "f-c"]);
+    assert.deepEqual(selectWaivableP1Findings(undefined), []);
+  });
+
+  it("waives the P1 the human picked instead of whichever happens to sort first", () => {
+    const targets = selectWaivableP1Findings([
+      reviewFinding("f-a"),
+      reviewFinding("f-b"),
+      reviewFinding("f-c"),
+    ]);
+
+    assert.equal(resolveWaiveP1Target(targets, "f-c")?.id, "f-c");
+    assert.equal(resolveWaiveP1Target(targets, "f-b")?.id, "f-b");
+  });
+
+  it("defaults the waiver target to the first candidate before anything is picked", () => {
+    const targets = selectWaivableP1Findings([reviewFinding("f-a"), reviewFinding("f-b")]);
+
+    assert.equal(resolveWaiveP1Target(targets, "")?.id, "f-a");
+    assert.equal(resolveWaiveP1Target(targets, null)?.id, "f-a");
+  });
+
+  it("drops a stale pick instead of waiving a finding that stopped being a candidate", () => {
+    const targets = selectWaivableP1Findings([
+      reviewFinding("f-a"),
+      reviewFinding("f-b", { status: "waived" }),
+      reviewFinding("f-c", { waivable: false }),
+    ]);
+
+    // f-b was picked and then waived elsewhere; f-c was never waivable at all.
+    assert.equal(resolveWaiveP1Target(targets, "f-b")?.id, "f-a");
+    assert.equal(resolveWaiveP1Target(targets, "f-c")?.id, "f-a");
+    assert.equal(resolveWaiveP1Target([], "f-a"), null);
+  });
+
+  it("names a lone P1 target too, instead of hiding the picker below two candidates", () => {
+    const component = readFileSync(resolve(__dirname, "review-report-center.tsx"), "utf-8");
+
+    assert.match(component, /const p1Targets = useMemo\(\(\) => selectWaivableP1Findings\(state\?\.findings\)/);
+    assert.match(component, /resolveWaiveP1Target\(p1Targets, selectedP1FindingId\)/);
+    assert.match(component, /\{p1Targets\.length > 0 && \(/);
+    // spec-battlefield gates its picker on `> 1`, so a single target gets waived
+    // without ever being named on screen. Review must not copy that.
+    assert.doesNotMatch(component, /p1Targets\.length > 1/);
+    assert.match(component, /id="waive-review-p1-target"/);
+    assert.match(component, /p1Targets\.map/);
+    assert.match(component, /value=\{p1Target \?\? ""\}/);
+    assert.match(component, /onChange=\{\(event\) => setSelectedP1FindingId\(event\.target\.value\)\}/);
+    // The picker is live exactly when the waive button is: same two conditions.
+    assert.match(component, /disabled=\{actionBusy \|\| waiveReason !== null\}/);
+    // Opening the dialog pins the target, so a refresh cannot slide the waiver
+    // onto another finding while the reason is being typed.
+    assert.match(
+      component,
+      /const waiveP1 = useCallback\(async \(\) => \{[\s\S]*?setSelectedP1FindingId\(p1Target\);[\s\S]*?setWaiveDialogOpen\(true\);/,
+    );
+
+    assert.equal(waiveP1TargetHint(1), "「接受 P1 风险」只对这一项生效。");
+    assert.match(waiveP1TargetHint(3), /只对选中的这一项生效，其余 2 项仍然阻断/);
+  });
+
+  it("renders one option per waivable P1, so the target can actually be changed", () => {
+    const html = renderReviewCenter([
+      // A P0 sorts ahead of both P1s: the default target must be the first
+      // *candidate*, never just the first finding in the report.
+      reviewFinding("f-p0", { title: "必修", severity: "P0", waivable: false }),
+      reviewFinding("f-a", { title: "空指针", file: "server/a.ts", line: 7 }),
+      reviewFinding("f-b", { title: "并发写", file: "server/b.ts", line: 21 }),
+      reviewFinding("f-done", { title: "已修", status: "fixed" }),
+      reviewFinding("f-locked", { title: "不可豁免", waivable: false }),
+    ]);
+
+    const picker = html.slice(html.indexOf('id="waive-review-p1-target"'));
+    assert.match(html, /id="waive-review-p1-target"/);
+    assert.match(picker, /<option value="f-a" selected="">server\/a\.ts:7 · 空指针<\/option>/);
+    assert.match(picker, /<option value="f-b">server\/b\.ts:21 · 并发写<\/option>/);
+    assert.doesNotMatch(picker, /<option value="f-p0"/);
+    assert.doesNotMatch(picker, /<option value="f-done"/);
+    assert.doesNotMatch(picker, /<option value="f-locked"/);
+    assert.match(html, /其余 1 项仍然阻断/);
+  });
+
+  it("renders the picker for a lone waivable P1 too, so it is named before it is waived", () => {
+    const html = renderReviewCenter([
+      reviewFinding("f-only", { title: "唯一的 P1", file: "server/only.ts", line: 3 }),
+      reviewFinding("f-done", { title: "已修", status: "fixed" }),
+    ]);
+
+    assert.match(html, /id="waive-review-p1-target"/);
+    assert.match(html, /<option value="f-only"[^>]*>server\/only\.ts:3 · 唯一的 P1<\/option>/);
+    assert.match(html, /只对这一项生效/);
+  });
+
+  it("hides the picker entirely when nothing is waivable", () => {
+    const html = renderReviewCenter([reviewFinding("f-done", { status: "fixed" })]);
+
+    assert.doesNotMatch(html, /waive-review-p1-target/);
   });
 
   it("maps only open P0/P1 Review findings to StageFrame blockers", () => {
