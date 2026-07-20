@@ -5,6 +5,7 @@ import type { RubricPhase, RubricRole } from "./rubric-assessment";
 import { stripRubricLines } from "./rubric-line-protocol";
 import { renderRubricPromptSection } from "./rubric-prompt";
 import {
+  ensureFactoryRubrics,
   getEffectiveRubric,
   recordRubricAssessments,
   recordUnansweredRubric,
@@ -77,6 +78,13 @@ export function resolveStageRubric(scope: StageRubricScope, pin?: {
   runId: string;
   roundId?: string | null;
 }): StageRubric | null {
+  // Seeding happens HERE, before the rubric is read, so the factory criteria
+  // judge the very run that triggered the seed rather than only the one after
+  // it. It seeds every scope the project is missing, not just this one, so the
+  // first stage any project runs populates the whole drawer -- otherwise a phase
+  // that has never run would show an empty checklist and the "出厂默认" promise
+  // would only come true retroactively.
+  ensureFactoryRubrics(scope.projectId);
   const effective = getEffectiveRubric({
     projectId: scope.projectId,
     changeId: scope.changeId,
@@ -212,6 +220,37 @@ export function recordUnansweredStageRubric(input: {
     });
   } catch {
     // Diagnostic only; the not_assessed rows are the record that matters.
+  }
+}
+
+/**
+ * Harvest, but record every criterion as `not_assessed` instead of throwing when
+ * the reply's protocol is malformed.
+ *
+ * For a stage with a cheap retry, §4.2 is right that an unknown criterion id
+ * should void the whole output: the run costs little and the model gets a chance
+ * to fix a typo. Build and Fix are not that. Their reply arrives after the model
+ * has already written code into a workspace, and throwing here would throw that
+ * away over a mis-typed id in a checklist -- so for them void degrades to
+ * unanswered, exactly as it already does for the Spec verdict rubric, which runs
+ * last in a round and has no retry vehicle at all.
+ *
+ * The degradation is safe in the direction that matters: `not_assessed` is
+ * blocking under rubricOutcome(), so a stage whose rubric could not be parsed
+ * fails CLOSED. Storing nothing is the only outcome that would read as a pass.
+ */
+export function harvestStageRubricOrRecordUnanswered(input: HarvestStageRubricInput): void {
+  try {
+    harvestStageRubric(input);
+  } catch (err) {
+    if (!(err instanceof RubricOutputVoidError)) throw err;
+    recordUnansweredStageRubric({
+      stageRubric: input.stageRubric,
+      changeId: input.changeId,
+      runId: input.runId,
+      roundId: input.roundId ?? null,
+      reason: err.message,
+    });
   }
 }
 

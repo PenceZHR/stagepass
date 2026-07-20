@@ -235,10 +235,21 @@ describe("§4.3 which verdicts block", () => {
     assert.equal(blockers[0]!.verdict, "no");
   });
 
-  it("an unanswered criterion blocks, whatever its blocking flag says", () => {
-    // Both directions in one case: `not_assessed` is the ONLY verdict that
-    // ignores `blocking: false`, because silence is not a judgment about
-    // content -- it is a model skipping a question it expects to fail.
+  it("an unanswered criterion blocks when it is marked blocking, and only then", () => {
+    // CHANGED in batch 6. This used to assert BOTH criteria derive a blocker --
+    // "`not_assessed` is the ONLY verdict that ignores `blocking: false`,
+    // because silence is a model skipping a question it expects to fail".
+    //
+    // The premise does not hold for a NON-blocking criterion: answering it `no`
+    // would not have blocked either, so there is no question worth skipping and
+    // nothing is being evaded. What the rule did cause, measurably, was an EDIT
+    // opening a blocker -- silence recorded while a criterion was advisory
+    // became a fresh P0 the moment anyone ticked `blocking`, because opening
+    // consulted today's flag instead of the judged snapshot. §4.3.1 says an edit
+    // may only ever close; §4.4 says an edit invalidates no stamped gate.
+    //
+    // The blocking half of the rule -- the half with a reason behind it -- is
+    // unchanged, and is what this case now pins.
     const rubric = saveSpecProducer([
       { text: "非阻断标准", blocking: false },
       { text: "阻断标准", blocking: true },
@@ -246,9 +257,29 @@ describe("§4.3 which verdicts block", () => {
     judge(rubric, [undefined, undefined], { runId: "RUN-1", roundId: ROUND_1 });
 
     const blockers = deriveRubricBlockers(specScope(ROUND_1));
+    assert.deepEqual(blockers.map((entry) => entry.verdict), ["not_assessed"]);
+    assert.deepEqual(blockers.map((entry) => entry.text), ["阻断标准"]);
+  });
+
+  it("ticking `blocking` later never opens a blocker from an old silence", () => {
+    // §4.3.1: opening reads the criterion AS JUDGED, retirement reads the live
+    // rubric, so an edit can only ever close. Before batch 6 this direction was
+    // wide open for `not_assessed`, and one tick could plant an unclearable P0
+    // on an already-stamped phase.
+    const rubric = saveSpecProducer([{ text: "先是非阻断", blocking: false }]);
+    judge(rubric, [undefined], { runId: "RUN-1", roundId: ROUND_1 });
+    assert.deepEqual(deriveRubricBlockers(specScope(ROUND_1)), []);
+
+    saveRubricVersion({
+      ...SPEC_PRODUCER,
+      criteria: [
+        { text: "先是非阻断", blocking: true, criterionKey: rubric.criteria[0]!.criterionKey },
+      ],
+    });
     assert.deepEqual(
-      blockers.map((entry) => entry.verdict).sort(),
-      ["not_assessed", "not_assessed"],
+      activeRubricBlockers(specScope(ROUND_1)),
+      [],
+      "an edit must not be able to open a blocker against a verdict already on file",
     );
   });
 

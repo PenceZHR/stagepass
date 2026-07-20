@@ -6,6 +6,7 @@ import {
   RUBRIC_ROLES,
   RUBRIC_ROLE_HINTS,
   RUBRIC_ROLE_LABELS,
+  type RubricBlockingChannel,
   type RubricPanelState,
   type RubricPhase,
   type RubricRole,
@@ -241,6 +242,7 @@ export function RubricPanel({
       </div>
 
       <p className="mt-2 text-xs text-muted-foreground">{RUBRIC_ROLE_HINTS[panel.role]}</p>
+      <RubricInertNotice blockingChannel={state.blockingChannel} panel={panel} />
 
       <div role="tabpanel" data-rubric-role-panel={panel.role} className="mt-3 space-y-3">
         <RubricVerdictList panel={panel} roundId={state.roundId} />
@@ -275,6 +277,46 @@ export function RubricPanel({
         )}
       </div>
     </section>
+  );
+}
+
+/**
+ * Says out loud when ticking `blocking` on this tab will do nothing.
+ *
+ * Two independent ways a criterion can be inert, and neither is visible from the
+ * checklist itself:
+ *
+ *  - nothing in the pipeline ANSWERS this role, so no verdict is ever recorded
+ *    (Refine, QA, Merge, and Fix's critic tab);
+ *  - the phase owns no blocking channel, so a `no` is recorded and stops
+ *    nothing (Refine, QA, Merge, Retro).
+ *
+ * Without this the drawer offers a 阻断 toggle that silently achieves nothing --
+ * the exact "backend can, UI hides it" failure §7.3 was written about, in the
+ * mirror direction: UI offers it, backend cannot.
+ */
+export function RubricInertNotice({
+  blockingChannel,
+  panel,
+}: {
+  blockingChannel: RubricBlockingChannel;
+  panel: RubricRolePanel;
+}) {
+  const reasons: string[] = [];
+  if (panel.answeredBy === null) {
+    reasons.push("本阶段没有任何环节会回答这一栏的标准，写在这里不会产生判定");
+  }
+  if (blockingChannel === "none") {
+    reasons.push("本阶段没有可挂阻断项的关口，勾选「阻断」不会拦住任何东西");
+  }
+  if (reasons.length === 0) return null;
+  return (
+    <p
+      className="mt-2 rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground"
+      data-rubric-inert-notice="true"
+    >
+      {reasons.join("；")}。
+    </p>
   );
 }
 

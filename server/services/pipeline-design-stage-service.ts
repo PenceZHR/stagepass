@@ -11,6 +11,7 @@ import { getActions } from "./action-contract-service";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
 import { runDocumentStage } from "./pipeline-document-stage-runner-service";
 import { nowISO, writeRunOnlyArtifactBestEffort } from "./pipeline-run-ledger-service";
+import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import { getSpecBattleState } from "./spec-battle-service";
 import { recomputeStageGate } from "./stage-authority-service";
 import { parseTechSpecLineProtocol } from "./techspec-line-protocol";
@@ -316,6 +317,10 @@ async function persistTechSpecAndApiSnapshots(input: {
       { table: "api_snapshots", id: api.id, contractDbHash: api.contractDbHash },
     ],
   }).sourceDbHash;
+  // Before getActions: the action contract is computed from the gate, so a
+  // rubric blocker appended afterwards would not reach the buttons until
+  // something else happened to recompute it.
+  reapplyRubricStageGateBlockers(input.changeId, "TechSpec");
   getActions(input.changeId);
 
   const techSpecMarkdown = renderDesignSnapshotMarkdown("TechSpec DB Snapshot", techSpec);
@@ -405,6 +410,8 @@ export async function runTechSpec(
     successSummary: "Tech spec completed",
     provider,
     sessionKind: "general",
+    // §3: tech_spec is TechSpec's producer, and the phase has no critic.
+    rubricPhase: "TechSpec",
     additionalPromptFileName: "api-spec.md",
     outputSchema: TECH_SPEC_OUTPUT_SCHEMA,
     // The model writes protocol lines, never JSON; the schema above stays as
@@ -500,6 +507,8 @@ export async function runTestPlan(
     successSummary: "Test plan completed",
     provider: selectedProvider,
     sessionKind: "general",
+    // §3: test_plan is TestPlan's producer, and the phase has no critic.
+    rubricPhase: "TestPlan",
     outputSchema: TESTPLAN_OUTPUT_SCHEMA,
     // The model writes protocol lines, never JSON; the schema above stays as
     // the second gate over the deterministically assembled payload.

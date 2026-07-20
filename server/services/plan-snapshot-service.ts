@@ -16,6 +16,7 @@ import {
 } from "../db/schema";
 import { computeNextGateVersion } from "../repositories/stage-authority-repository";
 import { normalizeRepoPath } from "./plan-glob-policy-service";
+import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import {
   changeDir,
   planMarkdownPath,
@@ -499,5 +500,12 @@ export function persistPlanSnapshot(input: {
       }).run();
     }
   });
+  // Deliberately AFTER the transaction commits, not inside it. This writer is
+  // the one that hand-rolls `tx.insert(stageGates)` instead of calling
+  // recomputeStageGate, and recomputeStageGate opens its own transaction on the
+  // same connection -- calling from inside the block above would raise "cannot
+  // start a transaction within a transaction". The gate row is durable by this
+  // point, so the resync reads exactly what the phase just published.
+  reapplyRubricStageGateBlockers(input.changeId, "Plan");
   return snapshotId;
 }

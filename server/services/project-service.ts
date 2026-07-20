@@ -10,7 +10,7 @@ import type { Project, CreateProjectInput } from "../types";
 import { scaffoldShipDir } from "./template-service";
 import { initializeProjectContext } from "./context-init-service";
 import { deleteChangeRecords } from "./change-service";
-import { PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service";
+import { ensureFactoryRubrics, PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service";
 import { resolveGitState, syncProjectGitState } from "./project-git-state-service";
 import { resolveProvider } from "./ai-provider-service";
 import type { AiProvider } from "../types";
@@ -107,6 +107,12 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
       createdAt: now,
     })
     .run();
+
+  // A new project gets the factory rubrics up front so its drawer is populated
+  // before any stage has run. Existing projects reach the same state through
+  // resolveStageRubric on their next stage; this call is only what saves a brand
+  // new project from having to run one first.
+  ensureFactoryRubrics(id);
 
   log.info({ projectId: id, repoPath: absPath }, "Project created");
   return project;

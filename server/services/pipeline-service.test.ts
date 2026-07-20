@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execSync } from "child_process";
 import Database from "better-sqlite3";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import fs from "fs";
 import os from "os";
@@ -135,6 +135,7 @@ import {
   type BuildRunStatus,
 } from "./build-workspace-service.ts";
 import { readBuildRunByNumber } from "./build-workspace-run-store.ts";
+import { PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service.ts";
 import { computeMergeReadiness } from "./merge-readiness-service.ts";
 import { hasUncommittedChanges } from "./git-service.ts";
 import { getReviewCenterState } from "./review-center-service.ts";
@@ -353,6 +354,15 @@ function cleanupRows() {
   db.delete(prdDrafts).where(eq(prdDrafts.changeId, CHANGE_ID)).run();
   db.delete(briefingQuestions).where(eq(briefingQuestions.changeId, CHANGE_ID)).run();
   db.delete(prdBriefings).where(eq(prdBriefings.changeId, CHANGE_ID)).run();
+  // Batch 6: every stage that resolves a rubric now seeds this project's factory
+  // rubrics. Must precede BOTH deletes below -- `rubric_assessments.change_id`
+  // references `changes.id` and `rubrics.project_id` references `projects.id`,
+  // so either one raises SQLITE_CONSTRAINT_FOREIGNKEY while these rows exist.
+  // Reuses the very plan deleteProject runs rather than hand-listing the three
+  // tables, so a future rubric table cannot go missing from one of the lists.
+  for (const step of PROJECT_RUBRIC_DELETE_PLAN) {
+    db.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(PROJECT_ID)}`);
+  }
   db.delete(changes).where(eq(changes.id, CHANGE_ID)).run();
   db.delete(projects).where(eq(projects.id, PROJECT_ID)).run();
 }
@@ -8675,10 +8685,15 @@ describe("pipeline-service v2 stages", () => {
     }
     await runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-red-timeout-retry"));
 
+    // CHANGED in batch 6: `spec_verdict` appended. Spec now ships factory
+    // verdict criteria, and a non-empty verdict rubric is what makes
+    // runSpecVerdictRubric call a provider -- §2.3's third agent. The
+    // retry/resume property each case pins is unchanged.
     assert.deepEqual(observedRuns, [
       { phase: "spec", threadId: undefined },
       { phase: "spec", threadId: "real-red-timeout-session" },
       { phase: "spec_critic", threadId: undefined },
+      { phase: "spec_verdict", threadId: undefined },
     ]);
   });
 
@@ -8989,9 +9004,14 @@ describe("pipeline-service v2 stages", () => {
     await runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-composite-timeout-budget"));
 
     assert.ok(Date.now() - startedAt >= 28);
+    // CHANGED in batch 6: `spec_verdict` appended -- Spec ships factory verdict
+    // criteria now, so §2.3's third agent runs and gets its own full timeout.
+    // That IS the property under test: each sequential provider is budgeted
+    // independently rather than sharing one, and it now covers three of them.
     assert.deepEqual(observed, [
       { phase: "spec", timeoutMs: 10 },
       { phase: "spec_critic", timeoutMs: 10 },
+      { phase: "spec_verdict", timeoutMs: 10 },
     ]);
     assert.equal(currentStatus(), "SPEC_READY");
   });
@@ -9275,9 +9295,15 @@ describe("pipeline-service v2 stages", () => {
 
     await runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-fresh-provider-threads"));
 
+    // CHANGED in batch 6: `spec_verdict` joined the list. Spec now ships factory
+    // verdict criteria, and a non-empty verdict rubric is exactly what makes
+    // runSpecVerdictRubric call a provider -- §2.3's third agent, which the user
+    // asked for by name. The property under test (each half opens a FRESH
+    // thread, threadId undefined) is unchanged and now covers the third call too.
     assert.deepEqual(observedThreadIds, [
       { phase: "spec", threadId: undefined },
       { phase: "spec_critic", threadId: undefined },
+      { phase: "spec_verdict", threadId: undefined },
     ]);
   });
 
@@ -9382,10 +9408,15 @@ describe("pipeline-service v2 stages", () => {
     await runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-blue-timeout-retry"));
 
     assert.equal(currentStatus(), "SPEC_READY");
+    // CHANGED in batch 6: `spec_verdict` appended. Spec now ships factory
+    // verdict criteria, and a non-empty verdict rubric is what makes
+    // runSpecVerdictRubric call a provider -- §2.3's third agent. The
+    // retry/resume property each case pins is unchanged.
     assert.deepEqual(observedRuns, [
       { phase: "spec", threadId: undefined },
       { phase: "spec_critic", threadId: undefined },
       { phase: "spec_critic", threadId: "real-blue-timeout-session" },
+      { phase: "spec_verdict", threadId: undefined },
     ]);
   });
 
@@ -9448,10 +9479,18 @@ describe("pipeline-service v2 stages", () => {
     assert.match(criticFailureEvents[0].rawJson ?? "", /"errorCode":"provider_run_failed"/);
     await runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-blue-provider-failure-retry"));
 
+    // CHANGED in batch 6: `spec_verdict` appended. Spec now ships factory
+    // verdict criteria, and a non-empty verdict rubric is what makes
+    // runSpecVerdictRubric call a provider -- §2.3's third agent. The
+    // retry/resume property each case pins is unchanged.
+    // CHANGED in batch 6: `spec_verdict` appended -- Spec now ships factory
+    // verdict criteria, so §2.3's third agent runs. The property pinned here
+    // (a non-timeout Blue failure is NOT resumed in its old session) is unchanged.
     assert.deepEqual(observedRuns, [
       { phase: "spec", threadId: undefined },
       { phase: "spec_critic", threadId: undefined },
       { phase: "spec_critic", threadId: undefined },
+      { phase: "spec_verdict", threadId: undefined },
     ]);
   });
 

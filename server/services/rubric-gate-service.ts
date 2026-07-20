@@ -212,8 +212,11 @@ export function deriveRubricBlockers(
     evidence: entry.evidence,
   }));
 
-  const outcome = rubricOutcome(criteria, drafts);
-  const blocked = new Set([...outcome.failedCriterionIds, ...outcome.notAssessedCriterionIds]);
+  // `blockingCriterionIds`, not failed+notAssessed: silence on a criterion that
+  // was advisory WHEN JUDGED must not become a blocker later just because
+  // somebody ticked the box afterwards. Opening reads the judged snapshot; only
+  // retirement reads the live rubric (§4.3.1).
+  const blocked = new Set(rubricOutcome(criteria, drafts).blockingCriterionIds);
   return verdicts.filter((entry) => blocked.has(entry.criterionKey));
 }
 

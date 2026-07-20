@@ -328,7 +328,23 @@ describe("stale rubric versions are labelled, not hidden", () => {
 });
 
 describe("what the drawer treats as blocking", () => {
-  it("treats not_assessed as blocking even on a non-blocking criterion", () => {
+  it("shows not_assessed on a non-blocking criterion, and does not call the phase blocked", () => {
+    // CHANGED in batch 6. This used to assert `blocked === true` on the grounds
+    // that "silence is not content". The verdict is still shown as
+    // `not_assessed` -- that part was never in question -- but calling the phase
+    // BLOCKED was wrong twice over:
+    //
+    //  - the gate disagreed. `activeRubricBlockers` produced nothing for this
+    //    exact input, so the drawer drew a blocking dot on a phase that was not
+    //    blocked. Batch 5's comment claims sharing `rubricOutcome` makes that
+    //    impossible; sharing it was not enough, because the two read different
+    //    fields off the result.
+    //  - it made every project's drawer light up once batch 6 shipped factory
+    //    criteria, which are all non-blocking: one skipped line from any model
+    //    and the phase looked blocked while nothing was.
+    //
+    // See rubricOutcome for the full argument, including the edit-opens-a-P0
+    // failure the old rule also caused.
     addRound(ROUND_1, 1);
     const rubric = saveRubricVersion({
       ...SPEC_PRODUCER,
@@ -348,11 +364,30 @@ describe("what the drawer treats as blocking", () => {
     }).roles.find((role) => role.role === "producer")!;
 
     assert.equal(panel.verdicts[0]!.verdict, "not_assessed");
-    assert.equal(
-      panel.blocked,
-      true,
-      "silence is not content: blocking:false says a FAILURE is tolerable, not that an unanswered question is",
-    );
+    assert.equal(panel.blocked, false);
+  });
+
+  it("treats not_assessed as blocking on a criterion the user marked blocking", () => {
+    addRound(ROUND_1, 1);
+    const rubric = saveRubricVersion({
+      ...SPEC_PRODUCER,
+      criteria: [{ text: "Must hold", blocking: true }],
+    });
+    recordUnansweredRubric({
+      changeId: CHANGE_ID,
+      runId: "RUN-RED-1",
+      roundId: ROUND_1,
+      rubric,
+    });
+
+    const panel = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Spec",
+    }).roles.find((role) => role.role === "producer")!;
+
+    assert.equal(panel.verdicts[0]!.verdict, "not_assessed");
+    assert.equal(panel.blocked, true, "a model refusing to answer a required standard must not pass");
   });
 
   it("does not block on a `no` against a non-blocking criterion", () => {

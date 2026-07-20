@@ -37,6 +37,11 @@ import { persistStageRawCapture } from "./stage-raw-capture-service";
 import { applyLineProtocol, guardLineProtocolSchema } from "./ai-line-protocol";
 import { parsePlanLineProtocol } from "./plan-line-protocol";
 import {
+  appendRubricPromptSection,
+  harvestStageRubric,
+  resolveStageRubric,
+} from "./rubric-stage-service";
+import {
   captureWorkspaceSnapshot,
   diffWorkspaceSnapshots,
   validateReadOnlyStage,
@@ -235,14 +240,21 @@ async function generatePlanInExecutionScope(
   const runId = beginStageRun({ changeId, phase: "generate_plan", runningStatus: "PLANNING", provider });
 
   try {
-    const prompt = assemblePrompt("plan", {
+    // §3: generate_plan is Plan's producer, and the phase has no critic. Plan is
+    // dispatched straight here rather than through runDocumentStage, so it wires
+    // its own rubric instead of naming a `rubricPhase`.
+    const stageRubric = resolveStageRubric(
+      { projectId: change.projectId, changeId, phase: "Plan", role: "producer" },
+      { runId, roundId: null },
+    );
+    const prompt = appendRubricPromptSection(assemblePrompt("plan", {
       changeId,
       repoPath: project.repoPath,
-    });
+    }), stageRubric);
 
     const beforeAi = captureWorkspaceSnapshot(project.repoPath);
     const engine = await getPipelineEngine(provider as "codex" | "claude");
-    const result = await engine.run({
+    let result = await engine.run({
       changeId,
       repoPath: project.repoPath,
       phase: "plan",
@@ -261,6 +273,22 @@ async function generatePlanInExecutionScope(
       }),
     });
     assertCurrentExecutionFence(context, runId);
+    // Harvest before the plan line protocol runs: RUBRIC lines are not part of
+    // this stage's contract, so parsePlanLineProtocol and the plan artifact must
+    // both see a reply without them. Skipped for a failed or empty reply --
+    // there is nothing to judge, and recording silence as the model's answer
+    // when the provider never spoke is false provenance.
+    if (stageRubric && result.success && (result.summary ?? "").trim().length > 0) {
+      const harvested = harvestStageRubric({
+        stageRubric,
+        changeId,
+        runId,
+        roundId: null,
+        rawText: result.summary ?? "",
+      });
+      assertCurrentExecutionFence(context, runId);
+      result = { ...result, summary: harvested.cleanedText };
+    }
     const afterAi = captureWorkspaceSnapshot(project.repoPath);
     const mutations = diffWorkspaceSnapshots(beforeAi, afterAi);
     const violation = validateReadOnlyStage("generate_plan", mutations);

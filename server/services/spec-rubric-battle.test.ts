@@ -532,6 +532,18 @@ describe("Spec battle rubric wiring", () => {
   });
 
   it("leaves the round untouched when no rubric is configured", async () => {
+    // CHANGED in batch 6: the empty state now has to be asked for.
+    //
+    // The behaviour under test is §4.5's -- "an empty rubric means this phase
+    // does no rubric judging, and the stage behaves exactly as it did before
+    // rubrics existed" -- and that is unchanged. What changed is how a project
+    // REACHES it: batch 6 seeds factory criteria for Spec, so "nobody configured
+    // one" no longer implies "there is none". Saving an empty list is the
+    // documented way to turn a phase's rubric off, and is exactly what deleting
+    // every row in the drawer does.
+    saveSpecRubric("producer", []);
+    saveSpecRubric("critic", []);
+    saveSpecRubric("verdict", []);
     const { prompts } = installEngine({ spec: RED_JSON, spec_critic: BLUE_LINES });
 
     await runSpec(CHANGE_ID, makeJobContext("spec-no-rubric"));
@@ -654,7 +666,16 @@ describe("rubric text stays out of stamped hashes", () => {
     );
     // ...and the verdicts really were there to be leaked, so the assertions above
     // are not passing on an empty table.
-    assert.equal(listRubricAssessments({ runId: specRunId() }).length, 2);
+    //
+    // CHANGED in batch 6: was `=== 2`, the exact count when the only rubrics in
+    // the project were this test's own. Factory criteria are now seeded for Spec
+    // too, so the round also records verdicts for those. The assertion's job is
+    // to prove the table was NOT empty, which a lower bound does just as well
+    // and without re-pinning to however many factory criteria Spec ships.
+    assert.ok(
+      listRubricAssessments({ runId: specRunId() }).length >= 2,
+      "the hash assertions above must not be passing on an empty assessments table",
+    );
   });
 });
 

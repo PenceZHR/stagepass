@@ -6,6 +6,9 @@ import {
   type RubricRole,
   rubricPhaseHasCritic,
 } from "./rubric-assessment";
+import { rubricRoleAnsweredBy } from "./rubric-defaults";
+import { rubricBlockingChannel, type RubricBlockingChannel } from "./rubric-gate-adapters";
+import { blockingCriterionKeysInForce } from "./rubric-gate-service";
 import type { RubricVerdict } from "./rubric-line-protocol";
 import {
   getCurrentRubric,
@@ -71,8 +74,19 @@ export interface RubricRolePanel {
    * the one in force. Drives the explicit staleness label (§7.6).
    */
   judgedByOutdatedVersion: boolean;
-  /** Anything here would block once batch 5 wires rubrics into the gates. */
+  /** Anything here blocks, through the phase's `blockingChannel`. */
   blocked: boolean;
+  /**
+   * The pipeline stage that answers this role, or null when nothing does.
+   *
+   * `applicable` says the tab is worth showing; this says whether writing a
+   * criterion into it will ever get a verdict. They differ: Fix's critic tab is
+   * applicable (§3 gives Fix a critic) but unanswered, because the single review
+   * stage answers Build's critic rubric. Surfacing it is the point -- a checklist
+   * nobody answers collects no rows, and no rows is indistinguishable from "no
+   * rubric", which reads as a pass.
+   */
+  answeredBy: string | null;
 }
 
 export interface RubricPanelState {
@@ -85,6 +99,12 @@ export interface RubricPanelState {
    * inferring it.
    */
   roundId: string | null;
+  /**
+   * The blocking form this phase's verdicts take. `none` means a criterion
+   * ticked `blocking` here records a verdict and stops nothing, which the drawer
+   * must say rather than let the user infer from silence.
+   */
+  blockingChannel: RubricBlockingChannel;
   roles: RubricRolePanel[];
 }
 
@@ -111,6 +131,7 @@ export function buildRubricPanelState(input: {
     projectId: input.projectId,
     changeId: input.changeId,
     roundId,
+    blockingChannel: rubricBlockingChannel(input.phase),
     roles,
   };
 }
@@ -131,6 +152,12 @@ function buildRolePanel(input: {
   const applicable = input.role !== "critic" || rubricPhaseHasCritic(input.phase);
   const effective = getEffectiveRubric(scope);
   const hasChangeOverride = getCurrentRubric(scope) !== null;
+  // The live half of §4.3.1's exit, straight from the gate's own definition.
+  const keysInForce = blockingCriterionKeysInForce({
+    projectId: input.projectId,
+    changeId: input.changeId,
+    phase: input.phase,
+  });
 
   const batch = selectLatestAssessmentBatch(listRubricAssessmentsForScope(scope), {
     roundId: input.roundId,
@@ -199,6 +226,20 @@ function buildRolePanel(input: {
     judgedVersion,
     judgedByOutdatedVersion:
       judgedRubricId !== null && effective !== null && judgedRubricId !== effective.rubric.id,
-    blocked: batch.length > 0 && rubricOutcome(judgedCriteria, drafts).blocked,
+    // Exactly `activeRubricBlockers`: what the verdicts imply, INTERSECTED with
+    // the standards the user still requires. Both halves are needed and the
+    // intersection is the one that kept being forgotten -- without it the drawer
+    // went on showing a blocking dot after the user had taken §4.3.1's exit and
+    // the gate had already reopened, which makes the only exit look broken.
+    //
+    // Reusing the gate's own function rather than re-deriving "still in force"
+    // here is deliberate: batch 5 believed sharing `rubricOutcome` was enough to
+    // keep the two in step, and it was not, because each side then applied its
+    // own second filter. Sharing BOTH filters is what actually binds them.
+    blocked: batch.length > 0
+      && rubricOutcome(judgedCriteria, drafts)
+        .blockingCriterionIds.some((criterionId) =>
+          keysInForce.has(criteriaById.get(criterionId)?.criterion.criterionKey ?? "")),
+    answeredBy: rubricRoleAnsweredBy(input.phase, input.role),
   };
 }

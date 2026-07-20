@@ -31,6 +31,7 @@ import {
   type PrdBriefingSourceHashes,
   type PrdGateResult,
 } from "./prd-briefing-ledger";
+import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import type { StageProgressEventPayload } from "./stage-ai-output-contract";
 import {
   completeStageRun,
@@ -599,6 +600,7 @@ function syncPrdStageAuthority(changeId: string, provider?: Provider): void {
     requiredActions: status === "pass" ? [] : blockers,
     sourceDbHash,
   });
+  reapplyRubricStageGateBlockers(changeId, "PRD");
 }
 
 async function insertEvent(input: {

@@ -12,6 +12,7 @@ import {
   type RubricPhase,
   type RubricRole,
 } from "./rubric-assessment";
+import { factoryCriteria, factoryRubricScopes } from "./rubric-defaults";
 import { parseRubricLineProtocol } from "./rubric-line-protocol";
 import { withCurrentExecutionFenceWrite } from "./execution-fence-service";
 import { withSqliteWriteRetry } from "../db/write-boundary";
@@ -330,6 +331,113 @@ export function saveRubricVersion(input: SaveRubricVersionInput): RubricVersionR
   return toRecord(saved);
 }
 
+/**
+ * Gives a project the factory rubrics it does not already have (§4.5).
+ *
+ * Idempotent and additive: a scope that already owns ANY rubric row is left
+ * alone, including one whose current version the user emptied out. "No criteria"
+ * is a deliberate state meaning this phase does no rubric judging, and re-seeding
+ * over it would resurrect a checklist somebody explicitly deleted.
+ *
+ * ## Why this may trust the criterion keys it is handed
+ *
+ * `saveRubricVersion` deliberately refuses a `criterionKey` that belongs to no
+ * version of the scope, because honouring one would let a request bind a brand
+ * new criterion to the identity of an existing -- possibly already blocking --
+ * one (§5.1). That danger does not exist here and cannot be made to: the keys
+ * come from a code constant no request can reach, and the write only happens
+ * for a scope that has no versions at all, so there is no prior identity in this
+ * scope to hijack. The guard is asserted below rather than assumed, so the
+ * property survives somebody later calling this from a new place.
+ *
+ * ## Why seeding is a write and not a read-time fallback
+ *
+ * `rubric_assessments` has real foreign keys onto `rubrics.id` and
+ * `rubric_criteria.id`. A "virtual" default that existed only in code could be
+ * shown in the drawer but could never be JUDGED, which is the only thing that
+ * makes a rubric more than decoration.
+ */
+export function ensureFactoryRubrics(projectId: string): Array<{ phase: RubricPhase; role: RubricRole }> {
+  if (!projectId) return [];
+  const seeded: Array<{ phase: RubricPhase; role: RubricRole }> = [];
+  const scopeKey = (phase: string, role: string) => `${phase} ${role}`;
+
+  const missingBefore = () => {
+    const existing = new Set(
+      db
+        .select({ phase: rubrics.phase, role: rubrics.role })
+        .from(rubrics)
+        .where(and(eq(rubrics.projectId, projectId), isNull(rubrics.changeId)))
+        .all()
+        .map((row) => scopeKey(row.phase, row.role)),
+    );
+    return factoryRubricScopes().filter((scope) => !existing.has(scopeKey(scope.phase, scope.role)));
+  };
+
+  // Cheap pre-check outside the transaction: this runs at the top of every stage
+  // that resolves a rubric, and on all but the first it must cost one indexed
+  // SELECT and nothing else.
+  if (missingBefore().length === 0) return [];
+
+  try {
+    withSqliteWriteRetry("rubric.ensureFactoryRubrics", () =>
+      db.transaction((tx) => {
+        // Re-read inside the transaction. The worker is a separate process from
+        // the web app, so two of them can reach the pre-check together; whoever
+        // opens the transaction second must see the first one's rows rather than
+        // its own stale snapshot.
+        for (const scope of missingBefore()) {
+          const criteria = factoryCriteria(scope.phase, scope.role);
+          if (criteria.length === 0) continue;
+          const now = new Date().toISOString();
+          const id = `RUB-${randomUUID()}`;
+          tx.insert(rubrics)
+            .values({
+              id,
+              projectId,
+              changeId: null,
+              phase: scope.phase,
+              role: scope.role,
+              version: 1,
+              isCurrent: 1,
+              createdAt: now,
+            })
+            .run();
+          criteria.forEach((criterion, ordinal) => {
+            tx.insert(rubricCriteria)
+              .values({
+                id: `RBC-${randomUUID()}`,
+                rubricId: id,
+                criterionKey: criterion.criterionKey,
+                ordinal,
+                text: criterion.text,
+                // §4.5 ships these advisory. A factory criterion that blocked on
+                // arrival would stall every existing project against wording
+                // nobody has read, and the only exit is a drawer most users have
+                // not opened. See rubric-defaults.ts for the full argument.
+                blocking: 0,
+                createdAt: now,
+              })
+              .run();
+          });
+          seeded.push(scope);
+        }
+      }),
+    );
+  } catch (err) {
+    // A UNIQUE violation here means the other process seeded first, which is the
+    // outcome this function wanted anyway. Anything else is a real fault and
+    // must not cost the stage that was merely passing through: the caller's own
+    // resolve falls back to "no rubric", which is the documented legal state for
+    // a scope with no rows (§4.5).
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message.includes("UNIQUE constraint failed")) throw err;
+    return [];
+  }
+
+  return seeded;
+}
+
 export interface RecordRubricAssessmentsInput {
   changeId: string;
   runId: string;
@@ -542,6 +650,28 @@ export function listRubricAssessmentsForScope(scope: {
  * because persistRubricAssessments only clears rows of the version it is
  * writing. The newest version wins, since that is the one that actually just
  * answered.
+ *
+ * ## The batch is one (rubricId, runId), not one rubricId
+ *
+ * `persistRubricAssessments` clears only the rows of the run it is writing, so
+ * every EXECUTION of a stage leaves its own set behind. For Spec that was
+ * invisible: a re-run opens a new round, and the roundId filter above drops the
+ * old rows. Round-LESS phases -- every document phase, Build and Fix -- store
+ * `roundId = null` forever, so the filter keeps every run this change ever made,
+ * and selecting by rubricId alone returned all of them at once.
+ *
+ * The observable failure: re-run a stage that answered `no`, have it answer
+ * `yes`, and the batch contains BOTH rows for that criterion. `rubricOutcome`
+ * counts the `no` and blocks; `latestRubricVerdictsByKey` keeps whichever row
+ * the database happened to return last. So a rubric blocker could not be
+ * cleared by fixing the artifact and re-running -- the pipeline's own way out
+ * (§4.3.1's second exit) was unreachable, leaving only the human one. Batch 5
+ * could not have seen this: nothing was calling these paths with a null round.
+ *
+ * Keying the batch on (rubricId, runId) fixes it without touching §5.2, because
+ * the roundId filter still runs FIRST. Spec's resumeBlue case is unaffected:
+ * red's producer rows and blue's critic rows are selected by separate calls, one
+ * per role, so red's earlier run is still the newest run of red's own role.
  */
 export function selectLatestAssessmentBatch(
   assessments: readonly StoredRubricAssessment[],
@@ -552,16 +682,23 @@ export function selectLatestAssessmentBatch(
     : assessments.filter((row) => row.roundId === scope.roundId);
   if (inScope.length === 0) return [];
 
-  const newestByRubric = new Map<string, string>();
+  const batchKey = (row: StoredRubricAssessment) => `${row.rubricId} ${row.runId}`;
+  const newestByBatch = new Map<string, string>();
   for (const row of inScope) {
-    const seen = newestByRubric.get(row.rubricId);
-    if (!seen || row.createdAt > seen) newestByRubric.set(row.rubricId, row.createdAt);
+    const seen = newestByBatch.get(batchKey(row));
+    if (!seen || row.createdAt > seen) newestByBatch.set(batchKey(row), row.createdAt);
   }
   let winner: string | null = null;
-  for (const [rubricId, createdAt] of newestByRubric) {
-    if (winner === null || createdAt > newestByRubric.get(winner)!) winner = rubricId;
+  for (const [key, createdAt] of newestByBatch) {
+    const best = winner === null ? null : newestByBatch.get(winner)!;
+    // The tie-break is on the KEY, not on insertion order. Every row one call to
+    // persistRubricAssessments writes shares a single `createdAt`, so two
+    // executions landing inside the same millisecond would otherwise resolve by
+    // whatever order the rows came back in -- non-deterministic, and in the
+    // passing direction half the time.
+    if (best === null || createdAt > best || (createdAt === best && key > winner!)) winner = key;
   }
-  return inScope.filter((row) => row.rubricId === winner);
+  return inScope.filter((row) => batchKey(row) === winner);
 }
 
 /** Every version of one scope, newest first, for resolving a verdict's wording. */

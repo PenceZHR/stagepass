@@ -22,6 +22,7 @@ import {
 } from "./stage-authority-service";
 import { getActions } from "./action-contract-service";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
+import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import type { Provider } from "./provider-selection-service";
 
 type TestPlanSnapshotDb = typeof import("../db/index").db;
@@ -495,7 +496,7 @@ function recomputeContentGate(input: {
       title: "TestPlan requires approval before QA",
     });
   }
-  return recomputeStageGate({
+  const gate = recomputeStageGate({
     changeId: input.changeId,
     phase: "TestPlan",
     status: blockers.length > 0 ? "blocked" : "passed",
@@ -522,6 +523,12 @@ function recomputeContentGate(input: {
       ...rows.manualChecks,
     ],
   });
+  // Both TestPlan gate writers funnel through here, so the rubric re-derivation
+  // sits here too: a gate row is append-only and the blocker list above is built
+  // purely from snapshot content, so without this the next TestPlan gate write
+  // would silently drop any rubric blocker already open.
+  const resynced = reapplyRubricStageGateBlockers(input.changeId, "TestPlan");
+  return resynced.applied ? resynced.gate : gate;
 }
 
 export function createTestPlanSnapshot(input: CreateTestPlanSnapshotInput): TestPlanSnapshot {
@@ -765,7 +772,7 @@ export function approveTestPlan(input: ApproveTestPlanInput): StageGateRecord {
     })),
   });
   if (blockers.length > 0) {
-    return recomputeStageGate({
+    const blockedGate = recomputeStageGate({
       changeId: input.changeId,
       phase: "TestPlan",
       status: "blocked",
@@ -778,6 +785,10 @@ export function approveTestPlan(input: ApproveTestPlanInput): StageGateRecord {
       requiredActions: ["retry_test_plan"],
       rows: [snapshot, ...rows.coverageItems, ...rows.riskMappings, ...rows.requiredCommands, ...rows.manualChecks],
     });
+    // This early return is a second, independent TestPlan gate writer that does
+    // not go through recomputeContentGate, so it needs its own re-derivation.
+    const resynced = reapplyRubricStageGateBlockers(input.changeId, "TestPlan");
+    return resynced.applied ? resynced.gate : blockedGate;
   }
 
   const approvedAt = input.approvedAt ?? nowISO();

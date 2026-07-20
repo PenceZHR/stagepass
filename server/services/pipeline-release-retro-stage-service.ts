@@ -147,6 +147,11 @@ export async function runRetro(
     successSummary: "Retro completed",
     provider,
     sessionKind: "general",
+    // §3: retro is Retro's producer, and the phase has no critic. Retro owns no
+    // `stage_gates` row anywhere in the repo, so its verdicts are recorded and
+    // displayed but can never block -- see RUBRIC_ROLE_ANSWERED_BY, and the
+    // drawer says so rather than letting a ticked `blocking` do nothing quietly.
+    rubricPhase: "Retro",
     resumeThread: false,
     afterSuccessfulResult: async ({ runId }) => {
       runLedgerRepository.patchChange(changeId, { retroDone: 1 }, { runId });

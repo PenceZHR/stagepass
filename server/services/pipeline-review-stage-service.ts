@@ -23,6 +23,12 @@ import {
   withExecutionFence,
 } from "./execution-fence-service";
 import { assemblePrompt } from "./prompt-service";
+import { syncRubricFindings } from "./rubric-gate-adapters";
+import { stripRubricLines } from "./rubric-line-protocol";
+import {
+  harvestStageRubricOrRecordUnanswered,
+  resolveStageRubric,
+} from "./rubric-stage-service";
 import {
   completeReviewAttemptFromStructuredOutput,
   failReviewAttempt,
@@ -722,6 +728,14 @@ export async function runReview(
       });
       assertCurrentExecutionFence(context, runId);
 
+      // §3: review IS Build's critic, so it answers the Build critic rubric even
+      // when re-running after a Fix. That matches the Review panel's own mapping
+      // (change-phase-map.ts) -- one critic rubric the stage and the drawer both
+      // point at, instead of two that alternate depending on what was reviewed.
+      const stageRubric = resolveStageRubric(
+        { projectId: project.id, changeId, phase: "Build", role: "critic" },
+        { runId, roundId: null },
+      );
       const prompt = `${assemblePrompt("review", {
         changeId,
         repoPath: reviewRepoPath,
@@ -761,12 +775,14 @@ export async function runReview(
   ${priorBlockingFindings}
 
   For every prior finding listed above, output exactly one PRIOR line using verdict still_open, fixed, downgraded, not_reviewable, or not_rechecked. Missing prior verdicts are recorded as not_rechecked and keep the old blocker open; unknown prior verdicts invalidate the whole Review output.
-  Every PRIOR line must include non-empty evidence or reviewerNotes. still_open and downgraded verdicts must include a meaningful requiredFix for the remaining remediation.`;
+  Every PRIOR line must include non-empty evidence or reviewerNotes. still_open and downgraded verdicts must include a meaningful requiredFix for the remaining remediation.${
+    stageRubric?.promptSection ? `\n\n${stageRubric.promptSection}` : ""
+  }`;
 
       const engine = await getPipelineEngine(reviewProvider);
       const reviewCandidateBeforeRun = readReviewCandidateFileState(project.repoPath, changeId);
 
-      const result = await engine.run({
+      let result = await engine.run({
         changeId,
         repoPath: reviewRepoPath,
         phase: "review",
@@ -791,6 +807,31 @@ export async function runReview(
         }),
       });
       assertCurrentExecutionFence(context, runId);
+      // Harvest before the review line protocol: RUBRIC lines are not part of
+      // the FINDING/PRIOR/APPROVED contract, and parseReviewLineProtocol would
+      // see them as stray text. Void degrades to `not_assessed` rather than
+      // throwing -- a review attempt is a ledger row with a fenced lifecycle,
+      // and killing one over a mis-typed criterion id would strand the change at
+      // REVIEWING; not_assessed is blocking anyway, so this still fails closed.
+      if (stageRubric && result.success && (result.summary ?? "").trim().length > 0) {
+        harvestStageRubricOrRecordUnanswered({
+          stageRubric,
+          changeId,
+          runId,
+          roundId: null,
+          rawText: result.summary ?? "",
+          // parseReviewLineProtocol declares SUMMARY. The rubric guard runs the
+          // same structural check and runs FIRST, so without this it would
+          // reject the review's own SUMMARY body as an off-script block.
+          expectedBlockNames: ["SUMMARY"],
+        });
+        assertCurrentExecutionFence(context, runId);
+        result = { ...result, summary: stripRubricLines(result.summary ?? "") };
+        // §4.3: a blocking critic criterion answered `no` becomes a P0 finding,
+        // which computeMergeReadiness counts across every source.
+        syncRubricFindings(changeId, "Build");
+        assertCurrentExecutionFence(context, runId);
+      }
       const reviewThreadId = normalizedProviderThreadId(result.threadId);
       if (reviewThreadId) {
         recordProviderSession({

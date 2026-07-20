@@ -52,13 +52,18 @@ export interface RubricRolePanel {
   judgedVersion: number | null;
   judgedByOutdatedVersion: boolean;
   blocked: boolean;
+  /** The pipeline stage that answers this role; null when nothing does. */
+  answeredBy: string | null;
 }
+
+export type RubricBlockingChannel = "requirement_gap" | "finding" | "stage_gate" | "none";
 
 export interface RubricPanelState {
   phase: RubricPhase;
   projectId: string;
   changeId: string;
   roundId: string | null;
+  blockingChannel: RubricBlockingChannel;
   roles: RubricRolePanel[];
 }
 

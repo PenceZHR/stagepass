@@ -126,27 +126,62 @@ export interface RubricOutcome {
   blocked: boolean;
   /** Blocking criteria the model answered `no` on. */
   failedCriterionIds: string[];
-  /** Criteria with no verdict at all. Always blocking. */
+  /** Criteria with no verdict at all, whatever their `blocking` flag. */
   notAssessedCriterionIds: string[];
-  /** Non-blocking criteria answered `no`: recorded, not blocking. */
+  /** Non-blocking criteria answered `no`, or left unanswered: recorded, not blocking. */
   advisoryCriterionIds: string[];
+  /**
+   * Exactly the criteria that block: the single list a gate should derive from.
+   *
+   * Kept separate from `notAssessedCriterionIds` because those two answer
+   * different questions. "Did the model answer?" is what the drawer renders and
+   * what the fail-closed record is about; "does this stop the pipeline?" is what
+   * a gate needs. Collapsing them is what let the drawer and the gate disagree.
+   */
+  blockingCriterionIds: string[];
 }
 
 /**
  * What a set of assessments blocks.
  *
- * Three rules, straight from §4.3:
+ * Three rules, from §4.3:
  *  - `no` on a blocking criterion blocks;
  *  - `no` on a non-blocking criterion is recorded only;
- *  - ANY `not_assessed` blocks, whatever the criterion's `blocking` flag says.
+ *  - `not_assessed` is recorded for every criterion, and blocks the ones whose
+ *    `blocking` flag is set.
  *
- * The asymmetry in the third rule is deliberate and worth stating: `blocking:
- * false` is the author saying "a failure here should not stop the pipeline",
- * which is a judgment about the CONTENT. `not_assessed` is not content -- it
- * means the model did not answer a question it was given, so the rubric has no
- * information about that criterion at all. Letting a non-blocking criterion
- * absorb silence would give any model a way to skip the questions it expects to
- * fail. Nothing here is wired to a gate yet; batch 5 owns that.
+ * ## Why the third rule is scoped to blocking criteria
+ *
+ * §4.3 states it unscoped -- "ANY not_assessed blocks" -- and the reason it
+ * gives is that letting a non-blocking criterion absorb silence "would give any
+ * model a way to skip the questions it expects to fail". That reason does not
+ * reach a non-blocking criterion: answering it `no` would not have blocked
+ * anything either, so skipping it buys the model nothing. There is no evasion to
+ * close.
+ *
+ * Applied literally it does real damage, in two ways that were both measured
+ * rather than argued:
+ *
+ *  1. It contradicted the gate. `activeRubricBlockers` intersects derived
+ *     blockers with the criteria the user currently has ticked, so an unanswered
+ *     advisory criterion produced NO blocking record -- while this function said
+ *     `blocked`, and the drawer drew a red dot for a phase nothing was blocking.
+ *     Batch 5's comment asserts the two "can never disagree" because they share
+ *     this function; sharing it was not enough, because each read a different
+ *     field off it.
+ *  2. It let an EDIT open a blocker. Silence recorded against an advisory
+ *     criterion sat there harmlessly until someone ticked `blocking`, at which
+ *     point the intersection admitted it and a P0 appeared -- derived from a
+ *     stale verdict, on a phase whose gate may already be stamped. §4.3.1's
+ *     asymmetry rule is explicit that an edit may only ever CLOSE a blocker, and
+ *     §4.4 that editing a rubric invalidates no stamped gate; this broke both.
+ *
+ * Scoping the rule to blocking criteria settles both: what opens a blocker is
+ * now entirely a function of the criterion as it stood WHEN JUDGED, which is
+ * exactly the snapshot direction §4.3.1 requires. Silence on a criterion the
+ * user did mark blocking still blocks, so the fail-closed guarantee that matters
+ * is untouched -- and `notAssessedCriterionIds` still lists every unanswered
+ * criterion, so nothing stops being visible.
  */
 export function rubricOutcome(
   criteria: readonly RubricCriterion[],
@@ -156,27 +191,33 @@ export function rubricOutcome(
   const failedCriterionIds: string[] = [];
   const notAssessedCriterionIds: string[] = [];
   const advisoryCriterionIds: string[] = [];
+  const blockingCriterionIds: string[] = [];
 
   for (const assessment of assessments) {
+    // Unknown criterion ids default to blocking rather than advisory: an id with
+    // no known `blocking` flag is a bug, and the safe reading of a bug is that
+    // it blocks.
+    const advisory = blockingById.get(assessment.criterionId) === false;
     if (assessment.verdict === "not_assessed") {
       notAssessedCriterionIds.push(assessment.criterionId);
+      if (advisory) advisoryCriterionIds.push(assessment.criterionId);
+      else blockingCriterionIds.push(assessment.criterionId);
       continue;
     }
     if (assessment.verdict !== "no") continue;
-    if (blockingById.get(assessment.criterionId) === false) {
+    if (advisory) {
       advisoryCriterionIds.push(assessment.criterionId);
     } else {
-      // Unknown criterion ids default to blocking rather than advisory: an id
-      // with no known `blocking` flag is a bug, and the safe reading of a bug
-      // is that it blocks.
       failedCriterionIds.push(assessment.criterionId);
+      blockingCriterionIds.push(assessment.criterionId);
     }
   }
 
   return {
-    blocked: failedCriterionIds.length > 0 || notAssessedCriterionIds.length > 0,
+    blocked: blockingCriterionIds.length > 0,
     failedCriterionIds,
     notAssessedCriterionIds,
     advisoryCriterionIds,
+    blockingCriterionIds,
   };
 }

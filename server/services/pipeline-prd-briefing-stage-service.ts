@@ -36,6 +36,12 @@ import {
   StageBoundaryViolationError,
 } from "./pipeline-run-ledger-service";
 import { assemblePrompt, type PromptPhase } from "./prompt-service";
+import type { RubricRole } from "./rubric-assessment";
+import {
+  appendRubricPromptSection,
+  harvestStageRubric,
+  resolveStageRubric,
+} from "./rubric-stage-service";
 import {
   applyLineProtocol,
   guardLineProtocolSchema,
@@ -87,6 +93,27 @@ interface PrdBriefingStageConfig {
   lineProtocol?: {
     parse: (rawText: string, ctx: LineProtocolContext) => LineProtocolParseResult;
   };
+  /**
+   * Which PRD rubric role this stage answers (§3).
+   *
+   * PRD is the only phase outside Spec with a real critic: the briefing draft is
+   * the producer, and the final review is the independent recheck -- exactly the
+   * producer/critic pair §3 describes. Question generation answers neither. It
+   * produces questions rather than the artifact the rubric is about, and handing
+   * it a checklist about a draft that does not exist yet would collect a page of
+   * `no`s that mean nothing and, under §4.3, block on every one of them.
+   */
+  rubricRole?: RubricRole;
+  /**
+   * The `<<` block names THIS stage legitimately emits.
+   *
+   * The rubric parser runs the same structural guard the stage's own parser
+   * does, and it runs FIRST. Without this it would reject the stage's own
+   * `MARKDOWN<<` body as an off-script block and void a reply the stage was
+   * about to accept -- turning a rubric into a way to break a working stage.
+   * Kept next to `lineProtocol` so the two lists are edited together.
+   */
+  rubricExpectedBlockNames?: readonly string[];
 }
 
 class PipelineRunStoppedError extends Error {
@@ -321,10 +348,16 @@ async function runPrdBriefingStage(
   const scope = defaultScopeForPhase("intake");
 
   try {
-    const prompt = assemblePrompt(config.promptPhase, {
+    const stageRubric = config.rubricRole
+      ? resolveStageRubric(
+          { projectId: change.projectId, changeId, phase: "PRD", role: config.rubricRole },
+          { runId, roundId: null },
+        )
+      : null;
+    const prompt = appendRubricPromptSection(assemblePrompt(config.promptPhase, {
       changeId,
       repoPath: project.repoPath,
-    }, scope);
+    }, scope), stageRubric);
 
     const beforeAi = captureWorkspaceSnapshot(project.repoPath);
     const engine = await getPipelineEngine(provider as EngineProvider);
@@ -338,7 +371,7 @@ async function runPrdBriefingStage(
       source: "none",
       message: `${config.label} provider running`,
     });
-    const result = await engine.run({
+    let result = await engine.run({
       changeId,
       repoPath: project.repoPath,
       phase: "intake",
@@ -362,6 +395,20 @@ async function runPrdBriefingStage(
     });
     assertRunStillRunning(runId);
     assertChangeNotBlocked(changeId, "intake");
+    // Harvest before the line protocol and the ingestion: the RUBRIC lines are
+    // not part of this stage's contract, and the draft's own reply becomes
+    // prd-draft.md verbatim. Skipped for a failed or empty reply.
+    if (stageRubric && result.success && (result.summary ?? "").trim().length > 0) {
+      const harvested = harvestStageRubric({
+        stageRubric,
+        changeId,
+        runId,
+        roundId: null,
+        rawText: result.summary ?? "",
+        expectedBlockNames: config.rubricExpectedBlockNames,
+      });
+      result = { ...result, summary: harvested.cleanedText };
+    }
 
     const afterAi = captureWorkspaceSnapshot(project.repoPath);
     const mutations = diffWorkspaceSnapshots(beforeAi, afterAi);
@@ -586,6 +633,10 @@ export async function runPrdBriefingDraft(
       markdown: (output as PrdBriefingDraftOutput).markdown,
       provider,
     }),
+    rubricRole: "producer",
+    // parsePrdBriefingDraftLineProtocol declares MARKDOWN; the rubric guard must
+    // allow exactly what the stage's own parser allows.
+    rubricExpectedBlockNames: ["MARKDOWN"],
     provider,
   }));
 }
@@ -616,6 +667,9 @@ export async function runPrdBriefingFinalReview(
       reviewOutput: output as FinalReviewOutput,
       provider,
     }),
+    rubricRole: "critic",
+    // parseFinalReviewLineProtocol declares RISK_SUMMARY.
+    rubricExpectedBlockNames: ["RISK_SUMMARY"],
     provider,
   }));
 }

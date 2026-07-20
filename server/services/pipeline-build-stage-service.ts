@@ -11,6 +11,12 @@ import { createChildLogger } from "../logger";
 import type { Change, ChangeStatus, Project } from "../types";
 import { emitEvent } from "./event-service";
 import { assemblePrompt } from "./prompt-service";
+import type { RubricPhase } from "./rubric-assessment";
+import { syncRubricFindings } from "./rubric-gate-adapters";
+import {
+  harvestStageRubricOrRecordUnanswered,
+  resolveStageRubric,
+} from "./rubric-stage-service";
 import type { AiRunItem, AiRunResult, AiStreamEvent } from "./ai-engine-types";
 import {
   StaleLeaseFenceError,
@@ -257,6 +263,79 @@ export function formatThreadEvent(event: AiStreamEvent): FormattedEvent | null {
   return null;
 }
 
+interface StreamedRubricHarvest {
+  /** Feed every stream event through this. */
+  observe: (event: AiStreamEvent) => void;
+  /** Call once, after the stream has completed normally. */
+  settle: () => void;
+  promptSection: string | null;
+}
+
+/**
+ * Lets a rubric ride on a STREAMED stage (§3: `implement` is Build's producer,
+ * `fix_findings` is Fix's).
+ *
+ * Build and Fix are the only producers that never hand back a single reply
+ * string: `engine.runStreamed` yields items and the stage's real output is the
+ * workspace, so `result.summary` -- the thing every other harvest parses -- does
+ * not exist. The model's prose does though, as `agent_message` items, which is
+ * where the RUBRIC lines land. Collecting them and parsing the concatenation is
+ * what makes these two phases answerable at all; without it the Build/Fix
+ * blocking channel batch 5 built has nobody to produce a verdict for it.
+ *
+ * Every completed message is kept, not just the last. A model that writes its
+ * checklist and then adds one more remark would otherwise have its whole rubric
+ * silently dropped -- and silently dropped, under §4.3, reads as "this phase has
+ * no rubric", which reads as a pass.
+ *
+ * `settle` is deliberately callable with nothing collected: a stage that was
+ * asked and said nothing must record `not_assessed` per criterion rather than no
+ * rows at all. It must only be called once the stream has finished normally,
+ * because attributing silence to a model whose provider died is the same false
+ * provenance the document runner refuses.
+ */
+function streamedRubricHarvest(input: {
+  changeId: string;
+  projectId: string;
+  phase: Extract<RubricPhase, "Build" | "Fix">;
+  runId: string;
+}): StreamedRubricHarvest {
+  const stageRubric = resolveStageRubric(
+    {
+      projectId: input.projectId,
+      changeId: input.changeId,
+      phase: input.phase,
+      role: "producer",
+    },
+    { runId: input.runId, roundId: null },
+  );
+  const messages: string[] = [];
+  return {
+    promptSection: stageRubric?.promptSection ?? null,
+    observe: (event) => {
+      if (!stageRubric) return;
+      const e = event as { type?: string; item?: { type?: string; text?: string } };
+      if (e.type !== "item.completed" || e.item?.type !== "agent_message") return;
+      const text = e.item.text ?? "";
+      if (text.trim().length > 0) messages.push(text);
+    },
+    settle: () => {
+      if (!stageRubric) return;
+      harvestStageRubricOrRecordUnanswered({
+        stageRubric,
+        changeId: input.changeId,
+        runId: input.runId,
+        roundId: null,
+        rawText: messages.join("\n"),
+      });
+      // §4.3: turn the verdicts into this phase's own blocking form. Build and
+      // Fix own no stage gate, so the channel is a review finding, and
+      // computeMergeReadiness counts open P0s across every source.
+      syncRubricFindings(input.changeId, input.phase);
+    },
+  };
+}
+
 export async function runImplementStreamed(
   changeId: string,
   context: JobExecutionContext,
@@ -319,10 +398,18 @@ async function runImplementStreamedInExecutionScope(
           changeId,
           run: buildRun,
         });
+        const rubric = streamedRubricHarvest({
+          changeId,
+          projectId: change.projectId,
+          phase: "Build",
+          runId,
+        });
         const prompt = `${assemblePrompt("implement", {
           changeId,
           repoPath: buildRun.workspacePath,
-        })}\n\n${renderDbPlanScopeForPrompt(changeId)}\n\n${renderDbTestPlanForPrompt(changeId)}\n\n${renderDesignInputsForPrompt(buildDesign.designInputs)}\n\n${renderBuildGitFactsForPrompt(buildRun)}`;
+        })}\n\n${renderDbPlanScopeForPrompt(changeId)}\n\n${renderDbTestPlanForPrompt(changeId)}\n\n${renderDesignInputsForPrompt(buildDesign.designInputs)}\n\n${renderBuildGitFactsForPrompt(buildRun)}${
+          rubric.promptSection ? `\n\n${rubric.promptSection}` : ""
+        }`;
 
         if (Date.now() - startupStartedAt >= startupTimeoutMs) {
           throw new Error(`Build stream start timed out after ${startupTimeoutMs}ms`);
@@ -358,6 +445,7 @@ async function runImplementStreamedInExecutionScope(
             threadId = e.threadId;
           }
 
+          rubric.observe(event);
           const formatted = formatThreadEvent(event);
           if (formatted) {
             await emitEvent({
@@ -370,6 +458,11 @@ async function runImplementStreamedInExecutionScope(
             });
           }
         });
+        assertCurrentExecutionFence(context, runId);
+        // Only now that the stream has finished normally: a provider that died
+        // mid-run said nothing, and "the model declined to answer" is a claim
+        // this stage would have no basis for.
+        rubric.settle();
         assertCurrentExecutionFence(context, runId);
 
         // Save the write-phase thread under its own session kind: recording it
@@ -688,6 +781,12 @@ async function runFixStreamedInExecutionScope(
         },
       });
 
+      const rubric = streamedRubricHarvest({
+        changeId,
+        projectId: change.projectId,
+        phase: "Fix",
+        runId,
+      });
       let prompt = assemblePrompt("fix", {
         changeId,
         repoPath: buildRun.workspacePath,
@@ -736,6 +835,11 @@ async function runFixStreamedInExecutionScope(
         rawJson: { provider },
       });
 
+      // Last, after the open findings block: the rubric section tells the model
+      // to put its RUBRIC lines at the very end of its reply, so it must be the
+      // last thing the prompt says.
+      if (rubric.promptSection) prompt += `\n\n${rubric.promptSection}`;
+
       const stream = engine.runStreamed({
         changeId,
         repoPath: buildRun.workspacePath,
@@ -773,6 +877,7 @@ async function runFixStreamedInExecutionScope(
           });
         }
 
+        rubric.observe(event);
         const formatted = formatThreadEvent(event);
         if (formatted) {
           await emitEvent({
@@ -785,6 +890,8 @@ async function runFixStreamedInExecutionScope(
           });
         }
       }
+      assertCurrentExecutionFence(context, runId);
+      rubric.settle();
       assertCurrentExecutionFence(context, runId);
 
       // Event 7: AI completed, collecting results

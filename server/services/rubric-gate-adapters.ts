@@ -24,6 +24,7 @@ import {
   peekStageAuthority,
   recomputeStageGate,
   type PipelinePhase,
+  type StageGateRecord,
 } from "./stage-authority-service";
 import { withSqliteWriteRetry } from "../db/write-boundary";
 
@@ -492,7 +493,14 @@ function toStoredBlocker(value: unknown): StoredBlocker | null {
 
 export type RubricStageGateSyncResult =
   | { applied: false; reason: "unsupported_phase" | "no_gate" | "unchanged" }
-  | { applied: true; blocking: string[]; status: string };
+  /**
+   * `gate` is the row this sync appended. Callers that hand a gate record on to
+   * something human-readable need it: `recomputeContentGate` returns its own
+   * record straight into a TestPlan markdown mirror, and returning the
+   * pre-resync one would print "gate: passed" in a file whose phase is, as of
+   * one statement later, blocked.
+   */
+  | { applied: true; blocking: string[]; status: string; gate: StageGateRecord };
 
 /**
  * Projects rubric verdicts onto a document phase's stage gate.
@@ -571,7 +579,7 @@ export function syncRubricStageGateBlockers(
   }
 
   const status = derived.length > 0 ? "blocked" : baseStatus;
-  recomputeStageGate({
+  const next = recomputeStageGate({
     changeId,
     phase: pipelinePhase,
     status,
@@ -586,14 +594,81 @@ export function syncRubricStageGateBlockers(
     sourceDbHash: gate.sourceDbHash,
   });
 
-  return { applied: true, blocking: nextRubricIds, status };
+  return { applied: true, blocking: nextRubricIds, status, gate: next };
+}
+
+/**
+ * What every document-phase gate writer must call immediately AFTER writing its
+ * own gate row.
+ *
+ * ## The failure this exists to stop
+ *
+ * `stage_gates` is append-only and each phase publishes its whole blocker list
+ * from its own inputs -- `pipeline-design-stage-service` writes a literal `[]`
+ * for TechSpec, `plan-snapshot-service` hand-builds Plan's from missing fields
+ * and risks. None of them knows rubric blockers exist. So the sequence
+ *
+ *     rubric verdict says `no` -> blocker appended to the gate
+ *     ... phase re-runs, or anything else recomputes its gate ...
+ *     phase writes a fresh gate row from its own inputs
+ *
+ * ends with the rubric blocker GONE, silently, with the gate reading `passed`.
+ * Batch 5 built the projection and wrote this ordering rule down, but left the
+ * writers themselves untouched, so until now the rule had no enforcer.
+ *
+ * Re-deriving after the fact is the only shape that works, because a gate row
+ * cannot be amended in place -- `insertStageGate` is the sole production writer
+ * of that table and there is no update path anywhere.
+ *
+ * ## Why it is safe to run on every gate write
+ *
+ * It is a no-op unless the set of rubric blocker ids actually changed, so the
+ * common case -- no rubric, no criteria ticked blocking, or nothing judged --
+ * costs a few indexed reads and appends nothing. That matters: a gate row that
+ * says the same thing as its predecessor still bumps `gate_version`, which
+ * `preflight-service` rejects as `gate_version_drift` for any client holding
+ * the older contract.
+ *
+ * ## Why it is not defensive about failure
+ *
+ * It deliberately does not swallow errors. Losing a rubric blocker is the exact
+ * fail-open this whole mechanism exists to prevent, so a phase whose resync
+ * cannot run must fail loudly rather than publish a gate that quietly under-
+ * reports what is blocking. The one thing a caller must guarantee is that it is
+ * NOT inside a `db.transaction`: `recomputeStageGate` opens its own on the same
+ * better-sqlite3 connection, and nesting raises "cannot start a transaction
+ * within a transaction". `persistPlanSnapshot` is the only writer that had to be
+ * arranged around this, and it calls after its transaction commits.
+ */
+export function reapplyRubricStageGateBlockers(
+  changeId: string,
+  phase: RubricPhase,
+): RubricStageGateSyncResult {
+  return syncRubricStageGateBlockers(changeId, phase);
 }
 
 // --- dispatcher -------------------------------------------------------------
 
+export type RubricBlockingChannel = "requirement_gap" | "finding" | "stage_gate" | "none";
+
+/**
+ * Which blocking form a phase's verdicts take, decided without writing anything.
+ *
+ * The drawer reads this so a `blocking` tick on a phase with `none` can say so
+ * out loud. Refine, QA, Merge and Retro own no `stage_gates` row and are not
+ * Spec, Build or Fix, so a verdict of theirs has nowhere to land -- ticking
+ * `blocking` there is a no-op, and an invisible no-op in a mechanism whose whole
+ * purpose is stopping things is worse than a visible absence.
+ */
+export function rubricBlockingChannel(phase: RubricPhase): RubricBlockingChannel {
+  if (phase === "Spec") return "requirement_gap";
+  if (phase === "Build" || phase === "Fix") return "finding";
+  return stageGatePhaseFor(phase) === null ? "none" : "stage_gate";
+}
+
 export interface SyncRubricBlockersResult {
   phase: RubricPhase;
-  channel: "requirement_gap" | "finding" | "stage_gate" | "none";
+  channel: RubricBlockingChannel;
   records: RubricGateSyncResult;
   stageGate: RubricStageGateSyncResult | null;
 }

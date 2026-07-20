@@ -149,11 +149,21 @@ describe("rubric assessments", () => {
     assert.deepEqual(outcome.failedCriterionIds, []);
   });
 
-  it("blocks on not_assessed even for a non-blocking criterion", () => {
-    // §4.3. `blocking: false` says "a failure here should not stop the
-    // pipeline" -- a judgment about content. Silence is not content, so a
-    // non-blocking criterion must not become a place to hide unanswered
-    // questions.
+  it("records not_assessed on a non-blocking criterion without blocking on it", () => {
+    // CHANGED in batch 6. This used to assert `blocked === true`, on §4.3's
+    // literal "ANY not_assessed blocks" plus the reasoning that a non-blocking
+    // criterion must not become a place to hide unanswered questions.
+    //
+    // That reasoning does not reach a NON-blocking criterion: answering it `no`
+    // would not have blocked either, so there is nothing to hide from. Keeping
+    // it cost two measured defects (see rubricOutcome's own comment): the gate
+    // and the drawer disagreed about whether such a phase was blocked, and
+    // merely TICKING `blocking` later promoted an old silence into a fresh P0 --
+    // an edit opening a blocker, which §4.3.1 and §4.4 both forbid.
+    //
+    // The unanswered criterion is still RECORDED, which is the fail-closed
+    // guarantee that matters, and silence on a criterion the user did mark
+    // blocking still blocks -- the case below.
     const answeredExceptC3 = ok([
       "RUBRIC: C1 | yes | a",
       "RUBRIC: C2 | yes | b",
@@ -163,8 +173,19 @@ describe("rubric assessments", () => {
       buildRubricAssessments(CRITERIA, answeredExceptC3.judgments),
     );
 
-    assert.equal(outcome.blocked, true);
-    assert.deepEqual(outcome.notAssessedCriterionIds, ["C3"]);
+    assert.equal(outcome.blocked, false);
+    assert.deepEqual(outcome.notAssessedCriterionIds, ["C3"], "silence is still recorded as silence");
+    assert.deepEqual(outcome.blockingCriterionIds, []);
+  });
+
+  it("still blocks on not_assessed for a criterion marked blocking", () => {
+    const outcome = rubricOutcome(
+      CRITERIA,
+      buildRubricAssessments(CRITERIA, ok("RUBRIC: C3 | yes | cosmetic ok").judgments),
+    );
+
+    assert.equal(outcome.blocked, true, "the fail-closed rule survives where it has a reason to");
+    assert.deepEqual(outcome.blockingCriterionIds, ["C1", "C2"]);
   });
 
   it("blocks a `no` on a blocking criterion and only records one on a non-blocking criterion", () => {

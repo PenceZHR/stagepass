@@ -35,6 +35,8 @@ import {
 import { markdownArtifactContentFromResult } from "./markdown-artifact-content-service";
 import { validateOutputSchema } from "./output-schema-validator";
 import { assemblePrompt, type PromptPhase } from "./prompt-service";
+import type { RubricPhase } from "./rubric-assessment";
+import { harvestStageRubric, resolveStageRubric } from "./rubric-stage-service";
 import { transitionChangeStatus } from "./change-status-service";
 import { runStageWithLedger } from "./stage-orchestrator-service";
 import {
@@ -113,6 +115,20 @@ export interface DocumentStageConfig {
     promptSection: string | null;
     harvest: (input: { runId: string; rawText: string }) => { cleanedText: string };
   };
+  /**
+   * The phase whose PRODUCER rubric this stage answers, for the stages that need
+   * nothing more than that.
+   *
+   * `rubric` above stays for callers that cannot use this -- Spec passes rounds
+   * and roles the runner knows nothing about. Everything else gets its rubric by
+   * naming a phase, because the alternative is copying the same six lines into
+   * every stage and getting the run id, the round id or the role wrong in one of
+   * them. `resolveStageRubric` is called INSIDE the run so the version pin
+   * records the run that actually asked.
+   *
+   * Ignored when `rubric` is set; passing both is a caller bug, not a merge.
+   */
+  rubricPhase?: RubricPhase;
   resumeThread?: boolean;
   threadId?: string;
   afterAiResult?: (input: { runId: string; result: AiRunResult }) => void | Promise<void>;
@@ -375,6 +391,47 @@ function appendAdditionalPrompt(
   return `${prompt}\n\n--- ${config.additionalPromptFileName} ---\n\n${additional}`;
 }
 
+/**
+ * Turns a `rubricPhase` into the same `{ promptSection, harvest }` pair a caller
+ * would otherwise hand-build.
+ *
+ * `roundId` is deliberately absent rather than defaulted: these phases have no
+ * rounds, and the null round is what `selectLatestAssessmentBatch` filters on.
+ * Every phase reachable through here answers the PRODUCER rubric -- a document
+ * stage IS the author of its artifact. The one phase whose critic also runs
+ * through a stage (PRD's final review) passes its own `rubric` because the role
+ * differs.
+ */
+function resolveConfiguredRubric(input: {
+  changeId: string;
+  projectId: string;
+  phase: RubricPhase | undefined;
+  runId: string;
+}): DocumentStageConfig["rubric"] | undefined {
+  if (!input.phase) return undefined;
+  const stageRubric = resolveStageRubric(
+    {
+      projectId: input.projectId,
+      changeId: input.changeId,
+      phase: input.phase,
+      role: "producer",
+    },
+    { runId: input.runId, roundId: null },
+  );
+  if (!stageRubric) return undefined;
+  return {
+    promptSection: stageRubric.promptSection,
+    harvest: ({ runId, rawText }) =>
+      harvestStageRubric({
+        stageRubric,
+        changeId: input.changeId,
+        runId,
+        roundId: null,
+        rawText,
+      }),
+  };
+}
+
 export async function runDocumentStage(
   changeId: string,
   config: DocumentStageConfig,
@@ -423,8 +480,14 @@ export async function runDocumentStage(
         changeId,
         repoPath: project.repoPath,
       }, scope), config, { changeId, repoPath: project.repoPath });
-      const prompt = config.rubric?.promptSection
-        ? `${basePrompt}\n\n${config.rubric.promptSection}`
+      const rubric = config.rubric ?? resolveConfiguredRubric({
+        changeId,
+        projectId: change.projectId,
+        phase: config.rubricPhase,
+        runId,
+      });
+      const prompt = rubric?.promptSection
+        ? `${basePrompt}\n\n${rubric.promptSection}`
         : basePrompt;
 
       const beforeAi = captureWorkspaceSnapshot(project.repoPath);
@@ -466,8 +529,8 @@ export async function runDocumentStage(
       // them. Skipped for a failed or empty reply -- there is nothing to judge,
       // and attributing silence to the model when the provider never spoke is
       // the same false provenance applyLineProtocol() guards against.
-      if (config.rubric && result.success && (result.summary ?? "").trim().length > 0) {
-        const harvested = config.rubric.harvest({ runId, rawText: result.summary ?? "" });
+      if (rubric && result.success && (result.summary ?? "").trim().length > 0) {
+        const harvested = rubric.harvest({ runId, rawText: result.summary ?? "" });
         assertCurrentExecutionFence(executionContext, runId);
         result = { ...result, summary: harvested.cleanedText };
       }
