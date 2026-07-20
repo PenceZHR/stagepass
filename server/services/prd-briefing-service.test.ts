@@ -358,16 +358,144 @@ describe("prd-briefing-service", { concurrency: false }, () => {
   });
 
   /**
-   * The post-condition itself, driven directly.
+   * The post-condition at its call site, driven through the real write path.
    *
    * The test above proves a correct append leaves decisions alone, but it
-   * cannot prove the guard is what would stop an incorrect one: deleting the
-   * assertRecordedDecisionsPreserved call and changing nothing else leaves the
-   * whole suite green, because the append has no route to a state it rejects.
-   * That is exactly the evidence a no-op guard would produce. Since the guard
-   * exists to catch a regression that does not exist yet, the only way to hold
-   * it to its claim is to hand it the bad state on purpose.
+   * cannot prove the guard is what would stop an incorrect one: the append has
+   * no route to a state the guard rejects, so deleting the call and changing
+   * nothing else left the whole suite green -- exactly the evidence a guard
+   * that did nothing at all would produce. `assertRecordedDecisionsPreserved`
+   * is the only thing standing where `assertQuestionsCanBeReplaced` stood, and
+   * a guard whose call site cannot be killed is a comment.
+   *
+   * So hand the transaction the bad state on purpose. The TEMP trigger stands
+   * in for the regression the guard names -- a write inside the append's own
+   * transaction that destroys or rewrites a decided card -- the same
+   * fault-injection the lock-rollback test at the bottom of this file uses.
+   * What these pin is not "the append is correct"; it is the three claims the
+   * call site makes: the guard runs, it runs INSIDE the transaction, and its
+   * rejection takes the entire round back out.
    */
+  async function seedAnsweredCard(): Promise<string> {
+    const criticalId = await seedQuestion("critical");
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID,
+      questionId: criticalId,
+      action: "answer",
+      value: "由 owner 审批。",
+    });
+    return criticalId;
+  }
+
+  async function appendRoundWithCorruption(
+    triggerBody: string,
+  ): Promise<unknown> {
+    db.run(sql.raw(`
+      CREATE TEMP TRIGGER prd_round_corrupts_decision
+      AFTER INSERT ON briefing_questions
+      WHEN NEW.change_id = '${CHANGE_ID}'
+      BEGIN
+        ${triggerBody}
+      END
+    `));
+    try {
+      return await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        blueJson: JSON.stringify({ questions: [question("important")] }),
+      }).then(
+        (value) => value,
+        (error: unknown) => error,
+      );
+    } finally {
+      db.run(sql`DROP TRIGGER IF EXISTS prd_round_corrupts_decision`);
+    }
+  }
+
+  function assertRoundRolledBack(criticalId: string): void {
+    const state = getPrdBriefingState(CHANGE_ID);
+    assert.deepEqual(
+      state.questions.map((row) => row.id),
+      [criticalId],
+      "a rejected round must leave no card behind: the guard runs inside the transaction",
+    );
+    assert.equal(state.questions[0].status, "answered");
+    assert.equal(state.questions[0].answer, "由 owner 审批。");
+  }
+
+  it("rejects and rolls back a round whose own write destroyed a decided card", async () => {
+    const criticalId = await seedAnsweredCard();
+
+    const outcome = await appendRoundWithCorruption(
+      `DELETE FROM briefing_questions WHERE id = '${criticalId}';`,
+    );
+
+    assert.ok(
+      outcome instanceof PrdBriefingError && outcome.code === "questions_have_human_actions",
+      `the append must be rejected, got: ${String(outcome)}`,
+    );
+    assert.match((outcome as PrdBriefingError).message, /destroyed/);
+    assertRoundRolledBack(criticalId);
+  });
+
+  it("rejects and rolls back a round whose own write reopened a decided card", async () => {
+    const criticalId = await seedAnsweredCard();
+
+    const outcome = await appendRoundWithCorruption(
+      `UPDATE briefing_questions SET status = 'open', answer = NULL WHERE id = '${criticalId}';`,
+    );
+
+    assert.ok(
+      outcome instanceof PrdBriefingError && outcome.code === "questions_have_human_actions",
+      `the append must be rejected, got: ${String(outcome)}`,
+    );
+    assert.match((outcome as PrdBriefingError).message, /overwrote/);
+    assertRoundRolledBack(criticalId);
+  });
+
+  /**
+   * The other edge of the same guard: it must reject writes that damage a
+   * decision, and it must NOT reject a human making one.
+   *
+   * The snapshot the post-condition measures against is read inside the
+   * transaction that writes, so the question it asks is "did MY append damage a
+   * decision". Read it at function entry instead -- one await earlier -- and
+   * the question quietly becomes "has anyone touched a decision since I
+   * started", which a human answering a card during an in-flight generation
+   * answers yes to. Against that shape the guard rejects, and rolls back a
+   * perfectly good AI round to protect an answer that was never in danger.
+   *
+   * The window is one microtask wide, so this sweeps interleaving points rather
+   * than guessing the one that lands in it.
+   */
+  it("does not reject a round because a human answered a card while it was in flight", async () => {
+    const criticalId = await seedQuestion("critical");
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID, questionId: criticalId, action: "answer", value: "答案 0",
+    });
+
+    for (let ticks = 1; ticks <= 6; ticks += 1) {
+      const generation = completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [question("optional")] },
+      }).then(() => null, (error: unknown) => error);
+      for (let tick = 0; tick < ticks; tick += 1) await Promise.resolve();
+      await applyBriefingQuestionAction({
+        changeId: CHANGE_ID, questionId: criticalId, action: "answer", value: `答案 ${ticks}`,
+      });
+
+      assert.equal(
+        await generation,
+        null,
+        `a human answer ${ticks} tick(s) into a generation must not cost the round`,
+      );
+    }
+
+    const state = getPrdBriefingState(CHANGE_ID);
+    assert.deepEqual(state.questions.map((row) => row.roundNo), [1, 2, 3, 4, 5, 6, 7]);
+    assert.equal(state.questions[0].id, criticalId);
+    assert.equal(state.questions[0].answer, "答案 6", "the last human answer stands");
+  });
+
   describe("assertRecordedDecisionsPreserved", () => {
     const decided = (overrides: Partial<typeof briefingQuestions.$inferSelect> = {}) => ({
       id: "BQ-DECIDED",
@@ -438,6 +566,51 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     }
 
     assert.deepEqual(getPrdBriefingState(CHANGE_ID).questions.map((row) => row.roundNo), [1, 2, 3]);
+  });
+
+  /**
+   * A round number read outside the transaction that writes it is a guess about
+   * a past state, and `(change_id, round_no)` is a NON-unique index, so the
+   * guess does not fail loudly -- it files a second generation's cards under
+   * the first generation's round, and the interrogation record silently lies
+   * about which answers were asked for together.
+   *
+   * This needs no second process and no SQLite contention. `completeQuestion-
+   * Generation` awaits between reading the round number and writing it (id
+   * minting is async), and `await` is an interleaving point: two overlapping
+   * calls in one process, on one connection, both read the same number. Run
+   * against the read-outside version this test observes rounds [1, 1].
+   *
+   * The assertion is on the invariant, not on an ordering, so it holds however
+   * the two calls interleave -- and fails the moment any two of them agree on a
+   * round number.
+   */
+  it("gives two overlapping question rounds distinct round numbers", async () => {
+    await savePrdIntent({ changeId: CHANGE_ID, rawText: "我要做一个战前会议室。" });
+
+    await Promise.all([
+      completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [question("optional")] },
+      }),
+      completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [question("important")] },
+      }),
+    ]);
+
+    const cards = getPrdBriefingState(CHANGE_ID).questions;
+    assert.equal(cards.length, 2, "both generations must land");
+    assert.deepEqual(
+      cards.map((row) => row.roundNo),
+      [1, 2],
+      "two concurrent generations must not share a round number",
+    );
+    assert.deepEqual(
+      [...cards.map((row) => row.severity)].sort(),
+      ["important", "optional"],
+      "one card from each generation, so the rounds really are the two separate calls",
+    );
   });
 
   /**
