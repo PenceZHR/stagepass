@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ActionReasonDialog } from "./action-reason-dialog";
+import { selectReviewFindingWaiverContext } from "./action-reason-context";
 import { ProducedFile } from "./produced-file";
 import type { StageActionView } from "./stage-action-bar";
 import {
@@ -445,6 +446,11 @@ export function ReviewReportCenter({
   const p1Target = state?.findings.find(
     (finding) => finding.severity === "P1" && finding.status === "open" && finding.waivable
   )?.id ?? null;
+  // The waiver is binding, so the dialog shows the finding it waives — and only that one.
+  const waiverContext = useMemo(
+    () => selectReviewFindingWaiverContext(state?.findings, p1Target),
+    [state?.findings, p1Target],
+  );
   const actionBusy = busy || loading || waiving;
   const runReviewCommand = useMemo(() => resolveReviewRunCommand({
     gate,
@@ -568,6 +574,7 @@ export function ReviewReportCenter({
         description="提交前请写明本次人工接受 Review P1 风险的依据。"
         confirmLabel="提交"
         required
+        context={waiverContext}
         busy={waiving}
         onOpenChange={setWaiveDialogOpen}
         onConfirm={submitP1Waiver}

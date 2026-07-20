@@ -6,6 +6,11 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ArtifactsPanel } from "./artifacts-panel";
 import { ActionReasonDialog } from "./action-reason-dialog";
+import {
+  selectPlanRiskWaiverContext,
+  selectSpecBattleDecisionContext,
+  selectSpecRiskWaiverContext,
+} from "./action-reason-context";
 import { BuildSandbox } from "./build-sandbox";
 import { ChangedFilesPanel } from "./changed-files-panel";
 import { EventStreamPanel } from "./event-stream-panel";
@@ -977,6 +982,23 @@ export default function ChangeDetailPage() {
     await handleWaivePlanRisk(pending.riskId, reason);
   }, [handleSpecBattleDecision, handleWaivePlanRisk, reasonDialog, submitAcceptSpecBattleRisk]);
 
+  // The reason is a binding judgement, so the dialog has to carry the findings it
+  // rules on. Each kind gets only what it acts on: a waiver shows its single
+  // target, continuing the battle shows every still-open gap.
+  const reasonDialogContext = useMemo(() => {
+    if (!reasonDialog) return null;
+    const gaps = specBattleState?.gaps;
+    if (reasonDialog.kind === "spec_battle_decision") {
+      return reasonDialog.action === "waive_p1"
+        ? selectSpecRiskWaiverContext(gaps, reasonDialog.targetId)
+        : selectSpecBattleDecisionContext(gaps);
+    }
+    if (reasonDialog.kind === "accept_spec_risk") {
+      return selectSpecRiskWaiverContext(gaps, reasonDialog.targetId);
+    }
+    return selectPlanRiskWaiverContext(planSandboxState?.risks, reasonDialog.riskId);
+  }, [reasonDialog, specBattleState?.gaps, planSandboxState?.risks]);
+
   if (!change && changeError) {
     return (
       <div className="mx-auto max-w-2xl p-8">
@@ -1090,6 +1112,7 @@ export default function ChangeDetailPage() {
         description="提交前请写明本次人工处理依据。"
         confirmLabel="提交"
         required={reasonDialogRequired}
+        context={reasonDialogContext}
         busy={gateBusy}
         onOpenChange={(open) => {
           if (!open) setReasonDialog(null);

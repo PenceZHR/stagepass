@@ -16,7 +16,8 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { BattleDecisionAction, RequirementGap, SpecBattleGateState, SpecBattleState } from "./spec-battle-types";
+import type { BattleDecisionAction, SpecBattleGateState, SpecBattleState } from "./spec-battle-types";
+import { effectiveSeverity, isActiveGap, severityTone } from "./action-reason-context";
 import { ProducedFile } from "./produced-file";
 
 interface SpecBattlefieldProps {
@@ -42,14 +43,6 @@ interface SpecBattlefieldProps {
   onBattleDecision: (action: BattleDecisionAction, targetId?: string | null) => void;
   onRestartBattle: () => void;
   onRegenerateReport: () => void;
-}
-
-function effectiveSeverity(gap: RequirementGap): string {
-  return gap.downgradedTo ?? gap.severity;
-}
-
-function activeGap(gap: RequirementGap): boolean {
-  return ["open", "downgraded", "overridden"].includes(gap.status);
 }
 
 function displayPath(value: string | null | undefined): string {
@@ -119,12 +112,6 @@ function statusCopy(specBattle: SpecBattleGateState): { label: string; tone: str
     tone: "border-emerald-200 bg-emerald-50 text-emerald-900",
     detail: "没有阻断型 Requirement Gap",
   };
-}
-
-function severityTone(severity: string): string {
-  if (severity === "P0") return "border-red-200 bg-red-50 text-red-900";
-  if (severity === "P1") return "border-orange-200 bg-orange-50 text-orange-900";
-  return "border-yellow-200 bg-yellow-50 text-yellow-900";
 }
 
 function CommandButton({
@@ -197,7 +184,7 @@ export function SpecBattlefield({
     newlyFound: 0,
     notRechecked: 0,
   };
-  const openGaps = gaps.filter(activeGap);
+  const openGaps = gaps.filter(isActiveGap);
   const latestRoundFixClaims = latestRound ? fixClaims.filter((claim) => claim.roundId === latestRound.id) : [];
   const latestRoundGapReviews = latestRound ? gapReviews.filter((review) => review.roundId === latestRound.id) : [];
   const p1Targets = gaps.filter((gap) => effectiveSeverity(gap) === "P1" && ["open", "downgraded"].includes(gap.status));
