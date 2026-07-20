@@ -55,6 +55,21 @@
 
 **没有 critic 的阶段，`verdict` 只读 producer 产出。** 结构不变，少一路输入而已。
 
+**第 6 批实测：上表有三处不可实现，不是拼写问题。**
+- **Refine** 是聊天循环，没有 `runs` 行（`rubric_assessments.run_id` 是 NOT NULL），
+  判定**无处可挂**；也没有任何 `stage_gates` 行
+- **QA / Merge** 两个文件里**一个 `engine.run` 都没有** —— 表里自己写了"确定性检查"，
+  但没往下推出「没有人可以被摆一张清单」
+- **Fix 的 critic** 写的是「review（复跑）」，但只有**一个** review 阶段，只能回答一份
+  critic rubric
+
+**处理办法：不硬凑，而是做成显式映射并在 UI 里说出来** —— 不可答的栏明写「本阶段
+没有任何环节会回答这一栏的标准」，无阻断通道的阶段明写「勾选阻断不会拦住任何东西」。
+给出后端做不到的开关，正是前几批一直在治的静默失效，只是方向反过来（UI 骗用户）。
+
+**出厂默认 criteria 一律 `blocking: false`**：`not_assessed` 会阻断，出厂就勾阻断的话
+任何一次模型漏答都会给所有现存项目挂一条 P0，而 P0 的出口只有抽屉。
+
 ## 4. 主控已决（用户授权，无需再问）
 
 ### 4.1 判定取值：三态
@@ -84,7 +99,11 @@ not_assessed  未评估（模型漏答）
 - criterion 标 `blocking: true` 且判定 `no` → **生成一条该阶段既有形态的阻断项**
   （Spec → requirement gap；Build/Fix → review finding；文档阶段 → stage gate blocker）
 - `blocking: false` 的 `no` → 只记录，不阻断
-- 任何 `not_assessed` → **视同阻断**
+- **标了阻断的** criterion 漏答 → 视同阻断
+  （第 6 批修正：原文"任何 `not_assessed` 都阻断"对非阻断 criterion 不成立 ——
+  非阻断的题答 `no` 本来也不拦，跳过它一无所得，原理由够不着。更要命的是：
+  它让**一次纯编辑能凭一条陈旧的沉默开出 P0**，直接违反 §4.3.1 的不对称规则和
+  §4.4。修法：「开启」完全由**判定当时的快照**决定，「退休」才读当前 rubric。）
 
 **理由：不新建平行的阻断机制。** gate 已经会数 open P0/P1，rubric 只负责把
 "模型没想到去看"的东西变成它数得着的东西。
