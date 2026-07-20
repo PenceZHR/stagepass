@@ -133,6 +133,30 @@ rubric_assessments id, change_id, run_id, round_id(null), rubric_id,
    建过 rubric 的项目从此再也删不掉，且没有既有测试会发现（只有 change 删除计划有
    schema 推导的守卫，项目删除没有）。
 
+### 5.1 criterion 必须有跨版本稳定身份（**第 3 批发现，第 5 批之前必须堵死**）
+
+现状：`saveRubricVersion` 对每条 criterion 无条件生成新的 `RBC-<uuid>`，**哪怕正文
+一个字没改**。这在第 5 批会造成**无出口的死锁**：
+
+§4.3 要求 `blocking:true` 的 `no` 生成 requirement gap。若 gap id 从 criterion id 派生，
+则**任何一次 rubric 编辑都会让所有已开的 rubric 派生 gap 变成孤儿** —— 蓝方复核不到
+（它只认识自己报过的 gap），人类也解不掉（`human_cannot_resolve_gap` 明文禁止），
+只有 P1 能 waive。**一条被编辑孤立的 P0 rubric gap 会永久卡死 Spec gate，没有任何出口。**
+
+这正是本会话反复在治的那类病（死路 + 没有出口），不能再造一个。
+
+**要求：**
+- `rubric_criteria` 补 `criterion_key`（跨版本稳定，正文未变则沿用）
+- rubric 派生的 gap id **必须绑在 `criterion_key` 上**，不是版本内的行 id
+- **criterion 正文必须快照进 gap，永不回溯派生** —— 否则改一次措辞就会移动
+  `specSourceDbHash`，§4.3 与 §4.4 在这个边界上是冲突的
+
+### 5.2 判定必须按 `roundId` 读，不能按 `runId` 读（第 3 批发现）
+
+蓝方续跑（`resumeBlue`）那一轮不重跑红方，所以本次新 `runId` 下没有 producer 判定行，
+旧行还在、带着**同一个 `roundId`**。按 `runId` 读会看到「producer 无判定」并读成
+「没有 rubric」= 通过 —— **正是这套机制要防的失效**。第 4/5 批切记。
+
 ## 6. 输出契约（**AI 绝不亲手写 JSON** —— 项目成文规则）
 
 走 `outputSchema` 结构化输出 + schema 校验 + raw capture，判定照 `PRIOR` 行的样子：
@@ -185,4 +209,22 @@ RUBRIC <criterionId> yes|no <evidence>
 无 TTY 才中止（`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`）。有 TTY 的会话里会真删。
 
 **worktree 里一律改用 `npx tsx scripts/run-tests-isolated.ts`**（就是 `pnpm test` 指向的
-同一个脚本，只是绕开 pnpm 的前置检查，隔离逻辑与临时库完全一致）。
+同一个脚本，只是绕开 pnpm 的前置检查，隔离逻辑与临时库完全一致）。`pnpm lint` 同理，
+改用 `npx eslint`。
+
+**等待循环别用 `grep -q "[r]un-tests-isolated"` —— 它会匹配自己。** 外层 `zsh -c` 的
+命令行里就含这个字面量，`[r]un` 照样命中，结果死循环。第 3 批实测卡了 15 分钟。
+改成匹配不出现在等待命令自身里的串，例如：
+`while pgrep -f "tsx scripts/run-tests" >/dev/null; do sleep 20; done`
+
+## 11. 第 3 批发现但未修（推广前建议先处理）
+
+1. **红方 `spec` 阶段仍亲手写 JSON，且失败静默。** `parseRedSpecOutput` 的 catch 直接
+   返回 `{prdDeltaMarkdown: raw, fixClaims: []}` —— 无日志无事件无 gate 信号，任何杂质
+   都会让**全部 fix claims 人间蒸发**，蓝方下一轮把已修的 gap 当没修。违反「AI 绝不
+   亲手写 JSON」全项目规则。**第 6 批推广前建议先把 `spec` 迁到行协议。**
+2. **`prd-delta.md` 里存的是 JSON blob 不是 markdown**，而它在 tech_spec 的可读 scope
+   里 —— tech_spec agent 读到的「PRD delta」是一坨 JSON。既有问题。
+3. **仓库里有两套互不相同的 Spec 哈希定义**（`specSourceDbHash` 含 `war_reports.Spec`，
+   `reportSourceDbHash` 含 `findings.Spec`）。第 5 批若让 rubric 派生阻断项进哈希，
+   **两边都要改**，否则战报新鲜度会和 gate 判断打架。
