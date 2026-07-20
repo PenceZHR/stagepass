@@ -14,8 +14,10 @@ import {
 import type {
   AiRunInput,
   AiRunLifecycleSink,
+  AiRunResult,
   AiStreamEvent,
 } from "./ai-engine-types";
+import { StaleLeaseFenceError } from "./job-execution-context";
 import type { ProcessIdentity, ProcessIdentityProbe } from "./process-identity-service";
 
 function delay(ms: number): Promise<void> {
@@ -942,6 +944,264 @@ describe("CodexCliEngine.runStreamed child cleanup", () => {
         child.killSignals.includes("SIGTERM"),
         "a stream that never started must not leave codex running",
       );
+    } finally {
+      restoreSpawn();
+      restoreProbe();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider heartbeat lifecycle failures
+//
+// The heartbeat runs on a timer, so anything it throws lands in the timer
+// callback with no caller to catch it. In production that killed the whole
+// pipeline worker: scripts/pipeline-worker.ts installs an uncaughtException
+// handler that logs `pipeline_worker_fatal` and shuts the process down, the
+// supervisor restarts it, the replacement fences the dead worker's in-flight
+// jobs, and their still-live codex heartbeats then kill the replacement too.
+// ---------------------------------------------------------------------------
+
+/**
+ * The lifecycle sink the pipeline actually passes in is SYNCHRONOUS:
+ * pipeline-engine-service.ts's `onHeartbeat` calls `heartbeatProviderLease()`
+ * inline, and every write beneath it is better-sqlite3, which is synchronous
+ * (`withSqliteWriteRetry` even sleeps with `Atomics.wait`). A fenced lease
+ * therefore throws STRAIGHT INTO the timer callback -- which is why the live
+ * failure was reported as `uncaughtException` with `Timeout._onTimeout`
+ * directly above `onHeartbeat` in the stack, and why attaching a bare
+ * `promise.catch()` would not have caught it: `onHeartbeat` throws before it
+ * ever returns a promise to attach to.
+ *
+ * `mode: "reject"` exercises the other half of the declared contract
+ * (`onHeartbeat(event): void | Promise<void>`, ai-engine-types.ts:57).
+ */
+function fencingLifecycle(mode: "throw" | "reject"): {
+  sink: AiRunLifecycleSink;
+  fence: StaleLeaseFenceError;
+  heartbeatCount: () => number;
+  terminals: string[];
+} {
+  const fence = new StaleLeaseFenceError({
+    jobId: "PJOB-FENCED",
+    workerId: "worker-replacement",
+    leaseToken: "lease-replacement",
+    attemptNo: 1,
+  });
+  let heartbeats = 0;
+  const terminals: string[] = [];
+  const sink: AiRunLifecycleSink = {
+    onProcessStarted() {},
+    onHeartbeat() {
+      heartbeats += 1;
+      if (mode === "throw") throw fence;
+      return Promise.reject(fence);
+    },
+    onTerminal(event) {
+      terminals.push(event.status);
+    },
+  };
+  return { sink, fence, heartbeatCount: () => heartbeats, terminals };
+}
+
+/**
+ * Make process-level crashes observable instead of letting them abort the test
+ * run. node:test's own handlers are swapped out for the window, so an
+ * uncaughtException escaping a timer is recorded rather than tearing the
+ * runner down -- exactly the escape that kills the worker in production.
+ */
+async function captureProcessCrashes(body: () => Promise<void>): Promise<unknown[]> {
+  const crashes: unknown[] = [];
+  const onCrash = (error: unknown) => {
+    crashes.push(error);
+  };
+  const priorUncaught = process.listeners("uncaughtException");
+  const priorUnhandled = process.listeners("unhandledRejection");
+  process.removeAllListeners("uncaughtException");
+  process.removeAllListeners("unhandledRejection");
+  process.on("uncaughtException", onCrash);
+  process.on("unhandledRejection", onCrash);
+  try {
+    await body();
+    // Unhandled rejections are reported a turn later than the throw that made
+    // them, so give the microtask queue a chance to surface one.
+    await delay(50);
+    return crashes;
+  } finally {
+    process.off("uncaughtException", onCrash);
+    process.off("unhandledRejection", onCrash);
+    for (const listener of priorUncaught) {
+      process.on("uncaughtException", listener as (error: Error) => void);
+    }
+    for (const listener of priorUnhandled) {
+      process.on("unhandledRejection", listener as (error: Error) => void);
+    }
+  }
+}
+
+/** Run `body` with a short heartbeat period so a tick lands inside the test. */
+async function withFastHeartbeat(ms: number, body: () => Promise<void>): Promise<void> {
+  const prior = process.env.STAGEPASS_CODEX_HEARTBEAT_MS;
+  process.env.STAGEPASS_CODEX_HEARTBEAT_MS = String(ms);
+  try {
+    await body();
+  } finally {
+    if (prior === undefined) delete process.env.STAGEPASS_CODEX_HEARTBEAT_MS;
+    else process.env.STAGEPASS_CODEX_HEARTBEAT_MS = prior;
+  }
+}
+
+describe("CodexCliEngine provider heartbeat lifecycle failures", () => {
+  for (const mode of ["throw", "reject"] as const) {
+    it(`run(): a lifecycle that ${mode}s a stale fence aborts the run instead of killing the process`, async () => {
+      const child = new FakeCodexProcess();
+      const restoreProbe = installFakeIdentityProbe(child);
+      const restoreSpawn = setCodexCliSpawnForTest(() => child as never);
+      const lifecycle = fencingLifecycle(mode);
+      const settled: { result: AiRunResult | null; error: unknown } = {
+        result: null,
+        error: null,
+      };
+      try {
+        await withFastHeartbeat(10, async () => {
+          const crashes = await captureProcessCrashes(async () => {
+            const engine = new CodexCliEngine();
+            // Deliberately never fed: the run is mid-stream, exactly as a real
+            // codex run is when the replacement worker fences its job.
+            const tracked = engine.run(baseInput({ lifecycle: lifecycle.sink })).then(
+              (result) => {
+                settled.result = result;
+              },
+              (error: unknown) => {
+                settled.error = error;
+              },
+            );
+            // Long enough for many heartbeat periods to elapse.
+            await delay(150);
+            // Unblock the run even when the engine failed to reap the child,
+            // so an unfixed engine fails on its assertions rather than hanging.
+            child.kill("SIGKILL");
+            await Promise.race([tracked, delay(1_000)]);
+          });
+
+          assert.deepEqual(
+            crashes.map((crash) => (crash as Error)?.name ?? String(crash)),
+            [],
+            "a lifecycle heartbeat failure must never reach the process as an "
+              + "uncaughtException/unhandledRejection -- that is what kills the worker",
+          );
+        });
+
+        // Not swallowed: the run is over, and it is over BECAUSE of the fence.
+        assert.equal(settled.error, null, "run() reports failures as a result, not a rejection");
+        assert.equal(settled.result?.success, false, "losing the lease must fail the run");
+        assert.match(
+          String(settled.result?.summary),
+          /Stale lease fence for job PJOB-FENCED/,
+          "the fence must be named in the failure the stage layer sees, not hidden "
+            + "behind a generic empty-response error",
+        );
+        // The run no longer owns its slot, so the provider must not keep working.
+        assert.ok(
+          child.killSignals.length > 0,
+          "a run that lost its lease must reap codex rather than let it stream on",
+        );
+        assert.equal(
+          lifecycle.heartbeatCount(),
+          1,
+          "the timer must stop after the fence: heartbeating a lease we have "
+            + "provably lost is pointless and noisy",
+        );
+      } finally {
+        restoreSpawn();
+        restoreProbe();
+      }
+    });
+
+    it(`runStreamed(): a lifecycle that ${mode}s a stale fence aborts the stream instead of killing the process`, async () => {
+      const child = new FakeCodexProcess();
+      const restoreProbe = installFakeIdentityProbe(child);
+      const restoreSpawn = setCodexCliSpawnForTest(() => child as never);
+      const lifecycle = fencingLifecycle(mode);
+      const settled: { events: string[]; error: unknown } = { events: [], error: null };
+      try {
+        await withFastHeartbeat(10, async () => {
+          const crashes = await captureProcessCrashes(async () => {
+            const engine = new CodexCliEngine();
+            const tracked = consumeStream(
+              engine.runStreamed(baseInput({ lifecycle: lifecycle.sink })),
+            ).then((outcome) => {
+              settled.events = outcome.events;
+              settled.error = outcome.error;
+            });
+            child.stdout.write(
+              `${JSON.stringify({ type: "thread.started", thread_id: "th_fenced" })}\n`,
+            );
+            child.stdout.write(
+              `${JSON.stringify({
+                type: "item.completed",
+                item: { type: "agent_message", text: "working" },
+              })}\n`,
+            );
+            await delay(150);
+            child.kill("SIGKILL");
+            await Promise.race([tracked, delay(1_000)]);
+          });
+
+          assert.deepEqual(
+            crashes.map((crash) => (crash as Error)?.name ?? String(crash)),
+            [],
+            "a lifecycle heartbeat failure must never reach the process as an "
+              + "uncaughtException/unhandledRejection -- that is what kills the worker",
+          );
+        });
+
+        // A generator CAN propagate the error object itself, so it does: the
+        // stage services discriminate on `err instanceof StaleLeaseFenceError`
+        // and deliberately rethrow a fence rather than write a failure record
+        // to rows the run no longer owns.
+        assert.ok(settled.error, "losing the lease must fail the stream");
+        assert.equal(
+          (settled.error as Error).name,
+          "StaleLeaseFenceError",
+          "the fence must reach the caller as itself, not repackaged as a "
+            + "generic provider failure",
+        );
+        assert.ok(
+          child.killSignals.length > 0,
+          "a stream that lost its lease must reap codex rather than let it stream on",
+        );
+        assert.equal(
+          lifecycle.heartbeatCount(),
+          1,
+          "the timer must stop after the fence rather than retry a lost lease forever",
+        );
+      } finally {
+        restoreSpawn();
+        restoreProbe();
+      }
+    });
+  }
+
+  it("keeps heartbeating a healthy run", async () => {
+    const child = new FakeCodexProcess();
+    const restoreProbe = installFakeIdentityProbe(child);
+    const restoreSpawn = setCodexCliSpawnForTest(() => child as never);
+    const lifecycle = recordingLifecycle();
+    try {
+      await withFastHeartbeat(10, async () => {
+        const engine = new CodexCliEngine();
+        const promise = engine.run(baseInput({ lifecycle: lifecycle.sink }));
+        await delay(60);
+        feed(child, [{ type: "item.completed", item: { type: "agent_message", text: "ok" } }]);
+        const result = await promise;
+
+        assert.equal(result.success, true);
+        assert.ok(
+          lifecycle.calls.filter((call) => call.type === "heartbeat").length > 1,
+          "the abort path must not cost a healthy run its heartbeat",
+        );
+      });
     } finally {
       restoreSpawn();
       restoreProbe();

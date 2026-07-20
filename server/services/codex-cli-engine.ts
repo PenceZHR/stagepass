@@ -439,6 +439,87 @@ function codexHeartbeatMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CODEX_HEARTBEAT_MS;
 }
 
+/**
+ * Start the provider heartbeat timer for a codex run.
+ *
+ * `Promise.resolve().then(...)` is load-bearing, not ceremony. The lifecycle
+ * contract is `onHeartbeat(event): void | Promise<void>`
+ * (ai-engine-types.ts:57) and the implementation the pipeline actually passes
+ * in is the SYNCHRONOUS one: pipeline-engine-service.ts's `onHeartbeat` calls
+ * `heartbeatProviderLease()` inline, and every write beneath it is
+ * better-sqlite3, which is synchronous. So a fenced lease threw straight into
+ * the timer callback, where `void expr` discards the value but catches
+ * nothing -- an uncaughtException that killed the entire pipeline worker
+ * (`pipeline_worker_fatal`). The supervisor then restarted it, the
+ * replacement fenced the dead worker's in-flight jobs, and their still-live
+ * codex heartbeats killed the replacement in turn. Attaching a bare
+ * `.catch()` to the call would NOT have fixed it: `onHeartbeat` throws before
+ * it returns a promise to attach to. Wrapping in `Promise.resolve().then()`
+ * converts the synchronous throw into a rejection, which is exactly the shape
+ * claude-engine.ts:1008 already uses -- this engine was the only one missing
+ * it.
+ *
+ * The failure is reported, never swallowed. Losing the lease means the run no
+ * longer owns its slot, so `onLifecycleFailure` aborts it: silently streaming
+ * on would turn a real ownership loss into invisible zombie work. The engine
+ * stays deliberately lease-agnostic (it does not import StaleLeaseFenceError,
+ * and neither does claude-engine) -- it reports the error it was handed and
+ * lets the stage layer, whose `assertCurrentExecutionFence` re-checks
+ * ownership at every write boundary, decide what a fence means.
+ */
+function startCodexHeartbeat(options: {
+  lifecycle: NonNullable<AiRunInput["lifecycle"]>;
+  pid: number | null;
+  /** Read per tick: the thread id is only learned once codex emits it. */
+  externalRef: () => string | null;
+  onLifecycleFailure: (error: Error) => void;
+}): ReturnType<typeof setInterval> {
+  let stopped = false;
+  let interval: ReturnType<typeof setInterval> | null = null;
+  const started = setInterval(() => {
+    if (stopped) return;
+    void Promise.resolve()
+      .then(() =>
+        options.lifecycle.onHeartbeat({
+          provider: "codex",
+          pid: options.pid,
+          externalRef: options.externalRef(),
+          observedAt: new Date().toISOString(),
+        }),
+      )
+      .catch((error: unknown) => {
+        if (stopped) return;
+        // Heartbeating a lease we have provably lost is pointless and noisy,
+        // and every extra tick was another crash in the old code. Stop first,
+        // so the abort below can never be re-entered by a later tick.
+        stopped = true;
+        if (interval) clearInterval(interval);
+        const failure = error instanceof Error ? error : new Error(String(error));
+        // The abort is recorded before anything cosmetic: this is the exact
+        // callback whose escaping throw killed the worker, so the load-bearing
+        // effect must not sit behind a line that could itself fail.
+        options.onLifecycleFailure(failure);
+        log.error(
+          {
+            pid: options.pid,
+            // A definite fence ("stale_lease_fence") and a database that
+            // stayed wedged through withSqliteWriteRetry's whole budget
+            // ("sqlite_write_busy") both end the run, but they need different
+            // operator responses, so the class that distinguishes them is
+            // carried into the log rather than flattened away.
+            errorName: failure.name,
+            errorCode: (failure as { code?: unknown }).code ?? null,
+            err: failure.message,
+          },
+          "Codex provider heartbeat failed; aborting the run",
+        );
+      });
+  }, codexHeartbeatMs());
+  interval = started;
+  started.unref();
+  return started;
+}
+
 interface RawCodexResult {
   items: Array<Record<string, unknown>>;
   finalResponse: string;
@@ -654,10 +735,25 @@ export class CodexCliEngine implements AiEngineAdapter {
     let forceKillTimeout: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
     let threadId = input.threadId ?? null;
+    /** Set when the lifecycle sink failed; the run is unwound and reports it. */
+    let lifecycleFailure: Error | null = null;
     const stopTimers = () => {
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       if (timeout) clearTimeout(timeout);
       if (forceKillTimeout) clearTimeout(forceKillTimeout);
+    };
+    /** SIGTERM now, SIGKILL after the grace -- the escalation used elsewhere here. */
+    const killChild = () => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      if (forceKillTimeout) return;
+      forceKillTimeout = setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }, CODEX_FORCE_KILL_GRACE_MS);
+      forceKillTimeout.unref();
     };
 
     try {
@@ -694,28 +790,25 @@ export class CodexCliEngine implements AiEngineAdapter {
           identity,
           startedAt: new Date().toISOString(),
         });
-        heartbeatInterval = setInterval(() => {
-          void input.lifecycle?.onHeartbeat({
-            provider: "codex",
-            pid,
-            externalRef: threadId,
-            observedAt: new Date().toISOString(),
-          });
-        }, codexHeartbeatMs());
-        heartbeatInterval.unref();
+        heartbeatInterval = startCodexHeartbeat({
+          lifecycle: input.lifecycle,
+          pid,
+          externalRef: () => threadId,
+          onLifecycleFailure: (error) => {
+            lifecycleFailure ??= error;
+            // The run has lost its claim on the slot, so stop the provider
+            // rather than let it keep producing work nobody owns. Reaping the
+            // child is also what ends the readline loop below and unwinds the
+            // run -- the same mechanism the wall-clock timeout relies on.
+            killChild();
+          },
+        });
       }
 
       if (typeof input.timeoutMs === "number" && input.timeoutMs > 0) {
         timeout = setTimeout(() => {
           timedOut = true;
-          try {
-            proc.kill("SIGTERM");
-          } catch {}
-          forceKillTimeout = setTimeout(() => {
-            try {
-              proc.kill("SIGKILL");
-            } catch {}
-          }, CODEX_FORCE_KILL_GRACE_MS);
+          killChild();
         }, input.timeoutMs);
       }
 
@@ -760,6 +853,15 @@ export class CodexCliEngine implements AiEngineAdapter {
       const stderrTail = codexStderrTail(stderr);
       const processFacts = { exitCode: code, signal, stderrTail };
 
+      // Reported FIRST, and as itself. A lifecycle failure is the root cause of
+      // every downstream symptom this run will show (a reaped child, no
+      // agent_message), so letting `!finalResponse` win the race would blame
+      // the provider for an empty reply it never had the chance to give, and
+      // bury the real reason. Rethrowing the original error rather than
+      // wrapping it in CodexRunFailure keeps `err instanceof
+      // StaleLeaseFenceError` answerable for callers that can see it -- this
+      // engine never has to know what a fence is.
+      if (lifecycleFailure) throw lifecycleFailure;
       if (timedOut) {
         throw new CodexRunFailure(`provider_timeout: codex timed out after ${input.timeoutMs}ms`, {
           ...processFacts,
@@ -846,6 +948,8 @@ export class CodexCliEngine implements AiEngineAdapter {
      * whether the RUN reached its end, which is what the checks below ask.
      */
     let deliveredEvents = 0;
+    /** Set when the lifecycle sink failed; the stream is unwound and reports it. */
+    let lifecycleFailure: Error | null = null;
     const exit = observeProcessExit(proc);
     // The streaming path never read stderr at all, so a codex that died with a
     // reason printed there produced a terminal event with no reason in it.
@@ -912,15 +1016,17 @@ export class CodexCliEngine implements AiEngineAdapter {
           identity,
           startedAt: new Date().toISOString(),
         });
-        heartbeatInterval = setInterval(() => {
-          void input.lifecycle?.onHeartbeat({
-            provider: "codex",
-            pid,
-            externalRef: threadId,
-            observedAt: new Date().toISOString(),
-          });
-        }, codexHeartbeatMs());
-        heartbeatInterval.unref();
+        heartbeatInterval = startCodexHeartbeat({
+          lifecycle: input.lifecycle,
+          pid,
+          externalRef: () => threadId,
+          onLifecycleFailure: (error) => {
+            lifecycleFailure ??= error;
+            // Lost the slot: stop the provider instead of streaming work
+            // nobody owns into a stage that no longer has the right to write.
+            killChild();
+          },
+        });
       }
 
       // The wall-clock kill the streaming path never had. `input.timeoutMs` was
@@ -942,6 +1048,11 @@ export class CodexCliEngine implements AiEngineAdapter {
 
       const rl = readline.createInterface({ input: proc.stdout! });
       for await (const line of rl) {
+        // Checked per line, not just after the loop: the child is being reaped
+        // but its buffered stdout can still be drained, and yielding events for
+        // a run that has lost its slot is the zombie work this abort exists to
+        // prevent.
+        if (lifecycleFailure) throw lifecycleFailure;
         if (!line.trim()) continue;
         let event: CodexThreadEvent;
         try {
@@ -996,6 +1107,12 @@ export class CodexCliEngine implements AiEngineAdapter {
           providerErrorCode,
         });
 
+      // Same precedence as run(): the lifecycle failure is the cause, the dead
+      // child and the missing events are its symptoms. Propagated as itself so
+      // the stage services' `err instanceof StaleLeaseFenceError` handlers --
+      // which deliberately rethrow a fence instead of writing a failure record
+      // to rows the run no longer owns -- still recognise it.
+      if (lifecycleFailure) throw lifecycleFailure;
       if (timedOut) {
         throw failure("provider_timeout", `codex stream timed out after ${input.timeoutMs}ms`);
       }
