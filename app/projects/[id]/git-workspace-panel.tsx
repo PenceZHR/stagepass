@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  createPipelinePreflightPayload,
+  type PipelineActionContract,
+} from "./changes/[changeId]/pipeline-action-contract";
 
 interface FileEntry {
   path: string;
@@ -15,6 +19,14 @@ interface WorkspaceStatus {
   ahead: number;
   behind: number;
   branch: string | null;
+  /**
+   * getWorkingTreeStatus answers `clean: true` for a path that is not a
+   * repository, which is indistinguishable from a genuinely clean tree, so this
+   * has to be carried separately. Without it the panel reported "工作区干净" on
+   * exactly the projects that were stuck at "Path is not a git repository."
+   */
+  isRepo: boolean;
+  hasCommits: boolean;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -41,14 +53,42 @@ function normalizeWorkspaceStatus(data: Partial<WorkspaceStatus>): WorkspaceStat
     ahead: typeof data.ahead === "number" ? data.ahead : 0,
     behind: typeof data.behind === "number" ? data.behind : 0,
     branch: typeof data.branch === "string" ? data.branch : null,
+    // Absent field defaults to true: an older/failed response must not make an
+    // existing repository look uninitialised and offer to `git init` over it.
+    isRepo: data.isRepo !== false,
+    hasCommits: data.hasCommits !== false,
   };
 }
 
-export function GitWorkspacePanel({ projectId }: { projectId: string }) {
+/**
+ * This is the one Git surface that follows the user around: it is mounted on the
+ * project page and, through StageGitPanel, on every phase of every change page.
+ * Everything a stalled repository needs has to be reachable from here, because
+ * the alternative is what it used to be -- notice the problem on a change's Fix
+ * stage, navigate to the project page, open its Git tab, click 初始化 in
+ * GitSetupPanel, navigate back.
+ *
+ * `changeId` is optional because the project page has no change in scope. When it
+ * *is* in scope the panel routes through the change's contract actions instead of
+ * the project-level git endpoint, so the operation is preflighted, attributed to
+ * the change, and refused if HEAD moved since the contract was issued.
+ */
+export function GitWorkspacePanel({
+  projectId,
+  changeId,
+  commitAction,
+  initAction,
+}: {
+  projectId: string;
+  changeId?: string;
+  commitAction?: PipelineActionContract | null;
+  initAction?: PipelineActionContract | null;
+}) {
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
   const [commitMsg, setCommitMsg] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [initializing, setInitializing] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<string | null>(null);
@@ -82,11 +122,51 @@ export function GitWorkspacePanel({ projectId }: { projectId: string }) {
     };
   }, [loadStatus]);
 
+  /**
+   * `git init` in place, from wherever the user happens to be standing. The same
+   * capability exists in GitSetupPanel, but that panel lives only in the project
+   * page's Git section -- unreachable from a change without leaving the change.
+   */
+  async function handleInit() {
+    setInitializing(true);
+    setResult(null);
+    try {
+      const contractInit = changeId && initAction
+        ? {
+            url: `/api/projects/${projectId}/changes/${changeId}/git`,
+            body: createPipelinePreflightPayload(initAction),
+          }
+        : null;
+      const res = await fetch(contractInit?.url ?? `/api/projects/${projectId}/git`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(contractInit?.body ?? { action: "init" }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setResult("已初始化 Git 仓库");
+        loadStatus();
+      } else {
+        setResult(`初始化失败: ${data.action?.reason ?? data.reasonCode ?? data.error}`);
+      }
+    } catch {
+      setResult("初始化请求失败");
+    } finally {
+      setInitializing(false);
+    }
+  }
+
   async function handleSuggest() {
     setSuggesting(true);
     setResult(null);
     try {
-      const res = await fetch(`/api/projects/${projectId}/git/suggest-message`, { method: "POST" });
+      // suggestCommitMessage has always accepted change context; nothing ever
+      // passed it, so every suggestion was written as if the diff had no owner.
+      const res = await fetch(`/api/projects/${projectId}/git/suggest-message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changeId ? { changeId } : {}),
+      });
       const data = await res.json();
       if (data.message) {
         setCommitMsg(data.message);
@@ -105,10 +185,19 @@ export function GitWorkspacePanel({ projectId }: { projectId: string }) {
     setCommitting(true);
     setResult(null);
     try {
-      const res = await fetch(`/api/projects/${projectId}/git`, {
+      const contractCommit = changeId && commitAction
+        ? {
+            url: `/api/projects/${projectId}/changes/${changeId}/git`,
+            body: createPipelinePreflightPayload(commitAction, {
+              message: commitMsg,
+              paths: Array.from(selectedPaths),
+            }),
+          }
+        : null;
+      const res = await fetch(contractCommit?.url ?? `/api/projects/${projectId}/git`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(contractCommit?.body ?? {
           action: "commit_changes",
           message: commitMsg,
           paths: Array.from(selectedPaths),
@@ -138,7 +227,9 @@ export function GitWorkspacePanel({ projectId }: { projectId: string }) {
 
         loadStatus();
       } else {
-        setResult(`提交失败: ${data.error}`);
+        // A contract refusal answers the 409 envelope, where `error` is only
+        // "action_not_allowed" and the readable cause is on `action.reason`.
+        setResult(`提交失败: ${data.action?.reason ?? data.reasonCode ?? data.error}`);
       }
     } catch {
       setResult("提交请求失败");
@@ -193,6 +284,35 @@ export function GitWorkspacePanel({ projectId }: { projectId: string }) {
     return (
       <div className="rounded-lg border p-4">
         <p className="text-sm text-muted-foreground">加载工作区状态...</p>
+      </div>
+    );
+  }
+
+  /**
+   * A path that is not a repository has no working tree to show, and showing the
+   * ordinary clean-tree copy for it is what made this state invisible. The pipeline
+   * refuses run_build here (build_base_camp_blocked / "Path is not a git
+   * repository."), so this branch has to name the fault and offer the one action
+   * that clears it, on whatever page the panel happens to be mounted.
+   */
+  if (!status.isRepo) {
+    return (
+      <div className="rounded-lg border p-4" data-git-repo-missing>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">工作区</h2>
+          <Button size="sm" variant="outline" onClick={() => loadStatus(true)}>
+            刷新
+          </Button>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          该路径不是 Git 仓库，流水线的 Build 阶段会因此阻塞（Path is not a git repository）。
+        </p>
+        <div className="mt-3">
+          <Button size="sm" onClick={handleInit} disabled={initializing}>
+            {initializing ? "初始化中..." : "初始化 Git 仓库"}
+          </Button>
+        </div>
+        {result && <p className="mt-3 text-sm text-muted-foreground">{result}</p>}
       </div>
     );
   }

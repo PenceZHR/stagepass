@@ -105,6 +105,22 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   { actionId: "adopt_build", phase: "Build", label: "收编 Build" },
   { actionId: "adopt_fix", phase: "Build", label: "收编 Fix" },
   { actionId: "reject_build", phase: "Build", label: "拒绝本轮施工" },
+  // Git is the pipeline's substrate, not one of its stages, so both entries are
+  // deliberately left without requiredStatus. That is the OPPOSITE of the
+  // a9a953f2 phantom-button shape rather than a relapse into it: the phantom
+  // case is an action advertised at statuses where its *runner* would reject it,
+  // and git has no status precondition to mirror -- `git init` succeeds on any
+  // change status, and so does a commit. The git facts alone decide these
+  // (action-contract-git-policy), and a status filter here could only hide
+  // init_git_repo at the statuses where it is most needed: a project whose
+  // repoPath is not a repository stalls at run_build/PLAN_APPROVED with
+  // build_base_camp_blocked, and this is the only action that clears it.
+  //
+  // They are filed under the Build phase because that is where the pipeline
+  // first touches the working tree, which puts them on the Build and Fix stages
+  // in the UI (pipeline-ui-model maps both onto actionPhase "Build").
+  { actionId: "init_git_repo", phase: "Build", label: "初始化 Git 仓库" },
+  { actionId: "commit_changes", phase: "Build", label: "提交改动" },
   { actionId: "run_review", phase: "Review", label: "开始反方审查", requiredStatus: "IMPLEMENTED" },
   { actionId: "retry_review", phase: "Review", label: "重新反方审查", requiredStatus: ["IMPLEMENTED", "CHECK_FAILED", "SCOPE_FAILED", "BLOCKED"] },
   // Mirrors runFixStreamed's FIX_ALLOWED_STATUSES (pipeline-build-stage-service)

@@ -86,6 +86,8 @@ describe("provider-backed route contract", () => {
       "prd-briefing/route.ts",
       "prd-briefing/questions/[questionId]/route.ts",
       "spec-battle/report/route.ts",
+      // init_git_repo / commit_changes: local git operations, never provider-backed.
+      "git/route.ts",
     ];
 
     for (const relativePath of humanActionRoutes) {

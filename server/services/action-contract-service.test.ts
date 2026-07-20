@@ -2447,6 +2447,172 @@ describe("action-contract-service", () => {
     assert.equal(retryBuild?.reasonCode, "build_base_camp_blocked");
   });
 
+  /**
+   * The git actions. Before they existed the contract held zero of them, so the
+   * two facts below were invisible to the pipeline: "this path is not a git
+   * repository" was something only run_build consulted, and only to refuse
+   * itself, and "there is uncommitted work" was not represented at all -- the Git
+   * tool panel beside the pipeline could see it, the gate could not.
+   */
+  it("offers init_git_repo as the escape from the same stall that blocks Build on a non-repository", () => {
+    db.update(changes).set({ status: "PLAN_APPROVED" }).where(eq(changes.id, CHANGE_ID)).run();
+    seedStageGate("TestPlan", "passed", "testplan-source-hash");
+
+    const actions = getActions(CHANGE_ID);
+    const runBuild = actions.find((action) => action.actionId === "run_build");
+    const initGitRepo = actions.find((action) => action.actionId === "init_git_repo");
+    const commitChanges = actions.find((action) => action.actionId === "commit_changes");
+
+    // The stall and its exit are served by the same contract, in the same read.
+    assert.equal(runBuild?.enabled, false);
+    assert.equal(runBuild?.reasonCode, "build_base_camp_blocked");
+
+    assert.equal(initGitRepo?.enabled, true);
+    assert.equal(initGitRepo?.reasonCode, null);
+    assert.deepEqual(initGitRepo?.blockers, []);
+
+    assert.equal(commitChanges?.enabled, false);
+    assert.equal(commitChanges?.reasonCode, "git_repo_missing");
+    assert.equal(commitChanges?.reason, "Cannot commit: Path is not a git repository.");
+    // Same wording run_build's base camp blocker uses -- one fault, one name.
+    assert.deepEqual(commitChanges?.blockers, [
+      { id: "git_repo_missing", severity: "P1", title: "Path is not a git repository." },
+    ]);
+  });
+
+  it("closes init_git_repo and opens commit_changes once the tree carries uncommitted work", () => {
+    initCleanGitRepo(repoPath);
+    seedStageGate("Build", "passed", "build-source-hash");
+
+    const cleanActions = getActions(CHANGE_ID);
+    const cleanInit = cleanActions.find((action) => action.actionId === "init_git_repo");
+    const cleanCommit = cleanActions.find((action) => action.actionId === "commit_changes");
+
+    assert.equal(cleanInit?.enabled, false);
+    assert.equal(cleanInit?.reasonCode, "git_repo_already_initialized");
+    assert.deepEqual(cleanInit?.blockers, []);
+    assert.equal(cleanCommit?.enabled, false);
+    assert.equal(cleanCommit?.reasonCode, "git_worktree_clean");
+    // A clean tree is not a fault, so it must not manufacture a blocker: this is
+    // the steady state of every healthy change.
+    assert.deepEqual(cleanCommit?.blockers, []);
+
+    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
+
+    const dirtyCommit = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+    assert.equal(dirtyCommit?.enabled, true);
+    assert.equal(dirtyCommit?.reasonCode, null);
+    assert.deepEqual(dirtyCommit?.blockers, []);
+  });
+
+  it("does not report the change's own pipeline artifact churn as uncommitted work", () => {
+    initCleanGitRepo(repoPath);
+    const changeArtifactDir = path.join(repoPath, ".ship", "changes", CHANGE_ID);
+    fs.mkdirSync(changeArtifactDir, { recursive: true });
+    fs.writeFileSync(path.join(changeArtifactDir, "plan.json"), "{}\n");
+    fs.mkdirSync(path.join(repoPath, ".ship", "prompts"), { recursive: true });
+    fs.writeFileSync(path.join(repoPath, ".ship", "prompts", "build.md"), "# prompt\n");
+    seedStageGate("Build", "passed", "build-source-hash");
+
+    const artifactOnly = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+
+    // Every stage writes into .ship on every run. Counting those as "work to
+    // commit" would leave the action permanently enabled and permanently
+    // meaningless, so it reads the same exclusion list the Build base camp does.
+    assert.equal(artifactOnly?.enabled, false);
+    assert.equal(artifactOnly?.reasonCode, "git_worktree_clean");
+
+    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
+    const withRealWork = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+    assert.equal(withRealWork?.enabled, true);
+  });
+
+  it("enables the initial commit on a repository that has no commits yet", () => {
+    // Exactly the state init_git_repo leaves behind, so the two actions have to
+    // hand off cleanly: HEAD does not resolve, and every file is committable.
+    fs.mkdirSync(repoPath, { recursive: true });
+    execSync("git init -b main", { cwd: repoPath, stdio: "ignore" });
+    fs.writeFileSync(path.join(repoPath, "README.md"), "# unborn\n");
+    seedStageGate("Build", "passed", "build-source-hash");
+
+    const commitChanges = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+
+    assert.equal(commitChanges?.enabled, true);
+    assert.equal(commitChanges?.sourceDbHash, "git_head:unborn");
+  });
+
+  /**
+   * The git actions are stamped with their own identity instead of the Build
+   * gate's, and this is why.
+   *
+   * GET /gate serves computeActions (no self-heal, no persist) while preflight
+   * runs getActions (self-heals, persists, and bumps stage gate versions), so an
+   * action that borrows the stage gate's version can be handed out by a render
+   * and then refused by the very next POST with gate_version_drift. Pinning
+   * gateVersion to a constant and sourceDbHash to HEAD takes these two out of
+   * that race: the value the page renders is the value preflight compares
+   * against, whichever entry point produced it.
+   */
+  it("issues git actions with a gate-independent identity that preflight accepts", () => {
+    initCleanGitRepo(repoPath);
+    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
+    seedStageGate("Build", "passed", "build-source-hash");
+    const headSha = execSync("git rev-parse HEAD", { cwd: repoPath, encoding: "utf-8" }).trim();
+
+    const rendered = computeActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+    assert.equal(rendered?.enabled, true);
+    assert.equal(rendered?.gateVersion, "0");
+    assert.equal(rendered?.sourceDbHash, `git_head:${headSha}`);
+    // NOT the Build gate's 7/build-source-hash, which self-heal is free to move.
+    assert.notEqual(rendered?.gateVersion, "7");
+    assert.notEqual(rendered?.sourceDbHash, "build-source-hash");
+
+    const refreshed = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+    assert.equal(refreshed?.gateVersion, rendered?.gateVersion);
+    assert.equal(refreshed?.sourceDbHash, rendered?.sourceDbHash);
+
+    // The contract the page rendered survives the self-healing preflight path.
+    const allowed = assertActionAllowed({
+      changeId: CHANGE_ID,
+      actionId: "commit_changes",
+      expectedGateVersion: rendered!.gateVersion,
+      expectedSourceDbHash: rendered!.sourceDbHash,
+    });
+    assert.equal(allowed.actionId, "commit_changes");
+  });
+
+  it("refuses a commit whose contract was issued against a HEAD that has since moved", () => {
+    initCleanGitRepo(repoPath);
+    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
+    seedStageGate("Build", "passed", "build-source-hash");
+    const stale = computeActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+    assert.equal(stale?.enabled, true);
+
+    // Something else lands a commit -- in the double-submit case, this action's
+    // own first POST. HEAD is what makes the second one refusable even though
+    // the tree is dirty again.
+    execSync("git add -A", { cwd: repoPath, stdio: "ignore" });
+    execSync("git commit -m other", { cwd: repoPath, stdio: "ignore" });
+    fs.writeFileSync(path.join(repoPath, "other.ts"), "export const y = 2;\n");
+
+    const current = computeActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
+    assert.equal(current?.enabled, true);
+    assert.notEqual(current?.sourceDbHash, stale?.sourceDbHash);
+
+    assert.throws(
+      () =>
+        assertActionAllowed({
+          changeId: CHANGE_ID,
+          actionId: "commit_changes",
+          expectedGateVersion: stale!.gateVersion,
+          expectedSourceDbHash: stale!.sourceDbHash,
+        }),
+      (error: unknown) =>
+        error instanceof PreflightBlockedError &&
+        error.envelope.reasonCode === "source_db_hash_drift",
+    );
+  });
+
   it("allows Build actions when base camp is dirty with warnings but no blockers", () => {
     initCleanGitRepo(repoPath);
     fs.writeFileSync(path.join(repoPath, "README.md"), "# dirty action contract fixture\n");

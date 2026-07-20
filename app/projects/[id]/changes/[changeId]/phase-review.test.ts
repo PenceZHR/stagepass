@@ -59,6 +59,11 @@ const specBattleTypes = readFileSync(resolve(__dirname, "spec-battle-types.ts"),
 const prdBriefingRoomSource = readFileSync(resolve(__dirname, "prd-briefing-room.tsx"), "utf-8");
 const stageGitPanelSource = readFileSync(resolve(__dirname, "stage-git-panel.tsx"), "utf-8");
 const gitWorkspacePanelSource = readFileSync(resolve(__dirname, "../../git-workspace-panel.tsx"), "utf-8");
+const projectPageSource = readFileSync(resolve(__dirname, "../../page.tsx"), "utf-8");
+const gitWorkspaceRouteSource = readFileSync(
+  resolve(__dirname, "../../../../api/projects/[id]/git/workspace/route.ts"),
+  "utf-8",
+);
 
 function reviewFinding(id: string, overrides: Partial<ReviewFindingView> = {}): ReviewFindingView {
   return {
@@ -226,8 +231,12 @@ function strandedTechSpecGateStatus(actions: PipelineActionContract[]): GateStat
 describe("phase review UI", () => {
   it("renders a manual Git panel for every selected change phase without joining pipeline action errors", () => {
     assert.match(src, /import \{ StageGitPanel \} from "\.\/stage-git-panel";/);
-    assert.match(src, /<StageGitPanel projectId=\{projectId\} selectedPhase=\{activeSelectedPhase\} \/>/);
-    assert.match(stageGitPanelSource, /<GitWorkspacePanel projectId=\{projectId\} \/>/);
+    assert.match(src, /<StageGitPanel[\s\S]*?projectId=\{projectId\}[\s\S]*?selectedPhase=\{activeSelectedPhase\}[\s\S]*?\/>/);
+    // Was pinned as a single-line `<GitWorkspacePanel projectId={projectId}`.
+    // The panel now also receives changeId and the change's git contracts, so
+    // the JSX wraps. Only the formatting moved -- that it is handed the project
+    // is still pinned here, and the change scoping has its own test below.
+    assert.match(stageGitPanelSource, /<GitWorkspacePanel[\s\S]*?projectId=\{projectId\}/);
     assert.match(gitWorkspacePanelSource, /loadStatus/);
     assert.match(gitWorkspacePanelSource, /\/api\/projects\/\$\{projectId\}\/git\/workspace/);
     assert.match(gitWorkspacePanelSource, /刷新/);
@@ -236,9 +245,82 @@ describe("phase review UI", () => {
     assert.doesNotMatch(gitWorkspacePanelSource, /setActionError/);
   });
 
+  /**
+   * The Git panel used to be handed only a projectId, so a commit made from a
+   * change's Build/Fix stage was indistinguishable from one made on the project
+   * page: it could not be attributed to the change, and the AI message
+   * suggestion (which has always accepted change context) was asked for one
+   * without any. Both hops of the changeId are pinned here -- page -> panel and
+   * panel -> workspace panel -- because dropping either silently restores the
+   * old behaviour with no other visible symptom.
+   */
+  it("scopes the stage Git panel to the change it is rendered under", () => {
+    assert.match(src, /<StageGitPanel[\s\S]*?changeId=\{changeId\}[\s\S]*?\/>/);
+    assert.match(src, /<StageGitPanel[\s\S]*?commitAction=\{findPipelineAction\(pipelineActions, "commit_changes"\)\}[\s\S]*?\/>/);
+    assert.match(stageGitPanelSource, /changeId,/);
+    assert.match(stageGitPanelSource, /<GitWorkspacePanel[\s\S]*?changeId=\{changeId\}/);
+    assert.match(gitWorkspacePanelSource, /body: JSON\.stringify\(changeId \? \{ changeId \} : \{\}\)/);
+  });
+
+  /**
+   * "git 要集成在每个页面" -- the panel has to be able to finish the job wherever
+   * it is mounted, because the alternative is the round trip the user objected
+   * to: notice on a change's Fix stage that the repo is not initialised,
+   * navigate to the project page, open its Git section, click 初始化 in
+   * GitSetupPanel, navigate back.
+   *
+   * The state that made that round trip mandatory was invisible: getWorkingTreeStatus
+   * answers `clean: true` for a path that is not a repository, so the panel drew
+   * "工作区干净，没有未提交的改动" on precisely the projects the pipeline was
+   * refusing with "Path is not a git repository."
+   */
+  it("names the not-a-repository state and offers init from the workspace panel itself", () => {
+    assert.match(gitWorkspacePanelSource, /if \(!status\.isRepo\) \{/);
+    assert.match(gitWorkspacePanelSource, /该路径不是 Git 仓库/);
+    assert.match(gitWorkspacePanelSource, /初始化 Git 仓库/);
+    assert.match(gitWorkspacePanelSource, /async function handleInit\(\)/);
+    // With a change in scope the init goes through the contract action; without
+    // one (project page) it falls back to the project-level endpoint.
+    assert.match(gitWorkspacePanelSource, /changeId && initAction/);
+    assert.match(gitWorkspacePanelSource, /createPipelinePreflightPayload\(initAction\)/);
+    assert.match(gitWorkspacePanelSource, /\{ action: "init" \}/);
+    // isRepo must be carried separately from `clean`, and must default to true so
+    // a failed status read never offers to `git init` over a live repository.
+    assert.match(gitWorkspacePanelSource, /isRepo: data\.isRepo !== false/);
+    assert.match(gitWorkspaceRouteSource, /isRepo: repo/);
+    assert.match(gitWorkspaceRouteSource, /hasCommits: repo \? hasCommits\(project\.repoPath\) : false/);
+  });
+
+  it("mounts the Git workspace panel on every project-scoped page", () => {
+    // Change page: rendered outside every stage branch, so it is present for all
+    // phases -- pinned by its position after the last stage conditional.
+    assert.match(src, /\)\}\s*\{\/\*[\s\S]*?\*\/\}\s*<StageGitPanel/);
+    // Project page: same component, no change in scope.
+    assert.match(projectPageSource, /<GitWorkspacePanel projectId=\{projectId\} \/>/);
+    // The two pages above are the only project-scoped ones; / redirects to
+    // /projects, and /projects is a multi-project list with no single repo.
+    assert.match(readFileSync(resolve(__dirname, "../../../../page.tsx"), "utf-8"), /redirect\("\/projects"\)/);
+  });
+
   it("passes selected Git paths to commit_changes from the workspace panel", () => {
     assert.match(gitWorkspacePanelSource, /action: "commit_changes"/);
     assert.match(gitWorkspacePanelSource, /paths: Array\.from\(selectedPaths\)/);
+  });
+
+  /**
+   * With a change in scope the panel must commit through the change-scoped
+   * contract route, not the project-level endpoint: only that path runs
+   * preflight, so only that path refuses a commit whose contract has gone stale.
+   * The project-level body is still reachable, and must stay so -- the same
+   * panel is mounted on the project page where there is no change.
+   */
+  it("commits through the change contract route when the Git panel has a change in scope", () => {
+    assert.match(
+      gitWorkspacePanelSource,
+      /url: `\/api\/projects\/\$\{projectId\}\/changes\/\$\{changeId\}\/git`/,
+    );
+    assert.match(gitWorkspacePanelSource, /createPipelinePreflightPayload\(commitAction, \{/);
+    assert.match(gitWorkspacePanelSource, /changeId && commitAction/);
   });
 
   it("renders phase bar items as buttons that can select review phases", () => {

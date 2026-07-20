@@ -221,10 +221,17 @@ describe("BuildSandbox UI", () => {
     assert.match(pageSource, /sourceActionId: "fix_blockers"/);
     assert.match(pageSource, /busy: running/);
     assert.match(pageSource, /onAction: \(\) => handleAction\("fix_blockers"\)/);
-    assert.match(pageSource, /if \(activeSelectedPhase !== "Fix"\) return buildStageActions;/);
+    // These three returns used to be a bare `buildStageActions`. Git actions are
+    // now appended to every one of them, which is the whole point: committing is
+    // what unblocks adopting a Fix, so it has to sit in the same action zone as
+    // the adopt button instead of in a workspace panel screens further down.
+    // What these assertions actually pin -- build actions reach the shared zone,
+    // fix_blockers is prepended only when enabled -- is unchanged, and git
+    // actions trail rather than displace the stage's own next step.
+    assert.match(pageSource, /if \(activeSelectedPhase !== "Fix"\) return \[\.\.\.buildStageActions, \.\.\.gitStageActions\];/);
     assert.match(pageSource, /const hasFixBlockerAction = disabledReason === null;/);
-    assert.match(pageSource, /if \(!hasFixBlockerAction\) return buildStageActions;/);
-    assert.match(pageSource, /return \[fixBlockersStageAction, \.\.\.buildStageActions\];/);
+    assert.match(pageSource, /if \(!hasFixBlockerAction\) return \[\.\.\.buildStageActions, \.\.\.gitStageActions\];/);
+    assert.match(pageSource, /return \[fixBlockersStageAction, \.\.\.buildStageActions, \.\.\.gitStageActions\];/);
     assert.match(pageSource, /const buildOrFixStageActionError = activeSelectedPhase === "Fix"[\s\S]*actionError/);
     assert.match(pageSource, /<PhaseStageShell[\s\S]*phase=\{activeSelectedPhase === "Fix" \? "Fix" : "Build"\}[\s\S]*actions=\{buildOrFixStageActions\}[\s\S]*actionError=\{buildOrFixStageActionError\}[\s\S]*<BuildSandbox/);
     assert.match(pageSource, /onStageActionError=\{setBuildStageActionError\}/);
@@ -239,7 +246,10 @@ describe("BuildSandbox UI", () => {
     const actionBlock = pageSource.slice(actionBlockStart, actionBlockEnd);
 
     assert.match(actionBlock, /const hasFixBlockerAction = disabledReason === null;/);
-    assert.match(actionBlock, /if \(!hasFixBlockerAction\) return buildStageActions;/);
+    // Same early return as above, now carrying the git actions with it. The
+    // assertion still pins the thing this test is named for: a disabled
+    // fix_blockers must not be built or prepended.
+    assert.match(actionBlock, /if \(!hasFixBlockerAction\) return \[\.\.\.buildStageActions, \.\.\.gitStageActions\];/);
     assert.doesNotMatch(actionBlock, /const fixBlockersStageAction[\s\S]*if \(!hasFixBlockerAction\)/);
   });
 
