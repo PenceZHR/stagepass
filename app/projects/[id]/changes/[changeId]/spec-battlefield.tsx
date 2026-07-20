@@ -16,7 +16,12 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { BattleDecisionAction, SpecBattleGateState, SpecBattleState } from "./spec-battle-types";
+import type {
+  BattleDecisionAction,
+  RequirementGap,
+  SpecBattleGateState,
+  SpecBattleState,
+} from "./spec-battle-types";
 import { effectiveSeverity, isActiveGap, severityTone } from "./action-reason-context";
 import { ProducedFile } from "./produced-file";
 
@@ -155,6 +160,43 @@ function MiniCount({ label, value, tone }: { label: string; value: number; tone:
   );
 }
 
+/**
+ * Every gap the P1 waiver could land on, in report order. A Spec P1 stays
+ * waivable while it is open or downgraded — the same pair the battlefield
+ * already counts as blocking.
+ */
+export function selectWaivableP1Gaps(
+  gaps: RequirementGap[] | null | undefined,
+): RequirementGap[] {
+  return (gaps ?? []).filter(
+    (gap) => effectiveSeverity(gap) === "P1" && ["open", "downgraded"].includes(gap.status),
+  );
+}
+
+/**
+ * The gap the waiver will actually hit. The human pick wins for as long as it is
+ * still a candidate; once it stops being one — resolved, already waived, or
+ * replaced by a fresh round — the pick is dropped instead of being carried onto
+ * a gap nobody chose. Falling back to the first target keeps the button usable,
+ * and the picker below renders that fallback, so it is never silent.
+ */
+export function resolveWaiveP1Gap(
+  targets: RequirementGap[],
+  selectedId: string | null | undefined,
+): RequirementGap | null {
+  return targets.find((gap) => gap.id === selectedId) ?? targets[0] ?? null;
+}
+
+/**
+ * Says out loud what accepting the risk does and does not cover. Written for one
+ * target as well as many: the picker renders whenever there is a target at all,
+ * so a lone P1 still gets named on screen before the button is pressed.
+ */
+export function waiveP1GapHint(targetCount: number): string {
+  if (targetCount <= 1) return "「接受风险并通过」只对这一项生效。";
+  return `「接受风险并通过」只对选中的这一项生效，其余 ${targetCount - 1} 项仍然阻断。`;
+}
+
 export function SpecBattlefield({
   projectId,
   changeId,
@@ -187,9 +229,9 @@ export function SpecBattlefield({
   const openGaps = gaps.filter(isActiveGap);
   const latestRoundFixClaims = latestRound ? fixClaims.filter((claim) => claim.roundId === latestRound.id) : [];
   const latestRoundGapReviews = latestRound ? gapReviews.filter((review) => review.roundId === latestRound.id) : [];
-  const p1Targets = gaps.filter((gap) => effectiveSeverity(gap) === "P1" && ["open", "downgraded"].includes(gap.status));
+  const p1Targets = useMemo(() => selectWaivableP1Gaps(gaps), [gaps]);
   const [selectedP1GapId, setSelectedP1GapId] = useState("");
-  const selectedP1Gap = p1Targets.find((gap) => gap.id === selectedP1GapId) ?? p1Targets[0] ?? null;
+  const selectedP1Gap = resolveWaiveP1Gap(p1Targets, selectedP1GapId);
   const runningRoundStatuses = ["red_running", "blue_running"];
   const specBattleRunningStatus = runningRoundStatuses.includes(specBattle.roundStatus ?? "") ? specBattle.roundStatus : null;
   const latestRoundRunningStatus = runningRoundStatuses.includes(latestRound?.status ?? "") ? latestRound?.status ?? null : null;
@@ -259,7 +301,13 @@ export function SpecBattlefield({
   };
 
   const handleAcceptRisk = () => {
-    onAcceptRisk(selectedP1Gap?.id ?? null);
+    const target = selectedP1Gap?.id ?? null;
+    // Pin the pick before the reason dialog opens. The waiver itself travels by
+    // value, but the picker below keeps re-deriving its fallback, so a
+    // background refresh that reorders the gaps would otherwise leave the screen
+    // naming a different one than the dialog is about to waive.
+    if (target) setSelectedP1GapId(target);
+    onAcceptRisk(target);
   };
 
   return (
@@ -537,7 +585,7 @@ export function SpecBattlefield({
                   )}
                 </div>
 
-                {p1Targets.length > 1 && (
+                {p1Targets.length > 0 && (
                   <div>
                     <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="accept-risk-gap">
                       接受风险目标
@@ -555,6 +603,7 @@ export function SpecBattlefield({
                         </option>
                       ))}
                     </select>
+                    <p className="mt-1 text-xs text-muted-foreground">{waiveP1GapHint(p1Targets.length)}</p>
                   </div>
                 )}
 

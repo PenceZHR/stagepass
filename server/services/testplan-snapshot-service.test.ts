@@ -11,6 +11,7 @@ import * as schema from "../db/schema.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { getActions } from "./action-contract-service.ts";
 import { setActionContractServiceDbForTest } from "./action-contract-service.ts";
+import { ACTION_DEFINITIONS } from "./action-contract-registry-service.ts";
 import { setArtifactMirrorServiceDbForTest } from "./artifact-mirror-service.ts";
 import {
   setMergeReadinessDbForTest,
@@ -413,5 +414,70 @@ describe("testplan-snapshot-service", () => {
         .all().length,
       1,
     );
+  });
+
+  /**
+   * The gate's requiredActions are persisted forever (stage_gates is append-only),
+   * served by GET /phases, and mirrored into test-plan-delta.json. They named
+   * `approve_test_plan` / `fix_test_plan`, neither of which is an action the
+   * contract registry has ever defined -- so anything resolving them got nothing.
+   */
+  function registeredActionIds(): Set<string> {
+    return new Set(ACTION_DEFINITIONS.map((definition) => definition.actionId));
+  }
+
+  function requiredActionsOf(gate: { requiredActionsJson: string | null }): string[] {
+    return JSON.parse(gate.requiredActionsJson ?? "null") as string[];
+  }
+
+  it("asks for the approval that actually clears an approval-blocked TestPlan gate", () => {
+    const snapshot = createTestPlanSnapshot(validSnapshot());
+
+    assert.equal(snapshot.gate.status, "blocked");
+    assert.match(snapshot.gate.blockersJson ?? "", /testplan_approval/);
+    // approve_plan is filed under Plan but carries TESTPLAN_DONE precisely so it
+    // can serve this confirmation; the UI labels it "确认测试计划".
+    assert.deepEqual(requiredActionsOf(snapshot.gate), ["approve_plan"]);
+
+    const approved = approveTestPlan({ changeId: CHANGE_ID, actor: "tester", approvedAt: NOW });
+
+    assert.equal(approved.status, "passed");
+    assert.deepEqual(requiredActionsOf(approved), []);
+  });
+
+  it("points a content-blocked TestPlan gate at the retry, not at an approval that is refused", () => {
+    // riskMappings: [] leaves the coverage item unmapped, which the AI output
+    // validator permits and contentBlockers rejects -- so this branch is live,
+    // not theoretical.
+    const snapshot = createTestPlanSnapshot(validSnapshot({ riskMappings: [] }));
+
+    assert.equal(snapshot.gate.status, "blocked");
+    assert.deepEqual(requiredActionsOf(snapshot.gate), ["retry_test_plan"]);
+
+    // Approving cannot clear a content blocker and approveTestPlan refuses, so
+    // the gate it writes back must not tell the reader to approve either.
+    const refused = approveTestPlan({ changeId: CHANGE_ID, actor: "tester", approvedAt: NOW });
+
+    assert.equal(refused.status, "blocked");
+    assert.deepEqual(requiredActionsOf(refused), ["retry_test_plan"]);
+  });
+
+  it("never advertises a TestPlan gate action the contract registry cannot resolve", () => {
+    const registered = registeredActionIds();
+    const gates = [
+      createTestPlanSnapshot(validSnapshot({ riskMappings: [] })).gate,
+      approveTestPlan({ changeId: CHANGE_ID, actor: "tester", approvedAt: NOW }),
+      createTestPlanSnapshot(validSnapshot()).gate,
+      approveTestPlan({ changeId: CHANGE_ID, actor: "tester", approvedAt: NOW }),
+    ];
+
+    const advertised = [...new Set(gates.flatMap(requiredActionsOf))];
+
+    assert.ok(advertised.length > 0, "at least one gate should advertise an action");
+    for (const actionId of advertised) {
+      assert.ok(registered.has(actionId), `${actionId} is not a registered action id`);
+    }
+    assert.ok(!advertised.includes("approve_test_plan"));
+    assert.ok(!advertised.includes("fix_test_plan"));
   });
 });

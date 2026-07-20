@@ -487,6 +487,7 @@ function recomputeContentGate(input: {
       required: command.required === 1,
     })),
   });
+  const contentBlockerCount = blockers.length;
   if (input.includeApprovalBlocker && input.snapshot.approvalState !== "approved") {
     blockers.push({
       id: "testplan_approval",
@@ -500,7 +501,19 @@ function recomputeContentGate(input: {
     status: blockers.length > 0 ? "blocked" : "passed",
     blockers,
     freshness: { fresh: true, sourceSnapshotId: input.snapshot.id },
-    requiredActions: blockers.length > 0 ? ["approve_test_plan"] : [],
+    // Only the pending-approval blocker has a human action that clears it, and
+    // that action is `approve_plan` -- the registry files it under Plan but
+    // gives it TESTPLAN_DONE precisely so it can serve this confirmation, and
+    // the UI labels it "确认测试计划". `approve_test_plan` was never a registered
+    // action id at all, so this advertised something no contract could resolve.
+    // Content blockers are cleared by regenerating the snapshot, never by an
+    // approval -- approveTestPlan below refuses them -- so they advertise the
+    // retry instead of an approval that would be rejected.
+    requiredActions: blockers.length === 0
+      ? []
+      : contentBlockerCount > 0
+        ? ["retry_test_plan"]
+        : ["approve_plan"],
     rows: [
       input.snapshot,
       ...rows.coverageItems,
@@ -758,7 +771,11 @@ export function approveTestPlan(input: ApproveTestPlanInput): StageGateRecord {
       status: "blocked",
       blockers,
       freshness: { fresh: true, sourceSnapshotId: snapshot.id },
-      requiredActions: ["fix_test_plan"],
+      // Same dangling-reference shape as `approve_test_plan` above: `fix_test_plan`
+      // is not a registered action either. Regenerating is the real remedy, and
+      // retry_test_plan accepts both statuses this path can be reached at
+      // (TESTPLANNING mid-run, PLAN_APPROVED after a failed one).
+      requiredActions: ["retry_test_plan"],
       rows: [snapshot, ...rows.coverageItems, ...rows.riskMappings, ...rows.requiredCommands, ...rows.manualChecks],
     });
   }

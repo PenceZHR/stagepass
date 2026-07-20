@@ -1056,6 +1056,12 @@ describe("phase review page source", () => {
     assert.doesNotMatch(specBattlefieldSource, /waiveUnavailableReason/);
     assert.doesNotMatch(specBattlefieldSource, /targetId.*<input/);
     assert.doesNotMatch(specBattlefieldSource, /gap id/i);
+    // Inside the details, but never below two candidates: at `> 1` a lone
+    // waivable P1 was accepted without the screen ever naming it. The rendered
+    // proof lives in phase-review.test.ts.
+    assert.match(specBattlefieldSource, /\{p1Targets\.length > 0 && \(/);
+    assert.doesNotMatch(specBattlefieldSource, /p1Targets\.length > 1/);
+    assert.match(specBattlefieldSource, /waiveP1GapHint\(p1Targets\.length\)/);
   });
 
   it("refreshes both gate and battle state after report and human battle commands", () => {
