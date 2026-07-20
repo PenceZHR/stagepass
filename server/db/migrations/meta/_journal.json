@@ -1,0 +1,160 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1781753793792,
+      "tag": "0000_early_marrow",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1781840000000,
+      "tag": "0001_add_provider",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781926400000,
+      "tag": "0002_add_context_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1782012800000,
+      "tag": "0003_add_phase_rework",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1782099200000,
+      "tag": "0004_add_prd_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1782185600000,
+      "tag": "0005_add_git",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1782272000000,
+      "tag": "0006_add_prd_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1782358400000,
+      "tag": "0007_add_project_ai_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1782444800000,
+      "tag": "0008_add_gate_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1782531200000,
+      "tag": "0009_spec_battle_mvp",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1782617600000,
+      "tag": "0010_spec_battle_gap_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1782360000000,
+      "tag": "0011_prd_briefing_room",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782704000000,
+      "tag": "0012_review_db_contract",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1782790400000,
+      "tag": "0013_db_first_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783555200000,
+      "tag": "0014_provider_run_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1783641600000,
+      "tag": "0015_pipeline_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1783728000000,
+      "tag": "0016_process_identity_fencing",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783814400000,
+      "tag": "0017_provider_run_latest_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783900800000,
+      "tag": "0018_pipeline_job_active_phase",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783987200000,
+      "tag": "0019_per_action_provider_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784073600000,
+      "tag": "0020_release_note_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784160000000,
+      "tag": "0021_plan_model_authored_fields",
+      "breakpoints": true
+    }
+  ]
+}

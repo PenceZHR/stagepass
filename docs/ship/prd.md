@@ -1,0 +1,227 @@
+# stagepass — 产品需求文档
+
+## 概述
+
+stagepass 是一个本地优先（local-first）的 AI 研发流水线控制台，采用 **Stage-Gate** 方法论（分阶段推进、每个阶段之间设一道人工决策 gate），用于在单一界面中管理本地项目、PRD、change、AI 辅助研发流水线阶段、人工 gate，以及 Build / Review / QA / Merge 流程。
+
+产品主张是**不替用户写代码，而是替用户把流程走对**：一句需求被押着走完 12 个阶段，每道 gate 由人拍板放行；用户不追日志，而是在一个控制台里处理战报、风险、gate 和人工裁决。AI 不只是单路生成，而是通过 PRD Briefing、Spec Battle、Review 等对抗机制**主动把风险暴露给使用者**——这是让经验不足的人也能做出老手级裁决的关键。语义上**红方只指人类用户本人**（需求源头与最终裁决者），SPEC_WRITER 是服务红方的我方执行代理，REQUIREMENT_CRITIC 是负责质询挑刺的反方；批准权只在人类手里。
+
+系统正在从“文件产物驱动”迁移到“DB-first pipeline”：DB 是裁判，Git 当前事实是现场，`.ship` / JSON / Markdown 只作为 AI 上下文、人工阅读和审计的镜像。核心流水线为 Project → PRD ready → Change → PRD Briefing Room → Spec Battle → TechSpec/API snapshot → Plan Sandbox → TestPlan snapshot → Build Sandbox → Review Center → QA → Merge → Retro。本 PRD 描述 stagepass 项目自身作为一款产品的需求，事实取自仓库当前状态（DB migration 已到 0013_db_first_pipeline，约 48 张表，85 个后端 service 文件，64 个测试文件）。
+
+## 目标用户
+
+主要用户是**想用 AI 写代码、但没受过系统工程训练的开发者**（vibe coding 使用者），以及重度使用 AI 编码 agent（Codex / Claude Code）的单人开发者与小团队。
+
+核心洞察：他们的困难**不是不会写代码**——Codex / Claude Code 已经能写——而是**看不出 AI 在哪里糊弄了自己**：需求哪里还含糊、验收标准缺了哪条、技术方案埋了什么坑。他们只能看着 AI 吐出一大段代码，然后点一下“看起来不错”。
+
+stagepass 对他们的价值分两层：
+
+1. **第一层（主张）：把流程教给他们。** 一句需求被押着走完 12 个阶段，每个关键路口停下来等他们拍板——在 PRD 阶段先清除需求迷雾，在 Spec 阶段用红蓝对抗暴露需求漏洞，在 Plan 阶段明确该改哪些文件、禁止碰哪些，在 Review 阶段用 P0/P1/P2 战报决定是否进入 QA。走完一遍，这条真实的工程流程（即 Stage-Gate）本身也就学会了。对抗机制的意义正在于：**用户不需要自己就能看出坑，有个 AI 专门负责把坑指给他看**，他只需要裁决。
+2. **第二层（随之而来）：管住 AI。** 隔离 worktree 安全施工、DB 权威 gate 兜底、真实进程 pid 与崩溃恢复——让 AI 跑不掉、瞒不住、崩了能捞回来。
+
+使用者兼具“裁决者”（红方，做放行决定）与“学习者”（通过走流程理解代码与风险）双重角色。
+
+## 用户故事
+
+- 作为 **开发者**，我想要 在控制台注册本地项目并自动初始化 .ship/ 脚手架，以便 无需手动搭建规范文件，即可在一个控制台统一管理该项目的所有 AI 辅助变更
+- 作为 **作战指挥官**，我想要 在 PRD Briefing Room 输入作战意图并处理 AI 反方疑点卡，以便 在进入 Spec 之前清除需求迷雾，锁定一份可审查、可进入对抗的 PRD 基线
+- 作为 **作战指挥官**，我想要 在 Spec Battle 中查看红蓝对抗战报并对 Requirement Gap 做裁决，以便 一个 P0/P1 需求漏洞能被发现、阻断、回流 Spec、被裁决、修订后重新验证，并在 Merge 前被机器可靠检查
+- 作为 **作战指挥官**，我想要 查看由 deterministic service 聚合的 War Report 而非原始日志，以便 把注意力从追日志转移到看战报、做风险裁决上
+- 作为 **开发者**，我想要 依赖 DB-first action contract 决定页面按钮是否可点，以便 前端显示与后端 preflight 同源，不再出现“能点却被后端拒绝”的不一致
+- 作为 **开发者**，我想要 让 Build Runner 在 change 级 git worktree 中施工并经人类审批收编，以便 主仓库工作区不被污染，失败施工可回滚，收编前有确定性 gate 兜底
+- 作为 **作战指挥官**，我想要 在 Review 战报中心按 P0/P1/P2 findings 决定代码是否进入 QA，以便 用结构化反方结论替代自然语言摘要，P0 不可绕过、P1 可带理由豁免
+- 作为 **开发者**，我想要 在 Merge 前由系统汇总所有阶段 gate 与 Git 事实计算 merge readiness，以便 任一阶段不达标或 HEAD 漂移都会阻断合并，避免不健全的代码进入主干
+
+## 功能需求
+
+### FR-001: 项目注册与 .ship 脚手架 [must]
+
+注册本地项目路径，自动在项目根目录创建 `.ship/` 脚手架（policy.json、baseline、prompts、coding-rules 等），在 DB `projects` 表落库；删除项目时清理关联 change 与 DB 数据；Git enabled 时可选校验并记录默认分支与 HEAD。
+
+**验收标准：**
+- Given 一个有效的本地项目路径，When 用户注册项目，Then 系统在项目根目录生成 `.ship/` 结构（至少含 policy.json、baseline/、prompts/）并在 DB `projects` 表写入一条记录。
+- Given 已注册的项目，When 用户删除该项目，Then 系统删除该项目的所有 change 及其关联 DB 表数据（findings / artifacts / stage_* / battle_* 等），不残留孤儿记录。
+- Given Git enabled 的项目，When 注册时选择 Git 校验，Then 系统能读取并记录默认分支与当前 HEAD；无 Git 时不进入正式 Build/Review/Check/Fix，只能做需求草稿与初始化引导。
+
+### FR-002: Change 生命周期与状态机 [must]
+
+基于 `server/types/enums.ts` 的 ChangeStatus 状态机管理 change 生命周期（INTAKE_PENDING → … → MERGE_READY → MERGING → RETRO_PENDING → DONE）。change 创建要求项目 PRD ready；门态（◆ 标记）不自动前进，必须由人工 gate 或显式 action 推进。
+
+**验收标准：**
+- Given 项目 PRD 状态不为 ready，When 用户尝试创建 change，Then 系统拒绝创建并返回明确原因。
+- Given 项目 PRD ready，When 创建 change 成功，Then change 初始状态为 INTAKE_PENDING，且 Git enabled 时创建/切换到 change 级 branch。
+- Given change 处于任一门态（INTAKE_READY/SPEC_READY/TECHSPEC_READY/PLAN_READY/MERGE_READY 等），When 无人工 gate approve 或显式 action，Then 状态不得自动前进到下一阶段。
+
+### FR-003: PRD Briefing Room（PRD 阶段对抗） [must]
+
+PRD 阶段不做 AI 多方互搏：人类是红方需求源头，AI 是反方质询官。用户输入作战意图，AI 生成结构化疑点卡（category/severity：critical/important/optional），用户可回答/采用 AI 假设/暂缓；系统生成 PRD 草案；AI 反方做一次最终质询；人类锁定 PRD 基线。PRD Gate 由确定性规则计算。
+
+**验收标准：**
+- Given 用户输入作战意图，When 进入 PRD Briefing，Then AI 反方生成一组结构化疑点卡，每张含 category 与 severity，且每张可被执行 回答 / 采用 AI 假设 / 暂缓 三个动作之一。
+- Given 存在 open 状态的 critical 疑点，When 用户尝试锁定 PRD，Then PRD Gate 拒绝锁定并返回阻断的疑点 ID 列表。
+- Given 不存在 open critical 疑点、每个 accepted AI assumption 都有用户确认记录、PRD 草案含目标/范围/成功标准核心章节，When 用户锁定 PRD，Then 系统写 PRD gate 为 passed 并解锁 Spec Battle。
+- Given PRD Briefing 任意操作，When 读取或推进状态，Then 权威数据来自 DB（prd_briefings / briefing_questions / prd_drafts），`.ship` 下 prd-intent.md / briefing-questions.json / prd-draft.md 仅为可重建的 AI 上下文与人工阅读镜像，不作为 gate 依据。
+
+### FR-004: Spec Battle 与 Requirement Gap 逐项消账 [must]
+
+Spec 阶段表现为有限回合 SLG 对战：每轮 我方代理(SPEC_WRITER)出招并逐项认领 open P0/P1 gap → 反方(REQUIREMENT_CRITIC)先复核旧 gap 再挑新增 → BATTLE_REPORTER 结算战报 → 人类裁决（继续一轮/接受风险通过/终止）。Requirement Gap 有 open/resolved/waived/downgraded 状态与逐项消账协议，防止反方无限新增、旧 gap 被自动关闭。
+
+**验收标准：**
+- Given locked PRD baseline，When 启动 Spec Battle 一轮，Then 按 我方代理出招 → 反方复核旧 gap + 识别新增 → 战报结算 → 人类裁决 的固定顺序推进，状态写入 DB battle_rounds / requirement_gaps / red_fix_claims / blue_gap_reviews。
+- Given 一轮反方输出，When 反方未对某条上一轮仍 open 的 P0/P1 gap 给出明确复核 verdict，Then 该 gap 保持 open 且不得被自动关闭，并在战报中标记为“未被复核”。
+- Given 存在 open P0 requirement gap，When 用户尝试“接受风险并通过”，Then 系统拒绝（P0 不可豁免），只允许继续修订或终止。
+- Given 已有战报，When 用户点击“刷新战报”，Then 只重新结算 facts / counts / report metadata，不重新运行 SPEC_WRITER 或 REQUIREMENT_CRITIC，也不改变 Requirement Gap 业务状态。
+
+### FR-005: DB-first Action Contract 与 Preflight [must]
+
+所有 UI/API 可执行动作（run_plan / approve_plan / run_build / adopt_build / run_review / enter_qa / merge 等）由 ActionContractService 统一计算 enabled/reasonCode/reason/blockers/gateVersion/sourceDbHash，持久化到 stage_actions；执行 API 复用 PreflightService 校验 action contract snapshot、idempotency key、gateVersion/sourceDbHash 漂移，必要时校验 Git HEAD 漂移，返回结构化 action_not_allowed 信封。
+
+**验收标准：**
+- Given 任一阶段的 change，When 前端获取 action contract，Then 每个 action 携带 enabled / reasonCode / reason / blockers / gateVersion / sourceDbHash 字段。
+- Given 后端 preflight 会拒绝某 action，When 前端获取 action contract，Then 该 action enabled=false，且 reason/reasonCode 与 preflight 拒绝理由同源。
+- Given 提交 action 时 DB 状态已变化（gateVersion 或 sourceDbHash 漂移），When 调用执行 API，Then 返回 409 并附带最新的 action contract，不出现“前端可点但后端才拒绝”的长期不一致。
+
+### FR-006: Build Sandbox（Git Base Camp + 隔离 worktree） [should]
+
+Build 采用 A+B：轻量 Build Runner 在 change 级 git worktree 隔离施工区执行一次实现/验证/产出 diff/patch/战报；RTS 施工沙盘让人类看到施工区、变更范围、验证结果、反方审计与收编许可。正式 Build 必须先过 Git Base Camp（是 Git 仓库、有有效 HEAD、能记录 baseCommit）。deterministic Build Gate 硬判定 forbiddenFiles / policy blockedGlobs / 路径逃逸 / base commit 漂移；AI 反方只做风险解释。收编需人类审批。
+
+**验收标准：**
+- Given change 处于 PLAN_APPROVED，When 进入正式 Build，Then 系统先校验 Git Base Camp（项目是 Git 仓库且能读取 HEAD/baseCommit）；无 Git 时阻断正式 Build 并引导用户建立 Git Base Camp，不提供“临时目录直接施工后覆盖主仓”的 fallback。
+- Given 正式 Build，When Build Runner 施工，Then 所有代码修改、依赖安装、测试命令都在 change 级 git worktree（`<仓库父目录>/.stagepass-workspaces/<仓库名>/<changeId>/build-<runNumber>`，见 `workspacePathFor`）内执行，不直接写入主仓工作区。
+- Given Build 结果触碰 forbiddenFiles / policy blockedGlobs / 路径逃逸 / base commit 漂移，When deterministic Build Gate 判定，Then 硬阻断收编（MVP 不提供高危 override）；expectedFiles 之外的 diff 进入 Build Audit 标记 BuildDeviation，不自动失败。
+- Given Build Gate 通过且无 open P0 audit finding，When 人类批准收编，Then 系统校验主仓 clean 且 HEAD===baseCommit 且 patch 来自已登记 workspace 后，将 patch 收编回主仓；任一不满足则阻断收编。
+
+### FR-007: Review 战报中心（DB 权威） [must]
+
+Review 位于 Build 收编之后、QA 之前，不写代码、不跑测试、不替代 QA，只审查已收编代码包是否值得进入 QA。REVIEWER（反方 AI）只读 patch/changed files/上游文档，输出结构化 P0/P1/P2 findings（source=review）；REVIEW_REPORTER（deterministic）结算 latestAttempt / latestValidReview / gate / freshness。P0 不可豁免；P1 可带 reason 豁免但会使 report stale；review-findings.json / review-report.md / raw-review-output.json 仅为审计镜像。
+
+**验收标准：**
+- Given Build 已收编（BuildRun.status=adopted），When 用户点击“开始反方审查”，Then AI Reviewer 只读 patch/changed files/上游文档，输出结构化 findings，其 source 固定为 review、severity 只允许 P0/P1/P2，P0/P1 必须含 evidence 与 requiredFix。
+- Given 存在 open P0 finding，When 用户尝试进入 QA，Then Review QA Gate 拒绝（P0 不可豁免），返回阻断 finding 列表。
+- Given 存在 open P1 finding，When 用户填写 reason 后豁免，Then 当前 Review 战报被标记 stale，必须重新结算出 fresh report 后才允许进入 QA（禁止 waiver 后 approve 旧 report）。
+- Given 删除 `.ship` 下所有 review JSON / Markdown 镜像，When 打开 Review Center，Then UI 仍按 DB（review_reports / findings / review_state）展示真实状态，仅显示 mirror warning，gate 结论不变。
+- Given 最新 Review attempt 为 failed / invalid_output / data_inconsistent，When 展示战报，Then 不得覆盖 latestValidReview；UI 同时展示“最近尝试”与“上一轮有效战报”两个事实，QA gate 只基于 latestValidReview 判断。
+
+### FR-008: QA gate（统一入口） [must]
+
+QA 从 TestPlan required commands 初始化 QA run，记录 command result / evidence / failure，重新计算 QA gate。所有进入 QA 的入口（UI 按钮、pipeline service、API route、旧 runCheck/continue 路径、任何自动推进）都必须调用同一个 Review QA Gate service。
+
+**验收标准：**
+- Given Review gate passed，When 进入 QA，Then QA run 从 TestPlan 的 required validation commands 初始化。
+- Given 任一进入 QA 的入口（UI / pipeline / API / 旧 runCheck / continue），When 尝试进入 QA，Then 都必须经过同一 Review QA Gate service，不得绕过。
+- Given 某 QA required command 失败，When 计算 QA gate，Then QA gate 为失败并阻断 merge，记录失败项与证据。
+
+### FR-009: Merge readiness 汇总 [must]
+
+MergeReadinessService 汇总 PRD/Spec/Plan/TestPlan/Build/Review/QA 全部 gate，检查 latest adopted build、latest QA run、review state、open P0/P1 requirement gaps 与 Git HEAD，写 merge_readiness 与 merge_blockers；gate-service 在 merge approve 时调用并写 human decision / merge approval / merge decision。
+
+**验收标准：**
+- Given 任一阶段存在 open P0/P1 blocking finding 或 stale gate，When 计算 merge readiness，Then Merge 不可通过，并在 merge_blockers 记录阻断项。
+- Given 计算 merge readiness，When 汇总，Then 检查 PRD/Spec/Plan/TestPlan/Build/Review/QA 全部 gate、latest adopted build、latest QA run、review state、requirement gaps 与当前 Git HEAD 一致。
+- Given merge readiness 未满足，When `.ship` war report Markdown 显示可合并，Then Merge action 仍为 disabled，执行 API 返回 DB gate 阻断原因。
+
+### FR-010: AI 引擎抽象（Codex / Claude） [must]
+
+通过 AiEngineAdapter 统一封装 codex 与 claude 两个 provider，输入/输出符合 AiRunInput / AiRunResult 契约；项目可配置 AI provider。claude-engine 必须用 stdin 传 prompt（放 argv 会被错解析成 --allowedTools）。
+
+**验收标准：**
+- Given 项目配置了 provider（codex 或 claude），When 执行任一阶段，Then 系统通过 AiEngineAdapter 统一调用，输入/输出符合 AiRunInput / AiRunResult 契约，阶段逻辑不直接耦合具体 provider。
+- Given provider 为 claude，When 传递 prompt，Then prompt 通过 stdin 传递，不得放在 argv 中（避免被 claude CLI 错解析为 --allowedTools）。
+
+### FR-011: War Report 与产物镜像（deterministic） [should]
+
+阶段级与 change 总战报由 deterministic service（BATTLE_REPORTER / REVIEW_REPORTER / BUILD_REPORTER 等）从 DB facts / counts / gate 聚合生成，AI 只做摘要润色、不参与裁决。`.ship` 下 JSON / Markdown 与 artifacts 表索引是可从 DB 重建的镜像；镜像缺失/损坏/过期只产生 mirror warning，不影响 DB 真相。
+
+**验收标准：**
+- Given 阶段结算，When 生成 report，Then 由 deterministic service 聚合 facts/counts/gate，AI 输出只用于摘要润色，不作为 gate 或 action 的裁决依据。
+- Given 镜像文件缺失/损坏/与 DB 不一致，When 后端计算 gate，Then 不得读取镜像作为放行依据，只产生 mirror warning，并提供“从 DB 重建镜像”动作。
+
+### FR-012: Plan Sandbox / TechSpec / TestPlan snapshot [should]
+
+Spec gate approved 后进入 Plan 作战沙盘：写 DB Plan snapshot（expectedFiles / forbiddenFiles / implementationSteps / validationCommands / risks）与 Plan Risk，plan.json/plan.md 仅为镜像；Plan Gate 由确定性规则计算。TechSpec/API snapshot 标准化 interfaces/dataContracts/migrationNotes/buildInputs/reviewInputs。TestPlan snapshot 提供 coverage items、risk mappings、required validation commands 与 manual checks，供 Build/Review/QA 使用。
+
+**验收标准：**
+- Given Spec gate approved，When 运行 Plan，Then 写 DB Plan snapshot（含 expectedFiles/forbiddenFiles/implementationSteps/validationCommands），plan.json / plan.md 仅为从 DB 渲染的镜像，不作为 Build 施工范围或 gate 的权威输入。
+- Given Plan snapshot，When 计算 Plan gate，Then 校验 implementationSteps 非空且编号连续、每个 step 的 file 被 expectedFiles 覆盖、expectedFiles 与 forbiddenFiles 不冲突、validationCommands 非空、不存在 open P0 Plan Risk。
+- Given TestPlan snapshot，When 进入 QA，Then QA required commands 来自 TestPlan 的 required validation commands；TechSpec/API snapshot 为 Build/Review 提供设计输入。
+
+### FR-013: 事件流与审计 [should]
+
+通过 GET /events/stream（SSE）实时推送 run/event/finding 等事件；任一人类裁决或 action 写入 human_decisions / stage_actions 审计记录，供回溯。
+
+**验收标准：**
+- Given change 处于活动中，When 前端订阅 /events/stream，Then 通过 SSE 实时推送 run_started/run_completed/run_failed/finding_created/change_status_changed 等事件。
+- Given 任一人类裁决或 action 执行，When 完成，Then 在 human_decisions 或 stage_actions 写入审计记录（含 actor/action/reason/createdAt）。
+
+### FR-014: Retro 与 backlog 回流 [could]
+
+Merge 完成后进入 Retro：生成 retro 产物，将未决问题与改进点回流 backlog，为下一个 change 提供上下文。retro 与 backlog 仅作为镜像与 AI 上下文，不作为流程权威。
+
+**验收标准：**
+- Given Merge 完成（change 进入 RETRO_PENDING），When 运行 Retro，Then 生成 retro 产物，并将未决问题/改进点回流 backlog。
+- Given retro/backlog 产物，When 后端推进流程，Then retro/backlog 仅作为 AI 上下文与人工阅读镜像，不作为任何 gate 或 action 的权威依据。
+
+## 非功能性需求
+
+性能：本地优先，单文件 SQLite（better-sqlite3）作为运行时数据库，不依赖外部服务；阶段 AI 调用受 timeout 约束，UI 通过轮询 + SSE 获取进度，避免长时间无反馈。安全：Build 必须在隔离 git worktree 中施工，禁止直接修改主仓工作区；forbiddenFiles / policy blockedGlobs / 路径逃逸 / 密钥 / Git 安全边界由 deterministic Build Gate 硬阻断；本地数据库文件（ship.db 等）与临时截图（tmp-*.png）不入 git。可用性：第一屏聚焦关卡状态、反方战报与指挥按钮，原始 run id / artifact 绝对路径 / events stream 默认折叠到高级详情；UI 按钮文案使用作战语义而非后台词（confirm/approve gate/run spec 等不得作为主按钮）。可审计性：DB 是唯一流程权威，所有 gate/preflight/action/freshness/latest-valid 选择只读 DB 与当前仓库事实；`.ship` JSON/Markdown 可从 DB 重建，镜像异常不影响真相。确定性：门禁由 deterministic service 计算，不依赖 AI 自然语言摘要；AI 输出必须重新 parse/validate/normalize 后写 DB。工程规范：函数 ≤50 行、禁止 any、禁止生产 console.log、kebab-case 文件名、camelCase 变量、ESLint+Prettier、优先 async/await。
+
+## 非目标
+
+不做自由低代码平台 / workflow builder / prompt marketplace / agent marketplace；不允许用户自定义对抗单位 prompt、新增单位、新增阶段、修改状态机边或自定义对抗回合流程（单位与模板均为系统内置 enum）。不在 MVP 做 PRD 阶段 AI 多方互搏、TechSpec/TestPlan/Review 多轮 Battle 的新对抗模型、多模板自由组合、多人审批流、P0 override UI。不替换现有 pipeline/artifacts/findings/gate/.ship 基础资产。不承诺 AI 自动合并或绕过人类 gate；不让 AI 反方 Audit 替代 deterministic Build Gate；不让 Review 替代 QA。不允许任何新阶段产生 JSON-only 后端状态；不允许 `.ship` JSON/Markdown 作为 PRD/Spec/Plan/TestPlan/Build/Review/QA/Merge 的流程权威；不允许前端绕过 DB action contract 自行猜测按钮是否可点。不提供主仓 dirty 时直接进入正式 Build 的 fallback。
+
+## 成功指标
+
+第一验证目标（来自产品愿景）：一个 P0/P1 需求漏洞能被反方发现、阻断、回流 Spec、被人类裁决、修订后重新验证，并在 Merge 前被机器可靠检查。DB-first 不变式：删除 `.ship` 下所有阶段 JSON/Markdown 后，UI 仍按 DB 展示真实状态并只显示 mirror warning；篡改 `.ship` JSON 写成 passed 不得作为放行依据。一致性：前端 action contract 与后端 preflight 同源，不出现“前端可点但后端拒绝”的长期不一致；后端 preflight 拒绝时 UI 必须禁用并展示同源 reason。门禁可信度：进入 QA 只能依赖 DB Review gate；Merge 前任一阶段 open P0/P1 blocking finding 或 stale gate 都阻断合并。可维护性：Review DB 化完成度作为其他阶段的样板；测试覆盖保持 service 层与 gate 边界（当前 64 个测试文件）绿色。
+
+## 风险
+
+1) `server/services/pipeline-service.ts` 过重（既是编排器又承载多阶段 schema/校验/渲染/snapshot/mirror 逻辑），是当前最大技术债，建议优先拆出 document-stage-runner / plan / techspec / testplan / review stage service。2) Plan Sandbox 仍存在文件权威残留（读写 plan.json/plan.md/plan-critique.json 再同步 DB），需继续收敛为 DB snapshot 权威。3) `server/db/schema.ts` 集中了约 48 张表在一个大文件，长期建议按 core/stage/prd/spec/plan/build/review/qa/merge/mirror 分域拆分。4) AI provider 多轮对抗的 token 成本与延迟：Spec Battle 多轮、Review 多次 attempt 可能拖慢流程，需用 maxSpecRounds 上限与确定性结算控制。5) 历史 JSON-only change 的迁移复杂度：legacy import 必须幂等且不得把不完整数据误升为有效战报。6) API preflight 接入不完全统一（review route 有自己的 idempotency/preflight，部分 route 未完全接入 action contract）。
+
+## 开放问题
+
+- ✅ pipeline-service.ts 的拆分（document-stage-runner / plan / techspec / testplan / review stage service）是否在本轮 PRD 周期内执行，还是作为后续模块化工作？ → 已规划拆分方向（见 docs/project-codebase-overview.md §11），时机待定；本 PRD 不阻塞。
+- ✅ Plan 阶段是否引入多轮 Plan Battle（类似 Spec Battle 的多轮攻防）？ → 当前决策：不引入，Plan 只做一次反方执行风险拦截（作战沙盘），除非人类明确要求重排计划。
+- ✅ schema.ts 是否按领域拆分为 server/db/schema/ 子目录（core/stage/prd/spec/plan/build/review/qa/merge/mirror + barrel 导出）？ → 建议拆分但先不改 DB 行为，只调整导出结构；时机待定。
+- ✅ 主仓存在未提交变更（dirty baseline）时，是否允许用户显式选择进入正式 Build？ → MVP 默认阻断并提示先 commit/stash/discard；未来可允许显式选择 dirty baseline，但需先写清快照与回滚策略。
+
+---
+
+## AI 执行附录
+
+### 实现约束
+
+框架：Next.js 16 App Router + React 19 + TypeScript（strict）；后端服务跑在 Node 运行时（route handlers / server services）。数据：SQLite + better-sqlite3 + Drizzle ORM（schema 集中在 server/db/schema.ts，迁移在 server/db/migrations/，迁移到 0013_db_first_pipeline）。AI：Codex CLI（直接 spawn `codex exec --json` 二进制，替代旧 @openai/codex-sdk）与 Claude Code（@anthropic-ai/claude-code），通过 AiEngineAdapter 抽象；不要 top-level await；claude-engine 必须用 stdin 传 prompt。UI：Tailwind + shadcn 风格基础组件（components/ui/）+ lucide-react 图标 + @base-ui/react。测试：node:test + tsx（pnpm test = tsx --test --test-concurrency=1 app/**/*.test.ts server/services/*.test.ts server/db/*.test.ts）。编码规范（.ship/coding-rules.md）：函数 ≤50 行、禁止 any、禁止生产 console.log、文件 kebab-case、变量 camelCase、类/接口 PascalCase、常量 UPPER_SNAKE_CASE、优先 async/await、每个功能模块必须有 *.test.ts 单测。必检命令（.ship/policy.json）：lint/typecheck/test/build；blockedGlobs 含 package.json、lockfile、.github/workflows/**、infra/**、deploy/**、.env*。
+
+### 影响模块
+
+- server/services/pipeline-service.ts（阶段编排核心，当前最重）
+- server/services/project-service.ts、change-service.ts、change-rework-service.ts
+- server/services/stage-authority-service.ts、action-contract-service.ts、preflight-service.ts、gate-service.ts
+- server/services/prd-service.ts、prd-briefing-service.ts、prd-briefing-ledger.ts
+- server/services/spec-battle-service.ts、spec-battle-ledger.ts、spec-battle-rules.ts、spec-battle-report-service.ts
+- server/services/plan-sandbox-service.ts、techspec-api-snapshot-service.ts、testplan-snapshot-service.ts
+- server/services/build-workspace-service.ts、build-run-record-service.ts
+- server/services/review-run-service.ts、review-report-service.ts、review-center-service.ts、review-qa-gate-service.ts、review-waiver-service.ts、review-artifact-mirror-service.ts
+- server/services/qa-run-service.ts、merge-readiness-service.ts
+- server/services/ai-engine-adapter.ts、ai-engine-types.ts、claude-engine.ts、codex-cli-engine.ts
+- server/db/schema.ts、server/db/migrate.ts、server/db/index.ts
+- server/types/enums.ts、server/types/prd.ts、server/types/api.ts、server/types/models.ts
+- app/api/projects/[id]/changes/[changeId]/*（约 60 个 REST route + SSE）
+- app/projects/[id]/changes/[changeId]/page.tsx（change 主控制台，当前过重）及专项组件（prd-briefing-room / spec-battlefield / plan-sandbox / build-sandbox / review-report-center）
+- app/projects/[id]/changes/[changeId]/pipeline-action-contract.ts（前端 action contract 组装）
+
+### 接口契约
+
+REST API（app/api/projects/[id]/changes/[changeId]/*）：阶段执行 POST /intake /spec /tech-spec /plan /test-plan /implement /review /check /fix /release /retro；change 生命周期 GET/POST /changes、PATCH/DELETE /changes/[changeId]、POST /confirm /block /rework /stop；gate GET /gate、POST /gate/approve、POST /gate/reject；专项视图 /prd-briefing(/questions/draft/final-review/lock)、/spec-battle(/report/decision)、/plan-sandbox(/report/decision)、/build-workspace、/review-center、/review-report/recompute；审计 GET /events、GET /events/stream(SSE)、GET /artifacts、PUT /artifacts/[id]/content、PUT /phase-artifacts、GET /findings、POST /findings/[id]/waive、GET /diff。统一 action contract：PipelineAction { actionId; phase: PRD|Spec|Plan|TestPlan|Build|Review|QA|Merge; label; enabled; reasonCode; reason; blockers: Array<{id;severity:P0|P1|P2;title}>; gateVersion; sourceDbHash; requiresIdempotencyKey }。执行 action 提交 action contract snapshot + idempotency key；漂移返回 409 + 最新 contract 或结构化 action_not_allowed 信封。事件类型见 server/types/enums.ts EventType。finding 字段：id/changeId/runId/phase/source/severity(P0|P1|P2)/category/title/file/line/evidence/requiredFix/status(open|fixed|waived)。
+
+### 测试策略
+
+测试运行器：node:test + tsx，pnpm test（--test-concurrency=1）。覆盖重点（与现有 64 个测试文件一致）：DB migrations 幂等、pipeline-service、stage-authority-service、action-contract-service、preflight-service、gate-service、spec-battle(service/rules/ledger/report)、plan-sandbox-service、build-workspace-service/build-run-record-service、review(service/report/center/qa-gate/waiver/artifact-mirror)、qa-run-service、merge-readiness-service、artifact-mirror-service、route 安全与 route contract、关键前端组件逻辑。DB-first 不变式必须有测试：删除 .ship JSON/MD 后 UI 仍按 DB 展示；篡改 .ship 不得放行；action contract 与 preflight 同源；P0 不可豁免；P1 waiver 后 report stale 且需重新结算才能进 QA；latestValidReview 不被 failed/invalid_output/data_inconsistent attempt 覆盖；merge readiness 任一阶段不达标即阻断。重构原则：大文件重构前先跑对应 service 测试，再跑 pnpm test，保持绿色。
+
+### 边界条件
+
+门态不自动前进，必须由人工 gate 或显式 action 推进。P0 不可豁免（不允许 P0 waiver/override，overridden 仅作未来枚举保留，MVP 不产生不依赖）；P1 豁免必须填写 reason 并使当前 report stale，需重新结算出 fresh report 才能进 QA。进入 QA 前必须 Review gate passed，且所有 QA 入口统一调用 Review QA Gate service。Merge 前需 PRD/Spec/Plan/TestPlan/Build/Review/QA 全部 gate 通过 + latest adopted build + latest QA run + Git HEAD 一致 + 无 open P0/P1 blocking。Build：无 Git 不进正式 Build；主仓 dirty 默认阻断；worktree 隔离施工；forbiddenFiles/policy/路径逃逸硬阻断；收编前校验主仓 clean 且 HEAD===baseCommit 且 patch 来自已登记 workspace。镜像：.ship JSON/Markdown 永远不是流程权威，只能由 DB 生成/重建；镜像异常只产生 mirror warning；legacy import 必须幂等，不完整数据只标记 legacy_incomplete，不参与 latest valid state/QA/Merge。AI 输出必须重新 parse/validate/normalize 后写 DB，不得沿用旧 JSON 状态。Fix 迭代上限 maxFixIterations=3，超过进入 BLOCKED。
+
+### 阶段约束
+
+DB-first 写入顺序固定：AI/deterministic output → schema validation → normalize → DB transaction → recompute gate → recompute action contract → render JSON/Markdown/.ship mirror from DB → expose UI DTO from DB。读取顺序固定：DB state → deterministic gate service → action contract → UI DTO/API response。DB 写入失败则本阶段不得通过；镜像写入失败 DB 状态仍有效但记 mirror warning。模块化阶段约束（避免大搬家式重构，采用垂直可测试小步）：第一优先级拆 pipeline-service（document-stage-runner / plan-stage / techspec-stage / testplan-stage / review-stage），第二优先级拆 change 主页面（hooks / api-client / phase constants / action handlers / 各 panel），第三优先级 schema 分域（先只调导出结构不改 DB 行为）。新功能不得绕过 ActionContractService 与 PreflightService；新阶段不得让 .ship/JSON/Markdown 成为后端权威。

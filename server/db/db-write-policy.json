@@ -1,0 +1,1835 @@
+{
+  "schemaVersion": 1,
+  "productionEntries": [
+    {
+      "file": "server/db/migrate.ts",
+      "symbol": "record.run",
+      "nodeKind": "CallExpression",
+      "table": "__native_sql__",
+      "owner": "Database migration owner",
+      "reason": "native SQLite schema migration write"
+    },
+    {
+      "file": "server/db/migrate.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "__migrations",
+      "owner": "Database migration owner",
+      "reason": "native SQLite schema migration write"
+    },
+    {
+      "file": "server/db/migrate.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "__native_sql__",
+      "owner": "Database migration owner",
+      "reason": "native SQLite schema migration write"
+    },
+    {
+      "file": "server/db/migrate.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "testplan_snapshots",
+      "owner": "Database migration owner",
+      "reason": "native SQLite schema migration write"
+    },
+    {
+      "file": "server/repositories/action-contract-repository.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageActions",
+      "owner": "Task 14",
+      "reason": "action contract repository upsert insert"
+    },
+    {
+      "file": "server/repositories/action-contract-repository.ts",
+      "symbol": "connection.update",
+      "nodeKind": "CallExpression",
+      "table": "stageActions",
+      "owner": "Task 14",
+      "reason": "action contract repository upsert update"
+    },
+    {
+      "file": "server/repositories/job-store-repository.ts",
+      "symbol": "connection.update",
+      "nodeKind": "CallExpression",
+      "table": "pipelineJobs",
+      "owner": "Task 10",
+      "reason": "owned by Task 10"
+    },
+    {
+      "file": "server/repositories/job-store-repository.ts",
+      "symbol": "getJobStoreDb().transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 10",
+      "reason": "owned by Task 10"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.delete",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "releaseNoteState",
+      "owner": "Task 14",
+      "reason": "persists the immutable approved release-note content hash"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "runs",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "runs",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageGates",
+      "owner": "Task 14",
+      "reason": "stage authority gate persistence"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageReports",
+      "owner": "Task 14",
+      "reason": "stage authority report persistence"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageRuns",
+      "owner": "Task 14",
+      "reason": "stage authority run persistence"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageStates",
+      "owner": "Task 14",
+      "reason": "stage authority state persistence"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "connection.update",
+      "nodeKind": "CallExpression",
+      "table": "stageRuns",
+      "owner": "Task 14",
+      "reason": "stage authority run patch"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "connection.update",
+      "nodeKind": "CallExpression",
+      "table": "stageStates",
+      "owner": "Task 14",
+      "reason": "stage authority state patch"
+    },
+    {
+      "file": "server/repositories/stage-authority-repository.ts",
+      "symbol": "getStageAuthorityDb().transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "stage authority aggregate transaction"
+    },
+    {
+      "file": "server/services/action-contract-self-heal-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/action-contract-self-heal-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/action-contract-self-heal-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "testplanSnapshots",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/artifact-mirror-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifactMirrors",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/artifact-mirror-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "artifactMirrors",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/build-run-record-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "buildRunRecords",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
+      "symbol": "activeDb.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
+      "symbol": "tx.delete",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "db.run",
+      "nodeKind": "CallExpression",
+      "table": "__raw_sql__",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "atomically deletes the complete change record graph"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "tx.delete",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "deletes the change row in the same transaction as its dependents"
+    },
+    {
+      "file": "server/services/change-status-service.ts",
+      "symbol": "statusDb.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-status-service.ts",
+      "symbol": "statusDb.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/context-init-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.exec",
+      "nodeKind": "CallExpression",
+      "table": "__native_sql__",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.exec",
+      "nodeKind": "CallExpression",
+      "table": "provider_run_processes",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "pipeline_jobs",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "provider_run_processes",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "runs",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "stage_gates",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "stage_runs",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "expireDb.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "pipeline_jobs",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "leaseDb.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "pipeline_jobs",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/event-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/execution-fence-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/gate-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/gate-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "mergeApprovals",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/gate-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "mergeDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/gate-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/job-dispatch-service.ts",
+      "symbol": "database.run",
+      "nodeKind": "CallExpression",
+      "table": "__raw_sql__",
+      "owner": "Task 9",
+      "reason": "owned by Task 9"
+    },
+    {
+      "file": "server/services/job-dispatch-service.ts",
+      "symbol": "getJobDispatchDb().transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 9",
+      "reason": "owned by Task 9"
+    },
+    {
+      "file": "server/services/job-dispatch-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 9",
+      "reason": "owned by Task 9"
+    },
+    {
+      "file": "server/services/job-dispatch-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "pipelineJobs",
+      "owner": "Task 9",
+      "reason": "owned by Task 9"
+    },
+    {
+      "file": "server/services/merge-readiness-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "mergeBlockers",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/merge-readiness-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "mergeReadiness",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-approval-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-approval-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-approval-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "planApprovals",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-approval-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "planSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "planRisks",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "planSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "planSteps",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "requiredValidationCommands",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageGates",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageReports",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageRuns",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "stageStates",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "stageStates",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.delete",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "prdBriefings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "prdDrafts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "prdBriefings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-briefing-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "prdBriefings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-document-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/prd-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-git-state-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-service.ts",
+      "symbol": "db.delete",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-service.ts",
+      "symbol": "db.delete",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-service.ts",
+      "symbol": "db.delete",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/project-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "projects",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/provider-run-lifecycle-service.ts",
+      "symbol": "getProviderRunLifecycleDb().transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 10",
+      "reason": "owned by Task 10"
+    },
+    {
+      "file": "server/services/provider-run-lifecycle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "providerRunProcesses",
+      "owner": "Task 10",
+      "reason": "owned by Task 10"
+    },
+    {
+      "file": "server/services/provider-run-lifecycle-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "providerRunProcesses",
+      "owner": "Task 10",
+      "reason": "owned by Task 10"
+    },
+    {
+      "file": "server/services/provider-run-lifecycle-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "runs",
+      "owner": "Task 10",
+      "reason": "owned by Task 10"
+    },
+    {
+      "file": "server/services/provider-session-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "changeProviderSessions",
+      "owner": "Task 14",
+      "reason": "records the provider session row on the non-transactional path"
+    },
+    {
+      "file": "server/services/provider-session-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "atomically records the per-change provider session row"
+    },
+    {
+      "file": "server/services/provider-session-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "changeProviderSessions",
+      "owner": "Task 14",
+      "reason": "upserts the provider session row inside the recording transaction"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "qaCommandResults",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "qaEvidence",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "qaFailures",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "qaRuns",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "qaCommandResults",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "qaFailures",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/qa-run-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "qaRuns",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "providerRunProcesses",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "buildRunRecords",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "pipelineJobs",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "providerRunProcesses",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewAttempts",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewReports",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewState",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "runs",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/recovery-executors.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "stageRuns",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/refine-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/refine-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/refine-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "atomically replaces the refine spec artifact row with its staged file"
+    },
+    {
+      "file": "server/services/refine-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/refine-service.ts",
+      "symbol": "tx.delete",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "clears the previous refine spec artifact row inside the replacement transaction"
+    },
+    {
+      "file": "server/services/refine-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "records the staged refine spec artifact row inside the replacement transaction"
+    },
+    {
+      "file": "server/services/review-artifact-mirror-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-artifact-mirror-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "reviewArtifactMirrors",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-artifact-mirror-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewArtifactMirrors",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-report-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "reviewReports",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-report-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "reviewState",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-report-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewState",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "reviewPriorFindingReviews",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewAttempts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "reviewAttempts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewAttempts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-run-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewPriorFindingReviews",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "reviewState",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewReports",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "reviewState",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "txDb.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "txDb.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/review-waiver-service.ts",
+      "symbol": "txDb.update",
+      "nodeKind": "CallExpression",
+      "table": "findings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-repair-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-report-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-report-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "warReports",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-report-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "warReports",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "warReports",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "blueGapReviews",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "redFixClaims",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "runs",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "battleRounds",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/spec-battle-service.ts",
+      "symbol": "tx.update",
+      "nodeKind": "CallExpression",
+      "table": "requirementGaps",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/stale-provider-run-recovery-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "events",
+      "owner": "Task 11",
+      "reason": "owned by Task 11"
+    },
+    {
+      "file": "server/services/techspec-api-snapshot-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "apiSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/techspec-api-snapshot-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "techspecSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/techspec-api-snapshot-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/techspec-api-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "apiSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/techspec-api-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "techspecSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "db.insert",
+      "nodeKind": "CallExpression",
+      "table": "humanDecisions",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "db.transaction",
+      "nodeKind": "CallExpression",
+      "table": null,
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "testplanSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "tx.delete",
+      "nodeKind": "CallExpression",
+      "table": "requiredValidationCommands",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "requiredValidationCommands",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "testplanCoverageItems",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "testplanManualChecks",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "testplanRiskMappings",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.ts",
+      "symbol": "tx.insert",
+      "nodeKind": "CallExpression",
+      "table": "testplanSnapshots",
+      "owner": "Task 14",
+      "reason": "owned by Task 14"
+    }
+  ],
+  "testFixtures": [
+    {
+      "file": "scripts/test-retry-always-available.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "scripts/test-state-machine-closure.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/db/db-write-inventory.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/db/migrate.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/db/sqlite-lock-retry.test.ts",
+      "mode": "local-temp",
+      "reason": "test owns an isolated temporary-file SQLite fixture"
+    },
+    {
+      "file": "server/repositories/run-ledger-repository.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/action-contract-self-heal-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/action-contract-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/artifact-mirror-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/build-run-record-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/build-stale-run-recovery-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/build-workspace-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/change-rework-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/change-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/context-init-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/db-first-pipeline-contract.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/db-migrations.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/diff-route-security.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/execution-fence-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/gate-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/graph-runner.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/job-dispatch-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/merge-readiness-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/pipeline-crash-window.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/pipeline-job-lease-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/pipeline-routes.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/pipeline-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/plan-sandbox-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/plan-snapshot-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/prd-briefing-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/prd-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/preflight-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/project-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/provider-action-authority-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/provider-process-lease-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/provider-run-lifecycle-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/provider-session-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/provider-worker-protocol.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/qa-run-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/refine-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/review-artifact-mirror-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-center-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/review-center-state-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-db-contract.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-prior-finding-review.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-qa-gate-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-report-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-run-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/review-waiver-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/scope-check-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/spec-battle-repair-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/spec-battle-report-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/spec-battle-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/stage-authority-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/stage-gate-latest-selection.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/stage-guard-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/stale-provider-run-recovery-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/static-analyzer.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/techspec-api-snapshot-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/testplan-snapshot-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    }
+  ]
+}

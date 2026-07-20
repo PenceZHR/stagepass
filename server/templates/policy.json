@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "requiredChecks": ["lint", "typecheck", "test", "build"],
+  "optionalChecks": [],
+  "defaultValidationCommands": {
+    "lint": "pnpm lint",
+    "typecheck": "pnpm typecheck",
+    "test": "pnpm test",
+    "build": "pnpm build",
+    "semgrep": "semgrep scan --config auto --json --json-output .ship/changes/{changeId}/semgrep-local.json"
+  },
+  "blockedFiles": [],
+  "blockedGlobs": [
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    ".github/workflows/**",
+    "infra/**",
+    "deploy/**",
+    ".env*"
+  ],
+  "maxFixIterations": 3
+}

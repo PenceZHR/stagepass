@@ -1,0 +1,1 @@
+ALTER TABLE changes ADD COLUMN provider TEXT NOT NULL DEFAULT 'codex';
