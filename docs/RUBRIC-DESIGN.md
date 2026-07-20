@@ -62,8 +62,13 @@
 ```
 yes           满足
 no            不满足
-not_assessed  未评估（模型没给 / 给了未知值）
+not_assessed  未评估（模型漏答）
 ```
+
+**未知 verdict 值 → 作废整份输出，不是记 `not_assessed`。**（第 1 批实现时修正：
+原文这里与 §1/§4.2「照抄 review.md」自相矛盾，review.md 是未知 verdict 作废整份输出。
+作废可重试 —— 模型有机会改错字；`not_assessed` 是永久记账。两者都 fail-closed，
+但作废更保守，且不会被误读成一次真实判定。**模型也不许自己写 `not_assessed`**。）
 
 **用户要的是「是或否」；`not_assessed` 不是第三个答案，而是「模型没回答」的记账。**
 它必须存在，否则漏答会被静默当成通过 —— 那正是 `not_rechecked` 在防的事。
@@ -111,9 +116,22 @@ rubrics            id, project_id, change_id(null=项目级默认), phase,
                    role(producer|critic|verdict), version, is_current,
                    created_at
 rubric_criteria    id, rubric_id, ordinal, text, blocking(bool)
-rubric_assessments id, run_id, round_id(null), rubric_id, criterion_id,
-                   verdict(yes|no|not_assessed), evidence, created_at
+rubric_assessments id, change_id, run_id, round_id(null), rubric_id,
+                   criterion_id, verdict(yes|no|not_assessed), evidence, created_at
 ```
+
+**第 1 批实现时的两处修正（原设计有真实缺陷）：**
+
+1. **`rubric_assessments` 必须有 `change_id`。** 否则针对「项目级 rubric」做出的判定，
+   在删 change 时找不到 —— 它唯一的另一条链路 `rubric_id` 指向一个比 change 活得更久的
+   对象，`run_id` 又不能加外键（各阶段的 run 分散在 `runs`/`stage_runs`/`battle_rounds`）。
+2. **「每个 scope 只有一行 current」必须用两个部分唯一索引**（`change_id IS NOT NULL`
+   与 `IS NULL` 各一），不能用单个。**SQLite 唯一索引里 NULL 互不相等**，单索引会让
+   所有项目级 rubric 版本同时是 current —— 而且是静默失效。version 唯一性同理。
+3. 顺带：`rubrics.project_id` 引用 `projects.id`，项目级 rubric 不属于任何 change，
+   `deleteChangeRecords` 够不到它。**必须补 `PROJECT_RUBRIC_DELETE_PLAN`**，否则任何
+   建过 rubric 的项目从此再也删不掉，且没有既有测试会发现（只有 change 删除计划有
+   schema 推导的守卫，项目删除没有）。
 
 ## 6. 输出契约（**AI 绝不亲手写 JSON** —— 项目成文规则）
 
@@ -156,4 +174,15 @@ RUBRIC <criterionId> yes|no <evidence>
 - 改/删任何既有断言，逐条说明「原本钉住什么、为什么那个行为是错的」
 - 完整 `pnpm test` + `tsc --noEmit` + `pnpm lint`
 - 新增生产 DB 写 → 登记 `db-write-policy.json` + 重算快照
-- **真浏览器验证，不是只有测试绿**
+- **真浏览器验证，不是只有测试绿** —— 但**第 1–3 批没有 UI 可点**（UI 是第 4 批），
+  这几批用「生产库副本 + 真实服务函数重算」代替：先复现真实盖章的哈希以证明重算函数
+  忠实，再证明改动前后哈希不变。第 4 批起才有界面可验。
+
+## 10. worktree 陷阱（实测，别再踩）
+
+**`.npmrc` 里的 `verify-deps-before-run=false` 对 pnpm 不生效。** 第 1 批实测：pnpm 仍会
+在 `pnpm test` 前尝试 `pnpm install`，而那会**删掉指向主树的 node_modules 软链**；只因为
+无 TTY 才中止（`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`）。有 TTY 的会话里会真删。
+
+**worktree 里一律改用 `npx tsx scripts/run-tests-isolated.ts`**（就是 `pnpm test` 指向的
+同一个脚本，只是绕开 pnpm 的前置检查，隔离逻辑与临时库完全一致）。
