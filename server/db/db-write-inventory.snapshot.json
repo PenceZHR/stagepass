@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "5842566b7e495f194751b15af33de315e4ac391da729d12a76bfeb64245aebec",
+  "policySha256": "7514276b36c9dd0d19742c71d3174cb70a3e2277e0e1748aaf2cc4a7dccfaf6f",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -305,6 +305,14 @@
       "table": null,
       "owner": "Task 14",
       "reason": "atomically deletes the complete change record graph"
+    },
+    {
+      "file": "server/services/change-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "adoption commit branch repair",
+      "reason": "resolveAdoptionCommitBranch backfills changes.gitBranch when a change opened before its repo was a git repository; without it adoption never commits, HEAD never leaves the run base, and the next fix patch collides with the output already in the tree"
     },
     {
       "file": "server/services/change-service.ts",

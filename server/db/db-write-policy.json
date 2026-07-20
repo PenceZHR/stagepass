@@ -307,6 +307,14 @@
     },
     {
       "file": "server/services/change-service.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "changes",
+      "owner": "adoption commit branch repair",
+      "reason": "resolveAdoptionCommitBranch backfills changes.gitBranch when a change opened before its repo was a git repository; without it adoption never commits, HEAD never leaves the run base, and the next fix patch collides with the output already in the tree"
+    },
+    {
+      "file": "server/services/change-service.ts",
       "symbol": "tx.delete",
       "nodeKind": "CallExpression",
       "table": "changes",
@@ -1578,6 +1586,11 @@
       "file": "server/services/action-contract-service.test.ts",
       "mode": "local-memory",
       "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/adoption-commit-branch.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
       "file": "server/services/artifact-mirror-service.test.ts",

@@ -18,6 +18,7 @@ import { runDocumentStage } from "./pipeline-document-stage-runner-service";
 import { appendRetroDebtsToBacklog } from "./retro-service";
 import { assertCanMerge } from "./merge-readiness-service";
 import { resolveRetroActionAuthority } from "./provider-action-authority-service";
+import { resolveAdoptionCommitBranch } from "./change-service";
 
 function getProject(projectId: string) {
   return db.select().from(projects).where(eq(projects.id, projectId)).get();
@@ -62,7 +63,14 @@ export async function runRelease(
         + `Adopt or discard the newer run, then retry the merge.`
       );
     }
-    const commit = { enabled: Boolean(project.gitEnabled && change.gitBranch) };
+    const commit = {
+      enabled: resolveAdoptionCommitBranch({
+        changeId,
+        gitEnabled: Boolean(project.gitEnabled),
+        repoPath: project.repoPath,
+        gitBranch: change.gitBranch ?? null,
+      }) !== null,
+    };
     if (approvedBuildRun.purpose === "fix") {
       adoptFixPatch({ repoPath: project.repoPath, changeId, commit });
     } else {

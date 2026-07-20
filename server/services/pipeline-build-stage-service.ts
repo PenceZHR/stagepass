@@ -61,6 +61,7 @@ import {
 } from "./stage-guard-service";
 import type { Provider } from "./provider-selection-service";
 import { checkoutBranch, commitAll } from "./git-service";
+import { resolveAdoptionCommitBranch } from "./change-service";
 import { runCheck } from "./pipeline-qa-stage-service";
 import {
   recordProviderSession,
@@ -520,7 +521,13 @@ export async function approveBuildAbsorb(changeId: string): Promise<void> {
     repoPath: project.repoPath,
     changeId,
   });
-  const commit = { enabled: Boolean(project.gitEnabled && change.gitBranch) };
+  const commitBranch = resolveAdoptionCommitBranch({
+    changeId,
+    gitEnabled: Boolean(project.gitEnabled),
+    repoPath: project.repoPath,
+    gitBranch: change.gitBranch ?? null,
+  });
+  const commit = { enabled: commitBranch !== null };
   const adopted = approved.status === "adopted"
     ? approved
     : approved.purpose === "fix"

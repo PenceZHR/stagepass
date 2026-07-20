@@ -208,7 +208,13 @@ export function commitChangesDecision(repoPath: string, changeId: string): Actio
   if (
     pendingFix
     && pendingFix.purpose === "fix"
-    && pendingFix.status === "approved_for_absorb"
+    // Every status on the way to adoption, not just the last one. Measured on
+    // the live pipeline: a commit landed at 16:11:45Z while the run was still
+    // awaiting_human, and the run only reached approved_for_absorb at
+    // 16:11:51Z -- six seconds too late for a guard that watched only that
+    // status, and the dirty tree that invites the commit is at its worst
+    // exactly in that window.
+    && !["adopted", "rejected"].includes(pendingFix.status)
     && pendingFix.baseCommit
     && facts.headSha
     && pendingFix.baseCommit === facts.headSha

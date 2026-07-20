@@ -31,7 +31,7 @@ function dirtyTheTree(): void {
   fs.writeFileSync(path.join(repoPath!, "src-new.mjs"), "export const x = 1;\n");
 }
 
-function writePendingFix(input: { baseCommit: string; status: "approved_for_absorb" | "adopted"; purpose: "fix" | "build" }): void {
+function writePendingFix(input: { baseCommit: string; status: "approved_for_absorb" | "awaiting_human" | "adopted"; purpose: "fix" | "build" }): void {
   writeBuildRun(repoPath!, {
     changeId: CHANGE_ID,
     runNumber: 1,
@@ -93,6 +93,21 @@ describe("commit_changes guard against drifting a pending fix", () => {
     // commit would only strand the user with no action at all.
     assert.equal(decision.enabled, true);
     assert.equal(decision.reasonCode, null);
+  });
+
+  // The commit that broke a live absorb landed while the run was still
+  // awaiting_human, six seconds before it reached approved_for_absorb. A guard
+  // that watches only the last status misses exactly the window in which the
+  // tree is dirtiest and the commit most tempting.
+  it("withholds commit from the moment a fix run exists, not just once it is approved", () => {
+    const head = createRepoWithCommit();
+    dirtyTheTree();
+    writePendingFix({ baseCommit: head, status: "awaiting_human", purpose: "fix" });
+
+    const decision = commitChangesDecision(repoPath!, CHANGE_ID);
+
+    assert.equal(decision.enabled, false);
+    assert.equal(decision.reasonCode, "git_commit_would_drift_fix_base");
   });
 
   it("allows commit when the pending run is a build rather than a fix", () => {

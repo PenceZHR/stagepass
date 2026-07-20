@@ -11,7 +11,13 @@ import type { Change, ChangeStatus } from "../types";
 import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
 import { transitionChangeStatus } from "./change-status-service";
 import { CHANGE_DELETE_PLAN } from "./change-delete-plan";
-import { generateChangeBranchName, createBranch, checkoutBranch, branchExists } from "./git-service";
+import {
+  branchExists,
+  checkoutBranch,
+  createBranch,
+  generateChangeBranchName,
+  getCurrentBranch,
+} from "./git-service";
 import { syncProjectGitState } from "./project-git-state-service";
 import fs from "fs";
 import path from "path";
@@ -20,6 +26,58 @@ const log = createChildLogger("change-service");
 
 function nowISO(): string {
   return new Date().toISOString();
+}
+
+/**
+ * The branch an adoption should commit on, repairing a change that never got
+ * one.
+ *
+ * createChange assigns a per-change branch when the project has git, so a null
+ * gitBranch means that step could not run -- typically the repository was not a
+ * git repository yet when the change was opened. Callers used to read that null
+ * as `commit.enabled = false` and adopt without committing, which is where the
+ * pipeline came apart: HEAD stayed on the run's base commit while the working
+ * tree filled up with adopted output, so the next fix cut its patch from that
+ * same base and collided with the files already there ("already exists in
+ * working directory"). Committing by hand to clear it moved HEAD instead, and
+ * adoption then refused for good with git_head_drift. Silently not committing
+ * was the root of both.
+ *
+ * The repair adopts the branch the work is already on rather than creating the
+ * per-change branch retroactively: by the time this runs, earlier builds have
+ * been adopted onto the current branch, and moving off it now would strand that
+ * history. New changes still get their own branch from createChange.
+ */
+export function resolveAdoptionCommitBranch(input: {
+  changeId: string;
+  gitEnabled: boolean;
+  repoPath: string;
+  gitBranch: string | null;
+}): string | null {
+  if (!input.gitEnabled) return null;
+  if (input.gitBranch) return input.gitBranch;
+
+  // No isGitRepo() pre-check: it runs the same rev-parse this does, so it can
+  // only ever agree, and a mutation test confirmed no behaviour distinguishes
+  // the two. Both a non-repository and a repository with no commits yet fail
+  // here, and both should leave adoption uncommitted.
+  let currentBranch: string;
+  try {
+    currentBranch = getCurrentBranch(input.repoPath);
+  } catch {
+    return null;
+  }
+  if (!currentBranch) return null;
+
+  db.update(changes)
+    .set({ gitBranch: currentBranch, updatedAt: nowISO() })
+    .where(eq(changes.id, input.changeId))
+    .run();
+  log.info(
+    { changeId: input.changeId, gitBranch: currentBranch },
+    "Adopted the current branch for a change that never got one, so adoption can commit",
+  );
+  return currentBranch;
 }
 
 async function nextChangeId(): Promise<string> {
