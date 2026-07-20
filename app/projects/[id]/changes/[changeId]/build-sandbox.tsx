@@ -138,11 +138,23 @@ function selectBuildStartAction(actions: PipelineActionContract[] | undefined): 
   return runBuild ?? retryBuild ?? null;
 }
 
+/**
+ * Only a base camp blocker stops an absorb. A merely `dirty` tree used to stop
+ * it too, and that turned the stage into a trap: the untracked files are the
+ * Build's own output, the one remedy the UI offers is a commit, and adopting a
+ * fix requires HEAD to still equal the run's base commit -- so obeying the
+ * "clean the repo" advice moved HEAD and refused the absorb for good
+ * (git_head_drift). checkGitBaseCamp already sorts this out, reporting the
+ * fix's own artifacts as warnings and real problems as blockers, and adoptFix
+ * has its own dirty-workspace tolerance that fails with a precise conflict when
+ * the patch genuinely cannot apply. Deferring to that keeps one authority on
+ * whether an absorb is safe instead of two disagreeing ones.
+ */
 function buildAbsorbBaseCampReason(baseCamp: GitBaseCampView | null): string | null {
-  if (!baseCamp || baseCamp.status === "ready") return null;
+  if (!baseCamp) return null;
   if (!baseCamp.headSha) return "Git HEAD could not be verified before absorbing Build output.";
   if (baseCamp.blockers.length > 0) return baseCamp.blockers.join("; ");
-  return "主仓需清理后才能收编 Build。";
+  return null;
 }
 
 export function BuildSandbox({

@@ -115,8 +115,24 @@ export type BuildWorkspaceGitCommandRunner = (
   options: BuildWorkspaceGitCommandOptions,
 ) => SpawnSyncReturns<string>;
 
+/**
+ * `message` stays a fixed summary: git stderr can carry absolute repository
+ * paths, and leaking those is what "maps git failures without exposing
+ * repository paths or stderr" exists to prevent.
+ *
+ * `detail` is the same stderr with absolute paths redacted, kept off `message`
+ * so nothing that logs an error incidentally publishes it. It exists because the
+ * summary alone is true of a dozen unrelated causes and diagnostic of none: a
+ * refused fix adoption read identically whether the patch collided with a file
+ * already in the tree, the repo was locked, or the patch was corrupt. Git says
+ * which every time, and relative paths -- the part that actually names the
+ * offending file -- survive redaction intact.
+ */
 export class BuildWorkspaceGitProbeError extends Error {
-  constructor(readonly code: BuildWorkspaceGitProbeFailureReason) {
+  constructor(
+    readonly code: BuildWorkspaceGitProbeFailureReason,
+    readonly detail?: string,
+  ) {
     super(
       code === "build_workspace_probe_timeout"
         ? "Build workspace Git probe timed out"
@@ -126,6 +142,27 @@ export class BuildWorkspaceGitProbeError extends Error {
     );
     this.name = "BuildWorkspaceGitProbeError";
   }
+}
+
+/** git's diagnostics are the useful half; cap them so one run cannot flood a UI. */
+const GIT_PROBE_DETAIL_MAX_CHARS = 600;
+
+/**
+ * Absolute paths are the only part of git's output that can name something
+ * outside the repository, so they are the only part removed. `tests/a.mjs:
+ * already exists in working directory` survives whole.
+ */
+export function redactAbsolutePaths(text: string): string {
+  return text.replace(/(^|[\s'"(<])\/[^\s'")>]+/g, (_match, lead: string) => `${lead}<path>`);
+}
+
+function gitFailureDetail(result: SpawnSyncReturns<string>): string | undefined {
+  const raw = (result.stderr || "").trim() || (result.stdout || "").trim();
+  if (!raw) return undefined;
+  const redacted = redactAbsolutePaths(raw);
+  return redacted.length > GIT_PROBE_DETAIL_MAX_CHARS
+    ? `${redacted.slice(0, GIT_PROBE_DETAIL_MAX_CHARS)}…`
+    : redacted;
 }
 
 const DEFAULT_GIT_COMMAND_TIMEOUT_MS = 500;
@@ -165,7 +202,7 @@ function mapGitCommandFailure(result: SpawnSyncReturns<string>): BuildWorkspaceG
   ) {
     return new BuildWorkspaceGitProbeError("build_workspace_probe_timeout");
   }
-  return new BuildWorkspaceGitProbeError("build_workspace_probe_failure");
+  return new BuildWorkspaceGitProbeError("build_workspace_probe_failure", gitFailureDetail(result));
 }
 
 function runGitCommand(

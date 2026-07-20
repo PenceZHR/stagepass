@@ -110,10 +110,27 @@ describe("BuildSandbox UI", () => {
     assert.doesNotMatch(componentSource, /key=\{reason\}/);
   });
 
-  it("locally disables Build absorb while Git Base Camp is dirty", () => {
+  // Was "locally disables Build absorb while Git Base Camp is dirty", pinning
+  // `baseCamp.status === "ready"` and the string 主仓需清理后才能收编 Build.
+  // That local guard was stricter than every other authority and turned the
+  // stage into a trap: the untracked files are the Build's own output, the only
+  // remedy the UI offers is a commit, and adoptFix refuses once HEAD leaves the
+  // run's base commit -- so taking the advice killed the absorb for good with
+  // git_head_drift. checkGitBaseCamp already reports that churn as a warning
+  // with `blockers: []`, and adoptFix has its own dirty-workspace tolerance that
+  // fails with a precise conflict when the patch genuinely cannot apply.
+  // Verified against the live pipeline: with the tree still dirty, the absorb
+  // succeeded and the change reached IMPLEMENTED.
+  it("blocks Build absorb on Git Base Camp blockers, not on a merely dirty tree", () => {
     assert.match(componentSource, /function buildAbsorbBaseCampReason/);
-    assert.match(componentSource, /baseCamp\.status === "ready"/);
-    assert.match(componentSource, /主仓需清理后才能收编 Build/);
+    assert.match(componentSource, /if \(baseCamp\.blockers\.length > 0\) return baseCamp\.blockers\.join\("; "\);/);
+    // A dirty-but-unblocked base camp falls through to null, leaving the absorb
+    // governed by the action contract and the adopt service alone.
+    assert.doesNotMatch(componentSource, /baseCamp\.status === "ready"/);
+    assert.doesNotMatch(componentSource, /主仓需清理后才能收编 Build/);
+    // An unverifiable HEAD stays a hard local stop: without it there is no base
+    // commit to compare the fix against.
+    assert.match(componentSource, /if \(!baseCamp\.headSha\) return "Git HEAD could not be verified before absorbing Build output\.";/);
     assert.match(componentSource, /const absorbBaseCampReason = buildAbsorbBaseCampReason\(baseCamp\)/);
     assert.match(componentSource, /const approveAbsorbReason = absorbBaseCampReason \?\? pipelineActionDisabledReason\(approveAbsorbAction\)/);
     assert.match(componentSource, /const canApproveAbsorb = approveAbsorbAction\?\.enabled === true && absorbBaseCampReason === null/);

@@ -1,5 +1,9 @@
 import type { ActionDecision } from "./action-contract-types";
-import { changeArtifactIgnoredPrefixes, checkGitBaseCamp } from "./build-workspace-service";
+import {
+  changeArtifactIgnoredPrefixes,
+  checkGitBaseCamp,
+  readLatestBuildRun,
+} from "./build-workspace-service";
 import { getPorcelainStatus, hasCommits, isGitRepo } from "./git-service";
 
 /**
@@ -194,5 +198,42 @@ export function commitChangesDecision(repoPath: string, changeId: string): Actio
     });
   }
 
+  // Adopting a fix replays its patch onto the commit the fix was cut from, so
+  // adoptFix refuses once HEAD no longer equals run.baseCommit -- permanently,
+  // with git_head_drift. A commit here is exactly what moves HEAD. Offering it
+  // while a fix waits to be absorbed hands the user a button that destroys the
+  // absorb they are trying to reach, and the dirty tree that makes the button
+  // look necessary is usually the fix's own output. Withhold it and say why.
+  const pendingFix = readLatestBuildRunSafely(repoPath, changeId);
+  if (
+    pendingFix
+    && pendingFix.purpose === "fix"
+    && pendingFix.status === "approved_for_absorb"
+    && pendingFix.baseCommit
+    && facts.headSha
+    && pendingFix.baseCommit === facts.headSha
+  ) {
+    return stamped(facts, {
+      enabled: false,
+      reasonCode: "git_commit_would_drift_fix_base",
+      reason: "先收编这一轮 Fix，再提交：现在提交会让 HEAD 离开 Fix 的基准 commit，收编将无法完成",
+      blockers: [],
+    });
+  }
+
   return stamped(facts, { enabled: true, reasonCode: null, reason: null, blockers: [] });
+}
+
+/**
+ * The build run lives in a workspace file, so a half-written or missing one must
+ * not take the whole action contract down with it. Any read failure just means
+ * "no fix is waiting", which leaves commit_changes enabled -- the state it had
+ * before this guard existed.
+ */
+function readLatestBuildRunSafely(repoPath: string, changeId: string) {
+  try {
+    return readLatestBuildRun(repoPath, changeId);
+  } catch {
+    return null;
+  }
 }
