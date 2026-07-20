@@ -61,7 +61,10 @@ import {
   assertCanStartPrdBriefingQuestions,
   PrdBriefingError,
 } from "./prd-briefing-service.ts";
-import { setMergeReadinessHeadProbeForTest } from "./merge-readiness-service.ts";
+import {
+  setMergeReadinessDirtyProbeForTest,
+  setMergeReadinessHeadProbeForTest,
+} from "./merge-readiness-service.ts";
 import { assertActionAllowed, PreflightBlockedError } from "./preflight-service.ts";
 import { setReviewQaGateHeadProbeForTest } from "./review-qa-gate-service.ts";
 import { writeBuildRun, type BuildRunFile } from "./build-workspace-service.ts";
@@ -966,6 +969,56 @@ function seedMergeReadyExceptApproval() {
     contentHash: HEAD_SHA,
     createdAt: now,
   }).run();
+}
+
+/**
+ * A change parked at RETRO_PENDING with a trusted Release authority behind it:
+ * merge approved, Merge gate passed, one completed release run, and a
+ * release note whose on-disk copy matches the approved-content hash.
+ * Returns that hash so callers can tamper with it.
+ */
+function seedRetroPendingRelease(repoPath: string): string {
+  const now = new Date().toISOString();
+  initCleanGitRepo(repoPath);
+  seedMergeReadyExceptApproval();
+  db.insert(humanDecisions).values({
+    id: "HD-RETRO-MERGE", changeId: CHANGE_ID, gate: "Merge", action: "approve_merge",
+    targetType: "change", targetId: CHANGE_ID, reason: "release ready", reportHash: null,
+    createdBy: "human", createdAt: now,
+  }).run();
+  db.insert(mergeApprovals).values({
+    id: "MAP-RETRO-MERGE", changeId: CHANGE_ID, decisionId: "HD-RETRO-MERGE",
+    actor: "human", approvedAt: now,
+  }).run();
+  db.update(changes)
+    .set({ status: "RETRO_PENDING" })
+    .where(eq(changes.id, CHANGE_ID))
+    .run();
+  db.insert(stageGates).values({
+    id: "SG-RETRO-MERGE", changeId: CHANGE_ID, phase: "Merge", status: "passed",
+    blockersJson: "[]", freshnessJson: "{}", requiredActionsJson: "[]",
+    sourceDbHash: "merge-retro-source", gateVersion: 1, computedAt: now,
+  }).run();
+  db.insert(runs).values({
+    id: "RUN-RETRO-RELEASE", changeId: CHANGE_ID, phase: "release", status: "completed",
+    startedAt: now, endedAt: now, summary: "release complete",
+  }).run();
+  const changeDir = path.join(repoPath, ".ship", "changes", CHANGE_ID);
+  const runDir = path.join(changeDir, "runs", "RUN-RETRO-RELEASE");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(changeDir, "release-note.md"), "# Release\n");
+  const runPath = path.join(runDir, "release-note.md");
+  fs.writeFileSync(runPath, "# Release\n");
+  db.insert(artifacts).values({
+    id: "ART-RETRO-RELEASE", changeId: CHANGE_ID, runId: "RUN-RETRO-RELEASE",
+    type: "release_note", path: runPath, createdAt: now,
+  }).run();
+  const approvedReleaseHash = createHash("sha256").update("# Release\n").digest("hex");
+  db.insert(releaseNoteState).values({
+    id: "RNS-RETRO-RELEASE", changeId: CHANGE_ID, runId: "RUN-RETRO-RELEASE",
+    artifactId: "ART-RETRO-RELEASE", approvedContentHash: approvedReleaseHash, createdAt: now,
+  }).run();
+  return approvedReleaseHash;
 }
 
 describe("action-contract repository wrapper", () => {
@@ -3139,46 +3192,7 @@ describe("action-contract-service", () => {
   });
 
   it("enables Retro and hides stale Review or QA actions while RETRO_PENDING", () => {
-    const now = new Date().toISOString();
-    initCleanGitRepo(repoPath);
-    seedMergeReadyExceptApproval();
-    db.insert(humanDecisions).values({
-      id: "HD-RETRO-MERGE", changeId: CHANGE_ID, gate: "Merge", action: "approve_merge",
-      targetType: "change", targetId: CHANGE_ID, reason: "release ready", reportHash: null,
-      createdBy: "human", createdAt: now,
-    }).run();
-    db.insert(mergeApprovals).values({
-      id: "MAP-RETRO-MERGE", changeId: CHANGE_ID, decisionId: "HD-RETRO-MERGE",
-      actor: "human", approvedAt: now,
-    }).run();
-    db.update(changes)
-      .set({ status: "RETRO_PENDING" })
-      .where(eq(changes.id, CHANGE_ID))
-      .run();
-    db.insert(stageGates).values({
-      id: "SG-RETRO-MERGE", changeId: CHANGE_ID, phase: "Merge", status: "passed",
-      blockersJson: "[]", freshnessJson: "{}", requiredActionsJson: "[]",
-      sourceDbHash: "merge-retro-source", gateVersion: 1, computedAt: now,
-    }).run();
-    db.insert(runs).values({
-      id: "RUN-RETRO-RELEASE", changeId: CHANGE_ID, phase: "release", status: "completed",
-      startedAt: now, endedAt: now, summary: "release complete",
-    }).run();
-    const changeDir = path.join(repoPath, ".ship", "changes", CHANGE_ID);
-    const runDir = path.join(changeDir, "runs", "RUN-RETRO-RELEASE");
-    fs.mkdirSync(runDir, { recursive: true });
-    fs.writeFileSync(path.join(changeDir, "release-note.md"), "# Release\n");
-    const runPath = path.join(runDir, "release-note.md");
-    fs.writeFileSync(runPath, "# Release\n");
-    db.insert(artifacts).values({
-      id: "ART-RETRO-RELEASE", changeId: CHANGE_ID, runId: "RUN-RETRO-RELEASE",
-      type: "release_note", path: runPath, createdAt: now,
-    }).run();
-    const approvedReleaseHash = createHash("sha256").update("# Release\n").digest("hex");
-    db.insert(releaseNoteState).values({
-      id: "RNS-RETRO-RELEASE", changeId: CHANGE_ID, runId: "RUN-RETRO-RELEASE",
-      artifactId: "ART-RETRO-RELEASE", approvedContentHash: approvedReleaseHash, createdAt: now,
-    }).run();
+    const approvedReleaseHash = seedRetroPendingRelease(repoPath);
     assert.ok(resolveRetroActionAuthority(db, CHANGE_ID), "real Release authority fixture must be trusted");
 
     // release_note_state is the immutable approved-content authority for Retro: with no
@@ -3190,7 +3204,7 @@ describe("action-contract-service", () => {
     db.insert(releaseNoteState).values({
       id: "RNS-RETRO-RELEASE", changeId: CHANGE_ID, runId: "RUN-RETRO-RELEASE",
       artifactId: "ART-RETRO-RELEASE", approvedContentHash: `${approvedReleaseHash}-tampered`,
-      createdAt: now,
+      createdAt: new Date().toISOString(),
     }).run();
     assert.equal(resolveRetroActionAuthority(db, CHANGE_ID), null,
       "release_note_state hash drift from the current copy must deny Retro authority");
@@ -3207,6 +3221,103 @@ describe("action-contract-service", () => {
     for (const actionId of ["run_review", "retry_review", "run_qa", "retry_qa"]) {
       assert.equal(actionById.get(actionId)?.enabled, false, `${actionId} should be disabled`);
       assert.equal(actionById.get(actionId)?.reasonCode, "not_at_gate");
+    }
+  });
+
+  /**
+   * The first click on 运行 Retro used to be refused, every time, and only a
+   * page reload made the second one work.
+   *
+   * run_retro is stamped with the Merge stage gate's (gateVersion,
+   * sourceDbHash), and that gate is a cache of merge readiness that only the
+   * write path refreshes. GET /gate serves computeActions -- no self-heal, no
+   * persist, no readiness recompute -- so it renders whatever was last written.
+   * The POST preflight runs getActions, recomputes readiness with persist:true,
+   * writes a corrected stage_gates row, and refuses the click against *that*
+   * version. runRelease now refreshes the contract before it hands the change
+   * over at RETRO_PENDING (pipeline-release-retro-stage-service), which is what
+   * closes the window; the end-to-end proof is in pipeline-service.test.ts.
+   *
+   * What this pins is the other half of that invariant: once the cache is
+   * current, serving the contract must not move it again. A getActions that
+   * bumped the gate on every call -- or a computeActions that read a different
+   * row than getActions writes -- would reopen the defect immediately, and both
+   * are cheap regressions to make.
+   *
+   * The dirty probe is stubbed because this fixture writes the release note
+   * straight into an otherwise clean repo: real releases reach RETRO_PENDING
+   * with the merge gate passing (pipeline-service.test.ts drives that for
+   * real), and a git_worktree_dirty blocker here would be measuring the
+   * fixture, not the contract.
+   */
+  it("does not move the Retro contract when serving it, once the release-time refresh has run", () => {
+    const restoreDirtyProbe = setMergeReadinessDirtyProbeForTest(() => false);
+    try {
+      seedRetroPendingRelease(repoPath);
+      // What runRelease does before it hands the change to the user.
+      getActions(CHANGE_ID);
+
+      const rendered = computeActions(CHANGE_ID).find((action) => action.actionId === "run_retro");
+      assert.equal(rendered?.enabled, true, JSON.stringify(rendered));
+
+      const allowed = assertActionAllowed({
+        changeId: CHANGE_ID,
+        actionId: "run_retro",
+        expectedGateVersion: rendered!.gateVersion,
+        expectedSourceDbHash: rendered!.sourceDbHash,
+        idempotencyKey: "retro-first-click",
+      });
+
+      assert.equal(allowed.actionId, "run_retro");
+    } finally {
+      restoreDirtyProbe();
+    }
+  });
+
+  /**
+   * The fence still has to bite. Retro is authorized against the approved
+   * release note, so a contract issued before that note was replaced must be
+   * refused -- "the first click stops 409ing" must never become "any contract
+   * is accepted".
+   */
+  it("still refuses a Retro contract whose release note changed after it was issued", () => {
+    const restoreDirtyProbe = setMergeReadinessDirtyProbeForTest(() => false);
+    try {
+      seedRetroPendingRelease(repoPath);
+      getActions(CHANGE_ID);
+      const stale = computeActions(CHANGE_ID).find((action) => action.actionId === "run_retro");
+      assert.equal(stale?.enabled, true, JSON.stringify(stale));
+
+      // The release note is re-approved with different content. What the user
+      // was looking at when they were handed `stale` no longer exists.
+      const changeDir = path.join(repoPath, ".ship", "changes", CHANGE_ID);
+      const runDir = path.join(changeDir, "runs", "RUN-RETRO-RELEASE");
+      fs.writeFileSync(path.join(changeDir, "release-note.md"), "# Release v2\n");
+      fs.writeFileSync(path.join(runDir, "release-note.md"), "# Release v2\n");
+      db.update(releaseNoteState)
+        .set({ approvedContentHash: createHash("sha256").update("# Release v2\n").digest("hex") })
+        .where(eq(releaseNoteState.changeId, CHANGE_ID))
+        .run();
+
+      const current = computeActions(CHANGE_ID).find((action) => action.actionId === "run_retro");
+      assert.equal(current?.enabled, true, "the action is still available, just against different facts");
+      assert.notEqual(current?.sourceDbHash, stale?.sourceDbHash);
+
+      assert.throws(
+        () =>
+          assertActionAllowed({
+            changeId: CHANGE_ID,
+            actionId: "run_retro",
+            expectedGateVersion: stale!.gateVersion,
+            expectedSourceDbHash: stale!.sourceDbHash,
+            idempotencyKey: "retro-stale-click",
+          }),
+        (error: unknown) =>
+          error instanceof PreflightBlockedError &&
+          ["gate_version_drift", "source_db_hash_drift"].includes(error.envelope.reasonCode ?? ""),
+      );
+    } finally {
+      restoreDirtyProbe();
     }
   });
 });
