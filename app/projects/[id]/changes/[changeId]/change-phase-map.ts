@@ -1,5 +1,6 @@
 import type { ChangeDetail } from "./change-detail-types";
 import type { ReviewCenterResponse } from "./review-report-center";
+import type { RubricPhase } from "./rubric-types";
 import type { SpecBattleState } from "./spec-battle-types";
 
 export const PHASES = [
@@ -38,6 +39,43 @@ export const REVIEW_PHASES: ReviewPhase[] = [
   "Merge",
   "Retro",
 ];
+
+/**
+ * Which rubric a UI phase edits (§3, §7.1).
+ *
+ * The two vocabularies do not line up, and the mismatches are not spelling:
+ *
+ *  - `Intake` is the PRD phase and `Check` is QA; those are display renames.
+ *  - `Implement` and `Build` are the same stage under two ids.
+ *  - `Review` is NOT a phase in §3's table — it is Build's CRITIC. The Review
+ *    stage panel therefore edits the Build rubric, the same object the Build
+ *    panel edits. That is informative rather than confusing only because the
+ *    drawer names the rubric phase it is editing; the alternative, showing
+ *    nothing on Review, would hide the very tab whose verdicts that stage
+ *    produces.
+ *
+ * `Done` has no entry: it is a completion screen, not a pipeline stage, and it
+ * renders no stage panel at all.
+ */
+const REVIEW_PHASE_TO_RUBRIC_PHASE: Partial<Record<ReviewPhase, RubricPhase>> = {
+  Refine: "Refine",
+  Intake: "PRD",
+  Spec: "Spec",
+  TechSpec: "TechSpec",
+  Plan: "Plan",
+  TestPlan: "TestPlan",
+  Build: "Build",
+  Implement: "Build",
+  Review: "Build",
+  Check: "QA",
+  Fix: "Fix",
+  Merge: "Merge",
+  Retro: "Retro",
+};
+
+export function reviewPhaseToRubricPhase(phase: ReviewPhase): RubricPhase | null {
+  return REVIEW_PHASE_TO_RUBRIC_PHASE[phase] ?? null;
+}
 
 // Phases the /rework endpoint actually supports — see change-rework-service.ts's
 // ReworkReviewPhase (and its PHASE_TO_RUN_PHASE / PHASE_TO_READY_STATUS maps).

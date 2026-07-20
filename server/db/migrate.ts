@@ -227,6 +227,23 @@ function repairReviewDbContractSchema(sqlite: Database.Database): void {
  * fully-migrated DB, or a partially hand-migrated DB.
  */
 export function runMigrations(sqlite: Database.Database): { applied: string[] } {
+  // A migration that rebuilds a table has to turn foreign keys off for the
+  // drop-and-rename (0024 does), and PRAGMA is connection state, not statement
+  // state -- so without this the migration would silently hand the caller a
+  // different setting than the one it opened with. Callers make that choice
+  // deliberately in both directions: createDatabaseHandle turns them ON, and
+  // several tests turn them OFF so they can migrate an in-memory database and
+  // then insert partial fixtures. Restoring means neither is overwritten by
+  // whatever the last migration happened to leave behind.
+  const foreignKeysWereEnabled = sqlite.pragma("foreign_keys", { simple: true }) === 1;
+  try {
+    return runMigrationsInner(sqlite);
+  } finally {
+    sqlite.pragma(`foreign_keys = ${foreignKeysWereEnabled ? "ON" : "OFF"}`);
+  }
+}
+
+function runMigrationsInner(sqlite: Database.Database): { applied: string[] } {
   sqlite.exec(
     `CREATE TABLE IF NOT EXISTS __migrations (
       tag TEXT PRIMARY KEY,

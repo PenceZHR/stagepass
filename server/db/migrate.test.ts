@@ -442,7 +442,34 @@ describe("migration runner", () => {
     const migrationRows = sqlite.prepare("SELECT tag FROM __migrations").all();
 
     assert.deepEqual(second.applied, []);
-    assert.equal(migrationRows.length, 24);
+    // 25 with 0024_rubric_criterion_key. This is a count of the journal, so it
+    // moves by design every time a migration is added; what the test actually
+    // pins is the line above -- a second run applies nothing further.
+    assert.equal(migrationRows.length, 25);
+  });
+
+  it("hands the connection's foreign_keys setting back exactly as it found it", () => {
+    // A real regression, caught only by the full suite. 0024 rebuilds
+    // rubric_criteria, which requires foreign_keys=OFF for the drop-and-rename,
+    // and PRAGMA is connection state rather than statement state. Its trailing
+    // `PRAGMA foreign_keys=ON` therefore reached back out of the migration and
+    // switched the setting on for the CALLER -- silently breaking six tests
+    // that deliberately migrate an in-memory database with foreign keys off so
+    // they can insert partial fixtures. Both directions are asserted because
+    // both are choices a caller makes on purpose.
+    const readFk = (sqlite: Database.Database) => sqlite.pragma("foreign_keys", { simple: true });
+
+    const off = new Database(":memory:");
+    off.pragma("foreign_keys = OFF");
+    runMigrations(off);
+    assert.equal(readFk(off), 0, "a caller that disabled foreign keys must still have them off");
+    off.close();
+
+    const on = new Database(":memory:");
+    on.pragma("foreign_keys = ON");
+    runMigrations(on);
+    assert.equal(readFk(on), 1, "a caller that enabled foreign keys must still have them on");
+    on.close();
   });
 
   it("records a migration whose columns were already applied manually", () => {

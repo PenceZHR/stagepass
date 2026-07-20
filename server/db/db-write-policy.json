@@ -1604,6 +1604,11 @@
   ],
   "testFixtures": [
     {
+      "file": "app/api/projects/[id]/changes/[changeId]/rubrics/route.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "scripts/test-retry-always-available.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
@@ -1852,6 +1857,16 @@
       "file": "server/services/review-waiver-service.test.ts",
       "mode": "local-memory",
       "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/rubric-criterion-key.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner; the migration cases additionally own a local in-memory fixture"
+    },
+    {
+      "file": "server/services/rubric-panel-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
       "file": "server/services/rubric-service.test.ts",

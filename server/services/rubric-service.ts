@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
 import { rubricAssessments, rubricCriteria, rubrics } from "../db/schema";
@@ -60,7 +60,17 @@ export interface RubricVersionRecord {
 }
 
 export interface SaveRubricVersionInput extends RubricScope {
-  criteria: Array<{ text: string; blocking?: boolean }>;
+  criteria: Array<{
+    text: string;
+    blocking?: boolean;
+    /**
+     * The `criterionKey` this row continues, when the caller is editing a row
+     * it read back from a previous version. Omit for a genuinely new criterion.
+     * A key that belongs to no version of THIS scope is ignored rather than
+     * honoured -- see resolveCriterionKeys.
+     */
+    criterionKey?: string | null;
+  }>;
 }
 
 class RubricError extends Error {
@@ -99,18 +109,23 @@ function scopeFilter(scope: RubricScope) {
   );
 }
 
+function toCriterion(row: typeof rubricCriteria.$inferSelect): RubricCriterion {
+  return {
+    id: row.id,
+    criterionKey: row.criterionKey,
+    ordinal: row.ordinal,
+    text: row.text,
+    blocking: row.blocking === 1,
+  };
+}
+
 function readCriteria(rubricId: string): RubricCriterion[] {
   return db
     .select()
     .from(rubricCriteria)
     .where(eq(rubricCriteria.rubricId, rubricId))
     .all()
-    .map((row) => ({
-      id: row.id,
-      ordinal: row.ordinal,
-      text: row.text,
-      blocking: row.blocking === 1,
-    }))
+    .map(toCriterion)
     .sort((a, b) => a.ordinal - b.ordinal);
 }
 
@@ -171,6 +186,78 @@ export function listRubricVersions(scope: RubricScope): RubricVersionRecord[] {
 }
 
 /**
+ * Decides which `criterionKey` each incoming criterion carries (§5.1).
+ *
+ * Three rules, tried in order, per criterion:
+ *
+ *  1. the key the caller sent back, IF it belongs to some version of this same
+ *     scope. This is what makes REWORDING safe: the editor round-trips the key,
+ *     so fixing a typo keeps the criterion's identity and does not orphan
+ *     whatever batch 5 has derived from it.
+ *  2. otherwise, the key of an identically-worded criterion in the most recent
+ *     version that had one. This is the design doc's literal rule ("正文未变则
+ *     沿用同一个 key") and covers any caller that does not track keys.
+ *  3. otherwise a fresh key: this is a criterion nobody has seen before.
+ *
+ * A key that belongs to no version of this scope is DROPPED to rule 3 rather
+ * than trusted. Honouring it would let a request bind a brand-new criterion to
+ * the identity of an existing one -- and therefore to an existing open gap --
+ * which is the one thing a stable key must never allow. The safe direction is a
+ * new identity: at worst it costs the continuity that did not exist before.
+ *
+ * No key may be used twice in one version. `uq_rubric_criteria_rubric_key`
+ * would reject it anyway, but failing the whole save because a caller sent a
+ * duplicate would be worse than minting a fresh key for the second one.
+ */
+function resolveCriterionKeys(
+  previousVersions: readonly RubricVersionRecord[],
+  incoming: SaveRubricVersionInput["criteria"],
+): string[] {
+  const knownKeys = new Set<string>();
+  for (const version of previousVersions) {
+    for (const criterion of version.criteria) knownKeys.add(criterion.criterionKey);
+  }
+
+  // Newest version first, so a wording that has existed in several versions
+  // resolves to its most recent identity. A text repeated inside one version
+  // yields a queue, consumed in order, so duplicates stay distinct.
+  const keysByText = new Map<string, string[]>();
+  for (const version of [...previousVersions].sort((a, b) => b.version - a.version)) {
+    const inThisVersion = new Map<string, string[]>();
+    for (const criterion of version.criteria) {
+      const bucket = inThisVersion.get(criterion.text) ?? [];
+      bucket.push(criterion.criterionKey);
+      inThisVersion.set(criterion.text, bucket);
+    }
+    for (const [text, keys] of inThisVersion) {
+      if (!keysByText.has(text)) keysByText.set(text, keys);
+    }
+  }
+
+  const used = new Set<string>();
+  const take = (key: string | undefined | null): string | null => {
+    if (!key || used.has(key)) return null;
+    used.add(key);
+    return key;
+  };
+
+  return incoming.map((criterion) => {
+    const text = criterion.text.trim();
+    const carried = knownKeys.has(criterion.criterionKey ?? "")
+      ? take(criterion.criterionKey)
+      : null;
+    if (carried) return carried;
+
+    const queue = keysByText.get(text) ?? [];
+    while (queue.length > 0) {
+      const matched = take(queue.shift());
+      if (matched) return matched;
+    }
+    return `RBK-${randomUUID()}`;
+  });
+}
+
+/**
  * Appends a new version of a rubric and makes it current.
  *
  * The demotion of the previous current row must land BEFORE the insert:
@@ -192,6 +279,13 @@ export function saveRubricVersion(input: SaveRubricVersionInput): RubricVersionR
       const nextVersion = existing.reduce((max, row) => Math.max(max, row.version), 0) + 1;
       const now = new Date().toISOString();
       const id = `RUB-${randomUUID()}`;
+      // Resolved INSIDE the transaction: which key a criterion inherits depends
+      // on what the previous versions hold, and reading that outside would race
+      // a concurrent save into issuing the same key twice. `toRecord` reads
+      // through the module-level `db`, which is the same better-sqlite3
+      // connection this transaction is open on, so these reads see the
+      // transaction's own state.
+      const criterionKeys = resolveCriterionKeys(existing.map(toRecord), input.criteria);
 
       tx.update(rubrics)
         .set({ isCurrent: 0 })
@@ -216,6 +310,7 @@ export function saveRubricVersion(input: SaveRubricVersionInput): RubricVersionR
           .values({
             id: `RBC-${randomUUID()}`,
             rubricId: id,
+            criterionKey: criterionKeys[ordinal]!,
             ordinal,
             text: criterion.text.trim(),
             // Absent means blocking. A criterion someone wrote down is assumed
@@ -380,6 +475,125 @@ export function listRubricAssessments(input: {
       evidence: row.evidence,
       createdAt: row.createdAt,
     }));
+}
+
+/**
+ * Every assessment ever recorded against ANY version of one rubric scope.
+ *
+ * Three things about this query are load-bearing, and each one is a failure the
+ * design doc names:
+ *
+ *  - it is keyed on the SCOPE, not on one `rubric_id`. Reading
+ *    `rubric_id = <current version>` would return nothing the moment somebody
+ *    edits the rubric, and "no rows" is indistinguishable from "this phase has
+ *    no rubric", which reads as a pass. Verdicts made against an older version
+ *    must stay visible and be LABELLED as older (§7.6), not vanish.
+ *  - it spans both the project-level default and this change's override.
+ *    Creating an override would otherwise hide every verdict made before it.
+ *  - callers select a batch by `roundId`, never by `runId` -- see
+ *    selectLatestAssessmentBatch.
+ */
+export function listRubricAssessmentsForScope(scope: {
+  projectId: string;
+  changeId: string;
+  phase: RubricPhase;
+  role: RubricRole;
+}): StoredRubricAssessment[] {
+  return db
+    .select({ assessment: rubricAssessments })
+    .from(rubricAssessments)
+    .innerJoin(rubrics, eq(rubrics.id, rubricAssessments.rubricId))
+    .where(
+      and(
+        eq(rubricAssessments.changeId, scope.changeId),
+        eq(rubrics.projectId, scope.projectId),
+        eq(rubrics.phase, scope.phase),
+        eq(rubrics.role, scope.role),
+        or(isNull(rubrics.changeId), eq(rubrics.changeId, scope.changeId)),
+      ),
+    )
+    .all()
+    .map((row) => ({
+      id: row.assessment.id,
+      rubricId: row.assessment.rubricId,
+      runId: row.assessment.runId,
+      roundId: row.assessment.roundId,
+      criterionId: row.assessment.criterionId,
+      verdict: row.assessment.verdict as RubricAssessmentDraft["verdict"],
+      evidence: row.assessment.evidence,
+      createdAt: row.assessment.createdAt,
+    }));
+}
+
+/**
+ * The one batch of verdicts that describes "this round" -- selected by
+ * `roundId`, deliberately never by `runId` (§5.2).
+ *
+ * `resumeBlue` starts a NEW run for a round that has already had its red half
+ * answered, and does not re-run red. Red's producer verdicts therefore sit
+ * under the round's FIRST `run_id` while the round is being finished under a
+ * second one. A caller that filtered on the current `run_id` would find no
+ * producer rows, read that as "the producer has no rubric", and pass the stage
+ * on the strength of a judgment that was never made. That is precisely the
+ * failure this whole mechanism exists to prevent, so the round is the unit.
+ *
+ * Within a round one rubric ROLE can still hold rows from two versions -- retry
+ * the same half after editing the rubric and the old version's rows survive,
+ * because persistRubricAssessments only clears rows of the version it is
+ * writing. The newest version wins, since that is the one that actually just
+ * answered.
+ */
+export function selectLatestAssessmentBatch(
+  assessments: readonly StoredRubricAssessment[],
+  scope: { roundId: string | null },
+): StoredRubricAssessment[] {
+  const inScope = scope.roundId === null
+    ? assessments.filter((row) => row.roundId === null)
+    : assessments.filter((row) => row.roundId === scope.roundId);
+  if (inScope.length === 0) return [];
+
+  const newestByRubric = new Map<string, string>();
+  for (const row of inScope) {
+    const seen = newestByRubric.get(row.rubricId);
+    if (!seen || row.createdAt > seen) newestByRubric.set(row.rubricId, row.createdAt);
+  }
+  let winner: string | null = null;
+  for (const [rubricId, createdAt] of newestByRubric) {
+    if (winner === null || createdAt > newestByRubric.get(winner)!) winner = rubricId;
+  }
+  return inScope.filter((row) => row.rubricId === winner);
+}
+
+/** Every version of one scope, newest first, for resolving a verdict's wording. */
+export function indexCriteriaByScope(scope: {
+  projectId: string;
+  changeId: string;
+  phase: RubricPhase;
+  role: RubricRole;
+}): Map<string, { criterion: RubricCriterion; rubricId: string; version: number }> {
+  const rows = db
+    .select({ criterion: rubricCriteria, rubric: rubrics })
+    .from(rubricCriteria)
+    .innerJoin(rubrics, eq(rubrics.id, rubricCriteria.rubricId))
+    .where(
+      and(
+        eq(rubrics.projectId, scope.projectId),
+        eq(rubrics.phase, scope.phase),
+        eq(rubrics.role, scope.role),
+        or(isNull(rubrics.changeId), eq(rubrics.changeId, scope.changeId)),
+      ),
+    )
+    .all();
+  return new Map(
+    rows.map((row) => [
+      row.criterion.id,
+      {
+        criterion: toCriterion(row.criterion),
+        rubricId: row.rubric.id,
+        version: row.rubric.version,
+      },
+    ]),
+  );
 }
 
 /**

@@ -169,6 +169,13 @@
       "when": 1784332800000,
       "tag": "0023_rubric_core",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784419200000,
+      "tag": "0024_rubric_criterion_key",
+      "breakpoints": true
     }
   ]
 }

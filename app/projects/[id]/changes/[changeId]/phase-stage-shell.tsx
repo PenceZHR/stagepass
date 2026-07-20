@@ -1,8 +1,9 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { ReviewPhase } from "./change-phase-map";
+import { reviewPhaseToRubricPhase, type ReviewPhase } from "./change-phase-map";
 import type { UiStageState } from "./pipeline-ui-model";
+import { RubricPanel } from "./rubric-panel";
 import { StageFrame, type StageBlockerView } from "./stage-frame";
 import type { StageActionView } from "./stage-action-bar";
 import type { AiProvider } from "./pipeline-action-contract";
@@ -83,7 +84,21 @@ export function phaseRecordsLabel(phase: ReviewPhase): string {
   return `${phaseDisplayName(phase)} 原始记录`;
 }
 
+/**
+ * `projectId` and `changeId` are REQUIRED, and only the rubric drawer needs
+ * them.
+ *
+ * That is the point. Every phase panel in this route goes through this shell,
+ * so rendering the drawer here rather than at each call site makes "§7.1: every
+ * phase panel has an entry point" a property of the shell instead of a promise
+ * ten branches have to keep. Making the two ids required turns forgetting one
+ * into a compile error rather than a phase that silently has no rubric UI —
+ * which is the failure mode this project has already hit twice, where the
+ * backend could do something and the interface never offered it.
+ */
 export function PhaseStageShell({
+  projectId,
+  changeId,
   phase,
   statusLabel,
   latestRunStatus,
@@ -100,6 +115,8 @@ export function PhaseStageShell({
   error,
   blockers,
 }: {
+  projectId: string;
+  changeId: string;
   phase: ReviewPhase;
   statusLabel: string;
   latestRunStatus?: string | null;
@@ -122,6 +139,9 @@ export function PhaseStageShell({
     description: "查看当前阶段的主要状态、动作和审计记录。",
   };
   const resolvedRecordsLabel = recordsLabel ?? phaseRecordsLabel(phase);
+  // Null only where the UI phase maps to no rubric phase at all (see
+  // reviewPhaseToRubricPhase); every real pipeline stage maps to one.
+  const rubricPhase = reviewPhaseToRubricPhase(phase);
   const evidence = records ? (
     <details className="rounded-lg border bg-background p-4">
       <summary className="cursor-pointer text-sm font-medium">{resolvedRecordsLabel}</summary>
@@ -149,6 +169,11 @@ export function PhaseStageShell({
         providerSelectable={providerSelectable}
         error={error}
         blockers={blockers}
+        rubric={
+          rubricPhase ? (
+            <RubricPanel projectId={projectId} changeId={changeId} phase={rubricPhase} />
+          ) : null
+        }
         evidence={evidence}
         evidenceLabel={resolvedRecordsLabel}
       >

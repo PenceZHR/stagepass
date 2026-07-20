@@ -25,6 +25,7 @@ import { PhaseReviewPanel, type PhaseReviewResponse } from "./phase-review-panel
 import { PipelinePageShell } from "./pipeline-page-shell";
 import { PhaseStageShell } from "./phase-stage-shell";
 import { RefineChatPanel } from "./refine-chat-panel";
+import { RubricPanel } from "./rubric-panel";
 import { ProviderPicker } from "./provider-picker";
 import { StageGitPanel } from "./stage-git-panel";
 import { selectVisibleGitStageActions } from "./git-action-policy";
@@ -49,6 +50,7 @@ import {
 } from "./pipeline-action-contract";
 import {
   getReviewPhaseForRunPhase,
+  reviewPhaseToRubricPhase,
   shouldPollChangeDetailParent,
   visibleChangeStatus,
   type ReviewPhase,
@@ -254,6 +256,7 @@ export default function ChangeDetailPage() {
   ]);
   const selectedStage = uiPipelineState?.selectedStage ?? null;
   const activeSelectedPhase = selectedStage?.reviewPhase ?? "Retro";
+  const fallbackRubricPhase = reviewPhaseToRubricPhase(activeSelectedPhase);
   const fetchPhase = selectedStage?.recordPhase ?? null;
   const showingBuildSandbox = activeSelectedPhase === "Build" || activeSelectedPhase === "Fix";
 
@@ -1172,6 +1175,8 @@ export default function ChangeDetailPage() {
         {showingRetroStage ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase="Retro"
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1202,6 +1207,8 @@ export default function ChangeDetailPage() {
             ) : showingBuildSandbox ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase={activeSelectedPhase === "Fix" ? "Fix" : "Build"}
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1224,6 +1231,8 @@ export default function ChangeDetailPage() {
             ) : showingTestPlanSandbox ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase="TestPlan"
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1240,6 +1249,8 @@ export default function ChangeDetailPage() {
             ) : showingPlanSandbox ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase="Plan"
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1261,6 +1272,8 @@ export default function ChangeDetailPage() {
             ) : showingPrdBriefingRoom ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase="Intake"
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1280,6 +1293,8 @@ export default function ChangeDetailPage() {
             ) : showingSpecOrTechSpecGate ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase={activeSelectedPhase}
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1307,6 +1322,8 @@ export default function ChangeDetailPage() {
             ) : showingReviewReportCenter ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase="Review"
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1336,6 +1353,8 @@ export default function ChangeDetailPage() {
               showingOperationalPhaseSummary ? (
                 <PhaseStageShell
                   {...providerControlProps}
+                  projectId={projectId}
+                  changeId={changeId}
                   phase={activeSelectedPhase}
                   state={selectedStageState}
                   statusLabel={stageStatusLabel}
@@ -1354,6 +1373,8 @@ export default function ChangeDetailPage() {
               ) : (
                 <PhaseStageShell
                   {...providerControlProps}
+                  projectId={projectId}
+                  changeId={changeId}
                   phase={activeSelectedPhase}
                   state={selectedStageState}
                   statusLabel={stageStatusLabel}
@@ -1365,6 +1386,8 @@ export default function ChangeDetailPage() {
             ) : change.status === "REFINING" ? (
               <PhaseStageShell
                 {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
                 phase={activeSelectedPhase}
                 state={selectedStageState}
                 statusLabel={stageStatusLabel}
@@ -1408,6 +1431,23 @@ export default function ChangeDetailPage() {
                 {actionError && (
                   <p className="mb-4 text-sm text-red-500">{actionError}</p>
                 )}
+
+                {/*
+                  The one branch that renders no PhaseStageShell, so the rubric
+                  drawer the shell would otherwise supply is placed by hand.
+                  §7.1 says every phase panel carries the entry point, and "this
+                  status has no dedicated panel" is not a reason for a phase to
+                  lose it.
+                */}
+                {fallbackRubricPhase ? (
+                  <div className="mb-6">
+                    <RubricPanel
+                      projectId={projectId}
+                      changeId={changeId}
+                      phase={fallbackRubricPhase}
+                    />
+                  </div>
+                ) : null}
 
                 {/* Live Panels */}
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2">

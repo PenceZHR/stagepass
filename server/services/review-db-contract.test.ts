@@ -212,6 +212,10 @@ describe("review DB contract", () => {
       "0021_plan_model_authored_fields",
       "0022_briefing_question_rounds",
       "0023_rubric_core",
+      // 0024 rebuilds rubric_criteria to add criterion_key. It appears here for
+      // the same reason as every tag above: this list pins which migrations run
+      // on a database that stopped at 0011, and a new migration belongs in it.
+      "0024_rubric_criterion_key",
     ]);
     assert.equal(finding.id, "FND-OLD");
     assert.equal(finding.review_attempt_id, null);

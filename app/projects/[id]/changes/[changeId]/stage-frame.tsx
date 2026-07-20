@@ -37,6 +37,12 @@ export interface StageFrameProps {
   providerSelectable?: boolean;
   error?: ReactNode;
   blockers?: StageBlockerView[];
+  /**
+   * The phase's rubric drawer. Rendered in the stage body ABOVE `evidence`,
+   * never inside it: `evidence` is a collapsed `<details>`, and §7.3 requires
+   * the rubric editor to be visible without a click.
+   */
+  rubric?: ReactNode;
   evidence?: ReactNode;
   evidenceLabel?: string;
   children: ReactNode;
@@ -58,6 +64,7 @@ export function StageFrame({
   providerSelectable = false,
   error = null,
   blockers = [],
+  rubric = null,
   evidence = null,
   evidenceLabel = "阶段记录",
   children,
@@ -136,7 +143,20 @@ export function StageFrame({
         </section>
       ) : null}
 
-      <div className={evidence ? "space-y-4" : ""}>
+      <div className={evidence || rubric ? "space-y-4" : ""}>
+        {/*
+          Above the workspace, not below it. Measured in a real browser: on the
+          Plan stage the task map is long enough to push anything that follows
+          it ~3900px down — the same "capability exists but sits 4.7 screens
+          below the fold" failure §7.3 was written about. A blocking verdict
+          nobody scrolls to is a blocking verdict nobody acts on.
+        */}
+        {rubric ? (
+          <section className="min-w-0" aria-label={`${stageLabel} 评判标准`}>
+            {rubric}
+          </section>
+        ) : null}
+
         <section className="min-w-0" role="region" aria-label={`${stageLabel} workspace`}>
           {children}
         </section>

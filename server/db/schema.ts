@@ -1235,6 +1235,17 @@ export const rubricCriteria = sqliteTable(
     rubricId: text("rubric_id")
       .notNull()
       .references(() => rubrics.id),
+    /**
+     * Identity that survives an edit (§5.1). `id` cannot serve: an edit appends
+     * a new version with a fresh set of rows, so `id` changes even when nobody
+     * touched the wording. Batch 5 derives a requirement gap from a blocking
+     * `no`, and a gap keyed on `id` would be orphaned by the next save -- blue
+     * cannot recheck a gap it never reported, a human is forbidden from
+     * resolving one, and only P1 can be waived, so an orphaned P0 would jam the
+     * Spec gate permanently. NOT NULL with no default on purpose: a defaulted
+     * key would collapse every criterion onto one gap id.
+     */
+    criterionKey: text("criterion_key").notNull(),
     ordinal: integer("ordinal").notNull(),
     text: text("text").notNull(),
     /**
@@ -1247,7 +1258,13 @@ export const rubricCriteria = sqliteTable(
   },
   (table) => [
     uniqueIndex("uq_rubric_criteria_rubric_ordinal").on(table.rubricId, table.ordinal),
+    // A key may appear at most once per version; two rows sharing one would be
+    // two criteria that batch 5 derives a single gap id from.
+    uniqueIndex("uq_rubric_criteria_rubric_key").on(table.rubricId, table.criterionKey),
     index("idx_rubric_criteria_rubric").on(table.rubricId),
+    // "Every round's verdict on this one standard" is a cross-version lookup by
+    // key, which nothing else indexes.
+    index("idx_rubric_criteria_key").on(table.criterionKey),
   ],
 );
 
