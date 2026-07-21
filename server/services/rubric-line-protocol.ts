@@ -185,10 +185,15 @@ export function parseRubricLineProtocol(
  * red artifact hash. Leaving RUBRIC lines in it does three concrete kinds of
  * damage, all observed reachable in this repo:
  *
- *  - the Spec red stage parses its reply with JSON.parse (parseRedSpecOutput),
- *    which fails on trailing protocol lines and SILENTLY degrades to
- *    "whole reply is the markdown, zero fixClaims" -- the round loses every
- *    prior-gap fix claim without an error;
+ *  - the Spec red stage used to parse its reply with JSON.parse
+ *    (parseRedSpecOutput), which failed on trailing protocol lines and SILENTLY
+ *    degraded to "whole reply is the markdown, zero fixClaims" -- the round lost
+ *    every prior-gap fix claim without an error. Red writes lines now
+ *    (spec-red-line-protocol.ts), so a leaked line no longer costs it claims.
+ *    Note the residual hazard: a RUBRIC line written INSIDE a host block is
+ *    excluded from scanProtocolLines, so it is neither harvested nor stripped
+ *    and rides into the document. That is why the prompts place rubric lines
+ *    outside every block and last;
  *  - prd-delta.md is inside the Spec stage scope, so the NEXT round's red agent
  *    and the blue critic would read the previous round's RUBRIC lines and can
  *    echo criterion ids that belong to a different rubric -- an unknown id,

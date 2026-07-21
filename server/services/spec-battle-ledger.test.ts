@@ -5,7 +5,6 @@ import {
   activeSpecBlocking,
   computeRoundDelta,
   parseBlueCritiqueOutput,
-  parseRedSpecOutput,
   validateBlueCritiqueOutput,
   type LedgerGap,
 } from "./spec-battle-ledger.ts";
@@ -25,55 +24,20 @@ function gap(overrides: Partial<LedgerGap> = {}): LedgerGap {
 }
 
 describe("spec-battle-ledger", () => {
-  it("parseRedSpecOutput parses JSON with canonicalGapId claim protocol", () => {
-    const parsed = parseRedSpecOutput(
-      JSON.stringify({
-        prdDeltaMarkdown: "## Delta\n- Add auth requirements.",
-        fixClaims: [
-          {
-            canonicalGapId: "gap-auth",
-            claimStatus: "fixed",
-            claimSummary: "Added sign-in requirements.",
-            evidence: "PRD now defines authentication behavior.",
-            artifactPath: "prd.md",
-          },
-          {
-            canonicalGapId: "gap-session",
-            claimStatus: "partially_fixed",
-            claimSummary: "Added partial session requirements.",
-            evidence: "PRD now mentions session expiry.",
-          },
-        ],
-      })
-    );
-
-    assert.equal(parsed.prdDeltaMarkdown, "## Delta\n- Add auth requirements.");
-    assert.deepEqual(parsed.fixClaims, [
-      {
-        canonicalGapId: "gap-auth",
-        claimStatus: "fixed",
-        claimSummary: "Added sign-in requirements.",
-        evidence: "PRD now defines authentication behavior.",
-        artifactPath: "prd.md",
-      },
-      {
-        canonicalGapId: "gap-session",
-        claimStatus: "partially_fixed",
-        claimSummary: "Added partial session requirements.",
-        evidence: "PRD now mentions session expiry.",
-        artifactPath: null,
-      },
-    ]);
-  });
-
-  it("parseRedSpecOutput keeps markdown-only output compatible", () => {
-    const markdown = "## Delta\nPlain markdown from an older red prompt.";
-
-    assert.deepEqual(parseRedSpecOutput(markdown), {
-      prdDeltaMarkdown: markdown,
-      fixClaims: [],
-    });
-  });
+  // Two parseRedSpecOutput cases lived here until red moved to its line
+  // protocol (spec-red-line-protocol.ts).
+  //
+  // The first pinned that valid JSON yields claims -- now covered by the
+  // protocol's own tests, against lines instead of JSON.
+  //
+  // The second, "keeps markdown-only output compatible", pinned that anything
+  // JSON.parse rejected became {prdDeltaMarkdown: raw, fixClaims: []}. That is
+  // the data-loss path itself, frozen as intended behaviour: it left an
+  // unparseable payload indistinguishable from a legitimate markdown-only
+  // reply, so no test could ever catch a round losing its claims. Production
+  // round 7 carried 11 claims one stray line away from exactly that. Handing
+  // over a plain document is still supported, but as an explicit
+  // completeRedSpecRound({markdown}) variant that never parses anything.
 
   it("parseBlueCritiqueOutput parses gapReviews and requirementGaps with canonicalGapId protocol", () => {
     const parsed = parseBlueCritiqueOutput(

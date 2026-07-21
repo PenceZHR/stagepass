@@ -313,19 +313,24 @@ function blueJson(severity: "P0" | "P1" | "P2" = "P0", canonicalGapId = "missing
   });
 }
 
-function redJson(canonicalGapId = "missing-state") {
-  return JSON.stringify({
-    prdDeltaMarkdown: "# Spec v2\n\n补齐状态矩阵。\n",
+// Red hands over the payload its line protocol assembled, not a JSON string it
+// authored. The assertions below are unchanged: they still pin that the claims
+// reach red_fix_claims and drive blue's review. Only the transport changed --
+// and with it the failure mode where an unparseable string dropped every claim
+// without a word.
+function redPayload(canonicalGapId = "missing-state") {
+  return {
+    markdown: "# Spec v2\n\n补齐状态矩阵。\n",
     fixClaims: [
       {
         canonicalGapId,
-        claimStatus: "fixed",
+        claimStatus: "fixed" as const,
         claimSummary: "已补齐状态矩阵",
         evidence: "新增 Ready/Running/Failed 状态与转换规则",
         artifactPath: "prd-delta.md",
       },
     ],
-  });
+  };
 }
 
 function blueReviewJson(options: {
@@ -672,7 +677,7 @@ describe("spec-battle-service", { concurrency: false }, () => {
     const nextRound = getSpecBattleState(CHANGE_ID).latestRound;
     assert.ok(nextRound);
     claimRoundForTest(nextRound.id);
-    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, markdown: redJson() });
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
 
     await completeBlueCritique({
       changeId: CHANGE_ID,
@@ -710,7 +715,7 @@ describe("spec-battle-service", { concurrency: false }, () => {
     const nextRound = getSpecBattleState(CHANGE_ID).latestRound;
     assert.ok(nextRound);
     claimRoundForTest(nextRound.id);
-    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, markdown: redJson() });
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
 
     await completeBlueCritique({
       changeId: CHANGE_ID,
@@ -763,7 +768,7 @@ describe("spec-battle-service", { concurrency: false }, () => {
     }) as typeof fs.writeFileSync;
 
     try {
-      await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, markdown: redJson() });
+      await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
     } finally {
       fs.writeFileSync = originalWriteFileSync;
     }
@@ -909,7 +914,7 @@ describe("spec-battle-service", { concurrency: false }, () => {
     const nextRound = getSpecBattleState(CHANGE_ID).latestRound;
     assert.ok(nextRound);
     claimRoundForTest(nextRound.id);
-    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, markdown: redJson() });
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
 
     await completeBlueCritique({
       changeId: CHANGE_ID,
@@ -951,7 +956,7 @@ describe("spec-battle-service", { concurrency: false }, () => {
     assert.ok(nextRound);
 
     claimRoundForTest(nextRound.id);
-    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, markdown: redJson() });
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
 
     const artifactPath = path.join(
       repoPath,

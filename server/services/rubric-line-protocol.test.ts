@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { validateOutputSchema } from "./output-schema-validator.ts";
+import { parseSpecRedLineProtocol } from "./spec-red-line-protocol.ts";
 import {
   buildRubricAssessments,
   rubricOutcome,
@@ -284,18 +285,35 @@ describe("stripping rubric lines from a host stage's reply", () => {
     );
   });
 
-  it("leaves red's JSON parseable after the rubric lines are removed", () => {
-    // The concrete damage a leaked line does: parseRedSpecOutput uses
-    // JSON.parse and degrades to "the whole reply is markdown, no fix claims"
-    // the moment anything trails the object.
-    const json = JSON.stringify({ prdDeltaMarkdown: "# delta", fixClaims: [] }, null, 2);
-    const reply = `${json}\nRUBRIC: C1 | yes | judged after the JSON`;
+  it("keeps red's claims and leaves no protocol noise in its document", () => {
+    // This case used to assert that stripping restored red's JSON parseability:
+    // one trailing RUBRIC line made JSON.parse throw, and parseRedSpecOutput's
+    // bare catch turned that into "the whole reply is the delta, no fix claims".
+    // Red now writes lines, so a leaked RUBRIC line costs it nothing -- the
+    // first assertion below is what the old test could not make.
+    //
+    // Stripping still matters for the second and third damages in
+    // stripRubricLines' contract: the PRD_DELTA block becomes prd-delta.md,
+    // which four later stages read, and the next round's agents would echo
+    // criterion ids belonging to a rubric that is no longer theirs.
+    const reply = [
+      "PRD_DELTA<<",
+      "# delta",
+      ">>PRD_DELTA",
+      "FIXCLAIM: gap-auth | fixed | 补齐登录要求 | PRD 第 2 节 | prd-delta.md",
+      "SPEC_DONE: true",
+      "RUBRIC: C1 | yes | judged after the document",
+    ].join("\n");
 
-    assert.throws(() => JSON.parse(reply));
-    assert.deepEqual(JSON.parse(stripRubricLines(reply)), {
-      prdDeltaMarkdown: "# delta",
-      fixClaims: [],
-    });
+    const leaked = parseSpecRedLineProtocol(reply);
+    assert.equal(leaked.ok, true, "a leaked rubric line must not void red's output");
+    if (leaked.ok) assert.equal(leaked.payload.fixClaims.length, 1);
+
+    const stripped = parseSpecRedLineProtocol(stripRubricLines(reply));
+    assert.equal(stripped.ok, true);
+    if (!stripped.ok) return;
+    assert.equal(stripped.payload.markdown, "# delta");
+    assert.doesNotMatch(stripped.payload.markdown, /RUBRIC/);
   });
 
   it("returns the reply untouched when there is nothing to strip", () => {

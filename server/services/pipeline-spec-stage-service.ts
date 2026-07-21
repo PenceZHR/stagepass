@@ -33,7 +33,10 @@ import {
   getPipelineEngine,
   type EngineProvider,
 } from "./pipeline-engine-service";
-import { markdownArtifactContentFromResult } from "./markdown-artifact-content-service";
+import {
+  parseSpecRedLineProtocol,
+  type SpecRedLinePayload,
+} from "./spec-red-line-protocol";
 import {
   defaultScopeForPhase,
   runDocumentStage,
@@ -52,9 +55,14 @@ import {
 } from "./stage-raw-capture-service";
 import {
   BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA,
+  RED_SPEC_OUTPUT_JSON_SCHEMA,
   validateBlueCritiqueOutput,
 } from "./spec-battle-ledger";
-import { applyLineProtocol, guardLineProtocolSchema } from "./ai-line-protocol";
+import {
+  applyLineProtocol,
+  guardLineProtocolSchema,
+  type LineProtocolParseResult,
+} from "./ai-line-protocol";
 import { parseSpecCritiqueLineProtocol } from "./spec-critique-line-protocol";
 import {
   appendRubricPromptSection,
@@ -319,8 +327,8 @@ export async function runSpec(
         // §3: red (SPEC_WRITER) is the Spec phase's producer, so it answers the
         // producer rubric as part of its own reply. The runner strips the
         // RUBRIC lines back out before anything else reads the reply -- red's
-        // output is parsed as JSON and becomes prd-delta.md, neither of which
-        // may contain protocol text.
+        // output is parsed as a line protocol and its PRD_DELTA block becomes
+        // prd-delta.md, neither of which may contain foreign protocol text.
         const redRubric = resolveStageRubric(
           { projectId: redChange.projectId, changeId, phase: "Spec", role: "producer" },
           { runId: round.runId, roundId: round.roundId },
@@ -348,6 +356,15 @@ export async function runSpec(
           deferRunCompletion: true,
           resumeThread: false,
           threadId: redRetryThreadId,
+          // Line-protocol stage: the model writes a PRD_DELTA block plus
+          // FIXCLAIM/SPEC_DONE lines, never JSON. The schema must be supplied
+          // even though the model never sees it -- the runner gates the whole
+          // ingestion block on `config.outputSchema`, so a lineProtocol without
+          // one parses nothing and lets the raw reply through untouched.
+          outputSchema: RED_SPEC_OUTPUT_JSON_SCHEMA,
+          lineProtocol: {
+            parse: (rawText) => parseSpecRedLineProtocol(rawText) as LineProtocolParseResult,
+          },
           rubric: redRubric
             ? {
                 promptSection: redRubric.promptSection,
@@ -358,6 +375,13 @@ export async function runSpec(
                     runId,
                     roundId: round.roundId,
                     rawText,
+                    // parseSpecRedLineProtocol declares PRD_DELTA. The rubric
+                    // guard runs the same structural check and runs FIRST, so
+                    // without this it rejects the stage's own block as off
+                    // script -- and since the Spec producer rubric ships with
+                    // six factory criteria, the empty-rubric early return never
+                    // fires and every red run would go BLOCKED.
+                    expectedBlockNames: ["PRD_DELTA"],
                   }),
               }
             : undefined,
@@ -377,10 +401,26 @@ export async function runSpec(
 
         assertCurrentExecutionFence(context, round.runId);
         assertChangeNotBlocked(changeId, "spec");
+        // The validated payload, not the reply text. The claims and the PRD
+        // delta now travel as one object instead of being re-derived from a
+        // string whose parseability decided, silently, whether the round kept
+        // its fix claims at all.
+        //
+        // validateStructuredDocumentOutput has already rejected anything the
+        // protocol or the schema refused, so this is a payload. Assert it here
+        // regardless: completeRedSpecRound's union reads a missing redOutput as
+        // the literal-markdown variant, so an undefined structuredOutput would
+        // not fail -- it would settle a claim-free round hashing the string
+        // "undefined". That is the exact silent shape this stage just stopped
+        // producing, and the invariant holding it shut lives two files away.
+        const redPayload = result.structuredOutput as unknown as SpecRedLinePayload | undefined;
+        if (!redPayload) {
+          throw new Error("spec red stage produced no line-protocol payload");
+        }
         await completeRedSpecRound({
           changeId,
           roundId: round.roundId,
-          markdown: markdownArtifactContentFromResult(result),
+          redOutput: redPayload,
           provider,
         });
       }

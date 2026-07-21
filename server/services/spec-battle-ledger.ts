@@ -63,10 +63,62 @@ const BlueRequirementGapSchema = z
   })
   .strict();
 
-const RedSpecOutputSchema = z.object({
-  prdDeltaMarkdown: z.string(),
-  fixClaims: z.array(RedFixClaimSchema).default([]),
-});
+/**
+ * The deterministically assembled red line-protocol payload.
+ *
+ * Strict, unlike the RedSpecOutputSchema it replaces: that one tolerated
+ * unknown keys, and that tolerance is the only reason production ever survived.
+ * spec.md told the model to emit `unit`/`changeId`/`phase`, three fields the
+ * schema never declared; zod stripped them instead of rejecting, so
+ * parseRedSpecOutput's bare catch went unreached by luck rather than by design.
+ *
+ * `markdown` rather than `prdDeltaMarkdown` because the document stage runner
+ * writes .md artifacts from `structuredOutput.markdown`; see
+ * spec-red-line-protocol.ts. It is non-empty because this string IS prd-delta.md.
+ */
+const RedSpecLinePayloadSchema = z
+  .object({
+    markdown: z.string().min(1),
+    fixClaims: z.array(RedFixClaimSchema).default([]),
+  })
+  .strict();
+
+export function validateRedSpecLinePayload(value: unknown) {
+  return RedSpecLinePayloadSchema.safeParse(value);
+}
+
+export const RED_SPEC_OUTPUT_JSON_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["markdown", "fixClaims"],
+  properties: {
+    markdown: { type: "string", minLength: 1 },
+    fixClaims: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          canonicalGapId: { type: "string" },
+          claimStatus: {
+            type: "string",
+            enum: ["fixed", "partially_fixed", "not_fixed", "needs_human_decision"],
+          },
+          claimSummary: { type: "string" },
+          evidence: { type: "string" },
+          artifactPath: { type: ["string", "null"] },
+        },
+        required: [
+          "canonicalGapId",
+          "claimStatus",
+          "claimSummary",
+          "evidence",
+          "artifactPath",
+        ],
+      },
+    },
+  },
+};
 
 export const BlueCritiqueOutputSchema = z.object({
   gapReviews: z.array(BlueGapReviewSchema),
@@ -188,17 +240,6 @@ function parseJson(raw: string): unknown {
 
 function effectiveSeverity(gap: Pick<LedgerGap, "severity" | "downgradedTo">): Severity {
   return gap.downgradedTo ?? gap.severity;
-}
-
-export function parseRedSpecOutput(raw: string): ParsedRedSpecOutput {
-  try {
-    return RedSpecOutputSchema.parse(parseJson(raw));
-  } catch {
-    return {
-      prdDeltaMarkdown: raw,
-      fixClaims: [],
-    };
-  }
 }
 
 export function parseBlueCritiqueOutput(raw: string): ParsedBlueCritiqueOutput {

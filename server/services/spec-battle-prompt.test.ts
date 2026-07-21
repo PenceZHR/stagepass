@@ -17,17 +17,37 @@ function writeFile(root: string, file: string, content: string) {
 describe("spec.md template", () => {
   const content = fs.readFileSync(path.join(TEMPLATES_DIR, "spec.md"), "utf-8");
 
-  it("requires our-side agent structured output with fix claims", () => {
-    assert.match(content, /只输出结构化 JSON/);
+  it("defines the our-side spec writer role", () => {
     assert.match(content, /我方执行代理/);
     assert.match(content, /红方只指人类用户本人/);
     assert.match(content, /反方负责质询/);
-    assert.match(content, /"unit": "SPEC_WRITER"/);
-    assert.match(content, /"changeId": "\{changeId\}"/);
-    assert.match(content, /"phase": "Spec"/);
-    assert.match(content, /prdDeltaMarkdown/);
-    assert.match(content, /fixClaims/);
+  });
+
+  it("teaches the line protocol and never JSON output", () => {
+    // Replaces /只输出结构化 JSON/, the three "unit"/"changeId"/"phase" keys and
+    // the prdDeltaMarkdown/fixClaims JSON field names.
+    //
+    // Those pinned a prompt that told the model to author JSON -- red was the
+    // last stage still doing so -- and to emit three fields RedSpecOutputSchema
+    // never declared. That schema was not .strict(), so zod stripped them
+    // instead of rejecting: the prompt asked for values nothing read, and
+    // nothing could tell. What must be pinned now is the protocol itself.
+    assert.match(content, /PRD_DELTA<</);
+    assert.match(content, />>PRD_DELTA/);
+    assert.match(
+      content,
+      /FIXCLAIM: canonicalGapId \| claimStatus \| claimSummary \| evidence \| artifactPath/,
+    );
+    assert.match(content, /SPEC_DONE: true/);
+    assert.match(content, /不要输出任何 JSON、代码块包裹的对象或花括号结构/);
+    assert.doesNotMatch(content, /```json/);
+    assert.doesNotMatch(content, /prdDeltaMarkdown/);
+    assert.match(content, /不要输出 unit、changeId、phase 等额外字段/);
+  });
+
+  it("declares the vocabulary the parser accepts", () => {
     assert.match(content, /RedFixClaim/);
+    assert.match(content, /`fixed` \/ `partially_fixed` \/ `not_fixed` \/ `needs_human_decision` 之一/);
     assert.match(content, /canonicalGapId/);
     assert.match(content, /claimStatus/);
     assert.match(content, /claimSummary/);
@@ -35,12 +55,27 @@ describe("spec.md template", () => {
     assert.match(content, /artifactPath/);
   });
 
+  // Both placements are load-bearing. A FIXCLAIM line inside the block becomes
+  // PRD prose and the claim vanishes. A RUBRIC line inside the block is excluded
+  // from scanProtocolLines, so it is neither harvested nor stripped and rides
+  // into prd-delta.md for the next round's agents to echo back.
+  it("keeps FIXCLAIM and RUBRIC lines outside the block", () => {
+    assert.match(content, /FIXCLAIM 行必须写在 PRD_DELTA 块外面/);
+    assert.match(content, /RUBRIC.*必须写在 PRD_DELTA 块外面/s);
+  });
+
+  it("documents that zero FIXCLAIM lines is legal but SPEC_DONE is not optional", () => {
+    assert.match(content, /没有旧 gap 要声明就不写 FIXCLAIM 行；但 SPEC_DONE 一定要写/);
+  });
+
   it("requires PRD briefing mirrors to guide spec output", () => {
     assert.match(content, /briefing-questions\.json/);
     assert.match(content, /deferred/);
     assert.match(content, /仍需人工判断/);
     assert.match(content, /待确认问题/);
-    assert.match(content, /prdDeltaMarkdown/);
+    // Was /prdDeltaMarkdown/, the JSON field name. The deferred questions must
+    // still reach the document; that document is now the PRD_DELTA block.
+    assert.match(content, /PRD_DELTA 块/);
     assert.match(content, /prd-draft\.md/);
     assert.match(content, /当前 PRD 草稿基础/);
   });

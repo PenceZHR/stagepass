@@ -1188,6 +1188,44 @@ function validBlueCritiqueOutput() {
 }
 
 /**
+ * Serializes a red draft payload into spec-red line-protocol text.
+ * With the Spec writer on the protocol, mocked engines speak one PRD_DELTA
+ * block carrying the whole delta document, then FIXCLAIM lines, then the
+ * required SPEC_DONE anchor -- all in `summary`, and stagepass assembles the
+ * payload. Model-authored structuredOutput is not accepted, so a fixture that
+ * returns prose (or the old JSON blob) is rejected as invalid_stage_output
+ * rather than silently degrading to "whole reply is the delta, zero claims".
+ */
+function redSpecLineProtocolText(
+  output: {
+    markdown?: string;
+    fixClaims?: unknown[];
+  } = {},
+): string {
+  const lines: string[] = [
+    "PRD_DELTA<<",
+    output.markdown ?? "# PRD delta\n\n补齐状态矩阵与导出上限。",
+    ">>PRD_DELTA",
+  ];
+  for (const raw of output.fixClaims ?? []) {
+    const claim = raw as {
+      canonicalGapId: string;
+      claimStatus: string;
+      claimSummary: string;
+      evidence: string;
+      artifactPath?: string | null;
+    };
+    lines.push(
+      `FIXCLAIM: ${claim.canonicalGapId} | ${claim.claimStatus} | ${claim.claimSummary} | ${
+        claim.evidence
+      } | ${claim.artifactPath ?? "-"}`,
+    );
+  }
+  lines.push("SPEC_DONE: true");
+  return lines.join("\n");
+}
+
+/**
  * Serializes a blue critique payload into spec-critique line-protocol text.
  * With spec_critic on the protocol, mocked engines speak REVIEW/GAP/ARTIFACT
  * lines plus the required CRITIQUE_DONE anchor in `summary`, and stagepass
@@ -1829,6 +1867,21 @@ describe("pipeline-service v2 stages", () => {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
             summary: validTestPlanLineProtocolText(),
+            success: true,
+            changedFiles: [],
+            structuredOutput: undefined,
+            items: [],
+          };
+        }
+        // Keyed on the engine phase, not on a prompt substring: `spec` is the
+        // red writer, `spec_critic` blue, `spec_verdict` the judge, and all
+        // three assemble prompts that name both units. Red is the only one of
+        // the three on this protocol, and phase is the stage identity itself.
+        if (input.phase === "spec") {
+          return {
+            threadId: `${input.changeId}-thread`,
+            runId: "ENGINE-RUN",
+            summary: redSpecLineProtocolText(),
             success: true,
             changedFiles: [],
             structuredOutput: undefined,
@@ -4707,7 +4760,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-SPEC-RED-STALE",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -4776,7 +4829,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-SPEC-RED-CURRENT",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -8531,7 +8584,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -8629,7 +8682,7 @@ describe("pipeline-service v2 stages", () => {
           return {
             threadId: "real-red-timeout-session",
             runId: "ENGINE-RED-RESUMED",
-            summary: `summary for ${input.changeId}`,
+            summary: redSpecLineProtocolText(),
             success: true,
             changedFiles: [],
             structuredOutput: undefined,
@@ -8721,7 +8774,7 @@ describe("pipeline-service v2 stages", () => {
           return {
             threadId: "fresh-red",
             runId: "ENGINE-RED-FRESH",
-            summary: `summary for ${input.changeId}`,
+            summary: redSpecLineProtocolText(),
             success: true,
             changedFiles: [],
             structuredOutput: undefined,
@@ -8787,7 +8840,7 @@ describe("pipeline-service v2 stages", () => {
           redAttempts += 1;
           return redAttempts === 1
             ? { threadId: " unknown ", runId: "ENGINE-RED-UNKNOWN", summary: "provider_timeout", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_timeout", items: [] }
-            : { threadId: "fresh-red", runId: "ENGINE-RED-FRESH", summary: "red ok", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+            : { threadId: "fresh-red", runId: "ENGINE-RED-FRESH", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
         return { threadId: "fresh-blue", runId: "ENGINE-BLUE", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
@@ -8812,7 +8865,7 @@ describe("pipeline-service v2 stages", () => {
           redAttempts += 1;
           if (redAttempts === 1) return { threadId: "old-red-timeout", runId: "RED-1", summary: "provider_timeout", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_timeout", items: [] };
           if (redAttempts === 2) return { threadId: " unknown ", runId: "RED-2", summary: "provider_timeout unknown", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_timeout", items: [] };
-          return { threadId: "fresh-red", runId: "RED-3", summary: "red ok", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+          return { threadId: "fresh-red", runId: "RED-3", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
         return { threadId: "blue", runId: "BLUE", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
@@ -8841,7 +8894,7 @@ describe("pipeline-service v2 stages", () => {
           if (redAttempts === 2) {
             return { threadId: "new-red-nontimeout", runId: "ENGINE-RED-NONTIMEOUT", summary: "provider rejected retry", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
           }
-          return { threadId: "fresh-red", runId: "ENGINE-RED-FRESH", summary: "red recovered fresh", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+          return { threadId: "fresh-red", runId: "ENGINE-RED-FRESH", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
         return { threadId: "fresh-blue", runId: "ENGINE-BLUE", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
@@ -8891,7 +8944,7 @@ describe("pipeline-service v2 stages", () => {
             await input.lifecycle.onTerminal({ provider: "codex", pid: null, status: "stopped", signal: "SIGTERM", summary: "Provider stopped after parent received SIGTERM", endedAt: new Date().toISOString() });
             return { threadId: "durable-red-timeout", runId: "RED-SIGTERM", summary: "Claude SDK run failed: Claude SDK exited with code 143:", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
           }
-          return { threadId: "durable-red-timeout", runId: "RED-RESUMED", summary: "red resumed", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+          return { threadId: "durable-red-timeout", runId: "RED-RESUMED", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
         return { threadId: "fresh-blue", runId: "BLUE", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
@@ -8914,7 +8967,7 @@ describe("pipeline-service v2 stages", () => {
           redAttempts += 1;
           return redAttempts === 1
             ? { threadId: "old-timeout-before-success", runId: "RED-TIMEOUT", summary: "provider_timeout", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_timeout", items: [] }
-            : { threadId: "fresh-after-success", runId: "RED-FRESH", summary: "red fresh", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+            : { threadId: "fresh-after-success", runId: "RED-FRESH", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
         return { threadId: "blue", runId: "BLUE", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
@@ -8937,7 +8990,7 @@ describe("pipeline-service v2 stages", () => {
           redAttempts += 1;
           return redAttempts === 1
             ? { threadId: "deep-red-timeout", runId: "RED-TIMEOUT", summary: "provider_timeout", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_timeout", items: [] }
-            : { threadId: "deep-red-timeout", runId: "RED-RESUMED", summary: "red resumed", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+            : { threadId: "deep-red-timeout", runId: "RED-RESUMED", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
         return { threadId: "blue", runId: "BLUE", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
@@ -8990,7 +9043,7 @@ describe("pipeline-service v2 stages", () => {
           runId: isBlue ? "ENGINE-BLUE" : "ENGINE-RED",
           summary: isBlue
             ? blueCritiqueLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9028,7 +9081,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: "red-session",
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9060,7 +9113,7 @@ describe("pipeline-service v2 stages", () => {
           runId: "ENGINE-RUN",
           summary: input.prompt.includes("REQUIREMENT_CRITIC")
             ? blueCritiqueLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9099,7 +9152,7 @@ describe("pipeline-service v2 stages", () => {
         }).then(() => ({
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9166,7 +9219,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9207,7 +9260,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9247,7 +9300,7 @@ describe("pipeline-service v2 stages", () => {
           runId: isBlue ? "ENGINE-BLUE" : "ENGINE-RED",
           summary: isBlue
             ? blueCritiqueLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9283,7 +9336,7 @@ describe("pipeline-service v2 stages", () => {
           runId: isBlue ? "ENGINE-BLUE-FRESH" : "ENGINE-RED-FRESH",
           summary: isBlue
             ? blueCritiqueLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9343,7 +9396,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: "real-red-session",
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9456,7 +9509,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: "real-red-session",
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9507,7 +9560,7 @@ describe("pipeline-service v2 stages", () => {
           if (blueAttempts === 2) return { threadId: "blue-nontimeout", runId: "BLUE-2", summary: "blue rejected retry", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
           return { threadId: "fresh-blue", runId: "BLUE-3", summary: blueCritiqueLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
-        return { threadId: "red", runId: "RED", summary: "red ok", success: true, changedFiles: [], structuredOutput: undefined, items: [] };
+        return { threadId: "red", runId: "RED", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
       },
       async *runStreamed() {},
     }));
@@ -9539,7 +9592,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: "red-session",
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9579,7 +9632,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC") ? "not json" : `summary for ${input.changeId}`,
+          summary: input.prompt.includes("REQUIREMENT_CRITIC") ? "not json" : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9621,7 +9674,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC") ? "not json" : `summary for ${input.changeId}`,
+          summary: input.prompt.includes("REQUIREMENT_CRITIC") ? "not json" : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9660,7 +9713,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9711,7 +9764,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9921,7 +9974,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-red-thread`,
           runId: "ENGINE-RED",
-          summary: `summary for ${input.changeId}`,
+          summary: redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -10626,7 +10679,7 @@ describe("pipeline-service v2 stages", () => {
           runId: "ENGINE-RUN",
           summary: input.prompt.includes("REQUIREMENT_CRITIC")
             ? blueCritiqueLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -10747,7 +10800,7 @@ describe("pipeline-service v2 stages", () => {
           runId: "ENGINE-RUN",
           summary: input.prompt.includes("REQUIREMENT_CRITIC")
             ? blueCritiqueLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -11172,6 +11225,11 @@ describe("pipeline-service v2 stages", () => {
           input.prompt.includes("当前阶段是 test_plan") ||
           input.prompt.includes("coverageItems");
         const isPlanPrompt = input.prompt.includes("当前阶段是 generate_plan");
+        // Red is the Spec battle's producer and the only one of the three Spec
+        // agents on the red line protocol: blue (spec_critic) already returned
+        // above, and the verdict (spec_verdict) is rubric-only. Keyed on the
+        // engine phase, which is the stage identity itself.
+        const isSpecRed = input.phase === "spec";
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
@@ -11194,6 +11252,8 @@ describe("pipeline-service v2 stages", () => {
             }))
             : isReview
             ? reviewLineProtocolText()
+            : isSpecRed
+            ? redSpecLineProtocolText()
             : `summary for ${input.changeId}`,
           success: true,
           changedFiles: [],

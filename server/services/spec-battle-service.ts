@@ -42,10 +42,12 @@ import { generateSpecReport, getLatestSpecReportForDecision } from "./spec-battl
 import { inspectArtifactMirrors, renderMirrorsFromDb } from "./artifact-mirror-service";
 import {
   parseBlueCritiqueOutput,
-  parseRedSpecOutput,
   validateBlueCritiqueOutput,
+  validateRedSpecLinePayload,
   type ParsedBlueCritiqueOutput,
+  type ParsedRedSpecOutput,
 } from "./spec-battle-ledger";
+import type { SpecRedLinePayload } from "./spec-red-line-protocol";
 import { prdStageHashQuestionRows } from "./prd-briefing-ledger";
 import {
   completeStageRun,
@@ -877,14 +879,44 @@ export function claimSpecBattleRedRun(input: {
   return claim;
 }
 
-export async function completeRedSpecRound(input: {
+type CompleteRedSpecRoundInput = {
   changeId: string;
   roundId: string;
-  markdown: string;
   provider?: Provider;
-}): Promise<void> {
+} & (
+  | { markdown: string; redOutput?: never }
+  | { redOutput: SpecRedLinePayload; markdown?: never }
+);
+
+/**
+ * The two variants are two different things a caller can hand over, and telling
+ * them apart is the fix for the round that used to lose every fix claim.
+ *
+ * A single `markdown: string` parameter used to mean whichever of three things
+ * JSON.parse happened to make of it: a payload when it parsed, a literal
+ * document when it did not, and -- for a real payload with one stray line
+ * appended -- a literal document that swallowed the claims and reported
+ * nothing. Production round 7 carried 11 claims through that path on the sole
+ * grounds that RedSpecOutputSchema tolerated unknown keys.
+ *
+ * `markdown` is now taken literally: a document, zero claims. Nothing is parsed
+ * out of it, so nothing can be silently lost from it.
+ */
+function normalizedRedOutput(input: CompleteRedSpecRoundInput): ParsedRedSpecOutput {
+  if (input.redOutput !== undefined) {
+    const validated = validateRedSpecLinePayload(input.redOutput);
+    if (!validated.success) throw validated.error;
+    return {
+      prdDeltaMarkdown: validated.data.markdown,
+      fixClaims: validated.data.fixClaims,
+    };
+  }
+  return { prdDeltaMarkdown: input.markdown, fixClaims: [] };
+}
+
+export async function completeRedSpecRound(input: CompleteRedSpecRoundInput): Promise<void> {
   const { project } = getProjectForChange(input.changeId);
-  const redOutput = parseRedSpecOutput(input.markdown);
+  const redOutput = normalizedRedOutput(input);
   const now = nowISO();
   const redHash = sha256Text(redOutput.prdDeltaMarkdown);
 

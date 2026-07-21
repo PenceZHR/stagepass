@@ -247,21 +247,29 @@ function rubricLines(
 
 // --- provider stub --------------------------------------------------------
 
-const RED_JSON = JSON.stringify({
-  unit: "SPEC_WRITER",
-  changeId: CHANGE_ID,
-  phase: "Spec",
-  prdDeltaMarkdown: "# PRD delta\n\nRubric fixture delta body.\n",
-  fixClaims: [
-    {
-      canonicalGapId: RED_FIX_CLAIM_GAP,
-      claimStatus: "fixed",
-      claimSummary: "Closed by the fixture.",
-      evidence: "See the delta body.",
-      artifactPath: null,
-    },
-  ],
-}, null, 2);
+/** The PRD delta body, byte-exact: it is what prd-delta.md and red.md must hold. */
+const RED_DELTA_BODY = "# PRD delta\n\nRubric fixture delta body.\n";
+
+/**
+ * Red's reply in the line protocol (spec-red-line-protocol.ts): one PRD_DELTA
+ * block carrying the whole document, then FIXCLAIM lines, then SPEC_DONE.
+ *
+ * Every call site appends the RUBRIC lines AFTER this, which is where spec.md
+ * tells the model to put them -- outside every block, last. That placement is
+ * load-bearing for the rubric, not cosmetic: scanProtocolLines skips block
+ * bodies, so a RUBRIC line written INSIDE PRD_DELTA is neither harvested nor
+ * stripped and rides into the document.
+ */
+const RED_LINES = [
+  "PRD_DELTA<<",
+  // Verbatim, trailing newline included: join("\n") turns that newline into the
+  // blank line before the terminator, which the block reads back as the body's
+  // own trailing newline. The delta round-trips byte-exact.
+  RED_DELTA_BODY,
+  ">>PRD_DELTA",
+  `FIXCLAIM: ${RED_FIX_CLAIM_GAP} | fixed | Closed by the fixture. | See the delta body. | -`,
+  "SPEC_DONE: true",
+].join("\n");
 
 const BLUE_LINES = [
   "GAP: gap-rubric-new | Export limit undefined | scope | P2 | delta says export with no cap | add a cap",
@@ -352,7 +360,7 @@ describe("Spec battle rubric wiring", () => {
       { text: "No requirement contradicts the PRD" },
     ]);
     const { prompts } = installEngine({
-      spec: [RED_JSON, ...rubricLines(producer, ["yes", "no"])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes", "no"])].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
@@ -377,7 +385,7 @@ describe("Spec battle rubric wiring", () => {
   it("keeps red's RUBRIC lines out of the PRD delta and out of the round artifact", async () => {
     const producer = saveSpecRubric("producer", [{ text: "Acceptance criteria are testable" }]);
     installEngine({
-      spec: [RED_JSON, ...rubricLines(producer, ["yes"])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes"])].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
@@ -393,13 +401,30 @@ describe("Spec battle rubric wiring", () => {
     assert.doesNotMatch(roundRed, /^RUBRIC:/m);
     assert.doesNotMatch(roundRed, new RegExp(producer.criteria[0]!.id));
 
-    // The real damage a leaked line does: red's reply is parsed with JSON.parse,
-    // which fails on trailing text and silently degrades to "the whole reply is
-    // the markdown, zero fix claims". The claim below is the canary.
+    // The three assertions above are no longer what does the work, and saying so
+    // matters: under the line protocol both documents are the PRD_DELTA block's
+    // CONTENT, so a RUBRIC line written where spec.md says to put it -- outside
+    // every block -- cannot reach them whether or not stripRubricLines ran. They
+    // would pass against a broken strip.
+    //
+    // So pin the property that actually keeps the rubric out: each document is
+    // the block body and nothing else. That fails loudly if the artifact write
+    // ever falls back to `result.summary` (markdownArtifactContentFromResult does
+    // exactly that when structuredOutput.markdown is absent), which is the one
+    // reachable way protocol text still gets into prd-delta.md.
+    assert.equal(prdDelta, RED_DELTA_BODY, "the delta is the block body, byte for byte");
+    assert.equal(roundRed, RED_DELTA_BODY);
+
+    // Red's claims survive alongside a rubric. Under the JSON contract this was
+    // the canary for a leaked line: JSON.parse threw on trailing text and
+    // parseRedSpecOutput's bare catch degraded to "whole reply is the markdown,
+    // zero claims". Red writes FIXCLAIM lines now, so what this pins today is the
+    // rubric/host coupling one layer up -- the harvest runs FIRST and would void
+    // the whole round (RubricOutputVoidError) if it rejected red's own PRD_DELTA
+    // block, leaving zero claims and a failed round.
     const claims = db.select().from(redFixClaims).where(eq(redFixClaims.changeId, CHANGE_ID)).all();
-    assert.equal(claims.length, 1, "stripping must leave red's JSON parseable");
+    assert.equal(claims.length, 1, "the rubric harvest must not void red's own output");
     assert.equal(claims[0]!.canonicalGapId, RED_FIX_CLAIM_GAP);
-    assert.match(roundRed, /Rubric fixture delta body/);
   });
 
   it("records the blue critic rubric without disturbing the critique payload", async () => {
@@ -408,7 +433,7 @@ describe("Spec battle rubric wiring", () => {
       { text: "New gaps cite concrete evidence" },
     ]);
     const { prompts } = installEngine({
-      spec: RED_JSON,
+      spec: RED_LINES,
       spec_critic: [BLUE_LINES, ...rubricLines(critic, ["no", "yes"])].join("\n"),
     });
 
@@ -450,7 +475,7 @@ describe("Spec battle rubric wiring", () => {
       { text: "No P0 gap is still open" },
     ]);
     const { prompts } = installEngine({
-      spec: RED_JSON,
+      spec: RED_LINES,
       spec_critic: BLUE_LINES,
       spec_verdict: rubricLines(verdict, ["yes", "no"]).join("\n"),
     });
@@ -477,7 +502,7 @@ describe("Spec battle rubric wiring", () => {
       { text: "No P0 gap is still open" },
     ]);
     installEngine({
-      spec: RED_JSON,
+      spec: RED_LINES,
       spec_critic: BLUE_LINES,
       spec_verdict: { fail: true },
     });
@@ -500,7 +525,7 @@ describe("Spec battle rubric wiring", () => {
       { text: "Criterion the model stays silent about" },
     ]);
     installEngine({
-      spec: [RED_JSON, ...rubricLines(producer, ["yes", null])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes", null])].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
@@ -516,7 +541,7 @@ describe("Spec battle rubric wiring", () => {
   it("voids the round when red answers a rubric it was not given", async () => {
     const producer = saveSpecRubric("producer", [{ text: "Only criterion" }]);
     installEngine({
-      spec: [RED_JSON, "RUBRIC: RBC-invented | yes | answered someone else's checklist"].join("\n"),
+      spec: [RED_LINES, "RUBRIC: RBC-invented | yes | answered someone else's checklist"].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
@@ -544,7 +569,7 @@ describe("Spec battle rubric wiring", () => {
     saveSpecRubric("producer", []);
     saveSpecRubric("critic", []);
     saveSpecRubric("verdict", []);
-    const { prompts } = installEngine({ spec: RED_JSON, spec_critic: BLUE_LINES });
+    const { prompts } = installEngine({ spec: RED_LINES, spec_critic: BLUE_LINES });
 
     await runSpec(CHANGE_ID, makeJobContext("spec-no-rubric"));
 
@@ -561,7 +586,7 @@ describe("Spec battle rubric wiring", () => {
   it("pins the rubric version each round was judged by", async () => {
     const producer = saveSpecRubric("producer", [{ text: "First wording" }]);
     installEngine({
-      spec: [RED_JSON, ...rubricLines(producer, ["yes"])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes"])].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
@@ -608,7 +633,7 @@ describe("rubric text stays out of stamped hashes", () => {
       { text: "Original verdict wording", blocking: false },
     ]);
     installEngine({
-      spec: [RED_JSON, ...rubricLines(producer, ["no"])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["no"])].join("\n"),
       spec_critic: BLUE_LINES,
       spec_verdict: rubricLines(verdict, ["yes"]).join("\n"),
     });
