@@ -45,6 +45,11 @@ const PIPELINE_SYSTEM_METADATA_IGNORED_PREFIXES = [
   ".ship/prd.json",
   ".ship/prd.md",
   ".ship/prompts",
+  // Rubric text files, same ownership story as .ship/prompts: maintained by
+  // the pipeline (bootstrap + canonical rewrite at stage-resolve), hand-edited
+  // by users between runs. Absent from this list, the very first bootstrap
+  // write marks the repo dirty and every subsequent build absorb 409s.
+  ".ship/rubrics",
   ".ship/tech-stack.md",
 ].map(normalizeIgnoredPrefixPath);
 

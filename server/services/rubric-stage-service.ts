@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { emitIdempotentEvent } from "./event-service";
 import type { RubricPhase, RubricRole } from "./rubric-assessment";
+import { repoPathForProject, syncRubricFileForScope } from "./rubric-file-service";
 import { stripRubricLines } from "./rubric-line-protocol";
 import { renderRubricPromptSection } from "./rubric-prompt";
 import {
@@ -85,6 +86,23 @@ export function resolveStageRubric(scope: StageRubricScope, pin?: {
   // that has never run would show an empty checklist and the "出厂默认" promise
   // would only come true retroactively.
   ensureFactoryRubrics(scope.projectId);
+  // File sync happens HERE -- after seeding (so a first run has a version to
+  // project into the file) and before getEffectiveRubric (so an edit made in
+  // `.ship/rubrics/` is minted first and judged by THIS run, per §2.3: the
+  // stage must run against the post-sync version, and finished rounds stay
+  // pinned to whatever version they were judged under). Only the PROJECT-level
+  // rubric has a file; a change-level override still wins below, unsynced.
+  // syncRubricFileForScope never throws -- a broken file degrades to "DB is
+  // authoritative", it cannot cost the stage.
+  const repoPath = repoPathForProject(scope.projectId);
+  if (repoPath) {
+    syncRubricFileForScope({
+      projectId: scope.projectId,
+      repoPath,
+      phase: scope.phase,
+      role: scope.role,
+    });
+  }
   const effective = getEffectiveRubric({
     projectId: scope.projectId,
     changeId: scope.changeId,
