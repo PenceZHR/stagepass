@@ -1,7 +1,12 @@
 # Rubric：给全流程每个阶段一份可编辑的是/否评判标准
 
-状态：**设计已定，待实现。** 用户 2026-07-20 拍板并授权全部按推荐执行，不需要再裁决。
-**执行前提：之前那批修复（batch-ui / prd / schema / gate）必须先正式测试验收并合并。**
+状态：**已实现并上线。** 用户 2026-07-20 拍板，六批全部落地：迁移 `0023_rubric_core` /
+`0024_rubric_criterion_key`，九个 `rubric-*.ts` 服务，UI 面板 `rubric-panel.tsx`，
+并已接进 spec / build / review / prd-briefing / design / plan 各阶段。
+出厂 12 个 scope / 81 条标准，全部 `blocking: false`。
+
+原状态行写的是「设计已定，待实现」，还挂着一条早已满足的执行前提——照它读会从
+第 1 批重做。**§11 是历史遗留清单，不是待办。**
 
 ---
 
@@ -91,7 +96,7 @@ not_assessed  未评估（模型漏答）
 ### 4.2 fail-closed 规则（照抄 review.md 已验证的那套）
 
 - 每条 criterion **必须恰好一行**输出
-- **缺失 → 记为 `not_assessed`，视同阻断**
+- **缺失 → 记为 `not_assessed`；标了阻断的 criterion 缺失才视同阻断**（收窄见 §4.3）
 - **未知 criterion id → 整份输出作废**
 
 ### 4.3 `no` 怎么进 gate
@@ -216,8 +221,13 @@ rubric_assessments id, change_id, run_id, round_id(null), rubric_id,
 走 `outputSchema` 结构化输出 + schema 校验 + raw capture，判定照 `PRIOR` 行的样子：
 
 ```
-RUBRIC <criterionId> yes|no <evidence>
+RUBRIC: <criterionId> | yes 或 no | <evidence>
 ```
+
+（竖线分隔，恰好 3 个字段——见 `rubric-line-protocol.ts` 与 `rubric-prompt.ts:54`。
+本节原先写成空格分隔的 `RUBRIC <id> yes|no <evidence>`，那里的 `yes|no` 是散文里的
+「或」，不是字段分隔符；照它写第二个 rubric 产出方或测试夹具，每一行都会被判
+「needs 3 `|` fields」。这正是 `rubric-line-protocol.ts:22-28` 专门警告过的那种歧义。）
 
 - 每条 criterion 恰好一行
 - 缺失 → `not_assessed`
@@ -287,14 +297,20 @@ RUBRIC <criterionId> yes|no <evidence>
 改成匹配不出现在等待命令自身里的串，例如：
 `while pgrep -f "tsx scripts/run-tests" >/dev/null; do sleep 20; done`
 
-## 11. 第 3 批发现但未修（推广前建议先处理）
+## 11. 第 3 批发现但未修 —— 已消化（2026-07-21）
 
-1. **红方 `spec` 阶段仍亲手写 JSON，且失败静默。** `parseRedSpecOutput` 的 catch 直接
-   返回 `{prdDeltaMarkdown: raw, fixClaims: []}` —— 无日志无事件无 gate 信号，任何杂质
-   都会让**全部 fix claims 人间蒸发**，蓝方下一轮把已修的 gap 当没修。违反「AI 绝不
-   亲手写 JSON」全项目规则。**第 6 批推广前建议先把 `spec` 迁到行协议。**
-2. **`prd-delta.md` 里存的是 JSON blob 不是 markdown**，而它在 tech_spec 的可读 scope
-   里 —— tech_spec agent 读到的「PRD delta」是一坨 JSON。既有问题。
-3. **仓库里有两套互不相同的 Spec 哈希定义**（`specSourceDbHash` 含 `war_reports.Spec`，
-   `reportSourceDbHash` 含 `findings.Spec`）。第 5 批若让 rubric 派生阻断项进哈希，
-   **两边都要改**，否则战报新鲜度会和 gate 判断打架。
+**本节是历史记录，三条都不再是待办。** 照第 3 条原文去手改两处哈希定义，正是
+§4.4 警告会让**每一个已盖章 gate 失效**的动作。
+
+1. ~~**红方 `spec` 阶段仍亲手写 JSON，且失败静默。**~~ **已修（`19f47ee`）**：
+   红方迁到行协议（`spec-red-line-protocol.ts`），`parseRedSpecOutput` 与它的裸 catch
+   已删。`completeRedSpecRound` 按调用方意图拆成 `{markdown} | {redOutput}` 判别联合。
+2. ~~**`prd-delta.md` 里存的是 JSON blob 不是 markdown。**~~ **已修（`19f47ee`）**：
+   取证证明这与第 1 条**不是同一个根因**——prd-delta.md 由 `runDocumentStage` 经
+   `markdownArtifactContentFromResult` 写原始 raw，永远不经过 `parseRedSpecOutput`。
+   payload 键取名 `markdown` 后由既有的 `.md` 产物路径自动接住。
+3. ~~**两套互不相同的 Spec 哈希定义。**~~ **前提有误，不必照做**：`spec-battle-service.ts`
+   与 `spec-battle-report-service.ts` 的行集本就都逐行含 `requirement_gaps`，派生 gap
+   自动进两边（理由见 `rubric-gate-adapters.ts:41-47`），rubric 不需要动哈希。
+   哈希定义本身确实分裂，而且是**三套不是两套**——但那是独立问题，
+   见 `docs/AMBIGUITY-AUDIT-2026-07-20.md` §2.1（含对本节 `STG-GATE-062` 归属的更正）。

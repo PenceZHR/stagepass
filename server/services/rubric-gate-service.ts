@@ -187,8 +187,17 @@ export function latestRubricVerdictsByKey(
  *
  * `rubricOutcome` is reused rather than reimplemented so the gate can never
  * disagree with the drawer that shows the same verdicts: `blocking: true` +
- * `no` blocks, `blocking: false` + `no` is advisory, and ANY `not_assessed`
- * blocks whatever the flag says (§4.3).
+ * `no` blocks, `blocking: false` + `no` is advisory, and `not_assessed` blocks
+ * only on a criterion that was itself marked blocking (§4.3, as narrowed in
+ * batch 6).
+ *
+ * That last clause used to read "ANY `not_assessed` blocks whatever the flag
+ * says", which is what §4.3 said before batch 6 and what the code has not done
+ * since. Reading it and "fixing" deriveRubricBlockers to take
+ * failed ∪ notAssessed reintroduces two regressions that were measured, not
+ * argued -- see the long comment above `rubricOutcome` in rubric-assessment.ts:
+ * the gate stops agreeing with the drawer, and a pure rubric EDIT opens a P0 on
+ * an already-stamped gate off a stale silence, which §4.3.1 and §4.4 both forbid.
  */
 export function deriveRubricBlockers(
   scope: RubricGateScope & { roundId: string | null },
