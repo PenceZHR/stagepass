@@ -1,12 +1,12 @@
-import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { createChildLogger } from "../logger";
+import { isShipArtifact } from "./build-gate-service";
+import { getWorkingTreeStatus, hasCommits, isGitRepo } from "./git-service";
 import type { Finding } from "./local-check-service";
 import { loadDbPlanScope, loadPolicy, matchesGlob } from "./stage-guard-service";
 
 const log = createChildLogger("scope-check-service");
-const GIT_COMMAND_TIMEOUT_MS = 30_000;
 
 export interface ScopeCheckResult {
   success: boolean;
@@ -36,17 +36,41 @@ export function runScopeCheck(
 
   const policy = loadPolicy(repoPath);
 
-  // Get changed files from git
+  // `git status --porcelain` (via getWorkingTreeStatus) rather than
+  // `git diff --name-only`. The latter lists only unstaged edits to files git
+  // already tracks: it shows neither newly created files nor staged ones. So an
+  // agent that wrote a brand new file outside the approved scope -- the exact
+  // violation this check exists to catch -- walked through it untouched, and
+  // every test here happened to modify a tracked file, so nothing noticed.
+  //
+  // getWorkingTreeStatus owns the repo's one porcelain parse, rename entries
+  // included. A second scanner here could disagree with the Git panel about
+  // what counts as a changed file.
   let changedFiles: string[] = [];
+  let statusUnavailable = false;
   try {
-    const output = execSync("git diff --name-only", {
-      cwd: repoPath,
-      encoding: "utf-8",
-      timeout: GIT_COMMAND_TIMEOUT_MS,
-    });
-    changedFiles = output.trim().split("\n").filter(Boolean);
-  } catch {
-    log.warn("Failed to get git diff, using empty changeset");
+    // The reachability check has to be explicit. getWorkingTreeStatus answers
+    // `{clean: true, staged: [], unstaged: []}` for a path that is not a git
+    // repo or has no commits -- isGitRepo and hasCommits both swallow their
+    // errors and return false. That is right for the Git panel on a fresh
+    // checkout and wrong here: a scope check that could not reach the
+    // repository has verified nothing, and an empty changeset passes.
+    if (!isGitRepo(repoPath) || !hasCommits(repoPath)) {
+      statusUnavailable = true;
+      log.warn({ repoPath }, "Repository unreadable; scope cannot be verified");
+    } else {
+      // expandUntrackedDirectories: a new directory collapses to one porcelain
+      // entry (`?? secrets/`), which matches neither `secrets/**` nor any other
+      // plan glob -- the files inside would be judged by a path that is not
+      // theirs. isShipArtifact drops stagepass's own bookkeeping, the same rule
+      // the Build gate applies to the same question.
+      const status = getWorkingTreeStatus(repoPath, { expandUntrackedDirectories: true });
+      changedFiles = [...new Set([...status.staged, ...status.unstaged].map((entry) => entry.path))]
+        .filter((filePath) => !isShipArtifact(filePath));
+    }
+  } catch (err) {
+    statusUnavailable = true;
+    log.warn({ err, repoPath }, "Failed to read git status; scope cannot be verified");
   }
 
   // expectedFiles is what loadDbPlanScope actually populates; allowedFiles is
@@ -77,11 +101,22 @@ export function runScopeCheck(
     }
   }
 
-  const blocked = blockedFiles.length > 0;
+  const blocked = blockedFiles.length > 0 || statusUnavailable;
   const success = !blocked && outOfScopeFiles.length === 0;
 
   const findings: Finding[] = [];
-  if (blocked) {
+  if (statusUnavailable) {
+    findings.push({
+      source: "scope-check",
+      severity: "BLOCKER",
+      category: "scope",
+      title: "Scope could not be checked",
+      evidence: "the repository could not be read, so the set of written files is unknown",
+      requiredFix: "Repair the repository state so git can report status, then re-run QA",
+      status: "open",
+    });
+  }
+  if (blockedFiles.length > 0) {
     findings.push({
       source: "scope-check",
       severity: "BLOCKER",

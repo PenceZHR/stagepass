@@ -269,13 +269,31 @@ export interface WorkingTreeStatus {
   branch: string | null;
 }
 
-export function getWorkingTreeStatus(repoPath: string): WorkingTreeStatus {
+export interface WorkingTreeStatusOptions {
+  /**
+   * Whether to list every file inside an untracked directory instead of the
+   * directory itself. Plain porcelain collapses a new directory to one entry
+   * (`?? .ship/`), which is what the Git panel wants -- one checkbox per thing
+   * the user thinks of as a change. Scope enforcement wants the opposite: it
+   * has to match individual paths against the plan's globs, and a collapsed
+   * `secrets/` matches neither `secrets/**` nor anything else useful.
+   */
+  expandUntrackedDirectories?: boolean;
+}
+
+export function getWorkingTreeStatus(
+  repoPath: string,
+  options: WorkingTreeStatusOptions = {},
+): WorkingTreeStatus {
   if (!isGitRepo(repoPath) || !hasCommits(repoPath)) {
     return { clean: true, staged: [], unstaged: [], ahead: 0, behind: 0, branch: null };
   }
 
   const branch = getCurrentBranch(repoPath);
-  const porcelain = execWithTimeout("git status --porcelain", { cwd: repoPath, encoding: "utf-8" }).trimEnd();
+  const command = options.expandUntrackedDirectories
+    ? "git status --porcelain -uall"
+    : "git status --porcelain";
+  const porcelain = execWithTimeout(command, { cwd: repoPath, encoding: "utf-8" }).trimEnd();
 
   const staged: FileEntry[] = [];
   const unstaged: FileEntry[] = [];

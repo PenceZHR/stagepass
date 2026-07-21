@@ -146,6 +146,67 @@ describe("runScopeCheck", () => {
     assert.deepEqual(result.blockedFiles, ["src-app.ts"]);
   });
 
+  // Every case above modifies a file that is already tracked -- the one shape
+  // `git diff --name-only` can see. It lists neither newly created files nor
+  // staged ones, so an agent that writes a brand new file outside the approved
+  // scope walked through this check untouched. Creating a file where the plan
+  // never said you could is the violation scope enforcement most exists to
+  // catch, and it was the one violation invisible to it.
+  it("flags a newly created file that is outside the approved DB plan scope", () => {
+    seedChange(repoPath);
+    seedApprovedPlan({ expectedFiles: ["src-app.ts"], forbiddenFiles: [] });
+    fs.writeFileSync(path.join(repoPath, "src-leaked.ts"), "export const leaked = 1;\n");
+
+    const result = runScopeCheck(repoPath, CHANGE_ID);
+
+    assert.equal(result.success, false);
+    assert.deepEqual(result.outOfScopeFiles, ["src-leaked.ts"]);
+  });
+
+  it("blocks a newly created file the plan forbids", () => {
+    seedChange(repoPath);
+    seedApprovedPlan({ expectedFiles: ["src-app.ts"], forbiddenFiles: ["secrets/**"] });
+    fs.mkdirSync(path.join(repoPath, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(repoPath, "secrets", "keys.ts"), "export const key = 1;\n");
+
+    const result = runScopeCheck(repoPath, CHANGE_ID);
+
+    assert.equal(result.blocked, true);
+    assert.deepEqual(result.blockedFiles, ["secrets/keys.ts"]);
+  });
+
+  it("sees a staged out-of-scope change as well as an unstaged one", () => {
+    seedChange(repoPath);
+    seedApprovedPlan({ expectedFiles: ["src-app.ts"], forbiddenFiles: [] });
+    fs.writeFileSync(path.join(repoPath, "src-forbidden.ts"), "export const secret = 2;\n");
+    execFileSync("git", ["add", "src-forbidden.ts"], { cwd: repoPath });
+
+    const result = runScopeCheck(repoPath, CHANGE_ID);
+
+    assert.equal(result.success, false);
+    assert.deepEqual(result.outOfScopeFiles, ["src-forbidden.ts"]);
+  });
+
+  // "Nothing was written" and "we could not look" used to be the same answer:
+  // the catch swallowed the failure and left an empty changeset, which passes.
+  // A check whose entire job is to notice writes must not report clean when it
+  // could not read the repository.
+  it("blocks instead of passing when git status cannot be read", () => {
+    seedChange(repoPath);
+    seedApprovedPlan({ expectedFiles: ["src-app.ts"], forbiddenFiles: [] });
+    fs.writeFileSync(path.join(repoPath, ".git", "HEAD"), "not a ref\n");
+
+    const result = runScopeCheck(repoPath, CHANGE_ID);
+
+    assert.equal(result.success, false);
+    assert.equal(result.blocked, true);
+    assert.equal(
+      result.findings.some((finding) => finding.title === "Scope could not be checked"),
+      true,
+      "an unreadable repository must surface as a blocker, not as a clean scope",
+    );
+  });
+
   it("ignores a tampered plan.json on disk -- the approved DB snapshot is authoritative", () => {
     seedChange(repoPath);
     seedApprovedPlan({ expectedFiles: ["src-app.ts"], forbiddenFiles: [] });
