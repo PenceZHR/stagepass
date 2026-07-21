@@ -63,11 +63,19 @@ const CHANGE_ID = "CHG-RUBRIC-GATE-001";
 const ROUND_1 = "BR-RUBRIC-GATE-1";
 const ROUND_2 = "BR-RUBRIC-GATE-2";
 
-const SPEC_PRODUCER = {
+// Spec/critic, deliberately. The gap channel this file exercises only exists
+// for phase Spec, but Spec/producer saves now force-merge the always-blocking
+// tier-1 row into every version (rubric-tiers.ts §2.1), so every one-criterion
+// fixture below would drag an extra not_assessed tier-1 blocker through the
+// assertions for reasons unrelated to the derive/retire machinery under test.
+// That machinery is role-agnostic (latestRubricVerdictsByKey and
+// blockingCriterionKeysInForce loop RUBRIC_ROLES), and Spec/critic carries no
+// tier-1 row; tier-1's own gate behaviour is pinned in rubric-tiers.test.ts.
+const SPEC_CRITIC = {
   projectId: PROJECT_ID,
   changeId: null as string | null,
   phase: "Spec" as const,
-  role: "producer" as const,
+  role: "critic" as const,
 };
 
 function cleanupRows(): void {
@@ -191,10 +199,10 @@ function judge(
   assert.equal(recorded.ok, true, "fixture judgment must parse");
 }
 
-function saveSpecProducer(
+function saveSpecCritic(
   criteria: Array<{ text: string; blocking?: boolean; criterionKey?: string | null }>,
 ): RubricVersionRecord {
-  return saveRubricVersion({ ...SPEC_PRODUCER, criteria });
+  return saveRubricVersion({ ...SPEC_CRITIC, criteria });
 }
 
 function specScope(roundId: string | null) {
@@ -226,7 +234,7 @@ afterEach(cleanupRows);
 
 describe("§4.3 which verdicts block", () => {
   it("a blocking criterion answered `no` blocks", () => {
-    const rubric = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const rubric = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(rubric, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
 
     const blockers = deriveRubricBlockers(specScope(ROUND_1));
@@ -250,7 +258,7 @@ describe("§4.3 which verdicts block", () => {
     //
     // The blocking half of the rule -- the half with a reason behind it -- is
     // unchanged, and is what this case now pins.
-    const rubric = saveSpecProducer([
+    const rubric = saveSpecCritic([
       { text: "非阻断标准", blocking: false },
       { text: "阻断标准", blocking: true },
     ]);
@@ -266,12 +274,12 @@ describe("§4.3 which verdicts block", () => {
     // rubric, so an edit can only ever close. Before batch 6 this direction was
     // wide open for `not_assessed`, and one tick could plant an unclearable P0
     // on an already-stamped phase.
-    const rubric = saveSpecProducer([{ text: "先是非阻断", blocking: false }]);
+    const rubric = saveSpecCritic([{ text: "先是非阻断", blocking: false }]);
     judge(rubric, [undefined], { runId: "RUN-1", roundId: ROUND_1 });
     assert.deepEqual(deriveRubricBlockers(specScope(ROUND_1)), []);
 
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [
         { text: "先是非阻断", blocking: true, criterionKey: rubric.criteria[0]!.criterionKey },
       ],
@@ -284,13 +292,13 @@ describe("§4.3 which verdicts block", () => {
   });
 
   it("a NON-blocking criterion answered `no` does not block", () => {
-    const rubric = saveSpecProducer([{ text: "建议性标准", blocking: false }]);
+    const rubric = saveSpecCritic([{ text: "建议性标准", blocking: false }]);
     judge(rubric, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     assert.deepEqual(deriveRubricBlockers(specScope(ROUND_1)), []);
   });
 
   it("`yes` does not block", () => {
-    const rubric = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const rubric = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(rubric, ["yes"], { runId: "RUN-1", roundId: ROUND_1 });
     assert.deepEqual(deriveRubricBlockers(specScope(ROUND_1)), []);
   });
@@ -304,19 +312,22 @@ describe("§4.3 which verdicts block", () => {
 // --- §5.2: by round, never by run ------------------------------------------
 
 describe("§5.2 verdicts are selected by round, never by run", () => {
-  it("still sees the producer's blocking verdict after blue resumes under a new run id", () => {
+  it("still sees the first run's blocking verdict after the round resumes under a new run id", () => {
     // resumeBlue opens a NEW run for a round whose red half already answered
-    // and does not re-run red. Reading by run id would find no producer rows,
-    // read that as "no rubric", and pass the stage on a judgment nobody made.
-    const rubric = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    // and does not re-run red. Reading by run id would find no rows from the
+    // round's first run, read that as "no rubric", and pass the stage on a
+    // judgment nobody made. The by-round selection is role-agnostic, so it is
+    // exercised on the two tier-1-free Spec roles (critic + verdict) -- see
+    // the note on SPEC_CRITIC.
+    const rubric = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(rubric, ["no"], { runId: "RUN-RED", roundId: ROUND_1 });
 
-    const critic = saveRubricVersion({
-      ...SPEC_PRODUCER,
-      role: "critic",
-      criteria: [{ text: "反方标准", blocking: true }],
+    const verdictRubric = saveRubricVersion({
+      ...SPEC_CRITIC,
+      role: "verdict",
+      criteria: [{ text: "裁决标准", blocking: true }],
     });
-    judge(critic, ["yes"], { runId: "RUN-BLUE-RESUMED", roundId: ROUND_1 });
+    judge(verdictRubric, ["yes"], { runId: "RUN-BLUE-RESUMED", roundId: ROUND_1 });
 
     const blockers = deriveRubricBlockers(specScope(ROUND_1));
     assert.equal(blockers.length, 1, "red's `no` must survive blue resuming under a second run");
@@ -324,7 +335,7 @@ describe("§5.2 verdicts are selected by round, never by run", () => {
   });
 
   it("a later round's verdicts, not an earlier round's, decide what blocks now", () => {
-    const rubric = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const rubric = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(rubric, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     addRound(ROUND_2, 2);
     judge(rubric, ["yes"], { runId: "RUN-2", roundId: ROUND_2 });
@@ -338,7 +349,7 @@ describe("§5.2 verdicts are selected by round, never by run", () => {
 
 describe("§5.1 derived blockers are keyed on criterionKey, not on the version row", () => {
   it("survives a reword: the criterion keeps its key, so the gap is still reachable", () => {
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     const gapBefore = rubricGaps();
@@ -347,7 +358,7 @@ describe("§5.1 derived blockers are keyed on criterionKey, not on the version r
     assert.equal(gapBefore[0]!.canonicalGapId, rubricBlockerId(key));
 
     // The editor round-trips the key, which is what makes a typo fix safe.
-    const v2 = saveSpecProducer([
+    const v2 = saveSpecCritic([
       { text: "验收条件必须可判定", blocking: true, criterionKey: key },
     ]);
     assert.notEqual(v2.criteria[0]!.id, v1.criteria[0]!.id, "a new version mints a new row id");
@@ -366,13 +377,13 @@ describe("§5.1 derived blockers are keyed on criterionKey, not on the version r
     // (specSourceDbHash and reportSourceDbHash, §11.3), so re-deriving the
     // wording would stale every stamped Spec gate and every war report at once
     // on a typo fix.
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     const before = rubricGaps()[0]!;
     const hashBefore = specGateSourceDbHash();
 
-    saveSpecProducer([
+    saveSpecCritic([
       { text: "验收条件必须可判定（措辞修订）", blocking: true, criterionKey: v1.criteria[0]!.criterionKey },
     ]);
     syncSpecRubricGaps(CHANGE_ID);
@@ -385,20 +396,20 @@ describe("§5.1 derived blockers are keyed on criterionKey, not on the version r
   it("a criterion the caller sends with an unknown key gets a NEW identity, not the open gap's", () => {
     // Honouring a foreign key would let one request bind a brand-new criterion
     // to an existing open gap. The safe direction is always a fresh identity.
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
 
-    const v2 = saveSpecProducer([
+    const v2 = saveSpecCritic([
       { text: "完全不同的新标准", blocking: true, criterionKey: "RBK-not-from-this-scope" },
     ]);
     assert.notEqual(v2.criteria[0]!.criterionKey, v1.criteria[0]!.criterionKey);
   });
 
   it("the snapshotted text comes from the version that was judged, not from today's", () => {
-    const v1 = saveSpecProducer([{ text: "原始措辞", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "原始措辞", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
-    saveSpecProducer([
+    saveSpecCritic([
       { text: "新措辞", blocking: true, criterionKey: v1.criteria[0]!.criterionKey },
     ]);
 
@@ -411,7 +422,7 @@ describe("§5.1 derived blockers are keyed on criterionKey, not on the version r
 
 describe("the human exit: withdrawing the criterion retires what it derived", () => {
   it("unticking `blocking` retires the gap and unblocks the Spec gate", () => {
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
 
@@ -432,7 +443,7 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
     );
 
     // THE EXIT: the user withdraws the standard rather than claiming it is met.
-    saveSpecProducer([
+    saveSpecCritic([
       { text: "验收条件可判定", blocking: false, criterionKey: v1.criteria[0]!.criterionKey },
     ]);
     const result = syncSpecRubricGaps(CHANGE_ID);
@@ -451,18 +462,18 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
   });
 
   it("deleting the criterion retires the gap too", () => {
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     assert.equal(rubricGaps()[0]!.status, "open");
 
-    saveSpecProducer([]);
+    saveSpecCritic([]);
     syncSpecRubricGaps(CHANGE_ID);
     assert.equal(rubricGaps()[0]!.status, "resolved");
   });
 
   it("a later round answering `yes` retires the gap without any human action", () => {
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     assert.equal(rubricGaps()[0]!.status, "open");
@@ -480,7 +491,7 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
     // The fail-open this whole mechanism exists to prevent. A round that died
     // before its rubric ran has no rows for the criterion, and "no rows" must
     // not read as "cleared".
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     assert.equal(rubricGaps()[0]!.status, "open");
@@ -492,11 +503,11 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
   });
 
   it("a still-blocking criterion is not retired just because the rubric was saved again", () => {
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
 
-    saveSpecProducer([
+    saveSpecCritic([
       { text: "验收条件可判定", blocking: true, criterionKey: v1.criteria[0]!.criterionKey },
       { text: "另一条新标准", blocking: true },
     ]);
@@ -511,12 +522,12 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
     // the criterion as it then stood, and a criterion nobody has judged has no
     // verdict at all -- so a rubric edit can never newly block a change whose
     // gate is already stamped (§4.4).
-    const v1 = saveSpecProducer([{ text: "已通过的标准", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "已通过的标准", blocking: true }]);
     judge(v1, ["yes"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     assert.deepEqual(rubricGaps(), []);
 
-    saveSpecProducer([
+    saveSpecCritic([
       { text: "已通过的标准", blocking: true, criterionKey: v1.criteria[0]!.criterionKey },
       { text: "刚刚加上的新标准", blocking: true },
     ]);
@@ -527,12 +538,12 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
   });
 
   it("flipping a judged non-blocking `no` to blocking does not block retroactively either", () => {
-    const v1 = saveSpecProducer([{ text: "当时是建议性的", blocking: false }]);
+    const v1 = saveSpecCritic([{ text: "当时是建议性的", blocking: false }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     assert.deepEqual(rubricGaps(), []);
 
-    saveSpecProducer([
+    saveSpecCritic([
       { text: "当时是建议性的", blocking: true, criterionKey: v1.criteria[0]!.criterionKey },
     ]);
     // The verdict on file was made against a criterion that did not block, and
@@ -542,7 +553,7 @@ describe("the human exit: withdrawing the criterion retires what it derived", ()
   });
 
   it("a retired gap reopens when a later round blocks on the same criterion again", () => {
-    const v1 = saveSpecProducer([{ text: "验收条件可判定", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "验收条件可判定", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     syncSpecRubricGaps(CHANGE_ID);
     addRound(ROUND_2, 2);
@@ -617,11 +628,11 @@ describe("blocker ids carry the criterion key", () => {
 
 describe("activeRubricBlockers refuses to derive from a withdrawn standard", () => {
   it("drops a verdict whose criterion is no longer blocking", () => {
-    const v1 = saveSpecProducer([{ text: "标准", blocking: true }]);
+    const v1 = saveSpecCritic([{ text: "标准", blocking: true }]);
     judge(v1, ["no"], { runId: "RUN-1", roundId: ROUND_1 });
     assert.equal(activeRubricBlockers(specScope(ROUND_1)).length, 1);
 
-    saveSpecProducer([{ text: "标准", blocking: false, criterionKey: v1.criteria[0]!.criterionKey }]);
+    saveSpecCritic([{ text: "标准", blocking: false, criterionKey: v1.criteria[0]!.criterionKey }]);
     assert.deepEqual(activeRubricBlockers(specScope(ROUND_1)), []);
     // derive still reports it: the model really did answer `no`. The two
     // functions differ exactly where the user withdrew the standard, which is
@@ -633,10 +644,15 @@ describe("activeRubricBlockers refuses to derive from a withdrawn standard", () 
 // --- Build / Fix: findings --------------------------------------------------
 
 describe("Build/Fix channel: review findings", () => {
-  function buildProducer(
+  // Fix rather than Build: both route to the same `finding` channel (see the
+  // routing case at the bottom of this file), but Build/producer saves now
+  // force-merge two always-blocking tier-1 rows (rubric-tiers.ts §2.1), so a
+  // one-criterion fixture would open three findings at once. Fix/producer
+  // carries no tier-1 row, which keeps these cases about the channel itself.
+  function fixProducer(
     criteria: Array<{ text: string; blocking?: boolean; criterionKey?: string | null }>,
   ): RubricVersionRecord {
-    return saveRubricVersion({ ...SPEC_PRODUCER, phase: "Build", criteria });
+    return saveRubricVersion({ ...SPEC_CRITIC, phase: "Fix", role: "producer", criteria });
   }
 
   function rubricFindings() {
@@ -649,10 +665,10 @@ describe("Build/Fix channel: review findings", () => {
   }
 
   it("a blocking `no` becomes an open P0 finding", () => {
-    const rubric = buildProducer([{ text: "实现覆盖了计划里的每个文件", blocking: true }]);
-    judge(rubric, ["no"], { runId: "RUN-BUILD", roundId: null });
+    const rubric = fixProducer([{ text: "实现覆盖了计划里的每个文件", blocking: true }]);
+    judge(rubric, ["no"], { runId: "RUN-FIX", roundId: null });
 
-    const result = syncRubricFindings(CHANGE_ID, "Build");
+    const result = syncRubricFindings(CHANGE_ID, "Fix");
     assert.deepEqual(result.opened, [rubric.criteria[0]!.criterionKey]);
 
     const row = rubricFindings()[0]!;
@@ -668,36 +684,28 @@ describe("Build/Fix channel: review findings", () => {
   });
 
   it("withdrawing the criterion waives it; a later `yes` marks it fixed", () => {
-    const rubric = buildProducer([{ text: "实现覆盖了计划里的每个文件", blocking: true }]);
-    judge(rubric, ["no"], { runId: "RUN-BUILD", roundId: null });
-    syncRubricFindings(CHANGE_ID, "Build");
+    const rubric = fixProducer([{ text: "实现覆盖了计划里的每个文件", blocking: true }]);
+    judge(rubric, ["no"], { runId: "RUN-FIX", roundId: null });
+    syncRubricFindings(CHANGE_ID, "Fix");
 
-    saveRubricVersion({
-      ...SPEC_PRODUCER,
-      phase: "Build",
-      criteria: [
-        { text: "实现覆盖了计划里的每个文件", blocking: false, criterionKey: rubric.criteria[0]!.criterionKey },
-      ],
-    });
-    syncRubricFindings(CHANGE_ID, "Build");
+    fixProducer([
+      { text: "实现覆盖了计划里的每个文件", blocking: false, criterionKey: rubric.criteria[0]!.criterionKey },
+    ]);
+    syncRubricFindings(CHANGE_ID, "Fix");
     const waived = rubricFindings()[0]!;
     assert.equal(waived.status, "waived");
     assert.equal(waived.waivedBy, "rubric_criterion_withdrawn");
 
     // Restore the standard, answer it, and the finding tells the other story.
-    const restored = saveRubricVersion({
-      ...SPEC_PRODUCER,
-      phase: "Build",
-      criteria: [
-        { text: "实现覆盖了计划里的每个文件", blocking: true, criterionKey: rubric.criteria[0]!.criterionKey },
-      ],
-    });
-    judge(restored, ["no"], { runId: "RUN-BUILD-2", roundId: null });
-    syncRubricFindings(CHANGE_ID, "Build");
+    const restored = fixProducer([
+      { text: "实现覆盖了计划里的每个文件", blocking: true, criterionKey: rubric.criteria[0]!.criterionKey },
+    ]);
+    judge(restored, ["no"], { runId: "RUN-FIX-2", roundId: null });
+    syncRubricFindings(CHANGE_ID, "Fix");
     assert.equal(rubricFindings()[0]!.status, "open");
 
-    judge(restored, ["yes"], { runId: "RUN-BUILD-3", roundId: null });
-    syncRubricFindings(CHANGE_ID, "Build");
+    judge(restored, ["yes"], { runId: "RUN-FIX-3", roundId: null });
+    syncRubricFindings(CHANGE_ID, "Fix");
     assert.equal(rubricFindings()[0]!.status, "fixed");
   });
 
@@ -706,9 +714,9 @@ describe("Build/Fix channel: review findings", () => {
     // next attempt's obligation set. A rubric row claiming `review` would make
     // a model answer `PRIOR: <id> | fixed` about a criterion it was never
     // shown -- and that verdict would silently close a rubric judgment.
-    const rubric = buildProducer([{ text: "标准", blocking: true }]);
-    judge(rubric, ["no"], { runId: "RUN-BUILD", roundId: null });
-    syncRubricFindings(CHANGE_ID, "Build");
+    const rubric = fixProducer([{ text: "标准", blocking: true }]);
+    judge(rubric, ["no"], { runId: "RUN-FIX", roundId: null });
+    syncRubricFindings(CHANGE_ID, "Fix");
     assert.notEqual(rubricFindings()[0]!.source, "review");
   });
 });
@@ -719,7 +727,7 @@ describe("document phase channel: stage gate blockers", () => {
   function techSpecRubric(
     criteria: Array<{ text: string; blocking?: boolean; criterionKey?: string | null }>,
   ): RubricVersionRecord {
-    return saveRubricVersion({ ...SPEC_PRODUCER, phase: "TechSpec", criteria });
+    return saveRubricVersion({ ...SPEC_CRITIC, phase: "TechSpec", role: "producer", criteria });
   }
 
   function seedPassingTechSpecGate(): void {
@@ -750,8 +758,9 @@ describe("document phase channel: stage gate blockers", () => {
     );
 
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       phase: "TechSpec",
+      role: "producer",
       criteria: [{ text: "接口契约完整", blocking: false, criterionKey: rubric.criteria[0]!.criterionKey }],
     });
     syncRubricStageGateBlockers(CHANGE_ID, "TechSpec");
@@ -787,8 +796,9 @@ describe("document phase channel: stage gate blockers", () => {
       sourceDbHash: "PLAN-SOURCE-HASH",
     });
     const rubric = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       phase: "Plan",
+      role: "producer",
       criteria: [{ text: "步骤可执行", blocking: true }],
     });
     judge(rubric, ["no"], { runId: "RUN-PLAN", roundId: null });
@@ -802,8 +812,9 @@ describe("document phase channel: stage gate blockers", () => {
     // Retiring the rubric blocker must leave the phase's own blocker and its
     // own `blocked` status exactly where they were.
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       phase: "Plan",
+      role: "producer",
       criteria: [{ text: "步骤可执行", blocking: false, criterionKey: rubric.criteria[0]!.criterionKey }],
     });
     syncRubricStageGateBlockers(CHANGE_ID, "Plan");

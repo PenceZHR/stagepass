@@ -46,6 +46,7 @@ import {
   selectLatestAssessmentBatch,
   type StoredRubricAssessment,
 } from "./rubric-service.ts";
+import { TIER1_CRITERION_KEYS } from "./rubric-tiers.ts";
 import { peekStageAuthority, recomputeStageGate } from "./stage-authority-service.ts";
 
 /**
@@ -62,6 +63,8 @@ import { peekStageAuthority, recomputeStageGate } from "./stage-authority-servic
  *     so "this execution's verdicts" has to be identified by run.
  *  3. Factory criteria must be inert on arrival: recorded and displayed, never
  *     blocking, or every existing project stalls the next time it runs anything.
+ *     (Since 2026-07-21 the four tier-1 promotions are the deliberate exception
+ *     -- §2.1 恒阻断, pinned in rubric-tiers.test.ts.)
  */
 
 const PROJECT_ID = "PRJ-RUBRIC-ROLLOUT";
@@ -126,18 +129,29 @@ function scopeFor(phase: RubricPhase, role: RubricRole = "producer") {
   return { projectId: PROJECT_ID, changeId: null as string | null, phase, role };
 }
 
-/** A rubric with one blocking criterion, answered `no` under a round-less run. */
+/**
+ * A rubric with one blocking criterion, answered `no` under a round-less run.
+ *
+ * The judged row is looked up by the text this helper wrote, not by index: on
+ * a tier-1 scope (Build/Done producer) saveRubricVersion pins the tier-1 rows
+ * first (rubric-tiers.ts §2.1), so `criteria[0]` is no longer the row this
+ * fixture created. Tier-1 rows the model stays silent about are recorded
+ * `not_assessed` -- exactly what a real one-answer reply produces there.
+ */
 function judgedBlockingCriterion(phase: RubricPhase, runId: string) {
+  const text = `${phase} 的一条硬标准`;
   const rubric = saveRubricVersion({
     ...scopeFor(phase),
-    criteria: [{ text: `${phase} 的一条硬标准`, blocking: true }],
+    criteria: [{ text, blocking: true }],
   });
+  const created = rubric.criteria.find((criterion) => criterion.text === text);
+  assert.ok(created, "the fixture's own criterion must survive the save");
   recordRubricAssessments({
     changeId: CHANGE_ID,
     runId,
     roundId: null,
     rubric,
-    rawText: `RUBRIC: ${rubric.criteria[0]!.id} | no | 产物没有满足这一条`,
+    rawText: `RUBRIC: ${created.id} | no | 产物没有满足这一条`,
   });
   return rubric;
 }
@@ -161,17 +175,26 @@ describe("factory rubrics", () => {
     assert.deepEqual(ensureFactoryRubrics(PROJECT_ID), [], "seeding must be idempotent");
   });
 
-  it("ships every criterion non-blocking, so no existing project is stalled by an upgrade", () => {
+  it("ships every criterion non-blocking, except the four tier-1 promotions", () => {
+    // Until 2026-07-21 this asserted NO criterion ships blocking. That is now
+    // wrong by design for exactly the tier-1 registry (§2.1 恒阻断): those four
+    // keys are promotions of factory lines that already shipped, blocking on
+    // arrival is their whole point, and no drawer can turn them off. The
+    // "stalled against wording nobody has read" argument this test encodes
+    // still holds for every OTHER criterion, so that is what it pins now.
     ensureFactoryRubrics(PROJECT_ID);
     for (const scope of factoryRubricScopes()) {
       const rubric = getCurrentRubric(scopeFor(scope.phase, scope.role))!;
       assert.ok(rubric, `${scope.phase} ${scope.role} was not seeded`);
       const blocking = rubric.criteria.filter((criterion) => criterion.blocking);
       assert.deepEqual(
-        blocking.map((criterion) => criterion.text),
-        [],
-        `${scope.phase} ${scope.role} ships a blocking criterion; every existing project would `
-        + "meet it for the first time mid-pipeline, and the only exit is a drawer nobody has opened",
+        blocking.map((criterion) => criterion.criterionKey),
+        rubric.criteria
+          .map((criterion) => criterion.criterionKey)
+          .filter((key) => TIER1_CRITERION_KEYS.has(key)),
+        `${scope.phase} ${scope.role} ships a blocking criterion outside the tier-1 registry; `
+        + "every existing project would meet it for the first time mid-pipeline, and the only "
+        + "exit is a drawer nobody has opened",
       );
     }
   });
@@ -755,9 +778,15 @@ describe("Done records a blocking verdict without blocking anything", () => {
       .sort();
   }
 
-  it("control: the same fixture on Build really does write a blocking record", () => {
-    const rubric = judgedBlockingCriterion("Build", "RUN-BUILD-CONTROL");
-    const synced = syncRubricBlockers(CHANGE_ID, "Build");
+  it("control: the same fixture on Fix really does write a blocking record", () => {
+    // Fix rather than Build for the positive control: both route to the same
+    // `finding` channel, but Build/producer now force-merges two always-blocking
+    // tier-1 rows into the fixture's save (rubric-tiers.ts §2.1), whose
+    // not_assessed verdicts would open findings of their own. Fix/producer
+    // carries no tier-1 row, so the control stays a single criterion in, a
+    // single finding out.
+    const rubric = judgedBlockingCriterion("Fix", "RUN-FIX-CONTROL");
+    const synced = syncRubricBlockers(CHANGE_ID, "Fix");
 
     assert.equal(synced.channel, "finding");
     assert.deepEqual(
@@ -793,7 +822,7 @@ describe("Done records a blocking verdict without blocking anything", () => {
   });
 
   it("still records the verdict, and the drawer can still say the tick is inert", () => {
-    judgedBlockingCriterion("Done", "RUN-DONE-2");
+    const rubric = judgedBlockingCriterion("Done", "RUN-DONE-2");
     syncRubricBlockers(CHANGE_ID, "Done");
 
     const state = buildRubricPanelState({
@@ -803,9 +832,19 @@ describe("Done records a blocking verdict without blocking anything", () => {
     });
     const producer = state.roles.find((role) => role.role === "producer")!;
 
-    assert.equal(producer.verdicts.length, 1, "the judgment is kept, not discarded");
-    assert.equal(producer.verdicts[0]!.verdict, "no");
-    assert.equal(producer.verdicts[0]!.blocking, true, "and it is shown as a blocking one");
+    // Two rows, not one, since 2026-07-21: Done/producer saves force-merge the
+    // tier-1 delivery clause (rubric-tiers.ts §2.1), so the fixture's rubric is
+    // [tier-1, user criterion] and the unanswered tier-1 row is recorded
+    // not_assessed. The behaviour under test -- the user's blocking `no` is
+    // kept and shown while the channel stays "none" -- is unchanged.
+    assert.equal(
+      producer.verdicts.length,
+      rubric.criteria.length,
+      "every criterion's judgment is kept, not discarded",
+    );
+    const judged = producer.verdicts.find((entry) => entry.verdict === "no");
+    assert.ok(judged, "the user's `no` is kept, not discarded");
+    assert.equal(judged.blocking, true, "and it is shown as a blocking one");
     assert.equal(
       rubricRoleAnsweredBy("Done", "producer"),
       "delivery",

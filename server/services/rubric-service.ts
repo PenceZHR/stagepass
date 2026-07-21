@@ -14,6 +14,7 @@ import {
 } from "./rubric-assessment";
 import { factoryCriteria, factoryRubricScopes } from "./rubric-defaults";
 import { parseRubricLineProtocol } from "./rubric-line-protocol";
+import { TIER1_CRITERION_KEYS, tier1CriteriaForScope } from "./rubric-tiers";
 import { withCurrentExecutionFenceWrite } from "./execution-fence-service";
 import { withSqliteWriteRetry } from "../db/write-boundary";
 
@@ -213,6 +214,16 @@ export function listRubricVersions(scope: RubricScope): RubricVersionRecord[] {
 function resolveCriterionKeys(
   previousVersions: readonly RubricVersionRecord[],
   incoming: SaveRubricVersionInput["criteria"],
+  /**
+   * Keys no incoming row may resolve to, whatever rule matches. Tier-1 keys are
+   * passed here: their rows are pinned by mergeTier1Criteria before this runs,
+   * so a user row reaching one -- by carrying the key (rule 1) or by matching
+   * the text of a historical version where the key sat next to since-corrected
+   * wording (rule 2) -- would collide with the pinned row or, worse, hand a
+   * user-authored criterion tier-1 identity. Reserved keys fall through to the
+   * next rule, ending at rule 3's fresh mint.
+   */
+  reservedKeys: ReadonlySet<string> = new Set(),
 ): string[] {
   const knownKeys = new Set<string>();
   for (const version of previousVersions) {
@@ -237,7 +248,7 @@ function resolveCriterionKeys(
 
   const used = new Set<string>();
   const take = (key: string | undefined | null): string | null => {
-    if (!key || used.has(key)) return null;
+    if (!key || used.has(key) || reservedKeys.has(key)) return null;
     used.add(key);
     return key;
   };
@@ -259,6 +270,41 @@ function resolveCriterionKeys(
 }
 
 /**
+ * The rows every saved version of a tier-1 scope must open with (§2.1: 一级
+ * 不可删改、恒阻断、关不掉).
+ *
+ * Enforced HERE, at the single write choke point, so no caller -- the PUT
+ * route, the file sync, a future one -- can produce a version without them.
+ * Incoming rows that ARE the tier-1 row in disguise are absorbed rather than
+ * duplicated: a row carrying the tier-1 key (the editor round-tripping it) or
+ * matching its canonical text (a file edit that kept the line but lost the
+ * key) is dropped in favour of the pinned canonical row. Drifted text under a
+ * tier-1 key is corrected back to canon, and `blocking` is not consulted.
+ *
+ * Trusting these keys without a prior version to check against is the same
+ * argument ensureFactoryRubrics makes: they come from a code constant no
+ * request can reach, so there is no caller-supplied identity to hijack.
+ *
+ * The empty save -- the route's documented way of saying "this phase does no
+ * rubric judging" -- still yields the tier-1 rows on these scopes. That is not
+ * an oversight; "关不掉" is the design's exact word for it.
+ */
+function mergeTier1Criteria(input: SaveRubricVersionInput): {
+  tier1: Array<{ criterionKey: string; text: string }>;
+  rest: SaveRubricVersionInput["criteria"];
+} {
+  const tier1 = tier1CriteriaForScope(input.phase, input.role);
+  if (tier1.length === 0) return { tier1: [], rest: input.criteria };
+  const canonicalTexts = new Set(tier1.map((criterion) => criterion.text));
+  const rest = input.criteria.filter(
+    (criterion) =>
+      !TIER1_CRITERION_KEYS.has(criterion.criterionKey ?? "")
+      && !canonicalTexts.has(criterion.text.trim()),
+  );
+  return { tier1, rest };
+}
+
+/**
  * Appends a new version of a rubric and makes it current.
  *
  * The demotion of the previous current row must land BEFORE the insert:
@@ -273,6 +319,7 @@ export function saveRubricVersion(input: SaveRubricVersionInput): RubricVersionR
       throw new RubricError("rubric_criterion_empty", "a rubric criterion cannot be empty");
     }
   }
+  const { tier1, rest } = mergeTier1Criteria(input);
 
   const rubricId = withSqliteWriteRetry("rubric.saveRubricVersion", () =>
     db.transaction((tx) => {
@@ -286,7 +333,11 @@ export function saveRubricVersion(input: SaveRubricVersionInput): RubricVersionR
       // through the module-level `db`, which is the same better-sqlite3
       // connection this transaction is open on, so these reads see the
       // transaction's own state.
-      const criterionKeys = resolveCriterionKeys(existing.map(toRecord), input.criteria);
+      const criterionKeys = resolveCriterionKeys(
+        existing.map(toRecord),
+        rest,
+        TIER1_CRITERION_KEYS,
+      );
 
       tx.update(rubrics)
         .set({ isCurrent: 0 })
@@ -306,17 +357,33 @@ export function saveRubricVersion(input: SaveRubricVersionInput): RubricVersionR
         })
         .run();
 
-      input.criteria.forEach((criterion, ordinal) => {
+      // Tier-1 first, in factory order: their position is part of the
+      // read-only presentation (the file serializer puts the 一级 section at
+      // the top), and a stable ordinal keeps the canonical serialization
+      // byte-identical across versions that only edited user rows.
+      const rows: Array<{ criterionKey: string; text: string; blocking: 0 | 1 }> = [
+        ...tier1.map((criterion) => ({
+          criterionKey: criterion.criterionKey,
+          text: criterion.text,
+          blocking: 1 as const,
+        })),
+        ...rest.map((criterion, index) => ({
+          criterionKey: criterionKeys[index]!,
+          text: criterion.text.trim(),
+          // Absent means blocking. A criterion someone wrote down is assumed
+          // to matter until they say otherwise.
+          blocking: criterion.blocking === false ? (0 as const) : (1 as const),
+        })),
+      ];
+      rows.forEach((row, ordinal) => {
         tx.insert(rubricCriteria)
           .values({
             id: `RBC-${randomUUID()}`,
             rubricId: id,
-            criterionKey: criterionKeys[ordinal]!,
+            criterionKey: row.criterionKey,
             ordinal,
-            text: criterion.text.trim(),
-            // Absent means blocking. A criterion someone wrote down is assumed
-            // to matter until they say otherwise.
-            blocking: criterion.blocking === false ? 0 : 1,
+            text: row.text,
+            blocking: row.blocking,
             createdAt: now,
           })
           .run();
@@ -415,7 +482,12 @@ export function ensureFactoryRubrics(projectId: string): Array<{ phase: RubricPh
                 // arrival would stall every existing project against wording
                 // nobody has read, and the only exit is a drawer most users have
                 // not opened. See rubric-defaults.ts for the full argument.
-                blocking: 0,
+                //
+                // Tier-1 keys are the deliberate exception (§2.1 恒阻断): their
+                // whole point is that no one gets to opt out, and the "wording
+                // nobody has read" objection is answered by their wording being
+                // a promotion of these same factory lines, not new text.
+                blocking: TIER1_CRITERION_KEYS.has(criterion.criterionKey) ? 1 : 0,
                 createdAt: now,
               })
               .run();

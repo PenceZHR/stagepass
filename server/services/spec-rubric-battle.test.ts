@@ -355,20 +355,25 @@ afterEach(() => {
 
 describe("Spec battle rubric wiring", () => {
   it("records the red producer rubric against this run and round", async () => {
+    // Spec/producer saves force-merge the always-blocking tier-1 row on top
+    // (rubric-tiers.ts §2.1, 关不掉), so this rubric is THREE criteria:
+    // [tier-1, the two saved below]. Red answers the tier-1 row `yes` (c1) so
+    // the user rows' verdicts stay the thing under test.
     const producer = saveSpecRubric("producer", [
       { text: "Every requirement has an acceptance criterion" },
       { text: "No requirement contradicts the PRD" },
     ]);
+    assert.equal(producer.criteria.length, 3, "tier-1 row + the two saved above");
     const { prompts } = installEngine({
-      spec: [RED_LINES, ...rubricLines(producer, ["yes", "no"])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes", "yes", "no"])].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
     await runSpec(CHANGE_ID, makeJobContext("spec-producer"));
 
     const stored = assessmentsFor(producer);
-    assert.equal(stored.length, 2, "one row per criterion");
-    assert.deepEqual(verdictByCriterion(producer), { c1: "yes", c2: "no" });
+    assert.equal(stored.length, 3, "one row per criterion");
+    assert.deepEqual(verdictByCriterion(producer), { c1: "yes", c2: "yes", c3: "no" });
     const round = currentRound();
     assert.ok(round);
     for (const row of stored) {
@@ -432,8 +437,14 @@ describe("Spec battle rubric wiring", () => {
       { text: "Every prior P0 gap was rechecked" },
       { text: "New gaps cite concrete evidence" },
     ]);
+    // Spec/producer can no longer be rubric-free: an empty save still leaves
+    // the always-blocking tier-1 row (rubric-tiers.ts §2.1), and without this
+    // save runSpec would seed the factory producer rubric instead. Red answers
+    // that one row `yes`, so the only derived gap below is the critic's --
+    // which is what this case is about.
+    const producer = saveSpecRubric("producer", []);
     const { prompts } = installEngine({
-      spec: RED_LINES,
+      spec: [RED_LINES, ...rubricLines(producer, ["yes"])].join("\n"),
       spec_critic: [BLUE_LINES, ...rubricLines(critic, ["no", "yes"])].join("\n"),
     });
 
@@ -519,19 +530,21 @@ describe("Spec battle rubric wiring", () => {
   });
 
   it("records an unanswered criterion as not_assessed rather than as a pass", async () => {
-    // §9's "红方漏答被当成通过" case.
+    // §9's "红方漏答被当成通过" case. c1 is the force-merged tier-1 row
+    // (rubric-tiers.ts §2.1), answered `yes` so the silence under test stays
+    // the user's own criterion (c3).
     const producer = saveSpecRubric("producer", [
       { text: "Answered criterion" },
       { text: "Criterion the model stays silent about" },
     ]);
     installEngine({
-      spec: [RED_LINES, ...rubricLines(producer, ["yes", null])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes", "yes", null])].join("\n"),
       spec_critic: BLUE_LINES,
     });
 
     await runSpec(CHANGE_ID, makeJobContext("spec-silent"));
 
-    assert.deepEqual(verdictByCriterion(producer), { c1: "yes", c2: "not_assessed" });
+    assert.deepEqual(verdictByCriterion(producer), { c1: "yes", c2: "yes", c3: "not_assessed" });
     assert.equal(
       assessmentsFor(producer).find((row) => row.verdict === "not_assessed")?.evidence,
       null,
@@ -556,29 +569,38 @@ describe("Spec battle rubric wiring", () => {
     assert.equal(assessmentsFor(producer).length, 0);
   });
 
-  it("leaves the round untouched when no rubric is configured", async () => {
-    // CHANGED in batch 6: the empty state now has to be asked for.
-    //
-    // The behaviour under test is §4.5's -- "an empty rubric means this phase
-    // does no rubric judging, and the stage behaves exactly as it did before
-    // rubrics existed" -- and that is unchanged. What changed is how a project
-    // REACHES it: batch 6 seeds factory criteria for Spec, so "nobody configured
-    // one" no longer implies "there is none". Saving an empty list is the
-    // documented way to turn a phase's rubric off, and is exactly what deleting
-    // every row in the drawer does.
-    saveSpecRubric("producer", []);
+  it("an emptied rubric turns critic and verdict off; Spec producer keeps its tier-1 row", async () => {
+    // CHANGED in batch 6 (the empty state has to be asked for), and AGAIN on
+    // 2026-07-21. §4.5's "an empty rubric means this role does no rubric
+    // judging" still holds for critic and verdict, but an empty save on
+    // Spec/producer now deliberately leaves the always-blocking tier-1 row
+    // behind (rubric-tiers.ts §2.1, 关不掉) -- there is no reachable state in
+    // which red runs without a rubric anymore, so the old "no rubric at all"
+    // premise cannot be staged. What this case pins now: the emptied critic
+    // and verdict roles really are off (no prompt section, no verdict call, no
+    // rows), while red's prompt carries exactly the tier-1 criterion and its
+    // verdict is the only judgment recorded.
+    const producer = saveSpecRubric("producer", []);
+    assert.equal(producer.criteria.length, 1, "the empty save leaves the tier-1 row (关不掉)");
     saveSpecRubric("critic", []);
     saveSpecRubric("verdict", []);
-    const { prompts } = installEngine({ spec: RED_LINES, spec_critic: BLUE_LINES });
+    const { prompts } = installEngine({
+      spec: [RED_LINES, ...rubricLines(producer, ["yes"])].join("\n"),
+      spec_critic: BLUE_LINES,
+    });
 
     await runSpec(CHANGE_ID, makeJobContext("spec-no-rubric"));
 
     assert.equal(currentRound()?.status, "report_ready");
-    assert.deepEqual(listRubricAssessments({ runId: specRunId() }), []);
+    assert.deepEqual(
+      listRubricAssessments({ runId: specRunId() }).map((row) => [row.criterionId, row.verdict]),
+      [[producer.criteria[0]!.id, "yes"]],
+      "the tier-1 judgment is the only rubric row this round leaves behind",
+    );
     // Matched on the rubric section's own wire-format line rather than the bare
     // word: this fixture's change id contains "RUBRIC".
     const rubricSection = /RUBRIC: criterionId \| yes 或 no \| evidence/;
-    assert.doesNotMatch(prompts.get("spec") ?? "", rubricSection);
+    assert.match(prompts.get("spec") ?? "", rubricSection);
     assert.doesNotMatch(prompts.get("spec_critic") ?? "", rubricSection);
     assert.equal(prompts.has("spec_verdict"), false, "no verdict rubric means no verdict call");
   });
@@ -628,12 +650,18 @@ describe("rubric text stays out of stamped hashes", () => {
     // rule that a non-blocking `no` is recorded without blocking, end to end.
     // (An OPEN derived gap's own hash stability across an edit is covered
     // separately in rubric-gate-service.test.ts.)
+    //
+    // 2026-07-21: the producer rubric's first row is now the force-merged,
+    // always-blocking tier-1 criterion (rubric-tiers.ts §2.1). Red answers it
+    // `yes` -- a `no` there would derive a real P0 gap and turn the approve
+    // below into `gate_blocked`, and this test would stop measuring the hash.
+    // The deliberate non-blocking `no` stays on the user's own criterion.
     const producer = saveSpecRubric("producer", [{ text: "Original wording", blocking: false }]);
     const verdict = saveSpecRubric("verdict", [
       { text: "Original verdict wording", blocking: false },
     ]);
     installEngine({
-      spec: [RED_LINES, ...rubricLines(producer, ["no"])].join("\n"),
+      spec: [RED_LINES, ...rubricLines(producer, ["yes", "no"])].join("\n"),
       spec_critic: BLUE_LINES,
       spec_verdict: rubricLines(verdict, ["yes"]).join("\n"),
     });

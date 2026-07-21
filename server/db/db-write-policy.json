@@ -1914,6 +1914,11 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner; the migration cases additionally own a local in-memory fixture"
     },
     {
+      "file": "server/services/rubric-file-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/rubric-gate-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
@@ -1930,6 +1935,11 @@
     },
     {
       "file": "server/services/rubric-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/rubric-tiers.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },

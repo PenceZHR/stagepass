@@ -23,10 +23,16 @@ import { getCurrentRubric, listRubricVersions, saveRubricVersion } from "./rubri
 const PROJECT_ID = "PRJ-RUBRIC-KEY-001";
 const CHANGE_ID = "CHG-RUBRIC-KEY-001";
 
+// TechSpec, deliberately: key identity (§5.1) is a tier-agnostic mechanism,
+// and TechSpec/producer carries no tier-1 row. Spec/producer saves now
+// force-merge the tier-1 row first (rubric-tiers.ts §2.1), which would shift
+// every index and ordinal these cases assert on for reasons unrelated to key
+// continuity; the tier-1 interaction with key resolution (reservedKeys) is
+// pinned in rubric-tiers.test.ts instead.
 const SCOPE = {
   projectId: PROJECT_ID,
   changeId: null,
-  phase: "Spec" as const,
+  phase: "TechSpec" as const,
   role: "producer" as const,
 };
 

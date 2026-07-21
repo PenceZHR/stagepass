@@ -26,10 +26,16 @@ import {
 const PROJECT_ID = "PRJ-RUBRIC-SERVICE-001";
 const CHANGE_ID = "CHG-RUBRIC-SERVICE-001";
 
+// TechSpec, deliberately: this file pins the tier-agnostic persistence
+// mechanics (versioned writes, key resolution, assessment rows, deletion), and
+// TechSpec/producer carries no tier-1 row. Spec/Build/Done producer saves now
+// force-merge the tier-1 rows (rubric-tiers.ts §2.1), which would change every
+// count and ordinal below for reasons this file is not about; that behaviour
+// is pinned in rubric-tiers.test.ts instead.
 const SCOPE = {
   projectId: PROJECT_ID,
   changeId: null,
-  phase: "Spec" as const,
+  phase: "TechSpec" as const,
   role: "producer" as const,
 };
 

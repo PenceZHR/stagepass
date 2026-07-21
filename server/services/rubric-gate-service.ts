@@ -12,6 +12,7 @@ import {
   listRubricAssessmentsForScope,
   selectLatestAssessmentBatch,
 } from "./rubric-service";
+import { TIER1_CRITERION_KEYS } from "./rubric-tiers";
 
 /**
  * Turning rubric verdicts into whatever blocking form a phase already has
@@ -248,7 +249,15 @@ export function blockingCriterionKeysInForce(scope: RubricGateScope): Set<string
   for (const role of RUBRIC_ROLES) {
     const effective = getEffectiveRubric({ ...scope, role });
     for (const criterion of effective?.rubric.criteria ?? []) {
-      if (criterion.blocking) keys.add(criterion.criterionKey);
+      // A tier-1 key is in force whenever it is present, whatever the stored
+      // flag says (§2.1 恒阻断). saveRubricVersion already coerces the flag to
+      // 1 on every new version, so this only decides for rows written before
+      // tier-1 existed -- but that is exactly the version an existing project
+      // is still on, and reading the stale flag there would give tier-1 a
+      // silent opt-out for as long as nobody happens to save.
+      if (criterion.blocking || TIER1_CRITERION_KEYS.has(criterion.criterionKey)) {
+        keys.add(criterion.criterionKey);
+      }
     }
   }
   return keys;
