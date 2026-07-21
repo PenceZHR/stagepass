@@ -4,7 +4,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { PhaseStageShell } from "./phase-stage-shell";
-import { RubricPanel, rubricScopeLabel, verdictTone, verdictToneClass } from "./rubric-panel";
+import {
+  RubricEditor,
+  RubricPanel,
+  rubricScopeLabel,
+  verdictTone,
+  verdictToneClass,
+} from "./rubric-panel";
 import { reviewPhaseToRubricPhase, REVIEW_PHASES } from "./change-phase-map";
 import type {
   RubricPanelState,
@@ -28,13 +34,14 @@ function rolePanel(overrides: Partial<RubricRolePanel> = {}): RubricRolePanel {
     source: "project",
     hasChangeOverride: false,
     criteria: [
-      { criterionKey: "RBK-alpha", text: "Every requirement has an acceptance criterion", blocking: true },
-      { criterionKey: "RBK-beta", text: "Wording is consistent", blocking: false },
+      { criterionKey: "RBK-alpha", text: "Every requirement has an acceptance criterion", blocking: true, tier: 3 },
+      { criterionKey: "RBK-beta", text: "Wording is consistent", blocking: false, tier: 3 },
     ],
     verdicts: [],
     judgedVersion: null,
     judgedByOutdatedVersion: false,
     blocked: false,
+    answeredBy: "spec",
     ...overrides,
   };
 }
@@ -45,6 +52,8 @@ function panelState(overrides: Partial<RubricPanelState> = {}): RubricPanelState
     projectId: "PRJ-1",
     changeId: "CHG-1",
     roundId: "BR-1",
+    blockingChannel: "requirement_gap",
+    tier1Deterministic: [],
     roles: [
       rolePanel(),
       rolePanel({ role: "critic", rubricId: "RUB-2" }),
@@ -341,5 +350,188 @@ describe("the drawer is on every phase panel (§7.1)", () => {
     const markup = render(panelState({ phase: "Build" }));
     assert.match(markup, /评判标准 · Build/);
     assert.match(markup, /data-rubric-phase="Build"/);
+  });
+});
+
+function tieredCriteria() {
+  return [
+    {
+      criterionKey: "RBK-factory-Spec-producer-03",
+      text: "我没有在 delta 里引入 PRD 从未提过的新需求。",
+      blocking: true,
+      tier: 1 as const,
+    },
+    {
+      criterionKey: "RBK-factory-Spec-producer-01",
+      text: "我列出的每一条 PRD delta 都指明了它改的是 PRD 的哪一节。",
+      blocking: false,
+      tier: 2 as const,
+    },
+    { criterionKey: "RBK-user-1", text: "User-added standard", blocking: true, tier: 3 as const },
+  ];
+}
+
+describe("rubric drawer: tiers in the read view (design §2.1)", () => {
+  it("badges each criterion with its tier, tier-1 as 恒阻断", () => {
+    const markup = render(
+      panelState({ roles: [rolePanel({ criteria: tieredCriteria() })] }),
+    );
+    assert.match(markup, /data-rubric-tier="1"/);
+    assert.match(markup, /一级 · 恒阻断/);
+    assert.match(markup, /data-rubric-tier="2"/);
+    assert.match(markup, /出厂/);
+    assert.match(markup, /data-rubric-tier="3"/);
+    assert.match(markup, /自加/);
+  });
+});
+
+describe("rubric drawer: the deterministic tier-1 checks (design §2.1)", () => {
+  const items = [
+    {
+      id: "stage-write-scope",
+      title: "本阶段只允许写这些文件",
+      detail: "落在 .ship/changes/**/prd-delta.md 之外的改动一律阻断",
+      enforcedBy: "stage-guard-service · validatePlannedChanges（pipeline-spec-stage-service）",
+    },
+  ];
+
+  it("renders them read-only, naming the real execution point", () => {
+    const markup = render(panelState({ tier1Deterministic: items }));
+    assert.match(markup, /data-rubric-tier1-deterministic/);
+    assert.match(markup, /data-rubric-deterministic-id="stage-write-scope"/);
+    assert.match(markup, /由代码强制执行，此处仅呈现/);
+    assert.match(markup, /本阶段只允许写这些文件/);
+    assert.match(
+      markup,
+      /执行点：stage-guard-service · validatePlannedChanges/,
+      "enforcedBy has to be on screen: a guard with no named execution point reads as prose",
+    );
+    // Read-only means read-only: the section ships no toggle of any kind. The
+    // whole view-mode render has none either (the editor is closed), so the
+    // stronger assertion costs nothing and catches a toggle leaking anywhere.
+    assert.doesNotMatch(markup, /data-rubric-blocking-toggle/);
+  });
+
+  it("renders nothing for a phase with no deterministic guards", () => {
+    assert.doesNotMatch(
+      render(panelState({ tier1Deterministic: [] })),
+      /data-rubric-tier1-deterministic/,
+      "an empty section would imply Merge has guards it does not have",
+    );
+  });
+});
+
+describe("rubric editor: tier-1 rows are locked, tier-2/3 rows are not", () => {
+  const editorProps = {
+    draftScope: "project" as const,
+    saving: false,
+    error: "",
+    hasChangeOverride: false,
+    onChangeText: () => undefined,
+    onToggleBlocking: () => undefined,
+    onRemove: () => undefined,
+    onMove: () => undefined,
+    onAdd: () => undefined,
+    onScopeChange: () => undefined,
+    onCancel: () => undefined,
+    onSave: () => undefined,
+  };
+  const draftFromCriteria = () =>
+    tieredCriteria().map((criterion) => ({
+      criterionKey: criterion.criterionKey,
+      text: criterion.text,
+      blocking: criterion.blocking,
+      tier: criterion.tier,
+    }));
+  const renderEditor = (draft = draftFromCriteria()) =>
+    renderToStaticMarkup(createElement(RubricEditor, { ...editorProps, draft }));
+  const rowOf = (markup: string, marker: string): string => {
+    const rows = markup.split("<li").filter((chunk) => chunk.includes(marker));
+    assert.equal(rows.length, 1, `expected exactly one row containing ${marker}`);
+    return rows[0]!;
+  };
+
+  it("renders the tier-1 row read-only: no delete, no move, blocking locked on", () => {
+    const markup = renderEditor();
+    const row = rowOf(markup, 'data-rubric-tier1-locked');
+    assert.match(row, /readonly/i, "the tier-1 text input is read-only");
+    assert.match(row, /data-rubric-tier1-blocking-lock/);
+    assert.match(row, /恒阻断/);
+    assert.match(row, /一级条款恒阻断，不可撤下/);
+    assert.doesNotMatch(row, /data-rubric-remove/, "no delete button on a tier-1 row");
+    assert.doesNotMatch(row, /data-rubric-blocking-toggle/, "no blocking toggle on a tier-1 row");
+    assert.doesNotMatch(row, /data-rubric-move-up/, "no reordering on a tier-1 row");
+    assert.match(markup, /data-rubric-tier1-edit-note/);
+  });
+
+  it("keeps tier-2 rows fully editable -- the lock must not creep downward", () => {
+    // THE over-locking canary: lock tier-2 rows too and this goes red.
+    const markup = renderEditor();
+    const row = rowOf(markup, 'data-rubric-criterion-key="RBK-factory-Spec-producer-01"');
+    assert.doesNotMatch(row, /readonly/i, "tier-2 text stays editable");
+    assert.match(row, /data-rubric-blocking-toggle/, "tier-2 blocking stays the user's choice");
+    assert.match(row, /data-rubric-remove/, "tier-2 stays deletable -- 删除即撤下 is the one exit");
+    assert.match(row, /出厂/, "tier-2 is visibly factory-authored");
+  });
+
+  it("keeps tier-3 rows fully editable and visibly user-authored", () => {
+    const markup = renderEditor();
+    const row = rowOf(markup, 'data-rubric-criterion-key="RBK-user-1"');
+    assert.doesNotMatch(row, /readonly/i);
+    assert.match(row, /data-rubric-blocking-toggle/);
+    assert.match(row, /data-rubric-remove/);
+    assert.match(row, /自加/, "tier-3 is visibly user-authored, distinct from 出厂");
+  });
+
+  it("disables moving an editable row up into the pinned tier-1 prefix", () => {
+    const markup = renderEditor();
+    const row = rowOf(markup, 'data-rubric-criterion-key="RBK-factory-Spec-producer-01"');
+    const moveUp = /data-rubric-move-up[^>]*/.exec(row) ?? /disabled[^>]*data-rubric-move-up/.exec(row);
+    assert.ok(moveUp, "the tier-2 row renders a move-up button");
+    assert.match(
+      row.slice(0, row.indexOf("data-rubric-move-up") + 40),
+      /disabled/,
+      "row 1 sits directly under the tier-1 prefix, so moving up is a no-op the server would undo",
+    );
+  });
+
+  it("shows no tier-1 note on a scope without tier-1 rows", () => {
+    const markup = renderEditor(
+      [{ criterionKey: "RBK-user-1", text: "Only mine", blocking: true, tier: 3 as const }],
+    );
+    assert.doesNotMatch(markup, /data-rubric-tier1-edit-note/);
+    assert.doesNotMatch(markup, /data-rubric-tier1-locked/);
+  });
+});
+
+describe("rubric drawer: Done's blocking story is told in both halves", () => {
+  it("says tier-2/3 verdicts only record, while tier-1 is enforced by the delivery gate", () => {
+    const markup = render(
+      panelState({
+        phase: "Done",
+        blockingChannel: "none",
+        roles: [rolePanel({ answeredBy: "delivery" })],
+      }),
+    );
+    assert.match(markup, /data-rubric-inert-notice/);
+    assert.match(markup, /二级\/三级条款的判定仅记录、不拦截/);
+    assert.match(markup, /一级条款另由交付完成门在 delivery 阶段强制/);
+  });
+
+  it("keeps the generic wording on other channel-less phases", () => {
+    const markup = render(
+      panelState({
+        phase: "Retro",
+        blockingChannel: "none",
+        roles: [rolePanel({ answeredBy: "retro" })],
+      }),
+    );
+    assert.match(markup, /data-rubric-inert-notice/);
+    assert.match(markup, /勾选「阻断」不会拦住任何东西/);
+    assert.doesNotMatch(
+      markup,
+      /交付完成门/,
+      "the delivery-gate sentence is Done's fact, not a blanket claim",
+    );
   });
 });

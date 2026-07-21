@@ -124,9 +124,14 @@ describe("rubrics route", () => {
     assert.match(((await response.json()) as { error: string }).error, /Unknown rubric phase/);
   });
 
+  // The generic round-trip tests below moved from Spec producer to TechSpec
+  // producer when Spec producer became a tier-1 scope: there, every save gains
+  // the pinned RBK-factory-Spec-producer-03 row, so "two criteria in, two rows
+  // out" stopped being true of that scope specifically -- not of the route.
+  // TechSpec has no tier-1 key, so the counts pin what they always pinned.
   it("saves a project-level rubric and reads it back as the one in force", async () => {
     const saved = await put({
-      phase: "Spec",
+      phase: "TechSpec",
       role: "producer",
       scope: "project",
       criteria: [
@@ -136,7 +141,7 @@ describe("rubrics route", () => {
     });
     assert.equal(saved.status, 200);
 
-    const state = (await (await get("Spec")).json()) as RubricPanelState;
+    const state = (await (await get("TechSpec")).json()) as RubricPanelState;
     const producer = state.roles.find((role) => role.role === "producer")!;
     assert.equal(producer.source, "project");
     assert.equal(producer.version, 1);
@@ -150,30 +155,30 @@ describe("rubrics route", () => {
     );
 
     // The project default applies to a change that has never been touched.
-    const other = (await (await get("Spec", OTHER_CHANGE_ID)).json()) as RubricPanelState;
+    const other = (await (await get("TechSpec", OTHER_CHANGE_ID)).json()) as RubricPanelState;
     assert.equal(other.roles.find((role) => role.role === "producer")!.source, "project");
   });
 
   it("writes a change-level override only when scope says so", async () => {
     await put({
-      phase: "Spec",
+      phase: "TechSpec",
       role: "producer",
       scope: "project",
       criteria: [{ text: "Project default" }],
     });
     await put({
-      phase: "Spec",
+      phase: "TechSpec",
       role: "producer",
       scope: "change",
       criteria: [{ text: "Change override" }],
     });
 
-    const mine = (await (await get("Spec")).json()) as RubricPanelState;
+    const mine = (await (await get("TechSpec")).json()) as RubricPanelState;
     const minePanel = mine.roles.find((role) => role.role === "producer")!;
     assert.equal(minePanel.source, "change");
     assert.equal(minePanel.criteria[0]!.text, "Change override");
 
-    const other = (await (await get("Spec", OTHER_CHANGE_ID)).json()) as RubricPanelState;
+    const other = (await (await get("TechSpec", OTHER_CHANGE_ID)).json()) as RubricPanelState;
     assert.equal(
       other.roles.find((role) => role.role === "producer")!.criteria[0]!.text,
       "Project default",
@@ -183,23 +188,23 @@ describe("rubrics route", () => {
 
   it("round-trips criterionKey so a rewording keeps the criterion's identity", async () => {
     await put({
-      phase: "Spec",
+      phase: "TechSpec",
       role: "producer",
       scope: "project",
       criteria: [{ text: "Evrey requirement has an acceptance criterion" }],
     });
-    const before = (await (await get("Spec")).json()) as RubricPanelState;
+    const before = (await (await get("TechSpec")).json()) as RubricPanelState;
     const key = before.roles.find((role) => role.role === "producer")!.criteria[0]!.criterionKey;
 
     // Exactly what the drawer sends: the key it read, with edited text.
     await put({
-      phase: "Spec",
+      phase: "TechSpec",
       role: "producer",
       scope: "project",
       criteria: [{ criterionKey: key, text: "Every requirement has an acceptance criterion" }],
     });
 
-    const after = (await (await get("Spec")).json()) as RubricPanelState;
+    const after = (await (await get("TechSpec")).json()) as RubricPanelState;
     const panel = after.roles.find((role) => role.role === "producer")!;
     assert.equal(panel.version, 2);
     assert.equal(panel.criteria[0]!.text, "Every requirement has an acceptance criterion");
@@ -211,16 +216,16 @@ describe("rubrics route", () => {
   });
 
   it("accepts an empty rubric as 'this phase does no rubric judging'", async () => {
-    await put({ phase: "Spec", role: "producer", scope: "project", criteria: [{ text: "Alpha" }] });
+    await put({ phase: "TechSpec", role: "producer", scope: "project", criteria: [{ text: "Alpha" }] });
     const cleared = await put({
-      phase: "Spec",
+      phase: "TechSpec",
       role: "producer",
       scope: "project",
       criteria: [],
     });
     assert.equal(cleared.status, 200);
 
-    const state = (await (await get("Spec")).json()) as RubricPanelState;
+    const state = (await (await get("TechSpec")).json()) as RubricPanelState;
     const panel = state.roles.find((role) => role.role === "producer")!;
     assert.deepEqual(panel.criteria, []);
     assert.equal(panel.version, 2, "clearing appends a version rather than deleting history");
@@ -250,6 +255,75 @@ describe("rubrics route", () => {
       db.select().from(rubrics).where(eq(rubrics.projectId, PROJECT_ID)).all(),
       [],
       "a rejected payload must write nothing at all",
+    );
+  });
+
+  it("sends tier and the deterministic tier-1 checks over the wire", async () => {
+    await put({
+      phase: "Spec",
+      role: "producer",
+      scope: "project",
+      criteria: [{ text: "A user standard" }],
+    });
+
+    const state = (await (await get("Spec")).json()) as RubricPanelState;
+    const producer = state.roles.find((role) => role.role === "producer")!;
+    assert.deepEqual(
+      producer.criteria.map((criterion) => criterion.tier),
+      [1, 3],
+      "the injected tier-1 row comes first; the user row is tier 3",
+    );
+
+    assert.ok(state.tier1Deterministic.length > 0, "Spec ships its code-enforced guards");
+    for (const item of state.tier1Deterministic) {
+      assert.ok(item.id && item.title && item.detail && item.enforcedBy);
+    }
+  });
+
+  it("keeps the tier-1 row canonical against a payload that edits, unlocks or drops it", async () => {
+    await put({
+      phase: "Spec",
+      role: "producer",
+      scope: "project",
+      criteria: [{ text: "A user standard" }],
+    });
+    const v1 = (await (await get("Spec")).json()) as RubricPanelState;
+    const tier1 = v1.roles.find((role) => role.role === "producer")!.criteria[0]!;
+    assert.equal(tier1.tier, 1);
+
+    // The three tamper shapes in one payload: the tier-1 key with drifted text
+    // and blocking:false, plus NOT including it a second time (i.e. also the
+    // "delete" case, since absence is how the editor expresses removal).
+    await put({
+      phase: "Spec",
+      role: "producer",
+      scope: "project",
+      criteria: [
+        { criterionKey: tier1.criterionKey, text: "看起来一样其实改过了", blocking: false },
+        { text: "A user standard" },
+      ],
+    });
+
+    const v2 = (await (await get("Spec")).json()) as RubricPanelState;
+    const panel = v2.roles.find((role) => role.role === "producer")!;
+    assert.equal(panel.version, 2);
+    assert.deepEqual(
+      panel.criteria.map((criterion) => [criterion.criterionKey, criterion.text, criterion.blocking]),
+      [
+        [tier1.criterionKey, tier1.text, true],
+        [panel.criteria[1]!.criterionKey, "A user standard", true],
+      ],
+      "drifted text is corrected back to canon, blocking stays forced, nothing is duplicated",
+    );
+
+    // The empty save -- the documented "no rubric judging" state -- still
+    // cannot shed the tier-1 row (§2.1 关不掉).
+    await put({ phase: "Spec", role: "producer", scope: "project", criteria: [] });
+    const v3 = (await (await get("Spec")).json()) as RubricPanelState;
+    assert.deepEqual(
+      v3.roles.find((role) => role.role === "producer")!.criteria.map((c) => [c.tier, c.blocking]),
+      [[1, true]],
+      "an empty save keeps exactly the tier-1 row; on a non-tier-1 scope it keeps nothing",
     );
   });
 

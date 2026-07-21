@@ -1,3 +1,7 @@
+import { eq } from "drizzle-orm";
+
+import { db } from "../db";
+import { projects } from "../db/schema";
 import {
   RUBRIC_ROLES,
   rubricOutcome,
@@ -10,6 +14,11 @@ import { rubricRoleAnsweredBy } from "./rubric-defaults";
 import { rubricBlockingChannel, type RubricBlockingChannel } from "./rubric-gate-adapters";
 import { blockingCriterionKeysInForce } from "./rubric-gate-service";
 import type { RubricVerdict } from "./rubric-line-protocol";
+import {
+  tier1DeterministicChecks,
+  type Tier1DeterministicItem,
+} from "./rubric-tier1-deterministic";
+import { tierOfCriterionKey, type RubricTier } from "./rubric-tiers";
 import {
   getCurrentRubric,
   getEffectiveRubric,
@@ -38,6 +47,15 @@ export interface RubricPanelCriterion {
   criterionKey: string;
   text: string;
   blocking: boolean;
+  /**
+   * Derived server-side from the criterionKey (rubric-tiers.ts), never stored
+   * and never trusted from a client: tier decides which editing affordances the
+   * UI may offer, and the client re-deriving it would give a spoofed payload a
+   * second place to lie. The REAL guard is saveRubricVersion's tier-1 merge --
+   * this field only lets the UI be honest about it up front instead of letting
+   * the user edit a row the server will silently overwrite.
+   */
+  tier: RubricTier;
 }
 
 export interface RubricPanelVerdict {
@@ -105,6 +123,14 @@ export interface RubricPanelState {
    * must say rather than let the user infer from silence.
    */
   blockingChannel: RubricBlockingChannel;
+  /**
+   * 一级确定性条款（design §2.1 实施第 2 步）：the code-enforced checks that
+   * already guard this phase, projected read-only into the drawer. Derived
+   * fresh on every read from the same constants and files the enforcement
+   * points consume -- there is nothing to store, and storing a copy is how a
+   * display drifts from what is actually enforced.
+   */
+  tier1Deterministic: Tier1DeterministicItem[];
   roles: RubricRolePanel[];
 }
 
@@ -126,12 +152,23 @@ export function buildRubricPanelState(input: {
 }): RubricPanelState {
   const roundId = resolveAssessmentRoundId(input.changeId, input.phase);
   const roles = RUBRIC_ROLES.map((role) => buildRolePanel({ ...input, role, roundId }));
+  // The repoPath feeds only the deterministic projection (.ship/policy.json).
+  // A project row without one -- or a deleted checkout -- degrades to the
+  // explicit "策略文件缺失" item rather than an error: the drawer must still
+  // open on a project whose repo has gone away.
+  const repoPath =
+    db
+      .select({ repoPath: projects.repoPath })
+      .from(projects)
+      .where(eq(projects.id, input.projectId))
+      .get()?.repoPath ?? "";
   return {
     phase: input.phase,
     projectId: input.projectId,
     changeId: input.changeId,
     roundId,
     blockingChannel: rubricBlockingChannel(input.phase),
+    tier1Deterministic: tier1DeterministicChecks({ phase: input.phase, repoPath }),
     roles,
   };
 }
@@ -220,7 +257,14 @@ function buildRolePanel(input: {
     criteria: (effective?.rubric.criteria ?? []).map((criterion) => ({
       criterionKey: criterion.criterionKey,
       text: criterion.text,
-      blocking: criterion.blocking,
+      // The criteria list is "today's standard", so a tier-1 row reports the
+      // in-force truth even off a pre-tier version whose stored flag is still
+      // 0 -- same rule as blockingCriterionKeysInForce, and without it the
+      // drawer says 非阻断 next to a 恒阻断 badge while the gate enforces.
+      // The judged-snapshot rows above deliberately keep their historical
+      // flag: they describe what the verdict meant when it was made (§4.3.1).
+      blocking: criterion.blocking || tierOfCriterionKey(criterion.criterionKey) === 1,
+      tier: tierOfCriterionKey(criterion.criterionKey),
     })),
     verdicts,
     judgedVersion,

@@ -6,12 +6,15 @@ import {
   RUBRIC_ROLES,
   RUBRIC_ROLE_HINTS,
   RUBRIC_ROLE_LABELS,
+  RUBRIC_TIER_LABELS,
   type RubricBlockingChannel,
   type RubricPanelState,
   type RubricPhase,
   type RubricRole,
   type RubricRolePanel,
+  type RubricTier,
   type RubricVerdict,
+  type Tier1DeterministicItem,
 } from "./rubric-types";
 
 /**
@@ -42,6 +45,15 @@ interface DraftCriterion {
   criterionKey: string | null;
   text: string;
   blocking: boolean;
+  /**
+   * Carried from the server row (a new row is tier 3 by definition: the server
+   * mints it a runtime key). The UI locks tier-1 rows on this field, but the
+   * lock here is PRESENTATION -- saveRubricVersion re-pins tier-1 rows whatever
+   * the payload says. Locking in the editor keeps the user from typing an edit
+   * the server would silently discard, which is a worse experience than a
+   * visible lock.
+   */
+  tier: RubricTier;
 }
 
 type VerdictTone = "pass" | "block";
@@ -82,6 +94,7 @@ function toDraft(panel: RubricRolePanel): DraftCriterion[] {
     criterionKey: criterion.criterionKey,
     text: criterion.text,
     blocking: criterion.blocking,
+    tier: criterion.tier,
   }));
 }
 
@@ -158,6 +171,10 @@ export function RubricPanel({
           phase,
           role: panel.role,
           scope: draftScope,
+          // Tier-1 rows go back exactly as they came (the editor never let
+          // them change). The server would re-pin them anyway; sending them
+          // untouched keeps the payload an honest statement of intent instead
+          // of one the server has to correct.
           criteria: draft
             .filter((criterion) => criterion.text.trim().length > 0)
             .map((criterion) => ({
@@ -242,7 +259,8 @@ export function RubricPanel({
       </div>
 
       <p className="mt-2 text-xs text-muted-foreground">{RUBRIC_ROLE_HINTS[panel.role]}</p>
-      <RubricInertNotice blockingChannel={state.blockingChannel} panel={panel} />
+      <RubricInertNotice phase={phase} blockingChannel={state.blockingChannel} panel={panel} />
+      <RubricTier1DeterministicList items={state.tier1Deterministic} />
 
       <div role="tabpanel" data-rubric-role-panel={panel.role} className="mt-3 space-y-3">
         <RubricVerdictList panel={panel} roundId={state.roundId} />
@@ -266,7 +284,12 @@ export function RubricPanel({
             onRemove={(index) => setDraft((current) => current.filter((_row, i) => i !== index))}
             onMove={move}
             onAdd={() =>
-              setDraft((current) => [...current, { criterionKey: null, text: "", blocking: true }])
+              setDraft((current) => [
+                ...current,
+                // A hand-added row is tier 3 by definition: the server will
+                // mint it a runtime key, and runtime keys are what tier 3 IS.
+                { criterionKey: null, text: "", blocking: true, tier: 3 },
+              ])
             }
             onScopeChange={setDraftScope}
             onCancel={() => setEditingKey(null)}
@@ -296,9 +319,11 @@ export function RubricPanel({
  * mirror direction: UI offers it, backend cannot.
  */
 export function RubricInertNotice({
+  phase,
   blockingChannel,
   panel,
 }: {
+  phase: RubricPhase;
   blockingChannel: RubricBlockingChannel;
   panel: RubricRolePanel;
 }) {
@@ -307,7 +332,17 @@ export function RubricInertNotice({
     reasons.push("本阶段没有任何环节会回答这一栏的标准，写在这里不会产生判定");
   }
   if (blockingChannel === "none") {
-    reasons.push("本阶段没有可挂阻断项的关口，勾选「阻断」不会拦住任何东西");
+    // Done's `none` is HALF true and saying only half would lie in one
+    // direction or the other: the rubric channel really does stop nothing
+    // (tier 2/3 verdicts are recorded and that is all), but the tier-1 Done
+    // clause is enforced anyway -- by the delivery completion gate, outside
+    // this channel. Blanket wording either scares the user off tier 2/3
+    // ("nothing here matters") or lets them believe 阻断 works here.
+    reasons.push(
+      phase === "Done"
+        ? "Done 没有 rubric 阻断通道：二级/三级条款的判定仅记录、不拦截；一级条款另由交付完成门在 delivery 阶段强制，不经过这里"
+        : "本阶段没有可挂阻断项的关口，勾选「阻断」不会拦住任何东西",
+    );
   }
   if (reasons.length === 0) return null;
   return (
@@ -317,6 +352,59 @@ export function RubricInertNotice({
     >
       {reasons.join("；")}。
     </p>
+  );
+}
+
+/**
+ * 一级确定性条款（design §2.1）：the code checks that already guard this phase,
+ * shown read-only. No toggles, no editor entry -- these are enforced whether or
+ * not anyone looks at them, and the section says so explicitly so it cannot be
+ * mistaken for configuration.
+ */
+export function RubricTier1DeterministicList({ items }: { items: Tier1DeterministicItem[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div
+      className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 p-2"
+      data-rubric-tier1-deterministic
+    >
+      <h4 className="text-xs font-semibold">
+        一级 · 确定性守卫
+        <span className="ml-2 font-normal text-muted-foreground">
+          由代码强制执行，此处仅呈现，关不掉
+        </span>
+      </h4>
+      <ul className="mt-1.5 space-y-1.5">
+        {items.map((item) => (
+          <li
+            key={item.id}
+            className="rounded-md border bg-background px-2 py-1.5 text-xs"
+            data-rubric-deterministic-id={item.id}
+          >
+            <div className="font-medium">{item.title}</div>
+            <p className="mt-0.5 text-muted-foreground">{item.detail}</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground" data-rubric-enforced-by>
+              执行点：{item.enforcedBy}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function RubricTierBadge({ tier }: { tier: RubricTier }) {
+  return (
+    <span
+      className={`shrink-0 rounded border px-1 text-[10px] font-medium ${
+        tier === 1
+          ? "border-destructive/50 text-destructive"
+          : "text-muted-foreground"
+      }`}
+      data-rubric-tier={tier}
+    >
+      {RUBRIC_TIER_LABELS[tier]}
+    </span>
   );
 }
 
@@ -430,6 +518,7 @@ function RubricCriteriaList({
             >
               <span className="text-muted-foreground">{index + 1}.</span>
               <span className="min-w-0 flex-1">{criterion.text}</span>
+              <RubricTierBadge tier={criterion.tier} />
               <span
                 className="shrink-0 text-[10px] text-muted-foreground"
                 data-rubric-blocking={criterion.blocking ? "true" : "false"}
@@ -444,7 +533,10 @@ function RubricCriteriaList({
   );
 }
 
-function RubricEditor({
+/** Exported for rubric-panel.test.ts: the editor only mounts after a click,
+ * which a static server render cannot perform, so the lock semantics are
+ * asserted on the editor rendered directly with a draft. */
+export function RubricEditor({
   draft,
   draftScope,
   saving,
@@ -476,61 +568,106 @@ function RubricEditor({
   return (
     <div className="space-y-2" data-rubric-editor>
       <ol className="space-y-1.5">
-        {draft.map((criterion, index) => (
-          <li key={index} className="flex flex-wrap items-center gap-1.5">
-            <input
-              type="text"
-              value={criterion.text}
-              onChange={(event) => onChangeText(index, event.target.value)}
-              placeholder="一条可以用是/否回答的标准"
-              aria-label={`标准 ${index + 1}`}
-              data-rubric-criterion-input
-              data-rubric-criterion-key={criterion.criterionKey ?? ""}
-              className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
-            />
-            <button
-              type="button"
-              onClick={() => onToggleBlocking(index)}
-              aria-pressed={criterion.blocking}
-              data-rubric-blocking-toggle={criterion.blocking ? "true" : "false"}
-              className={`rounded-md border px-2 py-1 text-[10px] font-medium ${
-                criterion.blocking ? "border-destructive/50 text-destructive" : "text-muted-foreground"
-              }`}
+        {draft.map((criterion, index) =>
+          criterion.tier === 1 ? (
+            /*
+             * Tier-1 rows are rendered locked rather than hidden. The REAL
+             * guard is saveRubricVersion's merge -- this is the presentation
+             * of it. Rendering editable controls the server would silently
+             * override teaches the user their edits are kept when they are
+             * not; hiding the row entirely would make the saved rubric look
+             * shorter than what will actually be enforced. No move buttons
+             * either: the server pins tier-1 rows first whatever order the
+             * payload sends.
+             */
+            <li
+              key={index}
+              className="flex flex-wrap items-center gap-1.5"
+              data-rubric-tier1-locked
             >
-              {criterion.blocking ? "阻断" : "非阻断"}
-            </button>
-            <button
-              type="button"
-              onClick={() => onMove(index, -1)}
-              disabled={index === 0}
-              aria-label={`上移标准 ${index + 1}`}
-              data-rubric-move-up
-              className="rounded-md border px-1.5 py-1 text-[10px] disabled:opacity-40"
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              onClick={() => onMove(index, 1)}
-              disabled={index === draft.length - 1}
-              aria-label={`下移标准 ${index + 1}`}
-              data-rubric-move-down
-              className="rounded-md border px-1.5 py-1 text-[10px] disabled:opacity-40"
-            >
-              ↓
-            </button>
-            <button
-              type="button"
-              onClick={() => onRemove(index)}
-              aria-label={`删除标准 ${index + 1}`}
-              data-rubric-remove
-              className="rounded-md border px-1.5 py-1 text-[10px] text-destructive"
-            >
-              ✕
-            </button>
-          </li>
-        ))}
+              <input
+                type="text"
+                value={criterion.text}
+                readOnly
+                aria-label={`标准 ${index + 1}（一级，不可编辑）`}
+                data-rubric-criterion-input
+                data-rubric-criterion-key={criterion.criterionKey ?? ""}
+                className="min-w-0 flex-1 rounded-md border bg-muted/40 px-2 py-1 text-xs text-muted-foreground"
+              />
+              <RubricTierBadge tier={1} />
+              <span
+                className="rounded-md border border-destructive/50 px-2 py-1 text-[10px] font-medium text-destructive"
+                title="一级条款恒阻断，不可撤下"
+                data-rubric-tier1-blocking-lock
+              >
+                恒阻断
+              </span>
+            </li>
+          ) : (
+            <li key={index} className="flex flex-wrap items-center gap-1.5">
+              <input
+                type="text"
+                value={criterion.text}
+                onChange={(event) => onChangeText(index, event.target.value)}
+                placeholder="一条可以用是/否回答的标准"
+                aria-label={`标准 ${index + 1}`}
+                data-rubric-criterion-input
+                data-rubric-criterion-key={criterion.criterionKey ?? ""}
+                className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-xs"
+              />
+              <RubricTierBadge tier={criterion.tier} />
+              <button
+                type="button"
+                onClick={() => onToggleBlocking(index)}
+                aria-pressed={criterion.blocking}
+                data-rubric-blocking-toggle={criterion.blocking ? "true" : "false"}
+                className={`rounded-md border px-2 py-1 text-[10px] font-medium ${
+                  criterion.blocking ? "border-destructive/50 text-destructive" : "text-muted-foreground"
+                }`}
+              >
+                {criterion.blocking ? "阻断" : "非阻断"}
+              </button>
+              <button
+                type="button"
+                onClick={() => onMove(index, -1)}
+                // Also fenced against the tier-1 prefix: the server pins tier-1
+                // rows first whatever the payload says, so offering a move into
+                // that region would accept an edit only to silently undo it.
+                disabled={index === 0 || draft[index - 1]?.tier === 1}
+                aria-label={`上移标准 ${index + 1}`}
+                data-rubric-move-up
+                className="rounded-md border px-1.5 py-1 text-[10px] disabled:opacity-40"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => onMove(index, 1)}
+                disabled={index === draft.length - 1}
+                aria-label={`下移标准 ${index + 1}`}
+                data-rubric-move-down
+                className="rounded-md border px-1.5 py-1 text-[10px] disabled:opacity-40"
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                onClick={() => onRemove(index)}
+                aria-label={`删除标准 ${index + 1}`}
+                data-rubric-remove
+                className="rounded-md border px-1.5 py-1 text-[10px] text-destructive"
+              >
+                ✕
+              </button>
+            </li>
+          ),
+        )}
       </ol>
+      {draft.some((criterion) => criterion.tier === 1) ? (
+        <p className="text-[10px] text-muted-foreground" data-rubric-tier1-edit-note>
+          一级条款恒阻断，正文与开关均不可改，也不可撤下；删除二级/三级条款即撤下该标准（既有语义）。
+        </p>
+      ) : null}
 
       <Button type="button" variant="outline" size="sm" onClick={onAdd} data-rubric-add>
         + 新增一条标准

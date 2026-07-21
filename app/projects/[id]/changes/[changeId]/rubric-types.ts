@@ -26,10 +26,30 @@ export type RubricPhase =
 
 export type RubricVerdict = "yes" | "no" | "not_assessed";
 
+/**
+ * Design §2.1. Derived server-side from the criterionKey (rubric-tiers.ts) and
+ * only ever READ here: the client must not re-derive it, because the key
+ * registry lives with the write guard and a client copy would drift.
+ */
+export type RubricTier = 1 | 2 | 3;
+
 export interface RubricPanelCriterion {
   criterionKey: string;
   text: string;
   blocking: boolean;
+  tier: RubricTier;
+}
+
+/**
+ * One code-enforced tier-1 guard, projected read-only into the drawer
+ * (design §2.1: 把已有检查接进面板，不新增拦截). `enforcedBy` names the real
+ * execution point so the display cannot quietly outlive the check.
+ */
+export interface Tier1DeterministicItem {
+  id: string;
+  title: string;
+  detail: string;
+  enforcedBy: string;
 }
 
 export interface RubricPanelVerdict {
@@ -65,8 +85,15 @@ export interface RubricPanelState {
   changeId: string;
   roundId: string | null;
   blockingChannel: RubricBlockingChannel;
+  tier1Deterministic: Tier1DeterministicItem[];
   roles: RubricRolePanel[];
 }
+
+export const RUBRIC_TIER_LABELS: Record<RubricTier, string> = {
+  1: "一级 · 恒阻断",
+  2: "出厂",
+  3: "自加",
+};
 
 export const RUBRIC_ROLE_LABELS: Record<RubricRole, string> = {
   producer: "正方",

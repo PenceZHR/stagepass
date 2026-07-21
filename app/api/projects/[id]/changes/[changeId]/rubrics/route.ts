@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/server/db";
-import { changes } from "@/server/db/schema";
+import { changes, projects } from "@/server/db/schema";
 import { isRubricPhase, isRubricRole } from "@/server/services/rubric-assessment";
+import { writeRubricFileForScope } from "@/server/services/rubric-file-service";
 import { syncRubricBlockers } from "@/server/services/rubric-gate-adapters";
 import { buildRubricPanelState } from "@/server/services/rubric-panel-service";
 import { RubricError, saveRubricVersion } from "@/server/services/rubric-service";
@@ -139,6 +140,22 @@ export async function PUT(
     // nothing here re-judges. That asymmetry is what keeps §4.4 true -- an edit
     // cannot newly block a change whose gate is already stamped.
     syncRubricBlockers(changeId, payload.phase);
+    // Projection direction of §2.3 (file owns text, DB owns state): after a UI
+    // save the .ship/rubrics file must be rewritten, or the next stage-resolve
+    // sync would read the PRE-edit file as a user edit and mint a version that
+    // reverts this save. Deliberately after saveRubricVersion (there must be a
+    // version to project) and after syncRubricBlockers (the projection has no
+    // say in blocking state). Runs for both scopes: the file carries whatever
+    // is IN FORCE for the phase/role, which a project-level edit also changes.
+    const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
+    if (project) {
+      writeRubricFileForScope({
+        projectId,
+        repoPath: project.repoPath,
+        phase: payload.phase,
+        role: payload.role,
+      });
+    }
   } catch (err) {
     if (err instanceof RubricError) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: 400 });

@@ -1364,6 +1364,34 @@ function seedClosedSpecBattle() {
   }).run();
 }
 
+/**
+ * RUBRIC yes-lines for every criterion id the prompt names. With tier-1
+ * always-blocking live (rubric-tiers.ts), a producer that stays silent on its
+ * rubric is blocked by design -- not_assessed on a tier-1 key is a P0 with no
+ * human exit -- so any fixture that must reach merge or DONE has to answer the
+ * rubric the way a well-behaved provider does. Harvest strips these lines from
+ * artifacts, exactly as in production, so no other assertion sees them.
+ */
+function rubricYesLines(prompt: string): string {
+  // Only ids from the CURRENT rubric section's enumeration (`N. \`RBC-…\` — 正文`,
+  // rubric-prompt.ts). A bare RBC-substring scan also picks up criterion ids
+  // quoted inside upstream artifacts embedded in the prompt (e.g. a prior
+  // stage's RUBRIC answer lines), and one foreign id voids the whole parse.
+  const ids = [
+    ...new Set(
+      [...prompt.matchAll(/^\d+\. `(RBC-[0-9a-f-]{36})` — /gim)].map((match) => match[1]!),
+    ),
+  ];
+  return ids.map((id) => `RUBRIC: ${id} | yes | 测试夹具逐条核对`).join("\n");
+}
+
+function rubricAnswerStreamEvent(prompt: string): AiStreamEvent {
+  return {
+    type: "item.completed",
+    item: { type: "agent_message", text: rubricYesLines(prompt) },
+  } as unknown as AiStreamEvent;
+}
+
 async function prepareAdoptedBuild(repoPath: string) {
   seedChange(repoPath, "PLAN_APPROVED");
   writePlanArtifacts(repoPath, {
@@ -4932,6 +4960,7 @@ describe("pipeline-service v2 stages", () => {
       async *runStreamed(input) {
         fs.writeFileSync(path.join(input.repoPath, "src", "app.ts"), "export const value = 2;\n");
         yield { type: "thread.started", threadId: `${input.changeId}-build-thread` } as unknown as AiStreamEvent;
+        yield rubricAnswerStreamEvent(input.prompt);
       },
     }));
     await prepareAdoptedBuild(repoPath);
@@ -11050,6 +11079,7 @@ describe("pipeline-service v2 stages", () => {
       async *runStreamed(input) {
         fs.writeFileSync(path.join(input.repoPath, "src", "app.ts"), "export const value = 2;\n");
         yield { type: "thread.started", threadId: `${input.changeId}-build-thread` } as unknown as AiStreamEvent;
+        yield rubricAnswerStreamEvent(input.prompt);
       },
     }));
 
@@ -11295,10 +11325,10 @@ describe("pipeline-service v2 stages", () => {
         // engine phase, which is the stage identity itself.
         const isSpecRed = input.phase === "spec";
         const isDelivery = input.phase === "delivery";
-        return {
-          threadId: `${input.changeId}-thread`,
-          runId: "ENGINE-RUN",
-          summary: isDelivery
+        // Every canned reply answers whatever rubric its prompt carries: with
+        // tier-1 live, silence on Spec/Build/Done producer criteria blocks the
+        // pipeline by design, and this test's whole point is to reach DONE.
+        const cannedSummary = isDelivery
             ? validDeliveryLineProtocolText()
             : isDesignSnapshotPrompt
             ? validTechSpecLineProtocolText()
@@ -11321,7 +11351,11 @@ describe("pipeline-service v2 stages", () => {
             ? reviewLineProtocolText()
             : isSpecRed
             ? redSpecLineProtocolText()
-            : `summary for ${input.changeId}`,
+            : `summary for ${input.changeId}`;
+        return {
+          threadId: `${input.changeId}-thread`,
+          runId: "ENGINE-RUN",
+          summary: [cannedSummary, rubricYesLines(input.prompt)].filter(Boolean).join("\n\n"),
           success: true,
           changedFiles: [],
           // tech_spec is on the line protocol: the payload comes from the
@@ -11333,6 +11367,7 @@ describe("pipeline-service v2 stages", () => {
       async *runStreamed(input) {
         fs.writeFileSync(path.join(input.repoPath, "src", "app.ts"), "export const value = 2;\n");
         yield { type: "thread.started", threadId: `${input.changeId}-thread` } as unknown as AiStreamEvent;
+        yield rubricAnswerStreamEvent(input.prompt);
       },
     }));
 

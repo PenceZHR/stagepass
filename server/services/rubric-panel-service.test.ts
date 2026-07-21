@@ -6,6 +6,7 @@ import { db } from "../db/index.ts";
 import { battleRounds, changes, projects, rubricAssessments, rubricCriteria, rubrics } from "../db/schema.ts";
 import { buildRubricPanelState } from "./rubric-panel-service.ts";
 import {
+  ensureFactoryRubrics,
   listRubricAssessmentsForScope,
   recordRubricAssessments,
   recordUnansweredRubric,
@@ -36,6 +37,18 @@ const SPEC_PRODUCER = {
   phase: "Spec" as const,
   role: "producer" as const,
 };
+
+/**
+ * Spec producer is a TIER-1 SCOPE since the rubric-tiers batch: every save on
+ * it prepends the pinned `RBK-factory-Spec-producer-03` row (blocking, ordinal
+ * 0), so "save one criterion" yields TWO rows there. Tests below that pin
+ * GENERIC panel mechanics (round selection, staleness, blocking arithmetic,
+ * scope precedence) therefore run on Spec's CRITIC scope -- same phase, so
+ * rounds still exist, but no tier-1 key, so counts and ordinals mean what the
+ * test says they mean. Tests that stay on SPEC_PRODUCER do so because they are
+ * ABOUT the producer (§5.2's red half) or about the tier-1 injection itself.
+ */
+const SPEC_CRITIC = { ...SPEC_PRODUCER, role: "critic" as const };
 
 function cleanupRows() {
   const rubricIds = db
@@ -144,13 +157,19 @@ describe("verdicts are read by round, never by run (§5.2)", () => {
       criteria: [{ text: "No boundary is left implicit" }],
     });
 
-    // Red answered under the round's FIRST run.
+    // Red answered under the round's FIRST run. The producer rubric now opens
+    // with the injected tier-1 row, so BOTH rows get a yes: this test pins
+    // §5.2's by-round read, and a not_assessed tier-1 row would drag `blocked`
+    // into the assertion for reasons that belong to the tier tests below.
     recordRubricAssessments({
       changeId: CHANGE_ID,
       runId: "RUN-RED-1",
       roundId: ROUND_1,
       rubric: producer,
-      rawText: `RUBRIC: ${producer.criteria[0]!.id} | yes | acceptance criteria present`,
+      rawText: [
+        `RUBRIC: ${producer.criteria[0]!.id} | yes | no requirement beyond the PRD`,
+        `RUBRIC: ${producer.criteria[1]!.id} | yes | acceptance criteria present`,
+      ].join("\n"),
     });
     // Blue failed and was resumed: a NEW run id, the SAME round, and red is not
     // re-run, so nothing writes producer rows under RUN-BLUE-2.
@@ -170,12 +189,16 @@ describe("verdicts are read by round, never by run (§5.2)", () => {
     assert.equal(state.roundId, ROUND_1);
 
     const producerPanel = state.roles.find((role) => role.role === "producer")!;
+    // 2 = the tier-1 row plus the user's row. Was 1 before the tier-1 merge.
     assert.equal(
       producerPanel.verdicts.length,
-      1,
+      2,
       "the producer answered this round; a run-scoped read would have lost it and read as a pass",
     );
-    assert.equal(producerPanel.verdicts[0]!.verdict, "yes");
+    assert.ok(
+      producerPanel.verdicts.every((verdict) => verdict.verdict === "yes"),
+      "both rows -- tier-1 and the user's -- were answered yes under the round's first run",
+    );
     assert.equal(producerPanel.blocked, false);
 
     const criticPanel = state.roles.find((role) => role.role === "critic")!;
@@ -210,21 +233,24 @@ describe("verdicts are read by round, never by run (§5.2)", () => {
   });
 
   it("selectLatestAssessmentBatch keys on roundId and ignores runId entirely", () => {
+    // Pins generic batch selection, so it runs on the critic scope: on the
+    // producer the tier-1 merge would add a second assessment row and the
+    // `length === 1` below would be counting the injection, not the selection.
     addRound(ROUND_1, 1);
-    const producer = saveRubricVersion({ ...SPEC_PRODUCER, criteria: [{ text: "Alpha" }] });
+    const critic = saveRubricVersion({ ...SPEC_CRITIC, criteria: [{ text: "Alpha" }] });
     recordRubricAssessments({
       changeId: CHANGE_ID,
       runId: "RUN-RED-1",
       roundId: ROUND_1,
-      rubric: producer,
-      rawText: `RUBRIC: ${producer.criteria[0]!.id} | yes | round one`,
+      rubric: critic,
+      rawText: `RUBRIC: ${critic.criteria[0]!.id} | yes | round one`,
     });
 
     const all = listRubricAssessmentsForScope({
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-      role: "producer",
+      role: "critic",
     });
     assert.equal(all.length, 1);
     assert.equal(all[0]!.runId, "RUN-RED-1");
@@ -248,10 +274,13 @@ describe("verdicts are read by round, never by run (§5.2)", () => {
 });
 
 describe("stale rubric versions are labelled, not hidden", () => {
+  // Both tests pin generic version-staleness mechanics (judgedVersion, the
+  // stale label, snapshotted wording), so they run on the critic scope where
+  // criteria[0] is the row the test wrote, not the injected tier-1 row.
   it("keeps showing a verdict after the rubric is edited, marked as an older version", () => {
     addRound(ROUND_1, 1);
     const v1 = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ text: "Original wording" }],
     });
     recordRubricAssessments({
@@ -263,7 +292,7 @@ describe("stale rubric versions are labelled, not hidden", () => {
     });
 
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ criterionKey: v1.criteria[0]!.criterionKey, text: "Reworded wording" }],
     });
 
@@ -271,7 +300,7 @@ describe("stale rubric versions are labelled, not hidden", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
 
     assert.equal(panel.version, 2);
     assert.equal(panel.judgedVersion, 1);
@@ -293,7 +322,7 @@ describe("stale rubric versions are labelled, not hidden", () => {
   it("marks a verdict whose criterion was deleted outright", () => {
     addRound(ROUND_1, 1);
     const v1 = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ text: "Alpha" }, { text: "Beta" }],
     });
     recordRubricAssessments({
@@ -307,7 +336,7 @@ describe("stale rubric versions are labelled, not hidden", () => {
       ].join("\n"),
     });
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ criterionKey: v1.criteria[0]!.criterionKey, text: "Alpha" }],
     });
 
@@ -315,7 +344,7 @@ describe("stale rubric versions are labelled, not hidden", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
 
     assert.deepEqual(
       panel.verdicts.map((verdict) => [verdict.text, verdict.stillCurrent]),
@@ -347,7 +376,7 @@ describe("what the drawer treats as blocking", () => {
     // failure the old rule also caused.
     addRound(ROUND_1, 1);
     const rubric = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ text: "Advisory only", blocking: false }],
     });
     recordUnansweredRubric({
@@ -361,7 +390,7 @@ describe("what the drawer treats as blocking", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
 
     assert.equal(panel.verdicts[0]!.verdict, "not_assessed");
     assert.equal(panel.blocked, false);
@@ -370,7 +399,7 @@ describe("what the drawer treats as blocking", () => {
   it("treats not_assessed as blocking on a criterion the user marked blocking", () => {
     addRound(ROUND_1, 1);
     const rubric = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ text: "Must hold", blocking: true }],
     });
     recordUnansweredRubric({
@@ -384,7 +413,7 @@ describe("what the drawer treats as blocking", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
 
     assert.equal(panel.verdicts[0]!.verdict, "not_assessed");
     assert.equal(panel.blocked, true, "a model refusing to answer a required standard must not pass");
@@ -393,7 +422,7 @@ describe("what the drawer treats as blocking", () => {
   it("does not block on a `no` against a non-blocking criterion", () => {
     addRound(ROUND_1, 1);
     const rubric = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ text: "Advisory only", blocking: false }],
     });
     recordRubricAssessments({
@@ -408,27 +437,31 @@ describe("what the drawer treats as blocking", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
     assert.equal(panel.verdicts[0]!.verdict, "no");
     assert.equal(panel.blocked, false);
   });
 });
 
 describe("scope and role visibility", () => {
+  // Both scope-precedence tests pin generic mechanics (which scope is in
+  // force, override visibility), so they run on the critic scope: on the
+  // producer, criteria[0] is the injected tier-1 row on BOTH scopes, and the
+  // text assertions would compare the same pinned wording to itself.
   it("reports which scope is in force and that an override exists", () => {
-    saveRubricVersion({ ...SPEC_PRODUCER, criteria: [{ text: "Project default" }] });
+    saveRubricVersion({ ...SPEC_CRITIC, criteria: [{ text: "Project default" }] });
 
     const asProject = buildRubricPanelState({
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
     assert.equal(asProject.source, "project");
     assert.equal(asProject.hasChangeOverride, false);
     assert.equal(asProject.criteria[0]!.text, "Project default");
 
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       changeId: CHANGE_ID,
       criteria: [{ text: "Change override" }],
     });
@@ -436,7 +469,7 @@ describe("scope and role visibility", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
     assert.equal(asChange.source, "change");
     assert.equal(asChange.hasChangeOverride, true);
     assert.equal(asChange.criteria[0]!.text, "Change override");
@@ -445,7 +478,7 @@ describe("scope and role visibility", () => {
   it("keeps a verdict made against the project default visible after an override appears", () => {
     addRound(ROUND_1, 1);
     const projectLevel = saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       criteria: [{ text: "Project default" }],
     });
     recordRubricAssessments({
@@ -456,7 +489,7 @@ describe("scope and role visibility", () => {
       rawText: `RUBRIC: ${projectLevel.criteria[0]!.id} | no | judged against the default`,
     });
     saveRubricVersion({
-      ...SPEC_PRODUCER,
+      ...SPEC_CRITIC,
       changeId: CHANGE_ID,
       criteria: [{ text: "Change override" }],
     });
@@ -465,7 +498,7 @@ describe("scope and role visibility", () => {
       projectId: PROJECT_ID,
       changeId: CHANGE_ID,
       phase: "Spec",
-    }).roles.find((role) => role.role === "producer")!;
+    }).roles.find((role) => role.role === "critic")!;
     assert.equal(panel.source, "change");
     assert.equal(panel.verdicts.length, 1, "creating an override must not erase what was judged");
     assert.equal(panel.judgedByOutdatedVersion, true);
@@ -499,5 +532,93 @@ describe("scope and role visibility", () => {
       phase: "Plan",
     });
     assert.equal(state.roundId, null, "Plan has no rounds; borrowing Spec's would be nonsense");
+  });
+});
+
+describe("tiers reach the drawer (design §2.1)", () => {
+  it("annotates every criterion with its server-derived tier", () => {
+    // Factory seed gives Spec producer its tier-1 and tier-2 rows; an
+    // append-save adds a user (tier-3) row on top.
+    ensureFactoryRubrics(PROJECT_ID);
+    const seeded = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Spec",
+    }).roles.find((role) => role.role === "producer")!;
+    saveRubricVersion({
+      ...SPEC_PRODUCER,
+      criteria: [
+        ...seeded.criteria.map((criterion) => ({
+          criterionKey: criterion.criterionKey,
+          text: criterion.text,
+          blocking: criterion.blocking,
+        })),
+        { text: "User-added standard" },
+      ],
+    });
+
+    const panel = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Spec",
+    }).roles.find((role) => role.role === "producer")!;
+
+    const byKey = new Map(panel.criteria.map((criterion) => [criterion.criterionKey, criterion]));
+    const tier1 = byKey.get("RBK-factory-Spec-producer-03")!;
+    assert.equal(tier1.tier, 1, "the promoted key is tier 1");
+    assert.equal(tier1.blocking, true, "tier-1 is always blocking, whatever the save sent");
+    assert.equal(
+      byKey.get("RBK-factory-Spec-producer-01")!.tier,
+      2,
+      "a non-promoted factory key is tier 2",
+    );
+    const userRow = panel.criteria.find((criterion) => criterion.text === "User-added standard")!;
+    assert.equal(userRow.tier, 3, "a runtime-minted key is tier 3");
+    assert.equal(panel.criteria[0]!.criterionKey, "RBK-factory-Spec-producer-03",
+      "the tier-1 row is pinned first by ordinal");
+  });
+
+  it("injects the tier-1 row into a save that did not carry it", () => {
+    saveRubricVersion({ ...SPEC_PRODUCER, criteria: [{ text: "Only mine" }] });
+    const panel = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Spec",
+    }).roles.find((role) => role.role === "producer")!;
+    assert.deepEqual(
+      panel.criteria.map((criterion) => [criterion.tier, criterion.blocking]),
+      [
+        [1, true],
+        [3, true],
+      ],
+      "one user row in, two rows out: the tier-1 clause cannot be saved away",
+    );
+  });
+
+  it("ships the deterministic tier-1 checks for the phase, read-only metadata included", () => {
+    const spec = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Spec",
+    });
+    assert.ok(spec.tier1Deterministic.length > 0, "Spec has code-enforced guards to show");
+    for (const item of spec.tier1Deterministic) {
+      assert.ok(item.id && item.title && item.detail && item.enforcedBy);
+    }
+    assert.match(
+      spec.tier1Deterministic[0]!.enforcedBy,
+      /validatePlannedChanges/,
+      "enforcedBy names the real execution point, not a paraphrase",
+    );
+
+    // The seeded repoPath does not exist on disk, so the policy-backed item
+    // must say the file is MISSING rather than show an empty list.
+    const build = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Build",
+    });
+    const policy = build.tier1Deterministic.find((item) => item.id === "policy-blocked-globs")!;
+    assert.match(policy.detail, /策略文件缺失/);
   });
 });
