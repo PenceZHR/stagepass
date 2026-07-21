@@ -46,7 +46,7 @@ import type { RubricPhase, RubricRole } from "./rubric-assessment";
  *
  * A role absent from a phase here has no answerer in the pipeline, and shipping
  * a checklist nobody answers would fill the drawer with rows that stay blank
- * forever. See `rubricRoleAnswerability` for the full map and the reasons.
+ * forever. See `RUBRIC_ROLE_ANSWERED_BY` below for the full map and the reasons.
  */
 
 export type FactoryRubricCriterion = {
@@ -62,133 +62,157 @@ export type FactoryRubricCriterion = {
   text: string;
 };
 
-type FactoryRubrics = Partial<Record<RubricPhase, Partial<Record<RubricRole, string[]>>>>;
+/**
+ * One authored criterion. The key is written down rather than derived, because
+ * derivation has to derive it from something, and both candidates are wrong:
+ * position changes when you insert a line, text changes when you reword.
+ */
+type FactoryRubricSource = { key: string; text: string };
+
+type FactoryRubrics = Partial<
+  Record<RubricPhase, Partial<Record<RubricRole, FactoryRubricSource[]>>>
+>;
 
 /**
- * The criteria themselves, as plain text lists. Keys are derived from position
- * by `factoryCriteria`, so the source of truth stays readable and a reordering
- * cannot silently re-key a row -- see the ordering warning there.
+ * The criteria themselves, each carrying its own key.
+ *
+ * These used to be plain strings with `factoryCriteria` deriving the key from
+ * the array index. Two comments assured the reader that a reordering could not
+ * silently re-key a row, and that the tests pinned the full key set. Neither was
+ * true: inserting one line renumbered every criterion below it, and the only
+ * assertions were on key SHAPE and count -- nothing bound a key to its text, so
+ * the renumbering was green.
+ *
+ * That matters because `criterionKey` IS identity. Derived blockers persist as
+ * `RUBRIC:<criterionKey>` and §4.3.1's exit hangs on it, so a silent renumber
+ * retires a blocker the user never withdrew and opens one they never saw. Now
+ * that these criteria also reach users as editable files, the same edit is one
+ * they can make in a text editor.
+ *
+ * Editing rules: reorder, insert and reword freely -- the key travels with the
+ * line. Never reuse a retired key for different text, and never "fix a typo" in
+ * a key: a different key is a different criterion.
  */
 const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
   PRD: {
     producer: [
-      "PRD 正文里每一条需求都写明了「谁、在什么场景下、要达成什么」，没有只写功能名的条目。",
-      "PRD 列出的每一条需求都带有至少一条可判定的验收条件（读完就能答出满足或不满足）。",
-      "PRD 明确写出了本次改动**不做**什么（非目标），而不是只写要做什么。",
-      "PRD 里出现的每一个业务名词，在文中有定义，或指向了已有定义。",
-      "PRD 没有把实现方案（技术选型、表结构、接口签名）当成需求写进来。",
-      "用户在澄清问答里给出的每一个决定，都能在 PRD 正文里找到对应的落点。",
-      "PRD 标注了本次改动会影响到的既有功能，或明确写出「不影响任何既有功能」。",
-      "PRD 里没有「优化」「完善」「提升体验」这类无法判定是否完成的表述。",
+      { key: "RBK-factory-PRD-producer-01", text: "PRD 正文里每一条需求都写明了「谁、在什么场景下、要达成什么」，没有只写功能名的条目。" },
+      { key: "RBK-factory-PRD-producer-02", text: "PRD 列出的每一条需求都带有至少一条可判定的验收条件（读完就能答出满足或不满足）。" },
+      { key: "RBK-factory-PRD-producer-03", text: "PRD 明确写出了本次改动**不做**什么（非目标），而不是只写要做什么。" },
+      { key: "RBK-factory-PRD-producer-04", text: "PRD 里出现的每一个业务名词，在文中有定义，或指向了已有定义。" },
+      { key: "RBK-factory-PRD-producer-05", text: "PRD 没有把实现方案（技术选型、表结构、接口签名）当成需求写进来。" },
+      { key: "RBK-factory-PRD-producer-06", text: "用户在澄清问答里给出的每一个决定，都能在 PRD 正文里找到对应的落点。" },
+      { key: "RBK-factory-PRD-producer-07", text: "PRD 标注了本次改动会影响到的既有功能，或明确写出「不影响任何既有功能」。" },
+      { key: "RBK-factory-PRD-producer-08", text: "PRD 里没有「优化」「完善」「提升体验」这类无法判定是否完成的表述。" },
     ],
     critic: [
-      "PRD 的每一条需求，我只读 PRD 就能判断它是否被满足，不需要追问作者。",
-      "PRD 中不存在两条互相矛盾的需求。",
-      "PRD 声称已回答的澄清问题，正文里确实能找到对应的答案。",
-      "PRD 的非目标一节确实排除了容易被顺手做掉的相邻功能，不是空话。",
-      "用户在澄清阶段明确提出、而 PRD 正文只字未提的需求，一条都没有。",
-      "PRD 的验收条件全部是可观察的外部行为，没有一条依赖内部实现细节。",
-      "没有任何一条需求的规模明显超出本次改动声明的意图。",
+      { key: "RBK-factory-PRD-critic-01", text: "PRD 的每一条需求，我只读 PRD 就能判断它是否被满足，不需要追问作者。" },
+      { key: "RBK-factory-PRD-critic-02", text: "PRD 中不存在两条互相矛盾的需求。" },
+      { key: "RBK-factory-PRD-critic-03", text: "PRD 声称已回答的澄清问题，正文里确实能找到对应的答案。" },
+      { key: "RBK-factory-PRD-critic-04", text: "PRD 的非目标一节确实排除了容易被顺手做掉的相邻功能，不是空话。" },
+      { key: "RBK-factory-PRD-critic-05", text: "用户在澄清阶段明确提出、而 PRD 正文只字未提的需求，一条都没有。" },
+      { key: "RBK-factory-PRD-critic-06", text: "PRD 的验收条件全部是可观察的外部行为，没有一条依赖内部实现细节。" },
+      { key: "RBK-factory-PRD-critic-07", text: "没有任何一条需求的规模明显超出本次改动声明的意图。" },
     ],
   },
   Spec: {
     producer: [
-      "我列出的每一条 PRD delta 都指明了它改的是 PRD 的哪一节。",
-      "上一轮反方提出的每一个 gap，我都给出了明确处置（已修，或不修并说明理由）。",
-      "我没有在 delta 里引入 PRD 从未提过的新需求。",
-      "我写下的每一条验收条件都能被一次具体的操作验证。",
-      "我没有在任何一条需求上留下「待定」「后续再议」。",
-      "我声称已修复的每一个 gap，都能在本次 delta 正文里指出对应的改动位置。",
+      { key: "RBK-factory-Spec-producer-01", text: "我列出的每一条 PRD delta 都指明了它改的是 PRD 的哪一节。" },
+      { key: "RBK-factory-Spec-producer-02", text: "上一轮反方提出的每一个 gap，我都给出了明确处置（已修，或不修并说明理由）。" },
+      { key: "RBK-factory-Spec-producer-03", text: "我没有在 delta 里引入 PRD 从未提过的新需求。" },
+      { key: "RBK-factory-Spec-producer-04", text: "我写下的每一条验收条件都能被一次具体的操作验证。" },
+      { key: "RBK-factory-Spec-producer-05", text: "我没有在任何一条需求上留下「待定」「后续再议」。" },
+      { key: "RBK-factory-Spec-producer-06", text: "我声称已修复的每一个 gap，都能在本次 delta 正文里指出对应的改动位置。" },
     ],
     critic: [
-      "我方执行代理声称修复的每一个 gap，我都逐条复核过并给出了 verdict。",
-      "我提出的每一个 gap 都指明了它违反了哪一条需求或哪一条验收条件。",
-      "我没有把「可以做得更好」当成 gap 提出来。",
-      "规格里的每一条需求，我都检查过它是否有对应的验收条件。",
-      "我检查过规格是否覆盖了失败路径与边界条件，而不是只覆盖正常路径。",
-      "我提出的每一个 P0 gap，都确实会导致产物无法交付，而不只是不够完善。",
+      { key: "RBK-factory-Spec-critic-01", text: "我方执行代理声称修复的每一个 gap，我都逐条复核过并给出了 verdict。" },
+      { key: "RBK-factory-Spec-critic-02", text: "我提出的每一个 gap 都指明了它违反了哪一条需求或哪一条验收条件。" },
+      { key: "RBK-factory-Spec-critic-03", text: "我没有把「可以做得更好」当成 gap 提出来。" },
+      { key: "RBK-factory-Spec-critic-04", text: "规格里的每一条需求，我都检查过它是否有对应的验收条件。" },
+      { key: "RBK-factory-Spec-critic-05", text: "我检查过规格是否覆盖了失败路径与边界条件，而不是只覆盖正常路径。" },
+      { key: "RBK-factory-Spec-critic-06", text: "我提出的每一个 P0 gap，都确实会导致产物无法交付，而不只是不够完善。" },
     ],
     verdict: [
-      "正反双方对同一条需求的判断，不存在任何未被处理的直接冲突。",
-      "反方提出的每一个 open gap，正方都有过回应（修复或说明）。",
-      "现有规格足以让下游 TechSpec 阶段开工，不需要再回头补问 PRD。",
-      "本轮不存在「双方都没看过」的需求：每条需求至少被一方检查过。",
-      "规格里不存在任何一条无法判定是否满足的需求。",
+      { key: "RBK-factory-Spec-verdict-01", text: "正反双方对同一条需求的判断，不存在任何未被处理的直接冲突。" },
+      { key: "RBK-factory-Spec-verdict-02", text: "反方提出的每一个 open gap，正方都有过回应（修复或说明）。" },
+      { key: "RBK-factory-Spec-verdict-03", text: "现有规格足以让下游 TechSpec 阶段开工，不需要再回头补问 PRD。" },
+      { key: "RBK-factory-Spec-verdict-04", text: "本轮不存在「双方都没看过」的需求：每条需求至少被一方检查过。" },
+      { key: "RBK-factory-Spec-verdict-05", text: "规格里不存在任何一条无法判定是否满足的需求。" },
     ],
   },
   TechSpec: {
     producer: [
-      "技术方案里的每一个改动点，都能对应到 PRD 或 Spec 的某一条需求。",
-      "我写出的每一处接口或数据结构变更，都标明了它是新增、修改还是删除。",
-      "我列出了本次改动会触碰的既有模块，或明确写出「不触碰任何既有模块」。",
-      "方案里没有留下「具体实现时再定」的关键决策。",
-      "我说明了数据迁移的处理方式，或明确写出「本次不涉及数据迁移」。",
-      "我说明了失败与回滚路径，或明确写出「本次改动不需要回滚路径」并给出理由。",
-      "我引入的每一个新依赖都写明了引入理由。",
-      "我检查过方案不会破坏任何既有对外契约（API、DB schema、文件格式）。",
+      { key: "RBK-factory-TechSpec-producer-01", text: "技术方案里的每一个改动点，都能对应到 PRD 或 Spec 的某一条需求。" },
+      { key: "RBK-factory-TechSpec-producer-02", text: "我写出的每一处接口或数据结构变更，都标明了它是新增、修改还是删除。" },
+      { key: "RBK-factory-TechSpec-producer-03", text: "我列出了本次改动会触碰的既有模块，或明确写出「不触碰任何既有模块」。" },
+      { key: "RBK-factory-TechSpec-producer-04", text: "方案里没有留下「具体实现时再定」的关键决策。" },
+      { key: "RBK-factory-TechSpec-producer-05", text: "我说明了数据迁移的处理方式，或明确写出「本次不涉及数据迁移」。" },
+      { key: "RBK-factory-TechSpec-producer-06", text: "我说明了失败与回滚路径，或明确写出「本次改动不需要回滚路径」并给出理由。" },
+      { key: "RBK-factory-TechSpec-producer-07", text: "我引入的每一个新依赖都写明了引入理由。" },
+      { key: "RBK-factory-TechSpec-producer-08", text: "我检查过方案不会破坏任何既有对外契约（API、DB schema、文件格式）。" },
     ],
   },
   Plan: {
     producer: [
-      "每一个实现步骤都指明了它要改哪些文件。",
-      "每一个步骤都小到可以独立验证，没有「实现整个功能」这种一步到位的步骤。",
-      "步骤之间的先后依赖是明确的，不存在两个步骤互相等待。",
-      "计划覆盖了 TechSpec 里的每一个改动点，没有遗漏。",
-      "计划里没有出现 TechSpec 未提及的新改动。",
-      "我列出了本次计划的风险项，或明确写出「没有已知风险」。",
-      "计划指明了每一步完成后要如何确认它确实完成了。",
-      "计划没有把测试放在最后当成可选步骤。",
+      { key: "RBK-factory-Plan-producer-01", text: "每一个实现步骤都指明了它要改哪些文件。" },
+      { key: "RBK-factory-Plan-producer-02", text: "每一个步骤都小到可以独立验证，没有「实现整个功能」这种一步到位的步骤。" },
+      { key: "RBK-factory-Plan-producer-03", text: "步骤之间的先后依赖是明确的，不存在两个步骤互相等待。" },
+      { key: "RBK-factory-Plan-producer-04", text: "计划覆盖了 TechSpec 里的每一个改动点，没有遗漏。" },
+      { key: "RBK-factory-Plan-producer-05", text: "计划里没有出现 TechSpec 未提及的新改动。" },
+      { key: "RBK-factory-Plan-producer-06", text: "我列出了本次计划的风险项，或明确写出「没有已知风险」。" },
+      { key: "RBK-factory-Plan-producer-07", text: "计划指明了每一步完成后要如何确认它确实完成了。" },
+      { key: "RBK-factory-Plan-producer-08", text: "计划没有把测试放在最后当成可选步骤。" },
     ],
   },
   TestPlan: {
     producer: [
-      "PRD 或 Spec 里的每一条验收条件，都至少有一个测试项覆盖。",
-      "每一个测试项都写明了预期结果，而不是只写「验证 XX 功能」。",
-      "测试计划覆盖了失败路径，而不是只测正常路径。",
-      "我列出的每一条必跑命令都能在本仓库里直接执行。",
-      "测试计划区分了自动化测试与需要人工确认的项。",
-      "没有任何一个测试项的通过与否取决于执行者的主观判断。",
-      "我说明了测试数据从哪里来，或明确写出「不需要额外测试数据」。",
+      { key: "RBK-factory-TestPlan-producer-01", text: "PRD 或 Spec 里的每一条验收条件，都至少有一个测试项覆盖。" },
+      { key: "RBK-factory-TestPlan-producer-02", text: "每一个测试项都写明了预期结果，而不是只写「验证 XX 功能」。" },
+      { key: "RBK-factory-TestPlan-producer-03", text: "测试计划覆盖了失败路径，而不是只测正常路径。" },
+      { key: "RBK-factory-TestPlan-producer-04", text: "我列出的每一条必跑命令都能在本仓库里直接执行。" },
+      { key: "RBK-factory-TestPlan-producer-05", text: "测试计划区分了自动化测试与需要人工确认的项。" },
+      { key: "RBK-factory-TestPlan-producer-06", text: "没有任何一个测试项的通过与否取决于执行者的主观判断。" },
+      { key: "RBK-factory-TestPlan-producer-07", text: "我说明了测试数据从哪里来，或明确写出「不需要额外测试数据」。" },
     ],
   },
   Build: {
     producer: [
-      "我改动的每一个文件都在计划的 expectedFiles 范围内。",
-      "我没有为了让检查通过而删除、跳过或放宽任何既有测试。",
-      "计划里的每一个步骤我都实现了，或明确说明了未实现的原因。",
-      "我为本次改动新增或更新了测试，或明确说明了为什么不需要。",
-      "我没有留下 TODO、占位实现或被注释掉的代码。",
-      "我没有修改与本次需求无关的既有行为。",
-      "我在本地实际运行过改动涉及的检查命令，而不是仅凭阅读判断。",
+      { key: "RBK-factory-Build-producer-01", text: "我改动的每一个文件都在计划的 expectedFiles 范围内。" },
+      { key: "RBK-factory-Build-producer-02", text: "我没有为了让检查通过而删除、跳过或放宽任何既有测试。" },
+      { key: "RBK-factory-Build-producer-03", text: "计划里的每一个步骤我都实现了，或明确说明了未实现的原因。" },
+      { key: "RBK-factory-Build-producer-04", text: "我为本次改动新增或更新了测试，或明确说明了为什么不需要。" },
+      { key: "RBK-factory-Build-producer-05", text: "我没有留下 TODO、占位实现或被注释掉的代码。" },
+      { key: "RBK-factory-Build-producer-06", text: "我没有修改与本次需求无关的既有行为。" },
+      { key: "RBK-factory-Build-producer-07", text: "我在本地实际运行过改动涉及的检查命令，而不是仅凭阅读判断。" },
     ],
     critic: [
-      "我逐个读过本次改动的产物文件，而不是只看 diff 摘要。",
-      "上一轮每一条 open finding，我都给出了 verdict。",
-      "我提出的每一条 finding 都指明了具体文件与位置。",
-      "我检查过改动是否引入了未被测试覆盖的新分支。",
-      "我检查过改动没有破坏任何既有对外契约。",
-      "我提出的每一条 P0，都确实会导致功能不可用或数据损坏。",
-      "我没有把风格偏好当成 finding 提出来。",
+      { key: "RBK-factory-Build-critic-01", text: "我逐个读过本次改动的产物文件，而不是只看 diff 摘要。" },
+      { key: "RBK-factory-Build-critic-02", text: "上一轮每一条 open finding，我都给出了 verdict。" },
+      { key: "RBK-factory-Build-critic-03", text: "我提出的每一条 finding 都指明了具体文件与位置。" },
+      { key: "RBK-factory-Build-critic-04", text: "我检查过改动是否引入了未被测试覆盖的新分支。" },
+      { key: "RBK-factory-Build-critic-05", text: "我检查过改动没有破坏任何既有对外契约。" },
+      { key: "RBK-factory-Build-critic-06", text: "我提出的每一条 P0，都确实会导致功能不可用或数据损坏。" },
+      { key: "RBK-factory-Build-critic-07", text: "我没有把风格偏好当成 finding 提出来。" },
     ],
   },
   Fix: {
     producer: [
-      "本轮每一条 open 的 P0/P1 finding，我都处理了。",
-      "我的修复没有引入计划范围之外的文件改动。",
-      "我没有通过删除或放宽测试来消除任何一条 finding。",
-      "每一条我声称已修的 finding，都能指出对应的代码改动位置。",
-      "我没有为了修一条 finding 而破坏另一条已经通过的验收条件。",
-      "我在本地实际重跑过相关检查，而不是仅凭阅读判断。",
+      { key: "RBK-factory-Fix-producer-01", text: "本轮每一条 open 的 P0/P1 finding，我都处理了。" },
+      { key: "RBK-factory-Fix-producer-02", text: "我的修复没有引入计划范围之外的文件改动。" },
+      { key: "RBK-factory-Fix-producer-03", text: "我没有通过删除或放宽测试来消除任何一条 finding。" },
+      { key: "RBK-factory-Fix-producer-04", text: "每一条我声称已修的 finding，都能指出对应的代码改动位置。" },
+      { key: "RBK-factory-Fix-producer-05", text: "我没有为了修一条 finding 而破坏另一条已经通过的验收条件。" },
+      { key: "RBK-factory-Fix-producer-06", text: "我在本地实际重跑过相关检查，而不是仅凭阅读判断。" },
     ],
   },
   Retro: {
     producer: [
-      "复盘里写出的每一条问题都指明了它发生在哪个阶段。",
-      "每一条改进建议都具体到可以被执行，不是「以后要更小心」这类表述。",
-      "我列出了本次流程中实际发生过的返工，或明确写出「没有返工」。",
-      "复盘区分了「这次的偶发问题」与「会重复发生的机制问题」。",
-      "我记录了本次遗留的技术债，或明确写出「没有遗留技术债」。",
-      "复盘指向流程或机制，没有把问题归给某个具体的人。",
+      { key: "RBK-factory-Retro-producer-01", text: "复盘里写出的每一条问题都指明了它发生在哪个阶段。" },
+      { key: "RBK-factory-Retro-producer-02", text: "每一条改进建议都具体到可以被执行，不是「以后要更小心」这类表述。" },
+      { key: "RBK-factory-Retro-producer-03", text: "我列出了本次流程中实际发生过的返工，或明确写出「没有返工」。" },
+      { key: "RBK-factory-Retro-producer-04", text: "复盘区分了「这次的偶发问题」与「会重复发生的机制问题」。" },
+      { key: "RBK-factory-Retro-producer-05", text: "我记录了本次遗留的技术债，或明确写出「没有遗留技术债」。" },
+      { key: "RBK-factory-Retro-producer-06", text: "复盘指向流程或机制，没有把问题归给某个具体的人。" },
     ],
   },
 };
@@ -246,21 +270,21 @@ export function rubricRoleAnsweredBy(phase: RubricPhase, role: RubricRole): stri
 }
 
 /**
- * The factory criteria for one scope, with their stable keys.
+ * The factory criteria for one scope, with the keys authored alongside them.
  *
- * The key embeds the ORDINAL, so inserting a line in the middle of a list above
- * shifts every key after it -- which would re-key criteria users may already
- * have ticked as blocking. Append to the end of a list instead of inserting,
- * and never renumber. The tests pin the full key set for exactly this reason.
+ * Nothing here derives identity any more, so the ordering warning this comment
+ * used to carry is gone with the ordering dependency. `factory-rubric-keys`
+ * (rubric-rollout.test.ts) pins every key to its text, which is the assertion
+ * that was missing while the keys were positional.
  */
 export function factoryCriteria(
   phase: RubricPhase,
   role: RubricRole,
 ): FactoryRubricCriterion[] {
-  const texts = FACTORY_RUBRIC_TEXT[phase]?.[role] ?? [];
-  return texts.map((text, index) => ({
-    criterionKey: `RBK-factory-${phase}-${role}-${String(index + 1).padStart(2, "0")}`,
-    text,
+  const entries = FACTORY_RUBRIC_TEXT[phase]?.[role] ?? [];
+  return entries.map((entry) => ({
+    criterionKey: entry.key,
+    text: entry.text,
   }));
 }
 

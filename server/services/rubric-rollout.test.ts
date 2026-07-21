@@ -193,6 +193,125 @@ describe("factory rubrics", () => {
   // is that a criterion you cannot confirm is `no`. That is a false `no` on a
   // standard the critic actually met, shipped to every project, and the moment
   // somebody ticks `blocking` it becomes a P0 that describes nothing.
+  // The assertion that was missing while keys were positional. `criterionKey` is
+  // identity: derived blockers persist as `RUBRIC:<criterionKey>` and §4.3.1's
+  // exit hangs on it, so changing a key silently retires a blocker the user
+  // never withdrew and opens one they never saw. The old tests checked key
+  // SHAPE and count, which a renumbering satisfies perfectly.
+  //
+  // Pinned as a SET, not a key-to-text map, on purpose: rewording a criterion
+  // must keep its identity (that is what the key being authored buys), so text
+  // drift is legal and must not fail here. Changing or dropping a key is not.
+  // Adding one fails until you add it below -- deliberately, since a new
+  // criterion reaches every project on the next seed.
+  const FACTORY_CRITERION_KEYS = [
+    // PRD producer
+    "RBK-factory-PRD-producer-01",
+    "RBK-factory-PRD-producer-02",
+    "RBK-factory-PRD-producer-03",
+    "RBK-factory-PRD-producer-04",
+    "RBK-factory-PRD-producer-05",
+    "RBK-factory-PRD-producer-06",
+    "RBK-factory-PRD-producer-07",
+    "RBK-factory-PRD-producer-08",
+    // PRD critic
+    "RBK-factory-PRD-critic-01",
+    "RBK-factory-PRD-critic-02",
+    "RBK-factory-PRD-critic-03",
+    "RBK-factory-PRD-critic-04",
+    "RBK-factory-PRD-critic-05",
+    "RBK-factory-PRD-critic-06",
+    "RBK-factory-PRD-critic-07",
+    // Spec producer
+    "RBK-factory-Spec-producer-01",
+    "RBK-factory-Spec-producer-02",
+    "RBK-factory-Spec-producer-03",
+    "RBK-factory-Spec-producer-04",
+    "RBK-factory-Spec-producer-05",
+    "RBK-factory-Spec-producer-06",
+    // Spec critic
+    "RBK-factory-Spec-critic-01",
+    "RBK-factory-Spec-critic-02",
+    "RBK-factory-Spec-critic-03",
+    "RBK-factory-Spec-critic-04",
+    "RBK-factory-Spec-critic-05",
+    "RBK-factory-Spec-critic-06",
+    // Spec verdict
+    "RBK-factory-Spec-verdict-01",
+    "RBK-factory-Spec-verdict-02",
+    "RBK-factory-Spec-verdict-03",
+    "RBK-factory-Spec-verdict-04",
+    "RBK-factory-Spec-verdict-05",
+    // TechSpec producer
+    "RBK-factory-TechSpec-producer-01",
+    "RBK-factory-TechSpec-producer-02",
+    "RBK-factory-TechSpec-producer-03",
+    "RBK-factory-TechSpec-producer-04",
+    "RBK-factory-TechSpec-producer-05",
+    "RBK-factory-TechSpec-producer-06",
+    "RBK-factory-TechSpec-producer-07",
+    "RBK-factory-TechSpec-producer-08",
+    // Plan producer
+    "RBK-factory-Plan-producer-01",
+    "RBK-factory-Plan-producer-02",
+    "RBK-factory-Plan-producer-03",
+    "RBK-factory-Plan-producer-04",
+    "RBK-factory-Plan-producer-05",
+    "RBK-factory-Plan-producer-06",
+    "RBK-factory-Plan-producer-07",
+    "RBK-factory-Plan-producer-08",
+    // TestPlan producer
+    "RBK-factory-TestPlan-producer-01",
+    "RBK-factory-TestPlan-producer-02",
+    "RBK-factory-TestPlan-producer-03",
+    "RBK-factory-TestPlan-producer-04",
+    "RBK-factory-TestPlan-producer-05",
+    "RBK-factory-TestPlan-producer-06",
+    "RBK-factory-TestPlan-producer-07",
+    // Build producer
+    "RBK-factory-Build-producer-01",
+    "RBK-factory-Build-producer-02",
+    "RBK-factory-Build-producer-03",
+    "RBK-factory-Build-producer-04",
+    "RBK-factory-Build-producer-05",
+    "RBK-factory-Build-producer-06",
+    "RBK-factory-Build-producer-07",
+    // Build critic
+    "RBK-factory-Build-critic-01",
+    "RBK-factory-Build-critic-02",
+    "RBK-factory-Build-critic-03",
+    "RBK-factory-Build-critic-04",
+    "RBK-factory-Build-critic-05",
+    "RBK-factory-Build-critic-06",
+    "RBK-factory-Build-critic-07",
+    // Fix producer
+    "RBK-factory-Fix-producer-01",
+    "RBK-factory-Fix-producer-02",
+    "RBK-factory-Fix-producer-03",
+    "RBK-factory-Fix-producer-04",
+    "RBK-factory-Fix-producer-05",
+    "RBK-factory-Fix-producer-06",
+    // Retro producer
+    "RBK-factory-Retro-producer-01",
+    "RBK-factory-Retro-producer-02",
+    "RBK-factory-Retro-producer-03",
+    "RBK-factory-Retro-producer-04",
+    "RBK-factory-Retro-producer-05",
+    "RBK-factory-Retro-producer-06",
+  ];
+
+  it("keeps every factory criterion key exactly as shipped", () => {
+    const live = factoryRubricScopes()
+      .flatMap((scope) => factoryCriteria(scope.phase, scope.role))
+      .map((criterion) => criterion.criterionKey);
+    assert.deepEqual(
+      [...live].sort(),
+      [...FACTORY_CRITERION_KEYS].sort(),
+      "a factory criterion key changed -- every blocker already stamped against the old key "
+      + "retires silently, and the criterion it named is no longer the one the user ticked",
+    );
+  });
+
   it("uses only the role words the prompt templates define", () => {
     const undefinedRoleWords = ["蓝方"];
     for (const scope of factoryRubricScopes()) {
