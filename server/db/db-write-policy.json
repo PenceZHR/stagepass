@@ -1644,6 +1644,11 @@
   ],
   "testFixtures": [
     {
+      "file": "app/api/projects/[id]/changes/[changeId]/block/route.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "app/api/projects/[id]/changes/[changeId]/rubrics/route.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"

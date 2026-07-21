@@ -9,6 +9,8 @@ import {
 import { NON_POST_ROUTED_ACTION_IDS, isPostRoutedAction } from "./pipeline-action-commands";
 import type { ChangeDetail, PhaseOverview } from "./change-detail-types";
 import type { ReviewPhase } from "./change-phase-map";
+import { getReviewPhaseForRunPhase } from "./change-phase-map";
+import { RunPhase } from "@/server/types/enums";
 import type { ReviewCenterResponse, ReviewCenterGateStatus } from "./review-report-center";
 import type { SpecBattleState } from "./spec-battle-types";
 import type { PipelineActionContract } from "./pipeline-action-contract";
@@ -496,5 +498,72 @@ describe("pipeline UI model", () => {
 
   it("keeps unknown statuses compatible with the current default review phase behavior", () => {
     assert.equal(selected(change({ status: "TOTALLY_NEW_STATUS" })).id, "plan");
+  });
+});
+
+describe("getReviewPhaseForRunPhase", () => {
+  /**
+   * The pairs RUN_PHASE_TO_REVIEW_PHASE in server/services/change-phase-service.ts
+   * produces. That map is the authority and is module-private, so this restates
+   * it; it is not a second source of truth but the agreement being asserted.
+   *
+   * `refine` and `delivery` are here because both used to be absent from the
+   * client half while the server mapped them to "Refine" and "Done" -- a failed
+   * run of either phase opened the wrong stage tab (getDefaultReviewPhaseForChange
+   * falls back on the status when this returns null, which for a failed refine
+   * run means landing on Intake).
+   */
+  const SERVER_AUTHORITY: Record<RunPhase, ReviewPhase> = {
+    refine: "Refine",
+    intake: "Intake",
+    spec: "Spec",
+    tech_spec: "TechSpec",
+    generate_plan: "Plan",
+    test_plan: "TestPlan",
+    implement: "Build",
+    review: "Review",
+    local_check: "Check",
+    fix_findings: "Fix",
+    release: "Merge",
+    retro: "Retro",
+    delivery: "Done",
+  };
+
+  it("agrees with the server authority for every RunPhase", () => {
+    // Driven off RunPhase.options rather than a copy, so a fourteenth phase
+    // fails here instead of silently mapping to null.
+    for (const phase of RunPhase.options) {
+      assert.equal(getReviewPhaseForRunPhase(phase), SERVER_AUTHORITY[phase], phase);
+    }
+  });
+
+  it("maps every RunPhase to some review phase", () => {
+    const unmapped = RunPhase.options.filter((phase) => getReviewPhaseForRunPhase(phase) === null);
+    assert.deepEqual(unmapped, [], "every run phase a run can be recorded under needs a stage tab");
+    assert.deepEqual(
+      Object.keys(SERVER_AUTHORITY).sort(),
+      [...RunPhase.options].sort(),
+      "the expectation table above must cover exactly RunPhase",
+    );
+  });
+
+  it("folds sub-phase run strings into the stage that owns them", () => {
+    const aliases: Array<[string, ReviewPhase]> = [
+      ["prd_briefing_questions", "Intake"],
+      ["prd_briefing_draft", "Intake"],
+      ["prd_briefing_final_review", "Intake"],
+      ["spec_critic", "Spec"],
+      ["spec_verdict", "Spec"],
+      ["fix", "Fix"],
+    ];
+    for (const [phase, expected] of aliases) {
+      assert.equal(getReviewPhaseForRunPhase(phase), expected, phase);
+    }
+  });
+
+  it("returns null for a string that is not a run phase", () => {
+    for (const phase of ["deliverz", "Done", "", null, undefined]) {
+      assert.equal(getReviewPhaseForRunPhase(phase), null, String(phase));
+    }
   });
 });

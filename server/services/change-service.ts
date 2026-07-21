@@ -5,6 +5,7 @@ import {
   changes,
   events,
   projects,
+  runs,
 } from "../db/schema";
 import { createChildLogger } from "../logger";
 import type { Change, ChangeStatus } from "../types";
@@ -277,6 +278,33 @@ export async function deleteChange(id: string): Promise<void> {
 
   if (RUNNING_CHANGE_STATUSES.has(change.status as ChangeStatus)) {
     throw new Error(`Cannot delete change in ${change.status} state`);
+  }
+
+  // The status check alone is not enough. RUNNING_CHANGE_STATUSES deliberately
+  // omits DELIVERY_PENDING (see its comment in state-machine/transitions.ts:
+  // including it would forbid starting any sibling change until someone clicks
+  // 运行交付), but pipeline-delivery-stage-service declares
+  // `runningStatus: "DELIVERY_PENDING"` -- the same status covers both "parked
+  // waiting for a human" and "the delivery run is executing right now".
+  //
+  // So a change could be deleted mid-run: verified 2026-07-21 against a copy of
+  // the production DB, DELETE returned 200 while a delivery run sat at
+  // status="running", taking the change row, all 24 runs rows and the on-disk
+  // .ship/changes/<id> directory with it while the worker still held them.
+  //
+  // Ask the runs table what is actually in flight rather than inferring it from
+  // the change status. RETRO_PENDING has the same shape and is covered too.
+  const inFlight = db
+    .select({ id: runs.id, phase: runs.phase })
+    .from(runs)
+    .where(and(eq(runs.changeId, id), eq(runs.status, "running")))
+    .all();
+  if (inFlight.length > 0) {
+    const phases = [...new Set(inFlight.map((run) => run.phase))].sort().join(", ");
+    throw new Error(
+      `Cannot delete change while a run is still in flight (${phases}). ` +
+      `Stop or block the run first.`,
+    );
   }
 
   const project = db.select().from(projects).where(eq(projects.id, change.projectId)).get();

@@ -435,12 +435,30 @@ interface StoredBlocker {
 /**
  * The `PipelinePhase` a rubric phase's stage gate lives under.
  *
- * Refine, Fix and Retro deliberately return null: `PipelinePhase` has no member
- * for them and they own no `stage_gates` row anywhere in the repo, so there is
- * no gate to add a blocker to. Returning null rather than guessing a neighbour
- * keeps the caller's `unsupported` branch explicit -- a rubric verdict that has
- * nowhere to go must be visible as such, not silently dropped into another
- * phase's gate.
+ * Refine, Fix, Retro and Done deliberately return null: `PipelinePhase` has no
+ * member for them and they own no `stage_gates` row anywhere in the repo, so
+ * there is no gate to add a blocker to. Returning null rather than guessing a
+ * neighbour keeps the caller's `unsupported` branch explicit -- a rubric verdict
+ * that has nowhere to go must be visible as such, not silently dropped into
+ * another phase's gate.
+ *
+ * ## Why Done is null on purpose, and why that is spelled out
+ *
+ * Done is the pipeline's terminus: the delivery stage runs DELIVERY_PENDING ->
+ * DONE and nothing follows it. Merge has already happened, so there is no
+ * downstream gate a Done verdict could stop and no unmerge for it to force.
+ * The only thing a Done blocker could do is strand the change short of DONE --
+ * and it would strand it permanently, because a rubric-derived blocker is P0 by
+ * construction (see this file's header) and P0 has no human waiver in any of the
+ * three channels. A blocker whose subject has already shipped and whose only
+ * effect is an unwaivable dead end is strictly worse than no blocker.
+ *
+ * That is a decision, not an accident, so it is written as one. Done used to
+ * reach null through a bare `default:` arm, which meant nothing distinguished
+ * "classified as gateless" from "added to RUBRIC_PHASES and never considered" --
+ * exactly how Done itself arrived here when design §3 promoted it from a UI
+ * label to a real stage. The arms below are exhaustive and the `never` guard
+ * makes the next new phase a compile error instead of a silent `none`.
  */
 export function stageGatePhaseFor(phase: RubricPhase): PipelinePhase | null {
   switch (phase) {
@@ -453,8 +471,19 @@ export function stageGatePhaseFor(phase: RubricPhase): PipelinePhase | null {
     case "QA":
     case "Merge":
       return phase;
-    default:
+    case "Refine":
+    case "Fix":
+    case "Retro":
+    case "Done":
       return null;
+    default: {
+      // A new RubricPhase must be classified here deliberately. Widening
+      // `PipelinePhase` to include one of the four above would also land here,
+      // which is the other half of the guard: that phase would start writing
+      // blockers onto a gate row, and this forces someone to say so out loud.
+      const unclassified: never = phase;
+      return unclassified;
+    }
   }
 }
 
@@ -655,10 +684,19 @@ export type RubricBlockingChannel = "requirement_gap" | "finding" | "stage_gate"
  * Which blocking form a phase's verdicts take, decided without writing anything.
  *
  * The drawer reads this so a `blocking` tick on a phase with `none` can say so
- * out loud. Refine, QA, Merge and Retro own no `stage_gates` row and are not
- * Spec, Build or Fix, so a verdict of theirs has nowhere to land -- ticking
- * `blocking` there is a no-op, and an invisible no-op in a mechanism whose whole
- * purpose is stopping things is worse than a visible absence.
+ * out loud (`RubricInertNotice`). Ticking `blocking` on such a phase is a no-op,
+ * and an invisible no-op in a mechanism whose whole purpose is stopping things
+ * is worse than a visible absence.
+ *
+ * The four `none` phases are Refine, Fix's document side, Retro and Done: they
+ * own no `stage_gates` row and are not Spec or Build. QA and Merge are NOT in
+ * that set -- both are `PipelinePhase` members with real gate rows, so both are
+ * `stage_gate`. They are inert for the unrelated reason that
+ * `RUBRIC_ROLE_ANSWERED_BY` gives them no answerer, which is the panel's
+ * `answeredBy === null` notice rather than this one. An earlier version of this
+ * comment listed QA and Merge here and omitted Done, i.e. it was wrong in both
+ * directions at once; `rubric-rollout.test.ts` now pins the channel of every
+ * member of RUBRIC_PHASES so the list cannot drift from the code again.
  */
 export function rubricBlockingChannel(phase: RubricPhase): RubricBlockingChannel {
   if (phase === "Spec") return "requirement_gap";
@@ -684,30 +722,38 @@ export interface SyncRubricBlockersResult {
  * thing that reads `requirement_gaps` back out and recomputes the Spec gate.
  *
  * `channel: "none"` is a real answer, not a failure: Refine, Fix's document
- * side and Retro have no gate of their own to block. Batch 6 owns giving those
- * phases somewhere to land before it starts producing verdicts for them.
+ * side, Retro and Done have no gate of their own to block. Batch 6 owns giving
+ * Refine, Fix and Retro somewhere to land before it starts producing verdicts
+ * for them.
+ *
+ * Done is not in that backlog and should not be added to it: it is terminal and
+ * post-merge, so `none` is its permanent answer rather than a gap waiting on a
+ * gate. See `stageGatePhaseFor` for the argument.
  */
 export function syncRubricBlockers(
   changeId: string,
   phase: RubricPhase,
 ): SyncRubricBlockersResult {
+  // Read from `rubricBlockingChannel` rather than restated as a literal per
+  // branch. The drawer decides what to TELL the user from that function and this
+  // decides what to DO from the branches below; when both sides spelled the
+  // channel out independently, nothing stopped them disagreeing, which is the
+  // same "advertised one thing, did another" shape this module exists to avoid.
+  // The branches still switch on `phase` because `syncRubricFindings` is typed
+  // to Build|Fix and only a phase check narrows to that.
+  const channel = rubricBlockingChannel(phase);
   if (phase === "Spec") {
-    return {
-      phase,
-      channel: "requirement_gap",
-      records: syncSpecRubricGaps(changeId),
-      stageGate: null,
-    };
+    return { phase, channel, records: syncSpecRubricGaps(changeId), stageGate: null };
   }
   if (phase === "Build" || phase === "Fix") {
-    return { phase, channel: "finding", records: syncRubricFindings(changeId, phase), stageGate: null };
+    return { phase, channel, records: syncRubricFindings(changeId, phase), stageGate: null };
   }
   if (stageGatePhaseFor(phase) === null) {
-    return { phase, channel: "none", records: emptyResult(), stageGate: null };
+    return { phase, channel, records: emptyResult(), stageGate: null };
   }
   return {
     phase,
-    channel: "stage_gate",
+    channel,
     records: emptyResult(),
     stageGate: syncRubricStageGateBlockers(changeId, phase),
   };

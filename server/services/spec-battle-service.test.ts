@@ -20,6 +20,7 @@ import {
   projects,
   redFixClaims,
   requirementGaps,
+  runs,
   stageActions,
   stageGates,
   stageReports,
@@ -558,6 +559,16 @@ describe("spec-battle-service", { concurrency: false }, () => {
     db.delete(stageReports).where(eq(stageReports.changeId, CHANGE_ID)).run();
     db.delete(stageRuns).where(eq(stageRuns.changeId, CHANGE_ID)).run();
     db.delete(stageStates).where(eq(stageStates.changeId, CHANGE_ID)).run();
+    // claimSpecRun (spec-battle-service.ts:820) opens a `runs` row as "running"
+    // and never closes it -- the worker does that once the provider returns, and
+    // no provider runs here. Production carries no lingering running rows (every
+    // row in the production DB is "completed"), and deleteChange now refuses to
+    // race a live run, so close the claim the way stop_change would before
+    // exercising what this test is actually about: the FK cascade.
+    db.update(runs)
+      .set({ status: "stopped", endedAt: now })
+      .where(and(eq(runs.changeId, CHANGE_ID), eq(runs.status, "running")))
+      .run();
     await deleteChange(CHANGE_ID);
 
     assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).all().length, 0);

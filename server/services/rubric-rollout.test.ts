@@ -8,7 +8,9 @@ import { eq, like } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import {
   changes,
+  findings,
   projects,
+  requirementGaps,
   rubricAssessments,
   rubricCriteria,
   rubrics,
@@ -25,8 +27,15 @@ import {
 import {
   rubricBlockingChannel,
   reapplyRubricStageGateBlockers,
+  stageGatePhaseFor,
+  syncRubricBlockers,
+  type RubricBlockingChannel,
 } from "./rubric-gate-adapters.ts";
-import { activeRubricBlockers, rubricBlockerId } from "./rubric-gate-service.ts";
+import {
+  activeRubricBlockers,
+  isRubricBlockerId,
+  rubricBlockerId,
+} from "./rubric-gate-service.ts";
 import { buildRubricPanelState } from "./rubric-panel-service.ts";
 import {
   ensureFactoryRubrics,
@@ -646,18 +655,47 @@ describe("the drawer and the gate agree on what is blocked", () => {
 });
 
 describe("a rubric that cannot block says so", () => {
-  it("reports each phase's real blocking channel", () => {
-    assert.equal(rubricBlockingChannel("Spec"), "requirement_gap");
-    assert.equal(rubricBlockingChannel("Build"), "finding");
-    assert.equal(rubricBlockingChannel("Fix"), "finding");
-    assert.equal(rubricBlockingChannel("Plan"), "stage_gate");
-    assert.equal(rubricBlockingChannel("TechSpec"), "stage_gate");
-    assert.equal(rubricBlockingChannel("PRD"), "stage_gate");
-    assert.equal(rubricBlockingChannel("TestPlan"), "stage_gate");
+  // Keyed by phase rather than written as a list of calls, and cross-checked
+  // against RUBRIC_PHASES below, because the previous version of this test
+  // asserted only 7 of the 12 phases. The five it skipped were exactly the ones
+  // whose channel nobody had checked -- QA, Merge and Done among them -- and two
+  // docblocks in rubric-gate-adapters had drifted to claim QA and Merge were
+  // `none` (they are `stage_gate`) while omitting Done (which is `none`). A
+  // partial list is how a vocabulary claims to be complete and is not.
+  const EXPECTED_CHANNEL: Record<RubricPhase, RubricBlockingChannel> = {
+    Spec: "requirement_gap",
+    Build: "finding",
+    Fix: "finding",
+    PRD: "stage_gate",
+    TechSpec: "stage_gate",
+    Plan: "stage_gate",
+    TestPlan: "stage_gate",
+    // Real `stage_gates` rows and real `PipelinePhase` members. These two are
+    // inert for an unrelated reason -- RUBRIC_ROLE_ANSWERED_BY gives them no
+    // answerer -- which is the panel's `answeredBy` notice, not this one.
+    QA: "stage_gate",
+    Merge: "stage_gate",
     // Own no stage_gates row anywhere in the repo: ticking `blocking` here
     // records a verdict and stops nothing, which the drawer has to admit.
-    assert.equal(rubricBlockingChannel("Refine"), "none");
-    assert.equal(rubricBlockingChannel("Retro"), "none");
+    Refine: "none",
+    Retro: "none",
+    // Terminal and post-merge. See the behavioural case below.
+    Done: "none",
+  };
+
+  it("reports each phase's real blocking channel, for every phase there is", () => {
+    for (const phase of RUBRIC_PHASES) {
+      assert.equal(
+        rubricBlockingChannel(phase),
+        EXPECTED_CHANNEL[phase],
+        `${phase} routes to the wrong blocking channel`,
+      );
+    }
+    assert.deepEqual(
+      Object.keys(EXPECTED_CHANNEL).sort(),
+      [...RUBRIC_PHASES].sort(),
+      "a phase added to RUBRIC_PHASES must be classified here, not left to a default arm",
+    );
   });
 
   it("marks a role nothing answers, and the panel carries it", () => {
@@ -677,5 +715,106 @@ describe("a rubric that cannot block says so", () => {
     for (const role of RUBRIC_ROLES) {
       assert.equal(panel.roles.find((entry) => entry.role === role)!.answeredBy, null);
     }
+  });
+});
+
+/**
+ * Done is the terminus (delivery runs DELIVERY_PENDING -> DONE, and the change
+ * is already merged by then), so a rubric-derived P0 there could not stop a
+ * downstream gate -- it could only strand the change short of DONE, and strand
+ * it permanently, since a rubric-derived blocker is P0 and P0 has no human
+ * waiver in any channel.
+ *
+ * So the behaviour under test is deliberately the NEGATIVE one: a ticked
+ * `blocking` criterion on Done, answered `no`, must be recorded and shown and
+ * must write no blocking record anywhere. That is only worth asserting next to a
+ * positive control -- "nothing was written" passes just as well when the fixture
+ * never worked -- so the Build case runs first through the same helper and the
+ * same dispatcher, and must write a finding.
+ */
+describe("Done records a blocking verdict without blocking anything", () => {
+  function rubricDerivedFindingIds(): string[] {
+    return db
+      .select()
+      .from(findings)
+      .where(eq(findings.changeId, CHANGE_ID))
+      .all()
+      .filter((row) => isRubricBlockerId(row.id))
+      .map((row) => row.id)
+      .sort();
+  }
+
+  function rubricDerivedGapIds(): string[] {
+    return db
+      .select()
+      .from(requirementGaps)
+      .where(eq(requirementGaps.changeId, CHANGE_ID))
+      .all()
+      .filter((row) => isRubricBlockerId(row.canonicalGapId))
+      .map((row) => row.canonicalGapId!)
+      .sort();
+  }
+
+  it("control: the same fixture on Build really does write a blocking record", () => {
+    const rubric = judgedBlockingCriterion("Build", "RUN-BUILD-CONTROL");
+    const synced = syncRubricBlockers(CHANGE_ID, "Build");
+
+    assert.equal(synced.channel, "finding");
+    assert.deepEqual(
+      rubricDerivedFindingIds(),
+      [rubricBlockerId(rubric.criteria[0]!.criterionKey)],
+      "a ticked `blocking` criterion answered `no` lands as an open P0 finding",
+    );
+  });
+
+  it("writes no finding, no gap and no stage gate for a blocking Done `no`", () => {
+    const rubric = judgedBlockingCriterion("Done", "RUN-DONE-1");
+    assert.equal(
+      rubric.criteria[0]!.blocking,
+      true,
+      "precondition: the user ticked 阻断 and the drawer persisted it",
+    );
+
+    const synced = syncRubricBlockers(CHANGE_ID, "Done");
+
+    assert.equal(synced.channel, "none");
+    // The three ways a blocker could land. Routing Done to any real channel
+    // trips one of these, which is the point of asserting all three rather than
+    // asserting that a constant equals "none".
+    assert.deepEqual(rubricDerivedFindingIds(), [], "Done must not open a finding");
+    assert.deepEqual(rubricDerivedGapIds(), [], "Done must not open a requirement gap");
+    assert.equal(synced.stageGate, null, "Done owns no stage gate to amend");
+    assert.deepEqual(
+      synced.records,
+      { opened: [], retired: [], reopened: [] },
+      "nothing opened, nothing retired -- the verdict simply has nowhere to land",
+    );
+    assert.equal(stageGatePhaseFor("Done"), null, "and no PipelinePhase to land it on");
+  });
+
+  it("still records the verdict, and the drawer can still say the tick is inert", () => {
+    judgedBlockingCriterion("Done", "RUN-DONE-2");
+    syncRubricBlockers(CHANGE_ID, "Done");
+
+    const state = buildRubricPanelState({
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      phase: "Done",
+    });
+    const producer = state.roles.find((role) => role.role === "producer")!;
+
+    assert.equal(producer.verdicts.length, 1, "the judgment is kept, not discarded");
+    assert.equal(producer.verdicts[0]!.verdict, "no");
+    assert.equal(producer.verdicts[0]!.blocking, true, "and it is shown as a blocking one");
+    assert.equal(
+      rubricRoleAnsweredBy("Done", "producer"),
+      "delivery",
+      "the delivery stage does answer this rubric, so the drawer's other inert reason does not apply",
+    );
+    assert.equal(
+      state.blockingChannel,
+      "none",
+      "which leaves exactly one honest notice for the drawer to print: the tick stops nothing",
+    );
   });
 });

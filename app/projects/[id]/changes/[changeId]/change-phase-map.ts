@@ -1,3 +1,4 @@
+import type { RunPhase } from "@/server/types/enums";
 import type { ChangeDetail } from "./change-detail-types";
 import type { ReviewCenterResponse } from "./review-report-center";
 import type { RubricPhase } from "./rubric-types";
@@ -159,21 +160,56 @@ export function getDefaultReviewPhase(status: string, reviewCenterState?: Review
   return "Plan";
 }
 
+/**
+ * The client half of the run-phase -> review-phase mapping. The server half,
+ * RUN_PHASE_TO_REVIEW_PHASE in change-phase-service.ts, is the authority; this
+ * must agree with it for every RunPhase.
+ *
+ * Typed as a total Record over RunPhase (type-only import, erased at compile
+ * time -- no server code reaches the client bundle) so that adding a RunPhase
+ * without adding it here is a type error rather than a silent null. As an
+ * if-chain it had silently drifted twice: `refine` and `delivery` both fell
+ * through to null while the server mapped them to "Refine" and "Done", which
+ * sent a failed run of either phase to the wrong stage tab.
+ */
+const RUN_PHASE_TO_REVIEW_PHASE: Record<RunPhase, ReviewPhase> = {
+  refine: "Refine",
+  intake: "Intake",
+  spec: "Spec",
+  tech_spec: "TechSpec",
+  generate_plan: "Plan",
+  test_plan: "TestPlan",
+  implement: "Build",
+  review: "Review",
+  local_check: "Check",
+  fix_findings: "Fix",
+  release: "Merge",
+  retro: "Retro",
+  delivery: "Done",
+};
+
+/**
+ * Sub-phase run strings that are not RunPhase members but do reach this
+ * function: the PRD briefing rounds, the spec battle's red/blue legs, and the
+ * legacy `fix` spelling of fix_findings. They fold into the stage that owns
+ * them, so the tab lands on that stage rather than nowhere.
+ */
+const SUB_PHASE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
+  prd_briefing_questions: "Intake",
+  prd_briefing_draft: "Intake",
+  prd_briefing_final_review: "Intake",
+  spec_critic: "Spec",
+  spec_verdict: "Spec",
+  fix: "Fix",
+};
+
 export function getReviewPhaseForRunPhase(phase?: string | null): ReviewPhase | null {
-  if (phase === "intake" || phase === "prd_briefing_questions" || phase === "prd_briefing_draft" || phase === "prd_briefing_final_review") {
-    return "Intake";
-  }
-  if (phase === "spec" || phase === "spec_critic" || phase === "spec_verdict") return "Spec";
-  if (phase === "tech_spec") return "TechSpec";
-  if (phase === "generate_plan") return "Plan";
-  if (phase === "test_plan") return "TestPlan";
-  if (phase === "implement") return "Build";
-  if (phase === "review") return "Review";
-  if (phase === "local_check") return "Check";
-  if (phase === "fix" || phase === "fix_findings") return "Fix";
-  if (phase === "release") return "Merge";
-  if (phase === "retro") return "Retro";
-  return null;
+  if (!phase) return null;
+  return (
+    RUN_PHASE_TO_REVIEW_PHASE[phase as RunPhase] ??
+    SUB_PHASE_TO_REVIEW_PHASE[phase] ??
+    null
+  );
 }
 
 export function getDefaultReviewPhaseForChange(change: ChangeDetail, reviewCenterState?: ReviewCenterResponse | null): ReviewPhase {

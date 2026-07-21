@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getGraphRunner } from "@/server/services/graph-runner";
+import { RunPhase } from "@/server/types/enums";
 import { requireProjectChange } from "../route-guard";
 import {
   actionPreflightErrorResponse,
@@ -10,22 +11,14 @@ import {
 
 const BlockBody = z.object({
   reason: z.string().optional(),
-  phase: z
-    .enum([
-      "refine",
-      "generate_plan",
-      "implement",
-      "review",
-      "local_check",
-      "fix_findings",
-      "intake",
-      "spec",
-      "tech_spec",
-      "test_plan",
-      "release",
-      "retro",
-    ])
-    .optional(),
+  // Derived from RunPhase rather than re-listed. The hand-copied list this
+  // replaced had drifted: it was missing `delivery`, so blocking a stuck
+  // delivery run -- BLOCKED being one of only two exits from DELIVERY_PENDING
+  // (state-machine/transitions.ts) -- returned 400, and blocking without an
+  // explicit phase recorded `local_check` instead (graph-runner's
+  // phaseFromStatus fallback). Every RunPhase is a phase a run can be stuck
+  // in, so the accepted set is exactly RunPhase, with no second list to drift.
+  phase: RunPhase.optional(),
 });
 
 export async function POST(

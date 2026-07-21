@@ -240,6 +240,56 @@ describe("change deletion provider sessions", () => {
   });
 });
 
+describe("change deletion refuses to race a live run", () => {
+  // DELIVERY_PENDING is both "parked waiting for a human to click 运行交付" and
+  // pipeline-delivery-stage-service's `runningStatus`, and RUNNING_CHANGE_STATUSES
+  // deliberately omits it (adding it would lock every sibling change in the
+  // project). So the status alone cannot answer "is something running right now";
+  // the runs table can. Verified against a copy of the production DB on
+  // 2026-07-21: before this guard, DELETE returned 200 mid-delivery and took the
+  // change, its runs and the on-disk .ship/changes/<id> directory with it.
+  it("refuses while a delivery run is still in flight at DELIVERY_PENDING", async () => {
+    db.update(changes).set({ status: "DELIVERY_PENDING" }).where(eq(changes.id, CHANGE_ID)).run();
+    db.insert(runs).values({
+      id: RUN_ID,
+      changeId: CHANGE_ID,
+      phase: "delivery",
+      status: "running",
+      startedAt: NOW,
+      summary: "{}",
+    }).run();
+
+    await assert.rejects(
+      () => deleteChange(CHANGE_ID),
+      /still in flight \(delivery\)/,
+    );
+    assert.equal(
+      db.select().from(changes).where(eq(changes.id, CHANGE_ID)).all().length,
+      1,
+      "the change must survive the refusal",
+    );
+  });
+
+  it("still deletes once that run is no longer running", async () => {
+    db.update(changes).set({ status: "DELIVERY_PENDING" }).where(eq(changes.id, CHANGE_ID)).run();
+    db.insert(runs).values({
+      id: RUN_ID,
+      changeId: CHANGE_ID,
+      phase: "delivery",
+      status: "failed",
+      startedAt: NOW,
+      endedAt: NOW,
+      summary: "{}",
+    }).run();
+
+    // The guard must not become a trap: a change parked at DELIVERY_PENDING with
+    // nothing running is exactly the case RUNNING_CHANGE_STATUSES leaves deletable.
+    await deleteChange(CHANGE_ID);
+
+    assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).all().length, 0);
+  });
+});
+
 describe("change deletion cascade", () => {
   it("deletes a fully populated change without tripping a foreign key constraint", async () => {
     seedFullyPopulatedChange();
