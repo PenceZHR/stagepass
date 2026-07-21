@@ -47,10 +47,10 @@ import {
 } from "./build-workspace-paths";
 import { evaluateBuildGate, isShipArtifact } from "./build-gate-service";
 import {
-  changeArtifactIgnoredPrefixes,
+  changeAndSiblingArtifactIgnoredPrefixes,
   patchAdoptionIgnoredPrefixes,
   pipelineSystemMetadataIgnoredPrefixes,
-  trustedPipelineArtifactIgnoredPrefixes,
+  allChangeArtifactIgnoredPrefixes,
 } from "./build-workspace-ignored-prefixes";
 import type {
   BuildDeviation,
@@ -64,7 +64,7 @@ export {
   changeArtifactIgnoredPrefixes,
   patchAdoptionIgnoredPrefixes,
   pipelineSystemMetadataIgnoredPrefixes,
-  trustedPipelineArtifactIgnoredPrefixes,
+  allChangeArtifactIgnoredPrefixes,
 } from "./build-workspace-ignored-prefixes";
 export {
   buildRunId,
@@ -904,7 +904,7 @@ export function assertAdoptedBuildRunMatchesWorkspace(
     input.repoPath,
     run,
     patch,
-    changeArtifactIgnoredPrefixes(input.changeId),
+    changeAndSiblingArtifactIgnoredPrefixes(input.repoPath, input.changeId),
     patchAdoptionIgnoredPrefixes()
   );
   if (!current.ok) {
@@ -1018,7 +1018,7 @@ export function absorbBuildPatch(input: AbsorbBuildPatchInput): BuildRunFile {
     const baseCamp = checkGitBaseCamp(input.repoPath, {
       ignoredPrefixes: [
         ...pipelineSystemMetadataIgnoredPrefixes(),
-        ...trustedPipelineArtifactIgnoredPrefixes(input.changeId),
+        ...allChangeArtifactIgnoredPrefixes(input.repoPath, input.changeId),
       ],
     });
     if (!run.baseCommit) {
@@ -1039,7 +1039,7 @@ export function absorbBuildPatch(input: AbsorbBuildPatchInput): BuildRunFile {
         patch,
         [
           ...pipelineSystemMetadataIgnoredPrefixes(),
-          ...trustedPipelineArtifactIgnoredPrefixes(input.changeId),
+          ...allChangeArtifactIgnoredPrefixes(input.repoPath, input.changeId),
         ],
         patchAdoptionIgnoredPrefixes(),
       );
@@ -1102,7 +1102,7 @@ export function adoptFixPatch(input: AdoptFixPatchInput): BuildRunFile {
   const removedMirrorArtifacts = captureAndRemoveBuildAdoptionMirrorArtifacts(input.repoPath, run);
   try {
     const baseCamp = checkGitBaseCamp(input.repoPath, {
-      ignoredPrefixes: changeArtifactIgnoredPrefixes(input.changeId),
+      ignoredPrefixes: changeAndSiblingArtifactIgnoredPrefixes(input.repoPath, input.changeId),
     });
     if (!run.baseCommit) {
       throw buildWorkspaceConflict("Cannot adopt fix patch without a base commit");
@@ -1123,7 +1123,7 @@ export function adoptFixPatch(input: AdoptFixPatchInput): BuildRunFile {
           input.repoPath,
           previousAdoptedRun,
           previousPatch,
-          changeArtifactIgnoredPrefixes(input.changeId),
+          changeAndSiblingArtifactIgnoredPrefixes(input.repoPath, input.changeId),
           patchAdoptionIgnoredPrefixes()
         );
         if (!adoptedCurrent.ok) {
@@ -1189,7 +1189,11 @@ export function createBuildWorkspace(input: CreateBuildWorkspaceInput): BuildRun
   const latestRun = readLatestBuildRun(input.repoPath, input.changeId);
   let adoptedBaselinePatch: string | null = null;
   let baseCamp = checkGitBaseCamp(input.repoPath, {
-    ignoredPrefixes: changeArtifactIgnoredPrefixes(input.changeId),
+    // Sibling-aware like the adopt paths. Here it only shapes WARNINGS
+    // (strictClean: false), but those warnings are what the Base Camp panel
+    // shows the user, and listing another change's pipeline artifacts as
+    // "uncommitted work" is noise that buries the real ones.
+    ignoredPrefixes: changeAndSiblingArtifactIgnoredPrefixes(input.repoPath, input.changeId),
     strictClean: false, // Don't require clean tree for build - allow local uncommitted work
   });
   // Only block if there are actual blockers (not just warnings)
@@ -1201,7 +1205,7 @@ export function createBuildWorkspace(input: CreateBuildWorkspaceInput): BuildRun
 
       // Re-check after cleanup
       const baseCampAfterClean = checkGitBaseCamp(input.repoPath, {
-        ignoredPrefixes: changeArtifactIgnoredPrefixes(input.changeId),
+        ignoredPrefixes: changeAndSiblingArtifactIgnoredPrefixes(input.repoPath, input.changeId),
         strictClean: false,
       });
       if (baseCampAfterClean.blockers.length > 0 || !baseCampAfterClean.headSha) {
@@ -1216,7 +1220,7 @@ export function createBuildWorkspace(input: CreateBuildWorkspaceInput): BuildRun
           input.repoPath,
           latestRun,
           adoptedBaselinePatch,
-          changeArtifactIgnoredPrefixes(input.changeId),
+          changeAndSiblingArtifactIgnoredPrefixes(input.repoPath, input.changeId),
           patchAdoptionIgnoredPrefixes()
         );
         if (!adoptedCurrent.ok) {

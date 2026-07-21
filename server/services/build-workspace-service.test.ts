@@ -43,6 +43,10 @@ import {
   setBuildWorkspaceGitRunnerForTest,
 } from "./build-workspace-service";
 import { buildRunsDir } from "./build-workspace-paths";
+import {
+  allChangeArtifactIgnoredPrefixes,
+  trustedPipelineArtifactIgnoredPrefixes,
+} from "./build-workspace-ignored-prefixes";
 import type {
   BuildWorkspaceGitCommandOptions,
   BuildWorkspaceGitCommandRunner,
@@ -237,6 +241,53 @@ function seedApprovedPlanScope(
     required: 1,
     createdAt: now,
   }).run();
+}
+
+function porcelainPaths(repo: string): string[] {
+  const output = execFileSync("git", ["status", "--porcelain", "-uall"], {
+    cwd: repo,
+    encoding: "utf-8",
+  }).trimEnd();
+  return output ? output.split("\n").map((line) => line.slice(3).trim()) : [];
+}
+
+/**
+ * The artifact set a change leaves behind once it has run PAST Build. Every one
+ * of these paths is outside `trustedPipelineArtifactIgnoredPrefixes`, which is
+ * the whole point: a per-file whitelist -- even one extended to siblings --
+ * still reads them as dirty, so tests built on this helper can only pass when
+ * the sibling's directory is ignored wholesale.
+ *
+ * Returns the repo-relative paths it wrote.
+ */
+function writePostBuildChangeArtifacts(repo: string, changeId: string): string[] {
+  const relativePaths = [
+    "plan.json",
+    "build/runs/build-1.json",
+    "approvals/build-1-approval.json",
+    "mirrors/review-report.md",
+    "review-findings.json",
+    "retro.md",
+    "scope-check.json",
+    "local-check.json",
+  ].map((relativePath) => path.posix.join(".ship", "changes", changeId, relativePath));
+
+  for (const relativePath of relativePaths) {
+    const target = path.join(repo, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `${changeId} artifact: ${relativePath}\n`);
+  }
+  return relativePaths;
+}
+
+/** Drives an approved-for-absorb build run for `changeId` that rewrites app.ts. */
+function approveAppTsBuild(repo: string, changeId = "CHG-001"): void {
+  trackBuildWorkspace(repo, changeId);
+  writeAndCommitPlan(repo, changeId, { allowedFiles: ["app.ts"] });
+  const run = createBuildWorkspace({ repoPath: repo, changeId });
+  fs.writeFileSync(path.join(run.workspacePath, "app.ts"), "export const value = 2;\n");
+  collectBuildResult({ repoPath: repo, changeId });
+  approveBuildForAbsorb({ repoPath: repo, changeId });
 }
 
 describe("git worktree primitives", () => {
@@ -1295,6 +1346,117 @@ describe("build workspace metadata and git base camp", () => {
     assert.equal(fs.readFileSync(path.join(repo, "app.ts"), "utf-8"), "export const value = 1;\n");
     assert.equal(readLatestBuildRun(repo, "CHG-001")?.status, "approved_for_absorb");
     assert.equal(getLatestAdoptedBuildRecord("CHG-001"), null);
+  });
+
+  it("absorbs while a sibling change's post-Build artifacts sit uncommitted", () => {
+    const repo = makeRepo();
+    approveAppTsBuild(repo, "CHG-001");
+    // CHG-002 ran the full pipeline and, as the pipeline never commits its own
+    // artifacts, left all of them uncommitted. None of these paths is in the
+    // per-file trusted whitelist, so scoping the ignore list to the change being
+    // adopted made every change after the first one permanently unadoptable.
+    const siblingFiles = writePostBuildChangeArtifacts(repo, "CHG-002");
+    const dirtyBefore = porcelainPaths(repo);
+    for (const siblingFile of siblingFiles) {
+      assert.ok(
+        dirtyBefore.includes(siblingFile),
+        `expected git to report ${siblingFile} as uncommitted before absorb`
+      );
+    }
+
+    const adopted = absorbBuildPatch({ repoPath: repo, changeId: "CHG-001" });
+
+    assert.equal(adopted.status, "adopted");
+    assert.equal(fs.readFileSync(path.join(repo, "app.ts"), "utf-8"), "export const value = 2;\n");
+    assert.equal(readLatestBuildRun(repo, "CHG-001")?.status, "adopted");
+    assert.ok(getLatestAdoptedBuildRecord("CHG-001"));
+    // Ignored, not swallowed: adoption must leave the sibling's files untouched.
+    for (const siblingFile of siblingFiles) {
+      assert.equal(
+        fs.readFileSync(path.join(repo, siblingFile), "utf-8"),
+        `CHG-002 artifact: ${siblingFile}\n`
+      );
+    }
+  });
+
+  it("still rejects absorb when the current change's own directory holds an unknown file", () => {
+    const repo = makeRepo();
+    approveAppTsBuild(repo, "CHG-001");
+    // The sibling relaxation is directory-level; the change being adopted keeps
+    // the narrow per-file whitelist, so an unrecognised file it wrote is still
+    // the anomaly the dirty check exists to surface.
+    fs.writeFileSync(
+      path.join(repo, ".ship", "changes", "CHG-001", "weird-model-output.txt"),
+      "the model wrote something nobody asked for\n"
+    );
+
+    assert.throws(
+      () => absorbBuildPatch({ repoPath: repo, changeId: "CHG-001" }),
+      (error: unknown) => {
+        assert.equal((error as { statusCode?: number }).statusCode, 409);
+        assert.match((error as Error).message, /dirty workspace/i);
+        assert.match((error as Error).message, /weird-model-output\.txt/);
+        return true;
+      }
+    );
+    assert.equal(fs.readFileSync(path.join(repo, "app.ts"), "utf-8"), "export const value = 1;\n");
+    assert.equal(readLatestBuildRun(repo, "CHG-001")?.status, "approved_for_absorb");
+    assert.equal(getLatestAdoptedBuildRecord("CHG-001"), null);
+  });
+
+  it("still rejects absorb for a dirty source file even when sibling artifacts are ignored", () => {
+    const repo = makeRepo();
+    approveAppTsBuild(repo, "CHG-001");
+    writePostBuildChangeArtifacts(repo, "CHG-002");
+    fs.writeFileSync(path.join(repo, "README-scratch.md"), "# notes I never committed\n");
+
+    assert.throws(
+      () => absorbBuildPatch({ repoPath: repo, changeId: "CHG-001" }),
+      (error: unknown) => {
+        assert.equal((error as { statusCode?: number }).statusCode, 409);
+        assert.match((error as Error).message, /README-scratch\.md/);
+        assert.match((error as Error).message, /outside the adopted patch/);
+        // The sibling is genuinely filtered out of the dirty set rather than
+        // merely outweighed: it must not appear among the blocking files.
+        assert.equal(/CHG-002/.test((error as Error).message), false);
+        return true;
+      }
+    );
+    assert.equal(fs.readFileSync(path.join(repo, "app.ts"), "utf-8"), "export const value = 1;\n");
+    assert.equal(readLatestBuildRun(repo, "CHG-001")?.status, "approved_for_absorb");
+    assert.equal(getLatestAdoptedBuildRecord("CHG-001"), null);
+  });
+
+  it("survives a missing or non-directory .ship/changes when building the ignore list", () => {
+    const repo = makeRepo();
+    assert.equal(fs.existsSync(path.join(repo, ".ship")), false);
+
+    // No `.ship/changes` at all: the readdir catch branch must degrade to the
+    // current change's own whitelist rather than throw.
+    assert.deepEqual(
+      allChangeArtifactIgnoredPrefixes(repo, "CHG-001"),
+      trustedPipelineArtifactIgnoredPrefixes("CHG-001")
+    );
+
+    // A stray file under `.ship/changes` is not a sibling change.
+    fs.mkdirSync(path.join(repo, ".ship", "changes"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".ship", "changes", "notes.txt"), "not a change\n");
+    assert.deepEqual(
+      allChangeArtifactIgnoredPrefixes(repo, "CHG-001"),
+      trustedPipelineArtifactIgnoredPrefixes("CHG-001")
+    );
+
+    // And absorb still works end to end when the current change is the only one.
+    approveAppTsBuild(repo, "CHG-001");
+    assert.deepEqual(
+      allChangeArtifactIgnoredPrefixes(repo, "CHG-001"),
+      trustedPipelineArtifactIgnoredPrefixes("CHG-001")
+    );
+
+    const adopted = absorbBuildPatch({ repoPath: repo, changeId: "CHG-001" });
+
+    assert.equal(adopted.status, "adopted");
+    assert.equal(fs.readFileSync(path.join(repo, "app.ts"), "utf-8"), "export const value = 2;\n");
   });
 
   it("applies an approved build patch and marks the run adopted", () => {

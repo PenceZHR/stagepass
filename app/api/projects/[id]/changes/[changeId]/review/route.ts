@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createChildLogger } from "@/server/logger";
 import { preflightReviewRun } from "@/server/services/pipeline-service";
 import { PreflightValidationError } from "@/server/services/preflight-service";
 import { enqueueProviderActionAtomically } from "@/server/services/job-dispatch-service";
@@ -10,6 +11,8 @@ import {
   resolveRequestProvider,
 } from "../action-preflight";
 import { requireProjectChange } from "../route-guard";
+
+const log = createChildLogger("review-route");
 
 function reviewActionId(value: unknown): "run_review" | "retry_review" {
   if (value === undefined) return "run_review";
@@ -48,8 +51,14 @@ export async function POST(
   } catch (err: unknown) {
     const preflightResponse = actionPreflightErrorResponse(err);
     if (preflightResponse) return preflightResponse;
+    // The message used to die here. An `internal_error` with no server log and
+    // no client detail is undiagnosable from either side -- the only signal was
+    // a bare 500 and a button that did nothing.
+    const message = err instanceof Error ? err.message : String(err);
+    log.error({ projectId, changeId, err: message, stack: err instanceof Error ? err.stack : undefined },
+      "Review request failed");
     return NextResponse.json(
-      { error: "Review request failed", reasonCode: "internal_error" },
+      { error: "Review request failed", reasonCode: "internal_error", message },
       { status: 500 },
     );
   }
