@@ -24,11 +24,17 @@ if (verdicts.length === 0) return [];
 
 **后果**：`pipeline-document-stage-runner-service.ts:532` 在回复为空时整个跳过 rubric harvest（条件是 `result.success && summary.trim().length > 0`），而这正是 codex 被 SIGTERM 后的形状（`success:true, summary:""`）。于是零条 assessment → `derived = []` → gate 停在 `passed`，不落行、不记事件。**一个本该被 81 条出厂标准评判的阶段，零条被评判地通过了，返回值与「全数通过」逐字节相同。**
 
-**现状**：活的。`7ae57fb` 刚把 rubric 推广到全阶段。同一文件 `:261-264` 用大写写着相反的原则——「ABSENCE IS NOT A THIRD WAY」——那是**关闭**路径的规则，**开启**路径在 64 行之前正好违反它。
+**现状（实证更正，2026-07-21）**：**潜伏，不是活的。** 定性偏强了：
 
-**消歧方向**：无判定返回显式第三态（`no_batch`），由调用方决定它算不算通过。
+- 能阻断的阶段（Spec / TechSpec / TestPlan / Plan）**都有 `outputSchema`**，空回复先被 schema 拒掉、阶段大声失败，rubric 轮不到。
+- `Retro` 是唯一有 rubric 却既无 `outputSchema` 也无 `lineProtocol` 的阶段，空回复确实一路走通——但生产库验证 `stage_gates` 没有 Retro 行，它的 rubric **本来就永远不能阻断**（`pipeline-release-retro-stage-service.ts:150-153` 明写）。
+- 真实损害与 rubric 无关：**change 带着一个空的 retro.md 进 DONE**，六条 Retro 标准零条被判。
 
-> 这条是三级 rubric 设计的前置条件。一级标准写得再硬，只要空回复能让它零条判定地通过，就都是纸的。
+`:261-264` 那段大写原则（「ABSENCE IS NOT A THIRD WAY」）描述的是**关闭**路径，而 `:197` 在**开启**路径上，两者并不矛盾——开启需要 verdict 本来就是设计。
+
+**已修（`92e6a74`）**：修的不是 `deriveRubricBlockers`，是更上一层——runner 现在拒绝「成功但空」的回复。`applyLineProtocol` 写着「callers already handle it」，而只有设了 `outputSchema` 的调用方真的 handle，没有任何东西强制这个配对。守卫放在 runner 让那句契约对每个阶段成立，包括还没写的。
+
+> 仍是三级 rubric 设计的前置条件：一级标准若落在没有 schema 兜底的阶段上，空回复就是现成的绕过口。
 
 ### 1.2 `review-report-service.ts:233-242` — 上一轮的阻断 finding 蒸发
 
@@ -63,13 +69,23 @@ const output = execSync("git diff --name-only", { cwd: repoPath, ... });
 - 读法 A：git 说没有文件变动。
 - 读法 B：git 调用失败（`:48` 的 catch 只 `log.warn`），或者我们问错了问题。
 
-**后果**：`pipeline-qa-stage-service.ts:144` 传入的是收编后的 worktree，而 `build-workspace-service.ts:1276` 已对它跑过 `git add -A` + `git commit`。**工作区必然干净 → `changedFiles` 恒为空 → `:61` 的循环一次都不执行 → `success = true`，QA 报告 scope-clean。**
+**现状（实证更正，2026-07-21）**：**「恒为空」是错的**，但缺陷真实存在，且更尖锐。
 
-**现状**：`edf6685 fix(build): 让收编真的提交` 是让收编真正 commit 的那次提交，它没有配套改这里的 git 调用。**一个修复静默关掉了另一个检查。**
+生产验证：CHG-001 的 build-5 / build-6 / build-7 三个工作区各有 12–13 个未提交文件，`git diff --name-only` **看得见它们**。所以不是恒为空。
 
-**消歧方向**：改用 `git diff --name-only <baseCommit>..HEAD` 或 `git status --porcelain`（`git-service.ts:100-103` 用的就是后者），并让 catch 产出 blocker 而不是空集。
+临时仓库逐形态实测，`git diff --name-only` 只列「已追踪文件的未暂存改动」：
 
-> 这条同样是三级设计的前置条件：一级「绝对不能僭越写文件」的确定性执行，在 QA 路径上现在是死的。
+| 改动形态 | `git diff --name-only` | `git status --porcelain` |
+|---|---|---|
+| 改已追踪文件 | ✅ | ✅ |
+| **新建文件** | **❌ 完全看不见** | ✅ |
+| 已暂存 | ❌ | ✅ |
+
+**真实缺陷**：新建文件对范围检查完全隐形。agent 新写一个范围外的 `src/secrets/leak.ts` 可以干净通过——而「不许在范围外新建文件」恰恰是这个检查最该拦的那种僭越。该文件原有的 4 个用例**全部改的是已追踪文件**，所以一个都没抓到。
+
+**已修（`9c6a1d2`）**：改用 `git status --porcelain`（经 `getWorkingTreeStatus` 复用仓库唯一的 porcelain 解析），加 `-uall` 防止未追踪目录被折叠成一条匹配不上任何 glob 的条目，并用 `isShipArtifact` 排除 stagepass 自己的记账。另修一处 fail-open：仓库读不出时不再回落成空集——注意挂点不是 catch，`isGitRepo` / `hasCommits` 都吞异常返回 false，`getWorkingTreeStatus` 对坏仓库提前返回 `{clean:true}`，异常根本不抛。
+
+> 这条同样是三级设计的前置条件：一级「绝对不能僭越写文件」的确定性执行，此前对新建文件是瞎的。
 
 ### 1.5 `build_run_records.run_id` 恒为 NULL — 成功的 run 被恢复路径判为失败
 
@@ -268,5 +284,5 @@ const output = execSync("git diff --name-only", { cwd: repoPath, ... });
 | §1.1 `rubric-gate-service.ts:197` | 空回复能让阶段零条判定地通过。不修，一级标准写多硬都是纸的 |
 | §1.4 `scope-check-service.ts:42` | 一级「绝对不能僭越写文件」的确定性执行在 QA 路径上现在是死的 |
 | §3.2 `criterionKey` 位置派生 | key 进了用户可编辑文件后，改一行会废掉已盖章的阻断项 |
-| §4.2 出厂 rubric 的「红方」 | 一级无出口，一次误判即永久死锁；这条现在就会产生误判 |
+| §4.2 出厂 rubric 的「红方」 | 一级无出口，一次误判即永久死锁；这条现在就会产生误判。**已修 `8d59eb8`**，但存量项目库里仍是旧措辞 |
 | §3.1 / §3.4 rubric 文档矛盾 | 三级语义要写进文档，而现有文档自相矛盾且自称未实现 |
