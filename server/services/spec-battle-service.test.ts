@@ -37,6 +37,7 @@ import {
   SpecBattleError,
   startSpecBattleRound,
 } from "./spec-battle-service.ts";
+import type { ParsedBlueCritiqueOutput } from "./spec-battle-ledger.ts";
 import { generateSpecReport } from "./spec-battle-report-service.ts";
 import { deleteChange, deleteChangeRecords } from "./change-service.ts";
 import { getActions } from "./action-contract-service.ts";
@@ -900,6 +901,139 @@ describe("spec-battle-service", { concurrency: false }, () => {
       db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
       "blue_running"
     );
+  });
+
+  // A "downgraded" verdict carrying no target used to satisfy neither the
+  // downgrade branch (guarded by `&& review.downgradedTo`) nor the still_open
+  // branch, so completeBlueCritique wrote the blue_gap_reviews row, closed the
+  // round, and left requirement_gaps byte-for-byte untouched -- status open,
+  // specBlocking 1, lastEvaluatedRoundId still pointing at the PREVIOUS round.
+  // The report then printed "[downgraded]" and "[P0/open/blocks-spec]" for the
+  // same gap, with no error and no event. The line-protocol parser refused this
+  // combination, but it was the only thing that did, and the production call
+  // site hands over an already-assembled payload instead of protocol text.
+  it("rejects a downgraded blue review with no downgrade target", async () => {
+    await readyRoundWithGap("P0");
+    await applySpecBattleDecision({
+      changeId: CHANGE_ID,
+      action: "request_changes",
+      targetType: "requirement_gap",
+      targetId: "missing-state",
+      reason: "下一轮复核",
+    });
+    const nextRound = getSpecBattleState(CHANGE_ID).latestRound;
+    assert.ok(nextRound);
+    claimRoundForTest(nextRound.id);
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, markdown: "# Spec v2\n" });
+
+    const gapBefore = db
+      .select()
+      .from(requirementGaps)
+      .where(eq(requirementGaps.canonicalGapId, "missing-state"))
+      .get();
+    assert.ok(gapBefore);
+
+    await assert.rejects(
+      () => completeBlueCritique({
+        changeId: CHANGE_ID,
+        roundId: nextRound.id,
+        // The discriminated union makes this unconstructible in TypeScript; the
+        // cast is what a JS caller or an `any`-typed provider payload does, and
+        // is exactly why the schema has to refuse it at runtime too.
+        blueCritique: {
+          gapReviews: [
+            {
+              canonicalGapId: "missing-state",
+              verdict: "downgraded",
+              reviewSummary: "严重度下调",
+              evidence: "复核证据",
+              resolutionEvidence: "部分缓解",
+              downgradedTo: null,
+            },
+          ],
+          requirementGaps: [],
+        } as unknown as ParsedBlueCritiqueOutput,
+      }),
+      /downgradedTo/
+    );
+
+    const gapAfter = db
+      .select()
+      .from(requirementGaps)
+      .where(eq(requirementGaps.canonicalGapId, "missing-state"))
+      .get();
+    assert.deepEqual(gapAfter, gapBefore);
+    assert.equal(
+      db.select().from(blueGapReviews).where(eq(blueGapReviews.roundId, nextRound.id)).all().length,
+      0
+    );
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, nextRound.id)).get()?.status,
+      "blue_running"
+    );
+  });
+
+  it("rejects a downgraded blue review with no downgrade target from parsed JSON", async () => {
+    const round = await startSpecBattleRound(CHANGE_ID);
+    claimRoundForTest(round.roundId);
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: round.roundId, markdown: "# Spec\n" });
+
+    await assert.rejects(
+      () => completeBlueCritique({
+        changeId: CHANGE_ID,
+        roundId: round.roundId,
+        blueJson: blueReviewJson({ verdict: "downgraded", resolutionEvidence: "部分缓解" }),
+      }),
+      /downgradedTo/
+    );
+
+    assert.equal(db.select().from(blueGapReviews).where(eq(blueGapReviews.changeId, CHANGE_ID)).all().length, 0);
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
+      "blue_running"
+    );
+  });
+
+  // The positive half of the same rule: a downgrade that DOES carry a target
+  // must move every field the no-op left behind.
+  it("downgrades an old P1 gap to P2 when blue supplies a downgrade target", async () => {
+    const firstRoundId = await readyRoundWithGap("P1");
+    await applySpecBattleDecision({
+      changeId: CHANGE_ID,
+      action: "request_changes",
+      targetType: "requirement_gap",
+      targetId: "missing-state",
+      reason: "反方同意降级",
+    });
+    const nextRound = getSpecBattleState(CHANGE_ID).latestRound;
+    assert.ok(nextRound);
+    claimRoundForTest(nextRound.id);
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
+
+    await completeBlueCritique({
+      changeId: CHANGE_ID,
+      roundId: nextRound.id,
+      blueJson: blueReviewJson({
+        verdict: "downgraded",
+        resolutionEvidence: "范围缩小后只剩体验问题",
+        downgradedTo: "P2",
+      }),
+    });
+
+    const gap = db
+      .select()
+      .from(requirementGaps)
+      .where(eq(requirementGaps.canonicalGapId, "missing-state"))
+      .get();
+    assert.equal(gap?.status, "downgraded");
+    assert.equal(gap?.downgradedTo, "P2");
+    assert.equal(gap?.severity, "P1");
+    assert.equal(gap?.downgradeReason, "反方复核旧缺口");
+    assert.equal(gap?.specBlocking, 0);
+    assert.equal(gap?.mergeBlocking, 0);
+    assert.notEqual(gap?.lastEvaluatedRoundId, firstRoundId);
+    assert.equal(gap?.lastEvaluatedRoundId, nextRound.id);
+    assert.equal(getSpecBattleState(CHANGE_ID).counts.blockingP1, 0);
   });
 
   it("does not reopen a gap resolved by a same-round blue review", async () => {

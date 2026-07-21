@@ -157,11 +157,18 @@ describe("pipeline UI model", () => {
     assert.equal(prd?.actionPhase, "PRD");
     assert.notEqual(prd?.id, prd?.reviewPhase);
 
+    // This used to assert reviewPhase/recordPhase/actionPhase all null and no
+    // actionIds, on the reading that Done was a completion screen rather than a
+    // stage. Design §3 made it a real stage: it runs `delivery`, writes
+    // delivery.md and answers the Done producer rubric. Keeping the old
+    // assertions would pin the exact defect the design set out to remove -- a
+    // stage whose records, artifact and rubric exist on the server with no way
+    // to reach any of them from the interface.
     const done = state.stages.find((stage) => stage.id === "done");
-    assert.equal(done?.reviewPhase, null);
-    assert.equal(done?.recordPhase, null);
-    assert.equal(done?.actionPhase, null);
-    assert.equal(done?.actionIds, undefined);
+    assert.equal(done?.reviewPhase, "Done");
+    assert.equal(done?.recordPhase, "Done");
+    assert.equal(done?.actionPhase, "Merge");
+    assert.deepEqual(done?.actionIds, ["run_delivery"]);
     assert.equal(done?.available, true);
   });
 
@@ -179,7 +186,11 @@ describe("pipeline UI model", () => {
     assert.deepEqual(undeclared, []);
   });
 
-  it("keeps Done as the final read-only completion stage", () => {
+  // Was "keeps Done as the final read-only completion stage". Done is still the
+  // final stage, but it is no longer read-only: the delivery note is produced
+  // here, and a stage with an artifact and a rubric has to be selectable or its
+  // records are unreachable.
+  it("keeps Done last, and makes it a selectable stage that owns the delivery note", () => {
     const state = buildUiPipelineState({ change: change({ status: "DONE" }) });
     const done = state.selectedStage;
 
@@ -187,12 +198,18 @@ describe("pipeline UI model", () => {
     assert.equal(done.id, "done");
     assert.equal(done.label, "Done");
     assert.equal(done.state, "complete");
-    assert.equal(done.reviewPhase, null);
-    assert.equal(done.recordPhase, null);
-    assert.equal(done.actionPhase, null);
-    assert.equal(done.actionIds, undefined);
-    assert.equal(done.selectable, false);
+    assert.equal(done.reviewPhase, "Done");
+    assert.equal(done.recordPhase, "Done");
+    assert.equal(done.actionPhase, "Merge");
+    assert.deepEqual(done.actionIds, ["run_delivery"]);
+    assert.equal(done.selectable, true);
     assert.equal(done.available, true);
+  });
+
+  it("parks a change at Done while the delivery note is still pending", () => {
+    const state = buildUiPipelineState({ change: change({ status: "DELIVERY_PENDING" }) });
+    assert.equal(state.activeStage.id, "done");
+    assert.equal(state.activeStage.state, "waiting");
   });
 
   it("maps every current change status to a user-facing stage and canonical UI state", () => {
@@ -222,6 +239,7 @@ describe("pipeline UI model", () => {
       ["MERGE_READY", "merge", "needs_review"],
       ["MERGING", "merge", "running"],
       ["RETRO_PENDING", "retro", "waiting"],
+      ["DELIVERY_PENDING", "done", "waiting"],
       ["DONE", "done", "complete"],
     ];
 

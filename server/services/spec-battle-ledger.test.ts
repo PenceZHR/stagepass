@@ -202,6 +202,76 @@ describe("spec-battle-ledger", () => {
     );
   });
 
+  // verdict and downgradedTo are one discriminated fact, not two independent
+  // fields. Read separately, a null downgradedTo means both "this is not a
+  // downgrade" (true for resolved/still_open) and "this IS a downgrade, target
+  // missing" -- and completeBlueCritique's branch table hit neither case, so the
+  // round updated the gap ledger not at all while still recording the verdict.
+  it("rejects a downgraded gap review that carries no downgrade target", () => {
+    const review = (downgradedTo: unknown) => ({
+      gapReviews: [
+        {
+          canonicalGapId: "gap-auth",
+          verdict: "downgraded",
+          reviewSummary: "Severity lowered.",
+          evidence: "Only cosmetic impact remains.",
+          resolutionEvidence: "Scope narrowed.",
+          downgradedTo,
+        },
+      ],
+      requirementGaps: [],
+    });
+
+    assert.equal(validateBlueCritiqueOutput(review(null)).success, false);
+    assert.match(
+      validateBlueCritiqueOutput(review(null)).error?.message ?? "",
+      /downgradedTo/
+    );
+    assert.equal(validateBlueCritiqueOutput(review("P1")).success, true);
+    assert.equal(validateBlueCritiqueOutput(review("P2")).success, true);
+    assert.equal(validateBlueCritiqueOutput(review("P0")).success, false);
+  });
+
+  // The other direction: a null target is the only legal value for every
+  // non-downgrade verdict, and tightening the rule must not cost them.
+  it("keeps a null downgrade target legal for every non-downgrade verdict", () => {
+    for (const verdict of ["resolved", "still_open", "needs_human_decision"]) {
+      const result = validateBlueCritiqueOutput({
+        gapReviews: [
+          {
+            canonicalGapId: "gap-auth",
+            verdict,
+            reviewSummary: "Reviewed.",
+            evidence: "Checked the PRD.",
+            resolutionEvidence: null,
+            downgradedTo: null,
+          },
+        ],
+        requirementGaps: [],
+      });
+      assert.equal(result.success, true, `${verdict} with a null target must stay legal`);
+    }
+  });
+
+  it("rejects a non-downgrade verdict that smuggles in a downgrade target", () => {
+    assert.equal(
+      validateBlueCritiqueOutput({
+        gapReviews: [
+          {
+            canonicalGapId: "gap-auth",
+            verdict: "still_open",
+            reviewSummary: "Still open.",
+            evidence: "Nothing changed.",
+            resolutionEvidence: null,
+            downgradedTo: "P2",
+          },
+        ],
+        requirementGaps: [],
+      }).success,
+      false
+    );
+  });
+
   it("exports a strict blue critique JSON schema with all object properties required", () => {
     const properties = BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA.properties as Record<string, {
       items: { required: string[] };

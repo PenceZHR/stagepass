@@ -29,6 +29,10 @@ export const ChangeStatus = z.enum([
   "MERGE_READY",
   "MERGING",
   "RETRO_PENDING",
+  // Retro is finished, the delivery note has not been produced yet. Like
+  // RETRO_PENDING this is a WAITING status, not a running one: the human presses
+  // the button. See RUNNING_CHANGE_STATUSES in state-machine/transitions.ts.
+  "DELIVERY_PENDING",
   "DONE",
 ]);
 export type ChangeStatus = z.infer<typeof ChangeStatus>;
@@ -46,6 +50,7 @@ export const RunPhase = z.enum([
   "test_plan",
   "release",
   "retro",
+  "delivery",
 ]);
 export type RunPhase = z.infer<typeof RunPhase>;
 
@@ -131,6 +136,7 @@ export const ArtifactType = z.enum([
   "requirement_gaps",
   "battle_round",
   "human_decisions",
+  "delivery",
 ]);
 export type ArtifactType = z.infer<typeof ArtifactType>;
 
@@ -194,6 +200,7 @@ export const Phase = z.enum([
   "Fix",
   "Merge",
   "Retro",
+  "Done",
   "Ready",
 ]);
 export type Phase = z.infer<typeof Phase>;

@@ -20,6 +20,13 @@ type ReviewFinding = typeof findings.$inferSelect;
 type BuildRunRecord = typeof buildRunRecords.$inferSelect;
 type ReviewPriorFindingReview = typeof reviewPriorFindingReviews.$inferSelect;
 
+export class InvalidPriorBlockingSnapshotError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidPriorBlockingSnapshotError";
+  }
+}
+
 export type ReviewConclusion =
   | "passed"
   | "issues_found"
@@ -230,15 +237,43 @@ function isOpenP0P1(finding: ReviewFinding): boolean {
   return finding.status === "open" && (finding.severity === "P0" || finding.severity === "P1");
 }
 
+/**
+ * A NULL column is the one honest empty set: the attempt predates the column,
+ * or it is attempt 1 and there was nothing prior to carry. Every other value
+ * has to read back as an array of strings.
+ *
+ * Anything unreadable is NOT an empty set, and the two must not share an
+ * answer. settlementFindingsForReviewAttempt consults this set as the only
+ * mechanism that carries a previous attempt's still-open P0/P1 into the current
+ * attempt's settlement, so an empty set drops those findings, zeroes
+ * counts.blockingP0, and lets recomputeReviewReport hand out gateStatus
+ * "passed" with qaAllowed=1 over a P0 that is still open in the DB. That is
+ * exactly the reading this throw refuses to make.
+ *
+ * Fail loud, matching the other readers of this column:
+ * review-structured-output-parser.parsePriorBlockingFindingIds throws
+ * InvalidReviewOutputError, and action-contract-review-policy's inline reader
+ * voids the cached gate by returning null. recomputeReviewReport converts this
+ * error into a data_inconsistent report below; every other caller of
+ * settlementFindingsForReviewAttempt fails closed on the throw.
+ */
 function parsePriorBlockingFindingIds(attempt: ReviewAttempt): Set<string> {
-  if (!attempt.priorBlockingFindingIdsJson) return new Set();
+  if (attempt.priorBlockingFindingIdsJson === null) return new Set();
+
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(attempt.priorBlockingFindingIdsJson) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((value): value is string => typeof value === "string"));
+    parsed = JSON.parse(attempt.priorBlockingFindingIdsJson) as unknown;
   } catch {
-    return new Set();
+    throw new InvalidPriorBlockingSnapshotError(
+      `prior blocking finding snapshot is not valid JSON for review attempt ${attempt.id}`,
+    );
   }
+  if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+    throw new InvalidPriorBlockingSnapshotError(
+      `prior blocking finding snapshot is not an array of strings for review attempt ${attempt.id}`,
+    );
+  }
+  return new Set(parsed as string[]);
 }
 
 function priorFindingReviewsForAttempt(
@@ -403,7 +438,21 @@ export function recomputeReviewReport(
     .where(eq(findings.changeId, changeId))
     .all()
     .filter((finding) => finding.source === "review");
-  const settlementFindings = settlementFindingsForReviewAttempt(attempt, reviewFindings);
+  // An unreadable prior-blocking snapshot cannot be settled, so the report is
+  // not entitled to a verdict on it. Record it as a data inconsistency instead
+  // of throwing: the reason lands in the persisted staleReason column where the
+  // Review panel can show it, gateStatus is forced to data_inconsistent below
+  // (qaAllowed=0), and validReportConclusion keeps that report from ever
+  // becoming review_state.latestValidReviewReportId.
+  let settlementFindings: ReviewFinding[];
+  const unreadablePriorSnapshotReasons: string[] = [];
+  try {
+    settlementFindings = settlementFindingsForReviewAttempt(attempt, reviewFindings);
+  } catch (error) {
+    if (!(error instanceof InvalidPriorBlockingSnapshotError)) throw error;
+    settlementFindings = [];
+    unreadablePriorSnapshotReasons.push("prior_blocking_snapshot_unreadable");
+  }
   const priorFindingReviews = priorFindingReviewsForAttempt(db, attempt.id);
   const counts = countFindings(settlementFindings);
   const findingVersion = maxVersion(settlementFindings);
@@ -411,12 +460,10 @@ export function recomputeReviewReport(
   const latestBuild = latestApprovedBuildRun(db, changeId);
   const latestBuildId = buildIdentity(latestBuild);
   const staleReasons: string[] = [];
-  const dataInconsistencyReasons = findDbInconsistencies(
-    db,
-    changeId,
-    previousState,
-    reviewFindings,
-  );
+  const dataInconsistencyReasons = [
+    ...findDbInconsistencies(db, changeId, previousState, reviewFindings),
+    ...unreadablePriorSnapshotReasons,
+  ].sort();
 
   if (latestBuildId && attempt.sourceBuildRunId !== latestBuildId) {
     staleReasons.push("source_build_changed");

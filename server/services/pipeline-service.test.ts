@@ -78,6 +78,7 @@ import {
   runPrdBriefingDraft,
   runPrdBriefingFinalReview,
   runPrdBriefingQuestions,
+  runDelivery,
   runRelease,
   runRetro,
   runReview,
@@ -997,6 +998,26 @@ function validTestPlanLineProtocolText() {
     "RISK: qa-db-commands | markdown-command-bypass | P0 | Required commands are persisted in DB order.",
     "COMMAND!: node -e \"console.log('testplan db command')\"",
     "MANUAL!: TestPlan mirror is informational only | Do not use Markdown to decide QA entry.",
+  ].join("\n");
+}
+
+/**
+ * Line-protocol form of the delivery (Done) reply. The delivery note's section
+ * 4.1 is generated from the database and has no slot in this text on purpose.
+ */
+function validDeliveryLineProtocolText() {
+  return [
+    "HOW_TO_RUN<<",
+    "在仓库根目录执行 `node src/app.ts`。",
+    ">>HOW_TO_RUN",
+    "WHAT_CHANGED<<",
+    "更新了 app 的返回值；运行入口后应看到新的值。",
+    ">>WHAT_CHANGED",
+    "FILEMAP: src/app.ts | entry | 应用入口",
+    "KNOWN_LIMITS<<",
+    "本次没有明确排除的范围；没有踩到已知坑。",
+    ">>KNOWN_LIMITS",
+    "DELIVERY_DONE: true",
   ].join("\n");
 }
 
@@ -1964,7 +1985,11 @@ describe("pipeline-service v2 stages", () => {
       name: "retro",
       initialStatus: "RETRO_PENDING",
       run: () => runRetro(CHANGE_ID, makeTestJobExecutionContext("stage-case-retro")),
-      expectedStatus: "DONE",
+      // Was DONE. Retro is no longer the last stage: design §3 put the delivery
+      // stage between it and DONE, so a change that stops here has a retro and
+      // no delivery note. Pinning DONE would pin "the pipeline may finish
+      // without ever saying how to use what it built".
+      expectedStatus: "DELIVERY_PENDING",
       artifact: "retro.md",
     },
   ];
@@ -11269,10 +11294,13 @@ describe("pipeline-service v2 stages", () => {
         // above, and the verdict (spec_verdict) is rubric-only. Keyed on the
         // engine phase, which is the stage identity itself.
         const isSpecRed = input.phase === "spec";
+        const isDelivery = input.phase === "delivery";
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: isDesignSnapshotPrompt
+          summary: isDelivery
+            ? validDeliveryLineProtocolText()
+            : isDesignSnapshotPrompt
             ? validTechSpecLineProtocolText()
             : isTestPlanPrompt
             ? validTestPlanLineProtocolText()
@@ -11619,6 +11647,12 @@ describe("pipeline-service v2 stages", () => {
     fs.rmSync(path.dirname(replacementRunPath), { recursive: true });
 
     await runRetro(CHANGE_ID, makeTestJobExecutionContext("complete-pipeline-retro"));
+    // Retro hands over to the Done stage rather than ending the pipeline: this
+    // used to assert DONE here, which is exactly the gap design §3 closed --
+    // a change could finish with nothing saying how to use what it built.
+    assert.equal(currentStatus(), "DELIVERY_PENDING");
+
+    await runDelivery(CHANGE_ID, makeTestJobExecutionContext("complete-pipeline-delivery"));
     assert.equal(currentStatus(), "DONE");
 
     for (const fileName of [
@@ -11632,6 +11666,7 @@ describe("pipeline-service v2 stages", () => {
       path.join("reports", "build-1-report.md"),
       "release-note.md",
       "retro.md",
+      "delivery.md",
     ]) {
       assert.equal(artifactExists(repoPath, fileName), true, `${fileName} should exist`);
     }

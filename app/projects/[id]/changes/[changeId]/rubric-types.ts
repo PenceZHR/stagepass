@@ -21,7 +21,8 @@ export type RubricPhase =
   | "Fix"
   | "QA"
   | "Merge"
-  | "Retro";
+  | "Retro"
+  | "Done";
 
 export type RubricVerdict = "yes" | "no" | "not_assessed";
 

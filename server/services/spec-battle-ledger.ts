@@ -20,13 +20,7 @@ const RedClaimStatusSchema = z.enum([
   "not_fixed",
   "needs_human_decision",
 ]);
-const BlueReviewVerdictSchema = z.enum([
-  "resolved",
-  "still_open",
-  "downgraded",
-  "needs_human_decision",
-]);
-const DowngradedToSchema = z.enum(["P1", "P2"]).nullable();
+const DowngradeTargetSchema = z.enum(["P1", "P2"]);
 
 const RedFixClaimSchema = z
   .object({
@@ -38,16 +32,56 @@ const RedFixClaimSchema = z
   })
   .strict();
 
-const BlueGapReviewSchema = z
-  .object({
-    canonicalGapId: z.string(),
-    verdict: BlueReviewVerdictSchema,
-    reviewSummary: z.string(),
-    evidence: z.string(),
-    resolutionEvidence: z.string().nullable(),
-    downgradedTo: DowngradedToSchema,
-  })
-  .strict();
+const blueGapReviewFields = {
+  canonicalGapId: z.string(),
+  reviewSummary: z.string(),
+  evidence: z.string(),
+  resolutionEvidence: z.string().nullable(),
+};
+
+/**
+ * verdict and downgradedTo are one fact, not two independent fields.
+ *
+ * As two fields, a null downgradedTo had two readings that no code could tell
+ * apart: "this is not a downgrade" (true of every other verdict) and "this IS a
+ * downgrade, and the target is missing". completeBlueCritique() branched on the
+ * first reading -- `verdict === "downgraded" && review.downgradedTo` -- and its
+ * still_open branch excluded the verdict, so the second reading matched neither.
+ * The round then wrote the blue_gap_reviews row, recorded verdict "downgraded",
+ * closed the round to report_ready, and updated requirement_gaps not at all: the
+ * gap stayed open, stayed spec-blocking, and kept the PREVIOUS round's
+ * lastEvaluatedRoundId. The generated report printed "[downgraded]" and
+ * "[P0/open/blocks-spec]" for one gap in one document, with no error and no
+ * event to say a whole round had done nothing.
+ *
+ * A discriminated union makes the pair inseparable: "downgraded" is the only
+ * verdict that carries a target, and it always carries one. The illegal
+ * combination is now unconstructible in TypeScript and rejected by the parser,
+ * so it can neither be written by hand nor arrive from a provider.
+ *
+ * The line-protocol parser already refused this (spec-critique-line-protocol.ts),
+ * but it was the only thing that did, and the production call site hands
+ * completeBlueCritique an assembled payload rather than protocol text.
+ */
+const withoutDowngradeTarget = <V extends Exclude<BlueReviewVerdict, "downgraded">>(verdict: V) =>
+  z.object({ ...blueGapReviewFields, verdict: z.literal(verdict), downgradedTo: z.null() }).strict();
+
+const BlueGapReviewSchema = z.discriminatedUnion("verdict", [
+  z
+    .object({
+      ...blueGapReviewFields,
+      verdict: z.literal("downgraded"),
+      downgradedTo: DowngradeTargetSchema,
+    })
+    .strict(),
+  // One option per verdict rather than one option with a three-verdict enum:
+  // narrowing a union of object types down to `never` is what lets an
+  // unhandled verdict fail to compile, and a single option whose discriminant
+  // is an enum narrows the property without ever collapsing the object.
+  withoutDowngradeTarget("resolved"),
+  withoutDowngradeTarget("still_open"),
+  withoutDowngradeTarget("needs_human_decision"),
+]);
 
 const BlueRequirementGapSchema = z
   .object({
@@ -203,8 +237,22 @@ export type RedFixClaimInput = z.infer<typeof RedFixClaimSchema>;
 export type BlueGapReviewInput = z.infer<typeof BlueGapReviewSchema>;
 export type BlueRequirementGapInput = z.infer<typeof BlueRequirementGapSchema>;
 export type RedFixClaim = RedFixClaimInput;
-export type BlueGapReview = BlueGapReviewInput;
 export type BlueRequirementGap = BlueRequirementGapInput;
+
+/**
+ * The shape a line-protocol assembler builds field by field, BEFORE the schema
+ * has run: verdict and downgradedTo are read out of two separate text fields,
+ * and a `Set.has()` check on each cannot prove to the compiler that the two
+ * agree. Widening exactly those two fields -- and deriving the rest from
+ * BlueGapReviewInput so they cannot drift -- keeps assembly expressible without
+ * handing the widened pair to the ledger: every assembled payload is re-parsed
+ * by BlueCritiqueOutputSchema, and only BlueGapReviewInput (the discriminated
+ * union) is accepted past that point.
+ */
+export type BlueGapReview = Omit<BlueGapReviewInput, "verdict" | "downgradedTo"> & {
+  verdict: BlueReviewVerdict;
+  downgradedTo: "P1" | "P2" | null;
+};
 
 export interface ParsedRedSpecOutput {
   prdDeltaMarkdown: string;
@@ -216,11 +264,19 @@ export interface ParsedBlueCritiqueOutput {
   requirementGaps: BlueRequirementGapInput[];
 }
 
+/**
+ * Reviews here are rehydrated from blue_gap_reviews rows, not handed over by a
+ * provider, so they carry the widened shape: the columns are plain text and a
+ * row written before the verdict/target pair was inseparable can still be read
+ * back. computeRoundDelta only reads canonicalGapId and verdict, so widening
+ * costs it nothing -- and refusing to re-validate history here keeps a report
+ * of an old round renderable.
+ */
 export interface ComputeRoundDeltaInput {
   roundId: string;
   previousBlockingGaps: LedgerGap[];
   fixClaims: RedFixClaimInput[];
-  gapReviews: BlueGapReviewInput[];
+  gapReviews: BlueGapReview[];
   newGaps: BlueRequirementGapInput[];
 }
 
@@ -231,7 +287,7 @@ export interface RoundDelta {
   newlyFound: BlueRequirementGapInput[];
   notRechecked: LedgerGap[];
   fixClaims: RedFixClaimInput[];
-  gapReviews: BlueGapReviewInput[];
+  gapReviews: BlueGapReview[];
 }
 
 function parseJson(raw: string): unknown {

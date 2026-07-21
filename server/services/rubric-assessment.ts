@@ -37,6 +37,9 @@ export const RUBRIC_PHASES = [
   "QA",
   "Merge",
   "Retro",
+  // Done is a real stage as of design §3: the delivery note. It was previously
+  // only a UI label with no runs, no prompt and no rubric.
+  "Done",
 ] as const;
 export type RubricPhase = (typeof RUBRIC_PHASES)[number];
 

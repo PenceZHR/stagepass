@@ -169,6 +169,16 @@ export const DEFAULT_STAGE_SCOPES: Record<RunPhase, Omit<StageScope, "phase">> =
     readableFiles: [".ship/changes/**"],
     writableFiles: [".ship/changes/**/retro.md", ".ship/baseline/backlog.md"],
   },
+  // The delivery note has to answer 「怎么跑起来」, so the model reads real source
+  // files -- but through the read-only sandbox, not through `readableFiles`.
+  // `readableFiles` is what assemblePrompt INLINES into the prompt, so `**` here
+  // would paste the entire repository into every delivery prompt. The change's
+  // own .ship artifacts are what the prompt needs pre-loaded; the code the model
+  // goes and reads itself.
+  delivery: {
+    readableFiles: [".ship/changes/**", ".ship/baseline/**"],
+    writableFiles: [".ship/changes/**/delivery.md"],
+  },
 };
 
 interface PolicyJson {

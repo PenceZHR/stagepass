@@ -27,7 +27,7 @@ INTAKE_PENDING  INTAKE_READY◆
 SPECCING        SPEC_READY◆
 TECHSPECCING    TECHSPEC_READY◆
 TESTPLANNING    TESTPLAN_DONE
-MERGE_READY◆    MERGING  RETRO_PENDING  DONE
+MERGE_READY◆    MERGING  RETRO_PENDING  DELIVERY_PENDING  DONE
 ```
 
 `◆` = 人工门（waiting，不自动前进）。
@@ -88,7 +88,7 @@ INTAKE_PENDING ──(AI评估)──▶ INTAKE_READY ◆
        MERGE_READY ◆ ──reject──▶ LOCAL_READY
             │ approve (canMerge=true)
             ▼
-        MERGING ──▶ RETRO_PENDING ──(产出 retro)──▶ DONE
+        MERGING ──▶ RETRO_PENDING ──(产出 retro)──▶ DELIVERY_PENDING ──(产出 delivery)──▶ DONE
 ```
 
 > 门态 approve 只记录 `gateState` / 人工决策，不直接改变 `ChangeStatus`；下一阶段 route 读取门态与 action contract 后启动。门态 reject 必须回到对应 stage 的可重跑入口态，不直接进入 `*ING` 执行中状态。
@@ -118,7 +118,8 @@ INTAKE_PENDING ──(AI评估)──▶ INTAKE_READY ◆
 | MERGE_READY | Merge | waiting（门）|
 | MERGING | Merge | running |
 | RETRO_PENDING | Retro | running |
-| DONE | Retro | done |
+| DELIVERY_PENDING | Done | waiting |
+| DONE | Done | done |
 | BLOCKED | （记录 blocked_phase）| blocked |
 
 > Review v2.1 说明：底层可暂时兼容 `IMPLEMENTED` / `REVIEWING` / `CHECK_FAILED`，但产品 UI 不得直接把 Review findings 显示成 QA failed。当前展示 Phase 必须结合 `ReviewCenterState` 派生：若最新失败来源是 Review，或存在 open Review P0/P1，则优先显示 Review 战报阻断，而不是 QA failed。
@@ -162,7 +163,8 @@ Review 战报中心是 Build 与 QA 之间的派生 gate，不要求第一版新
 | MERGE_READY | gate/reject | LOCAL_READY | 回到 merge 前入口 |
 | FIXING | （自动）| CHECKING | — |
 | FIXING | — | BLOCKED | fix_iterations >= 99 |
-| RETRO_PENDING | retro | DONE | retro.md 产出 |
+| RETRO_PENDING | retro | DELIVERY_PENDING | retro.md 产出 |
+| DELIVERY_PENDING | delivery | DONE | delivery.md 产出（交付单）|
 
 ## 五、不变式（Invariants）
 

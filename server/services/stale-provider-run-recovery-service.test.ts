@@ -754,8 +754,13 @@ async function seedCompletedProviderFixture(
       };
       writeBuildRun(repoPath, buildRun);
       const restoreBuildDb = setBuildRunRecordDbForTest(db);
+      // runId is deliberately null: every production writer reaches this table
+      // through recordBuildRunFromWorkspaceFile -> recordInputFromBuildRunFile,
+      // which hardcodes `runId: null` (build-run-record-service.ts). Seeding a
+      // runId here would make the fixture disagree with production and hide the
+      // reader-side join.
       recordBuildRunRecord({
-        changeId: CHANGE_ID, runId: "RUN-MATRIX", buildRunId: "build-1", status: "adopted",
+        changeId: CHANGE_ID, runId: null, buildRunId: "build-1", status: "adopted",
         headSha: adoptedHead, baseHeadSha: baseHead, baseCommit: baseHead,
         patchHash, changedFilesHash, adoptedHeadSha: adoptedHead,
         adoptionDecisionId: "build-1-adoption", adoptedAt: now, artifactHash: patchHash,
@@ -775,6 +780,109 @@ async function seedCompletedProviderFixture(
       sourceDbHash: "testplan-source-hash", gateVersion: 1, computedAt: now,
     }).run();
   }
+}
+
+/**
+ * Restores the legacy build_run_records.runId link that PRODUCTION NEVER WRITES.
+ *
+ * recovery-executors.ts's post-commit drift compensator still selects the build
+ * record with `eq(buildRunRecords.runId, run.id)` (its implement/fix_findings
+ * arm). Production rows always carry `runId: null` -- every writer reaches the
+ * table through recordBuildRunFromWorkspaceFile -> recordInputFromBuildRunFile
+ * -- so that select returns null, the block falls into its `else if (!build ||
+ * build.status !== "failed")` arm and throws RecoveryCasMissError. Post-commit
+ * Build drift is therefore never compensated in production: the run and job stay
+ * `succeeded` even though the adopted patch is gone.
+ *
+ * That is a SEPARATE, UNFIXED defect in recovery-executors.ts, out of scope for
+ * the reader-side fix in recovery-business-evidence.ts (which deliberately no
+ * longer depends on runId). The two drift tests below seed the link so they keep
+ * exercising the compensation logic they were written for instead of silently
+ * losing it. Delete this helper and re-key those assertions onto
+ * (changeId, buildRunId) once recovery-executors.ts is fixed.
+ */
+function linkBuildRecordToRunForExecutorCompensation(): void {
+  db.update(buildRunRecords)
+    .set({ runId: "RUN-MATRIX" })
+    .where(and(
+      eq(buildRunRecords.changeId, CHANGE_ID), eq(buildRunRecords.buildRunId, "build-1"),
+    ))
+    .run();
+}
+
+/**
+ * Seeds a completed "implement" provider run whose change carries TWO adopted
+ * build runs (build-1, then build-2), with the git workspace checked out at
+ * build-2's adopted commit -- the shape a change reaches after a fix run follows
+ * an initial build.
+ *
+ * Both build_run_records rows are written with `runId: null`, exactly as
+ * production does: every writer reaches the table through
+ * recordBuildRunFromWorkspaceFile -> recordInputFromBuildRunFile, which
+ * hardcodes null because one provider run can emit several build runs. The
+ * evidence reader therefore cannot key off runId and must resolve the build run
+ * the workspace actually carries.
+ */
+function seedMultiBuildProviderFixture(): {
+  run: typeof runs.$inferSelect;
+  provider: ProviderRunProcess;
+} {
+  seedReconciliationFixture({
+    providerStatus: "completed",
+    phase: "implement",
+    heartbeatAt: WORKER_GONE_HEARTBEAT_AT,
+  });
+  const repoPath = createFixtureRepo();
+  execFileSync("git", ["init", "-q"], { cwd: repoPath });
+  execFileSync("git", ["config", "user.email", "task11@example.test"], { cwd: repoPath });
+  execFileSync("git", ["config", "user.name", "Task11"], { cwd: repoPath });
+  const sourcePath = path.join(repoPath, "src", "a.ts");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(sourcePath, "export const value = 0;\n");
+  execFileSync("git", ["add", "src/a.ts"], { cwd: repoPath });
+  execFileSync("git", ["commit", "-q", "-m", "base"], { cwd: repoPath });
+
+  const restoreBuildDb = setBuildRunRecordDbForTest(db);
+  let baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
+  for (const runNumber of [1, 2]) {
+    const createdAt = `2026-07-10T00:00:${String(10 + runNumber).padStart(2, "0")}.000Z`;
+    const adoptedAt = `2026-07-10T00:00:${String(40 + runNumber).padStart(2, "0")}.000Z`;
+    fs.writeFileSync(sourcePath, `export const value = ${runNumber};\n`);
+    const patch = execFileSync("git", ["diff", "--binary"], { cwd: repoPath, encoding: "utf8" });
+    const patchPath = path.join(repoPath, ".ship", "changes", CHANGE_ID, "build", "runs", `build-${runNumber}.patch`);
+    fs.mkdirSync(path.dirname(patchPath), { recursive: true });
+    fs.writeFileSync(patchPath, patch);
+    const patchHash = createHash("sha256").update(patch).digest("hex");
+    const changedFiles = ["src/a.ts"];
+    const changedFilesHash = hashBuildChangedFiles(changedFiles);
+    execFileSync("git", ["add", "src/a.ts"], { cwd: repoPath });
+    execFileSync("git", ["commit", "-q", "-m", `adopt build-${runNumber}`], { cwd: repoPath });
+    const adoptedHeadSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
+    writeBuildRun(repoPath, {
+      changeId: CHANGE_ID, runNumber, status: "adopted", purpose: "build",
+      baseHeadSha: baseSha, baseCommit: baseSha, workspacePath: repoPath,
+      branchName: `build-${runNumber}`, expectedFiles: changedFiles, forbiddenFiles: [], changedFiles,
+      deviations: [], blockers: [], patchPath, patchSha256: patchHash, patchHash, changedFilesHash,
+      adoptedHeadSha, adoptionDecisionId: `build-${runNumber}-adoption`,
+      approvalPath: null, diffPath: null, auditPath: null, reportPath: null,
+      createdAt, updatedAt: adoptedAt,
+    });
+    recordBuildRunRecord({
+      changeId: CHANGE_ID, runId: null, buildRunId: `build-${runNumber}`, status: "adopted",
+      headSha: adoptedHeadSha, baseHeadSha: baseSha, baseCommit: baseSha,
+      patchHash, changedFilesHash, adoptedHeadSha,
+      adoptionDecisionId: `build-${runNumber}-adoption`, adoptedAt, artifactHash: patchHash,
+      source: "workspace_file", createdAt, updatedAt: adoptedAt,
+    });
+    baseSha = adoptedHeadSha;
+  }
+  restoreBuildDb();
+
+  const run = db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get();
+  const provider = db.select().from(providerRunProcesses).where(eq(providerRunProcesses.id, "PRP-MATRIX")).get();
+  assert.ok(run);
+  assert.ok(provider);
+  return { run, provider };
 }
 
 type IntakeActionId =
@@ -1055,7 +1163,16 @@ async function assertTask11RouteActionUiClosure(
   assert.equal(ui.activeStage.state, expectedUiState);
 }
 
-describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 30_000 }, () => {
+// 120s, not 30s. This suite imports real route modules, opens a second SQLite
+// connection and drives real transactions, and at 193 cases it already sat at
+// ~29s. Three more pushed it over, and node's answer to a suite timeout is to
+// CANCEL the remaining subtests -- 26 of them -- while still reporting
+// `fail 0`. A suite that silently stops running tests and comes back green is
+// the same shape as every bug this file exists to catch.
+//
+// The budget is here to catch a hang, not to ration legitimate work. If this
+// suite ever approaches 120s, split it rather than raising this again.
+describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 120_000 }, () => {
   beforeEach(() => {
     cleanupRows();
     resetRecoveryCursorsForTest();
@@ -2785,7 +2902,12 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
       assert.equal(db.select().from(artifacts).where(eq(artifacts.changeId, CHANGE_ID)).all().length, artifactCountBefore);
       if (phase === "spec") assert.equal(db.select().from(battleRounds).where(eq(battleRounds.id, "ROUND-COMPLETED-PROVIDER")).get()?.status, "report_ready");
       if (phase === "review") assert.ok(db.select().from(reviewState).where(eq(reviewState.changeId, CHANGE_ID)).get()?.latestValidReviewReportId);
-      if (phase === "implement") assert.equal(db.select().from(buildRunRecords).where(eq(buildRunRecords.runId, "RUN-MATRIX")).get()?.status, "adopted");
+      // Keyed on the row's business identity (changeId, buildRunId), not runId:
+      // production never populates build_run_records.runId, so a runId lookup
+      // here silently reads `undefined` instead of the adopted row.
+      if (phase === "implement") assert.equal(db.select().from(buildRunRecords).where(and(
+        eq(buildRunRecords.changeId, CHANGE_ID), eq(buildRunRecords.buildRunId, "build-1"),
+      )).get()?.status, "adopted");
       const expectedChange = phase === "tech_spec" ? "TECHSPEC_READY" : phase === "spec" ? "SPEC_READY" : "IMPLEMENTED";
       assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status, expectedChange);
     });
@@ -2962,8 +3084,13 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
         db.update(reviewReports).set({ reportJson: JSON.stringify({ forged: true }) })
           .where(eq(reviewReports.changeId, CHANGE_ID)).run();
       } else {
+        // Keyed on (changeId, buildRunId): production never populates
+        // build_run_records.runId, so a runId-keyed UPDATE matches zero rows and
+        // this test would silently forge nothing, then assert on a clean fixture.
         db.update(buildRunRecords).set({ changedFilesHash: "forged-changed-files-hash" })
-          .where(eq(buildRunRecords.runId, "RUN-MATRIX")).run();
+          .where(and(
+            eq(buildRunRecords.changeId, CHANGE_ID), eq(buildRunRecords.buildRunId, "build-1"),
+          )).run();
       }
 
       await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
@@ -3413,6 +3540,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
 
   it("compensates a post-commit Build artifact drift across build record, action, and GET", async () => {
     await seedCompletedProviderFixture("implement", true);
+    linkBuildRecordToRunForExecutorCompensation();
     // retry_build (snapshotPhase TestPlan) needs the TestPlan source behind the
     // already-seeded TestPlan gate once the drifted Build run fails to PLAN_APPROVED.
     seedTestPlanLegacySource("testplan-source-hash");
@@ -3562,6 +3690,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
 
   it("protects a succeeded new fence and its change ownership from old drift compensation", async () => {
     await seedCompletedProviderFixture("implement", true);
+    linkBuildRecordToRunForExecutorCompensation();
     const project = db.select().from(projects).where(eq(projects.id, PROJECT_ID)).get();
     assert.ok(project);
     const patchPath = path.join(
@@ -5417,6 +5546,52 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 3
       context,
     );
     assert.equal(afterRelease.status, 200, await afterRelease.text());
+  });
+
+  describe("build business evidence build-run selection", () => {
+    it("resolves the adopted build run without a build_run_records.runId link", () => {
+      const { run, provider } = seedMultiBuildProviderFixture();
+      assert.deepEqual(
+        db.select({ runId: buildRunRecords.runId }).from(buildRunRecords)
+          .where(eq(buildRunRecords.changeId, CHANGE_ID)).all(),
+        [{ runId: null }, { runId: null }],
+        "fixture must match production, where no build_run_records row carries a runId",
+      );
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, []);
+      assert.equal(observation.complete, true);
+    });
+
+    it("selects the workspace-adopted build run, not just any build run of the change", () => {
+      const { run, provider } = seedMultiBuildProviderFixture();
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // Pins WHICH row was chosen. The change carries two adopted build runs;
+      // only build-2 is the one the git workspace actually has checked out, so a
+      // selection that matches "any build run of this change" (build-1) must not
+      // satisfy this assertion.
+      const snapshot = JSON.parse(observation.dbSnapshot) as { build?: { buildRunId?: string } | null };
+      assert.equal(snapshot.build?.buildRunId, "build-2");
+      assert.equal(observation.complete, true);
+    });
+
+    it("fails closed when the newest adopted build run is not the one in the workspace", () => {
+      const { run, provider } = seedMultiBuildProviderFixture();
+      // Rewind the workspace to build-1's adopted commit while build-2 stays the
+      // newest adopted record: the git probe now attests a build run that the
+      // selected DB row disagrees with, which must not read as complete evidence.
+      const repoPath = db.select().from(projects).where(eq(projects.id, PROJECT_ID)).get()?.repoPath;
+      assert.ok(repoPath);
+      execFileSync("git", ["reset", "-q", "--hard", "HEAD~1"], { cwd: repoPath });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.equal(observation.complete, false);
+      assert.ok(observation.missingEvidence.includes("build_adopted_terminal"), observation.missingEvidence.join(","));
+    });
   });
 
   describe("PRD intake business evidence", () => {

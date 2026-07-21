@@ -15,6 +15,7 @@ export const PHASES = [
   "Fix",
   "Merge",
   "Retro",
+  "Done",
 ] as const;
 
 export type PhaseName = (typeof PHASES)[number];
@@ -38,6 +39,7 @@ export const REVIEW_PHASES: ReviewPhase[] = [
   "Fix",
   "Merge",
   "Retro",
+  "Done",
 ];
 
 /**
@@ -54,8 +56,10 @@ export const REVIEW_PHASES: ReviewPhase[] = [
  *    nothing on Review, would hide the very tab whose verdicts that stage
  *    produces.
  *
- * `Done` has no entry: it is a completion screen, not a pipeline stage, and it
- * renders no stage panel at all.
+ * `Done` used to have no entry, on the grounds that it was a completion screen
+ * rather than a pipeline stage. Design §3 made it one: it runs the delivery
+ * stage, produces delivery.md and answers the Done producer rubric, so it now
+ * maps like every other stage.
  */
 const REVIEW_PHASE_TO_RUBRIC_PHASE: Partial<Record<ReviewPhase, RubricPhase>> = {
   Refine: "Refine",
@@ -71,6 +75,7 @@ const REVIEW_PHASE_TO_RUBRIC_PHASE: Partial<Record<ReviewPhase, RubricPhase>> = 
   Fix: "Fix",
   Merge: "Merge",
   Retro: "Retro",
+  Done: "Done",
 };
 
 export function reviewPhaseToRubricPhase(phase: ReviewPhase): RubricPhase | null {
@@ -118,7 +123,8 @@ export const STATUS_TO_PHASE: Record<string, { phase: string; state: string }> =
   MERGE_READY: { phase: "Merge", state: "waiting" },
   MERGING: { phase: "Merge", state: "running" },
   RETRO_PENDING: { phase: "Retro", state: "waiting" },
-  DONE: { phase: "Retro", state: "done" },
+  DELIVERY_PENDING: { phase: "Done", state: "waiting" },
+  DONE: { phase: "Done", state: "done" },
 };
 
 export function getCurrentPhase(status: string, reviewCenterState?: ReviewCenterResponse | null): PhaseName {

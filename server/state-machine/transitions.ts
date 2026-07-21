@@ -18,6 +18,18 @@ export class TransitionInvariantError extends Error {
   }
 }
 
+/**
+ * Statuses that mean "a run of this change is in flight", which is what the
+ * one-active-change invariant below is about.
+ *
+ * DELIVERY_PENDING is deliberately ABSENT, for the same reason RETRO_PENDING's
+ * presence here is a wart rather than a precedent: the change is parked waiting
+ * for a human to press the button, and the delivery stage's own running status
+ * is DELIVERY_PENDING only because it, like retro, fails back onto itself.
+ * Adding it would forbid starting any sibling change in the project until
+ * someone clicks 运行交付 -- i.e. it would turn "I have not read the delivery
+ * note yet" into a project-wide lock.
+ */
 export const RUNNING_CHANGE_STATUSES = new Set<ChangeStatus>([
   "PLANNING",
   "SPECCING",
@@ -55,7 +67,8 @@ export const ALLOWED_TRANSITIONS: ReadonlyMap<ChangeStatus, ReadonlySet<ChangeSt
   ["LOCAL_READY", new Set(["MERGE_READY", "BLOCKED"])],
   ["MERGE_READY", new Set(["MERGING", "LOCAL_READY", "BLOCKED"])],
   ["MERGING", new Set(["RETRO_PENDING", "MERGE_READY", "BLOCKED"])],
-  ["RETRO_PENDING", new Set(["DONE", "BLOCKED"])],
+  ["RETRO_PENDING", new Set(["DELIVERY_PENDING", "BLOCKED"])],
+  ["DELIVERY_PENDING", new Set(["DONE", "BLOCKED"])],
   ["DONE", new Set<ChangeStatus>([])],
   [
     "BLOCKED",
@@ -84,6 +97,7 @@ export const ALLOWED_TRANSITIONS: ReadonlyMap<ChangeStatus, ReadonlySet<ChangeSt
       "MERGE_READY",
       "MERGING",
       "RETRO_PENDING",
+      "DELIVERY_PENDING",
     ]),
   ],
 ]);

@@ -16,6 +16,7 @@ export const ACTION_ENDPOINTS = {
   run_qa: "check",
   retry_qa: "check",
   run_retro: "retro",
+  run_delivery: "delivery",
   run_prd: "intake",
   retry_prd: "intake",
   run_spec: "spec",

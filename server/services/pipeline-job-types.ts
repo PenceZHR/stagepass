@@ -15,6 +15,7 @@ const PIPELINE_JOB_ACTIONS_BY_PHASE = {
   fix_findings: ["fix_blockers", "run_fix", "retry_fix"],
   release: ["run_release", "merge"],
   retro: ["run_retro"],
+  delivery: ["run_delivery"],
 } as const;
 
 export type PipelineJobPhase = keyof typeof PIPELINE_JOB_ACTIONS_BY_PHASE;

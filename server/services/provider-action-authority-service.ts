@@ -359,6 +359,61 @@ export function resolveRetroActionAuthority(
   return { gateVersion: String(gate.gateVersion), sourceDbHash };
 }
 
+/**
+ * What the Done (delivery) stage stands on: a Retro that actually finished.
+ *
+ * It needs its own resolver for the same reason `run_retro` does. Without one
+ * the generic fallback in `resolveProviderActionAuthority` reads the Merge stage
+ * gate and then tries to pair it with a `stage_runs` row for phase Merge --
+ * legacy machinery for Merge's own producer, which delivery is not. The
+ * observed result is `authority_source_missing` at every DELIVERY_PENDING
+ * change: an action the runner would happily accept, permanently greyed out.
+ *
+ * The fence is the retro run's identity rather than the Merge gate's, because
+ * the Merge gate is not what changed since retro ran -- the retro is. Re-running
+ * Retro therefore invalidates a delivery click that was handed out against the
+ * previous one, which is the only drift this action has.
+ */
+export function resolveDeliveryActionAuthority(
+  db: AuthorityDb,
+  changeId: string,
+): { gateVersion: string; sourceDbHash: string } | null {
+  const change = db.select({ retroDone: changes.retroDone }).from(changes)
+    .where(eq(changes.id, changeId)).get();
+  // `retroDone` is written inside the retro stage's own afterSuccessfulResult,
+  // so it is the one flag that means "retro reached its end", not "a retro run
+  // exists".
+  if (!change || change.retroDone !== 1) return null;
+  const retroRuns = db.select().from(runs).where(and(
+    eq(runs.changeId, changeId), eq(runs.phase, "retro"), eq(runs.status, "completed"),
+  )).all().sort((left, right) => {
+    const byEnded = (right.endedAt ?? right.startedAt ?? "").localeCompare(
+      left.endedAt ?? left.startedAt ?? "",
+    );
+    return byEnded !== 0 ? byEnded : right.id.localeCompare(left.id);
+  });
+  const retroRun = retroRuns[0];
+  if (!retroRun?.endedAt) return null;
+  // Two retro runs settling at the same instant leave no defensible "the" run to
+  // fence against, so refuse rather than pick one -- the same rule
+  // resolveRetroActionAuthority applies to release runs.
+  if (retroRuns[1] && (retroRuns[1].endedAt ?? retroRuns[1].startedAt ?? "") === retroRun.endedAt) {
+    return null;
+  }
+  const sourceDbHash = computeSourceDbHash({
+    changeId,
+    phase: "Merge",
+    rows: [
+      {
+        table: "runs", id: retroRun.id, changeId: retroRun.changeId, phase: retroRun.phase,
+        status: retroRun.status, endedAt: retroRun.endedAt, jobId: retroRun.jobId,
+        workerId: retroRun.workerId, leaseToken: retroRun.leaseToken, attemptNo: retroRun.attemptNo,
+      },
+    ],
+  });
+  return { gateVersion: "0", sourceDbHash };
+}
+
 const DIRECT_ACTION_AUTHORITY_RESOLVERS: Partial<Record<string, DirectActionAuthorityResolver>> = {
   fix_blockers: (db, changeId) => {
     const change = db.select({ status: changes.status }).from(changes)
@@ -403,6 +458,7 @@ const DIRECT_ACTION_AUTHORITY_RESOLVERS: Partial<Record<string, DirectActionAuth
     return { gateVersion: String(gate.gateVersion), sourceDbHash: readiness.sourceDbHash };
   },
   run_retro: resolveRetroActionAuthority,
+  run_delivery: resolveDeliveryActionAuthority,
 };
 
 function disabled(actionId: string, reasonCode: string): ProviderActionAuthority {

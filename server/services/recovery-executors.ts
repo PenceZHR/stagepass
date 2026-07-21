@@ -86,6 +86,7 @@ const fallbackStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
   fix_findings: "CHECK_FAILED",
   release: "MERGE_READY",
   retro: "RETRO_PENDING",
+  delivery: "DELIVERY_PENDING",
 };
 
 const completedStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
@@ -99,7 +100,8 @@ const completedStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
   implement: "IMPLEMENTED",
   review: "IMPLEMENTED",
   release: "RETRO_PENDING",
-  retro: "DONE",
+  retro: "DELIVERY_PENDING",
+  delivery: "DONE",
 };
 
 export function determineRecoveryOwnership(

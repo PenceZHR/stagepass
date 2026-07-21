@@ -1774,6 +1774,11 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
+      "file": "server/services/pipeline-delivery-stage-service.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/pipeline-job-lease-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"

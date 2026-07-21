@@ -40,6 +40,7 @@ export interface PipelineWorkerStageApi {
   runFixStreamed(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
   runRelease(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
   runRetro(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
+  runDelivery(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
 }
 
 export interface RunPipelineJobOptions {
@@ -101,6 +102,8 @@ function runnerMapForPipeline(pipeline: PipelineWorkerStageApi): PipelineJobRunn
     "release:run_release": (job, context) => pipeline.runRelease(job.changeId, context, job.provider),
     "release:merge": (job, context) => pipeline.runRelease(job.changeId, context, job.provider),
     "retro:run_retro": (job, context) => pipeline.runRetro(job.changeId, context, job.provider),
+    "delivery:run_delivery": (job, context) =>
+      pipeline.runDelivery(job.changeId, context, job.provider),
   };
 }
 

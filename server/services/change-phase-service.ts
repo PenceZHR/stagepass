@@ -23,6 +23,9 @@ export const CONTENT_PHASES = [
   "Fix",
   "Merge",
   "Retro",
+  // Done became a real stage (design §3): it produces delivery.md. Before that
+  // it was a completion screen with no records of its own.
+  "Done",
 ] as const;
 export type ReviewPhase = (typeof CONTENT_PHASES)[number];
 
@@ -169,6 +172,7 @@ const RUN_PHASE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
   fix_findings: "Fix",
   release: "Merge",
   retro: "Retro",
+  delivery: "Done",
 };
 
 const ARTIFACT_TYPE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
@@ -196,6 +200,7 @@ const ARTIFACT_TYPE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
   log: "Fix",
   release_note: "Merge",
   retro: "Retro",
+  delivery: "Done",
 };
 
 const STATUS_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
@@ -223,7 +228,8 @@ const STATUS_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
   MERGE_READY: "Merge",
   MERGING: "Merge",
   RETRO_PENDING: "Retro",
-  DONE: "Retro",
+  DELIVERY_PENDING: "Done",
+  DONE: "Done",
   BLOCKED: "Check",
 };
 
@@ -268,6 +274,7 @@ const VIRTUAL_ARTIFACTS: Record<ReviewPhase, Array<{ type: string; fileName: str
   Fix: [{ type: "changed_files", fileName: "changed-files.json" }],
   Merge: [{ type: "release_note", fileName: "release-note.md" }],
   Retro: [{ type: "retro", fileName: "retro.md" }],
+  Done: [{ type: "delivery", fileName: "delivery.md" }],
 };
 
 const RAW_REVIEW_OUTPUT_TYPES = new Set([

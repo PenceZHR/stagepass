@@ -140,7 +140,11 @@ export async function runRetro(
     promptPhase: "retro",
     allowedStatuses: ["RETRO_PENDING"],
     runningStatus: "RETRO_PENDING",
-    successStatus: "DONE",
+    // Retro is no longer the last stage: DONE is now produced by the delivery
+    // stage (design §3), which is what actually answers "怎么用这个项目".
+    // A change that stops here has a retro and no delivery note, so Retro hands
+    // over to DELIVERY_PENDING rather than declaring the change finished.
+    successStatus: "DELIVERY_PENDING",
     failureStatus: "RETRO_PENDING",
     artifactType: "retro",
     artifactFileName: "retro.md",

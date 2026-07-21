@@ -38,6 +38,7 @@ import {
 import { selfHealLegacyTestPlanApprovalForBuild } from "./action-contract-self-heal-bindings";
 import {
   resolveBriefingActionAuthority,
+  resolveDeliveryActionAuthority,
   resolveRetroActionAuthority,
 } from "./provider-action-authority-service";
 
@@ -241,6 +242,23 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
       enabled: Boolean(authority),
       reasonCode: authority ? null : "retro_release_authority_unavailable",
       reason: authority ? null : "Release authority is unavailable or has drifted",
+      blockers: [],
+      gateVersion: authority?.gateVersion,
+      sourceDbHash: authority?.sourceDbHash,
+    };
+  }],
+
+  // Mirrors resolveDeliveryActionAuthority exactly. The read path and the
+  // enqueue path have to agree in BOTH directions: reporting the action
+  // disabled where a POST would accept it strands the reader on a phantom
+  // blocker, and reporting it enabled where a POST would 409 promises an action
+  // that cannot be dispatched.
+  ["run_delivery", ({ db, changeId }) => {
+    const authority = resolveDeliveryActionAuthority(db, changeId);
+    return {
+      enabled: Boolean(authority),
+      reasonCode: authority ? null : "delivery_retro_authority_unavailable",
+      reason: authority ? null : "Retro has not completed, or its authority has drifted",
       blockers: [],
       gateVersion: authority?.gateVersion,
       sourceDbHash: authority?.sourceDbHash,

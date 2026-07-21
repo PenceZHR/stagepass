@@ -378,9 +378,24 @@ export function businessEvidenceForCompletedProvider(
       missingEvidence.push("review_gate_commit");
     }
   } else if (provider.phase === "implement" || provider.phase === "fix_findings") {
+    // build_run_records.runId is never populated: every production writer reaches
+    // this table through recordBuildRunFromWorkspaceFile -> recordInputFromBuild
+    // RunFile, which hardcodes `runId: null` because a single provider run can
+    // produce several build runs (build-1..build-N), so a one-column FK cannot
+    // express the relation. Joining on it therefore matched nothing and failed
+    // every healthy implement/fix_findings run that entered stale recovery.
+    // The row's real business identity is (changeId, buildRunId), so select the
+    // change's newest *adopted* row -- the same shape the `review` branch above
+    // uses -- and let the `workspaceValidated` git probe below decide whether
+    // that row really is the build run this change currently carries. Keep this
+    // selection in sync with captureEvidenceDbSnapshot's implement branch, which
+    // must watch the same row for drift.
     const build = evidenceDb.select().from(buildRunRecords).where(and(
-      eq(buildRunRecords.changeId, run.changeId), eq(buildRunRecords.runId, run.id),
-    )).get() ?? null;
+      eq(buildRunRecords.changeId, run.changeId),
+      eq(buildRunRecords.status, "adopted"),
+    )).orderBy(
+      desc(buildRunRecords.adoptedAt), desc(buildRunRecords.updatedAt), desc(buildRunRecords.id),
+    ).limit(1).get() ?? null;
     const runNumber = build?.buildRunId ? /^(?:build-)?(\d+)$/.exec(build.buildRunId)?.[1] ?? null : null;
     const buildRunPath = project && runNumber
       ? path.join(project.repoPath, ".ship", "changes", run.changeId, "build", "runs", `build-${runNumber}.json`)
@@ -685,6 +700,11 @@ export function captureEvidenceDbSnapshot(
     });
   }
   if (provider.phase === "implement" || provider.phase === "fix_findings") {
+    // Must select the same row businessEvidenceForCompletedProvider's implement
+    // branch reads, or this witness watches a different row than the evidence it
+    // is supposed to guard. Keyed on (changeId, adopted) rather than runId for
+    // the reason documented there; this function runs inside the recovery
+    // transaction and so cannot re-run the git probe to narrow it further.
     return JSON.stringify({
       ...common,
       build: query(() => evidenceDb.select({
@@ -696,8 +716,11 @@ export function captureEvidenceDbSnapshot(
         adoptedAt: buildRunRecords.adoptedAt, artifactHash: buildRunRecords.artifactHash,
         source: buildRunRecords.source, updatedAt: buildRunRecords.updatedAt,
       }).from(buildRunRecords).where(and(
-        eq(buildRunRecords.changeId, run.changeId), eq(buildRunRecords.runId, run.id),
-      )).limit(1).get() ?? null),
+        eq(buildRunRecords.changeId, run.changeId),
+        eq(buildRunRecords.status, "adopted"),
+      )).orderBy(
+        desc(buildRunRecords.adoptedAt), desc(buildRunRecords.updatedAt), desc(buildRunRecords.id),
+      ).limit(1).get() ?? null),
     });
   }
   if (provider.phase === "intake") {

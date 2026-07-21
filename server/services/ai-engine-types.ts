@@ -27,7 +27,9 @@ export type AiRunPhase =
   | "tech_spec"
   | "test_plan"
   | "release"
-  | "retro";
+  | "retro"
+  // The Done stage's delivery note.
+  | "delivery";
 
 export interface AiRunLifecycleProcessStarted {
   provider: AiProvider;

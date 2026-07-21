@@ -6,7 +6,9 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 
 import * as schema from "../db/schema.ts";
 import {
+  InvalidPriorBlockingSnapshotError,
   recomputeReviewReport,
+  settlementFindingsForReviewAttempt,
   setReviewReportServiceDbForTest,
 } from "./review-report-service.ts";
 
@@ -617,5 +619,107 @@ describe("review-report-service", { concurrency: false }, () => {
     assert.ok(staleReasons.includes("head_drift"));
     assert.ok(staleReasons.includes("finding_version_drift"));
     assert.ok(staleReasons.includes("waiver_version_drift"));
+  });
+
+  // "We read back an empty prior-blocking snapshot" and "we could not read the
+  // prior-blocking snapshot at all" are different facts, and the settlement set
+  // is the only place still-open prior P0/P1 findings enter the current
+  // attempt's counts. Answering the second question with the first one's answer
+  // silently empties that set, zeroes blockingP0, and hands the report a
+  // passed / qaAllowed=1 gate over a P0 that is still open in the DB.
+  const UNREADABLE_PRIOR_SNAPSHOTS: Array<[string, string]> = [
+    ["truncated JSON", '["FND-OLD-P0"'],
+    ["a JSON object instead of an array", '{"ids":["FND-OLD-P0"]}'],
+    ["JSON null", "null"],
+    ["an array holding a non-string", '["FND-OLD-P0", 123]'],
+    ["an array of objects", '[{"id":"FND-OLD-P0"}]'],
+    ["an empty string", ""],
+  ];
+
+  for (const [label, priorBlockingFindingIdsJson] of UNREADABLE_PRIOR_SNAPSHOTS) {
+    function seedUnreadableAttempt() {
+      seedAttempt(db, { id: "RAT-1", attemptNo: 1, reviewStatus: "issues_found" });
+      seedFinding(db, { id: "FND-OLD-P0", attemptId: "RAT-1", severity: "P0" });
+      seedAttempt(db, {
+        id: "RAT-2",
+        attemptNo: 2,
+        reviewStatus: "passed",
+        priorBlockingFindingIdsJson,
+      });
+    }
+
+    it(`refuses to clear the gate when the prior blocking snapshot is ${label}`, () => {
+      seedUnreadableAttempt();
+
+      const result = recomputeReviewReport(CHANGE_ID, "RAT-2");
+      const reasons = JSON.parse(result.report.staleReason ?? "[]") as string[];
+
+      assert.equal(result.report.gateStatus, "data_inconsistent");
+      assert.equal(result.report.qaAllowed, 0);
+      assert.equal(result.report.reviewConclusion, "data_inconsistent");
+      assert.ok(reasons.includes("prior_blocking_snapshot_unreadable"));
+      // A data_inconsistent report must never become the report the QA gate
+      // reads as the latest valid review.
+      assert.notEqual(result.state.latestValidReviewReportId, result.report.id);
+      assert.equal(
+        db.select().from(schema.findings).where(eq(schema.findings.id, "FND-OLD-P0")).get()?.status,
+        "open",
+      );
+    });
+
+    it(`throws out of settlementFindingsForReviewAttempt when the snapshot is ${label}`, () => {
+      // The exported helper is read by the QA gate, the waiver service, the
+      // mirror service and the recovery evidence builder as well. Each of them
+      // fails closed on a throw and undercounts silently on an empty array, so
+      // the throw has to happen in the helper, not only in the report path.
+      seedUnreadableAttempt();
+      const attempt = db
+        .select()
+        .from(schema.reviewAttempts)
+        .where(eq(schema.reviewAttempts.id, "RAT-2"))
+        .get();
+      const rows = db.select().from(schema.findings).all();
+
+      assert.throws(
+        () => settlementFindingsForReviewAttempt(attempt!, rows),
+        InvalidPriorBlockingSnapshotError,
+      );
+    });
+  }
+
+  it("still reads a recorded empty list and an absent snapshot as no prior blockers", () => {
+    seedAttempt(db, { id: "RAT-1", attemptNo: 1, reviewStatus: "issues_found" });
+    seedFinding(db, { id: "FND-OLD-P0", attemptId: "RAT-1", severity: "P0" });
+
+    seedAttempt(db, {
+      id: "RAT-2",
+      attemptNo: 2,
+      reviewStatus: "passed",
+      priorBlockingFindingIdsJson: JSON.stringify([]),
+    });
+    const emptyList = recomputeReviewReport(CHANGE_ID, "RAT-2").report;
+    assert.equal(emptyList.gateStatus, "passed");
+    assert.equal(emptyList.qaAllowed, 1);
+    assert.equal(emptyList.blockingP0, 0);
+
+    seedAttempt(db, {
+      id: "RAT-3",
+      attemptNo: 3,
+      reviewStatus: "passed",
+      priorBlockingFindingIdsJson: null,
+    });
+    const absentSnapshot = recomputeReviewReport(CHANGE_ID, "RAT-3").report;
+    assert.equal(absentSnapshot.gateStatus, "passed");
+    assert.equal(absentSnapshot.qaAllowed, 1);
+
+    const rows = db.select().from(schema.findings).all();
+    for (const attemptId of ["RAT-2", "RAT-3"]) {
+      const attempt = db
+        .select()
+        .from(schema.reviewAttempts)
+        .where(eq(schema.reviewAttempts.id, attemptId))
+        .get();
+      assert.deepEqual(settlementFindingsForReviewAttempt(attempt!, rows), []);
+    }
   });
 });

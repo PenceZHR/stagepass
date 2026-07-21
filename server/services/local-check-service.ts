@@ -90,7 +90,15 @@ function runCheck(
   };
 }
 
-function generateFindings(checks: CheckResult[]): Finding[] {
+/**
+ * Turns check state into findings.
+ *
+ * `missingCommands` are checks the policy declared *required* but for which no
+ * command could be resolved. They never executed, so they have no CheckResult —
+ * without an explicit finding they would vanish, and "required check has no
+ * command" would be indistinguishable from "required check passed".
+ */
+function generateFindings(checks: CheckResult[], missingCommands: string[] = []): Finding[] {
   const findings: Finding[] = [];
   for (const check of checks) {
     if (!check.success) {
@@ -115,6 +123,39 @@ function generateFindings(checks: CheckResult[]): Finding[] {
       });
     }
   }
+
+  for (const name of missingCommands) {
+    findings.push({
+      source: name,
+      severity: "P0",
+      category: "quality",
+      title: `Required check has no command: ${name}`,
+      evidence:
+        `"${name}" is declared in requiredChecks but no command resolves for it, so it never ran. ` +
+        `A required check that cannot run is not a passing check.`,
+      requiredFix:
+        `Define a command for "${name}" (.ship/policy.json defaultValidationCommands, a matching ` +
+        `package.json script, or a TestPlan required command), or drop "${name}" from requiredChecks.`,
+      status: "open",
+    });
+  }
+
+  if (checks.length === 0) {
+    findings.push({
+      source: "local_check",
+      severity: "P0",
+      category: "quality",
+      title: "No checks were executed",
+      evidence:
+        "Zero checks produced a result. An empty check set carries no evidence about the change " +
+        "and must not be settled as a pass.",
+      requiredFix:
+        "Declare at least one runnable validation command for this repository " +
+        "(.ship/policy.json, a package.json script, or a TestPlan required command).",
+      status: "open",
+    });
+  }
+
   return findings;
 }
 
@@ -157,10 +198,21 @@ export function runLocalChecks(
   fs.mkdirSync(logsDir, { recursive: true });
 
   const results: CheckResult[] = [];
+  // Required checks that resolved to no command. Recorded rather than skipped:
+  // the caller declared these must run, so silently dropping them would report a
+  // pass for validation that never happened. Optional checks may stay absent.
+  const requiredNames = new Set(required);
+  const missingCommands: string[] = [];
 
   for (const name of allChecks) {
     const cmd = commands[name];
-    if (!cmd) continue;
+    if (!cmd) {
+      if (requiredNames.has(name) && !missingCommands.includes(name)) {
+        log.warn({ name }, "Required check has no command - recording as a blocker");
+        missingCommands.push(name);
+      }
+      continue;
+    }
 
     // Skip pnpm/npm/yarn commands if no package.json exists
     if (!hasPkgJson && /^(pnpm|npm|yarn)\s/.test(cmd)) {
@@ -184,8 +236,15 @@ export function runLocalChecks(
     log.info({ name, success: result.success, durationMs: result.durationMs }, "Check done");
   }
 
-  const findings = generateFindings(results);
-  const success = results.every((r) => r.success);
+  const findings = generateFindings(results, missingCommands);
+  // `[].every(...)` is `true`, so the bare `every` reported a pass whenever
+  // nothing ran. QA reads this flag directly (pipeline-qa-stage-service: a truthy
+  // `success` with a clean scope check settles the change as MERGE_READY), so an
+  // empty check set used to mint a merge-ready verdict from zero evidence.
+  // Success now requires that checks actually ran, that every one of them passed,
+  // and that no required check was dropped for want of a command.
+  const success =
+    results.length > 0 && missingCommands.length === 0 && results.every((r) => r.success);
 
   const output: LocalCheckResult = { success, checks: results, findings };
   const outputPath = path.join(logsDir, "local-check.json");

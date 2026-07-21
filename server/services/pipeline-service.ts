@@ -32,6 +32,7 @@ import {
   runRelease as runReleaseStage,
   runRetro as runRetroStage,
 } from "./pipeline-release-retro-stage-service";
+import { runDelivery as runDeliveryStage } from "./pipeline-delivery-stage-service";
 import type { Provider } from "./provider-selection-service";
 
 export {
@@ -137,6 +138,14 @@ export async function runRetro(
   provider?: Provider,
 ): Promise<AiRunResult> {
   return withDocumentStageExecutionContext(context, () => runRetroStage(changeId, context, provider));
+}
+
+export async function runDelivery(
+  changeId: string,
+  context: JobExecutionContext,
+  provider?: Provider,
+): Promise<AiRunResult> {
+  return withDocumentStageExecutionContext(context, () => runDeliveryStage(changeId, context, provider));
 }
 
 export async function runIntake(

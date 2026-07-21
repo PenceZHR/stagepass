@@ -93,6 +93,21 @@ export interface DocumentStageConfig {
    */
   lineProtocol?: {
     parse: (rawText: string, ctx: LineProtocolContext) => LineProtocolParseResult;
+    /**
+     * The named blocks this stage's protocol declares (`NAME<<` … `>>NAME`),
+     * empty for record-only stages.
+     *
+     * Required whenever the stage ALSO has a rubric, and it lives here rather
+     * than as a sibling field so it sits next to the parser that owns the names.
+     * A rubric rides inside the host stage's reply and its harvest runs FIRST,
+     * over the whole reply, through the same `findStructuralBlockError`. With no
+     * block names it rejects the stage's own block as off-script -- so a stage
+     * with a non-empty rubric would fail every single run before its own parser
+     * ever saw the text. Spec's red draft already hit this and passes
+     * `expectedBlockNames` by hand at its call site; this field is what makes
+     * the `rubricPhase` shortcut carry the same information.
+     */
+    blockNames?: readonly string[];
   };
   /**
    * Rubric judging for this stage (docs/RUBRIC-DESIGN.md). `promptSection` is
@@ -407,6 +422,8 @@ function resolveConfiguredRubric(input: {
   projectId: string;
   phase: RubricPhase | undefined;
   runId: string;
+  /** See DocumentStageConfig["lineProtocol"].blockNames for why this is here. */
+  expectedBlockNames: readonly string[];
 }): DocumentStageConfig["rubric"] | undefined {
   if (!input.phase) return undefined;
   const stageRubric = resolveStageRubric(
@@ -428,6 +445,7 @@ function resolveConfiguredRubric(input: {
         runId,
         roundId: null,
         rawText,
+        expectedBlockNames: input.expectedBlockNames,
       }),
   };
 }
@@ -485,6 +503,7 @@ export async function runDocumentStage(
         projectId: change.projectId,
         phase: config.rubricPhase,
         runId,
+        expectedBlockNames: config.lineProtocol?.blockNames ?? [],
       });
       const prompt = rubric?.promptSection
         ? `${basePrompt}\n\n${rubric.promptSection}`

@@ -1086,7 +1086,7 @@ export async function completeBlueCritique(input: CompleteBlueCritiqueInput): Pr
         continue;
       }
 
-      if (review.verdict === "downgraded" && review.downgradedTo) {
+      if (review.verdict === "downgraded") {
         const downgradedRuleGap: RuleGap = {
           id: gap.id,
           originalSeverity: gap.originalSeverity as RuleGap["originalSeverity"],
@@ -1129,7 +1129,19 @@ export async function completeBlueCritique(input: CompleteBlueCritiqueInput): Pr
           })
           .where(eq(requirementGaps.id, gap.id))
           .run();
+        continue;
       }
+
+      // Falling out of the branch table is what made a round record a verdict
+      // and update the gap ledger not at all. `unreachable` is typed never, so
+      // adding a verdict without giving it a branch stops compiling here rather
+      // than silently no-opping in production; the throw covers the runtime case
+      // of a value that reached this loop without going through the schema.
+      const unreachable: never = review;
+      throw new SpecBattleError(
+        "unhandled_blue_verdict",
+        `unhandled blue review verdict: ${JSON.stringify(unreachable)}`
+      );
     }
 
     for (const item of parsed.requirementGaps ?? []) {

@@ -31,7 +31,7 @@ import { StageGitPanel } from "./stage-git-panel";
 import { selectVisibleGitStageActions } from "./git-action-policy";
 import { buildUiPipelineState } from "./pipeline-ui-model";
 import type { StageActionView } from "./stage-action-bar";
-import { StageFrame, type StageBlockerView } from "./stage-frame";
+import type { StageBlockerView } from "./stage-frame";
 import {
   GatePanel,
   buildGateStageActions,
@@ -812,6 +812,21 @@ export default function ChangeDetailPage() {
       onAction: () => handleAction("run_retro"),
     }];
   }, [handleAction, retroStageAction, running]);
+  const deliveryStageAction = findPipelineAction(pipelineActions, "run_delivery");
+  const deliveryStageActions = useMemo<StageActionView[]>(() => {
+    const disabledReason = pipelineActionDisabledReason(deliveryStageAction);
+
+    return [{
+      id: "done-run_delivery",
+      label: deliveryStageAction?.label ?? "生成交付单",
+      role: "primary",
+      enabled: disabledReason === null,
+      busy: running,
+      disabledReason,
+      sourceActionId: "run_delivery",
+      onAction: () => handleAction("run_delivery"),
+    }];
+  }, [deliveryStageAction, handleAction, running]);
   const gateApproveLabel = activeSelectedPhase === "Spec"
     ? "批准 Spec"
     : activeSelectedPhase === "TechSpec"
@@ -1193,17 +1208,36 @@ export default function ChangeDetailPage() {
                 </div>
               </PhaseStageShell>
             ) : showingDoneStage ? (
-              <StageFrame
-                stage={selectedStage}
-                title="Change complete"
-                eyebrow="Completion"
-                meta={[
-                  { id: "status", label: "Status:", value: stageStatusLabel },
-                  { id: "latest-run", label: "Latest Run:", value: latestRunStatusLabel ?? "none" },
-                ]}
+              // Done is a stage now, not a completion screen (design §3): it runs
+              // the delivery stage, owns delivery.md and answers the Done producer
+              // rubric. It therefore goes through PhaseStageShell like every other
+              // stage -- that shell is what carries the action bar, the phase
+              // records and the rubric drawer, all three of which a StageFrame has
+              // no way to render.
+              <PhaseStageShell
+                {...providerControlProps}
+                projectId={projectId}
+                changeId={changeId}
+                phase="Done"
+                state={selectedStageState}
+                statusLabel={stageStatusLabel}
+                latestRunStatus={latestRunStatusLabel}
+                actions={deliveryStageActions}
+                actionError={actionError}
+                records={renderPhaseRecords("Done", "done-records")}
               >
-                <DoneCompletionPanel change={change} />
-              </StageFrame>
+                {change.status === "DONE" ? (
+                  <DoneCompletionPanel change={change} />
+                ) : (
+                  <div className="rounded-lg border bg-muted/20 p-4" data-delivery-stage>
+                    <h3 className="text-sm font-semibold">交付单待生成</h3>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      Retro 已完成。运行交付阶段产出交付单：怎么跑起来、这次改了什么、
+                      文件地图、以及还有哪些没做。
+                    </p>
+                  </div>
+                )}
+              </PhaseStageShell>
             ) : showingBuildSandbox ? (
               <PhaseStageShell
                 {...providerControlProps}

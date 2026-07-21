@@ -28,7 +28,10 @@ describe("change-phase-service phase review aggregation", () => {
       "Check",
       "Fix",
       "Merge",
+      // Done joined the list when design §3 turned it into a real stage that
+      // produces delivery.md; before that it had no records of its own.
       "Retro",
+      "Done",
     ]);
     assert.equal(normalizeReviewPhase("plan"), "Plan");
     assert.equal(normalizeReviewPhase("techspec"), "TechSpec");
@@ -62,6 +65,7 @@ describe("change-phase-service phase review aggregation", () => {
         "Fix",
         "Merge",
         "Retro",
+        "Done",
       ]
     );
   });

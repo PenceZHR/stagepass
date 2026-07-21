@@ -128,6 +128,7 @@ export function activeJobPhaseForAction(db: ActionContractDb, actionId: string):
     retry_qa: "local_check",
     merge: "release",
     run_retro: "retro",
+    run_delivery: "delivery",
   };
   return phaseByAction[actionId] ?? null;
 }

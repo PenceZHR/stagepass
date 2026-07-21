@@ -23,6 +23,7 @@ export type PromptPhase =
   | "test_plan"
   | "release"
   | "retro"
+  | "delivery"
   | "init-context"
   | "init-context-select"
   | "init-context-generate";
@@ -57,6 +58,7 @@ function buildVariables(vars: PromptVariables): Record<string, string> {
     checkPath: path.join(changeDir, "local-check.json"),
     releaseNotePath: path.join(changeDir, "release-note.md"),
     retroPath: path.join(changeDir, "retro.md"),
+    deliveryPath: path.join(changeDir, "delivery.md"),
   };
 }
 
@@ -88,6 +90,7 @@ const PROMPT_TEMPLATE_FILES: Record<PromptPhase, string> = {
   test_plan: "test-plan.md",
   release: "release.md",
   retro: "retro.md",
+  delivery: "delivery.md",
   "init-context": "init-context.md",
   "init-context-select": "init-context-select.md",
   "init-context-generate": "init-context-generate.md",

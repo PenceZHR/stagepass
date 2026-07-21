@@ -215,6 +215,32 @@ const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
       { key: "RBK-factory-Retro-producer-06", text: "复盘指向流程或机制，没有把问题归给某个具体的人。" },
     ],
   },
+  // Done's producer is the delivery stage (design §3.4). Every line is written
+  // in the first person because delivery.md is the only prompt that answers this
+  // rubric and it defines exactly one role -- 交付说明撰写者 -- so a criterion
+  // naming any other role would be asking about someone who is not in the room.
+  //
+  // §3.4 offers 「已知限制一节列出的内容，与库里 open 的 gap / 已豁免的 P1 一致」
+  // as a tier-1 candidate. It is deliberately NOT shipped: that section is
+  // generated from the database and the model cannot write it, so the criterion
+  // could only ever be answered `yes` by construction, and a question whose
+  // answer is fixed teaches the model that `yes` is the shape of a good answer.
+  // What is shipped instead is the falsifiable neighbour: whether the model's
+  // OWN half contradicts it.
+  Done: {
+    producer: [
+      { key: "RBK-factory-Done-producer-01", text: "交付单里写的启动方式，我是在当前仓库状态下逐条确认过的，不是从文档或 README 抄来的。" },
+      { key: "RBK-factory-Done-producer-02", text: "我写出了入口文件的具体路径，而不是只写模块名或目录名。" },
+      { key: "RBK-factory-Done-producer-03", text: "我写明了运行前是否需要安装依赖，或明确写出「不需要安装依赖」。" },
+      { key: "RBK-factory-Done-producer-04", text: "我写明了跑起来之后应该看到什么，读者据此能自己判断是否跑成功了。" },
+      { key: "RBK-factory-Done-producer-05", text: "「本次改动带来了什么」里的每一条，都给出了读者可以自己执行的验证方式。" },
+      { key: "RBK-factory-Done-producer-06", text: "文件地图覆盖了本次新增或修改的每一个文件，没有遗漏。" },
+      { key: "RBK-factory-Done-producer-07", text: "文件地图里的每一个文件都标明了它是入口还是内部实现。" },
+      { key: "RBK-factory-Done-producer-08", text: "我没有把本次没有做的事写成已经做了的事。" },
+      { key: "RBK-factory-Done-producer-09", text: "我写出了本次明确不做的范围，或明确写出「本次没有明确排除的范围」。" },
+      { key: "RBK-factory-Done-producer-10", text: "我写出了本次踩到的已知坑，或明确写出「没有踩到已知坑」。" },
+    ],
+  },
 };
 
 /**
@@ -262,6 +288,10 @@ export const RUBRIC_ROLE_ANSWERED_BY: Record<
   QA: {},
   Merge: {},
   Retro: { producer: "retro" },
+  // Like Retro: one producing stage, no critic anywhere in the pipeline, and no
+  // `stage_gates` row for the phase -- so Done's verdicts are recorded and shown
+  // but can never block.
+  Done: { producer: "delivery" },
 };
 
 /** The pipeline stage that answers this role, or null when nothing does. */

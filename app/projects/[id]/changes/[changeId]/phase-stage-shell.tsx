@@ -74,6 +74,11 @@ const PHASE_STAGE_COPY: Record<ReviewPhase, { label: string; title: string; desc
     title: "收尾复盘",
     description: "整理交付结果和经验记录，完成 Change 生命周期。",
   },
+  Done: {
+    label: "Done",
+    title: "交付",
+    description: "产出交付单：怎么跑起来、这次改了什么、文件地图、还有哪些没做。",
+  },
 };
 
 export function phaseDisplayName(phase: ReviewPhase): string {

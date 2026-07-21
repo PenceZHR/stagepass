@@ -25,6 +25,7 @@ export const PROVIDER_BACKED_ACTION_IDS = new Set<string>([
   "fix_blockers",
   "merge",
   "run_retro",
+  "run_delivery",
 ]);
 
 export class ProviderSelectionError extends Error {

@@ -40,6 +40,17 @@ export const PHASE_ARTIFACT_DEFINITIONS = [
   { phase: "Fix", type: "changed_files", fileName: "changed-files.json", label: "修复变更文件" },
   { phase: "Merge", type: "release_note", fileName: "release-note.md", label: "发布与交付说明" },
   { phase: "Retro", type: "retro", fileName: "retro.md", label: "复盘与债务回流" },
+  // `editable: false` is the design's 「不可变」 (§3.1): one delivery note per
+  // change, never overwritten, so it stays an auditable record of what was
+  // handed over at that moment. Its §4.1 is generated from the database, and an
+  // in-place edit is exactly how that guarantee would be lost.
+  {
+    phase: "Done",
+    type: "delivery",
+    fileName: "delivery.md",
+    label: "交付单",
+    editable: false,
+  },
 ] as const satisfies readonly PhaseArtifactDefinitionShape[];
 
 export type PhaseArtifactDefinition = (typeof PHASE_ARTIFACT_DEFINITIONS)[number];

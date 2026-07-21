@@ -474,27 +474,46 @@ describe("phase review UI", () => {
     assert.match(retroBranch, /data-retro-stage/);
   });
 
-  it("renders Done as a read-only completion StageFrame without phase records or actions", () => {
+  // This case used to be "renders Done as a read-only completion StageFrame
+  // without phase records or actions", and it pinned three things that are now
+  // wrong on purpose: that the Done branch renders a bare <StageFrame>, that it
+  // carries no `actions={...}`, and that it calls no `renderPhaseRecords`.
+  //
+  // All three described Done while Done was only a label. It is a stage now: it
+  // runs the delivery stage, owns delivery.md and answers the Done producer
+  // rubric, so it needs the action bar to be startable, the phase records to
+  // show its run, and the rubric drawer -- none of which a StageFrame can
+  // render. Keeping the old assertions would have pinned the empty shell the
+  // pipeline used to end on, which is exactly the gap this stage closes.
+  //
+  // What survives unchanged: DoneCompletionPanel and its content, shown once the
+  // change actually reaches DONE.
+  it("renders Done as a real delivery stage, and the completion panel only once DONE", () => {
     const doneBranchStart = src.indexOf("showingDoneStage ? (");
     assert.notEqual(doneBranchStart, -1, "Done stage branch should exist");
     const doneBranchEnd = src.indexOf(") : showingBuildSandbox ? (", doneBranchStart);
     assert.notEqual(doneBranchEnd, -1, "Done branch should be before normal stage branches");
     const doneBranch = src.slice(doneBranchStart, doneBranchEnd);
 
-    assert.match(src, /import \{ StageFrame, type StageBlockerView \} from "\.\/stage-frame";/);
     assert.match(src, /const showingDoneStage = selectedStage\.id === "done";/);
     assert.match(src, /function DoneCompletionPanel/);
-    assert.match(doneBranch, /<StageFrame/);
-    assert.match(doneBranch, /stage=\{selectedStage\}/);
-    assert.match(doneBranch, /title="Change complete"/);
-    assert.match(doneBranch, /eyebrow="Completion"/);
-    assert.match(doneBranch, /<DoneCompletionPanel/);
-    assert.doesNotMatch(doneBranch, /actions=\{/);
-    assert.doesNotMatch(doneBranch, /renderPhaseRecords/);
+
+    // A stage, through the same shell as every other stage.
+    assert.match(doneBranch, /<PhaseStageShell/);
+    assert.match(doneBranch, /phase="Done"/);
+    assert.match(doneBranch, /actions=\{deliveryStageActions\}/);
+    assert.match(doneBranch, /records=\{renderPhaseRecords\("Done", "done-records"\)\}/);
     assert.doesNotMatch(doneBranch, /<PhaseReviewPanel/);
+
+    // The completion panel is the DONE state, not the stage itself: while the
+    // change sits at DELIVERY_PENDING the branch must offer to produce the
+    // delivery note rather than announce the change is finished.
+    assert.match(doneBranch, /change\.status === "DONE"/);
+    assert.match(doneBranch, /<DoneCompletionPanel/);
+    assert.match(doneBranch, /data-delivery-stage/);
+
     assert.match(src, /Change id/);
     assert.match(src, /Branch/);
-    assert.match(src, /function DoneCompletionPanel/);
     assert.match(src, /visibleChangeStatus\(change\)/);
     assert.doesNotMatch(src, /<dd className="font-medium">\{change\.status\}<\/dd>/);
   });

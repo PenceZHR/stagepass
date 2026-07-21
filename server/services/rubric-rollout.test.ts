@@ -298,6 +298,19 @@ describe("factory rubrics", () => {
     "RBK-factory-Retro-producer-04",
     "RBK-factory-Retro-producer-05",
     "RBK-factory-Retro-producer-06",
+    // Done producer (delivery note). Added deliberately: this list turning red
+    // on a new factory criterion is the mechanism working, not a nuisance --
+    // these keys reach every project on the next seed.
+    "RBK-factory-Done-producer-01",
+    "RBK-factory-Done-producer-02",
+    "RBK-factory-Done-producer-03",
+    "RBK-factory-Done-producer-04",
+    "RBK-factory-Done-producer-05",
+    "RBK-factory-Done-producer-06",
+    "RBK-factory-Done-producer-07",
+    "RBK-factory-Done-producer-08",
+    "RBK-factory-Done-producer-09",
+    "RBK-factory-Done-producer-10",
   ];
 
   it("keeps every factory criterion key exactly as shipped", () => {

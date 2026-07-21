@@ -37,6 +37,10 @@ describe("provider selection policy", () => {
       "fix_blockers",
       "merge",
       "run_retro",
+      // The Done stage calls a provider: the delivery note has to read the
+      // repository to answer 「怎么跑起来」, so it cannot be assembled from
+      // existing artifacts (design §3.1).
+      "run_delivery",
     ]);
     assert.equal(isProviderBackedAction("run_qa"), false);
     assert.equal(isProviderBackedAction("approve_plan"), false);

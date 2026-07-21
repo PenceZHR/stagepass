@@ -146,6 +146,19 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   { actionId: "reject_merge", phase: "Merge", label: "打回 Merge", requiredStatus: "MERGE_READY" },
   { actionId: "merge", phase: "Merge", label: "合并", requiredStatus: "MERGE_READY" },
   { actionId: "run_retro", phase: "Merge", label: "运行 Retro", requiredStatus: "RETRO_PENDING" },
+  // The Done stage's only action. Filed under Merge for the same reason
+  // run_retro is: both run after the merge, and the Merge stage gate is the
+  // authority they inherit (no snapshotPhase, no bespoke resolver -- see
+  // resolveProviderActionAuthority's fallback). requiredStatus mirrors exactly
+  // what runDelivery's assertStatus accepts, which is the whole of it:
+  // DELIVERY_PENDING is both the entry status and the running status, so unlike
+  // TechSpec/TestPlan there is no separate stranded-run entry to add.
+  {
+    actionId: "run_delivery",
+    phase: "Merge",
+    label: "生成交付单",
+    requiredStatus: "DELIVERY_PENDING",
+  },
 ];
 
 for (const definition of ACTION_DEFINITIONS) {

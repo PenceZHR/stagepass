@@ -207,10 +207,13 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
   done: {
     id: "done",
     label: "Done",
-    description: "The change pipeline has finished.",
-    reviewPhase: null,
-    recordPhase: null,
-    actionPhase: null,
+    description: "Produce the delivery note: how to run it, what changed, the file map, and what is still open.",
+    reviewPhase: "Done",
+    recordPhase: "Done",
+    // Filed under the Merge action phase for the same reason Retro is: both run
+    // after the merge and inherit the Merge stage gate as their authority.
+    actionPhase: "Merge",
+    actionIds: ["run_delivery"],
   },
 };
 
@@ -240,6 +243,7 @@ const STATUS_TO_STAGE: Record<string, StageResolution> = {
   MERGE_READY: { id: "merge", state: "needs_review" },
   MERGING: { id: "merge", state: "running" },
   RETRO_PENDING: { id: "retro", state: "waiting" },
+  DELIVERY_PENDING: { id: "done", state: "waiting" },
   DONE: { id: "done", state: "complete" },
 };
 
@@ -257,6 +261,7 @@ const REVIEW_PHASE_TO_STAGE: Record<ReviewPhase, UiStageId> = {
   Fix: "fix",
   Merge: "merge",
   Retro: "retro",
+  Done: "done",
 };
 
 const RUN_PHASE_TO_STAGE: Record<string, UiStageId> = {
@@ -284,6 +289,7 @@ const RUN_PHASE_TO_STAGE: Record<string, UiStageId> = {
   merge: "merge",
   release: "merge",
   retro: "retro",
+  delivery: "done",
 };
 
 const ACTIVE_SPEC_BATTLE_STATUSES = new Set(["not_started", "running", "red_running", "blue_running"]);

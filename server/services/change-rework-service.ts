@@ -46,6 +46,7 @@ const PHASE_ORDER: RunPhase[] = [
   "fix_findings",
   "release",
   "retro",
+  "delivery",
 ];
 
 const ROOT_FILES_BY_PHASE: Record<RunPhase, string[]> = {
@@ -70,6 +71,7 @@ const ROOT_FILES_BY_PHASE: Record<RunPhase, string[]> = {
   fix_findings: ["changed-files.json"],
   release: ["release-note.md"],
   retro: ["retro.md"],
+  delivery: ["delivery.md"],
 };
 
 function nowISO(): string {
