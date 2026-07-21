@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 
 import type { db } from "../db";
 import {
@@ -19,6 +19,9 @@ import {
   reviewAttempts,
   reviewReports,
   reviewState,
+  rubricAssessments,
+  rubricCriteria,
+  rubrics,
   runs,
   stageGates,
   stageRuns,
@@ -41,6 +44,14 @@ import {
   sha256Text,
 } from "./recovery-evidence";
 import { renderDesignSnapshotMarkdown } from "./pipeline-design-stage-service";
+import {
+  deliveryTier1Violations,
+  type DeliveryTier1JudgedCriterion,
+} from "./pipeline-delivery-stage-service";
+import {
+  selectLatestAssessmentBatch,
+  type StoredRubricAssessment,
+} from "./rubric-service";
 import {
   computeReviewFindingsDbHash,
   computeReviewReportDbHash,
@@ -194,6 +205,66 @@ function buildRunFallsInsideProviderRunWindow(
   // Canonical form is fixed-width UTC with millisecond precision, so
   // lexicographic order is chronological order.
   return buildCreatedAt >= runStartedAt && buildCreatedAt <= providerEndedAt;
+}
+
+/**
+ * The Done producer verdicts THIS run recorded, for the delivery tier-1 gate.
+ *
+ * A delivery run that wrote delivery.md, recorded its rubric, and crashed
+ * before the status commit is recovered here -- and the gate the live path
+ * enforces in `assertDeliveryTier1Gate` must hold on this path too, or a
+ * crash becomes the tier-1 escape hatch the design refuses to have.
+ *
+ * Filtered on `rubric_assessments.run_id = run.id` BEFORE batch selection:
+ * the batch must be this run's own. Selecting the change's latest batch and
+ * hoping it is this run's would let a run that crashed before its harvest
+ * inherit the previous run's `yes` -- the same inheritance
+ * `buildRunFallsInsideProviderRunWindow` closes for build rows (2.7), which
+ * this deliberately does not touch. `selectLatestAssessmentBatch` still owns
+ * the round/run batch arithmetic; the filter only narrows whose rows it sees.
+ *
+ * Queried through `evidenceDb` rather than the rubric service's module-level
+ * connection so the read is the same handle the snapshot witnesses.
+ */
+function judgedDoneProducerRubricForRecoveredRun(
+  evidenceDb: EvidenceDb,
+  run: typeof runs.$inferSelect,
+): DeliveryTier1JudgedCriterion[] {
+  const rows = evidenceDb
+    .select({ assessment: rubricAssessments, criterion: rubricCriteria })
+    .from(rubricAssessments)
+    .innerJoin(rubrics, eq(rubrics.id, rubricAssessments.rubricId))
+    .innerJoin(rubricCriteria, eq(rubricCriteria.id, rubricAssessments.criterionId))
+    .where(and(
+      eq(rubricAssessments.changeId, run.changeId),
+      eq(rubricAssessments.runId, run.id),
+      eq(rubrics.phase, "Done"),
+      eq(rubrics.role, "producer"),
+      or(isNull(rubrics.changeId), eq(rubrics.changeId, run.changeId)),
+    ))
+    .all();
+  const stored: StoredRubricAssessment[] = rows.map(({ assessment }) => ({
+    id: assessment.id,
+    rubricId: assessment.rubricId,
+    runId: assessment.runId,
+    roundId: assessment.roundId,
+    criterionId: assessment.criterionId,
+    verdict: assessment.verdict as StoredRubricAssessment["verdict"],
+    evidence: assessment.evidence,
+    createdAt: assessment.createdAt,
+  }));
+  const criterionById = new Map(rows.map((row) => [row.criterion.id, row.criterion]));
+  return selectLatestAssessmentBatch(stored, { roundId: null }).flatMap((row) => {
+    const criterion = criterionById.get(row.criterionId);
+    if (!criterion) return [];
+    return [{
+      criterionKey: criterion.criterionKey,
+      text: criterion.text,
+      blocking: criterion.blocking === 1,
+      verdict: row.verdict as DeliveryTier1JudgedCriterion["verdict"],
+      evidence: row.evidence,
+    }];
+  });
 }
 
 export function businessEvidenceForCompletedProvider(
@@ -595,6 +666,19 @@ export function businessEvidenceForCompletedProvider(
       if (!stage || !nonEmpty(stage.sourceLineageJson)) missingEvidence.push("stage_source_lineage");
     }
     if (!artifact || !nonEmpty(artifact.path)) missingEvidence.push("stage_run_artifact");
+    // The delivery tier-1 gate, recovery side. delivery.md alone is no longer
+    // the whole business outcome of a delivery run: the live path refuses DONE
+    // unless this run's own Done producer batch clears every tier-1 criterion
+    // (assertDeliveryTier1Gate), so a recovery that endorsed the artifact
+    // without the verdicts would promote a crashed run past a gate the same
+    // run could not have passed alive. A missing batch is a violation too --
+    // fail closed, never inherited from another run. Deliberately additive to
+    // the ARTIFACT_ONLY exemption above, not a change to it: the artifact
+    // check still stands on its own.
+    if (provider.phase === "delivery"
+      && deliveryTier1Violations(judgedDoneProducerRubricForRecoveredRun(evidenceDb, run)).length > 0) {
+      missingEvidence.push("delivery_tier1_rubric");
+    }
   }
   const dbSnapshot = captureEvidenceDbSnapshot(
     evidenceDb, run, provider, onEvidenceDbQuery, "observation", maxReviewFindings,
@@ -887,5 +971,34 @@ export function captureEvidenceDbSnapshot(
     }).from(artifacts).where(and(
       eq(artifacts.changeId, run.changeId), eq(artifacts.runId, run.id),
     )).orderBy(desc(artifacts.createdAt), desc(artifacts.id)).limit(1).get() ?? null),
+    // The delivery tier-1 verdict rows the evidence decision reads
+    // (judgedDoneProducerRubricForRecoveredRun): a field the decision reads
+    // but the witness omits is drift evidence_changed_during_probe -- and the
+    // in-transaction re-check -- would not catch. Every projected column is
+    // one that decision consumes: batch selection reads rubricId/runId/
+    // roundId/createdAt, the outcome reads verdict, and the violation reads
+    // criterionKey/blocking/text. Ordered by id so the witness string is
+    // stable across reads of unchanged data.
+    rubric: provider.phase === "delivery"
+      ? query(() => evidenceDb.select({
+        id: rubricAssessments.id, runId: rubricAssessments.runId,
+        roundId: rubricAssessments.roundId, rubricId: rubricAssessments.rubricId,
+        criterionId: rubricAssessments.criterionId, verdict: rubricAssessments.verdict,
+        evidence: rubricAssessments.evidence, createdAt: rubricAssessments.createdAt,
+        criterionKey: rubricCriteria.criterionKey, blocking: rubricCriteria.blocking,
+        text: rubricCriteria.text,
+      }).from(rubricAssessments)
+        .innerJoin(rubrics, eq(rubrics.id, rubricAssessments.rubricId))
+        .innerJoin(rubricCriteria, eq(rubricCriteria.id, rubricAssessments.criterionId))
+        .where(and(
+          eq(rubricAssessments.changeId, run.changeId),
+          eq(rubricAssessments.runId, run.id),
+          eq(rubrics.phase, "Done"),
+          eq(rubrics.role, "producer"),
+          or(isNull(rubrics.changeId), eq(rubrics.changeId, run.changeId)),
+        ))
+        .orderBy(asc(rubricAssessments.id))
+        .all())
+      : null,
   });
 }

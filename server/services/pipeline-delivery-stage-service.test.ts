@@ -36,6 +36,8 @@ import { runDelivery, runRetro, setPipelineEngineFactoryForTest } from "./pipeli
 import { computeActions } from "./action-contract-service.ts";
 import { ALLOWED_TRANSITIONS, RUNNING_CHANGE_STATUSES } from "../state-machine/transitions.ts";
 import { DELIVERY_KNOWN_LIMITS_PROVENANCE } from "./delivery-known-limits-service.ts";
+import { ensureFactoryRubrics, getCurrentRubric, saveRubricVersion } from "./rubric-service.ts";
+import { TIER1_CRITERION_KEYS } from "./rubric-tiers.ts";
 
 const PROJECT_ID = "PRJ-DELIVERY";
 const CHANGE_ID = "CHG-DELIVERY";
@@ -77,13 +79,19 @@ function deliveryLineProtocolText(overrides: {
   ].join("\n");
 }
 
-function stubEngine(summary: string, success = true): void {
+/**
+ * A lazy summary is evaluated INSIDE engine.run, i.e. after runDocumentStage
+ * has already resolved (and, on first contact, seeded) the Done producer
+ * rubric -- which is what lets a stubbed reply answer RUBRIC lines against
+ * criterion ids that only exist once the run is underway.
+ */
+function stubEngine(summary: string | (() => string), success = true): void {
   setPipelineEngineFactoryForTest(() => ({
     async run(input) {
       return {
         threadId: `${input.changeId}-thread`,
         runId: "ENGINE-RUN",
-        summary,
+        summary: typeof summary === "function" ? summary() : summary,
         success,
         changedFiles: [],
         structuredOutput: undefined,
@@ -92,6 +100,50 @@ function stubEngine(summary: string, success = true): void {
     },
     async *runStreamed() {},
   }));
+}
+
+/** §3.4's tier-1 clause: the one Done criterion allowed to hold completion. */
+const TIER1_DONE_KEY = "RBK-factory-Done-producer-01";
+
+function doneProducerCriteria() {
+  // Idempotent: inside a run this has already happened via resolveStageRubric.
+  ensureFactoryRubrics(PROJECT_ID);
+  const rubric = getCurrentRubric({
+    projectId: PROJECT_ID,
+    changeId: null,
+    phase: "Done",
+    role: "producer",
+  });
+  assert.ok(rubric, "the Done producer rubric must exist before it can be answered");
+  return rubric.criteria;
+}
+
+/**
+ * RUBRIC answer lines for the CURRENT Done producer rubric. `null` from
+ * `verdictFor` skips the line, which the harvest records as `not_assessed`.
+ */
+function doneRubricAnswers(
+  verdictFor: (criterion: { criterionKey: string }) => "yes" | "no" | null = () => "yes",
+): string[] {
+  return doneProducerCriteria().flatMap((criterion) => {
+    const verdict = verdictFor(criterion);
+    if (!verdict) return [];
+    return [`RUBRIC: ${criterion.id} | ${verdict} | 我在当前仓库状态下逐条核对过这一项`];
+  });
+}
+
+/**
+ * The fixture most cases want: a protocol-complete delivery reply whose Done
+ * producer rubric is answered (all `yes` unless overridden), because with the
+ * tier-1 completion gate a reply that stays silent on the rubric can no longer
+ * reach DONE. Rubric lines go last, outside every block, exactly where the
+ * prompts place them.
+ */
+function deliveryReplyWithRubric(
+  overrides: Parameters<typeof deliveryLineProtocolText>[0] = {},
+  verdictFor?: (criterion: { criterionKey: string }) => "yes" | "no" | null,
+): () => string {
+  return () => [deliveryLineProtocolText(overrides), ...doneRubricAnswers(verdictFor)].join("\n");
 }
 
 function makeContext(label: string, phase: string, actionId: string): JobExecutionContext {
@@ -337,7 +389,7 @@ describe("Done delivery stage", () => {
 
   it("writes a delivery note with all four sections and reaches DONE", async () => {
     seedChange("DELIVERY_PENDING");
-    stubEngine(deliveryLineProtocolText());
+    stubEngine(deliveryReplyWithRubric());
 
     await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
 
@@ -359,7 +411,7 @@ describe("Done delivery stage", () => {
 
   it("registers delivery.md as the stage's artifact", async () => {
     seedChange("DELIVERY_PENDING");
-    stubEngine(deliveryLineProtocolText());
+    stubEngine(deliveryReplyWithRubric());
 
     await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
 
@@ -427,7 +479,7 @@ describe("Done delivery stage", () => {
       findingVersion: 2,
     }).run();
 
-    stubEngine(deliveryLineProtocolText({
+    stubEngine(deliveryReplyWithRubric({
       knownLimits: "本次没有任何未关闭的 gap，也没有被豁免的 P1。",
     }));
 
@@ -495,7 +547,7 @@ describe("Done delivery stage", () => {
         createdAt: now,
       }).run();
     });
-    stubEngine(deliveryLineProtocolText());
+    stubEngine(deliveryReplyWithRubric());
 
     await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
 
@@ -515,7 +567,7 @@ describe("Done delivery stage", () => {
 
   it("says so explicitly when the database has nothing open", async () => {
     seedChange("DELIVERY_PENDING");
-    stubEngine(deliveryLineProtocolText());
+    stubEngine(deliveryReplyWithRubric());
 
     await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
 
@@ -581,7 +633,7 @@ describe("Done delivery stage", () => {
 
   it("records a Done producer rubric verdict for the run", async () => {
     seedChange("DELIVERY_PENDING");
-    stubEngine(deliveryLineProtocolText());
+    stubEngine(deliveryReplyWithRubric());
 
     await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
 
@@ -591,16 +643,177 @@ describe("Done delivery stage", () => {
     const criteria = db.select().from(rubricCriteria)
       .where(eq(rubricCriteria.rubricId, doneRubric.id)).all();
     assert.ok(criteria.length >= 5 && criteria.length <= 12, `expected 5-12 criteria, got ${criteria.length}`);
+    // This assertion used to read "every factory Done criterion ships
+    // non-blocking" and pinned §4.5's advisory-on-arrival rule. That rule now
+    // has exactly one deliberate exception (user decision 2026-07-21): the
+    // tier-1 clause is 恒阻断 and seeds with the flag already set, because a
+    // tier the user cannot opt out of must not depend on somebody ticking a
+    // box. Every OTHER factory Done criterion still ships advisory, and that
+    // half of the old pin is kept, so widening the seed beyond tier-1 fails
+    // here.
+    for (const criterion of criteria) {
+      assert.equal(
+        criterion.blocking,
+        TIER1_CRITERION_KEYS.has(criterion.criterionKey) ? 1 : 0,
+        `${criterion.criterionKey}: only the tier-1 clause may seed as blocking`,
+      );
+    }
     assert.ok(
-      criteria.every((criterion) => criterion.blocking === 0),
-      "factory Done criteria must ship non-blocking, or every existing project gets a P0",
+      criteria.some((criterion) => criterion.criterionKey === TIER1_DONE_KEY),
+      "the §3.4 tier-1 clause must be part of the seeded Done producer rubric",
     );
     const assessed = db.select().from(rubricAssessments).all()
       .filter((assessment) => criteria.some((criterion) => criterion.id === assessment.criterionId));
     assert.equal(
       assessed.length,
       criteria.length,
-      "silence must be recorded per criterion, not dropped",
+      "every criterion must get a verdict row for the run",
     );
+  });
+
+  // The tier-1 completion gate (§2.2 + §3.4). Both failure verdicts are
+  // exercised: an explicit `no` here, and silence (`not_assessed`) in the
+  // next case. And the loop out of the deadlock is proven in the same test:
+  // re-run delivery, answer `yes`, reach DONE. There is deliberately no
+  // human exit to test -- the user chose deadlock over an escape hatch.
+  it("holds the change at DELIVERY_PENDING on a tier-1 `no`, and a yes re-run releases it", async () => {
+    seedChange("DELIVERY_PENDING");
+    // run_delivery's dispatch authority: retro finished (the retroDone flag
+    // plus exactly one completed retro run). Seeded so the 保持可点 assertion
+    // below observes the gate's own effect, not a missing-retro blocker.
+    db.update(changes).set({ retroDone: 1 }).where(eq(changes.id, CHANGE_ID)).run();
+    db.insert(runs).values({
+      id: "RUN-DELIVERY-RETRO-AUTHORITY",
+      changeId: CHANGE_ID,
+      phase: "retro",
+      status: "completed",
+      startedAt: "2026-07-10T00:00:00.000Z",
+      endedAt: "2026-07-10T00:01:00.000Z",
+      summary: "retro completed",
+    }).run();
+    stubEngine(deliveryReplyWithRubric({}, (criterion) =>
+      criterion.criterionKey === TIER1_DONE_KEY ? "no" : "yes"));
+
+    const blockedContext = makeContext("delivery", "delivery", "run_delivery");
+    await assert.rejects(
+      () => runDelivery(CHANGE_ID, blockedContext),
+      new RegExp(TIER1_DONE_KEY),
+      "the failure must name the tier-1 criterion that held the change",
+    );
+    // What the job runner does when the stage throws; the fixture's job row
+    // must not keep claiming to run, or the action contract reports
+    // provider_job_running instead of the state under test.
+    db.update(pipelineJobs)
+      .set({ status: "failed", endedAt: nowISO(), errorCode: "pipeline_job_failed" })
+      .where(eq(pipelineJobs.id, blockedContext.jobId)).run();
+
+    assert.equal(currentStatus(), "DELIVERY_PENDING", "a tier-1 no must not land DONE");
+    assert.equal(
+      fs.existsSync(path.join(repoPath, ".ship", "changes", CHANGE_ID, "delivery.md")),
+      false,
+      "a blocked run must not hand over a delivery note",
+    );
+
+    // Observability: the run's own summary and a greppable event both carry
+    // which criterion blocked and what the verdict was.
+    const blockedRun = db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all()
+      .find((run) => run.phase === "delivery");
+    assert.ok(blockedRun);
+    assert.equal(blockedRun.status, "failed");
+    assert.match(blockedRun.summary ?? "", new RegExp(TIER1_DONE_KEY));
+    assert.match(blockedRun.summary ?? "", /判定为 no/);
+    const blockedEvent = db.select().from(events).where(eq(events.changeId, CHANGE_ID)).all()
+      .find((event) => event.type === "delivery_tier1_blocked");
+    assert.ok(blockedEvent, "the block must leave a delivery_tier1_blocked event");
+    assert.match(blockedEvent.message, new RegExp(TIER1_DONE_KEY));
+
+    // The failed delivery keeps its entry status, so the button stays live:
+    // the only exit is the pipeline's own loop, and it must remain reachable.
+    const retryAction = computeActions(CHANGE_ID)
+      .find((action) => action.actionId === "run_delivery");
+    assert.equal(retryAction?.enabled, true, retryAction?.reasonCode ?? "");
+
+    stubEngine(deliveryReplyWithRubric());
+    await runDelivery(CHANGE_ID, makeContext("delivery-retry", "delivery", "run_delivery"));
+    assert.equal(currentStatus(), "DONE", "a yes re-run is the one way past a tier-1 no");
+  });
+
+  it("treats tier-1 silence as blocking: a reply with no RUBRIC lines cannot reach DONE", async () => {
+    seedChange("DELIVERY_PENDING");
+    // Protocol-complete delivery reply, zero RUBRIC lines: every criterion is
+    // recorded not_assessed, and not_assessed on the tier-1 clause blocks.
+    stubEngine(deliveryLineProtocolText());
+
+    await assert.rejects(
+      () => runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery")),
+      new RegExp(TIER1_DONE_KEY),
+    );
+
+    assert.equal(currentStatus(), "DELIVERY_PENDING");
+    assert.equal(
+      fs.existsSync(path.join(repoPath, ".ship", "changes", CHANGE_ID, "delivery.md")),
+      false,
+    );
+    // The fail-closed record survives the failed run: silence is stored as
+    // not_assessed per criterion, not dropped.
+    const doneRubric = db.select().from(rubrics).all()
+      .find((rubric) => rubric.phase === "Done" && rubric.role === "producer");
+    assert.ok(doneRubric);
+    const criteria = db.select().from(rubricCriteria)
+      .where(eq(rubricCriteria.rubricId, doneRubric.id)).all();
+    const assessed = db.select().from(rubricAssessments).all()
+      .filter((assessment) => criteria.some((criterion) => criterion.id === assessment.criterionId));
+    assert.equal(assessed.length, criteria.length);
+    assert.ok(assessed.every((assessment) => assessment.verdict === "not_assessed"));
+  });
+
+  // Pins the 2.9 boundary the gate must NOT widen past: Done's blocking
+  // channel stays "none" for everything below tier-1. A factory tier-2
+  // criterion, deliberately ticked blocking by the user, answered `no`, is
+  // recorded -- and the change still lands DONE. A gate rewritten to block on
+  // every blockingCriterionId (not just tier-1) turns this red.
+  it("does not widen the gate: a blocking tier-2 Done `no` is recorded but does not stop DONE", async () => {
+    seedChange("DELIVERY_PENDING");
+    ensureFactoryRubrics(PROJECT_ID);
+    const seeded = getCurrentRubric({
+      projectId: PROJECT_ID, changeId: null, phase: "Done", role: "producer",
+    });
+    assert.ok(seeded);
+    const TIER2_KEY = "RBK-factory-Done-producer-02";
+    // The user ticks 阻断 on a tier-2 factory criterion: identity carried by
+    // key round-trip, exactly as the drawer's editor saves.
+    saveRubricVersion({
+      projectId: PROJECT_ID,
+      changeId: null,
+      phase: "Done",
+      role: "producer",
+      criteria: seeded.criteria.map((criterion) => ({
+        text: criterion.text,
+        criterionKey: criterion.criterionKey,
+        blocking: criterion.criterionKey === TIER2_KEY ? true : criterion.blocking,
+      })),
+    });
+    stubEngine(deliveryReplyWithRubric({}, (criterion) =>
+      criterion.criterionKey === TIER2_KEY ? "no" : "yes"));
+
+    await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
+
+    assert.equal(
+      currentStatus(),
+      "DONE",
+      "only tier-1 may hold completion; a tier-2 blocking `no` records and stops nothing (2.9)",
+    );
+    // ...and the `no` really was recorded rather than lost.
+    const current = getCurrentRubric({
+      projectId: PROJECT_ID, changeId: null, phase: "Done", role: "producer",
+    });
+    assert.ok(current);
+    const tier2 = current.criteria.find((criterion) => criterion.criterionKey === TIER2_KEY);
+    assert.ok(tier2);
+    assert.equal(tier2.blocking, true, "precondition: the tick persisted");
+    const verdicts = db.select().from(rubricAssessments).all()
+      .filter((assessment) => assessment.criterionId === tier2.id);
+    assert.equal(verdicts.length, 1);
+    assert.equal(verdicts[0]!.verdict, "no");
   });
 });

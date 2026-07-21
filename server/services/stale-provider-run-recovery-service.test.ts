@@ -33,6 +33,9 @@ import {
   reviewAttempts,
   reviewReports,
   reviewState,
+  rubricAssessments,
+  rubricCriteria,
+  rubrics,
   runs,
   stageActions,
   stageGates,
@@ -98,6 +101,13 @@ const OTHER_CHANGE_ID = "CHG-STALE-PROVIDER-OTHER";
 const fixtureRepoPaths: string[] = [];
 
 function cleanupRows(): void {
+  // Rubric children first: assessments reference changes, rubrics and criteria.
+  db.delete(rubricAssessments).where(eq(rubricAssessments.changeId, CHANGE_ID)).run();
+  for (const rubricRow of db.select({ id: rubrics.id }).from(rubrics)
+    .where(eq(rubrics.projectId, PROJECT_ID)).all()) {
+    db.delete(rubricCriteria).where(eq(rubricCriteria.rubricId, rubricRow.id)).run();
+  }
+  db.delete(rubrics).where(eq(rubrics.projectId, PROJECT_ID)).run();
   db.delete(pipelineJobs).where(eq(pipelineJobs.changeId, OTHER_CHANGE_ID)).run();
   db.delete(changes).where(eq(changes.id, OTHER_CHANGE_ID)).run();
   const readinessIds = db
@@ -1042,6 +1052,63 @@ function seedGenericDocumentStageProviderFixture(input: {
   assert.ok(run);
   assert.ok(provider);
   return { run, provider };
+}
+
+/**
+ * The Done producer rubric exactly as production leaves it: a project-scoped
+ * rubric row, factory criterion keys, and the tier-1 clause
+ * `RBK-factory-Done-producer-01` seeded blocking (§2.1 恒阻断). The second
+ * criterion is a real tier-2 factory key, advisory unless a test ticks it.
+ */
+function seedDoneProducerRubric(input: { tier2Blocking?: boolean } = {}): void {
+  const now = "2026-07-10T00:00:05.000Z";
+  db.insert(rubrics).values({
+    id: "RUB-DONE-PRODUCER", projectId: PROJECT_ID, changeId: null,
+    phase: "Done", role: "producer", version: 1, isCurrent: 1, createdAt: now,
+  }).run();
+  db.insert(rubricCriteria).values({
+    id: "RBC-DONE-TIER1", rubricId: "RUB-DONE-PRODUCER",
+    criterionKey: "RBK-factory-Done-producer-01", ordinal: 0,
+    text: "交付单里写的启动方式，我是在当前仓库状态下逐条确认过的，不是从文档或 README 抄来的。",
+    blocking: 1, createdAt: now,
+  }).run();
+  db.insert(rubricCriteria).values({
+    id: "RBC-DONE-TIER2", rubricId: "RUB-DONE-PRODUCER",
+    criterionKey: "RBK-factory-Done-producer-02", ordinal: 1,
+    text: "我写出了入口文件的具体路径，而不是只写模块名或目录名。",
+    blocking: input.tier2Blocking ? 1 : 0, createdAt: now,
+  }).run();
+}
+
+/**
+ * One verdict row, shaped as harvestStageRubric persists them: roundId null
+ * (Done is round-less), createdAt inside the provider window, keyed to
+ * whichever run the test says -- the run filter under test is exactly about
+ * WHOSE runId a row carries.
+ */
+function recordDoneAssessment(input: {
+  runId: string;
+  criterionId: "RBC-DONE-TIER1" | "RBC-DONE-TIER2";
+  verdict: "yes" | "no" | "not_assessed";
+}): void {
+  db.insert(rubricAssessments).values({
+    id: `RBA-${input.criterionId}-${input.runId}`,
+    changeId: CHANGE_ID,
+    runId: input.runId,
+    roundId: null,
+    rubricId: "RUB-DONE-PRODUCER",
+    criterionId: input.criterionId,
+    verdict: input.verdict,
+    evidence: input.verdict === "not_assessed" ? null : "已在当前仓库状态下核对",
+    createdAt: "2026-07-10T00:00:50.000Z",
+  }).run();
+}
+
+/** The healthy batch: this run judged both Done criteria `yes`. */
+function seedHealthyDoneRubricBatch(runId: string): void {
+  seedDoneProducerRubric();
+  recordDoneAssessment({ runId, criterionId: "RBC-DONE-TIER1", verdict: "yes" });
+  recordDoneAssessment({ runId, criterionId: "RBC-DONE-TIER2", verdict: "yes" });
 }
 
 function insertOwnershipJob(input: {
@@ -5921,10 +5988,11 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
   });
 
   describe("delivery business evidence", () => {
-    it("treats a delivery run that wrote its note as complete evidence", () => {
+    it("treats a delivery run that wrote its note and cleared tier-1 as complete evidence", () => {
       const { run, provider } = seedGenericDocumentStageProviderFixture({
         phase: "delivery", withArtifact: true,
       });
+      seedHealthyDoneRubricBatch(run.id);
 
       const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
 
@@ -5932,7 +6000,10 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       // checks -- no writer produces a stage_runs row for this phase -- so a
       // delivery that had already written delivery.md was recovered as failed,
       // the change never left DELIVERY_PENDING, and the next run_delivery wrote
-      // over the note. The artifact is the whole business outcome here.
+      // over the note. The artifact plus this run's own tier-1 `yes` batch is
+      // the whole business outcome; the healthy crash recovery must still
+      // complete, or the tier-1 gate turns every mid-commit crash into a
+      // permanent false negative.
       assert.deepEqual(observation.missingEvidence, []);
       assert.equal(observation.complete, true);
     });
@@ -5941,14 +6012,115 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       const { run, provider } = seedGenericDocumentStageProviderFixture({
         phase: "delivery", withArtifact: false,
       });
+      seedHealthyDoneRubricBatch(run.id);
 
       const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
 
       // The stage-authority checks are skipped for this phase, not the artifact
       // check. Skipping all three would make every delivery run complete
-      // unconditionally, which is a different bug in the same place.
+      // unconditionally, which is a different bug in the same place. The
+      // healthy rubric batch keeps this observation about the artifact alone.
       assert.deepEqual(observation.missingEvidence, ["stage_run_artifact"]);
       assert.equal(observation.complete, false);
+    });
+
+    // The recovery half of the Done tier-1 completion gate. A delivery run
+    // that wrote delivery.md, recorded its rubric, and crashed before the
+    // status commit must not be recovered past a gate the same run could not
+    // have passed alive (assertDeliveryTier1Gate in
+    // pipeline-delivery-stage-service.ts) -- otherwise a crash is the human
+    // exit the tier deliberately does not have.
+    it("fails closed when the crashed delivery run recorded no tier-1 verdict at all", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: true,
+      });
+      seedDoneProducerRubric();
+      // No assessment rows: the run died between the artifact write and the
+      // harvest, or never resolved a rubric. Absence must read as blocked,
+      // not as "no rubric, therefore pass".
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, ["delivery_tier1_rubric"]);
+      assert.equal(observation.complete, false);
+    });
+
+    it("refuses a tier-1 `no` (and a not_assessed) recorded by the run itself", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: true,
+      });
+      seedDoneProducerRubric();
+      recordDoneAssessment({ runId: run.id, criterionId: "RBC-DONE-TIER1", verdict: "no" });
+      recordDoneAssessment({ runId: run.id, criterionId: "RBC-DONE-TIER2", verdict: "yes" });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+      assert.deepEqual(observation.missingEvidence, ["delivery_tier1_rubric"]);
+      assert.equal(observation.complete, false);
+
+      // Same batch, the model's other refusal shape: silence recorded as
+      // not_assessed blocks a tier-1 clause exactly like an explicit no.
+      db.update(rubricAssessments).set({ verdict: "not_assessed", evidence: null })
+        .where(eq(rubricAssessments.id, `RBA-RBC-DONE-TIER1-${run.id}`)).run();
+      const second = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+      assert.deepEqual(second.missingEvidence, ["delivery_tier1_rubric"]);
+    });
+
+    it("never inherits another run's tier-1 `yes`", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: true,
+      });
+      // A previous delivery run of the same change answered yes; the run being
+      // reconciled recorded nothing. Selecting the change's latest batch
+      // instead of THIS run's would recover the crash on the strength of a
+      // judgment this run never earned -- the rubric replay of the build-run
+      // inheritance the 2.7 window check closed.
+      seedDoneProducerRubric();
+      recordDoneAssessment({
+        runId: "RUN-DOCSTAGE-PREVIOUS", criterionId: "RBC-DONE-TIER1", verdict: "yes",
+      });
+      recordDoneAssessment({
+        runId: "RUN-DOCSTAGE-PREVIOUS", criterionId: "RBC-DONE-TIER2", verdict: "yes",
+      });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, ["delivery_tier1_rubric"]);
+      assert.equal(observation.complete, false);
+    });
+
+    it("does not widen to tier-2: a blocking tier-2 `no` leaves recovery evidence complete", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: true,
+      });
+      // The user ticked 阻断 on a tier-2 factory criterion and the model
+      // answered no. Done's blocking channel is "none" (2.9): on the live
+      // path that verdict is recorded and stops nothing, so recovery must not
+      // hold the change hostage to it either. Only tier-1 keys may gate.
+      seedDoneProducerRubric({ tier2Blocking: true });
+      recordDoneAssessment({ runId: run.id, criterionId: "RBC-DONE-TIER1", verdict: "yes" });
+      recordDoneAssessment({ runId: run.id, criterionId: "RBC-DONE-TIER2", verdict: "no" });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, []);
+      assert.equal(observation.complete, true);
+    });
+
+    it("witnesses the tier-1 verdict rows in the delivery snapshot, so drift is observable", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: true,
+      });
+      seedHealthyDoneRubricBatch(run.id);
+
+      const before = captureEvidenceDbSnapshot(db, run, provider, undefined, "observation", DEFAULT_MAX_REVIEW_FINDINGS);
+      db.update(rubricAssessments).set({ verdict: "no" })
+        .where(eq(rubricAssessments.id, `RBA-RBC-DONE-TIER1-${run.id}`)).run();
+      const after = captureEvidenceDbSnapshot(db, run, provider, undefined, "transaction", DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // The evidence decision reads these rows; a witness blind to them would
+      // let the verdict flip between observation and the write transaction
+      // unnoticed -- the drift evidence_changed_during_probe exists to catch.
+      assert.notEqual(before, after);
     });
 
     it("keeps demanding stage-authority evidence from other generic-branch phases", () => {

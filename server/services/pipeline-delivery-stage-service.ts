@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { changes } from "../db/schema";
@@ -5,6 +6,7 @@ import type { Change } from "../types";
 import type { AiRunResult } from "./ai-engine-types";
 import type { JobExecutionContext } from "./job-execution-context";
 import type { Provider } from "./provider-selection-service";
+import { emitIdempotentEvent } from "./event-service";
 import { runDocumentStage } from "./pipeline-document-stage-runner-service";
 import {
   buildDeliveryKnownLimits,
@@ -15,6 +17,14 @@ import {
   parseDeliveryLineProtocol,
   type DeliveryLinePayload,
 } from "./delivery-line-protocol";
+import { rubricOutcome, type RubricAssessmentDraft, type RubricCriterion } from "./rubric-assessment";
+import type { RubricVerdict } from "./rubric-line-protocol";
+import {
+  indexCriteriaByScope,
+  listRubricAssessmentsForScope,
+  selectLatestAssessmentBatch,
+} from "./rubric-service";
+import { TIER1_CRITERION_KEYS, tier1CriteriaForScope } from "./rubric-tiers";
 
 /**
  * The Done stage (design §3): the change's delivery note.
@@ -136,6 +146,193 @@ export interface DeliveryStageResult {
   knownLimits: DeliveryKnownLimitsFacts;
 }
 
+/**
+ * One Done producer verdict as this run's own batch judged it, keyed by
+ * `criterionKey` (identity across rubric versions, §5.1).
+ */
+export interface DeliveryTier1JudgedCriterion {
+  criterionKey: string;
+  text: string;
+  /** `blocking` as stored in the version that was judged. */
+  blocking: boolean;
+  verdict: RubricVerdict;
+  evidence: string | null;
+}
+
+export interface DeliveryTier1Violation {
+  criterionKey: string;
+  text: string;
+  /**
+   * `missing` means this run's batch holds NO row for a tier-1 criterion at
+   * all -- the run never resolved a Done producer rubric, or its harvest never
+   * landed. Distinct from `not_assessed`, which is a recorded refusal.
+   */
+  verdict: RubricVerdict | "missing";
+  evidence: string | null;
+}
+
+/**
+ * The Done completion gate, tier-1 only (user decision 2026-07-21).
+ *
+ * Done's blocking CHANNEL stays "none" (rubric-gate-adapters.ts, the 2.9
+ * conclusion): a tier-2/3 Done criterion answered `no` is recorded and shown
+ * and stops nothing, because a rubric-derived P0 on a terminal phase would
+ * strand the change with no exit a human is allowed to take. Tier-1 is the
+ * deliberate exception -- §2.1's 恒阻断 with NO human exit. The user chose
+ * deadlock over an escape hatch, twice, with the counter-evidence on the
+ * table: the only way past a tier-1 `no` here is re-running delivery and
+ * being judged `yes`. Do not add a waiver, an override, or a channel.
+ *
+ * Semantics are deliberately not re-implemented: `rubricOutcome` decides what
+ * blocks (`no`, and `not_assessed` on a blocking criterion), and the gate
+ * merely intersects its `blockingCriterionIds` with `TIER1_CRITERION_KEYS`.
+ * The one correction applied first is the same one
+ * `blockingCriterionKeysInForce` documents: a tier-1 row written before the
+ * tier existed may still carry `blocking = 0`, and reading that stale flag
+ * would give 恒阻断 a silent opt-out, so tier-1 membership coerces the flag.
+ *
+ * Fails closed on ABSENCE: a tier-1 criterion with no row in this run's batch
+ * is a violation (`missing`), because "no rows" is indistinguishable from
+ * "this phase has no rubric", which reads as a pass -- the exact silent
+ * fail-open this whole mechanism exists to prevent, and the same rule the
+ * recovery path applies (recovery-business-evidence.ts, delivery branch).
+ *
+ * Pure over an already-selected batch so the live gate and the recovery path
+ * share one definition instead of two that drift.
+ */
+export function deliveryTier1Violations(
+  judged: readonly DeliveryTier1JudgedCriterion[],
+): DeliveryTier1Violation[] {
+  const expected = tier1CriteriaForScope("Done", "producer");
+  if (expected.length === 0) return [];
+
+  const byKey = new Map(judged.map((entry) => [entry.criterionKey, entry]));
+  const criteria: RubricCriterion[] = judged.map((entry, ordinal) => ({
+    id: entry.criterionKey,
+    criterionKey: entry.criterionKey,
+    ordinal,
+    text: entry.text,
+    blocking: entry.blocking || TIER1_CRITERION_KEYS.has(entry.criterionKey),
+  }));
+  const drafts: RubricAssessmentDraft[] = judged.map((entry) => ({
+    criterionId: entry.criterionKey,
+    verdict: entry.verdict,
+    evidence: entry.evidence,
+  }));
+  const blocked = new Set(rubricOutcome(criteria, drafts).blockingCriterionIds);
+
+  const violations: DeliveryTier1Violation[] = [];
+  for (const criterion of expected) {
+    const entry = byKey.get(criterion.criterionKey);
+    if (!entry) {
+      violations.push({
+        criterionKey: criterion.criterionKey,
+        text: criterion.text,
+        verdict: "missing",
+        evidence: null,
+      });
+    } else if (blocked.has(criterion.criterionKey)) {
+      violations.push({
+        criterionKey: entry.criterionKey,
+        text: entry.text,
+        verdict: entry.verdict,
+        evidence: entry.evidence,
+      });
+    }
+  }
+  return violations;
+}
+
+/**
+ * This run's OWN Done producer batch, resolved to criterion keys.
+ *
+ * Filtered on `rubric_assessments.run_id` BEFORE the batch selection, so the
+ * gate can never inherit another run's verdicts -- the same inheritance bug
+ * the build-run time-window check (2.7) exists to prevent, replayed on
+ * rubric rows instead of build rows. `selectLatestAssessmentBatch` still does
+ * the batch arithmetic (round/run semantics stay defined in one place); the
+ * run filter only narrows WHOSE rows it may pick from.
+ */
+function judgedDoneProducerRubricForRun(input: {
+  projectId: string;
+  changeId: string;
+  runId: string;
+}): DeliveryTier1JudgedCriterion[] {
+  const scope = {
+    projectId: input.projectId,
+    changeId: input.changeId,
+    phase: "Done" as const,
+    role: "producer" as const,
+  };
+  const ownRows = listRubricAssessmentsForScope(scope)
+    .filter((row) => row.runId === input.runId);
+  const batch = selectLatestAssessmentBatch(ownRows, { roundId: null });
+  if (batch.length === 0) return [];
+
+  const criteriaById = indexCriteriaByScope(scope);
+  return batch.flatMap((row) => {
+    const resolved = criteriaById.get(row.criterionId);
+    // An unattributable verdict names no standard; dropping it can only make
+    // the tier-1 key read as `missing`, which blocks -- the safe direction.
+    if (!resolved) return [];
+    return [{
+      criterionKey: resolved.criterion.criterionKey,
+      text: resolved.criterion.text,
+      blocking: resolved.criterion.blocking,
+      verdict: row.verdict,
+      evidence: row.evidence,
+    }];
+  });
+}
+
+/**
+ * Throws when this run's tier-1 verdicts do not clear the gate, which lands
+ * as the stage's ordinary failure shape: runStageWithLedger fails the run
+ * with this message as its summary and rolls the change to `failureStatus`.
+ * For delivery failureStatus == the entry status (DELIVERY_PENDING, the 2.8
+ * semantics), so `run_delivery` stays clickable and the loop -- fix, re-run,
+ * be judged yes -- is always available. The event below is the greppable
+ * record of WHICH criterion held the change and what the verdict was.
+ *
+ * Thrown from `afterSuccessfulResult`, i.e. after the rubric harvest and
+ * schema validation but BEFORE the artifact write: a blocked run hands over
+ * no delivery.md and registers no artifact row, so recovery cannot mistake
+ * it for a completed delivery either.
+ */
+function assertDeliveryTier1Gate(input: {
+  projectId: string;
+  changeId: string;
+  runId: string;
+}): void {
+  const violations = deliveryTier1Violations(judgedDoneProducerRubricForRun(input));
+  if (violations.length === 0) return;
+
+  const detail = violations
+    .map((violation) => `${violation.criterionKey} 判定为 ${violation.verdict}（${violation.text}）`)
+    .join("；");
+  const message = `Done 一级评判标准未放行，change 停在 DELIVERY_PENDING：${detail}。`
+    + "一级条款无人工出口：重跑 delivery 并让该标准被判 yes 后才落 DONE。";
+  try {
+    emitIdempotentEvent({
+      id: `EVT-delivery-tier1-${createHash("sha256").update(input.runId).digest("hex")}`,
+      changeId: input.changeId,
+      runId: input.runId,
+      type: "delivery_tier1_blocked",
+      message,
+      rawJson: {
+        deliveryTier1Blocked: {
+          schemaVersion: "delivery_tier1_block/v1",
+          runId: input.runId,
+          violations,
+        },
+      },
+    });
+  } catch {
+    // Diagnostic only: the failed run's summary carries the same facts.
+  }
+  throw new Error(message);
+}
+
 export async function runDelivery(
   changeId: string,
   _context?: JobExecutionContext,
@@ -167,9 +364,17 @@ export async function runDelivery(
     provider,
     sessionKind: "general",
     // §3.4: delivery is Done's producer, and the phase has no critic. Done owns
-    // no `stage_gates` row, so its verdicts are recorded and displayed but
+    // no `stage_gates` row, so tier-2/3 verdicts are recorded and displayed but
     // cannot block -- the same shape as Retro (see RUBRIC_ROLE_ANSWERED_BY).
+    // Tier-1 is the exception, enforced by afterSuccessfulResult below rather
+    // than by a blocking channel: see deliveryTier1Violations.
     rubricPhase: "Done",
+    // The tier-1 completion gate. Runs after the rubric harvest has stored
+    // this run's verdicts and throws on a violation, so the run fails, no
+    // artifact is written, and the change never transitions to DONE.
+    afterSuccessfulResult: async ({ runId }) => {
+      assertDeliveryTier1Gate({ projectId: change.projectId, changeId, runId });
+    },
     resumeThread: false,
     outputSchema: DELIVERY_OUTPUT_SCHEMA,
     // The model writes protocol lines, never JSON; the schema above is the
