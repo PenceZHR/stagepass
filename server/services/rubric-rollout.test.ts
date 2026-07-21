@@ -182,6 +182,32 @@ describe("factory rubrics", () => {
     }
   });
 
+  // A criterion is read by a model that also read its host template, and the
+  // Spec templates spend three lines each disambiguating who is who: 红方 is the
+  // human user and nobody else, SPEC_WRITER is 我方执行代理 / 正方,
+  // REQUIREMENT_CRITIC is 反方. 蓝方 is defined in no template at all.
+  //
+  // Three shipped criteria used 蓝方 and 红方 to mean the two agents. A critic
+  // obeying its template then reads "红方声称修复的每一个 gap" as a claim about
+  // the human -- who authors no fix claims -- and the rubric's own instruction
+  // is that a criterion you cannot confirm is `no`. That is a false `no` on a
+  // standard the critic actually met, shipped to every project, and the moment
+  // somebody ticks `blocking` it becomes a P0 that describes nothing.
+  it("uses only the role words the prompt templates define", () => {
+    const undefinedRoleWords = ["蓝方"];
+    for (const scope of factoryRubricScopes()) {
+      for (const criterion of factoryCriteria(scope.phase, scope.role)) {
+        for (const word of undefinedRoleWords) {
+          assert.ok(
+            !criterion.text.includes(word),
+            `${scope.phase} ${scope.role} criterion "${criterion.text}" uses "${word}", which no `
+            + "prompt template defines -- the model is being asked about a role it was never given",
+          );
+        }
+      }
+    }
+  });
+
   it("only declares a scope that something in the pipeline actually answers", () => {
     for (const scope of factoryRubricScopes()) {
       assert.ok(
