@@ -32,7 +32,7 @@ import type {
   FileEvidenceObservation,
 } from "./recovery-types";
 import { DEFAULT_MAX_REVIEW_FINDINGS } from "./recovery-types";
-import { nonEmpty } from "./recovery-predicates";
+import { isCanonicalUtcIsoTimestamp, nonEmpty } from "./recovery-predicates";
 import {
   DEFAULT_MAX_ARTIFACT_BYTES,
   boundedPriorFindingIds,
@@ -86,6 +86,42 @@ export const documentStagePhases: Partial<Record<string, string>> = {
 };
 
 /**
+ * Provider phases whose entire business output is the run-keyed `artifacts`
+ * row, because the phase owns no stage-authority row by design.
+ *
+ * `delivery` runs through `runDocumentStage` (pipeline-delivery-stage-service),
+ * and nothing on that path writes `stage_runs`. The table has exactly two
+ * inserters -- `stage-authority-repository.insertStageRun` (reached only via
+ * `startStageRun`, whose four call sites produce phases "Spec", "Spec", "PRD"
+ * and "TestPlan") and `plan-snapshot-service`'s direct insert of "Plan". No
+ * writer anywhere produces a "Done" or "Delivery" row, which is the design
+ * talking, not an omission: Done owns no `stage_gates` row either, because the
+ * phase has no critic and cannot block (see runDelivery's rubricPhase note).
+ *
+ * So the generic branch's stage checks were not asking for evidence that had
+ * gone missing, they were asking for evidence that never exists, and delivery
+ * runs came back permanently incomplete. That verdict fails the run, and a
+ * failed delivery stays clickable by design (failureStatus == entry status),
+ * so the change stayed at DELIVERY_PENDING and the next `run_delivery`
+ * regenerated `delivery.md` over the note already handed over.
+ *
+ * Adding a `documentStagePhases` entry for delivery does NOT fix this -- the
+ * lookup would still find no row, and the verdict would not move. Skipping
+ * checks that are structurally unsatisfiable is the fix; `stage_run_artifact`
+ * below still has to hold, and for this phase it is the whole of the business
+ * outcome.
+ *
+ * Deliberately not a blanket "no entry in documentStagePhases" rule. `release`
+ * and `retro` have the same shape and could be added on the same evidence, but
+ * `spec_verdict` and `refine` also reach the generic branch, and `spec_verdict`
+ * shares its `runs` row with the spec and spec_critic providers -- its artifact
+ * lookup would match the spec leg's row and hand it a completion it never
+ * earned, which is exactly the inheritance the build-run window check guards
+ * against. Membership here is a per-phase claim about that phase, not a default.
+ */
+const ARTIFACT_ONLY_PROVIDER_PHASES = new Set<string>(["delivery"]);
+
+/**
  * Resolves the pipelineJobs.actionId that produced an "intake"-phase provider
  * run, via provider.jobId. Intake has no stageRuns row (documentStagePhases has
  * no "intake" entry) so, unlike every other phase, there is no attemptNo-keyed
@@ -104,6 +140,60 @@ function resolveIntakeActionId(
     .from(pipelineJobs)
     .where(eq(pipelineJobs.id, provider.jobId))
     .get()?.actionId ?? null;
+}
+
+/**
+ * True when `buildCreatedAt` falls inside the window during which the provider
+ * run being reconciled was actually doing work, i.e. the build run is one this
+ * run produced rather than one it inherited.
+ *
+ * Why a time window is the anchor. Nothing in the schema binds a
+ * build_run_records row to the run that produced it:
+ *   - `runId` is always null (recordInputFromBuildRunFile hardcodes it, because
+ *     one run can emit build-1..build-N and one FK column cannot say that);
+ *   - the on-disk build-<n>.json (BuildRunFile) carries no run identifier;
+ *   - implement/fix_findings runs write no `artifacts` row and no `stage_runs`
+ *     row, so neither run-keyed table sees them.
+ * Creation time is the one signal the schema does express, it survives the
+ * one-run-to-many-builds relation, and `determineRecoveryOwnership` already
+ * anchors job ownership the same way.
+ *
+ * Both bounds are read off the real ordering of the build phase
+ * (pipeline-build-stage-service.ts): `createBuildWorkspace` -- the only site
+ * that ever *inserts* a build_run_records row -- runs inside the stage's
+ * `execute({ runId })`, so after the run row exists and before the engine is
+ * started. Every later write for the same build is an upsert on the stable
+ * (changeId, buildRunId) id whose `onConflictDoUpdate` set list omits
+ * `createdAt`, so the stored value stays pinned to that first insert and is not
+ * dragged forward by collection or adoption.
+ *
+ *   run.startedAt  <=  build.createdAt  <  provider.startedAt  <  provider.endedAt
+ *
+ * The lower bound is what stops a run that crashed before producing anything
+ * from inheriting the previous run's adopted build. The upper bound is
+ * `provider.endedAt` rather than the tighter `provider.startedAt` on purpose:
+ * the guarantee that the workspace predates the engine belongs to the current
+ * stage code, and pinning the bound to it would turn any future flow that
+ * creates a workspace mid-provider into a false negative -- the failure
+ * direction that previously made healthy runs unrecoverable. `endedAt` still
+ * excludes builds produced by a later run, which is the case that matters.
+ *
+ * Fails closed on any non-canonical timestamp: `runs.startedAt` is nullable in
+ * the schema, and a provider that never reached a terminal status has no
+ * `endedAt`. Neither can be compared, and treating an uncomparable bound as
+ * satisfied is exactly the inheritance this guard exists to prevent.
+ */
+function buildRunFallsInsideProviderRunWindow(
+  buildCreatedAt: string | null | undefined,
+  runStartedAt: string | null | undefined,
+  providerEndedAt: string | null | undefined,
+): boolean {
+  if (!isCanonicalUtcIsoTimestamp(buildCreatedAt)) return false;
+  if (!isCanonicalUtcIsoTimestamp(runStartedAt)) return false;
+  if (!isCanonicalUtcIsoTimestamp(providerEndedAt)) return false;
+  // Canonical form is fixed-width UTC with millisecond precision, so
+  // lexicographic order is chronological order.
+  return buildCreatedAt >= runStartedAt && buildCreatedAt <= providerEndedAt;
 }
 
 export function businessEvidenceForCompletedProvider(
@@ -389,7 +479,12 @@ export function businessEvidenceForCompletedProvider(
     // uses -- and let the `workspaceValidated` git probe below decide whether
     // that row really is the build run this change currently carries. Keep this
     // selection in sync with captureEvidenceDbSnapshot's implement branch, which
-    // must watch the same row for drift.
+    // must watch the same row for drift, and with the endorsedBuildRecordId
+    // capture in recovery-executors.ts, which pins the row this recovery
+    // endorses. The window check below is deliberately a predicate on the
+    // selected row rather than a filter in this WHERE clause: narrowing the
+    // query would silently make those three sites select different rows, and
+    // the snapshot would then stop witnessing the row the decision was made on.
     const build = evidenceDb.select().from(buildRunRecords).where(and(
       eq(buildRunRecords.changeId, run.changeId),
       eq(buildRunRecords.status, "adopted"),
@@ -421,6 +516,16 @@ export function businessEvidenceForCompletedProvider(
       || build.adoptionDecisionId !== expectedAdoptionDecisionId
       || buildRunFile?.adoptionDecisionId !== expectedAdoptionDecisionId) {
       missingEvidence.push("build_adopted_terminal");
+    }
+    // Everything the checks around this one compare is internally self
+    // consistent -- DB row against build-<n>.json against the workspace git HEAD
+    // against the recorded hashes. None of it answers "did *this* run produce
+    // it". Without that question a run that crashed having produced nothing
+    // still finds the previous run's adopted build, still finds the workspace
+    // sitting on that build's commit (precisely because it produced nothing to
+    // move it), and is recovered as a success it never achieved.
+    if (!buildRunFallsInsideProviderRunWindow(build?.createdAt, run.startedAt, provider.endedAt)) {
+      missingEvidence.push("build_not_produced_by_this_run");
     }
     const changedFiles = Array.isArray(buildRunFile?.changedFiles)
       ? buildRunFile!.changedFiles.filter((item): item is string => typeof item === "string")
@@ -485,8 +590,10 @@ export function businessEvidenceForCompletedProvider(
     const artifact = evidenceDb.select().from(artifacts).where(and(
       eq(artifacts.changeId, run.changeId), eq(artifacts.runId, run.id),
     )).get() ?? null;
-    if (!stage || stage.status !== "completed" || !nonEmpty(stage.outputDbHash)) missingEvidence.push("stage_success_commit");
-    if (!stage || !nonEmpty(stage.sourceLineageJson)) missingEvidence.push("stage_source_lineage");
+    if (!ARTIFACT_ONLY_PROVIDER_PHASES.has(provider.phase)) {
+      if (!stage || stage.status !== "completed" || !nonEmpty(stage.outputDbHash)) missingEvidence.push("stage_success_commit");
+      if (!stage || !nonEmpty(stage.sourceLineageJson)) missingEvidence.push("stage_source_lineage");
+    }
     if (!artifact || !nonEmpty(artifact.path)) missingEvidence.push("stage_run_artifact");
   }
   const dbSnapshot = captureEvidenceDbSnapshot(
@@ -705,6 +812,9 @@ export function captureEvidenceDbSnapshot(
     // is supposed to guard. Keyed on (changeId, adopted) rather than runId for
     // the reason documented there; this function runs inside the recovery
     // transaction and so cannot re-run the git probe to narrow it further.
+    // `createdAt` is projected because the run-window check over there decides
+    // on it: a field the decision reads but the witness omits is drift this
+    // observation would not catch.
     return JSON.stringify({
       ...common,
       build: query(() => evidenceDb.select({
@@ -714,7 +824,8 @@ export function captureEvidenceDbSnapshot(
         patchHash: buildRunRecords.patchHash, changedFilesHash: buildRunRecords.changedFilesHash,
         adoptedHeadSha: buildRunRecords.adoptedHeadSha, adoptionDecisionId: buildRunRecords.adoptionDecisionId,
         adoptedAt: buildRunRecords.adoptedAt, artifactHash: buildRunRecords.artifactHash,
-        source: buildRunRecords.source, updatedAt: buildRunRecords.updatedAt,
+        source: buildRunRecords.source, createdAt: buildRunRecords.createdAt,
+        updatedAt: buildRunRecords.updatedAt,
       }).from(buildRunRecords).where(and(
         eq(buildRunRecords.changeId, run.changeId),
         eq(buildRunRecords.status, "adopted"),

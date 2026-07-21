@@ -334,11 +334,23 @@ export function recoverMissingProvider(input: {
         }
       }
       if (ownsChange && (run.phase === "implement" || run.phase === "fix_findings")) {
+        // build_run_records.runId is never populated. The table's only writer is
+        // recordBuildRunFromWorkspaceFile -> recordInputFromBuildRunFile, which
+        // hardcodes `runId: null` because one provider run can emit several build
+        // runs (build-1..build-N) and a single FK column cannot express that.
+        // Joining on it therefore matched zero rows, so a crashed implement /
+        // fix_findings run left its build row claiming `running` forever and no
+        // later sweep ever failed it.
+        //
+        // The in-flight build run of a change is the real anchor. `ownsChange`
+        // has already established that no newer job or attempt owns this change,
+        // so a build row still sitting at `running` here is stranded by this run
+        // and failing it is correct; ordering only makes the pick deterministic
+        // when an older abandoned row is still around.
         const currentBuild = tx.select().from(buildRunRecords).where(and(
           eq(buildRunRecords.changeId, run.changeId),
-          eq(buildRunRecords.runId, run.id),
           eq(buildRunRecords.status, "running"),
-        )).get() ?? null;
+        )).orderBy(desc(buildRunRecords.updatedAt), desc(buildRunRecords.id)).limit(1).get() ?? null;
         if (currentBuild) {
           const buildCas = tx.update(buildRunRecords)
             .set({ status: "failed", updatedAt: recoveredAt })
@@ -474,8 +486,14 @@ function compensateEvidenceDrift(input: {
   provider: ProviderRunProcess;
   recoveredAt: string;
   evidenceObservation: BusinessEvidenceObservation;
+  /**
+   * Primary key of the build_run_records row the main recovery transaction
+   * endorsed, captured inside that transaction. See the implement/fix_findings
+   * arm below for why it cannot be re-derived here.
+   */
+  endorsedBuildRecordId: string | null;
 }): boolean {
-  const { run, provider, recoveredAt, evidenceObservation } = input;
+  const { run, provider, recoveredAt, evidenceObservation, endorsedBuildRecordId } = input;
   return withSqliteWriteRetry("stale-provider-run.compensate-evidence-drift", () =>
     db.transaction((tx) => {
       const ownership = determineRecoveryOwnership(
@@ -581,18 +599,39 @@ function compensateEvidenceDrift(input: {
       }
 
       if (provider.phase === "implement" || provider.phase === "fix_findings") {
-        const build = tx.select({ id: buildRunRecords.id, status: buildRunRecords.status })
-          .from(buildRunRecords).where(and(
-            eq(buildRunRecords.changeId, run.changeId),
-            eq(buildRunRecords.runId, run.id),
-          )).orderBy(desc(buildRunRecords.updatedAt), desc(buildRunRecords.id)).limit(1).get() ?? null;
+        // Anchored on the id the main transaction captured, NOT re-derived here.
+        //
+        // Two separate reasons. First, runId is never written (see
+        // recoverMissingProvider's arm), so the old `eq(runId, run.id)` matched
+        // nothing, fell into the `else` below and threw RecoveryCasMissError --
+        // and because the only call site sits outside recoverExistingProvider's
+        // try/catch, that rolled the whole compensation back and left the run and
+        // job reading `completed`/`succeeded` while the adopted patch they attest
+        // to was already gone. Post-commit Build drift was never compensated in
+        // production.
+        //
+        // Second, the obvious replacement -- re-select the change's newest
+        // adopted build run -- is wrong here even though it is exactly right in
+        // businessEvidenceForCompletedProvider. This transaction runs AFTER the
+        // main one committed, so a newer fence may have adopted its own build run
+        // for the same change in between; re-deriving would fail that new fence's
+        // build instead of the one this run endorsed. The main transaction
+        // captured the row while it still held the proof that the DB witness
+        // equalled the observed evidence, so that id is the only safe handle.
+        const build = endorsedBuildRecordId
+          ? tx.select({ id: buildRunRecords.id, status: buildRunRecords.status })
+            .from(buildRunRecords).where(and(
+              eq(buildRunRecords.id, endorsedBuildRecordId),
+              eq(buildRunRecords.changeId, run.changeId),
+            )).get() ?? null
+          : null;
         if (build && inArrayValue(build.status, ["adopted", "approved_for_absorb", "awaiting_human"])) {
           const buildCas = tx.update(buildRunRecords).set({
             status: "failed",
             updatedAt: recoveredAt,
           }).where(and(
             eq(buildRunRecords.id, build.id),
-            eq(buildRunRecords.runId, run.id),
+            eq(buildRunRecords.changeId, run.changeId),
             eq(buildRunRecords.status, build.status),
           )).run();
           requireCompensationCas(buildCas.changes, () =>
@@ -779,6 +818,8 @@ export function recoverExistingProvider(input: {
   } = input;
   const effectivePhase = provider.phase;
   let recovered: boolean;
+  // Set inside the transaction below; consumed only after it commits.
+  let endorsedBuildRecordId: string | null = null;
   try {
     recovered = withSqliteWriteRetry("stale-provider-run.reconcile", () => {
       assertWithinBudget?.();
@@ -812,6 +853,23 @@ export function recoverExistingProvider(input: {
           maxReviewFindings,
         ) !== evidenceObservation.dbSnapshot) {
         return false;
+      }
+      // Pin which build_run_records row this recovery is endorsing, while the
+      // proof that the DB witness still equals the observed evidence is fresh.
+      // The predicate must stay identical to captureEvidenceDbSnapshot's
+      // implement/fix_findings arm in recovery-business-evidence.ts -- that is
+      // the row the observation was taken over, so it is the row that has to be
+      // un-endorsed if the files behind it drift after this commits.
+      if (evidenceObservation && (effectivePhase === "implement" || effectivePhase === "fix_findings")) {
+        endorsedBuildRecordId = tx.select({ id: buildRunRecords.id })
+          .from(buildRunRecords).where(and(
+            eq(buildRunRecords.changeId, run.changeId),
+            eq(buildRunRecords.status, "adopted"),
+          )).orderBy(
+            desc(buildRunRecords.adoptedAt),
+            desc(buildRunRecords.updatedAt),
+            desc(buildRunRecords.id),
+          ).limit(1).get()?.id ?? null;
       }
       const effectiveDecision: RecoveryDecision = evidenceObservation && !evidenceObservation.complete
         ? {
@@ -940,11 +998,15 @@ export function recoverExistingProvider(input: {
           }
         }
         if (effectivePhase === "implement" || effectivePhase === "fix_findings") {
+          // Same anchor, and for the same reason, as recoverMissingProvider's
+          // implement/fix_findings arm: runId is never written, so only
+          // (changeId, status) can find the build run this change has in flight.
+          // Guarded by the enclosing `ownsChange`, so no newer fence's build row
+          // is reachable from here.
           const currentBuild = tx.select().from(buildRunRecords).where(and(
             eq(buildRunRecords.changeId, run.changeId),
-            eq(buildRunRecords.runId, run.id),
             eq(buildRunRecords.status, "running"),
-          )).get() ?? null;
+          )).orderBy(desc(buildRunRecords.updatedAt), desc(buildRunRecords.id)).limit(1).get() ?? null;
           if (currentBuild) {
             const buildCas = tx.update(buildRunRecords)
             .set({
@@ -1057,7 +1119,9 @@ export function recoverExistingProvider(input: {
       || evidenceDriftAfterCommitForTest?.() === true
     )
   ) {
-    compensateEvidenceDrift({ run, provider, recoveredAt, evidenceObservation });
+    compensateEvidenceDrift({
+      run, provider, recoveredAt, evidenceObservation, endorsedBuildRecordId,
+    });
     postCommitCompensated = true;
   }
   return {

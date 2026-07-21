@@ -768,9 +768,14 @@ async function seedCompletedProviderFixture(
       });
       restoreBuildDb();
     } else {
+      // runId null / source workspace_file: the shape recordBuildRunFromWorkspace
+      // File actually writes. The old fixture forged runId: "RUN-MATRIX", which
+      // was the ONLY reason the executor's `eq(runId, run.id)` build lookup ever
+      // matched -- in production it matched nothing and the in-flight build row
+      // was left at `running` forever.
       db.insert(buildRunRecords).values({
-        id: "BLD-COMPLETED-PROVIDER", changeId: CHANGE_ID, runId: "RUN-MATRIX",
-        buildRunId: "build-1", status: "running", source: "pipeline",
+        id: "BLD-COMPLETED-PROVIDER", changeId: CHANGE_ID, runId: null,
+        buildRunId: "build-1", status: "running", source: "workspace_file",
         createdAt: "2026-07-10T00:00:10.000Z", updatedAt: now,
       }).run();
     }
@@ -783,31 +788,16 @@ async function seedCompletedProviderFixture(
 }
 
 /**
- * Restores the legacy build_run_records.runId link that PRODUCTION NEVER WRITES.
- *
- * recovery-executors.ts's post-commit drift compensator still selects the build
- * record with `eq(buildRunRecords.runId, run.id)` (its implement/fix_findings
- * arm). Production rows always carry `runId: null` -- every writer reaches the
- * table through recordBuildRunFromWorkspaceFile -> recordInputFromBuildRunFile
- * -- so that select returns null, the block falls into its `else if (!build ||
- * build.status !== "failed")` arm and throws RecoveryCasMissError. Post-commit
- * Build drift is therefore never compensated in production: the run and job stay
- * `succeeded` even though the adopted patch is gone.
- *
- * That is a SEPARATE, UNFIXED defect in recovery-executors.ts, out of scope for
- * the reader-side fix in recovery-business-evidence.ts (which deliberately no
- * longer depends on runId). The two drift tests below seed the link so they keep
- * exercising the compensation logic they were written for instead of silently
- * losing it. Delete this helper and re-key those assertions onto
- * (changeId, buildRunId) once recovery-executors.ts is fixed.
+ * Reads the build_run_records row by its production identity, (changeId,
+ * buildRunId). Never key a build-record assertion on runId: production leaves
+ * that column null on every row, so `where(eq(runId, ...))` returns undefined
+ * and any assertion built on it passes vacuously against untouched data.
  */
-function linkBuildRecordToRunForExecutorCompensation(): void {
-  db.update(buildRunRecords)
-    .set({ runId: "RUN-MATRIX" })
-    .where(and(
-      eq(buildRunRecords.changeId, CHANGE_ID), eq(buildRunRecords.buildRunId, "build-1"),
-    ))
-    .run();
+function buildRecordByBusinessIdentity(buildRunId: string) {
+  return db.select().from(buildRunRecords).where(and(
+    eq(buildRunRecords.changeId, CHANGE_ID),
+    eq(buildRunRecords.buildRunId, buildRunId),
+  )).get() ?? null;
 }
 
 /**
@@ -986,6 +976,69 @@ function seedIntakeProviderFixture(
   }).run();
   const run = db.select().from(runs).where(eq(runs.id, "RUN-INTAKE")).get();
   const provider = db.select().from(providerRunProcesses).where(eq(providerRunProcesses.id, "PRP-INTAKE")).get();
+  assert.ok(run);
+  assert.ok(provider);
+  return { run, provider };
+}
+
+/**
+ * Seeds a completed provider run for a phase that reaches the generic
+ * (non-phase-specific) evidence branch.
+ *
+ * Deliberately seeds NO stage_runs row. That is not a shortcut: `runDelivery`
+ * and `runRetro` both go through `runDocumentStage`, which never writes that
+ * table, and stage_runs has only two inserters in the whole tree --
+ * stage-authority-repository's insertStageRun (reached solely via startStageRun,
+ * whose four call sites write phases "Spec", "Spec", "PRD", "TestPlan") and
+ * plan-snapshot-service's direct insert of "Plan". A "Done"/"Delivery" stage row
+ * is not something production can produce, so seeding one would test a world
+ * that does not exist.
+ *
+ * `changes.status` is the phase's running status, matching runDocumentStage's
+ * runningStatus for these stages.
+ */
+function seedGenericDocumentStageProviderFixture(input: {
+  phase: "delivery" | "retro";
+  withArtifact: boolean;
+}): { run: typeof runs.$inferSelect; provider: ProviderRunProcess } {
+  const startedAt = "2026-07-10T00:00:10.000Z";
+  const endedAt = "2026-07-10T00:01:00.000Z";
+  const config = input.phase === "delivery"
+    ? { status: "DELIVERY_PENDING", actionId: "run_delivery", artifactType: "delivery", fileName: "delivery.md" }
+    : { status: "RETRO_PENDING", actionId: "run_retro", artifactType: "retro", fileName: "retro.md" };
+  seedChange(config.status);
+  db.insert(pipelineJobs).values({
+    id: "JOB-DOCSTAGE", changeId: CHANGE_ID, phase: input.phase, actionId: config.actionId,
+    idempotencyKey: "docstage-fixture", status: "running", leasedBy: "worker-docstage",
+    leaseExpiresAt: "2026-07-10T00:10:00.000Z", heartbeatAt: WORKER_GONE_HEARTBEAT_AT,
+    attemptNo: 1, errorCode: null, errorSummary: null,
+    createdAt: startedAt, startedAt, endedAt: null,
+    leaseToken: "lease-docstage", workerNonce: "worker-docstage-nonce",
+  }).run();
+  db.insert(runs).values({
+    id: "RUN-DOCSTAGE", changeId: CHANGE_ID, phase: input.phase, status: "running",
+    startedAt, endedAt: null, summary: null, jobId: "JOB-DOCSTAGE",
+    workerId: "worker-docstage", leaseToken: "lease-docstage", attemptNo: 1,
+  }).run();
+  db.insert(providerRunProcesses).values({
+    id: "PRP-DOCSTAGE", changeId: CHANGE_ID, runId: "RUN-DOCSTAGE", phase: input.phase,
+    provider: "claude", pid: null, ppid: process.pid, roundId: null, status: "completed",
+    startedAt, lastHeartbeatAt: startedAt, endedAt, exitCode: 0, signal: null, summary: "done",
+    jobId: "JOB-DOCSTAGE", workerId: "worker-docstage", leaseToken: "lease-docstage", attemptNo: 1,
+    externalRef: null, processNonce: null, processStartTime: null, processPpid: null,
+    processPgid: null, processCwd: null, processCommandJson: null,
+  }).run();
+  if (input.withArtifact) {
+    db.insert(artifacts).values({
+      id: `ART-DOCSTAGE-${input.phase}`, changeId: CHANGE_ID, runId: "RUN-DOCSTAGE",
+      type: config.artifactType,
+      path: `/tmp/${CHANGE_ID}/${config.fileName}`,
+      createdAt: "2026-07-10T00:00:55.000Z",
+    }).run();
+  }
+  const run = db.select().from(runs).where(eq(runs.id, "RUN-DOCSTAGE")).get();
+  const provider = db.select().from(providerRunProcesses)
+    .where(eq(providerRunProcesses.id, "PRP-DOCSTAGE")).get();
   assert.ok(run);
   assert.ok(provider);
   return { run, provider };
@@ -2318,10 +2371,12 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       startedAt: "2026-07-10T00:01:00.000Z",
       completedAt: null,
     }).run();
+    // runId stays null exactly as production writes it, so this row only gets
+    // failed if recovery anchors the in-flight build run on (changeId, status).
     db.insert(buildRunRecords).values({
       id: "BLD-LEGACY-BUILD",
       changeId: CHANGE_ID,
-      runId: "RUN-LEGACY-BUILD",
+      runId: null,
       buildRunId: "build-legacy",
       status: "running",
       headSha: null,
@@ -2333,7 +2388,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       adoptionDecisionId: null,
       adoptedAt: null,
       artifactHash: null,
-      source: "pipeline",
+      source: "workspace_file",
       createdAt: "2026-07-10T00:01:00.000Z",
       updatedAt: "2026-07-10T00:01:00.000Z",
     }).run();
@@ -2415,11 +2470,12 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       status: "running", idempotencyKey: "legacy-fix", inputDbHash: null, outputDbHash: null,
       sourceLineageJson: null, errorCode: null, startedAt: "2026-07-10T00:01:00.000Z", completedAt: null,
     }).run();
+    // runId null, as production writes it -- see the row 2 fixture above.
     db.insert(buildRunRecords).values({
-      id: "BLD-LEGACY-FIX", changeId: CHANGE_ID, runId: "RUN-LEGACY-FIX",
+      id: "BLD-LEGACY-FIX", changeId: CHANGE_ID, runId: null,
       buildRunId: "build-fix", status: "running", headSha: null, baseHeadSha: null,
       baseCommit: null, patchHash: null, changedFilesHash: null, adoptedHeadSha: null,
-      adoptionDecisionId: null, adoptedAt: null, artifactHash: null, source: "pipeline",
+      adoptionDecisionId: null, adoptedAt: null, artifactHash: null, source: "workspace_file",
       createdAt: "2026-07-10T00:01:00.000Z", updatedAt: "2026-07-10T00:01:00.000Z",
     }).run();
     db.insert(findings).values({
@@ -3228,7 +3284,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
           runId: null,
           buildRunId: `historical-${phase}-${index}`,
           status: "failed",
-          source: "pipeline",
+          source: "workspace_file",
           createdAt: "2026-07-09T00:00:00.000Z",
           updatedAt: "2026-07-09T00:00:00.000Z",
         }).run();
@@ -3540,7 +3596,6 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
 
   it("compensates a post-commit Build artifact drift across build record, action, and GET", async () => {
     await seedCompletedProviderFixture("implement", true);
-    linkBuildRecordToRunForExecutorCompensation();
     // retry_build (snapshotPhase TestPlan) needs the TestPlan source behind the
     // already-seeded TestPlan gate once the drifted Build run fails to PLAN_APPROVED.
     seedTestPlanLegacySource("testplan-source-hash");
@@ -3549,7 +3604,14 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
     const patchPath = path.join(
       project.repoPath, ".ship", "changes", CHANGE_ID, "build", "runs", "build-1.patch",
     );
-    assert.equal(db.select().from(buildRunRecords).where(eq(buildRunRecords.runId, "RUN-MATRIX")).get()?.status, "adopted");
+    // Production shape, asserted rather than assumed: the compensator must find
+    // this row without any runId link, because no writer ever creates one.
+    assert.deepEqual(
+      db.select({ runId: buildRunRecords.runId }).from(buildRunRecords)
+        .where(eq(buildRunRecords.changeId, CHANGE_ID)).all(),
+      [{ runId: null }],
+    );
+    assert.equal(buildRecordByBusinessIdentity("build-1")?.status, "adopted");
     const originalTransaction = db.transaction.bind(db);
     let drifted = false;
     (db as unknown as { transaction: typeof db.transaction }).transaction = ((callback: (tx: typeof db) => unknown, config?: unknown) => {
@@ -3574,7 +3636,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
     assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "failed");
     assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
     assert.equal(db.select().from(stageRuns).where(eq(stageRuns.id, "STG-MATRIX")).get()?.status, "failed");
-    assert.equal(db.select().from(buildRunRecords).where(eq(buildRunRecords.runId, "RUN-MATRIX")).get()?.status, "failed");
+    assert.equal(buildRecordByBusinessIdentity("build-1")?.status, "failed");
     assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status, "PLAN_APPROVED");
     const event = db.select().from(events).where(eq(events.type, "business_run_reconciled")).get();
     const raw = JSON.parse(event?.rawJson ?? "{}") as { businessEvidenceComplete?: boolean };
@@ -3593,6 +3655,87 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
     assert.equal(response.status, 200);
     assert.equal(detail.status, "PLAN_APPROVED");
     assert.equal(detail.latestRun.status, "failed");
+  });
+
+  /**
+   * Pins the silent-data-loss signature of the runId join directly, on the
+   * transaction boundary rather than on the end state.
+   *
+   * compensateEvidenceDrift is called from recoverExistingProvider at a point
+   * OUTSIDE its own try/catch, so a RecoveryCasMissError raised inside the
+   * compensation does not merely skip a write -- SQLite rolls the entire
+   * compensation transaction back, and the error escapes to the orchestrator's
+   * per-candidate catch, which files it under report.failed. The observable
+   * result was a change whose adopted patch had already drifted off disk while
+   * its run still read `completed` and its job still read `succeeded`, with the
+   * emitted event still claiming businessEvidenceComplete: true.
+   *
+   * The event rewrite is the LAST write in the compensation transaction, so
+   * asserting on it is the strongest available proof that the transaction
+   * committed instead of rolling back.
+   */
+  it("commits the Build drift compensation instead of rolling it back and reporting a failure", async () => {
+    await seedCompletedProviderFixture("implement", true);
+    seedTestPlanLegacySource("testplan-source-hash");
+    const project = db.select().from(projects).where(eq(projects.id, PROJECT_ID)).get();
+    assert.ok(project);
+    const adoptedBefore = buildRecordByBusinessIdentity("build-1");
+    assert.equal(adoptedBefore?.status, "adopted");
+    assert.equal(adoptedBefore?.runId, null, "production never links a build record to a run");
+    assert.ok(adoptedBefore?.patchHash);
+    const patchPath = path.join(
+      project.repoPath, ".ship", "changes", CHANGE_ID, "build", "runs", "build-1.patch",
+    );
+
+    const originalTransaction = db.transaction.bind(db);
+    let drifted = false;
+    (db as unknown as { transaction: typeof db.transaction }).transaction = ((callback: (tx: typeof db) => unknown, config?: unknown) => {
+      const result = originalTransaction(callback, config as never);
+      const committedRun = db.select({ status: runs.status }).from(runs)
+        .where(eq(runs.id, "RUN-MATRIX")).get();
+      if (!drifted && committedRun?.status === "completed") {
+        drifted = true;
+        fs.rmSync(patchPath);
+      }
+      return result;
+    }) as typeof db.transaction;
+    let recovery: Awaited<ReturnType<typeof recoverStaleProviderRuns>> | null = null;
+    try {
+      recovery = await recoverStaleProviderRuns({
+        changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT,
+      });
+    } finally {
+      (db as unknown as { transaction: typeof db.transaction }).transaction = originalTransaction as typeof db.transaction;
+    }
+
+    // The compensation must not escape as an error. A RecoveryCasMissError
+    // thrown past recoverExistingProvider's try lands here as report.failed.
+    assert.equal(recovery?.failed.length, 0, JSON.stringify(recovery?.failed));
+    assert.equal(recovery?.recovered.length, 1, JSON.stringify(recovery?.observed));
+
+    // The exact silent-loss signature: patch gone from disk, run/job still green.
+    assert.equal(fs.existsSync(patchPath), false, "the drift this test injects");
+    assert.notEqual(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "completed");
+    assert.notEqual(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "succeeded");
+
+    // The compensation transaction reached its final write.
+    const event = db.select().from(events).where(eq(events.type, "business_run_reconciled")).get();
+    const raw = JSON.parse(event?.rawJson ?? "{}") as {
+      businessEvidenceComplete?: boolean; missingEvidence?: string[];
+    };
+    assert.equal(raw.businessEvidenceComplete, false, event?.rawJson ?? "");
+    assert.ok(
+      raw.missingEvidence?.includes("business_evidence_changed_after_commit"),
+      event?.rawJson ?? "",
+    );
+
+    // Un-endorsed, not destroyed: the row and its patch lineage survive so the
+    // adoption stays auditable; only the status stops vouching for it.
+    const adoptedAfter = buildRecordByBusinessIdentity("build-1");
+    assert.equal(adoptedAfter?.status, "failed");
+    assert.equal(adoptedAfter?.id, adoptedBefore?.id);
+    assert.equal(adoptedAfter?.patchHash, adoptedBefore?.patchHash);
+    assert.equal(adoptedAfter?.adoptedHeadSha, adoptedBefore?.adoptedHeadSha);
   });
 
   it("compensates completed Review attempt, state, and report authority after post-commit drift", async () => {
@@ -3635,7 +3778,11 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       { label: "job", phase: "tech_spec", table: "pipeline_jobs", where: "OLD.id = 'JOB-MATRIX' AND OLD.status = 'succeeded'" },
       { label: "stage", phase: "tech_spec", table: "stage_runs", where: "OLD.id = 'STG-MATRIX' AND OLD.status = 'completed'" },
       { label: "Spec round", phase: "spec", table: "battle_rounds", where: "OLD.id = 'ROUND-COMPLETED-PROVIDER' AND OLD.status IN ('report_ready', 'closed')" },
-      { label: "Build record", phase: "implement", table: "build_run_records", where: "OLD.run_id = 'RUN-MATRIX' AND OLD.status IN ('adopted', 'approved_for_absorb', 'awaiting_human')" },
+      // Keyed on change_id, not run_id. `OLD.run_id = 'RUN-MATRIX'` is NULL for
+      // every production row, so that WHERE was never true, the trigger never
+      // fired, and this row of the matrix proved nothing -- the rollback it
+      // observed came from the runId join bug, not from the injected CAS miss.
+      { label: "Build record", phase: "implement", table: "build_run_records", where: `OLD.change_id = '${CHANGE_ID}' AND OLD.status IN ('adopted', 'approved_for_absorb', 'awaiting_human')` },
       { label: "Review attempt", phase: "review", table: "review_attempts", where: "OLD.id = 'REV-COMPLETED-PROVIDER' AND OLD.status = 'completed'" },
       { label: "Review report", phase: "review", table: "review_reports", where: "OLD.attempt_id = 'REV-COMPLETED-PROVIDER' AND OLD.stale_reason IS NULL" },
       { label: "Review state", phase: "review", table: "review_state", where: `OLD.change_id = '${CHANGE_ID}' AND OLD.gate_status != 'blocked'` },
@@ -3673,8 +3820,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
             .where(eq(battleRounds.id, "ROUND-COMPLETED-PROVIDER")).get()?.status, "failed", target.label);
         }
         if (target.phase === "implement") {
-          assert.notEqual(db.select().from(buildRunRecords)
-            .where(eq(buildRunRecords.runId, "RUN-MATRIX")).get()?.status, "failed", target.label);
+          assert.equal(buildRecordByBusinessIdentity("build-1")?.status, "adopted", target.label);
         }
         if (target.phase === "review") {
           assert.equal(db.select().from(reviewAttempts)
@@ -3690,7 +3836,6 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
 
   it("protects a succeeded new fence and its change ownership from old drift compensation", async () => {
     await seedCompletedProviderFixture("implement", true);
-    linkBuildRecordToRunForExecutorCompensation();
     const project = db.select().from(projects).where(eq(projects.id, PROJECT_ID)).get();
     assert.ok(project);
     const patchPath = path.join(
@@ -3760,10 +3905,16 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
     assert.equal(newJob?.attemptNo, 2);
     assert.equal(newJob?.leaseToken, "lease-new-terminal");
     assert.equal(db.select().from(stageRuns).where(eq(stageRuns.id, "STG-MATRIX-NEW")).get()?.status, "completed");
+    // The new fence's build run is NEWER by every ordering the evidence reader
+    // uses (adoptedAt/updatedAt 00:02:01 vs build-1's 00:01:00), and neither row
+    // carries a runId. So an anchor that re-derives "this change's newest adopted
+    // build run" at compensation time lands on build-2 and fails the new fence's
+    // work; only the id the main transaction captured picks build-1.
     assert.equal(db.select().from(buildRunRecords).where(eq(buildRunRecords.id, "BLD-MATRIX-NEW")).get()?.status, "adopted");
+    assert.equal(buildRecordByBusinessIdentity("build-2")?.status, "adopted");
     assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
     assert.equal(db.select().from(stageRuns).where(eq(stageRuns.id, "STG-MATRIX")).get()?.status, "failed");
-    assert.equal(db.select().from(buildRunRecords).where(eq(buildRunRecords.runId, "RUN-MATRIX")).get()?.status, "failed");
+    assert.equal(buildRecordByBusinessIdentity("build-1")?.status, "failed");
     assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status, "IMPLEMENTED");
     const runReview = computeActions(CHANGE_ID, { selfHeal: true })
       .find((action) => action.actionId === "run_review");
@@ -5591,6 +5742,233 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
 
       assert.equal(observation.complete, false);
       assert.ok(observation.missingEvidence.includes("build_adopted_terminal"), observation.missingEvidence.join(","));
+    });
+  });
+
+  describe("build business evidence run-window", () => {
+    /**
+     * Re-times the already-seeded implement fixture so its run and provider
+     * describe a *later* run than the one that produced build-1, without
+     * touching a single byte of the build evidence itself. The build row, the
+     * build-1.json file, the patch, the hashes and the workspace HEAD all stay
+     * exactly as `seedCompletedProviderFixture("implement", true)` left them --
+     * fully self-consistent and fully attested by the git probe.
+     *
+     * That is the whole point: this models a run that started after build-1
+     * already existed and then produced nothing, so the workspace never moved
+     * off build-1's commit. Every within-row check still passes; only the
+     * question "did *this* run make it" separates the two cases.
+     */
+    function retimeRunWindow(input: { runStartedAt: string; providerEndedAt: string }): {
+      run: typeof runs.$inferSelect;
+      provider: ProviderRunProcess;
+    } {
+      db.update(runs).set({ startedAt: input.runStartedAt })
+        .where(eq(runs.id, "RUN-MATRIX")).run();
+      db.update(providerRunProcesses)
+        .set({ startedAt: input.runStartedAt, endedAt: input.providerEndedAt })
+        .where(eq(providerRunProcesses.id, "PRP-MATRIX")).run();
+      const run = db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get();
+      const provider = db.select().from(providerRunProcesses)
+        .where(eq(providerRunProcesses.id, "PRP-MATRIX")).get();
+      assert.ok(run);
+      assert.ok(provider);
+      return { run, provider };
+    }
+
+    /**
+     * The fixture's build-1 row carries createdAt 00:00:10 -- the value
+     * `createBuildWorkspace` would have stamped when it inserted the row, which
+     * later upserts never move because the onConflictDoUpdate set list in
+     * recordBuildRunRecord omits createdAt.
+     */
+    const BUILD_CREATED_AT = "2026-07-10T00:00:10.000Z";
+
+    it("treats a healthy run that produced its own adopted build as complete", async () => {
+      await seedCompletedProviderFixture("implement", true);
+      const build = buildRecordByBusinessIdentity("build-1");
+      const run = db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get();
+      const provider = db.select().from(providerRunProcesses)
+        .where(eq(providerRunProcesses.id, "PRP-MATRIX")).get();
+      assert.ok(run);
+      assert.ok(provider);
+      // The guard below is only meaningful if the healthy fixture really does
+      // sit inside the window; spell the three timestamps out so a fixture drift
+      // that made this test pass vacuously would fail here instead.
+      assert.equal(build?.createdAt, BUILD_CREATED_AT);
+      assert.equal(run.startedAt, "2026-07-10T00:00:10.000Z");
+      assert.equal(provider.endedAt, "2026-07-10T00:01:00.000Z");
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, []);
+      assert.equal(observation.complete, true);
+    });
+
+    it("refuses to credit a run with an adopted build that predates it", async () => {
+      await seedCompletedProviderFixture("implement", true);
+      // Run window 00:00:30 -> 00:01:00; build-1 was created at 00:00:10.
+      const { run, provider } = retimeRunWindow({
+        runStartedAt: "2026-07-10T00:00:30.000Z",
+        providerEndedAt: "2026-07-10T00:01:00.000Z",
+      });
+      assert.ok(buildRecordByBusinessIdentity("build-1")!.createdAt < run.startedAt!);
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // Exactly one code, and specifically NOT build_adopted_terminal: the row,
+      // the file and the workspace all still agree with each other. Asserting
+      // the whole array is what proves the new check is doing the work rather
+      // than riding on some other check that happened to break.
+      assert.deepEqual(observation.missingEvidence, ["build_not_produced_by_this_run"]);
+      assert.equal(observation.complete, false);
+    });
+
+    it("refuses to credit a run with an adopted build created after its provider died", async () => {
+      await seedCompletedProviderFixture("implement", true);
+      // Run window 00:00:00 -> 00:00:05; build-1 was created at 00:00:10, i.e.
+      // by whatever ran next. Without an upper bound the lower bound alone
+      // (00:00:10 >= 00:00:00) would wave this through.
+      const { run, provider } = retimeRunWindow({
+        runStartedAt: "2026-07-10T00:00:00.000Z",
+        providerEndedAt: "2026-07-10T00:00:05.000Z",
+      });
+      assert.ok(buildRecordByBusinessIdentity("build-1")!.createdAt >= run.startedAt!);
+      assert.ok(buildRecordByBusinessIdentity("build-1")!.createdAt > provider.endedAt!);
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, ["build_not_produced_by_this_run"]);
+      assert.equal(observation.complete, false);
+    });
+
+    it("accepts a build created in the same millisecond the run started", async () => {
+      await seedCompletedProviderFixture("implement", true);
+      // Both bounds are inclusive on purpose. createBuildWorkspace runs inside
+      // the stage's execute() a few ms after the run row is written (production
+      // measured 107ms), and nothing stops a coarser clock from collapsing that
+      // gap. An exclusive lower bound would fail those runs.
+      const { run, provider } = retimeRunWindow({
+        runStartedAt: BUILD_CREATED_AT,
+        providerEndedAt: BUILD_CREATED_AT,
+      });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      assert.deepEqual(observation.missingEvidence, []);
+      assert.equal(observation.complete, true);
+    });
+
+    for (const [label, mutate] of [
+      ["runs.startedAt is null", () => {
+        db.update(runs).set({ startedAt: null }).where(eq(runs.id, "RUN-MATRIX")).run();
+      }],
+      ["the provider never recorded an endedAt", () => {
+        db.update(providerRunProcesses).set({ endedAt: null })
+          .where(eq(providerRunProcesses.id, "PRP-MATRIX")).run();
+      }],
+      ["the build row's createdAt is not a canonical timestamp", () => {
+        db.update(buildRunRecords).set({ createdAt: "2026-07-10T00:00:10" })
+          .where(and(
+            eq(buildRunRecords.changeId, CHANGE_ID),
+            eq(buildRunRecords.buildRunId, "build-1"),
+          )).run();
+      }],
+    ] as const) {
+      it(`fails closed when ${label}`, async () => {
+        await seedCompletedProviderFixture("implement", true);
+        mutate();
+        const run = db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get();
+        const provider = db.select().from(providerRunProcesses)
+          .where(eq(providerRunProcesses.id, "PRP-MATRIX")).get();
+        assert.ok(run);
+        assert.ok(provider);
+
+        const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+        // An uncomparable bound cannot establish that this run made the build,
+        // and "cannot establish" has to mean incomplete: treating it as
+        // satisfied is the inheritance this check exists to stop.
+        assert.ok(
+          observation.missingEvidence.includes("build_not_produced_by_this_run"),
+          observation.missingEvidence.join(","),
+        );
+        assert.equal(observation.complete, false);
+      });
+    }
+
+    it("witnesses build createdAt in the snapshot so drift on it is observable", async () => {
+      await seedCompletedProviderFixture("implement", true);
+      const run = db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get();
+      const provider = db.select().from(providerRunProcesses)
+        .where(eq(providerRunProcesses.id, "PRP-MATRIX")).get();
+      assert.ok(run);
+      assert.ok(provider);
+
+      const before = captureEvidenceDbSnapshot(db, run, provider, undefined, "observation", DEFAULT_MAX_REVIEW_FINDINGS);
+      db.update(buildRunRecords).set({ createdAt: "2026-07-10T00:00:40.000Z" })
+        .where(and(
+          eq(buildRunRecords.changeId, CHANGE_ID),
+          eq(buildRunRecords.buildRunId, "build-1"),
+        )).run();
+      const after = captureEvidenceDbSnapshot(db, run, provider, undefined, "observation", DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // The window verdict is read off createdAt, so a snapshot blind to it
+      // would let that field move between observation and commit unnoticed --
+      // the exact drift evidence_changed_during_probe exists to catch.
+      assert.notEqual(before, after);
+    });
+  });
+
+  describe("delivery business evidence", () => {
+    it("treats a delivery run that wrote its note as complete evidence", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: true,
+      });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // Before this, delivery could never clear the generic branch's stage
+      // checks -- no writer produces a stage_runs row for this phase -- so a
+      // delivery that had already written delivery.md was recovered as failed,
+      // the change never left DELIVERY_PENDING, and the next run_delivery wrote
+      // over the note. The artifact is the whole business outcome here.
+      assert.deepEqual(observation.missingEvidence, []);
+      assert.equal(observation.complete, true);
+    });
+
+    it("still fails a delivery run that produced no note", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "delivery", withArtifact: false,
+      });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // The stage-authority checks are skipped for this phase, not the artifact
+      // check. Skipping all three would make every delivery run complete
+      // unconditionally, which is a different bug in the same place.
+      assert.deepEqual(observation.missingEvidence, ["stage_run_artifact"]);
+      assert.equal(observation.complete, false);
+    });
+
+    it("keeps demanding stage-authority evidence from other generic-branch phases", () => {
+      const { run, provider } = seedGenericDocumentStageProviderFixture({
+        phase: "retro", withArtifact: true,
+      });
+
+      const observation = businessEvidenceForCompletedProvider(db, run, provider, DEFAULT_MAX_REVIEW_FINDINGS);
+
+      // retro has the same runDocumentStage shape as delivery and arguably
+      // belongs in the exemption too, but it is not in it, and this pins that
+      // the exemption is a per-phase claim rather than a blanket "no entry in
+      // documentStagePhases" rule. spec_verdict also reaches this branch and
+      // shares its runs row with the spec provider, so a blanket rule would let
+      // it inherit the spec leg's artifact.
+      assert.deepEqual(
+        observation.missingEvidence,
+        ["stage_success_commit", "stage_source_lineage"],
+      );
+      assert.equal(observation.complete, false);
     });
   });
 

@@ -40,10 +40,25 @@ export const PHASE_ARTIFACT_DEFINITIONS = [
   { phase: "Fix", type: "changed_files", fileName: "changed-files.json", label: "修复变更文件" },
   { phase: "Merge", type: "release_note", fileName: "release-note.md", label: "发布与交付说明" },
   { phase: "Retro", type: "retro", fileName: "retro.md", label: "复盘与债务回流" },
-  // `editable: false` is the design's 「不可变」 (§3.1): one delivery note per
-  // change, never overwritten, so it stays an auditable record of what was
-  // handed over at that moment. Its §4.1 is generated from the database, and an
-  // in-place edit is exactly how that guarantee would be lost.
+  // `editable: false` covers exactly one of the two ways the design's 「不可变」
+  // (§3.1) can be lost: hand editing. It resolves to `editablePath: null`
+  // (change-phase-service), which is what the drawer's `canEdit` and the
+  // artifact write API key off, so nobody can retype §4.1 -- a section generated
+  // from the database -- into something the database never said.
+  //
+  // It does NOT make the file write-once. The stage write path
+  // (runDocumentStage's artifact write) has no existence check, and should not
+  // grow one: `run_delivery` is the only delivery action there is, and delivery
+  // failure deliberately leaves the change at DELIVERY_PENDING so the button
+  // stays clickable. A refuse-if-exists guard would strand any change whose
+  // delivery wrote the file and then failed, with no action left to run.
+  //
+  // What actually makes it one note per change is `allowedStatuses:
+  // ["DELIVERY_PENDING"]` on the stage: once the note lands and the change
+  // reaches DONE, `run_delivery` cannot execute again. That guarantee is only
+  // as good as the change's ability to reach DONE -- which is why the delivery
+  // phase must be able to produce complete business evidence in
+  // recovery-business-evidence.ts. See ARTIFACT_ONLY_PROVIDER_PHASES there.
   {
     phase: "Done",
     type: "delivery",
