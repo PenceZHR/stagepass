@@ -556,8 +556,32 @@ export async function runDocumentStage(
           lineProtocol,
         });
       }
+      // No document stage may finish on silence. A provider killed mid-flight
+      // returns success:true with an empty summary (macOS sleep -> supervisor
+      // SIGTERM -> codex emits reasoning items but no agent_message), and
+      // applyLineProtocol turns that into an EMPTY state on the stated grounds
+      // that "callers already handle it".
+      //
+      // Only callers with an outputSchema actually do: the schema rejects the
+      // empty payload above. Nothing pairs the two fields, so a stage configured
+      // without a schema -- Retro is the one today -- skips the whole
+      // ingest/validate block, skips the rubric harvest (which is correct on its
+      // own terms: blaming a model that never spoke is false provenance), and
+      // writes an empty artifact on its way to successStatus. Retro reached DONE
+      // carrying an empty retro.md with zero of its criteria judged.
+      //
+      // Refusing here rather than at each caller makes the contract true for
+      // every stage, including ones not written yet.
+      // Failure first: a run that failed AND came back empty must report the
+      // failure, not the emptiness. The empty guard is for the reply that claims
+      // to have succeeded.
       if (!result.success) {
         throw new Error(result.summary || `${config.phase} stage failed`);
+      }
+      if ((result.summary ?? "").trim().length === 0) {
+        throw new Error(
+          `${config.phase} stage returned an empty reply (provider produced no output)`,
+        );
       }
       const afterAi = captureWorkspaceSnapshot(project.repoPath);
       const mutations = diffWorkspaceSnapshots(beforeAi, afterAi);

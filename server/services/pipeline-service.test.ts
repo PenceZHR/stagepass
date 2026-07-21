@@ -10899,6 +10899,45 @@ describe("pipeline-service v2 stages", () => {
     assert.equal(observedThreadId, undefined);
   });
 
+  // A provider killed mid-flight returns success:true with an empty summary
+  // (macOS sleep -> supervisor SIGTERM -> codex emits reasoning items but no
+  // agent_message). Every other document stage catches that shape on its
+  // outputSchema; Retro is the one with a rubric and no schema, so nothing
+  // inspects the reply at all. The rubric harvest is skipped -- deliberately,
+  // because blaming a model that never spoke is false provenance -- the whole
+  // ingest/validate block is gated on outputSchema, and no guard stands between
+  // an empty summary and the artifact write. The change reached DONE carrying an
+  // empty retro.md with zero of its six criteria judged.
+  //
+  // The runner has to be the one to refuse it: `applyLineProtocol` documents
+  // that callers already handle the empty case, and that contract is only
+  // honoured by callers who set an outputSchema. Nothing enforces the pairing.
+  it("refuses an empty reply instead of finishing the stage on silence", async () => {
+    seedChange(repoPath, "RETRO_PENDING");
+    seedRetroReleaseAuthority(repoPath);
+    setPipelineEngineFactoryForTest(() => ({
+      async run(input) {
+        return {
+          threadId: `${input.changeId}-thread`,
+          runId: "ENGINE-RUN",
+          summary: "",
+          success: true,
+          changedFiles: [],
+          structuredOutput: undefined,
+          items: [],
+        };
+      },
+      async *runStreamed() {},
+    }));
+
+    await assert.rejects(
+      () => runRetro(CHANGE_ID, makeTestJobExecutionContext("retro-empty-reply")),
+      /empty|空/i,
+    );
+    assert.notEqual(currentStatus(), "DONE");
+    assert.equal(artifactExists(repoPath, "retro.md"), false);
+  });
+
   it("appends release notes to baseline changelog", async () => {
     seedChange(repoPath, "MERGE_READY");
     seedReleaseReadyFacts(repoPath);
