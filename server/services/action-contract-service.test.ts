@@ -1181,6 +1181,44 @@ describe("action-contract-service", () => {
     assert.equal(audit?.gateVersion, 7);
   });
 
+  it("contains an unreadable prior-blocking snapshot to enter_qa instead of emptying the contract", () => {
+    // A review that actually passes, so enter_qa starts enabled and the
+    // corruption has somewhere to move it from.
+    seedReviewWithOpenP0();
+    db.delete(findings).where(eq(findings.id, "FND-ACTION-CONTRACT-P0")).run();
+    seedApprovedTestPlanForQa();
+    settleTrustedReviewAuthority();
+    const healthy = computeActions(CHANGE_ID);
+    assert.equal(healthy.find((action) => action.actionId === "enter_qa")?.enabled, true);
+
+    // Valid JSON, wrong shape — what a partial migration or a hand-edited row
+    // leaves behind. parsePriorBlockingFindingIds refuses to read it as an
+    // empty set (that would silently drop carried-over P0s), so it throws.
+    db.update(reviewAttempts)
+      .set({ priorBlockingFindingIdsJson: '{"migrated":true}' })
+      .where(eq(reviewAttempts.id, "RAT-ACTION-CONTRACT-T3"))
+      .run();
+
+    const actions = computeActions(CHANGE_ID);
+
+    // The throw used to escape ACTION_DEFINITIONS.map() in action-contract-service,
+    // which has no per-action try: GET .../gate and GET .../phases both 500'd and
+    // every button on the change died. Observed on a change parked at DONE, whose
+    // delivery button went dead over a Review row it no longer consults.
+    assert.equal(actions.length, healthy.length);
+    const enterQa = actions.find((action) => action.actionId === "enter_qa");
+    assert.equal(enterQa?.enabled, false);
+    assert.equal(enterQa?.reasonCode, "data_inconsistent");
+    assert.match(enterQa?.reason ?? "", /prior blocking finding snapshot/);
+
+    // ...and nothing else moved.
+    const movedActionIds = actions
+      .filter((action) =>
+        healthy.find((before) => before.actionId === action.actionId)?.enabled !== action.enabled)
+      .map((action) => action.actionId);
+    assert.deepEqual(movedActionIds, ["enter_qa"]);
+  });
+
   it("disables fix_blockers with Review blockers when the change is not at a Fix gate", () => {
     seedReviewWithOpenP0();
     db.update(changes)

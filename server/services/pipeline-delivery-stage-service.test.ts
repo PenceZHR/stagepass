@@ -39,6 +39,8 @@ import { DELIVERY_KNOWN_LIMITS_PROVENANCE } from "./delivery-known-limits-servic
 
 const PROJECT_ID = "PRJ-DELIVERY";
 const CHANGE_ID = "CHG-DELIVERY";
+/** The 「为什么放行」 of a waived P1 -- the one fact section 4.1 exists to keep. */
+const WAIVER_REASON = "本轮先发，下一轮补测试";
 
 let repoPath = "";
 let contextSequence = 0;
@@ -382,6 +384,25 @@ describe("Done delivery stage", () => {
       status: "waived",
     });
     const now = nowISO();
+    // Shaped exactly like review-waiver-service.ts writes a P1 waiver: gate is
+    // lowercase "review", the action literal is "review_p1_waiver" (NOT the
+    // spec-battle "waive_p1"), and the finding points back at the decision
+    // through waiver_decision_id -- findings has no reason column, so that FK is
+    // the only route from a waived P1 to the reason it was let through. The
+    // decision row goes in first because foreign_keys is ON (server/db/index.ts).
+    db.insert(humanDecisions).values({
+      id: "HD-001",
+      changeId: CHANGE_ID,
+      roundId: null,
+      gate: "review",
+      action: "review_p1_waiver",
+      targetType: "finding",
+      targetId: "FND-WAIVED-P1",
+      reason: WAIVER_REASON,
+      reportHash: "a".repeat(64),
+      createdBy: "human",
+      createdAt: now,
+    }).run();
     db.insert(findings).values({
       id: "FND-WAIVED-P1",
       changeId: CHANGE_ID,
@@ -402,19 +423,8 @@ describe("Done delivery stage", () => {
       waivable: 1,
       waivedBy: "human",
       waivedAt: now,
-    }).run();
-    db.insert(humanDecisions).values({
-      id: "HD-WAIVE-1",
-      changeId: CHANGE_ID,
-      roundId: null,
-      gate: "Review",
-      action: "waive_p1",
-      targetType: "finding",
-      targetId: "FND-WAIVED-P1",
-      reason: "本轮先发，下一轮补测试",
-      reportHash: null,
-      createdBy: "human",
-      createdAt: now,
+      waiverDecisionId: "HD-001",
+      findingVersion: 2,
     }).run();
 
     stubEngine(deliveryLineProtocolText({
@@ -430,7 +440,6 @@ describe("Done delivery stage", () => {
     assert.match(note, /GAP-WAIVED-B/);
     assert.match(note, /FND-WAIVED-P1/, "the waived P1 finding must appear");
     assert.match(note, /重试次数上限没有测试覆盖/);
-    assert.match(note, /waive_p1/, "the human decision ledger must appear");
     // The model's contradicting claim is still printed -- in its own subsection,
     // clearly downstream of the facts, so a reader can see the disagreement.
     assert.match(note, /### 4\.2 明确不做的与踩到的坑/);
@@ -440,6 +449,68 @@ describe("Done delivery stage", () => {
       /本次没有任何未关闭的 gap/,
       "the model's self-report must never be the source of section 4.1",
     );
+    assert.match(dbSection, /review_p1_waiver/, "the human decision ledger must appear");
+    assert.match(
+      dbSection,
+      new RegExp(WAIVER_REASON),
+      "the reason a blocking P1 was let through must survive into the note",
+    );
+    // The failure this section is built to prevent: the DB holds a waiver and
+    // the note says there were none. Wrong is worse than silent here, because
+    // 4.1 opens by claiming it came straight from the database.
+    assert.doesNotMatch(
+      dbSection,
+      /没有豁免或打回类的人工决定记录/,
+      "a waived P1 in the DB must never be reported as no human decisions at all",
+    );
+  });
+
+  // The vocabulary is an allowlist, so the failure mode is silent: a waiver
+  // action missing from it does not error, it makes 4.1 assert there were none.
+  // This pins the partition so adding a literal forces a deliberate choice.
+  it("reports waivers and send-backs, and stays quiet about routine approvals", async () => {
+    seedChange("DELIVERY_PENDING");
+    const now = nowISO();
+    const decisions: Array<{ action: string; gate: string; reason: string }> = [
+      { action: "review_p1_waiver", gate: "review", reason: "REASON-REVIEW-P1-WAIVER" },
+      { action: "waive_p1", gate: "spec", reason: "REASON-WAIVE-P1" },
+      { action: "request_changes", gate: "spec", reason: "REASON-REQUEST-CHANGES" },
+      { action: "return_to_spec", gate: "spec", reason: "REASON-RETURN-TO-SPEC" },
+      { action: "approve", gate: "spec", reason: "REASON-APPROVE" },
+      { action: "approve_plan", gate: "Plan", reason: "REASON-APPROVE-PLAN" },
+      { action: "approve_merge", gate: "merge", reason: "REASON-APPROVE-MERGE" },
+    ];
+    decisions.forEach((decision, index) => {
+      db.insert(humanDecisions).values({
+        id: `HD-${String(index + 1).padStart(3, "0")}`,
+        changeId: CHANGE_ID,
+        roundId: null,
+        gate: decision.gate,
+        action: decision.action,
+        targetType: null,
+        targetId: null,
+        reason: decision.reason,
+        reportHash: null,
+        createdBy: "human",
+        createdAt: now,
+      }).run();
+    });
+    stubEngine(deliveryLineProtocolText());
+
+    await runDelivery(CHANGE_ID, makeContext("delivery", "delivery", "run_delivery"));
+
+    const note = readDeliveryNote();
+    const dbSection = note.slice(note.indexOf("### 4.1"), note.indexOf("### 4.2"));
+    for (const action of ["review_p1_waiver", "waive_p1", "request_changes", "return_to_spec"]) {
+      assert.match(dbSection, new RegExp(action), `${action} lets something through or sends it back`);
+    }
+    for (const action of ["approve", "approve_plan", "approve_merge"]) {
+      assert.doesNotMatch(
+        dbSection,
+        new RegExp(`· ${action}（`),
+        `${action} is a routine approval and would bury the exceptional decisions`,
+      );
+    }
   });
 
   it("says so explicitly when the database has nothing open", async () => {

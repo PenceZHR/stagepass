@@ -48,6 +48,7 @@ import {
   type AiProvider,
   type PipelineActionContract,
 } from "./pipeline-action-contract";
+import { buildDeliveryStageActions } from "./delivery-stage-actions";
 import {
   getReviewPhaseForRunPhase,
   reviewPhaseToRubricPhase,
@@ -813,20 +814,14 @@ export default function ChangeDetailPage() {
     }];
   }, [handleAction, retroStageAction, running]);
   const deliveryStageAction = findPipelineAction(pipelineActions, "run_delivery");
-  const deliveryStageActions = useMemo<StageActionView[]>(() => {
-    const disabledReason = pipelineActionDisabledReason(deliveryStageAction);
-
-    return [{
-      id: "done-run_delivery",
-      label: deliveryStageAction?.label ?? "生成交付单",
-      role: "primary",
-      enabled: disabledReason === null,
+  const deliveryStageActions = useMemo<StageActionView[]>(
+    () => buildDeliveryStageActions({
+      deliveryAction: deliveryStageAction,
       busy: running,
-      disabledReason,
-      sourceActionId: "run_delivery",
-      onAction: () => handleAction("run_delivery"),
-    }];
-  }, [deliveryStageAction, handleAction, running]);
+      onAction: handleAction,
+    }),
+    [deliveryStageAction, handleAction, running],
+  );
   const gateApproveLabel = activeSelectedPhase === "Spec"
     ? "批准 Spec"
     : activeSelectedPhase === "TechSpec"

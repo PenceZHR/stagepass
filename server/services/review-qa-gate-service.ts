@@ -13,7 +13,10 @@ import {
   reviewReports,
   reviewState,
 } from "../db/schema";
-import { settlementFindingsForReviewAttempt } from "./review-report-service";
+import {
+  InvalidPriorBlockingSnapshotError,
+  settlementFindingsForReviewAttempt,
+} from "./review-report-service";
 
 const GIT_COMMAND_TIMEOUT_MS = 30_000;
 
@@ -346,7 +349,23 @@ export function assertCanEnterQa(input: AssertCanEnterQaInput): ReviewQaGateResu
   }
 
   const rows = reviewFindings(db, input.changeId);
-  const settlementRows = settlementFindingsForReviewAttempt(reportAttempt, rows);
+  // An unreadable prior_blocking_snapshot is a data fault on ONE review attempt,
+  // but this call sits under ACTION_DEFINITIONS.map() in action-contract-service,
+  // which has no per-action try. Letting the throw escape takes out the entire
+  // action contract for the change — every button on the page, in every phase,
+  // not just QA. Observed: a change parked at DONE lost its "生成交付单" button
+  // (GET .../gate and GET .../phases both 500) because of a Review-attempt row it
+  // no longer has any reason to consult.
+  //
+  // Deny with the same code the stored-report path uses below, so the fault
+  // surfaces as a 409 naming the reason instead of a 500 naming nothing.
+  let settlementRows: ReviewFinding[];
+  try {
+    settlementRows = settlementFindingsForReviewAttempt(reportAttempt, rows);
+  } catch (error) {
+    if (!(error instanceof InvalidPriorBlockingSnapshotError)) throw error;
+    deny("data_inconsistent", `Review DB state is inconsistent: ${error.message}`, result);
+  }
   const decisions = db
     .select()
     .from(humanDecisions)

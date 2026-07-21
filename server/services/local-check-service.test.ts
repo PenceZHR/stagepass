@@ -10,7 +10,7 @@ const tempDirs: string[] = [];
 
 interface RepoSpec {
   scripts?: Record<string, string>;
-  /** Omit entirely to build a repo with no package.json at all. */
+  /** Set true to build a repo with no package.json at all (the default writes one). */
   noPackageJson?: boolean;
   policy?: {
     requiredChecks?: string[];
@@ -102,6 +102,79 @@ describe("runLocalChecks: an empty check set is never a pass", () => {
 
     const written = JSON.parse(fs.readFileSync(path.join(outDir(repo), "local-check.json"), "utf-8"));
     assert.equal(written.success, false, "the persisted artifact must agree with the return value");
+  });
+});
+
+/**
+ * The same defect one step later: the command resolved, but the environment
+ * cannot run it. This branch used to push a synthetic passing CheckResult, which
+ * satisfied every conjunct of `success` from zero executed commands.
+ *
+ * Not a corner case. server/templates/policy.json ships four required checks, all
+ * `pnpm ...`, and both projects in the production DB on 2026-07-21 have no
+ * package.json at their repoPath.
+ */
+describe("runLocalChecks: a command the repo cannot run is never a pass", () => {
+  it("blocks a required pnpm check when the repo has no package.json", () => {
+    const repo = makeRepo({
+      noPackageJson: true,
+      policy: {
+        requiredChecks: ["test"],
+        defaultValidationCommands: { test: "pnpm test" },
+      },
+    });
+
+    const result = runLocalChecks(repo, "CHG-NP-1", outDir(repo));
+
+    assert.equal(result.checks.length, 0, "precondition: pnpm cannot run without package.json");
+    assert.equal(result.success, false, "a required check that never executed must not pass");
+    const finding = result.findings.find((entry) => entry.source === "test");
+    assert.equal(finding?.severity, "P0", "merge-readiness only blocks on open P0/P1");
+    assert.match(finding?.evidence ?? "", /pnpm test/, "the finding must name the command that could not run");
+    assert.match(finding?.evidence ?? "", /package\.json/, "...and why it could not run");
+  });
+
+  it("blocks every required check of the factory policy template on a non-Node repo", () => {
+    const repo = makeRepo({
+      noPackageJson: true,
+      policy: {
+        requiredChecks: ["lint", "typecheck", "test", "build"],
+        defaultValidationCommands: {
+          lint: "pnpm lint",
+          typecheck: "pnpm typecheck",
+          test: "pnpm test",
+          build: "pnpm build",
+        },
+      },
+    });
+
+    const result = runLocalChecks(repo, "CHG-NP-2", outDir(repo));
+
+    assert.equal(result.checks.length, 0, "zero commands executed");
+    assert.equal(result.success, false, "QA settles a truthy success as MERGE_READY");
+    for (const name of ["lint", "typecheck", "test", "build"]) {
+      const finding = result.findings.find((entry) => entry.source === name);
+      assert.equal(finding?.severity, "P0", `${name} must be reported as a blocker`);
+    }
+  });
+
+  it("still skips an OPTIONAL pnpm check silently and passes on the check that ran", () => {
+    const repo = makeRepo({
+      noPackageJson: true,
+      policy: {
+        requiredChecks: ["smoke"],
+        optionalChecks: ["lint"],
+        defaultValidationCommands: { smoke: "true", lint: "pnpm lint" },
+      },
+    });
+
+    const result = runLocalChecks(repo, "CHG-NP-3", outDir(repo));
+
+    // Nothing declared the optional check must run, so its absence is not a lie.
+    assert.equal(result.checks.length, 1, "only the runnable required check executed");
+    assert.equal(result.checks[0]?.name, "smoke");
+    assert.equal(result.success, true, "a genuine pass must survive the stricter rule");
+    assert.equal(result.findings.length, 0);
   });
 });
 

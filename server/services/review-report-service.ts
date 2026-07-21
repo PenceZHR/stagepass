@@ -253,9 +253,20 @@ function isOpenP0P1(finding: ReviewFinding): boolean {
  * Fail loud, matching the other readers of this column:
  * review-structured-output-parser.parsePriorBlockingFindingIds throws
  * InvalidReviewOutputError, and action-contract-review-policy's inline reader
- * voids the cached gate by returning null. recomputeReviewReport converts this
- * error into a data_inconsistent report below; every other caller of
- * settlementFindingsForReviewAttempt fails closed on the throw.
+ * voids the cached gate by returning null.
+ *
+ * Callers of settlementFindingsForReviewAttempt do NOT all fail closed. As of
+ * 2026-07-21 the throw is handled at three of eight call sites:
+ *   - recomputeReviewReport (below) converts it to a data_inconsistent report
+ *   - action-contract-review-policy:129 is shielded by its own inline reader
+ *   - review-qa-gate-service:349 denies with a 409
+ * These five still let it escape, and each turns a one-row data fault into a 500:
+ *   - review-waiver-service:174, :203, :215  (the waiver escape hatch itself)
+ *   - review-artifact-mirror-service:190
+ *   - recovery-business-evidence:357
+ * Read that list as a to-do, not as a safety argument. An earlier revision of
+ * this comment asserted that every other caller failed closed; that claim was
+ * generalised from the single call site that happens to have an inline guard.
  */
 function parsePriorBlockingFindingIds(attempt: ReviewAttempt): Set<string> {
   if (attempt.priorBlockingFindingIdsJson === null) return new Set();

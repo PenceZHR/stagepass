@@ -121,10 +121,51 @@ export function readDeliveryKnownLimitsFacts(
     }))
     .sort((left, right) => byText(left.id, right.id));
 
-  const decisions = factsDb.select().from(humanDecisions)
+  // The complete set of literals production writes to `human_decisions.action`,
+  // enumerated from every `insert(humanDecisions)` site in the repo (there are
+  // seven, in six files) rather than from the stale `HumanDecisionAction` zod
+  // enum in types/enums.ts -- that enum omits three literals the DB already
+  // holds, so it cannot be the source of truth here:
+  //
+  //   spec-battle-service (x2, via SpecBattleDecisionInput["action"]):
+  //     approve | request_changes | return_to_spec | waive_p1
+  //   review-waiver-service:            review_p1_waiver
+  //   gate-service:                     approve_merge
+  //   plan-approval-service:            approve_plan
+  //   testplan-snapshot-service:        approve
+  //   action-contract-self-heal-service: approve
+  //
+  // This section is 「豁免或打回类的人工决定」, so the cut is: did a human let
+  // something unresolved through (豁免), or send work back (打回)?
+  //
+  //   IN   review_p1_waiver  a human waived a blocking P1 review finding. This
+  //                          is the ONLY waiver path that runs in production
+  //                          today, and its reason column is the only place the
+  //                          「为什么放行」 of a waived P1 is stored -- findings
+  //                          has no reason column, only waiver_decision_id
+  //                          pointing back here. Omitting it lost the reason
+  //                          outright while the section claimed there were none.
+  //   IN   waive_p1          the spec-battle waiver of a P1 requirement gap.
+  //   IN   request_changes   spec battle sending a round back for changes.
+  //   IN   return_to_spec    spec battle sending the change back to Spec.
+  //   OUT  approve           routine gate/TestPlan approval of a clean gate.
+  //   OUT  approve_merge     routine merge approval.
+  //   OUT  approve_plan      routine plan approval.
+  //
+  // The three approvals are excluded because they record the pipeline working
+  // as designed; mixing them in would bury the exceptional decisions this
+  // section exists to surface. Anything added to the vocabulary later must be
+  // classified here -- the empty case prints 「没有豁免或打回类的人工决定记录」,
+  // so a waiver missing from this list makes the section state a falsehood.
+  const decisionRows = factsDb.select().from(humanDecisions)
     .where(and(
       eq(humanDecisions.changeId, changeId),
-      inArray(humanDecisions.action, ["waive_p1", "request_changes", "return_to_spec"]),
+      inArray(humanDecisions.action, [
+        "review_p1_waiver",
+        "waive_p1",
+        "request_changes",
+        "return_to_spec",
+      ]),
     )).all()
     .map((decision) => ({
       gate: decision.gate,
@@ -137,7 +178,7 @@ export function readDeliveryKnownLimitsFacts(
     }))
     .sort((left, right) => byText(left.createdAt, right.createdAt) || byText(left.action, right.action));
 
-  return { openGaps, waivedGaps, waivedFindings, humanDecisions: decisions };
+  return { openGaps, waivedGaps, waivedFindings, humanDecisions: decisionRows };
 }
 
 /** Keeps a stray newline or pipe in a DB row from breaking the bullet it sits in. */

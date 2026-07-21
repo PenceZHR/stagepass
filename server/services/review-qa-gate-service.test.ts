@@ -460,6 +460,19 @@ describe("review-qa-gate-service", { concurrency: false }, () => {
     });
   });
 
+  it("denies with data_inconsistent when the report attempt's prior-blocking snapshot is unreadable", () => {
+    seedAllowedReview(db);
+    db.update(schema.reviewAttempts)
+      .set({ priorBlockingFindingIdsJson: '{"migrated":true}' })
+      .where(eq(schema.reviewAttempts.id, "RAT-1"))
+      .run();
+
+    // Not InvalidPriorBlockingSnapshotError: callers of assertCanEnterQa run
+    // inside ACTION_DEFINITIONS.map(), so a raw throw here takes out every
+    // action on the change. A 409 naming the fault keeps it local.
+    assert.throws(() => assertCanEnterQa(gateInput()), assertGateCode("data_inconsistent"));
+  });
+
   it("blocks when there is no latest valid review", () => {
     seedBuild(db);
 

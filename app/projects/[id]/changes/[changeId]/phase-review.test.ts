@@ -30,6 +30,7 @@ import type {
 } from "./spec-battle-types";
 import { OperationalPhasePanel } from "./operational-phase-panel";
 import { buildGateStageActions, selectRoutableStageRunActions } from "./gate-panel";
+import { buildDeliveryStageActions } from "./delivery-stage-actions";
 import { resolvePipelineActionCommand } from "./pipeline-action-commands";
 import type { GateStatus } from "./gate-types";
 import {
@@ -488,6 +489,68 @@ describe("phase review UI", () => {
   //
   // What survives unchanged: DoneCompletionPanel and its content, shown once the
   // change actually reaches DONE.
+  // The behaviour behind the delivery button, driven rather than grepped. The
+  // assertions below this one read page.tsx as text; that is this file's house
+  // style and fine for wiring, but it cannot see whether the button works.
+  // Measured: forcing `enabled: false` (delivery unclickable under every
+  // condition) left all 83 assertions green, while a pure rename of the memo
+  // turned them red. These five drive buildDeliveryStageActions directly.
+  it("enables the delivery button exactly when the action contract does", () => {
+    const contract = (over: Partial<PipelineActionContract> = {}): PipelineActionContract => ({
+      actionId: "run_delivery",
+      phase: "Merge",
+      label: "生成交付单",
+      enabled: true,
+      reasonCode: null,
+      reason: null,
+      blockers: [],
+      warnings: [],
+      gateVersion: "1",
+      sourceDbHash: "hash",
+      requiresIdempotencyKey: true,
+      requiresProvider: true,
+      providerSelectable: true,
+      defaultProvider: "codex",
+      ...over,
+    });
+
+    const [enabled] = buildDeliveryStageActions({
+      deliveryAction: contract(), busy: false, onAction: () => {},
+    });
+    assert.equal(enabled.enabled, true);
+    assert.equal(enabled.disabledReason, null);
+
+    const [denied] = buildDeliveryStageActions({
+      deliveryAction: contract({ enabled: false, reason: "Retro is not complete" }),
+      busy: false,
+      onAction: () => {},
+    });
+    assert.equal(denied.enabled, false, "a denied contract must not yield a pressable button");
+    assert.equal(denied.disabledReason, "Retro is not complete", "the user must be told why");
+
+    // The 2.1 failure mode: the whole contract goes missing. The button must
+    // fail closed, not fall through to enabled.
+    const [missing] = buildDeliveryStageActions({
+      deliveryAction: null, busy: false, onAction: () => {},
+    });
+    assert.equal(missing.enabled, false);
+    assert.equal(missing.disabledReason, "Action contract unavailable.");
+    assert.equal(missing.label, "生成交付单", "the label survives a missing contract");
+  });
+
+  it("dispatches run_delivery and carries the busy flag through", () => {
+    const dispatched: string[] = [];
+    const [action] = buildDeliveryStageActions({
+      deliveryAction: null, busy: true, onAction: (id) => dispatched.push(id),
+    });
+
+    assert.equal(action.busy, true, "a running pipeline must show the button as busy");
+    assert.equal(action.sourceActionId, "run_delivery");
+    assert.equal(action.id, "done-run_delivery");
+    action.onAction();
+    assert.deepEqual(dispatched, ["run_delivery"], "the button must fire exactly run_delivery");
+  });
+
   it("renders Done as a real delivery stage, and the completion panel only once DONE", () => {
     const doneBranchStart = src.indexOf("showingDoneStage ? (");
     assert.notEqual(doneBranchStart, -1, "Done stage branch should exist");

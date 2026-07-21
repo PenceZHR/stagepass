@@ -97,8 +97,16 @@ function runCheck(
  * command could be resolved. They never executed, so they have no CheckResult —
  * without an explicit finding they would vanish, and "required check has no
  * command" would be indistinguishable from "required check passed".
+ *
+ * `unrunnableCommands` are required checks that DID resolve a command this
+ * repository cannot execute (a `pnpm ...` script with no package.json). Same
+ * fact, one step later: the check did not run, so it is not a pass.
  */
-function generateFindings(checks: CheckResult[], missingCommands: string[] = []): Finding[] {
+function generateFindings(
+  checks: CheckResult[],
+  missingCommands: string[] = [],
+  unrunnableCommands: { name: string; command: string }[] = [],
+): Finding[] {
   const findings: Finding[] = [];
   for (const check of checks) {
     if (!check.success) {
@@ -136,6 +144,23 @@ function generateFindings(checks: CheckResult[], missingCommands: string[] = [])
       requiredFix:
         `Define a command for "${name}" (.ship/policy.json defaultValidationCommands, a matching ` +
         `package.json script, or a TestPlan required command), or drop "${name}" from requiredChecks.`,
+      status: "open",
+    });
+  }
+
+  for (const { name, command } of unrunnableCommands) {
+    findings.push({
+      source: name,
+      severity: "P0",
+      category: "quality",
+      title: `Required check could not run: ${name}`,
+      evidence:
+        `"${name}" resolves to \`${command}\`, but this repository has no package.json, ` +
+        `so the command was never executed. A required check that cannot run is not a passing check.`,
+      requiredFix:
+        `Point "${name}" at a command this repository can actually run ` +
+        `(.ship/policy.json defaultValidationCommands, or a TestPlan required command), ` +
+        `or drop "${name}" from requiredChecks.`,
       status: "open",
     });
   }
@@ -203,6 +228,10 @@ export function runLocalChecks(
   // pass for validation that never happened. Optional checks may stay absent.
   const requiredNames = new Set(required);
   const missingCommands: string[] = [];
+  // Required checks that resolved to a command the environment cannot execute.
+  // Kept separate from `missingCommands` only so the finding can name the command
+  // and the reason; both are blockers for the same reason.
+  const unrunnableCommands: { name: string; command: string }[] = [];
 
   for (const name of allChecks) {
     const cmd = commands[name];
@@ -214,18 +243,29 @@ export function runLocalChecks(
       continue;
     }
 
-    // Skip pnpm/npm/yarn commands if no package.json exists
+    // A pnpm/npm/yarn command cannot run in a repo with no package.json. For a
+    // *required* check that is the same fact `missingCommands` refuses to paper
+    // over above — the caller declared it must run, and it did not — so it lands
+    // in the same blocker channel.
+    //
+    // This branch used to push a synthetic passing CheckResult instead. That one
+    // row satisfied all three conjuncts of `success` below (a result existed, no
+    // command was missing, and every result "passed") while nothing executed, and
+    // pipeline-qa-stage-service settles a truthy `success` as MERGE_READY. The
+    // factory policy template declares four required checks, all `pnpm ...`, so
+    // any repo without a package.json at repoPath minted merge-ready from zero
+    // evidence — including both projects in the production DB on 2026-07-21.
+    //
+    // Optional checks may still be dropped silently: nothing declared they must run.
     if (!hasPkgJson && /^(pnpm|npm|yarn)\s/.test(cmd)) {
-      log.info({ name, command: cmd }, "Skipping check - no package.json");
-      results.push({
-        name,
-        command: cmd,
-        success: true,
-        exitCode: 0,
-        durationMs: 0,
-        logPath: "",
-        summary: "skipped - no package.json",
-      });
+      if (requiredNames.has(name)) {
+        log.warn({ name, command: cmd }, "Required check cannot run - no package.json");
+        if (!unrunnableCommands.some((entry) => entry.name === name)) {
+          unrunnableCommands.push({ name, command: cmd });
+        }
+      } else {
+        log.info({ name, command: cmd }, "Skipping optional check - no package.json");
+      }
       continue;
     }
 
@@ -236,15 +276,19 @@ export function runLocalChecks(
     log.info({ name, success: result.success, durationMs: result.durationMs }, "Check done");
   }
 
-  const findings = generateFindings(results, missingCommands);
+  const findings = generateFindings(results, missingCommands, unrunnableCommands);
   // `[].every(...)` is `true`, so the bare `every` reported a pass whenever
   // nothing ran. QA reads this flag directly (pipeline-qa-stage-service: a truthy
   // `success` with a clean scope check settles the change as MERGE_READY), so an
   // empty check set used to mint a merge-ready verdict from zero evidence.
   // Success now requires that checks actually ran, that every one of them passed,
-  // and that no required check was dropped for want of a command.
+  // and that no required check was dropped — whether for want of a command, or
+  // because the resolved command cannot execute in this repository.
   const success =
-    results.length > 0 && missingCommands.length === 0 && results.every((r) => r.success);
+    results.length > 0
+    && missingCommands.length === 0
+    && unrunnableCommands.length === 0
+    && results.every((r) => r.success);
 
   const output: LocalCheckResult = { success, checks: results, findings };
   const outputPath = path.join(logsDir, "local-check.json");
