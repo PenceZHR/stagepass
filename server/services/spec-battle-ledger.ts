@@ -274,7 +274,7 @@ export interface ParsedBlueCritiqueOutput {
  */
 export interface ComputeRoundDeltaInput {
   roundId: string;
-  previousBlockingGaps: LedgerGap[];
+  previousUnansweredGaps: LedgerGap[];
   fixClaims: RedFixClaimInput[];
   gapReviews: BlueGapReview[];
   newGaps: BlueRequirementGapInput[];
@@ -324,7 +324,7 @@ export function computeRoundDelta(input: ComputeRoundDeltaInput): RoundDelta {
   const stillOpen: LedgerGap[] = [];
   const notRechecked: LedgerGap[] = [];
 
-  for (const gap of input.previousBlockingGaps) {
+  for (const gap of input.previousUnansweredGaps) {
     const review = reviewsByCanonicalGapId.get(gap.canonicalGapId);
 
     if (!review) {

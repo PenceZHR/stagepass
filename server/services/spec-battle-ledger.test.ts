@@ -303,7 +303,7 @@ describe("spec-battle-ledger", () => {
     const oldGap = gap({ id: "db-gap-1", canonicalGapId: "gap-auth" });
     const delta = computeRoundDelta({
       roundId: "round-2",
-      previousBlockingGaps: [oldGap],
+      previousUnansweredGaps: [oldGap],
       fixClaims: [],
       gapReviews: [],
       newGaps: [],
@@ -319,7 +319,7 @@ describe("spec-battle-ledger", () => {
     const oldGap = gap({ id: "db-gap-1", canonicalGapId: "gap-auth" });
     const delta = computeRoundDelta({
       roundId: "round-2",
-      previousBlockingGaps: [oldGap],
+      previousUnansweredGaps: [oldGap],
       fixClaims: [],
       gapReviews: [
         {

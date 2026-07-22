@@ -431,10 +431,22 @@ function computeStateRoundDelta(
   const reviewsByCanonicalGapId = new Map(
     latestReviews.map((review) => [review.canonicalGapId, review])
   );
-  const previousBlocking = gaps.filter((gap) => {
-    const severity = effectiveSeverity(toRuleGap(gap));
+  // Gaps carried in from an earlier round that still owe a recheck. Severity
+  // decides whether a gap BLOCKS (computeGapCounts, and only P0/P1 do); it does
+  // not decide whether the gap is owed an answer. Filtering P2 out here meant a
+  // P2 fell out of both stillOpen and notRechecked, so a gap nobody ever
+  // rechecked read as zero outstanding work. Measured on the shipped database:
+  // both P2s ever raised (gap-persistence-failure-feedback,
+  // gap-random-spawn-acceptance-flaky) sit at status=open with zero rows in
+  // blue_gap_reviews and zero in red_fix_claims, while all six P1s are resolved.
+  //
+  // The gate is untouched: it reads computeGapCounts, which counts only P0/P1 as
+  // blocking, and both P2s carry spec_blocking = 0.
+  //
+  // spec-battle-report-service.ts's isPreviousBlockingGapForRound is the same
+  // predicate over the report's gap shape -- keep the two in step.
+  const previousUnanswered = gaps.filter((gap) => {
     return gap.firstSeenRoundId !== round.id &&
-      (severity === "P0" || severity === "P1") &&
       gap.status !== "waived" &&
       gap.status !== "overridden" &&
       !(gap.status === "resolved" && gap.resolvedByRoundId !== round.id);
@@ -443,12 +455,12 @@ function computeStateRoundDelta(
 
   return {
     resolvedThisRound: latestReviews.filter((review) => review.verdict === "resolved").length,
-    stillOpen: previousBlocking.filter((gap) => {
+    stillOpen: previousUnanswered.filter((gap) => {
       const review = reviewsByCanonicalGapId.get(gap.canonicalGapId);
       return !review || unresolvedReviewVerdicts.has(review.verdict);
     }).length,
     newlyFound: gaps.filter((gap) => gap.firstSeenRoundId === round.id).length,
-    notRechecked: previousBlocking.filter((gap) => !reviewsByCanonicalGapId.has(gap.canonicalGapId)).length,
+    notRechecked: previousUnanswered.filter((gap) => !reviewsByCanonicalGapId.has(gap.canonicalGapId)).length,
   };
 }
 
