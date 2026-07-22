@@ -357,6 +357,50 @@ describe("process-identity-service", () => {
     );
   });
 
+  /**
+   * The half the confirmation loop above cannot close. That loop discards a
+   * capture whose two `ps` reads straddle env's in-place exec -- but when BOTH
+   * reads land before it, they agree, and the pre-exec argv is persisted as the
+   * definite identity. Every later validate then compares it against the
+   * post-exec argv the process actually has, and kills a healthy run.
+   *
+   * This is RUN-039 in the shipped database: of 61 provider_run_processes rows
+   * exactly one carries the `/usr/bin/env` form, and it is the table's only
+   * `orphaned` row. RUN-040 -- same worker, change, phase and external_ref,
+   * differing only by that prefix -- completed.
+   */
+  it("validates a live process against a persisted pre-exec command line", psPlaceholderOnly, async () => {
+    const preExec = "/usr/bin/env node /opt/homebrew/bin/codex exec --json";
+    const postExec = "node /opt/homebrew/bin/codex exec --json";
+    // Both capture reads land before the exec, so they agree and the pre-exec
+    // form is what gets persisted.
+    const { runner } = scriptedPsRunner([psLine(preExec), psLine(preExec), psLine(postExec)]);
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    const persisted = await probe.capture(process.pid);
+    assert.deepEqual(persisted.command, [preExec], "the race persisted the pre-exec argv");
+
+    // The process is the same one, still healthy; only its argv settled.
+    const validated = await probe.validate(persisted);
+
+    assert.equal(validated.ok, true, JSON.stringify(validated));
+  });
+
+  it("still rejects a genuinely different command after normalising the env prefix", psPlaceholderOnly, async () => {
+    // The normalisation must not become a way for any two commands to match:
+    // dropping the env token is all it does.
+    const persisted = "/usr/bin/env node /opt/homebrew/bin/codex exec --json";
+    const different = "node /opt/homebrew/bin/some-other-tool exec --json";
+    const { runner } = scriptedPsRunner([psLine(persisted), psLine(persisted), psLine(different)]);
+    const probe = createPlatformProcessIdentityProbe({ commandRunner: runner, timeoutMs: 200 });
+
+    const captured = await probe.capture(process.pid);
+    const validated = await probe.validate(captured);
+
+    assert.equal(validated.ok, false);
+    assert.equal(!validated.ok && validated.reason, "command_mismatch");
+  });
+
   it("still captures a stable process in a single confirmed round trip", psPlaceholderOnly, async () => {
     const command = "node /opt/homebrew/bin/codex exec --json";
     const { runner, psCalls } = scriptedPsRunner([psLine(command)]);
