@@ -637,7 +637,7 @@ export default function ChangeDetailPage() {
       loadSpecBattleState();
       loadPlanSandboxState();
     }
-  }, [projectId, changeId, gateStatus, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, selectedProvider, setGateError, setGateStatus, setPhaseOverviews]);
+  }, [projectId, changeId, gateStatus, load, specBattleDecisionBody, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, selectedProvider, setGateError, setGateStatus, setPhaseOverviews]);
 
   const handleRegeneratePlanSandboxReport = useCallback(async () => {
     const reportAction = findPipelineAction(gateStatus?.actions, "regenerate_plan_report");

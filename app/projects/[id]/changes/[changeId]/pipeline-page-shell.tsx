@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import type { ChangeDetail, PhaseOverview } from "./change-detail-types";
@@ -43,6 +43,10 @@ export function PipelinePageShell({
   selectedProvider?: AiProvider;
   children: ReactNode;
 }) {
+  // Closed by default: the rail used to be a permanent 13rem column, and the
+  // reason to make it a drawer is that the page needs that width back.
+  const [railOpen, setRailOpen] = useState(false);
+
   return (
     <div className="mx-auto max-w-6xl p-6 lg:p-8">
       <div className="mb-2">
@@ -54,7 +58,7 @@ export function PipelinePageShell({
         </Link>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_13rem]">
+      <div className="min-w-0">
         <main className="min-w-0">
           <PipelinePageHeader
             change={change}
@@ -86,19 +90,24 @@ export function PipelinePageShell({
           {children}
         </main>
 
-        <aside className="hidden lg:block">
-          <div className="sticky top-6">
-            <VerticalPhaseRail
-              status={change.status}
-              stages={stages}
-              selectedPhase={selectedPhase}
-              phaseOverviews={phaseOverviews}
-              reviewCenterState={reviewCenterState}
-              isRunning={isRunning}
-              onSelectPhase={onSelectPhase}
-            />
-          </div>
-        </aside>
+        <PipelineRailDrawer
+          open={railOpen}
+          onOpenChange={setRailOpen}
+          isRunning={isRunning}
+        >
+          <VerticalPhaseRail
+            status={change.status}
+            stages={stages}
+            selectedPhase={selectedPhase}
+            phaseOverviews={phaseOverviews}
+            reviewCenterState={reviewCenterState}
+            isRunning={isRunning}
+            onSelectPhase={(phase) => {
+              onSelectPhase(phase);
+              setRailOpen(false);
+            }}
+          />
+        </PipelineRailDrawer>
       </div>
     </div>
   );
@@ -181,5 +190,79 @@ function PipelinePageHeader({
         <span>Updated: {new Date(change.updatedAt).toLocaleString()}</span>
       </div>
     </div>
+  );
+}
+
+/**
+ * The pipeline rail as a drawer instead of a permanent column.
+ *
+ * It used to be a 13rem grid column that was always on screen, which cost the
+ * main content that width on every page. The rail is a navigation aid — you
+ * consult it to jump stages, you do not read it while working — so it opens on
+ * demand and gets out of the way again. Selecting a stage closes it, because the
+ * thing you wanted is now behind it.
+ */
+function PipelineRailDrawer({
+  open,
+  onOpenChange,
+  isRunning,
+  children,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  isRunning: boolean;
+  children: ReactNode;
+}) {
+  // Escape closes it. A drawer that covers content and can only be dismissed by
+  // hitting the same small toggle is a trap on a narrow window.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onOpenChange(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onOpenChange]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+        aria-controls="pipeline-rail-drawer"
+        data-pipeline-rail-toggle
+        title={open ? "收起 Pipeline (Esc)" : "展开 Pipeline"}
+        className="fixed right-0 top-24 z-50 flex items-center gap-1.5 rounded-l-md border border-r-0 bg-background/95 px-2 py-3 text-xs font-medium shadow-sm backdrop-blur transition hover:bg-muted"
+      >
+        {/* The running dot has to survive the rail being closed: it is the one
+            thing in there you need to see without asking for it. */}
+        {isRunning && !open && (
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-yellow-500" />
+        )}
+        <span className="[writing-mode:vertical-rl]">Pipeline</span>
+        <span aria-hidden>{open ? "›" : "‹"}</span>
+      </button>
+
+      {open && (
+        <div
+          data-pipeline-rail-scrim
+          onClick={() => onOpenChange(false)}
+          className="fixed inset-0 z-40 bg-black/20"
+        />
+      )}
+
+      <aside
+        id="pipeline-rail-drawer"
+        data-pipeline-rail
+        data-open={open ? "true" : "false"}
+        aria-hidden={!open}
+        className={`fixed right-0 top-0 z-40 h-full w-56 overflow-y-auto border-l bg-background p-4 shadow-lg transition-transform duration-200 ${
+          open ? "translate-x-0" : "pointer-events-none translate-x-full"
+        }`}
+      >
+        {children}
+      </aside>
+    </>
   );
 }

@@ -591,7 +591,7 @@ describe("phase review UI", () => {
     assert.doesNotMatch(src, /\{latestFailedRun\.summary \|\| "后台任务失败，请查看该阶段记录。"\}/);
   });
 
-  it("renders a desktop vertical phase rail in a sticky right sidebar", () => {
+  it("renders the vertical phase rail in a toggleable right drawer", () => {
     const railStart = phaseRailSource.indexOf("function VerticalPhaseRail");
     assert.notEqual(railStart, -1, "VerticalPhaseRail should exist");
 
@@ -600,8 +600,16 @@ describe("phase review UI", () => {
     assert.match(railSource, /onSelectPhase/);
     assert.match(railSource, /selectedPhase/);
     assert.match(railSource, /<button/);
-    assert.match(pipelinePageShellSource, /<aside className="hidden lg:block">/);
-    assert.match(pipelinePageShellSource, /className="sticky top-6"/);
+    // Was: a permanent `<aside className="hidden lg:block">` with `sticky top-6`.
+    // The rail is a drawer now -- it cost the main content 13rem on every page
+    // while being a navigation aid you consult, not something you read while
+    // working. What still has to hold is that the rail is reachable and that
+    // opening it is a real toggle, so those are asserted instead of the old
+    // markup.
+    assert.match(pipelinePageShellSource, /data-pipeline-rail-toggle/);
+    assert.match(pipelinePageShellSource, /aria-expanded=\{open\}/);
+    assert.match(pipelinePageShellSource, /data-pipeline-rail\b/);
+    assert.match(pipelinePageShellSource, /translate-x-full/);
   });
 
   it("keeps Spec Battle inside the standard page shell rails and header metadata", () => {

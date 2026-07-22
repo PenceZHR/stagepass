@@ -867,7 +867,7 @@ describe("phase review page source", () => {
     assert.match(pageSource, /<PipelinePageShell[\s\S]*selectedPhase=\{activeSelectedPhase\}[\s\S]*onSelectPhase=\{handleSelectPhase\}/);
   });
 
-  it("renders a desktop vertical phase rail in a sticky right sidebar", () => {
+  it("renders the vertical phase rail in a toggleable right drawer", () => {
     const railStart = phaseRailSource.indexOf("function VerticalPhaseRail");
     assert.notEqual(railStart, -1, "VerticalPhaseRail should exist");
 
@@ -876,8 +876,13 @@ describe("phase review page source", () => {
     assert.match(railSource, /onSelectPhase/);
     assert.match(railSource, /selectedPhase/);
     assert.match(railSource, /<PipelineStageItem/);
-    assert.match(pipelinePageShellSource, /<aside className="hidden lg:block">/);
-    assert.match(pipelinePageShellSource, /className="sticky top-6"/);
+    // Was: a permanent `<aside className="hidden lg:block">` with `sticky top-6`
+    // (a second copy of the same assertion also lived in phase-review.test.ts).
+    // The rail is a drawer now; what still has to hold is that it is reachable
+    // and that opening it is a real toggle.
+    assert.match(pipelinePageShellSource, /data-pipeline-rail-toggle/);
+    assert.match(pipelinePageShellSource, /aria-expanded=\{open\}/);
+    assert.match(pipelinePageShellSource, /translate-x-full/);
   });
 
   it("fetches read-only phase review data through the phases endpoint", () => {
