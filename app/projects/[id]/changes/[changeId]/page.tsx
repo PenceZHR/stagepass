@@ -301,14 +301,47 @@ export default function ChangeDetailPage() {
     selectedProvider,
   });
 
+  /**
+   * The body for POST /spec-battle/decision.
+   *
+   * One route serves three decisions and only one of them, `waive_p1`, has an
+   * action contract behind it (`waive_spec_p1`). That branch runs the full
+   * preflight, so the gate snapshot has to travel with the request; the other
+   * two carry no contract action and are checked server-side on the terminal
+   * rule alone.
+   *
+   * Measured the hard way: the route was hardened to call
+   * assertRequestActionAllowed while both callers here still hand-wrote
+   * `{action, targetType, targetId, reason}`, so 接受风险并通过 answered
+   * 422 invalid_preflight_input on every click -- a live dead button, found by
+   * driving the real UI. Adding a server-side guard is only half the change
+   * when the client composes its own body.
+   */
+  const specBattleDecisionBody = useCallback(
+    (payload: {
+      action: BattleDecisionAction;
+      targetType: "gate" | "requirement_gap" | "finding" | null;
+      // Both callers reach here from optional dialog state, so undefined is a
+      // real input; the route treats it the same as null.
+      targetId: string | null | undefined;
+      reason: string | null | undefined;
+    }) => ({
+      ...payload,
+      ...(payload.action === "waive_p1"
+        ? createPipelinePreflightPayload(findPipelineAction(gateStatus?.actions, "waive_spec_p1"))
+        : {}),
+    }),
+    [gateStatus?.actions],
+  );
+
   const handleStopSpecBattle = useCallback(async () => {
     // block/route.ts requires a preflight envelope (assertRequestActionAllowed).
     // This body used to be hand-written as just {phase, reason}, so the route
     // answered 422 every time and the button could not stop a battle at all --
     // and because 422 fires before the handler runs, it also hid the 400 that
-    // stop_change produced with nothing to stop. Of the fifteen routes that
-    // call assertRequestActionAllowed this was the only client that hand-rolled
-    // its body; every other one goes through this helper.
+    // stop_change produced with nothing to stop. spec-battle/decision's
+    // waive_p1 branch later joined the same list and broke the same way; both
+    // now go through createPipelinePreflightPayload.
     const stopAction = findPipelineAction(gateStatus?.actions, "stop_change");
     const disabledReason = pipelineActionDisabledReason(stopAction);
     if (disabledReason) {
@@ -381,12 +414,12 @@ export default function ChangeDetailPage() {
       const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec-battle/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(specBattleDecisionBody({
           action,
           targetType: action === "waive_p1" ? "requirement_gap" : null,
           targetId,
           reason,
-        }),
+        })),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Spec battle decision failed");
@@ -567,7 +600,7 @@ export default function ChangeDetailPage() {
       const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec-battle/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(specBattleDecisionBody(payload)),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Spec battle decision failed");

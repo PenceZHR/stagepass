@@ -18,6 +18,7 @@ import {
   prdRunDecision,
   specRunDecision,
   techSpecRunDecision,
+  waiveSpecP1Decision,
 } from "./action-contract-design-policy";
 import {
   adoptBuildRunDecision,
@@ -205,6 +206,11 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
 
   // fix_blockers is decided in PRE_STATUS_GATE_POLICIES instead, ahead of the
   // requiredStatus filter.
+  // waive_spec_p1 needs its own policy: without one it falls through to
+  // gateDecision("Spec"), which disables anything whose gate is blocked -- and a
+  // P1 waiver is only ever used WHILE the gate is blocked.
+  ["waive_spec_p1", ({ changeId }) => waiveSpecP1Decision(changeId)],
+
   ["waive_review_p1", reviewControl],
   ["recompute_report", reviewControl],
   ["rebuild_mirror", reviewControl],

@@ -1296,6 +1296,42 @@ export function failSpecBattleRound(input: {
   syncSpecStageAuthority(input.changeId);
 }
 
+/**
+ * What the Spec battle currently allows, for a change, or null when no round
+ * exists yet.
+ *
+ * Exported so the action contract can DERIVE `waive_spec_p1` from the same rule
+ * the write path enforces, instead of restating it. Before this, the contract
+ * had no policy for that action at all, so it fell through to the generic
+ * "stage gate is blocked -> disable" base decision -- and a P1 waiver is only
+ * ever meaningful WHILE the gate is blocked. Net effect: the contract could
+ * never authorize a Spec P1 waiver. It stayed invisible only because the
+ * spec-battle route did not consult the contract; the moment it did, 接受风险并
+ * 通过 answered 409 spec_blocked on every click.
+ */
+export function getSpecActionAvailabilityForChange(
+  changeId: string,
+): ReturnType<typeof getSpecActionAvailability> | null {
+  const round = latestRound(changeId);
+  if (!round) return null;
+  let params: BattleParams = DEFAULT_BATTLE_PARAMS;
+  try {
+    params = { ...DEFAULT_BATTLE_PARAMS, ...JSON.parse(round.paramsJson) } as BattleParams;
+  } catch {
+    // A malformed params blob must not decide the gate by accident; the
+    // defaults are the documented battle parameters.
+  }
+  const state = getSpecBattleState(changeId);
+  const report = getLatestSpecReportForDecision(changeId);
+  return getSpecActionAvailability({
+    gaps: state.gaps.map(toRuleGap),
+    reportFresh: report.reportFresh,
+    currentRoundNo: round.roundNo,
+    maxSpecRounds: params.maxSpecRounds,
+    allowP1Waiver: params.allowP1Waiver,
+  });
+}
+
 export async function applySpecBattleDecision(input: SpecBattleDecisionInput): Promise<void> {
   const { change } = getProjectForChange(input.changeId);
   const round = latestRound(input.changeId);
