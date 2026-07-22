@@ -12,7 +12,7 @@ import type { Change, ChangeStatus } from "../types";
 import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
 import { transitionChangeStatus } from "./change-status-service";
 import { CHANGE_DELETE_PLAN } from "./change-delete-plan";
-import { branchExists, checkoutBranch, createBranch, generateChangeBranchName, getCurrentBranch } from "./git-service";
+import { branchExists, checkoutBranch, createBranch, generateChangeBranchName, getCurrentBranch, getDefaultBranch } from "./git-service";
 import { syncProjectGitState } from "./project-git-state-service";
 import { nextSequencedId } from "./record-identity";
 import fs from "fs";
@@ -405,10 +405,18 @@ function moveHeadOffDeletedBranch(
       .filter((row): row is { id: string; gitBranch: string } => Boolean(row.gitBranch))
       .sort((left, right) => right.id.localeCompare(left.id))[0]?.gitBranch ?? null;
 
-    const target = survivor ?? project.gitDefaultBranch;
-    if (!target || !branchExists(project.repoPath, target)) {
+    // Never the branch being deleted, whatever the candidate list says. The
+    // stored gitDefaultBranch turned out to be exactly that in the shipped
+    // database (see getDefaultBranch), so this helper faithfully checked out
+    // the branch it was supposed to be stepping off. Probing git directly is
+    // the last resort, because the stored column has proven wrong.
+    const target = [survivor, project.gitDefaultBranch, getDefaultBranch(project.repoPath)]
+      .find((candidate): candidate is string =>
+        Boolean(candidate) && candidate !== deletedBranch && branchExists(project.repoPath, candidate!))
+      ?? null;
+    if (!target) {
       log.warn(
-        { changeId, deletedBranch, target },
+        { changeId, deletedBranch },
         "HEAD is on the deleted change's branch and no surviving branch was found to move to",
       );
       return;

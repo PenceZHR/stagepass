@@ -76,6 +76,19 @@ export function getDefaultBranch(repoPath: string): string {
     }).trim();
     if (ref) return ref.replace("refs/remotes/origin/", "");
   } catch {}
+  // No origin/HEAD, which is every local-only repository this tool creates.
+  // Falling straight through to getCurrentBranch here is what corrupted
+  // `projects.git_default_branch`: syncProjectGitState calls this on every
+  // createChange, and at that moment HEAD is sitting on the PREVIOUS change's
+  // branch, so the column recorded "the branch someone was last on" and called
+  // it the default. Observed in the shipped database -- PRJ-004 held
+  // `ship/chg-003/...` and PRJ-002 held `ship/chg-001/...`, so every consumer
+  // asking for the default branch was handed a change branch.
+  for (const candidate of ["main", "master"]) {
+    if (branchExists(repoPath, candidate)) return candidate;
+  }
+  // Genuinely nothing conventional to point at; the current branch is the only
+  // answer left, and for a fresh repo on its first branch it is the right one.
   return getCurrentBranch(repoPath);
 }
 

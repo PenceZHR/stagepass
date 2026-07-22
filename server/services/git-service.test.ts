@@ -8,6 +8,7 @@ import path from "node:path";
 
 import {
   commitWithMessage,
+  getDefaultBranch,
   getDiffSummary,
   getPorcelainStatus,
   getWorkingTreeStatus,
@@ -28,6 +29,44 @@ describe("git-service", () => {
 
   afterEach(() => {
     fs.rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  describe("the default branch of a repository with no remote", () => {
+    /**
+     * This fell through to getCurrentBranch, and syncProjectGitState calls it on
+     * every createChange -- at which moment HEAD is sitting on the PREVIOUS
+     * change's branch. So `projects.git_default_branch` recorded "the branch
+     * someone was last on" and every consumer asking for the default branch got
+     * a change branch back. Found by running the real pipeline: the shipped
+     * database held `ship/chg-003/...` for PRJ-004 and `ship/chg-001/...` for
+     * PRJ-002, and deleteChange's "step off the deleted branch" repair then
+     * faithfully checked out the branch it was stepping off.
+     */
+    it("is main, not whatever branch happens to be checked out", () => {
+      execSync("git checkout -q -b ship/chg-007/some-change", { cwd: repoPath });
+      assert.equal(
+        execSync("git rev-parse --abbrev-ref HEAD", { cwd: repoPath, encoding: "utf-8" }).trim(),
+        "ship/chg-007/some-change",
+        "precondition: HEAD must be off the default branch for this to mean anything",
+      );
+
+      assert.equal(getDefaultBranch(repoPath), "main");
+    });
+
+    it("falls back to master when that is the conventional branch", () => {
+      execSync("git branch -m main master", { cwd: repoPath });
+      execSync("git checkout -q -b feature/x", { cwd: repoPath });
+
+      assert.equal(getDefaultBranch(repoPath), "master");
+    });
+
+    it("still answers the current branch when nothing conventional exists", () => {
+      // A fresh repository on its first, differently-named branch: the current
+      // branch really is the only sensible answer, so the fallback must survive.
+      execSync("git branch -m main trunk", { cwd: repoPath });
+
+      assert.equal(getDefaultBranch(repoPath), "trunk");
+    });
   });
 
   it("returns the full 40 character HEAD after committing", () => {
