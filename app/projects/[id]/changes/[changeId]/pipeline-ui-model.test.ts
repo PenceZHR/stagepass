@@ -20,7 +20,7 @@ function change(overrides: Partial<ChangeDetail> = {}): ChangeDetail {
     id: "change-1",
     projectId: "project-1",
     title: "Unify pipeline UI",
-    status: "DRAFT",
+    status: "INTAKE_PENDING",
     codexThreadId: null,
     fixIterations: 0,
     createdAt: "2026-07-07T00:00:00.000Z",
@@ -207,7 +207,6 @@ describe("pipeline UI model", () => {
 
   it("maps every current change status to a user-facing stage and canonical UI state", () => {
     const cases: Array<[string, UiStageId, UiStageState]> = [
-      ["DRAFT", "plan", "waiting"],
       ["INTAKE_PENDING", "prd", "waiting"],
       ["INTAKE_READY", "prd", "needs_review"],
       ["SPECCING", "spec", "running"],

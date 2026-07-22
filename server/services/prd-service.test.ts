@@ -483,7 +483,7 @@ describe("Change suspend/restore on PRD revision", () => {
   it("suspends active changes through the production state transition service", () => {
     seedRealProject(projectId, tmpDir, "ready");
     seedRealChange(projectId, `${projectId}-RUNNING`, "IMPLEMENTING");
-    seedRealChange(projectId, `${projectId}-DRAFT`, "DRAFT");
+    seedRealChange(projectId, `${projectId}-PLANREADY`, "PLAN_READY");
     seedRealChange(projectId, `${projectId}-LOCAL`, "LOCAL_READY");
 
     startPrdRevision(projectId);
@@ -493,7 +493,7 @@ describe("Change suspend/restore on PRD revision", () => {
     assert.equal(suspended.length, 2);
     assert.deepEqual(
       suspended.map((change) => change.preSuspendStatus).sort(),
-      ["DRAFT", "IMPLEMENTING"],
+      ["IMPLEMENTING", "PLAN_READY"],
     );
     assert.deepEqual(suspended.map((change) => change.status), ["BLOCKED", "BLOCKED"]);
 
@@ -507,7 +507,6 @@ describe("Change suspend/restore on PRD revision", () => {
     fs.writeFileSync(path.join(tmpDir, ".ship", "prd.md"), prdLikeMarkdown("Ready PRD"));
 
     const restoredStatuses: ChangeStatus[] = [
-      "DRAFT",
       "SPEC_READY",
       "TECHSPEC_READY",
       "PLAN_READY",

@@ -142,7 +142,11 @@ describe("change-rework-service", () => {
 
     const updated = await reworkChangeWithDb(db, "PRJ-001", "CHG-001", "Plan");
 
-    assert.equal(updated.status, "DRAFT");
+    // Was DRAFT. Reworking Plan used to park the change in a status whose only
+    // non-BLOCKED edge went to REFINING -- so once Refine was deleted, rework
+    // Plan led into a dead end. PLAN_READY is what it meant all along: the plan
+    // is there and waiting to be regenerated or re-approved.
+    assert.equal(updated.status, "PLAN_READY");
     assert.equal(updated.reworkFromPhase, "generate_plan");
     assert.equal(updated.blockedPhase, null);
     assert.deepEqual(db.select().from(runs).where(eq(runs.changeId, "CHG-001")).all().map((run) => run.id), ["RUN-001"]);

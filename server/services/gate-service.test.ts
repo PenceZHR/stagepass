@@ -762,7 +762,7 @@ describe("gate-service", () => {
   });
 
   it("rejects approve outside the requested gate", async () => {
-    seedChange(repoPath, "DRAFT");
+    seedChange(repoPath, "PLAN_READY");
 
     seedStageGate("Spec");
 

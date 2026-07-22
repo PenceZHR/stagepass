@@ -8,7 +8,6 @@ export const AiProvider = z.enum(["codex", "claude"]);
 export type AiProvider = z.infer<typeof AiProvider>;
 
 export const ChangeStatus = z.enum([
-  "DRAFT",
   "PLANNING",
   "PLAN_READY",
   "PLAN_APPROVED",

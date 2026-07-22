@@ -209,7 +209,6 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
 };
 
 const STATUS_TO_STAGE: Record<string, StageResolution> = {
-  DRAFT: { id: "plan", state: "waiting" },
   INTAKE_PENDING: { id: "prd", state: "waiting" },
   INTAKE_READY: { id: "prd", state: "needs_review" },
   SPECCING: { id: "spec", state: "running" },

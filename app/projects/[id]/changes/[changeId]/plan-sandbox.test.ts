@@ -184,7 +184,10 @@ describe("Plan Sandbox UI", () => {
     const phasesBlock = phaseMapSource.slice(phasesStart, phasesEnd);
     assert.match(phasesBlock, /"Plan"/);
     assert.match(phasesBlock, /"Intake"[\s\S]*"Spec"[\s\S]*"TechSpec"[\s\S]*"Plan"[\s\S]*"TestPlan"/);
-    assert.match(phaseMapSource, /DRAFT: \{ phase: "Plan", state: "waiting" \}/);
+    // Dropped: this pinned that DRAFT mapped to the Plan phase. DRAFT is
+    // deleted -- it was in the initial commit, no change ever entered it, and
+    // its only non-BLOCKED edge went to the (also deleted) REFINING. The
+    // remaining Plan status mappings below still pin Plan as a real phase.
     assert.match(phaseMapSource, /PLANNING: \{ phase: "Plan", state: "running" \}/);
     assert.match(phaseMapSource, /PLAN_READY: \{ phase: "Plan", state: "done" \}/);
     assert.match(phaseMapSource, /PLAN_APPROVED: \{ phase: "Plan", state: "done" \}/);

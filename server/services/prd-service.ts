@@ -624,7 +624,17 @@ export async function confirmPrdRevision(projectId: string): Promise<PrdValidati
 
   const now = nowISO();
   for (const change of suspendedChanges) {
-    const restoreStatus = (change.preSuspendStatus || "DRAFT") as ChangeStatus;
+    // No fallback. This used to default to DRAFT, a status nothing could leave
+    // (its only non-BLOCKED edge went to REFINING, and both are gone) -- so a
+    // change whose pre-suspend status was never recorded got silently buried in
+    // a dead end. An empty preSuspendStatus means the suspend itself did not
+    // record enough to undo, and that has to be visible rather than guessed at.
+    if (!change.preSuspendStatus) {
+      throw new Error(
+        `Cannot restore ${change.id} after PRD revision: it was suspended without recording preSuspendStatus`,
+      );
+    }
+    const restoreStatus = change.preSuspendStatus as ChangeStatus;
     transitionChangeStatus({
       changeId: change.id,
       to: restoreStatus,

@@ -25,7 +25,7 @@ const PHASE_TO_RUN_PHASE: Record<ReworkReviewPhase, RunPhase> = {
 };
 
 const PHASE_TO_READY_STATUS: Record<ReworkReviewPhase, ChangeStatus> = {
-  Plan: "DRAFT",
+  Plan: "PLAN_READY",
   TestPlan: "PLAN_APPROVED",
   Build: "PLAN_APPROVED",
   Implement: "PLAN_APPROVED",

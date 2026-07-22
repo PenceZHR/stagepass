@@ -96,7 +96,6 @@ export const REWORKABLE_REVIEW_PHASES: ReviewPhase[] = [
 ];
 
 export const STATUS_TO_PHASE: Record<string, { phase: string; state: string }> = {
-  DRAFT: { phase: "Plan", state: "waiting" },
   PLANNING: { phase: "Plan", state: "running" },
   PLAN_READY: { phase: "Plan", state: "done" },
   PLAN_APPROVED: { phase: "Plan", state: "done" },

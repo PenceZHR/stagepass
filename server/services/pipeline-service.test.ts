@@ -465,7 +465,7 @@ function seedChange(repoPath: string, status: ChangeStatus) {
     createdAt: now,
     updatedAt: now,
   }).run();
-  if (status !== "INTAKE_PENDING" && status !== "DRAFT") {
+  if (status !== "INTAKE_PENDING") {
     seedLockedPrdAuthority(repoPath);
   }
   if (
@@ -2733,7 +2733,7 @@ describe("pipeline-service v2 stages", () => {
   });
 
   it("rejects spec from an invalid status", async () => {
-    seedChange(repoPath, "DRAFT");
+    seedChange(repoPath, "PLAN_READY");
 
     await assert.rejects(
       () => runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-invalid-status")),
@@ -3794,15 +3794,18 @@ describe("pipeline-service v2 stages", () => {
     assert.equal(db.select().from(findings).where(eq(findings.id, "FND-RERUN-P1")).get()?.status, "fixed");
   });
 
-  it("rejects plan generation from DRAFT before starting a run", async () => {
-    seedChange(repoPath, "DRAFT");
+  it("rejects plan generation from INTAKE_PENDING before starting a run", async () => {
+    // Was DRAFT, a status that no longer exists. This test needs a status plan
+    // generation genuinely refuses -- PLAN_READY is not one, it is exactly when
+    // a plan may be regenerated. INTAKE_PENDING is before the TechSpec gate.
+    seedChange(repoPath, "INTAKE_PENDING");
 
     await assert.rejects(
       () => generatePlan(CHANGE_ID, makeTestJobExecutionContext("plan-invalid-status")),
       /Invalid status/,
     );
 
-    assert.equal(currentStatus(), "DRAFT");
+    assert.equal(currentStatus(), "INTAKE_PENDING");
     assert.equal(db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all().length, 0);
   });
 

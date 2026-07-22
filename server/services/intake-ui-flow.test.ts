@@ -58,7 +58,6 @@ describe("intake-first change flow", () => {
     const content = fs.readFileSync(CHANGE_SERVICE, "utf-8");
 
     assert.match(content, /const initialStatus = "INTAKE_PENDING"/);
-    assert.doesNotMatch(content, /const initialStatus = hasSpec \? "DRAFT" : "REFINING"/);
   });
 
   it("uses action contracts without treating INTAKE_PENDING as already running", () => {
