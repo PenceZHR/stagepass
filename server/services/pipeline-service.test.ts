@@ -109,6 +109,7 @@ import {
 import { recordBuildRunFromWorkspaceFile } from "./build-run-record-service.ts";
 import { approveGate, gateApprovalActionId, type GateName } from "./gate-service.ts";
 import { computeActions, getActions } from "./action-contract-service.ts";
+import { stageRawOutputPath } from "./stage-raw-output-path.ts";
 import { runStageWithLedger } from "./stage-orchestrator-service.ts";
 import { StageBoundaryViolationError } from "./pipeline-run-ledger-service.ts";
 import {
@@ -870,20 +871,23 @@ function latestStageRawOutputPayload(): Record<string, unknown> {
   return parsed.stageRawOutput;
 }
 
-function latestSpecRunRawCapturePath(repoPath: string): string {
+/**
+ * A capture written by one role of the latest spec run.
+ *
+ * `phase` used to be implicit: the path was built with the constant
+ * "raw-ai-output.json", so the red author and the blue critic of the same run
+ * wrote to one file and the critic's output simply replaced the author's. Every
+ * caller below wants the critic, and every one of them was silently relying on
+ * that overwrite to get it. Captures are per-phase now, so the role has to be
+ * named -- and the path is derived from the same function the writer uses,
+ * rather than being a fourth hand-written copy of the rule.
+ */
+function latestSpecRunRawCapturePath(repoPath: string, phase: string): string {
   const specRun = db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all()
     .filter((run) => run.phase === "spec")
     .at(-1);
   assert.ok(specRun);
-  return path.join(
-    repoPath,
-    ".ship",
-    "changes",
-    CHANGE_ID,
-    "runs",
-    specRun.id,
-    "raw-ai-output.json",
-  );
+  return stageRawOutputPath({ repoPath, changeId: CHANGE_ID, runId: specRun.id, phase });
 }
 
 function sha256Text(value: string): string {
@@ -9756,7 +9760,7 @@ describe("pipeline-service v2 stages", () => {
     }
 
     assert.equal(currentStatus(), "BLOCKED");
-    const rawCapturePath = latestSpecRunRawCapturePath(repoPath);
+    const rawCapturePath = latestSpecRunRawCapturePath(repoPath, "spec_critic");
     assert.equal(fs.existsSync(rawCapturePath), true);
     const rawCapture = JSON.parse(fs.readFileSync(rawCapturePath, "utf-8"));
     assert.equal(rawCapture.errorCode, "provider_timeout");
@@ -9791,7 +9795,7 @@ describe("pipeline-service v2 stages", () => {
     assert.equal(currentChange().blockedPhase, "spec");
     const round = db.select().from(battleRounds).where(eq(battleRounds.changeId, CHANGE_ID)).get();
     assert.equal(round?.status, "failed");
-    const rawCapturePath = latestSpecRunRawCapturePath(repoPath);
+    const rawCapturePath = latestSpecRunRawCapturePath(repoPath, "spec_critic");
     assert.equal(fs.existsSync(rawCapturePath), true);
     const rawCapture = JSON.parse(fs.readFileSync(rawCapturePath, "utf-8"));
     assert.equal(rawCapture.phase, "spec_critic");
@@ -9930,7 +9934,7 @@ describe("pipeline-service v2 stages", () => {
     const round = db.select().from(battleRounds).where(eq(battleRounds.changeId, CHANGE_ID)).get();
     assert.equal(round?.status, "failed");
     assert.equal(artifactExists(repoPath, path.join("reports", "spec-report.md")), false);
-    const rawCapturePath = latestSpecRunRawCapturePath(repoPath);
+    const rawCapturePath = latestSpecRunRawCapturePath(repoPath, "spec_critic");
     assert.equal(fs.existsSync(rawCapturePath), true);
     const rawCapture = JSON.parse(fs.readFileSync(rawCapturePath, "utf-8"));
     assert.equal(rawCapture.phase, "spec_critic");

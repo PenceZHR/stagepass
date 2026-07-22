@@ -1,4 +1,5 @@
 import fs from "fs";
+import { isStageRawOutputFileName } from "./stage-raw-output-path";
 import path from "path";
 import {
   changeArtifactDir,
@@ -718,7 +719,12 @@ function isReviewMetadataOnlyPath(filePath: string): boolean {
   return (
     fileName.includes("raw-review-output") ||
     fileName.includes("raw_review_output") ||
-    fileName === "raw-ai-output.json"
+    // Was `=== "raw-ai-output.json"`, a third spelling of the capture name.
+    // Captures are per-phase now, so an equality check would have stopped
+    // classifying every new one as review metadata and started surfacing raw
+    // provider dumps as produced artifacts. The predicate still accepts the
+    // legacy name, since runs recorded under it are on disk.
+    isStageRawOutputFileName(fileName)
   );
 }
 

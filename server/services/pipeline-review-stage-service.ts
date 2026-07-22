@@ -23,6 +23,7 @@ import {
   withExecutionFence,
 } from "./execution-fence-service";
 import { assemblePrompt } from "./prompt-service";
+import { stageRawOutputPath } from "./stage-raw-output-path";
 import {
   buildRecordSourceHead,
   latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
@@ -58,7 +59,6 @@ import {
 import {
   beginStageRun,
   recordPostCommitSideEffectFailure,
-  runArtifactDir,
   setStatus,
   writeRunArtifact,
 } from "./pipeline-run-ledger-service";
@@ -547,7 +547,10 @@ function reviewRejectedCandidateAudit(
 }
 
 function reviewRawArtifactPath(repoPath: string, changeId: string, runId: string): string {
-  return path.join(runArtifactDir(repoPath, changeId, runId), "raw-ai-output.json");
+  // Was a second, independent spelling of the capture path. It agreed with the
+  // writer only by coincidence; deriving it means the Review stage cannot start
+  // reading a file the writer no longer writes.
+  return stageRawOutputPath({ repoPath, changeId, runId, phase: "review" });
 }
 
 function reviewIngestionErrorCode(input: {
