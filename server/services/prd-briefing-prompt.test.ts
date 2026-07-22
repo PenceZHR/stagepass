@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import { assemblePrompt, type PromptPhase } from "./prompt-service.ts";
 import { DEFAULT_STAGE_SCOPES } from "./stage-guard-service.ts";
+import { BRIEFING_QUESTION_CATEGORIES } from "./prd-briefing-ledger.ts";
 
 const TEMPLATES_DIR = path.join(process.cwd(), "server", "templates", "prompts");
 
@@ -21,7 +22,10 @@ describe("PRD briefing prompt templates", () => {
     // them is what let a mis-typed changeId into the payload.
     assert.match(content, /unit \/ changeId \/ phase 由系统填写，你不要输出/);
     // The enum vocabulary the parser accepts must reach the model.
-    assert.match(content, /goal \/ user \/ scope \/ success \/ negative_case \/ risk \/ constraint \/ spec_blocker/);
+    assert.match(
+      content,
+      new RegExp(`category：${BRIEFING_QUESTION_CATEGORIES.join(" / ")} 之一`),
+    );
     assert.match(content, /critical \/ important \/ optional/);
   });
 

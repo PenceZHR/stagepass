@@ -21,6 +21,7 @@ import {
   getPrdBriefingState,
 } from "./prd-briefing-service";
 import {
+  BRIEFING_QUESTION_CATEGORIES,
   BriefingQuestionsOutputSchema,
   FinalReviewOutputSchema,
   PrdBriefingDraftOutputSchema,
@@ -157,7 +158,7 @@ function okValidation(result: { success: boolean; error?: unknown }) {
   return result.success ? { ok: true } : { ok: false, error: result.error };
 }
 
-function questionOutputSchema(): Record<string, unknown> {
+export function questionOutputSchema(): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
@@ -173,7 +174,7 @@ function questionOutputSchema(): Record<string, unknown> {
           properties: {
             category: {
               type: "string",
-              enum: ["goal", "user", "scope", "success", "negative_case", "risk", "constraint", "spec_blocker"],
+              enum: [...BRIEFING_QUESTION_CATEGORIES],
             },
             severity: { type: "string", enum: ["critical", "important", "optional"] },
             question: { type: "string", minLength: 1 },

@@ -7,10 +7,11 @@ import {
   scanProtocolLines,
   splitFields,
 } from "./ai-line-protocol";
-import type {
-  BriefingQuestionsOutput,
-  FinalReviewOutput,
-  PrdBriefingDraftOutput,
+import {
+  BRIEFING_QUESTION_CATEGORIES,
+  type BriefingQuestionsOutput,
+  type FinalReviewOutput,
+  type PrdBriefingDraftOutput,
 } from "./prd-briefing-ledger";
 
 /**
@@ -32,16 +33,7 @@ export type PrdBriefingLineProtocolResult<T> =
   | { ok: true; payload: T }
   | { ok: false; message: string };
 
-const QUESTION_CATEGORIES = new Set([
-  "goal",
-  "user",
-  "scope",
-  "success",
-  "negative_case",
-  "risk",
-  "constraint",
-  "spec_blocker",
-]);
+const QUESTION_CATEGORIES = new Set<string>(BRIEFING_QUESTION_CATEGORIES);
 const QUESTION_SEVERITIES = new Set(["critical", "important", "optional"]);
 const VERDICTS = new Set(["ready", "needs_answer", "risky_but_allowed"]);
 const NEXT_ACTIONS = new Set(["lock_prd", "answer_questions", "cancel_change"]);
@@ -72,7 +64,7 @@ export function parseBriefingQuestionsLineProtocol(
     ];
     if (!QUESTION_CATEGORIES.has(category)) {
       errors.push(
-        `line ${lineNo}: QUESTION category must be one of goal/user/scope/success/negative_case/risk/constraint/spec_blocker, got "${category}"`,
+        `line ${lineNo}: QUESTION category must be one of ${BRIEFING_QUESTION_CATEGORIES.join("/")}, got "${category}"`,
       );
       continue;
     }

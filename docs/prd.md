@@ -1368,11 +1368,7 @@ interface BriefingQuestion {
     | "goal"
     | "user"
     | "scope"
-    | "success"
-    | "negative_case"
-    | "risk"
-    | "constraint"
-    | "spec_blocker";
+    | "success";
   severity: "critical" | "important" | "optional";
   question: string;
   whyItMatters: string;

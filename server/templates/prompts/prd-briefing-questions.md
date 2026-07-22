@@ -32,7 +32,7 @@ unit / changeId / phase 由系统填写，你不要输出。
 
 QUESTION: category | severity | question | whyItMatters | suggestedDefault
 
-- category：goal / user / scope / success / negative_case / risk / constraint / spec_blocker 之一
+- category：goal / user / scope / success 之一
 - severity：critical / important / optional 之一
 - question：一个可被用户直接回答的具体问题（一行）
 - whyItMatters：为什么这个问题影响 PRD 或后续 Spec（一行）
