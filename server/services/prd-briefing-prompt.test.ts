@@ -80,4 +80,21 @@ describe("PRD briefing prompt templates", () => {
       assert.ok(DEFAULT_STAGE_SCOPES.spec.readableFiles.includes(pattern), `${pattern} should be readable in Spec`);
     }
   });
+
+  it("anchors question importance on human adjudication, not on Spec rework", () => {
+    const content = fs.readFileSync(path.join(TEMPLATES_DIR, "prd-briefing-questions.md"), "utf-8");
+
+    // 正向：新判据在位
+    assert.match(content, /只提出「不回答就无法裁决 PRD 方向」的问题/);
+    assert.match(content, /最多输出 10 张疑点卡/);
+    assert.match(content, /那是 Spec Battle 的职责/);
+
+    // 反向：旧锚点必须消失。这组才是主要防线——正向断言只能证明
+    // 新词句在，证明不了旧锚点已经拔掉，而本次改动的全部价值就在于
+    // 旧锚点必须消失。
+    assert.doesNotMatch(content, /优先输出会影响 Spec Battle 的关键问题/);
+    assert.doesNotMatch(content, /Spec 阶段高概率返工/);
+    assert.doesNotMatch(content, /继续深挖/);
+    assert.doesNotMatch(content, /最多输出 7 张/);
+  });
 });

@@ -12,15 +12,25 @@ Change ID: {changeId}
 - 已有疑点卡：{briefingQuestionsPath}
 - 已有 PRD 草案：{prdDraftPath}
 
-请发现 PRD 前期需求漏洞，最多输出 7 张疑点卡。优先输出会影响 Spec Battle 的关键问题。
+请发现 PRD 前期需求漏洞，最多输出 10 张疑点卡。只提出「不回答就无法裁决 PRD 方向」的问题。
+
+## 提问前先自检
+
+如果人类不回答这个问题，PRD 的**方向**会不会错？
+
+- 会错 → 提。
+- 方向已定，只是还没展开成实现细节 → **不提**，那是 Spec Battle 的职责。
+
+反例（这些一律不要问）：用什么数据结构、接口怎么设计、边界值怎么处理、
+并发怎么办、失败了怎么回滚。这些不影响人类判断「要不要做、给谁做、做到什么算成功」。
 
 ## 你正在开启新的一轮追问
 
 {briefingQuestionsPath} 里每张已有的卡都带 `roundNo`。你这次输出的卡会作为**新的一轮追加**进去，
 既有的卡和用户在上面记下的处理结果都会原样保留，不会被你覆盖。因此：
 
-- 不要重复已经 answered / assumption_accepted 的卡。请在用户的回答之上继续深挖，
-  问下一层还没被回答清楚的问题。
+- 不要重复已经 answered / assumption_accepted 的卡。请在用户已确认的方向之外，
+  检查还有哪些**方向性维度**尚未覆盖。不要就同一个方向追问下一层实现细节——那属于 Spec 阶段。
 - status 仍是 open 的旧卡依然有效、依然在等用户处理，不要原样再问一遍。
 - deferred 的卡如果已经不再影响 PRD，就不要再追。
 
@@ -47,7 +57,7 @@ QUESTION: scope | important | 是否包含历史数据迁移？ | 影响 Spec �
 - 至少输出 1 行 QUESTION。
 - 每行严格 5 个字段，且 question / whyItMatters / suggestedDefault 文本内不得出现 `|`。
 - question 与 whyItMatters 不得为空。
-- `critical` 只用于不回答就会导致方向错误或核心验收无法判断的问题。
-- `important` 用于不回答会导致 Spec 阶段高概率返工的问题。
-- `optional` 用于不会阻断 PRD 锁定的细节。
+- `critical` 只用于不回答，PRD 方向可能整个错、人类无法裁决的问题。
+- `important` 用于不回答，PRD 的范围或成功标准会含糊的问题。
+- `optional` 用于澄清了更好、但不影响方向裁决的问题。
 - 每张疑点卡必须短、具体、可处理。
