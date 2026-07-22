@@ -721,7 +721,7 @@ function normalizeQuestionGenerationOutput(
 ): ReturnType<typeof parseBriefingQuestionsOutput> {
   if ("questionsOutput" in input && input.questionsOutput !== undefined) {
     const parsed = BriefingQuestionsOutputSchema.parse(input.questionsOutput);
-    return { questions: parsed.questions };
+    return { questions: parsed.questions, noNewQuestions: parsed.noNewQuestions };
   }
   return parseBriefingQuestionsOutput(input.blueJson);
 }
@@ -737,6 +737,51 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
     parsed = normalizeQuestionGenerationOutput(input);
   } catch (error) {
     throw new PrdBriefingError("invalid_briefing_questions", error instanceof Error ? error.message : undefined);
+  }
+
+  // Convergence is legal from round 2 on, never on round 1.
+  //
+  // assertQuestionsGenerated() requires at least one card before a draft may
+  // start. A first round that produced nothing would leave getQuestions()
+  // empty forever, welding that gate shut with no way back. Forcing round 1 to
+  // produce cards means the set is non-empty from then on.
+  if (parsed.noNewQuestions === true) {
+    const round = nextQuestionRoundNoWithDb(db, input.changeId);
+    if (round === 1) {
+      throw new PrdBriefingError(
+        "first_round_cannot_converge",
+        "PRD briefing 首轮必须产出疑点卡，不能直接声明收敛",
+      );
+    }
+    // The run id must be real and distinct per generation. jobMarker() keys the
+    // convergence signal on `${runId}:${status}` — an empty or reused id makes
+    // two consecutive converged rounds produce an identical marker, and the
+    // second one falls through to the "no artifact updated" error all over
+    // again. Question generation runs under phase "intake", so the latest
+    // intake run IS this generation's run.
+    const runId = latestIntakeRun(input.changeId)?.id;
+    if (!runId) {
+      throw new PrdBriefingError(
+        "convergence_run_missing",
+        "PRD briefing 收敛需要一条 intake run 记录，但没有找到",
+      );
+    }
+    await insertEvent({
+      changeId: input.changeId,
+      type: "stage_progress",
+      message: "本轮未发现新的方向性疑点，可以进入 PRD 草稿",
+      rawJson: {
+        stageProgress: {
+          schemaVersion: "stage_progress/v1",
+          phase: "prd_briefing_questions",
+          runId,
+          status: "completed",
+          source: "prd_briefing_convergence",
+        },
+      },
+    });
+    syncPrdStageAuthority(input.changeId, input.provider);
+    return getPrdBriefingState(input.changeId);
   }
 
   // Ids are minted out here because nextId is async and a better-sqlite3

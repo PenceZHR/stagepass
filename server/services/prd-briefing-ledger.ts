@@ -80,6 +80,7 @@ export type FinalReviewOutput = z.infer<typeof FinalReviewOutputSchema>;
 
 export interface ParsedBriefingQuestionsOutput {
   questions: BriefingQuestionInput[];
+  noNewQuestions?: boolean;
 }
 
 export interface GateQuestion {
@@ -270,7 +271,7 @@ export function readPrdBriefingSourceHashes(raw: string | null | undefined): Prd
 
 export function parseBriefingQuestionsOutput(raw: string): ParsedBriefingQuestionsOutput {
   const parsed = BriefingQuestionsOutputSchema.parse(JSON.parse(raw));
-  return { questions: parsed.questions };
+  return { questions: parsed.questions, noNewQuestions: parsed.noNewQuestions };
 }
 
 export function parseFinalReviewOutput(raw: string): FinalReviewOutput {
