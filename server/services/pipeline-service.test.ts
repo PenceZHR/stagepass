@@ -150,6 +150,7 @@ import { runLedgerRepository } from "../repositories/run-ledger-repository.ts";
 import { getPlanSandboxState } from "./plan-sandbox-service.ts";
 import { ActionContractDriftError, enqueueProviderActionAtomically } from "./job-dispatch-service.ts";
 import { evaluateProviderActionAuthority } from "./provider-action-authority-service.ts";
+import { setReviewQaGateHeadProbeForTest } from "./review-qa-gate-service.ts";
 
 const PROJECT_ID = "PRJ-T27";
 const CHANGE_ID = "CHG-T27";
@@ -3682,6 +3683,12 @@ describe("pipeline-service v2 stages", () => {
         assert.equal(envelope?.error, "action_not_allowed");
         assert.equal(envelope?.action?.actionId, "enter_qa");
         assert.equal(envelope?.action?.enabled, false);
+        // The 409 has to say WHICH rule refused. The envelope used to be rebuilt
+        // from the current contract with no override, so on a change whose
+        // contract still read enabled it came back stating `action_not_allowed`
+        // and `enabled: true, reasonCode: null` in the same body -- and
+        // persistActionContract wrote that contradiction down.
+        assert.equal(envelope?.action?.reasonCode, "test_plan_gate_missing");
         return true;
       },
     );
@@ -3693,6 +3700,54 @@ describe("pipeline-service v2 stages", () => {
       .all()
       .filter((run) => run.phase === "local_check");
     assert.equal(localCheckRuns.length, 0);
+  });
+
+  /**
+   * The counterpart to the test above. `error instanceof Error` used to sit in
+   * the same condition as ReviewQaGateError, and that is true for essentially
+   * everything JS throws -- so a real fault was relabelled "action_not_allowed"
+   * and its message and stack were discarded. The worker reaches this function
+   * with no preflight ahead of it, so the only record of the failure was a 409
+   * naming a rule that had not actually refused.
+   */
+  it("lets an unexpected fault out of QA preflight instead of relabelling it action_not_allowed", async () => {
+    setPipelineEngineFactoryForTest(() => ({
+      async run() {
+        return {
+          threadId: `${CHANGE_ID}-thread`,
+          runId: "ENGINE-RUN",
+          summary: reviewLineProtocolText(),
+          success: true,
+          changedFiles: [],
+          structuredOutput: undefined,
+          items: [],
+        };
+      },
+      async *runStreamed(input) {
+        fs.writeFileSync(path.join(input.repoPath, "src", "app.ts"), "export const value = 2;\n");
+        yield { type: "thread.started", threadId: `${CHANGE_ID}-thread` } as unknown as AiStreamEvent;
+      },
+    }));
+    await prepareAdoptedBuild(repoPath);
+    await runReview(CHANGE_ID, makeTestJobExecutionContext("review-qa-fault-passthrough"));
+
+    const restoreProbe = setReviewQaGateHeadProbeForTest(() => {
+      throw new Error("git exploded while resolving HEAD");
+    });
+    try {
+      assert.throws(
+        () => assertCanRunCheck(CHANGE_ID, { entrypoint: "api_check_route", actor: "human" }),
+        (err) => {
+          // Travels with its own message, and is not dressed up as a refusal.
+          assert.match(String((err as Error).message), /git exploded while resolving HEAD/);
+          assert.equal((err as { status?: number }).status, undefined);
+          assert.equal((err as { envelope?: unknown }).envelope, undefined);
+          return true;
+        },
+      );
+    } finally {
+      restoreProbe();
+    }
   });
 
   it("allows Review reruns from CHECK_FAILED while open Review blockers need re-review", async () => {
