@@ -3,6 +3,7 @@ import { waivePlanRisk } from "@/server/services/plan-sandbox-service";
 import { requireProjectChange } from "../../route-guard";
 import {
   actionPreflightErrorResponse,
+  assertRequestActionAllowed,
   resolveRequestProviderForAction,
 } from "../../action-preflight";
 
@@ -24,6 +25,11 @@ export async function POST(
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return NextResponse.json({ error: "JSON object body required" }, { status: 400 });
     }
+    // The contract's decision for waive_plan_p1 -- terminal-change refusal
+    // included -- only binds if a route asks for it. This one did not, so
+    // waiving a Plan P1 on a DONE change went straight through while the gate
+    // reported `change_terminal`.
+    await assertRequestActionAllowed({ changeId, actionId: "waive_plan_p1", payload, request });
     resolveRequestProviderForAction("waive_plan_p1", payload);
     if (typeof payload.riskId !== "string") {
       return NextResponse.json({ error: "riskId field required" }, { status: 400 });
