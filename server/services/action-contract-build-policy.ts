@@ -261,9 +261,38 @@ export function buildBaseCampDecision(
   options: { blockDirtyStatus?: boolean } = {},
 ): ActionDecision {
   if (!current.enabled) return current;
-  const baseCamp = checkGitBaseCamp(repoPath, {
-    ignoredPrefixes: changeArtifactIgnoredPrefixes(changeId),
-  });
+  // checkGitBaseCamp shells out, so it throws rather than reports on a probe it
+  // could not complete: a spawn failure (repoPath deleted, renamed, or on an
+  // unmounted volume), a timeout, an output-limit overflow, or a kill signal.
+  // Unguarded, that exception left this function, left getActions, and reached
+  // GET /gate, which answers 500 -- so the client held no action contract at
+  // all and every control on the page lost its enablement, not just the build
+  // ones this probe speaks for. Verified against a copy of the shipped database:
+  // pointing a project's repo_path at a missing directory turned the gate into
+  // `500 GATE_STATUS_UNAVAILABLE` and emptied the stage action bar.
+  let baseCamp: GitBaseCampStatus;
+  try {
+    baseCamp = checkGitBaseCamp(repoPath, {
+      ignoredPrefixes: changeArtifactIgnoredPrefixes(changeId),
+    });
+  } catch (error) {
+    // Fail closed, and only for this action. A build cannot safely start on a
+    // workspace nobody can read, and the probe is the only thing that would
+    // have caught it -- so an unreadable workspace is a blocker, not a reason
+    // to wave the action through.
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ...current,
+      enabled: false,
+      reasonCode: "build_base_camp_probe_failed",
+      reason: `Build workspace base camp probe failed: ${detail}`,
+      blockers: [{
+        id: "build_base_camp_probe",
+        severity: "P1",
+        title: detail,
+      }],
+    };
+  }
   if (!buildBaseCampHasBlockingProblem(baseCamp, options)) return current;
   const details =
     baseCamp.blockers.length > 0

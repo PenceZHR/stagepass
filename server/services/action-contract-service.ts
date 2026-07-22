@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
 
+import { createChildLogger } from "../logger";
+
 import {
   actionContractRepository,
   setActionContractRepositoryDbForTest,
@@ -53,6 +55,8 @@ export interface ComputeActionsOptions {
 interface ActionBuildOptions extends Required<ComputeActionsOptions> {
   persist: boolean;
 }
+
+const log = createChildLogger("action-contract-service");
 
 const requireDefaultDb = createRequire(import.meta.url);
 let actionContractDbForTest: ActionContractDb | null = null;
@@ -138,6 +142,9 @@ function buildActions(changeId: string, options: ActionBuildOptions): PipelineAc
   if (!project) {
     throw new Error(`Project not found: ${effectiveChange.projectId}`);
   }
+  // Read out here rather than inside decideOneAction: the narrowing the guard
+  // above establishes does not follow `project` into a nested function.
+  const repoPath = project.repoPath;
 
   const snapshots = new Map<ContractPhase, StageAuthoritySnapshot>();
   const stageOutputSignals = new Map<PipelinePhase, StageOutputSignal>();
@@ -150,6 +157,46 @@ function buildActions(changeId: string, options: ActionBuildOptions): PipelineAc
     return next;
   };
   const actions = ACTION_DEFINITIONS.map((definition) => {
+    try {
+      return decideOneAction(definition);
+    } catch (error) {
+      // One action's policy must not be able to delete the whole contract.
+      // Several policies shell out to git (buildBaseCampDecision) or read the
+      // filesystem, so any of them can throw on a condition that has nothing to
+      // do with the other 44 actions -- and this .map() used to let that
+      // exception escape getActions into GET /gate, which answers 500. The
+      // client then has no contract at all: every control loses its enablement
+      // and its reason, over a probe that only ever spoke for one action.
+      // Degrading here keeps the blast radius at the action that actually
+      // failed, and keeps the failure legible instead of silent.
+      log.error(
+        { changeId, actionId: definition.actionId, err: String(error) },
+        "Action policy threw; degrading this action instead of the whole contract",
+      );
+      return {
+        actionId: definition.actionId,
+        phase: definition.phase,
+        label: definition.label,
+        enabled: false,
+        reasonCode: "action_policy_failed",
+        reason: `Action policy failed: ${error instanceof Error ? error.message : String(error)}`,
+        blockers: [{
+          id: `action_policy_${definition.actionId}`,
+          severity: "P1" as const,
+          title: error instanceof Error ? error.message : String(error),
+        }],
+        warnings: [],
+        gateVersion: "0",
+        sourceDbHash: MISSING_GATE_SOURCE_DB_HASH,
+        requiresIdempotencyKey: actionRequiresIdempotencyKey(definition.actionId),
+        requiresProvider: definition.requiresProvider === true,
+        providerSelectable: definition.providerSelectable === true,
+        defaultProvider: (effectiveChange.provider === "claude" ? "claude" : "codex") as "codex" | "claude",
+      };
+    }
+  });
+
+  function decideOneAction(definition: (typeof ACTION_DEFINITIONS)[number]) {
     if (
       options.recomputeMergeReadiness &&
       (definition.actionId === "approve_merge" || definition.actionId === "merge")
@@ -170,7 +217,7 @@ function buildActions(changeId: string, options: ActionBuildOptions): PipelineAc
       changeId,
       effectiveChange.status,
       effectiveChange.gateState,
-      project.repoPath,
+      repoPath,
       definition,
       snapshot,
       options,
@@ -214,7 +261,7 @@ function buildActions(changeId: string, options: ActionBuildOptions): PipelineAc
       providerSelectable: definition.providerSelectable === true,
       defaultProvider: (effectiveChange.provider === "claude" ? "claude" : "codex") as "codex" | "claude",
     };
-  });
+  }
 
   if (options.persist) {
     const computedAt = nowISO();

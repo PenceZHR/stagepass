@@ -2571,6 +2571,97 @@ describe("action-contract-service", () => {
     ]);
   });
 
+  /**
+   * The base camp probe shells out, so it reports nothing when it cannot run at
+   * all -- it throws. A repoPath that was deleted, renamed, or lives on an
+   * unmounted volume makes the spawn itself fail, and a timeout or an output
+   * overflow does the same. Unguarded, that exception escaped getActions and
+   * reached GET /gate, which answers 500: the client then held no contract for
+   * ANY of the 45 actions, over a probe that only speaks for the build ones.
+   * Reproduced against a copy of the shipped database before the fix -- the
+   * gate returned `500 GATE_STATUS_UNAVAILABLE` and the stage action bar
+   * vanished from the page.
+   */
+  it("degrades only the build actions when the base camp probe cannot run at all", () => {
+    initCleanGitRepo(repoPath);
+    db.update(changes).set({ status: "PLAN_APPROVED" }).where(eq(changes.id, CHANGE_ID)).run();
+    seedStageGate("TestPlan", "passed", "testplan-source-hash");
+    // Build run/retry trace the TestPlan gate; back it via the legacy pairing path.
+    seedAuthorityBackedStageSource("TestPlan", "test_plan", "testplan-source-hash");
+
+    const healthy = getActions(CHANGE_ID);
+    // The probe has to be reachable for the guard to mean anything:
+    // buildBaseCampDecision returns early on an already-disabled action.
+    assert.equal(healthy.find((action) => action.actionId === "run_build")?.enabled, true);
+
+    // Not "an empty directory" and not "a directory that is not a repo" -- both
+    // of those the probe answers cleanly. The path has to be gone, so the spawn
+    // itself fails and the probe throws.
+    fs.rmSync(repoPath, { recursive: true, force: true });
+
+    const actions = getActions(CHANGE_ID);
+
+    // The whole contract survives; this is the property the 500 destroyed.
+    assert.equal(actions.length, healthy.length);
+
+    const runBuild = actions.find((action) => action.actionId === "run_build");
+    assert.equal(runBuild?.enabled, false);
+    assert.equal(runBuild?.reasonCode, "build_base_camp_probe_failed");
+    // Fail closed with the cause named, not a bare "unavailable": a build must
+    // not start on a workspace nobody can read, and the operator needs to know
+    // it was the probe rather than the gate that refused.
+    assert.match(String(runBuild?.reason), /probe failed/i);
+    assert.equal(runBuild?.blockers.length, 1);
+
+    // An action that never consults git is untouched -- the blast radius stays
+    // at the probe's own actions.
+    const waiveSpec = actions.find((action) => action.actionId === "waive_spec_p1");
+    assert.notEqual(waiveSpec?.reasonCode, "build_base_camp_probe_failed");
+    assert.notEqual(waiveSpec?.reasonCode, "action_policy_failed");
+  });
+
+  /**
+   * Second layer, independent of the first: any policy may start shelling out or
+   * reading the filesystem later, so the map itself has to hold the line rather
+   * than relying on every policy remembering to. Injecting the fault through the
+   * QA head probe proves the isolation without depending on the base camp path.
+   */
+  it("keeps the rest of the contract when one action's policy throws", () => {
+    // enter_qa has to be genuinely enabled first, or its policy short-circuits
+    // on an earlier reason and never reaches the probe being made to explode.
+    seedReviewWithOpenP0();
+    db.delete(findings).where(eq(findings.id, "FND-ACTION-CONTRACT-P0")).run();
+    seedApprovedTestPlanForQa();
+    settleTrustedReviewAuthority();
+    const healthy = computeActions(CHANGE_ID);
+    assert.equal(healthy.find((action) => action.actionId === "enter_qa")?.enabled, true);
+
+    const restore = setReviewQaGateHeadProbeForTest(() => {
+      throw new Error("injected probe explosion");
+    });
+    let actions: ReturnType<typeof computeActions>;
+    try {
+      actions = computeActions(CHANGE_ID);
+    } finally {
+      restore();
+    }
+
+    assert.equal(actions.length, healthy.length);
+    const enterQa = actions.find((action) => action.actionId === "enter_qa");
+    assert.equal(enterQa?.enabled, false);
+    assert.equal(enterQa?.reasonCode, "action_policy_failed");
+    assert.match(String(enterQa?.reason), /injected probe explosion/);
+
+    // ...and nothing else moved. Same assertion the prior-blocking-findings
+    // regression above makes, for the same reason: "the contract survived" is
+    // worth little if the surviving contract quietly disabled everything.
+    const movedActionIds = actions
+      .filter((action) =>
+        healthy.find((before) => before.actionId === action.actionId)?.enabled !== action.enabled)
+      .map((action) => action.actionId);
+    assert.deepEqual(movedActionIds, ["enter_qa"]);
+  });
+
   it("closes init_git_repo and opens commit_changes once the tree carries uncommitted work", () => {
     initCleanGitRepo(repoPath);
     seedStageGate("Build", "passed", "build-source-hash");
