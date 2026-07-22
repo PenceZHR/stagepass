@@ -44,23 +44,6 @@ export interface ReviewCenterAttempt {
   findingCount: number;
 }
 
-export type ReviewCenterActionId =
-  | "run_review"
-  | "retry_review"
-  | "fix_blockers"
-  | "waive_review_p1"
-  | "enter_qa"
-  | "stop_change"
-  | "recompute_report"
-  | "rebuild_mirror";
-
-export interface ReviewCenterAction {
-  id: ReviewCenterActionId;
-  enabled: boolean;
-  reason: string | null;
-  idempotencyRequired: boolean;
-}
-
 export interface ReviewCenterCounts {
   p0: number;
   p1: number;
@@ -115,22 +98,15 @@ export interface ReviewCenterResponse {
     reason: string | null;
     artifactId: string | null;
   }>;
-  actions: {
-    run_review?: ReviewCenterAction;
-    retry_review?: ReviewCenterAction;
-    fix_blockers?: ReviewCenterAction;
-    waive_review_p1?: ReviewCenterAction;
-    enter_qa?: ReviewCenterAction;
-    stop_change?: ReviewCenterAction;
-    recompute_report?: ReviewCenterAction;
-    rebuild_mirror?: ReviewCenterAction;
-    canRunReview: boolean;
-    canRetryReview: boolean;
-    canFixBlockers: boolean;
-    canWaiveP1: boolean;
-    canEnterQa: boolean;
-    canStopChange: boolean;
-  };
+  // No `actions` block. The review center used to serve a second opinion on
+  // action enablement alongside the action contract, and the two had drifted:
+  // retry_review was vetoed at blocked_p0/blocked_p1, and stop_change was still
+  // the pre-fix `true` after the contract learned `no_active_run`. This type
+  // had drifted from the wire too -- it named `waive_review_p1`, a key the
+  // server never sent (it sent `waive_p1`), so that entry was permanently
+  // undefined. The action contract (`usePipelineActions`) is the only authority
+  // now; `qaAllowed` and `gate.canEnterQa` below remain the center's own, since
+  // the review gate is the thing the center actually computes.
   advancedDetails: {
     latestAttempt: ReviewAttemptAdvancedDetails | null;
     latestValidReview: ReviewAttemptAdvancedDetails | null;
@@ -231,15 +207,8 @@ function findingBadge(finding: ReviewFindingView) {
   return finding.status === "open" ? "待处理" : "已关闭";
 }
 
-function reviewCenterActionDisabledReason(action: ReviewCenterAction | undefined): string | null {
-  if (!action) return "Action contract unavailable.";
-  if (action.enabled) return null;
-  return action.reason ?? "Action is not available.";
-}
-
 export function resolveReviewRunCommand(input: {
   gate: ReviewCenterGateStatus;
-  centerActions?: ReviewCenterResponse["actions"] | null;
   pipelineActions?: PipelineActionContract[];
 }): {
   actionId: "run_review" | "retry_review";
@@ -248,14 +217,23 @@ export function resolveReviewRunCommand(input: {
   disabledReason: string | null;
 } {
   const actionId = input.gate === "not_started" ? "run_review" : "retry_review";
-  const centerReason = input.centerActions
-    ? reviewCenterActionDisabledReason(input.centerActions[actionId])
-    : null;
-  const runningReason = input.gate === "running" && !input.centerActions
-    ? "Review is still running."
-    : null;
+  // The review gate is the review center's own authority, and it carries the
+  // one fact the action contract does not: a Review that is still running must
+  // not be restarted out from under itself.
+  //
+  // Whether this change may retry *at all* is the action contract's call and
+  // only the action contract's. The review center used to answer that question
+  // too, from a private copy of the rule, and the two copies had drifted: the
+  // center's list (failed / invalid_output / data_inconsistent / stale) left
+  // out blocked_p0 and blocked_p1, so it vetoed the retry at exactly the states
+  // that need it -- Review found a P0, and the button to re-run Review was
+  // dead -- while the contract (whose requiredStatus list for retry_review
+  // covers the post-failure change statuses) and the enqueue authority both
+  // accepted the POST. The copy is gone; this resolver now reads the contract
+  // and the gate, nothing else.
+  const runningReason = input.gate === "running" ? "Review is still running." : null;
   const pipelineReason = pipelineActionDisabledReason(findPipelineAction(input.pipelineActions, actionId));
-  const disabledReason = centerReason ?? runningReason ?? pipelineReason;
+  const disabledReason = runningReason ?? pipelineReason;
   return {
     actionId,
     label: actionId === "run_review" ? "开始反方审查" : "重新审查",
@@ -490,9 +468,8 @@ export function ReviewReportCenter({
   const actionBusy = busy || loading || waiving;
   const runReviewCommand = useMemo(() => resolveReviewRunCommand({
     gate,
-    centerActions: state?.actions,
     pipelineActions: actions,
-  }), [gate, state?.actions, actions]);
+  }), [gate, actions]);
   const waiveAction = findPipelineAction(actions, "waive_review_p1");
   const fixAction = findPipelineAction(actions, "fix_blockers");
   const enterQaAction = findPipelineAction(actions, "enter_qa");

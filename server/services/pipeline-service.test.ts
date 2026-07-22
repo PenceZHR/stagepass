@@ -7258,8 +7258,36 @@ describe("pipeline-service v2 stages", () => {
     assert.match(attempt?.sanitizedErrorSummary ?? "", /Review provider timed out or was aborted after 42 ms/);
     assert.ok(attempt?.rawOutputArtifactId);
 
-    const reviewCenter = getReviewCenterState(CHANGE_ID);
-    assert.equal(reviewCenter.actions.retry_review.enabled, true);
+    // Was: assert.equal(getReviewCenterState(CHANGE_ID).actions.retry_review.enabled, true).
+    // "Retry stays available" is the point of this test, but the review center
+    // is no longer where that question is answered -- it used to publish its
+    // own copy of the rule, and that copy never consulted pipeline_jobs at all,
+    // which is why it answered `true` here regardless. Asserting against the
+    // action contract is strictly stronger: it is the same evaluation the write
+    // path enforces through assertRequestActionAllowed, so this pins that the
+    // button and the POST agree.
+    //
+    // makeTestJobExecutionContext inserts a pipeline_jobs row as `running` to
+    // stand in for the worker's lease, and calling runReview directly skips the
+    // worker's settlement, so the row is still `running` here. A real worker
+    // settles the job before any contract is served. Settle it the same way,
+    // otherwise this assertion only proves that an unsettled lease blocks
+    // retry -- which is true, and not what this test is about.
+    db.update(pipelineJobs)
+      .set({ status: "failed", endedAt: "2026-07-10T10:00:01.000Z" })
+      .where(and(
+        eq(pipelineJobs.changeId, CHANGE_ID),
+        eq(pipelineJobs.phase, "review"),
+        inArray(pipelineJobs.status, ["queued", "leased", "running"]),
+      ))
+      .run();
+
+    const retryReview = computeActions(CHANGE_ID).find((action) => action.actionId === "retry_review");
+    assert.equal(
+      retryReview?.enabled,
+      true,
+      `retry_review disabled after provider timeout: ${retryReview?.reasonCode} / ${retryReview?.reason}`,
+    );
   });
 
   it("records raw output artifact for successful Review", async () => {

@@ -56,14 +56,6 @@ function reviewCenter(gateStatus: ReviewCenterGateStatus): ReviewCenterResponse 
     findings: [],
     waivers: [],
     mirrorWarnings: [],
-    actions: {
-      canRunReview: true,
-      canRetryReview: false,
-      canFixBlockers: gateStatus === "blocked_p0" || gateStatus === "blocked_p1",
-      canWaiveP1: gateStatus === "blocked_p1",
-      canEnterQa: gateStatus === "passed",
-      canStopChange: true,
-    },
     advancedDetails: {
       latestAttempt: null,
       latestValidReview: null,

@@ -14,6 +14,7 @@ import {
   reviewState,
   runs,
 } from "../db/schema";
+import { latestApprovedBuildRecord as selectLatestApprovedBuildRecord } from "./build-record-identity";
 import type { FindingSeverity, FindingStatus, RunStatus } from "../types/enums";
 import {
   compareRunsDesc,
@@ -101,40 +102,6 @@ export interface ReviewCenterGate {
   latestBuildRunId: string | null;
 }
 
-export interface ReviewCenterActions {
-  run_review: ReviewCenterAction;
-  retry_review: ReviewCenterAction;
-  fix_blockers: ReviewCenterAction;
-  waive_p1: ReviewCenterAction;
-  enter_qa: ReviewCenterAction;
-  stop_change: ReviewCenterAction;
-  recompute_report: ReviewCenterAction;
-  rebuild_mirror: ReviewCenterAction;
-  canRunReview: boolean;
-  canRetryReview: boolean;
-  canFixBlockers: boolean;
-  canWaiveP1: boolean;
-  canEnterQa: boolean;
-  canStopChange: boolean;
-}
-
-export type ReviewCenterActionId =
-  | "run_review"
-  | "retry_review"
-  | "fix_blockers"
-  | "waive_p1"
-  | "enter_qa"
-  | "stop_change"
-  | "recompute_report"
-  | "rebuild_mirror";
-
-export interface ReviewCenterAction {
-  id: ReviewCenterActionId;
-  enabled: boolean;
-  reason: string | null;
-  idempotencyRequired: boolean;
-}
-
 export interface ReviewCenterWaiver {
   findingId: string;
   title: string;
@@ -194,7 +161,15 @@ export interface ReviewCenterState {
   findings: ReviewFindingView[];
   waivers: ReviewCenterWaiver[];
   mirrorWarnings: ReviewCenterMirrorWarning[];
-  actions: ReviewCenterActions;
+  // No `actions`. Action enablement belongs to the action contract
+  // (`computeActions`), which is also what the write path enforces via
+  // `assertRequestActionAllowed`. This service used to publish a second,
+  // independently written answer for the same eight actions, and it had
+  // drifted: `retry_review` was refused at blocked_p0/blocked_p1 (the states
+  // that most need it) and `canStopChange` was still a bare `true` after the
+  // contract learned `no_active_run`. Only two of the eight ever reached a
+  // button, so the rest were drift waiting to be wired up. `qaAllowed` and
+  // `gate` stay here: the review gate is what this service actually computes.
   advancedDetails: ReviewCenterAdvancedDetails;
 }
 
@@ -298,21 +273,10 @@ function latestValidReviewRun(changeId: string, reviewRuns: ReturnType<typeof re
 
 function latestApprovedBuildRunId(changeId: string): string | null {
   const db = getReviewCenterDb();
-  const records = db
-    .select()
-    .from(buildRunRecords)
-    .where(eq(buildRunRecords.changeId, changeId))
-    .all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted");
-  records.sort((left, right) => {
-    const adopted = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-    if (adopted !== 0) return adopted;
-    const updated = right.updatedAt.localeCompare(left.updatedAt);
-    if (updated !== 0) return updated;
-    return right.id.localeCompare(left.id);
-  });
-  const latest = records[0] ?? null;
-  return latest ? latest.buildRunId ?? latest.id : null;
+  const records = selectLatestApprovedBuildRecord(
+    db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all(),
+  );
+  return records ? records.buildRunId ?? records.id : null;
 }
 
 function isOpenBlocker(finding: { severity: string; status: string }): boolean {
@@ -491,71 +455,6 @@ function gateFor(input: {
   }
 
   return { ...base, status: "passed", canEnterQa: true, reason: null };
-}
-
-function action(
-  id: ReviewCenterActionId,
-  enabled: boolean,
-  reason: string | null,
-  idempotencyRequired: boolean,
-): ReviewCenterAction {
-  return {
-    id,
-    enabled,
-    reason: enabled ? null : reason,
-    idempotencyRequired,
-  };
-}
-
-function actionsFor(input: {
-  gate: ReviewCenterGate;
-  latestAttempt: ReviewCenterAttempt | null;
-  latestAttemptRow: typeof reviewAttempts.$inferSelect | null;
-  latestValidReport: typeof reviewReports.$inferSelect | null;
-  latestBuildRunId: string | null;
-}): ReviewCenterActions {
-  const { gate, latestAttempt, latestAttemptRow, latestValidReport, latestBuildRunId } = input;
-  const running = latestAttempt?.reviewStatus === "running";
-  const hasApprovedBuild = Boolean(latestBuildRunId);
-  const buildRequiredReason = "Review requires an approved Build run before starting.";
-  const canRunReview = !running && hasApprovedBuild;
-  const canRetryReview =
-    !running &&
-    hasApprovedBuild &&
-    ["failed", "invalid_output", "data_inconsistent", "stale"].includes(gate.status);
-  const canFixBlockers = gate.status === "blocked_p0" || gate.status === "blocked_p1";
-  const canWaiveP1 = gate.status === "blocked_p1";
-  const canEnterQa = gate.canEnterQa;
-  const canStopChange = true;
-  const canRecomputeReport = Boolean(latestAttemptRow) && !running;
-  const canRebuildMirror = Boolean(latestValidReport) && !running;
-
-  return {
-    run_review: action(
-      "run_review",
-      canRunReview,
-      running ? "Review is already running." : buildRequiredReason,
-      true,
-    ),
-    retry_review: action(
-      "retry_review",
-      canRetryReview,
-      !hasApprovedBuild ? buildRequiredReason : "Retry is only available for failed or stale Review state.",
-      true,
-    ),
-    fix_blockers: action("fix_blockers", canFixBlockers, "No open P0/P1 blockers need a fix command.", false),
-    waive_p1: action("waive_p1", canWaiveP1, "P1 waiver is only available when open P1 findings block QA.", false),
-    enter_qa: action("enter_qa", canEnterQa, gate.reason ?? "Review gate does not allow QA.", false),
-    stop_change: action("stop_change", canStopChange, null, false),
-    recompute_report: action("recompute_report", canRecomputeReport, "No Review attempt is available to recompute.", true),
-    rebuild_mirror: action("rebuild_mirror", canRebuildMirror, "No latest valid Review report is available to rebuild.", true),
-    canRunReview,
-    canRetryReview,
-    canFixBlockers,
-    canWaiveP1,
-    canEnterQa,
-    canStopChange,
-  };
 }
 
 function latestDbAttempt(changeId: string) {
@@ -981,13 +880,6 @@ export function getReviewCenterState(changeId: string): ReviewCenterState {
     findings: findingViews,
     waivers,
     mirrorWarnings: mirrorWarningsForReport(latestValidReport?.id ?? null),
-    actions: actionsFor({
-      gate: authoritativeGate,
-      latestAttempt,
-      latestAttemptRow,
-      latestValidReport,
-      latestBuildRunId,
-    }),
     advancedDetails,
   };
 }
