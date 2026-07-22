@@ -435,6 +435,46 @@ describe("merge-readiness-service", () => {
     assert.equal(healedGates.some((gate) => gate.phase === "Review" && gate.status === "passed"), true);
   });
 
+  it("does not self-heal a passed Review gate when an approved_for_absorb build moved off the reviewed commit", () => {
+    // The writer stamps a review report's sourceHeadSha via
+    // buildRecordSourceHead, which for an approved_for_absorb record resolves
+    // to baseCommit: adoptedHeadSha and headSha are only filled in at adoption
+    // and are both NULL until then. The self-heal read that head back as
+    // `headSha ?? adoptedHeadSha` -- no approved_for_absorb branch, and no
+    // baseCommit fallback either -- so it got NULL, the `latestBuildHead && ...`
+    // guard short-circuited, and it wrote a *passed* Review gate having never
+    // compared the two commits at all.
+    seedHappyPath(repoPath);
+    db.update(buildRunRecords)
+      .set({
+        status: "approved_for_absorb",
+        headSha: null,
+        adoptedHeadSha: null,
+        adoptionDecisionId: null,
+        adoptedAt: null,
+        baseHeadSha: STALE_HEAD,
+        baseCommit: STALE_HEAD,
+      })
+      .where(eq(buildRunRecords.changeId, CHANGE_ID))
+      .run();
+    db.delete(stageGates)
+      .where(and(eq(stageGates.changeId, CHANGE_ID), eq(stageGates.phase, "Review")))
+      .run();
+
+    computeMergeReadiness(CHANGE_ID);
+
+    const reviewGates = db
+      .select()
+      .from(stageGates)
+      .where(and(eq(stageGates.changeId, CHANGE_ID), eq(stageGates.phase, "Review")))
+      .all();
+    assert.equal(
+      reviewGates.some((gate) => gate.status === "passed"),
+      false,
+      "self-heal must not pass a Review gate for a build that is not on the reviewed commit",
+    );
+  });
+
   it("returns an approve_merge contract whose preflight passes after first-render Merge gate creation", () => {
     seedHappyPath(repoPath);
     db.delete(mergeApprovals).where(eq(mergeApprovals.changeId, CHANGE_ID)).run();

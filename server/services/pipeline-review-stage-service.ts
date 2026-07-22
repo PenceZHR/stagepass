@@ -23,6 +23,10 @@ import {
   withExecutionFence,
 } from "./execution-fence-service";
 import { assemblePrompt } from "./prompt-service";
+import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
+} from "./build-record-identity";
 import { syncRubricFindings } from "./rubric-gate-adapters";
 import { stripRubricLines } from "./rubric-line-protocol";
 import {
@@ -128,23 +132,9 @@ function normalizedProviderThreadId(value: unknown): string | undefined {
 // --- Review build-source resolution ---
 
 function latestApprovedBuildRecord(changeId: string): BuildRunRecord | null {
-  const records = db
-    .select()
-    .from(buildRunRecords)
-    .where(eq(buildRunRecords.changeId, changeId))
-    .all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted")
-    .sort((left, right) => {
-      const byTime = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-      if (byTime !== 0) return byTime;
-      return right.id.localeCompare(left.id);
-    });
-  return records[0] ?? null;
-}
-
-function buildRecordSourceHead(record: BuildRunRecord): string | null {
-  if (record.status === "approved_for_absorb") return record.baseCommit ?? record.baseHeadSha ?? null;
-  return record.adoptedHeadSha ?? record.headSha ?? record.baseCommit ?? null;
+  return selectLatestApprovedBuildRecord(
+    db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all(),
+  );
 }
 
 function resolveReviewBuildSource(repoPath: string, changeId: string): {

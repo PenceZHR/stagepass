@@ -14,6 +14,10 @@ import {
   reviewState,
 } from "../db/schema";
 import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
+} from "./build-record-identity";
+import {
   InvalidPriorBlockingSnapshotError,
   settlementFindingsForReviewAttempt,
 } from "./review-report-service";
@@ -139,20 +143,10 @@ function probeGitHead(repoPath: string): string | null {
 }
 
 function latestApprovedBuild(db: ReviewQaGateDb, changeId: string): BuildRunRecord | null {
-  const records = db
-    .select()
-    .from(buildRunRecords)
-    .where(eq(buildRunRecords.changeId, changeId))
-    .all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted");
-  records.sort((left, right) => {
-    const adopted = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-    if (adopted !== 0) return adopted;
-    const updated = right.updatedAt.localeCompare(left.updatedAt);
-    if (updated !== 0) return updated;
-    return right.id.localeCompare(left.id);
-  });
-  return records[0] ?? null;
+  const records = selectLatestApprovedBuildRecord(
+    db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all(),
+  );
+  return records;
 }
 
 function buildIdentity(record: BuildRunRecord | null): string | null {
@@ -336,9 +330,7 @@ export function assertCanEnterQa(input: AssertCanEnterQaInput): ReviewQaGateResu
   if (!latestBuild || !latestBuildRunId || latestBuildRunId !== report.sourceBuildRunId) {
     deny("source_build_stale", "Review source build is stale", result);
   }
-  const latestBuildHead = latestBuild.status === "approved_for_absorb"
-    ? latestBuild.baseCommit ?? latestBuild.baseHeadSha ?? null
-    : latestBuild.headSha ?? latestBuild.adoptedHeadSha ?? latestBuild.baseCommit ?? null;
+  const latestBuildHead = buildRecordSourceHead(latestBuild);
   if (latestBuildHead && report.sourceHeadSha && latestBuildHead !== report.sourceHeadSha) {
     deny("source_build_stale", "Review source build HEAD is stale", result);
   }

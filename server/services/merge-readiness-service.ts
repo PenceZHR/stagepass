@@ -21,6 +21,10 @@ import {
 import { recomputeStageGate, type PipelinePhase } from "./stage-authority-service";
 import { hasUncommittedChanges } from "./git-service";
 import { assertTrustedAdoptedBuildState } from "./build-workspace-service";
+import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord,
+} from "./build-record-identity";
 
 const GIT_COMMAND_TIMEOUT_MS = 30_000;
 
@@ -198,11 +202,7 @@ function latestApprovedBuild(db: MergeReadinessDb, changeId: string): BuildRunRe
     .from(buildRunRecords)
     .where(eq(buildRunRecords.changeId, changeId))
     .all();
-  return latestByTime(
-    rows.filter((row) => row.status === "approved_for_absorb" || row.status === "adopted"),
-    (row) => row.adoptedAt ?? row.updatedAt,
-    (left, right) => right.id.localeCompare(left.id)
-  );
+  return latestApprovedBuildRecord(rows);
 }
 
 function latestQaRun(db: MergeReadinessDb, changeId: string): QaRunRecord | null {
@@ -254,7 +254,7 @@ function selfHealMissingBuildGate(
     freshness: {
       fresh: true,
       sourceBuildRunId: buildIdentity(build),
-      sourceHeadSha: build.adoptedHeadSha ?? build.headSha,
+      sourceHeadSha: buildSourceHead(build),
       recoveredFrom: "merge_readiness_missing_gate",
     },
     requiredActions: [],
@@ -285,7 +285,13 @@ function selfHealMissingReviewGate(
   }
   const latestBuildId = buildIdentity(build);
   if (!latestBuildId || report.sourceBuildRunId !== latestBuildId) return gate;
-  const latestBuildHead = build?.headSha ?? build?.adoptedHeadSha ?? null;
+  // buildSourceHead, not `headSha ?? adoptedHeadSha`: on an approved_for_absorb
+  // record both of those columns are NULL until absorb, so the old spelling
+  // resolved to null, the guard below short-circuited on its first operand, and
+  // this function wrote a *passed* Review gate without ever comparing the
+  // reviewed commit to the build's. It is the same rule the Review writer uses
+  // to stamp report.sourceHeadSha, so it has to be the same function.
+  const latestBuildHead = buildSourceHead(build);
   if (latestBuildHead && report.sourceHeadSha && report.sourceHeadSha !== latestBuildHead) return gate;
 
   return recomputeStageGate({
@@ -422,8 +428,7 @@ function buildBlockers(build: BuildRunRecord | null): MergeReadinessBlocker[] {
 
 function buildSourceHead(build: BuildRunRecord | null): string | null {
   if (!build) return null;
-  if (build.status === "approved_for_absorb") return build.baseCommit ?? build.baseHeadSha ?? null;
-  return build.adoptedHeadSha ?? build.headSha ?? build.baseCommit ?? null;
+  return buildRecordSourceHead(build);
 }
 
 function gitWorktreeDirty(repoPath: string): boolean {

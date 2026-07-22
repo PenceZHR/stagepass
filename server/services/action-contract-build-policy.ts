@@ -11,24 +11,15 @@ import {
   buildRetryStartDecisionFromInspection,
   inspectStaleBuildRun,
 } from "./build-stale-run-recovery-service";
+import { latestApprovedBuildRecord as selectLatestApprovedBuildRecord } from "./build-record-identity";
 
 export function latestApprovedBuildRecord(
   db: ActionContractDb,
   changeId: string,
 ): typeof buildRunRecords.$inferSelect | null {
-  const records = db
-    .select()
-    .from(buildRunRecords)
-    .where(eq(buildRunRecords.changeId, changeId))
-    .all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted");
-  return records.sort((left, right) => {
-    const byAdoptedAt = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-    if (byAdoptedAt !== 0) return byAdoptedAt;
-    const byUpdatedAt = (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "");
-    if (byUpdatedAt !== 0) return byUpdatedAt;
-    return right.id.localeCompare(left.id);
-  })[0] ?? null;
+  return selectLatestApprovedBuildRecord(
+    db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all(),
+  );
 }
 
 export function reviewBuildSourceHash(record: typeof buildRunRecords.$inferSelect): string | null {

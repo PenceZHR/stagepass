@@ -2,6 +2,11 @@ import path from "node:path";
 
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 
+import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
+} from "./build-record-identity";
+
 import type { db } from "../db";
 import {
   apiSnapshots,
@@ -522,16 +527,21 @@ export function businessEvidenceForCompletedProvider(
       || report.findingsDbHash !== findingsDbHash || report.reportDbHash !== reportDbHash) {
       missingEvidence.push("review_report_commit");
     }
-    const latestBuild = evidenceDb.select().from(buildRunRecords).where(and(
-      eq(buildRunRecords.changeId, run.changeId),
-      inArray(buildRunRecords.status, ["approved_for_absorb", "adopted"]),
-    )).orderBy(
-      desc(buildRunRecords.adoptedAt), desc(buildRunRecords.updatedAt), desc(buildRunRecords.id),
-    ).limit(1).get() ?? null;
+    // Ordered in JavaScript rather than SQL, and by the same function the other
+    // readers use. adopted_at is NULL on every approved_for_absorb row by
+    // construction, and SQLite sorts NULL *last* under DESC, so the previous
+    // `ORDER BY adopted_at DESC, updated_at DESC, id DESC` put every
+    // approved-but-not-yet-absorbed build behind every adopted one no matter how
+    // much newer it was. The JavaScript readers coalesce adopted_at to
+    // updated_at, so with one build absorbed and the next awaiting absorb -- an
+    // ordinary Fix state, not an edge case -- SQL and JS selected different rows
+    // and this snapshot reported a healthy Review as missing its
+    // review_gate_commit evidence.
+    const latestBuild = selectLatestApprovedBuildRecord(
+      evidenceDb.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, run.changeId)).all(),
+    );
     const latestBuildId = latestBuild?.buildRunId ?? latestBuild?.id ?? null;
-    const latestBuildHead = latestBuild?.status === "approved_for_absorb"
-      ? latestBuild.baseCommit ?? latestBuild.baseHeadSha
-      : latestBuild?.headSha ?? latestBuild?.adoptedHeadSha ?? latestBuild?.baseCommit ?? null;
+    const latestBuildHead = latestBuild ? buildRecordSourceHead(latestBuild) : null;
     if (!state || state.latestAttemptId !== attempt?.id || state.latestValidReviewReportId !== report?.id
       || state.reportDbHash !== report?.reportDbHash || state.gateStatus !== report?.gateStatus
       || report?.sourceBuildRunId !== attempt?.sourceBuildRunId || report?.sourceBuildRunId !== latestBuildId

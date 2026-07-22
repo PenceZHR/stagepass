@@ -16,6 +16,7 @@ import { normalizeSeverity } from "./action-contract-common-policy";
 import type { ActionContractDb, ActionDecision, Blocker } from "./action-contract-types";
 import { latestApprovedBuildRecord } from "./action-contract-build-policy";
 import { assertBuildRecordFresh } from "./build-run-record-service";
+import { buildRecordSourceHead } from "./build-record-identity";
 import {
   computeReviewFindingsDbHash,
   computeReviewReportDbHash,
@@ -169,7 +170,7 @@ export function trustedLatestReviewReportSource(
       id: latestBuild.id,
       buildRunId: latestBuild.buildRunId,
       status: latestBuild.status,
-      headSha: latestBuild.headSha ?? latestBuild.adoptedHeadSha ?? latestBuild.baseCommit,
+      headSha: buildRecordSourceHead(latestBuild),
       baseCommit: latestBuild.baseCommit,
       adoptedAt: latestBuild.adoptedAt,
     },
