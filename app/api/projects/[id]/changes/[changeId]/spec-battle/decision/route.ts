@@ -4,9 +4,11 @@ import {
   SpecBattleError,
   type SpecBattleDecisionInput,
 } from "@/server/services/spec-battle-service";
+import { changeTerminalRefusal } from "@/server/services/action-contract-decision-router";
 import { requireProjectChange } from "../../route-guard";
 import {
   actionPreflightErrorResponse,
+  assertRequestActionAllowed,
   assertRequestProviderNotApplicable,
 } from "../../action-preflight";
 
@@ -32,6 +34,34 @@ export async function POST(
         },
         { status: 422 },
       );
+    }
+    // One route, three actions, and until now no contract check on any of them:
+    // it imported the preflight *error handler* but never the gate, so a POST
+    // went straight into applySpecBattleDecision. Measured against a copy of the
+    // shipped database: a return_to_spec on a DONE change reached the service
+    // and failed with a business error (round_not_ready), while /block answered
+    // 409 change_terminal for the same change.
+    //
+    // waive_p1 has a real contract action (waive_spec_p1, which
+    // pipeline-action-commands already documents as living at this endpoint), so
+    // it gets the full gate -- gate version, source hash and idempotency
+    // included. The other two have no ACTION_DEFINITIONS entry, so the most this
+    // can honour is the terminal rule, read from the same set the contract uses.
+    if (payload.action === "waive_p1") {
+      await assertRequestActionAllowed({
+        changeId,
+        actionId: "waive_spec_p1",
+        payload: payload as Record<string, unknown>,
+        request,
+      });
+    } else {
+      const terminal = changeTerminalRefusal(guard.change.status, "spec_battle_decision");
+      if (terminal) {
+        return NextResponse.json(
+          { error: terminal.reason, reasonCode: terminal.reasonCode },
+          { status: 409 },
+        );
+      }
     }
     await applySpecBattleDecision({
       changeId,

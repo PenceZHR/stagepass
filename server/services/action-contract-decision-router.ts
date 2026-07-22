@@ -303,7 +303,37 @@ const ACTIONS_REFUSED_ON_TERMINAL_CHANGE: ReadonlySet<string> = new Set([
   "commit_changes",
   "waive_spec_p1",
   "waive_plan_p1",
+  // The two operations below have no ACTION_DEFINITIONS entry, so they never
+  // pass through decideAction at all -- their routes call the service directly.
+  // They are listed here anyway so this set stays the one statement of "what a
+  // finished change refuses", and `changeTerminalRefusal` lets those routes read
+  // it. Measured against a copy of the shipped database: POSTing /rework to a
+  // DONE change reached reworkChange and died on "FOREIGN KEY constraint
+  // failed", while /block -- same change, same instant -- correctly answered 409
+  // change_terminal. The only thing standing between a terminal change and an
+  // unauthorized rework was an unrelated FK bug.
+  "rework",
+  "spec_battle_decision",
 ]);
+
+/**
+ * Why a finished change refuses an operation, or null if it does not.
+ *
+ * Exported so the routes that bypass the action contract entirely can still
+ * honour the same rule from the same set, rather than growing a second copy of
+ * it. `decideAction` below is the other caller.
+ */
+export function changeTerminalRefusal(
+  changeStatus: string,
+  actionId: string,
+): { reasonCode: string; reason: string } | null {
+  if (!TERMINAL_CHANGE_STATUSES.has(changeStatus)) return null;
+  if (!ACTIONS_REFUSED_ON_TERMINAL_CHANGE.has(actionId)) return null;
+  return {
+    reasonCode: "change_terminal",
+    reason: `Change is ${changeStatus} and cannot be advanced further`,
+  };
+}
 
 export function decideAction(
   db: ActionContractDb,
@@ -317,16 +347,9 @@ export function decideAction(
 ): ActionDecision {
   // Ahead of every policy: this is a fact about the change, not about any one
   // stage, and no per-stage policy is positioned to notice it.
-  if (
-    TERMINAL_CHANGE_STATUSES.has(changeStatus)
-    && ACTIONS_REFUSED_ON_TERMINAL_CHANGE.has(definition.actionId)
-  ) {
-    return {
-      enabled: false,
-      reasonCode: "change_terminal",
-      reason: `Change is ${changeStatus} and cannot be advanced further`,
-      blockers: [],
-    };
+  const terminalRefusal = changeTerminalRefusal(changeStatus, definition.actionId);
+  if (terminalRefusal) {
+    return { enabled: false, ...terminalRefusal, blockers: [] };
   }
 
   const legacyOnly = legacyOnlyDecision(db, changeId, snapshot);
