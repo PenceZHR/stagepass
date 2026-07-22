@@ -51,7 +51,13 @@ export function parseBriefingQuestionsLineProtocol(
   const questions: BriefingQuestionsOutput["questions"] = [];
   const errors: string[] = [];
 
-  for (const { lineNo, rest } of scanProtocolLines(rawText, ["QUESTION"])) {
+  let noNewQuestions = false;
+  for (const { lineNo, keyword, rest } of scanProtocolLines(rawText, ["QUESTION", "NO_NEW_QUESTIONS"])) {
+    if (keyword === "NO_NEW_QUESTIONS") {
+      if (rest === "true") noNewQuestions = true;
+      else errors.push(`line ${lineNo}: NO_NEW_QUESTIONS must be true, got "${rest}"`);
+      continue;
+    }
     const fields = splitFields(rest);
     if (fields.length !== QUESTION_FIELDS) {
       errors.push(
@@ -91,11 +97,18 @@ export function parseBriefingQuestionsLineProtocol(
     });
   }
 
-  // A prose-only reply parses to zero questions, which would settle the stage
-  // with an empty question set that lockPrdBriefing() can never lock. Requiring
-  // one line makes "protocol ignored" a loud, retryable failure instead.
-  if (questions.length === 0) {
-    errors.push("expected at least 1 QUESTION line");
+  // Three-state, not "at least one".
+  //
+  // A reply truncated just before its first QUESTION line and a reply that
+  // genuinely has nothing left to ask are indistinguishable on "zero QUESTION
+  // lines" alone. Requiring an explicit marker makes truncation a loud failure
+  // instead of a silently swallowed round. Same reasoning as PRD_DONE in
+  // prd-line-protocol.ts:328.
+  if (questions.length === 0 && !noNewQuestions) {
+    errors.push("expected at least 1 QUESTION line, or NO_NEW_QUESTIONS: true to declare convergence");
+  }
+  if (questions.length > 0 && noNewQuestions) {
+    errors.push("NO_NEW_QUESTIONS: true cannot appear alongside QUESTION lines");
   }
 
   if (errors.length > 0) {
@@ -109,6 +122,7 @@ export function parseBriefingQuestionsLineProtocol(
       changeId: ctx.changeId,
       phase: PRD_PHASE,
       questions,
+      ...(noNewQuestions ? { noNewQuestions: true } : {}),
     },
   };
 }

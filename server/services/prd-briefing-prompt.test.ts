@@ -96,5 +96,10 @@ describe("PRD briefing prompt templates", () => {
     assert.doesNotMatch(content, /Spec 阶段高概率返工/);
     assert.doesNotMatch(content, /继续深挖/);
     assert.doesNotMatch(content, /最多输出 7 张/);
+
+    // 收敛出口：允许显式声明「没有新的方向性疑点」，不再靠「至少 1 行 QUESTION」逼模型凑数。
+    assert.match(content, /NO_NEW_QUESTIONS: true/);
+    assert.match(content, /无话可问是正当结论/);
+    assert.doesNotMatch(content, /- 至少输出 1 行 QUESTION。/);
   });
 });

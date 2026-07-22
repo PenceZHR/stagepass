@@ -54,7 +54,9 @@ QUESTION: goal | critical | 这次改动要解决谁的什么问题？ | 目标�
 QUESTION: scope | important | 是否包含历史数据迁移？ | 影响 Spec 的工作量与风险 | -
 
 硬性规则（违反会被系统整体驳回并要求重试）：
-- 至少输出 1 行 QUESTION。
+- 若你发现了新的方向性疑点：输出 1～10 行 QUESTION，不要输出 NO_NEW_QUESTIONS。
+- 若确实没有新的方向性疑点：只输出一行 `NO_NEW_QUESTIONS: true`，不要输出任何 QUESTION。
+  无话可问是正当结论，不要为了凑数而降低粒度去问实现细节。
 - 每行严格 5 个字段，且 question / whyItMatters / suggestedDefault 文本内不得出现 `|`。
 - question 与 whyItMatters 不得为空。
 - `critical` 只用于不回答，PRD 方向可能整个错、人类无法裁决的问题。

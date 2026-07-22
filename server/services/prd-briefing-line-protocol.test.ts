@@ -139,6 +139,42 @@ describe("parseBriefingQuestionsLineProtocol", () => {
     if (result.ok) return;
     assert.match(result.message, /needs exactly 5 "\|" fields/);
   });
+
+  it("accepts a converged round: zero questions with the explicit marker", () => {
+    const result = parseQuestions("本轮没有发现新的方向性疑点。\nNO_NEW_QUESTIONS: true");
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.payload.noNewQuestions, true);
+    assert.deepEqual(result.payload.questions, []);
+  });
+
+  it("rejects zero questions without the marker — that is truncation, not convergence", () => {
+    const result = parseQuestions("我来看看这个改动的需求。");
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.message, /NO_NEW_QUESTIONS/);
+  });
+
+  it("rejects the marker alongside questions — self-contradictory", () => {
+    const result = parseQuestions(`${HAPPY_QUESTIONS}\nNO_NEW_QUESTIONS: true`);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.message, /NO_NEW_QUESTIONS/);
+  });
+
+  it("rejects a malformed marker value", () => {
+    const result = parseQuestions("NO_NEW_QUESTIONS: yes");
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.message, /NO_NEW_QUESTIONS/);
+  });
+
+  it("leaves a normal round's noNewQuestions falsy", () => {
+    const result = parseQuestions(HAPPY_QUESTIONS);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(!result.payload.noNewQuestions);
+  });
 });
 
 // --- draft ---

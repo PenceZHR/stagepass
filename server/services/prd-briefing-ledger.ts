@@ -51,6 +51,9 @@ export const BriefingQuestionsOutputSchema = z
     changeId: z.string().optional(),
     phase: z.string().optional(),
     questions: z.array(BriefingQuestionInputSchema),
+    // Set only when the model explicitly declared it has nothing left to ask.
+    // Absent on a normal round. The service layer refuses this on round 1.
+    noNewQuestions: z.boolean().optional(),
   })
   .strict();
 

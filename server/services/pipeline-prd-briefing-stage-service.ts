@@ -184,6 +184,7 @@ export function questionOutputSchema(): Record<string, unknown> {
           required: ["category", "severity", "question", "whyItMatters", "suggestedDefault"],
         },
       },
+      noNewQuestions: { type: "boolean" },
     },
     required: ["unit", "changeId", "phase", "questions"],
   };
