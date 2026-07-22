@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
+
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { commitWithMessage } from "./git-service.ts";
+import {
+  commitWithMessage,
+  getDiffSummary,
+  getPorcelainStatus,
+  getWorkingTreeStatus,
+} from "./git-service.ts";
 
 describe("git-service", () => {
   let repoPath: string;
@@ -99,6 +105,55 @@ describe("git-service", () => {
     const status = execSync("git status --porcelain", { cwd: repoPath, encoding: "utf-8" });
     assert.equal(after, before);
     assert.match(status, /app\.txt/);
+  });
+
+  // execSync defaults maxBuffer to 1 MiB and throws ENOBUFS the moment a
+  // command overruns it. Every read-only git query below is unbounded in
+  // principle -- a big working tree is a normal state, not an error -- so the
+  // service must size its own buffer rather than inherit the default.
+  describe("output larger than the 1 MiB execSync default buffer", () => {
+    function writeLargeFile(name: string, lineCount: number) {
+      const lines: string[] = [];
+      for (let i = 0; i < lineCount; i++) {
+        lines.push(`line ${i} ${"x".repeat(40)}`);
+      }
+      fs.writeFileSync(path.join(repoPath, name), lines.join("\n") + "\n");
+    }
+
+    it("summarizes a diff over 2 MiB without throwing ENOBUFS", () => {
+      writeLargeFile("app.txt", 40_000);
+
+      const summary = getDiffSummary(repoPath);
+
+      assert.match(summary, /app\.txt/);
+    });
+
+    it("reads a porcelain status over 1 MiB without throwing ENOBUFS", () => {
+      // Long names keep the file count low while still overrunning 1 MiB of
+      // porcelain output: each untracked entry costs "?? <path>\n".
+      const nameBody = "u".repeat(230);
+      const fileCount = 5_000;
+      for (let i = 0; i < fileCount; i++) {
+        fs.writeFileSync(path.join(repoPath, `${String(i).padStart(6, "0")}-${nameBody}.txt`), "x");
+      }
+
+      const entries = getPorcelainStatus(repoPath);
+
+      assert.equal(entries.length, fileCount);
+    });
+
+    it("reports working tree status over 1 MiB without throwing ENOBUFS", () => {
+      writeLargeFile("app.txt", 40_000);
+      const nameBody = "w".repeat(230);
+      for (let i = 0; i < 5_000; i++) {
+        fs.writeFileSync(path.join(repoPath, `${String(i).padStart(6, "0")}-${nameBody}.txt`), "x");
+      }
+
+      const status = getWorkingTreeStatus(repoPath);
+
+      assert.equal(status.clean, false);
+      assert.equal(status.unstaged.length, 5_001);
+    });
   });
 
   it("rejects selected paths that are not repo-relative", () => {

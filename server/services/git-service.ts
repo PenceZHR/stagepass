@@ -13,6 +13,15 @@ import { createChildLogger } from "../logger";
 
 const log = createChildLogger("git-service");
 const GIT_COMMAND_TIMEOUT_MS = 30_000;
+/**
+ * child_process defaults maxBuffer to 1 MiB and kills the command with ENOBUFS
+ * the moment it overruns. Every read-only query here is unbounded in principle
+ * -- `git status --porcelain` on a large working tree, `git diff` on a big
+ * change -- so a repository being big is a normal state that must not surface
+ * as a spawn failure. 20 MiB matches what getBinaryDiff already asked for
+ * explicitly, and is the single default both helpers below derive from.
+ */
+const GIT_COMMAND_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
 
 type ExecWithTimeoutOptions = (
   | ExecSyncOptions
@@ -30,6 +39,7 @@ function execWithTimeout(command: string, options: ExecWithTimeoutOptions = {}):
   return execSync(command, {
     ...options,
     timeout: options.timeout ?? GIT_COMMAND_TIMEOUT_MS,
+    maxBuffer: options.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
   } as ExecWithTimeoutOptions);
 }
 
@@ -41,6 +51,7 @@ function spawnWithTimeout(
   return spawnSync(command, args, {
     ...options,
     timeout: options.timeout ?? GIT_COMMAND_TIMEOUT_MS,
+    maxBuffer: options.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
   }) as SpawnSyncReturns<string>;
 }
 
