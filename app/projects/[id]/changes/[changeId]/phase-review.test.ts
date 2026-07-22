@@ -1651,6 +1651,17 @@ describe("phase review UI", () => {
     assert.match(stopSource, /Spec Battle terminated by human/);
     assert.match(src, /onStopBattle=\{handleStopSpecBattle\}/);
     assert.doesNotMatch(src, /onStopBattle=\{handleRejectGate\}/);
+
+    // block/route.ts gates on assertRequestActionAllowed, so a body without the
+    // preflight envelope is a guaranteed 422 -- this button could not stop a
+    // battle at all. Of the fifteen clients of routes that call
+    // assertRequestActionAllowed, this was the only one that hand-wrote its
+    // body; the 422 also masked the 400 stop_change produced with nothing to
+    // stop, because it fires first. Verified end to end: the same click that
+    // returned 422 now returns 200 and moves the change to BLOCKED.
+    assert.match(stopSource, /body: JSON\.stringify\(createPipelinePreflightPayload\(stopAction, \{/);
+    assert.match(stopSource, /findPipelineAction\(gateStatus\?\.actions, "stop_change"\)/);
+    assert.match(stopSource, /pipelineActionDisabledReason\(stopAction\)/);
   });
 
   it("accepts P1 risk through waive, report refresh, and fresh approve", () => {

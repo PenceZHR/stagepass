@@ -302,6 +302,19 @@ export default function ChangeDetailPage() {
   });
 
   const handleStopSpecBattle = useCallback(async () => {
+    // block/route.ts requires a preflight envelope (assertRequestActionAllowed).
+    // This body used to be hand-written as just {phase, reason}, so the route
+    // answered 422 every time and the button could not stop a battle at all --
+    // and because 422 fires before the handler runs, it also hid the 400 that
+    // stop_change produced with nothing to stop. Of the fifteen routes that
+    // call assertRequestActionAllowed this was the only client that hand-rolled
+    // its body; every other one goes through this helper.
+    const stopAction = findPipelineAction(gateStatus?.actions, "stop_change");
+    const disabledReason = pipelineActionDisabledReason(stopAction);
+    if (disabledReason) {
+      setGateError(disabledReason);
+      return;
+    }
     setGateBusy(true);
     setGateError("");
 
@@ -309,10 +322,10 @@ export default function ChangeDetailPage() {
       const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/block`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(createPipelinePreflightPayload(stopAction, {
           phase: "spec",
           reason: "Spec Battle terminated by human",
-        }),
+        })),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Spec Battle stop failed");
@@ -328,7 +341,7 @@ export default function ChangeDetailPage() {
       loadPlanSandboxState();
       loadTestPlanSandboxState();
     }
-  }, [projectId, changeId, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, setGateError, setPhaseOverviews]);
+  }, [projectId, changeId, gateStatus, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, setGateError, setPhaseOverviews]);
 
 
   const handleRegenerateSpecBattleReport = useCallback(async () => {

@@ -280,6 +280,31 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
   ["commit_changes", ({ changeId, repoPath }) => commitChangesDecision(repoPath, changeId)],
 ]);
 
+/**
+ * A change that has been delivered is finished. Nothing below may restart it.
+ *
+ * Measured on a copy of the shipped database: a change parked at DONE still
+ * offered seven actions with `enabled: true, reasonCode: null`, and `enter_qa`
+ * was not merely offered -- POSTing it answered **202** and queued a
+ * local_check job against the delivered change. The action contract is the only
+ * thing standing between the UI and that, because each policy answers about its
+ * own stage and none of them asks whether the change is still open at all.
+ *
+ * Deliberately not every action. Regenerating a report or rebuilding a mirror on
+ * a finished change is a legitimate read-back, and blanket-disabling would take
+ * away the only way to get those artifacts re-rendered. What is refused is
+ * anything that would move the change or start new work.
+ */
+const TERMINAL_CHANGE_STATUSES: ReadonlySet<string> = new Set(["DONE"]);
+
+const ACTIONS_REFUSED_ON_TERMINAL_CHANGE: ReadonlySet<string> = new Set([
+  "enter_qa",
+  "stop_change",
+  "commit_changes",
+  "waive_spec_p1",
+  "waive_plan_p1",
+]);
+
 export function decideAction(
   db: ActionContractDb,
   changeId: string,
@@ -290,6 +315,20 @@ export function decideAction(
   snapshot: StageAuthoritySnapshot,
   options: DecisionRouterOptions,
 ): ActionDecision {
+  // Ahead of every policy: this is a fact about the change, not about any one
+  // stage, and no per-stage policy is positioned to notice it.
+  if (
+    TERMINAL_CHANGE_STATUSES.has(changeStatus)
+    && ACTIONS_REFUSED_ON_TERMINAL_CHANGE.has(definition.actionId)
+  ) {
+    return {
+      enabled: false,
+      reasonCode: "change_terminal",
+      reason: `Change is ${changeStatus} and cannot be advanced further`,
+      blockers: [],
+    };
+  }
+
   const legacyOnly = legacyOnlyDecision(db, changeId, snapshot);
   if (legacyOnly) return legacyOnly;
 

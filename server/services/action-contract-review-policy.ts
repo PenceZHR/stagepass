@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import {
   artifacts,
@@ -10,6 +10,7 @@ import {
   reviewPriorFindingReviews,
   reviewReports,
   reviewState,
+  runs,
 } from "../db/schema";
 import { normalizeSeverity } from "./action-contract-common-policy";
 import type { ActionContractDb, ActionDecision, Blocker } from "./action-contract-types";
@@ -251,6 +252,33 @@ export function reviewControlDecision(
   changeStatus?: string,
 ): ActionDecision {
   const source = latestReviewReportSource(db, changeId);
+  // stop_change used to fall through to the unconditional `enabled: true` at the
+  // bottom of this function, so it was offered even with nothing to stop. Its
+  // handler is stopActiveRuns, which updates rows with status = 'running' and
+  // calls assertMutationAffected -- zero matches throws
+  // RunLedgerMutationTargetMissingError, which block/route.ts's bare catch turns
+  // into a 400 carrying the raw internal text. Verified by clicking the button
+  // on a change whose 19 runs were all `completed`: the page displayed
+  // "Run ledger mutation target was not found: stopActiveRuns CHG-003".
+  //
+  // The condition is the same predicate the mutation uses, so the contract and
+  // the write agree on what "there is something to stop" means.
+  if (actionId === "stop_change") {
+    const running = db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.changeId, changeId), eq(runs.status, "running")))
+      .all();
+    if (running.length === 0) {
+      return {
+        enabled: false,
+        reasonCode: "no_active_run",
+        reason: "No run is currently active on this change.",
+        blockers: [],
+        ...source,
+      };
+    }
+  }
   if (actionId === "fix_blockers") {
     const blockers = reviewFindingBlockers(db, changeId);
     if (blockers.length === 0) {

@@ -1350,7 +1350,18 @@ describe("action-contract-service", () => {
     assert.equal(actions.find((action) => action.actionId === "waive_review_p1")?.reasonCode, "no_waivable_review_p1");
     assert.equal(actions.find((action) => action.actionId === "recompute_report")?.enabled, true);
     assert.equal(actions.find((action) => action.actionId === "rebuild_mirror")?.enabled, true);
-    assert.equal(actions.find((action) => action.actionId === "stop_change")?.enabled, true);
+    // Was `enabled: true`. That assertion pinned the defect rather than a
+    // behaviour: this fixture's runs are all `completed` (seedReviewWithOpenP0
+    // inserts nothing running), and stop_change's handler is stopActiveRuns,
+    // which only touches rows with status = 'running' and throws when it
+    // matches none. So "enabled" here meant "offer a button whose only possible
+    // outcome is RunLedgerMutationTargetMissingError surfacing as a 400 with the
+    // raw internal string" -- reproduced in the browser before this change. The
+    // action's presence in the contract is still asserted, by the
+    // review_gate_missing loop below; what changed is that it now carries the
+    // reason it is unavailable instead of pretending it can run.
+    assert.equal(actions.find((action) => action.actionId === "stop_change")?.enabled, false);
+    assert.equal(actions.find((action) => action.actionId === "stop_change")?.reasonCode, "no_active_run");
     assert.equal(actions.find((action) => action.actionId === "recompute_report")?.requiresIdempotencyKey, true);
     assert.equal(actions.find((action) => action.actionId === "rebuild_mirror")?.requiresIdempotencyKey, true);
     for (const actionId of [
@@ -2569,6 +2580,69 @@ describe("action-contract-service", () => {
     assert.deepEqual(commitChanges?.blockers, [
       { id: "git_repo_missing", severity: "P1", title: "Path is not a git repository." },
     ]);
+  });
+
+  /**
+   * A delivered change is finished, and the contract is the only thing standing
+   * between the UI and restarting it. Measured on a copy of the shipped
+   * database: DONE offered seven actions with `enabled: true, reasonCode: null`,
+   * and POSTing enter_qa answered 202 -- queueing a local_check job against the
+   * delivered change rather than refusing it.
+   */
+  it("refuses the actions that would restart a delivered change, and only those", () => {
+    db.update(changes).set({ status: "DONE" }).where(eq(changes.id, CHANGE_ID)).run();
+
+    const actions = getActions(CHANGE_ID);
+    const byId = (id: string) => actions.find((action) => action.actionId === id);
+
+    for (const actionId of ["enter_qa", "stop_change", "commit_changes", "waive_spec_p1", "waive_plan_p1"]) {
+      assert.equal(byId(actionId)?.enabled, false, `${actionId} must be refused on DONE`);
+      assert.equal(byId(actionId)?.reasonCode, "change_terminal", `${actionId} reason`);
+    }
+
+    // Not a blanket terminal lock: re-rendering a report or a mirror on a
+    // finished change is a legitimate read-back, and disabling it would leave no
+    // way to regenerate those artifacts at all.
+    for (const actionId of ["recompute_report", "rebuild_mirror", "regenerate_plan_report"]) {
+      assert.notEqual(
+        byId(actionId)?.reasonCode,
+        "change_terminal",
+        `${actionId} must stay reachable on DONE`,
+      );
+    }
+  });
+
+  /**
+   * stop_change fell through to reviewControlDecision's unconditional
+   * `enabled: true`, so it was offered with nothing to stop. Its handler is
+   * stopActiveRuns, which updates rows with status = 'running' and asserts the
+   * mutation affected something; zero matches throws, and block/route.ts's bare
+   * catch turns that into a 400 carrying the raw internal text. Verified by
+   * clicking the button on a change whose runs were all completed: the page
+   * showed "Run ledger mutation target was not found: stopActiveRuns CHG-...".
+   */
+  it("offers stop_change only while a run is actually running", () => {
+    db.update(changes).set({ status: "REVIEWING" }).where(eq(changes.id, CHANGE_ID)).run();
+    db.update(runs).set({ status: "completed" }).where(eq(runs.changeId, CHANGE_ID)).run();
+
+    const idle = getActions(CHANGE_ID).find((action) => action.actionId === "stop_change");
+    assert.equal(idle?.enabled, false);
+    assert.equal(idle?.reasonCode, "no_active_run");
+
+    // The other direction matters just as much: a guard that also refused a
+    // change with a live run would take away the only way to stop one.
+    db.insert(runs).values({
+      id: "RUN-STOP-ACTIVE",
+      changeId: CHANGE_ID,
+      phase: "review",
+      status: "running",
+      startedAt: "2026-06-29T00:00:00.000Z",
+      provider: "codex",
+    }).run();
+
+    const active = getActions(CHANGE_ID).find((action) => action.actionId === "stop_change");
+    assert.equal(active?.enabled, true);
+    assert.equal(active?.reasonCode, null);
   });
 
   /**
