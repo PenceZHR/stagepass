@@ -21,6 +21,7 @@ import {
   stageReports,
   stageRuns,
   stageStates,
+  planSnapshots,
   testplanSnapshots,
 } from "../db/schema.ts";
 import {
@@ -57,6 +58,7 @@ function cleanupRows() {
   db.delete(artifactMirrors).where(eq(artifactMirrors.changeId, CHANGE_ID)).run();
   db.delete(requiredValidationCommands).where(eq(requiredValidationCommands.changeId, CHANGE_ID)).run();
   db.delete(testplanSnapshots).where(eq(testplanSnapshots.changeId, CHANGE_ID)).run();
+  db.delete(planSnapshots).where(eq(planSnapshots.changeId, CHANGE_ID)).run();
   db.delete(changes).where(eq(changes.id, CHANGE_ID)).run();
   db.delete(projects).where(eq(projects.id, PROJECT_ID)).run();
 }
@@ -125,6 +127,30 @@ function seedRequiredCommand(command: string) {
   }).run();
 }
 
+/** What plan-snapshot-service writes when a Plan declares validationCommands. */
+function seedPlanDeclaredCommand(command: string) {
+  const now = nowISO();
+  db.insert(planSnapshots).values({
+    id: "PLAN-QA-RUN-T12",
+    changeId: CHANGE_ID,
+    status: "approved",
+    schemaVersion: "plan/v1",
+    snapshotDbHash: "plan-qa-run-hash",
+    approvedAt: now,
+    createdAt: now,
+  }).run();
+  db.insert(requiredValidationCommands).values({
+    id: `REQ-PLAN-QA-RUN-T12-${command.replace(/\W+/g, "-")}`,
+    changeId: CHANGE_ID,
+    phase: "Plan",
+    sourceSnapshotId: "PLAN-QA-RUN-T12",
+    command,
+    commandOrder: 1,
+    required: 1,
+    createdAt: now,
+  }).run();
+}
+
 describe("qa-run-service", { concurrency: false }, () => {
   let repoPath: string;
 
@@ -137,6 +163,72 @@ describe("qa-run-service", { concurrency: false }, () => {
   afterEach(() => {
     cleanupRows();
     fs.rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  /**
+   * QA's required set is TestPlan-only, so a command the Plan stage declared as
+   * required was dropped without a word. Measured in the shipped database: 21
+   * Plan-declared commands across three changes (5 / 7 / 9) and QA ran exactly
+   * one on each -- `git diff --check` -- then reported MERGE_READY.
+   *
+   * The gate names them rather than running them. Plan's list mixes real checks
+   * with human steps (`open -a "Google Chrome" index.html` is one of the 21),
+   * and QA executes through execSync, so adopting them wholesale would launch a
+   * browser mid-QA and fail outright anywhere headless.
+   */
+  it("refuses the QA gate while a Plan-declared command is uncovered, naming it", () => {
+    seedRequiredCommand("node -e \"process.exit(0)\"");
+    const run = startQaRun({ changeId: CHANGE_ID });
+    recordQaCommandResult({
+      qaRunId: run.id,
+      commandOrder: 1,
+      command: "node -e \"process.exit(0)\"",
+      status: "passed",
+      exitCode: 0,
+      durationMs: 5,
+      evidence: "passed",
+    });
+
+    // Baseline first: every TestPlan-required command passed, so this run is
+    // genuinely green. Asserting it here is what makes the second half mean
+    // something -- otherwise "not passed" could be true for some unrelated
+    // reason and the test would pass with the gate change removed.
+    const before = recomputeQaGate(CHANGE_ID);
+    assert.equal(before.status, "passed", before.blockersJson ?? "null");
+
+    // The only thing that changes between the two recomputes.
+    seedPlanDeclaredCommand("pnpm test");
+    const after = recomputeQaGate(CHANGE_ID);
+
+    assert.notEqual(after.status, "passed");
+    const blockers = JSON.parse(after.blockersJson ?? "[]") as Array<{ title: string }>;
+    const uncovered = blockers.filter((blocker) => blocker.title.includes("pnpm test"));
+    assert.equal(uncovered.length, 1, after.blockersJson ?? "null");
+    assert.match(uncovered[0].title, /TestPlan does not cover it/);
+  });
+
+  it("passes the QA gate once the TestPlan covers the Plan-declared command", () => {
+    // The other direction: this must be a gate on an actual gap, not a
+    // permanent block on every change whose Plan declared anything.
+    seedRequiredCommand("pnpm test");
+    seedPlanDeclaredCommand("pnpm test");
+
+    const run = startQaRun({ changeId: CHANGE_ID });
+    recordQaCommandResult({
+      qaRunId: run.id,
+      commandOrder: 1,
+      command: "pnpm test",
+      status: "passed",
+      exitCode: 0,
+      durationMs: 5,
+      evidence: "passed",
+    });
+
+    const gate = recomputeQaGate(CHANGE_ID);
+
+    assert.equal(gate.status, "passed", gate.blockersJson ?? "null");
+    const blockers = JSON.parse(gate.blockersJson ?? "[]") as Array<{ title: string }>;
+    assert.equal(blockers.filter((b) => b.title.includes("does not cover")).length, 0);
   });
 
   it("starts QA from DB required_validation_commands and ignores Markdown test logs", () => {

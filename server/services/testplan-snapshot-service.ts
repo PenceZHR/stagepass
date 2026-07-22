@@ -22,6 +22,7 @@ import {
 } from "./stage-authority-service";
 import { getActions } from "./action-contract-service";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
+import { latestApprovedPlanSnapshot, latestPlanSnapshot } from "./plan-snapshot-service";
 import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import type { Provider } from "./provider-selection-service";
 
@@ -827,6 +828,60 @@ export function approveTestPlan(input: ApproveTestPlanInput): StageGateRecord {
   });
   getActions(input.changeId);
   return gate;
+}
+
+/**
+ * Validation commands the Plan stage declared as required.
+ *
+ * Plan writes these with `phase: "Plan"` and `required: 1`
+ * (plan-snapshot-service), and until now nothing ever read them: QA's required
+ * set is TestPlan-only, so every Plan declaration was silently dropped.
+ * Measured in the shipped database: 21 Plan-declared commands across three
+ * changes (5 / 7 / 9), and QA ran exactly one command on each -- `git diff
+ * --check` -- then reported MERGE_READY.
+ *
+ * Scoped to the current Plan snapshot for the same reason
+ * getRequiredValidationCommands scopes to the current TestPlan one: a command
+ * from a superseded snapshot is not a live requirement.
+ */
+export function getPlanDeclaredValidationCommands(changeId: string): string[] {
+  const db = getTestPlanSnapshotDb();
+  const snapshot = latestApprovedPlanSnapshot(changeId) ?? latestPlanSnapshot(changeId);
+  if (!snapshot) return [];
+  return db
+    .select()
+    .from(requiredValidationCommands)
+    .where(
+      and(
+        eq(requiredValidationCommands.changeId, changeId),
+        eq(requiredValidationCommands.phase, "Plan"),
+        eq(requiredValidationCommands.sourceSnapshotId, snapshot.id),
+        eq(requiredValidationCommands.required, 1),
+      ),
+    )
+    .orderBy(asc(requiredValidationCommands.commandOrder), asc(requiredValidationCommands.id))
+    .all()
+    .map((row) => row.command);
+}
+
+/**
+ * Plan-declared commands the TestPlan never picked up.
+ *
+ * Deliberately reported rather than executed. Plan's list is a mixed bag: of the
+ * 21 declared in the shipped database, three are `open ...` / `open -a "Google
+ * Chrome" ...` -- human verification steps, not machine checks -- and QA runs
+ * its commands through execSync, so adopting them wholesale would have QA
+ * launching a browser (and failing outright anywhere headless). Adopting the
+ * rest silently would also be a guess about which is which.
+ *
+ * So the gate names the difference and refuses to pass on it. That converts a
+ * silent drop into a decision someone has to make: carry the command into the
+ * TestPlan, or record it as a manual check (testplan_manual_checks already
+ * exists for exactly that and is already in use -- 15 rows).
+ */
+export function getUncoveredPlanValidationCommands(changeId: string): string[] {
+  const covered = new Set(getRequiredValidationCommands(changeId));
+  return getPlanDeclaredValidationCommands(changeId).filter((command) => !covered.has(command));
 }
 
 export function getRequiredValidationCommands(changeId: string): string[] {

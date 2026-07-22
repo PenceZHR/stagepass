@@ -10,7 +10,10 @@ import {
   qaFailures,
   qaRuns,
 } from "../db/schema";
-import { getRequiredValidationCommands } from "./testplan-snapshot-service";
+import {
+  getRequiredValidationCommands,
+  getUncoveredPlanValidationCommands,
+} from "./testplan-snapshot-service";
 import {
   computeSourceDbHash,
   recomputeStageGate as recomputeAuthorityStageGate,
@@ -294,9 +297,20 @@ export function recomputeQaGate(changeId: string): StageGateRecord {
   const hasAllRequiredCommands =
     requiredCommands.length > 0 &&
     requiredCommands.every((command) => commands.some((row) => row.command === command));
+  // Commands the Plan stage declared as required that the TestPlan never picked
+  // up. QA's required set is TestPlan-only, so these used to be dropped in
+  // silence: 21 of them across the three changes in the shipped database, while
+  // QA ran one command each and reported MERGE_READY.
+  //
+  // Named, not executed. Plan's list mixes real checks with human steps
+  // (`open -a "Google Chrome" index.html`), and QA runs commands through
+  // execSync -- adopting them wholesale would launch a browser during QA. The
+  // gate refuses instead, so a person decides: carry it into the TestPlan, or
+  // record it as a manual check.
+  const uncoveredPlanCommands = getUncoveredPlanValidationCommands(changeId);
   const status = hasFailed
     ? "failed"
-    : hasPending || !hasAllRequiredCommands
+    : hasPending || !hasAllRequiredCommands || uncoveredPlanCommands.length > 0
       ? "running"
       : "passed";
   const completedAt = status === "running" ? null : nowISO();
@@ -317,11 +331,20 @@ export function recomputeQaGate(changeId: string): StageGateRecord {
     changeId,
     phase: "QA",
     status,
-    blockers: failures.map((failure) => ({
-      id: failure.id,
-      severity: failure.severity,
-      title: failure.title ?? "QA failure",
-    })),
+    blockers: [
+      ...failures.map((failure) => ({
+        id: failure.id,
+        severity: failure.severity,
+        title: failure.title ?? "QA failure",
+      })),
+      // One blocker per uncovered command, so the gate says which ones rather
+      // than just that some exist.
+      ...uncoveredPlanCommands.map((command, index) => ({
+        id: `plan_validation_uncovered_${index + 1}`,
+        severity: "P1" as const,
+        title: `Plan declared this validation command and the TestPlan does not cover it: ${command}`,
+      })),
+    ],
     freshness: {
       fresh: true,
       sourceHeadSha: run.sourceHeadSha,
