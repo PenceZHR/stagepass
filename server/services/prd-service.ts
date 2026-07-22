@@ -141,7 +141,7 @@ export function validatePrdStage(mutations: WorkspaceMutation[]): StageViolation
 
   return {
     blocked: violatingFiles.length > 0,
-    stage: "refine" as const,
+    stage: "intake" as const,
     files: violatingFiles,
     message: violatingFiles.length > 0
       ? `PRD stage modified files outside allowed set: ${violatingFiles.join(", ")}`

@@ -7,7 +7,6 @@ import type { ReviewCenterResponse, ReviewCenterGateStatus } from "./review-repo
 import type { SpecBattleState } from "./spec-battle-types";
 
 export type UiStageId =
-  | "refine"
   | "prd"
   | "spec"
   | "tech_spec"
@@ -69,7 +68,6 @@ interface StageResolution {
 }
 
 export const UI_STAGE_ORDER: UiStageId[] = [
-  "refine",
   "prd",
   "spec",
   "tech_spec",
@@ -85,14 +83,6 @@ export const UI_STAGE_ORDER: UiStageId[] = [
 ];
 
 const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
-  refine: {
-    id: "refine",
-    label: "Refine",
-    description: "Clarify the change before it enters the PRD pipeline.",
-    reviewPhase: "Refine",
-    recordPhase: "Refine",
-    actionPhase: null,
-  },
   prd: {
     id: "prd",
     label: "PRD",
@@ -219,7 +209,6 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
 };
 
 const STATUS_TO_STAGE: Record<string, StageResolution> = {
-  REFINING: { id: "refine", state: "running" },
   DRAFT: { id: "plan", state: "waiting" },
   INTAKE_PENDING: { id: "prd", state: "waiting" },
   INTAKE_READY: { id: "prd", state: "needs_review" },
@@ -249,7 +238,6 @@ const STATUS_TO_STAGE: Record<string, StageResolution> = {
 };
 
 const REVIEW_PHASE_TO_STAGE: Record<ReviewPhase, UiStageId> = {
-  Refine: "refine",
   Intake: "prd",
   Spec: "spec",
   TechSpec: "tech_spec",
@@ -266,7 +254,6 @@ const REVIEW_PHASE_TO_STAGE: Record<ReviewPhase, UiStageId> = {
 };
 
 const RUN_PHASE_TO_STAGE: Record<string, UiStageId> = {
-  refine: "refine",
   intake: "prd",
   prd: "prd",
   prd_briefing_questions: "prd",

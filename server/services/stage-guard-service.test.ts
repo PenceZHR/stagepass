@@ -305,7 +305,6 @@ describe("stage-guard-service", () => {
   it("defines default read/write scopes for every run phase", () => {
     assert.deepEqual(
       [
-        "refine",
         "generate_plan",
         "implement",
         "review",

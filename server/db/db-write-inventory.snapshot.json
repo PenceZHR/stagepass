@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "65426dde6b40976283517ad84aff13a1c16cce565b598aced829c03c4263de54",
+  "policySha256": "c82020b3a5e183c69f05eb26e967b4c0b6b13c2e34f8483a12e6182a9e215f3d",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -1057,54 +1057,6 @@
       "table": "stageRuns",
       "owner": "Task 11",
       "reason": "owned by Task 11"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "events",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "findings",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.transaction",
-      "nodeKind": "CallExpression",
-      "table": null,
-      "owner": "Task 14",
-      "reason": "atomically replaces the refine spec artifact row with its staged file"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.update",
-      "nodeKind": "CallExpression",
-      "table": "changes",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "tx.delete",
-      "nodeKind": "CallExpression",
-      "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "clears the previous refine spec artifact row inside the replacement transaction"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "tx.insert",
-      "nodeKind": "CallExpression",
-      "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "records the staged refine spec artifact row inside the replacement transaction"
     },
     {
       "file": "server/services/review-artifact-mirror-service.ts",

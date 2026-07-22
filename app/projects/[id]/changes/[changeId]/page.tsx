@@ -24,7 +24,6 @@ import { OperationalPhasePanel } from "./operational-phase-panel";
 import { PhaseReviewPanel, type PhaseReviewResponse } from "./phase-review-panel";
 import { PipelinePageShell } from "./pipeline-page-shell";
 import { PhaseStageShell } from "./phase-stage-shell";
-import { RefineChatPanel } from "./refine-chat-panel";
 import { RubricPanel } from "./rubric-panel";
 import { ProviderPicker } from "./provider-picker";
 import { StageGitPanel } from "./stage-git-panel";
@@ -1458,26 +1457,6 @@ export default function ChangeDetailPage() {
                   {renderPhaseRecords(activeSelectedPhase, "phase-review")}
                 </PhaseStageShell>
               )
-            ) : change.status === "REFINING" ? (
-              <PhaseStageShell
-                {...providerControlProps}
-                projectId={projectId}
-                changeId={changeId}
-                phase={activeSelectedPhase}
-                state={selectedStageState}
-                statusLabel={stageStatusLabel}
-                latestRunStatus={latestRunStatusLabel}
-              >
-                <div className="h-[calc(100vh-16rem)]">
-                  <RefineChatPanel
-                    projectId={projectId}
-                    changeId={changeId}
-                    onSpecReady={load}
-                    selectedProvider={selectedProvider}
-                    onProviderChange={setSelectedProvider}
-                  />
-                </div>
-              </PhaseStageShell>
             ) : (
               <>
                 {/* Action Buttons */}

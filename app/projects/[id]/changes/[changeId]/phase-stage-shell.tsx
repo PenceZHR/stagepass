@@ -9,11 +9,6 @@ import type { StageActionView } from "./stage-action-bar";
 import type { AiProvider } from "./pipeline-action-contract";
 
 const PHASE_STAGE_COPY: Record<ReviewPhase, { label: string; title: string; description: string }> = {
-  Refine: {
-    label: "Refine",
-    title: "需求澄清",
-    description: "把原始想法整理成可以进入 PRD 的输入。",
-  },
   Intake: {
     label: "PRD",
     title: "PRD Briefing",

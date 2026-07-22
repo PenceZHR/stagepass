@@ -1058,54 +1058,6 @@
       "reason": "owned by Task 11"
     },
     {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "events",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "findings",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.transaction",
-      "nodeKind": "CallExpression",
-      "table": null,
-      "owner": "Task 14",
-      "reason": "atomically replaces the refine spec artifact row with its staged file"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.update",
-      "nodeKind": "CallExpression",
-      "table": "changes",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "tx.delete",
-      "nodeKind": "CallExpression",
-      "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "clears the previous refine spec artifact row inside the replacement transaction"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "tx.insert",
-      "nodeKind": "CallExpression",
-      "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "records the staged refine spec artifact row inside the replacement transaction"
-    },
-    {
       "file": "server/services/review-artifact-mirror-service.ts",
       "symbol": "db.insert",
       "nodeKind": "CallExpression",
@@ -1898,11 +1850,6 @@
     },
     {
       "file": "server/services/recovery-executors.test.ts",
-      "mode": "suite-env",
-      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
-    },
-    {
-      "file": "server/services/refine-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },

@@ -16,7 +16,6 @@ const now = "2026-06-20T00:00:00.000Z";
 describe("change-phase-service phase review aggregation", () => {
   it("exposes content-backed v2 review phases", () => {
     assert.deepEqual(CONTENT_PHASES, [
-      "Refine",
       "Intake",
       "Spec",
       "TechSpec",
@@ -43,7 +42,7 @@ describe("change-phase-service phase review aggregation", () => {
     const result = buildPhaseReview({
       changeId,
       repoPath,
-      selectedPhase: "Refine",
+      selectedPhase: "Intake",
       runs: [],
       events: [],
       artifacts: [],
@@ -52,7 +51,6 @@ describe("change-phase-service phase review aggregation", () => {
     assert.deepEqual(
       result.phases.map((phase) => phase.phase),
       [
-        "Refine",
         "Intake",
         "Spec",
         "TechSpec",
@@ -460,12 +458,12 @@ describe("change-phase-service phase review aggregation", () => {
     assert.equal(result.selected.artifacts[1].content, "# Run PRD");
   });
 
-  it("assigns refine spec artifact and chat events without requiring a run", () => {
+  it("assigns the spec artifact to Intake without requiring a run", () => {
     const specPath = path.join(changeDir, "spec.md");
     const result = buildPhaseReview({
       changeId,
       repoPath,
-      selectedPhase: "Refine",
+      selectedPhase: "Intake",
       runs: [],
       events: [
         {
@@ -502,10 +500,15 @@ describe("change-phase-service phase review aggregation", () => {
       },
     });
 
-    assert.equal(result.selected.phase, "Refine");
+    // Was "Refine". The spec.md artifact type used to map to the Refine stage;
+    // Refine is deleted and that artifact type now belongs to Intake.
+    assert.equal(result.selected.phase, "Intake");
     assert.equal(result.selected.artifacts.length, 1);
     assert.equal(result.selected.artifacts[0].type, "spec");
-    assert.deepEqual(result.selected.events.map((event) => event.id), ["EVT-001"]);
+    // Dropped the chat-event half. This pinned that chat_user/chat_assistant
+    // events landed on Refine without a run row; Refine and the chat feature
+    // are both deleted, so those event types are no longer produced or
+    // classified. The artifact half above is the part that still has a subject.
   });
 
   it("creates current check artifacts from known change files and omits missing files", () => {

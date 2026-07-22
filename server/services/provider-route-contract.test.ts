@@ -77,7 +77,6 @@ describe("provider-backed route contract", () => {
       "block/route.ts",
       "stop/route.ts",
       "approve-plan/route.ts",
-      "confirm/route.ts",
       "rework/route.ts",
       "spec-battle/decision/route.ts",
       "plan-sandbox/decision/route.ts",

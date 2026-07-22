@@ -16,7 +16,6 @@ describe("phase rail", () => {
     });
 
     assert.deepEqual(stages.map((stage) => stage.label), [
-      "Refine",
       "PRD",
       "Spec",
       "Tech Spec",
@@ -35,7 +34,6 @@ describe("phase rail", () => {
 
   it("maps important statuses to the expected user-facing rail stage", () => {
     const cases: Array<[string, string, string]> = [
-      ["REFINING", "Refine", "running"],
       ["DRAFT", "Plan", "waiting"],
       ["INTAKE_PENDING", "PRD", "waiting"],
       ["TESTPLAN_DONE", "Test Plan", "needs_review"],

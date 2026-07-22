@@ -101,7 +101,6 @@ export function PhaseReviewPanel({
   const selected = review?.selected;
   const isChangeRunning = ["PLANNING", "IMPLEMENTING", "CHECKING", "FIXING"].includes(changeStatus);
   const phaseArtifactReadOnly = [
-    "REFINING",
     "INTAKE_PENDING",
     "PLANNING",
     "IMPLEMENTING",

@@ -726,7 +726,10 @@ describe("a rubric that cannot block says so", () => {
     assert.equal(rubricRoleAnsweredBy("Build", "critic"), "review");
     assert.equal(rubricRoleAnsweredBy("QA", "producer"), null);
     assert.equal(rubricRoleAnsweredBy("Merge", "critic"), null);
-    assert.equal(rubricRoleAnsweredBy("Refine", "producer"), null);
+    // Dropped: this pinned that Refine answers no producer rubric. Refine is
+    // deleted, and every remaining phase does answer one, so the case has no
+    // subject left. The null-role behaviour is still covered by the QA/Merge
+    // assertions above.
     assert.equal(
       rubricRoleAnsweredBy("Fix", "critic"),
       null,

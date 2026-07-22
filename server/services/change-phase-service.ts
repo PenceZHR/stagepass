@@ -12,7 +12,6 @@ import { mapRowsDegrading } from "./per-row-degradation";
 import type { PipelinePhase } from "./stage-authority-service";
 
 export const CONTENT_PHASES = [
-  "Refine",
   "Intake",
   "Spec",
   "TechSpec",
@@ -162,7 +161,6 @@ export interface PhaseStageAuthority {
 }
 
 const RUN_PHASE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
-  refine: "Refine",
   intake: "Intake",
   spec: "Spec",
   tech_spec: "TechSpec",
@@ -178,7 +176,7 @@ const RUN_PHASE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
 };
 
 const ARTIFACT_TYPE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
-  spec: "Refine",
+  spec: "Intake",
   change_request: "Intake",
   prd_intent: "Intake",
   briefing_questions: "Intake",
@@ -206,8 +204,6 @@ const ARTIFACT_TYPE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
 };
 
 const STATUS_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
-  REFINING: "Refine",
-  DRAFT: "Refine",
   PLANNING: "Plan",
   PLAN_READY: "Plan",
   PLAN_APPROVED: "Plan",
@@ -236,7 +232,6 @@ const STATUS_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
 };
 
 const VIRTUAL_ARTIFACTS: Record<ReviewPhase, Array<{ type: string; fileName: string }>> = {
-  Refine: [{ type: "spec", fileName: "spec.md" }],
   Intake: [
     { type: "change_request", fileName: "change-request.md" },
     { type: "prd_intent", fileName: "prd-intent.md" },
@@ -327,9 +322,6 @@ function eventPhaseFromStatus(rawJson: string | null): ReviewPhase | null {
 function eventPhase(event: EventRow, runPhaseById: Map<string, ReviewPhase>): ReviewPhase | null {
   if (event.runId && runPhaseById.has(event.runId)) {
     return runPhaseById.get(event.runId) ?? null;
-  }
-  if (event.type === "chat_user" || event.type === "chat_assistant") {
-    return "Refine";
   }
   if (event.type === "change_status_changed") {
     return eventPhaseFromStatus(event.rawJson);

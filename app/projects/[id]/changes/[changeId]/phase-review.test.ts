@@ -629,7 +629,10 @@ describe("phase review UI", () => {
     assert.match(src, /<PhaseStageShell[\s\S]*phase="Review"[\s\S]*<ReviewReportCenter/);
     assert.match(src, /<PhaseStageShell[\s\S]*phase=\{activeSelectedPhase\}[\s\S]*actions=\{gateStageActions\}[\s\S]*<GatePanel/);
     assert.match(src, /<PhaseStageShell[\s\S]*phase=\{activeSelectedPhase\}[\s\S]*<OperationalPhasePanel/);
-    assert.match(src, /<PhaseStageShell[\s\S]*phase=\{activeSelectedPhase\}[\s\S]*<RefineChatPanel/);
+    // Dropped the tail of this pattern (`...<RefineChatPanel`). It pinned that the
+    // shared stage shell wrapped the Refine chat surface; Refine and its chat are
+    // deleted, so there is no such surface. The shared-shell requirement itself is
+    // still asserted by the matches above.
   });
 
   it("keeps internal phase names while presenting PRD and QA in the shared shell", () => {

@@ -8,7 +8,6 @@ export const AiProvider = z.enum(["codex", "claude"]);
 export type AiProvider = z.infer<typeof AiProvider>;
 
 export const ChangeStatus = z.enum([
-  "REFINING",
   "DRAFT",
   "PLANNING",
   "PLAN_READY",
@@ -42,7 +41,7 @@ export const ChangeStatus = z.enum([
 export type ChangeStatus = z.infer<typeof ChangeStatus>;
 
 export const RunPhase = z.enum([
-  "refine",
+
   "generate_plan",
   "implement",
   "review",
@@ -78,8 +77,6 @@ export const EventType = z.enum([
   "finding_waived",
   "scope_check_passed",
   "scope_check_failed",
-  "chat_user",
-  "chat_assistant",
   "prd_briefing_locked",
   "stage_progress",
 ]);

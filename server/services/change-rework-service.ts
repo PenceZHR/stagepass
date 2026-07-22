@@ -13,10 +13,9 @@ type SchemaTables = typeof import("../db/schema");
 
 let schemaPromise: Promise<SchemaTables> | null = null;
 
-export type ReworkReviewPhase = "Refine" | "Plan" | "TestPlan" | "Build" | "Implement" | "Check" | "Fix";
+export type ReworkReviewPhase = "Plan" | "TestPlan" | "Build" | "Implement" | "Check" | "Fix";
 
 const PHASE_TO_RUN_PHASE: Record<ReworkReviewPhase, RunPhase> = {
-  Refine: "refine",
   Plan: "generate_plan",
   TestPlan: "test_plan",
   Build: "implement",
@@ -26,7 +25,6 @@ const PHASE_TO_RUN_PHASE: Record<ReworkReviewPhase, RunPhase> = {
 };
 
 const PHASE_TO_READY_STATUS: Record<ReworkReviewPhase, ChangeStatus> = {
-  Refine: "REFINING",
   Plan: "DRAFT",
   TestPlan: "PLAN_APPROVED",
   Build: "PLAN_APPROVED",
@@ -36,7 +34,6 @@ const PHASE_TO_READY_STATUS: Record<ReworkReviewPhase, ChangeStatus> = {
 };
 
 const PHASE_ORDER: RunPhase[] = [
-  "refine",
   "intake",
   "spec",
   "tech_spec",
@@ -52,7 +49,6 @@ const PHASE_ORDER: RunPhase[] = [
 ];
 
 const ROOT_FILES_BY_PHASE: Record<RunPhase, string[]> = {
-  refine: ["spec.md"],
   intake: ["change-request.md"],
   spec: ["prd-delta.md"],
   tech_spec: ["tech-spec-delta.md", "api-spec-delta.md"],

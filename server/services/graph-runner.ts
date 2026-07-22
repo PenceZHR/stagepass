@@ -24,8 +24,6 @@ function getChange(changeId: string) {
 
 function phaseFromStatus(status: string): RunPhase {
   const map: Record<string, RunPhase> = {
-    REFINING: "refine",
-    DRAFT: "refine",
     PLANNING: "generate_plan",
     PLAN_READY: "generate_plan",
     PLAN_APPROVED: "generate_plan",

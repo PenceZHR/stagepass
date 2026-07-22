@@ -64,10 +64,10 @@ function statusVariant(status: string): "default" | "success" | "warning" | "des
   if (["DONE", "TESTPLAN_DONE", "IMPLEMENTED", "SPEC_DONE", "TECH_SPEC_DONE", "LOCAL_READY", "MERGE_READY"].includes(status)) return "success";
   if (["BLOCKED"].includes(status)) return "blocked";
   if (["CHECKING", "FIXING", "FIX_REVIEW", "REVIEWING"].includes(status)) return "pending";
-  if (["REFINING", "PLAN_APPROVED", "PLAN_READY", "INTAKE_READY", "SPEC_READY", "TECHSPEC_READY"].includes(status)) return "info";
+  if (["PLAN_APPROVED", "PLAN_READY", "INTAKE_READY", "SPEC_READY", "TECHSPEC_READY"].includes(status)) return "info";
   // DELIVERY_PENDING pairs with RETRO_PENDING: both mean "the pipeline is
   // parked waiting for a human to press a button", so they must read the same.
-  if (["DRAFT", "PLANNING", "IMPLEMENTING", "SPECCING", "TECHSPECCING", "TESTPLANNING", "MERGING", "RETRO_PENDING", "DELIVERY_PENDING"].includes(status)) return "default";
+  if (["PLANNING", "IMPLEMENTING", "SPECCING", "TECHSPECCING", "TESTPLANNING", "MERGING", "RETRO_PENDING", "DELIVERY_PENDING"].includes(status)) return "default";
   if (["CANCELLED", "CHECK_FAILED", "SCOPE_FAILED"].includes(status)) return "destructive";
   return "outline";
 }

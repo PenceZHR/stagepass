@@ -13,7 +13,6 @@ interface PhaseArtifactDefinitionShape {
 }
 
 export const PHASE_ARTIFACT_DEFINITIONS = [
-  { phase: "Refine", type: "spec", fileName: "spec.md", label: "需求澄清说明" },
   { phase: "Intake", type: "change_request", fileName: "change-request.md", label: "需求入口 / 变更请求" },
   { phase: "Intake", type: "prd_intent", fileName: "prd-intent.md", label: "PRD 需求意图" },
   { phase: "Intake", type: "briefing_questions", fileName: "briefing-questions.json", label: "PRD 澄清问题" },

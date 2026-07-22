@@ -22,13 +22,11 @@ export const PHASES = [
 
 export type PhaseName = (typeof PHASES)[number];
 export type ReviewPhase =
-  | "Refine"
   | "Plan"
   | "Implement"
   | PhaseName;
 
 export const REVIEW_PHASES: ReviewPhase[] = [
-  "Refine",
   "Intake",
   "Spec",
   "TechSpec",
@@ -64,7 +62,6 @@ export const REVIEW_PHASES: ReviewPhase[] = [
  * maps like every other stage.
  */
 const REVIEW_PHASE_TO_RUBRIC_PHASE: Partial<Record<ReviewPhase, RubricPhase>> = {
-  Refine: "Refine",
   Intake: "PRD",
   Spec: "Spec",
   TechSpec: "TechSpec",
@@ -90,7 +87,6 @@ export function reviewPhaseToRubricPhase(phase: ReviewPhase): RubricPhase | null
 // ReviewPhases (Intake, Spec, TechSpec, Review, Merge, Retro) have no rework path
 // and the endpoint rejects them with 400. Keep this list in sync with ReworkReviewPhase.
 export const REWORKABLE_REVIEW_PHASES: ReviewPhase[] = [
-  "Refine",
   "Plan",
   "TestPlan",
   "Build",
@@ -100,7 +96,6 @@ export const REWORKABLE_REVIEW_PHASES: ReviewPhase[] = [
 ];
 
 export const STATUS_TO_PHASE: Record<string, { phase: string; state: string }> = {
-  REFINING: { phase: "Intake", state: "running" },
   DRAFT: { phase: "Plan", state: "waiting" },
   PLANNING: { phase: "Plan", state: "running" },
   PLAN_READY: { phase: "Plan", state: "done" },
@@ -174,7 +169,6 @@ export function getDefaultReviewPhase(status: string, reviewCenterState?: Review
  * sent a failed run of either phase to the wrong stage tab.
  */
 const RUN_PHASE_TO_REVIEW_PHASE: Record<RunPhase, ReviewPhase> = {
-  refine: "Refine",
   intake: "Intake",
   spec: "Spec",
   tech_spec: "TechSpec",

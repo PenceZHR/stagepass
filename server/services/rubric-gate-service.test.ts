@@ -939,7 +939,8 @@ describe("document phase channel: stage gate blockers", () => {
   });
 
   it("refuses phases that own no stage gate rather than guessing a neighbour", () => {
-    assert.deepEqual(syncRubricStageGateBlockers(CHANGE_ID, "Refine"), {
+    // Was Refine (deleted); Retro is the remaining phase that owns no stage gate.
+    assert.deepEqual(syncRubricStageGateBlockers(CHANGE_ID, "Retro"), {
       applied: false,
       reason: "unsupported_phase",
     });

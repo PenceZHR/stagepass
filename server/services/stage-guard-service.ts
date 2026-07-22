@@ -94,10 +94,6 @@ export const DEFAULT_BLOCKED_PATTERNS = [
 export const SHIP_EXEMPT_PATTERNS = [".ship/**"];
 
 export const DEFAULT_STAGE_SCOPES: Record<RunPhase, Omit<StageScope, "phase">> = {
-  refine: {
-    readableFiles: [".ship/**"],
-    writableFiles: [".ship/changes/**"],
-  },
   generate_plan: {
     readableFiles: [".ship/**"],
     writableFiles: [".ship/changes/**"],
