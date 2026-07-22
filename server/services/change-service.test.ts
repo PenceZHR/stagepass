@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 import { eq } from "drizzle-orm";
 
 import { db } from "../db/index.ts";
@@ -8,6 +12,7 @@ import {
   artifacts,
   changeProviderSessions,
   changes,
+  events,
   projects,
   qaCommandResults,
   qaEvidence,
@@ -17,7 +22,7 @@ import {
   reviewReports,
   runs,
 } from "../db/schema.ts";
-import { deleteChange, deleteChangeRecords } from "./change-service.ts";
+import { createChange, deleteChange, deleteChangeRecords } from "./change-service.ts";
 
 const PROJECT_ID = "PRJ-CHANGE-DELETE-SESSIONS";
 const CHANGE_ID = "CHG-CHANGE-DELETE-SESSIONS";
@@ -287,6 +292,244 @@ describe("change deletion refuses to race a live run", () => {
     await deleteChange(CHANGE_ID);
 
     assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).all().length, 0);
+  });
+});
+
+// --- git branch takeover via recycled change ids ---------------------------
+//
+// These drive the real createChange/deleteChange against a throwaway `git init`
+// repository under os.tmpdir(). Nothing here touches a real project checkout.
+
+const GIT_PROJECT_ID = "PRJ-CHANGE-ID-REUSE";
+const CHANGE_TITLE = "登录页重构";
+
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8" });
+}
+
+function makeThrowawayRepo(): string {
+  const repo = fs.mkdtempSync(nodePath.join(os.tmpdir(), "change-service-idreuse-"));
+  git(repo, ["init", "-q", "-b", "main"]);
+  git(repo, ["config", "user.email", "test@example.com"]);
+  git(repo, ["config", "user.name", "test"]);
+  fs.writeFileSync(nodePath.join(repo, "README.md"), "base\n");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", "base commit"]);
+  return repo;
+}
+
+function seedGitProject(repoPath: string): void {
+  db.insert(projects).values({
+    id: GIT_PROJECT_ID,
+    name: "Change id reuse",
+    repoPath,
+    contextStatus: "ready",
+    contextProvider: "codex",
+    prdStatus: "ready",
+    prdProvider: "codex",
+    prdJson: null,
+    prdMarkdown: null,
+    gitEnabled: 1,
+    gitDefaultBranch: "main",
+    createdAt: NOW,
+    updatedAt: NOW,
+  }).run();
+}
+
+function cleanupGitProject(): void {
+  for (const row of db.select().from(changes).where(eq(changes.projectId, GIT_PROJECT_ID)).all()) {
+    db.delete(artifacts).where(eq(artifacts.changeId, row.id)).run();
+    db.delete(events).where(eq(events.changeId, row.id)).run();
+    db.delete(changes).where(eq(changes.id, row.id)).run();
+  }
+  db.delete(projects).where(eq(projects.id, GIT_PROJECT_ID)).run();
+}
+
+describe("a new change never inherits a deleted change's git branch", () => {
+  let repo: string;
+
+  beforeEach(() => {
+    cleanupGitProject();
+    repo = makeThrowawayRepo();
+    seedGitProject(repo);
+  });
+
+  afterEach(() => {
+    cleanupGitProject();
+    if (repo) fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  // The disambiguation must be a response to an actual collision, not a tax on
+  // every change: the ordinary branch name has to survive untouched.
+  it("uses the plain branch name when nothing holds it", async () => {
+    const change = await createChange({ projectId: GIT_PROJECT_ID, title: CHANGE_TITLE });
+    assert.equal(
+      change.gitBranch,
+      `ship/${change.id.toLowerCase()}/${CHANGE_TITLE}`,
+      "an uncontested branch name must not be given a suffix",
+    );
+    assert.equal(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), change.gitBranch);
+  });
+
+  // The defect, reproduced end to end on 2026-07-22 before the fix: nextChangeId
+  // handed out the LOWEST FREE number rather than max+1, deleteChange leaves the
+  // git branch in place, and createChange checks out a branch that already
+  // exists. So create -> commit -> delete -> create returned the same CHG-001,
+  // checked out ship/chg-001/登录页重构, and the deleted change's committed file
+  // was sitting in the working tree as the new change's starting point.
+  //
+  // Asserted on the symptom rather than on nextChangeId's return value: what
+  // must never happen is the second change starting from the first one's
+  // commits, however the id is allocated.
+  it("does not check out the deleted change's branch or its commits", async () => {
+    const first = await createChange({ projectId: GIT_PROJECT_ID, title: CHANGE_TITLE });
+    assert.ok(first.gitBranch, "the first change must get a branch");
+
+    const leakedFile = "work-of-the-deleted-change.txt";
+    fs.writeFileSync(nodePath.join(repo, leakedFile), "code from the FIRST change\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-q", "-m", "WORK FROM THE DELETED CHANGE"]);
+
+    git(repo, ["checkout", "-q", "main"]);
+    await deleteChange(first.id);
+
+    // The branch deliberately survives the delete -- it can hold unmerged work.
+    assert.match(git(repo, ["branch", "--list"]), new RegExp(first.gitBranch!));
+
+    const second = await createChange({ projectId: GIT_PROJECT_ID, title: CHANGE_TITLE });
+
+    // Deliberately NOT asserting that the id differs. Change ids are allocated
+    // max+1 over the live rows, which is not a high-water mark: deleting the
+    // newest change frees its number again, so `second.id` legitimately equals
+    // `first.id` here. That is exactly why the branch name -- a pure function of
+    // id and title -- cannot be trusted to be free, and why the fix is at the
+    // branch seam rather than the id seam.
+    assert.notEqual(
+      second.gitBranch,
+      first.gitBranch,
+      "the new change must not be pointed at the deleted change's branch",
+    );
+    assert.equal(
+      git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+      second.gitBranch,
+      "HEAD must be on the new change's own branch",
+    );
+    assert.equal(
+      fs.existsSync(nodePath.join(repo, leakedFile)),
+      false,
+      "the deleted change's committed file must not be in the new change's working tree",
+    );
+    assert.doesNotMatch(
+      git(repo, ["log", "--oneline"]),
+      /WORK FROM THE DELETED CHANGE/,
+      "the deleted change's commit must not be in the new change's history",
+    );
+  });
+
+  // The test above steps to `main` before deleting. That is the tidy case, and
+  // it is not the one a human produces: the delete button is clicked while you
+  // are working on that change, so HEAD is standing on its branch. A distinct
+  // branch NAME does not help there -- createBranch is `git checkout -b`, which
+  // cuts from wherever HEAD is, so the new branch starts at the deleted
+  // change's tip and inherits every commit a human just threw away.
+  //
+  // Fixed at the delete seam, not by cutting new branches from the default
+  // branch: there is no `git merge` anywhere in this codebase, so changes
+  // deliberately stack, each cut from the previous one's tip. Verified in the
+  // shipped repo -- `main` holds one init commit and never advances, while
+  // ship/chg-003 sits three commits ahead with HEAD parked on it. Cutting from
+  // the default branch would start every change from an empty tree.
+  it("does not let the next change stack on a change deleted while HEAD was on it", async () => {
+    const first = await createChange({ projectId: GIT_PROJECT_ID, title: CHANGE_TITLE });
+    const discarded = "discarded-work.txt";
+    fs.writeFileSync(nodePath.join(repo, discarded), "code a human deleted\n");
+    git(repo, ["add", "-A"]);
+    git(repo, ["commit", "-q", "-m", "WORK THE HUMAN DISCARDED"]);
+
+    // No checkout back to main: HEAD stays on the change being deleted.
+    assert.equal(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), first.gitBranch);
+    await deleteChange(first.id);
+
+    const second = await createChange({ projectId: GIT_PROJECT_ID, title: "另一个改动" });
+
+    assert.doesNotMatch(
+      git(repo, ["log", "--oneline"]),
+      /WORK THE HUMAN DISCARDED/,
+      "the new change must not inherit the deleted change's commits through ambient HEAD",
+    );
+    assert.equal(
+      fs.existsSync(nodePath.join(repo, discarded)),
+      false,
+      "the deleted change's file must not be in the new change's working tree",
+    );
+    assert.equal(
+      git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+      second.gitBranch,
+      "HEAD must end on the new change's own branch",
+    );
+  });
+
+  // The other half of the rule, and the one a mutation caught me missing:
+  // deleting a change must move HEAD only when HEAD is standing on THAT
+  // change's branch. Deleting some other change while you are working on this
+  // one must not yank the checkout out from under you. Removing the guard left
+  // every other test in this file green, so without this case the fix could be
+  // over-tightened silently.
+  it("leaves HEAD alone when it is on a different change's branch", async () => {
+    // Three changes, and HEAD parked on the MIDDLE one. That matters: with only
+    // two, the branch the guard protects is also the one the survivor lookup
+    // would pick, so removing the guard changed nothing observable and this
+    // test passed against the mutation. Deleting the oldest while sitting on the
+    // middle one makes the two answers differ -- unguarded, HEAD would jump to
+    // the newest change's branch.
+    const doomed = await createChange({ projectId: GIT_PROJECT_ID, title: CHANGE_TITLE });
+    const working = await createChange({ projectId: GIT_PROJECT_ID, title: "我正在做的改动" });
+    const newest = await createChange({ projectId: GIT_PROJECT_ID, title: "更晚的改动" });
+    assert.notEqual(working.gitBranch, newest.gitBranch);
+
+    git(repo, ["checkout", "-q", working.gitBranch!]);
+    assert.equal(git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), working.gitBranch);
+    await deleteChange(doomed.id);
+
+    assert.equal(
+      git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+      working.gitBranch,
+      "deleting an unrelated change must not move HEAD off the branch being worked on",
+    );
+  });
+
+  // Branch names must stay distinct however many times the id is recycled --
+  // one disambiguating suffix is not enough if the cycle repeats.
+  it("gives every change in a repeated delete-and-recreate cycle its own branch", async () => {
+    const branches: string[] = [];
+    for (let round = 0; round < 4; round += 1) {
+      const change = await createChange({ projectId: GIT_PROJECT_ID, title: CHANGE_TITLE });
+      branches.push(change.gitBranch!);
+      git(repo, ["checkout", "-q", "main"]);
+      await deleteChange(change.id);
+    }
+    assert.equal(
+      new Set(branches).size,
+      branches.length,
+      `branch names were reused: ${branches.join(", ")}`,
+    );
+    // Every one of them must be a branch that actually exists and was cut fresh.
+    const listed = git(repo, ["branch", "--list"]);
+    for (const branch of branches) assert.match(listed, new RegExp(branch));
+  });
+
+  // Change ids are allocated max+1 over live rows, so a gap in the middle stays
+  // open. This pins the allocator's actual contract rather than the one the
+  // lowest-free-gap version had.
+  it("does not refill a gap left by deleting an earlier change", async () => {
+    const first = await createChange({ projectId: GIT_PROJECT_ID, title: "第一个" });
+    const second = await createChange({ projectId: GIT_PROJECT_ID, title: "第二个" });
+    git(repo, ["checkout", "-q", "main"]);
+    await deleteChange(first.id);
+
+    const third = await createChange({ projectId: GIT_PROJECT_ID, title: "第三个" });
+    assert.notEqual(third.id, first.id, "the freed gap must not be refilled");
+    assert.notEqual(third.id, second.id);
   });
 });
 

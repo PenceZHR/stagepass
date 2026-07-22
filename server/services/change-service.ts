@@ -12,14 +12,9 @@ import type { Change, ChangeStatus } from "../types";
 import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
 import { transitionChangeStatus } from "./change-status-service";
 import { CHANGE_DELETE_PLAN } from "./change-delete-plan";
-import {
-  branchExists,
-  checkoutBranch,
-  createBranch,
-  generateChangeBranchName,
-  getCurrentBranch,
-} from "./git-service";
+import { branchExists, checkoutBranch, createBranch, generateChangeBranchName, getCurrentBranch } from "./git-service";
 import { syncProjectGitState } from "./project-git-state-service";
+import { nextSequencedId } from "./record-identity";
 import fs from "fs";
 import path from "path";
 
@@ -81,45 +76,78 @@ export function resolveAdoptionCommitBranch(input: {
   return currentBranch;
 }
 
+/**
+ * Change ids are allocated max+1, not lowest-free-gap.
+ *
+ * The gap-filling version handed a brand new change the id of a deleted one,
+ * and because the git branch is named after the id -- and deleteChange leaves
+ * that branch in place, and createChange checks out a branch that already
+ * exists -- the new change silently started from the deleted change's commits.
+ * See nextSequencedId's comment for the reproduction.
+ */
 async function nextChangeId(): Promise<string> {
   const rows = db.select({ id: changes.id }).from(changes).all();
-  const usedNums = new Set<number>();
-  for (const row of rows) {
-    const match = (row.id as string).match(/\d+$/);
-    if (match) usedNums.add(parseInt(match[0], 10));
-  }
-  let n = 1;
-  while (usedNums.has(n)) n++;
-  return `CHG-${String(n).padStart(3, "0")}`;
+  return nextSequencedId(rows.map((row) => row.id as string), "CHG");
 }
 
 async function nextEventId(): Promise<string> {
   const rows = db.select({ id: events.id }).from(events).all();
-  const used = new Set<string>();
-  let maxNum = 0;
-  for (const row of rows) {
-    const id = row.id as string;
-    used.add(id);
-    const match = id.match(/^EVT-(\d+)$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
-  }
-  let nextNum = maxNum + 1;
-  let candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
+  return nextSequencedId(rows.map((row) => row.id as string), "EVT");
 }
 
 async function nextArtifactId(): Promise<string> {
   const rows = db.select({ id: artifacts.id }).from(artifacts).all();
-  let maxNum = 0;
-  for (const row of rows) {
-    const match = (row.id as string).match(/\d+$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[0], 10));
+  return nextSequencedId(rows.map((row) => row.id as string), "ART");
+}
+
+/** Bound on the disambiguating suffix, so a broken branchExists cannot spin forever. */
+const MAX_BRANCH_NAME_ATTEMPTS = 100;
+
+/**
+ * A branch name for this change that no branch currently holds.
+ *
+ * createChange used to `git checkout` the branch when the name was already
+ * taken, which is how a deleted change's work became a new change's starting
+ * point. The path was reachable because change ids get recycled (deleting the
+ * newest change frees its number again -- max+1 over live rows is not a
+ * high-water mark) and because `generateChangeBranchName` is a pure function of
+ * id and title, so re-creating a change with the same title after deleting it
+ * regenerates the identical branch name. Reproduced end to end on 2026-07-22:
+ * create -> commit -> delete -> create returned CHG-001, checked out
+ * `ship/chg-001/登录页重构`, and the deleted change's committed file was in the
+ * working tree.
+ *
+ * Adopting the branch is wrong (the new change inherits foreign commits) and so
+ * is deleting it (it can hold unmerged work, and this runs behind a UI button),
+ * so the collision is resolved by taking a different name instead. The suffix is
+ * recorded on the change row like any other branch name, so nothing downstream
+ * has to know it happened.
+ *
+ * NOTE: this makes the *branch* unique, which is the reported defect. It does
+ * not make the new branch's *base commit* independent -- createBranch cuts from
+ * whatever HEAD is currently on, and nothing in the pipeline ever returns HEAD
+ * to the default branch. That is a separate, wider question.
+ */
+function resolveFreeChangeBranchName(
+  repoPath: string,
+  changeId: string,
+  title: string,
+): string {
+  const desired = generateChangeBranchName(changeId, title);
+  if (!branchExists(repoPath, desired)) return desired;
+
+  for (let suffix = 2; suffix < MAX_BRANCH_NAME_ATTEMPTS; suffix += 1) {
+    const candidate = `${desired}-${suffix}`;
+    if (branchExists(repoPath, candidate)) continue;
+    log.warn(
+      { changeId, desired, gitBranch: candidate },
+      "Branch name was already taken (typically left behind by a deleted change); cut a distinct branch instead of reusing it",
+    );
+    return candidate;
   }
-  return `ART-${String(maxNum + 1).padStart(3, "0")}`;
+  throw new Error(
+    `Cannot create change ${changeId}: ${MAX_BRANCH_NAME_ATTEMPTS} branch names starting at ${desired} are all taken`,
+  );
 }
 
 interface CreateChangeInput {
@@ -162,12 +190,8 @@ export async function createChange(input: CreateChangeInput): Promise<Change> {
   // Create git branch if git is enabled
   let gitBranch: string | null = null;
   if (project.gitEnabled) {
-    gitBranch = generateChangeBranchName(id, input.title);
-    if (branchExists(project.repoPath, gitBranch)) {
-      checkoutBranch(project.repoPath, gitBranch);
-    } else {
-      createBranch(project.repoPath, gitBranch);
-    }
+    gitBranch = resolveFreeChangeBranchName(project.repoPath, id, input.title);
+    createBranch(project.repoPath, gitBranch);
     log.info({ changeId: id, gitBranch }, "Git branch created for change");
   }
 
@@ -323,5 +347,82 @@ export async function deleteChange(id: string): Promise<void> {
     }
   }
 
-  log.info({ changeId: id }, "Change deleted");
+  // The git branch is deliberately NOT deleted: it can hold unmerged commits,
+  // and this function is reachable from a UI button. Say so, because the branch
+  // outliving the change is exactly the state that used to get silently
+  // adopted by the next change to be handed this id.
+  //
+  // But HEAD must not be left standing on it. createBranch is `git checkout -b`,
+  // which cuts from wherever HEAD happens to be, and nothing in this codebase
+  // ever moves HEAD back -- there is no `git merge` anywhere, so successive
+  // changes deliberately stack, each cut from the previous one's tip. That
+  // stacking is load-bearing (verified in the shipped repo: `main` holds a
+  // single init commit and never advances, while ship/chg-003 sits three ahead
+  // with HEAD parked on it), so cutting new branches from the default branch
+  // instead would start every change from an empty tree and silently drop all
+  // delivered work. The narrow defect is only this: deleting a change while
+  // HEAD is on its branch makes the NEXT change stack on work a human just
+  // threw away. Step back one place in the stack instead.
+  if (project?.gitEnabled && change.gitBranch) {
+    moveHeadOffDeletedBranch(project, change.gitBranch, id);
+  }
+
+  log.info(
+    { changeId: id, retainedGitBranch: change.gitBranch },
+    change.gitBranch
+      ? "Change deleted; its git branch is retained and must be removed by hand if unwanted"
+      : "Change deleted",
+  );
+}
+
+/**
+ * Leave HEAD somewhere that survives the deletion: the newest remaining
+ * change's branch (the tip this one was cut from, so the rest of the stack is
+ * preserved), or the project's default branch when no change is left.
+ *
+ * Best-effort by design. A checkout can fail for reasons that have nothing to
+ * do with the deletion -- a dirty worktree, most obviously -- and the change
+ * row and its directory are already gone by the time we get here. Failing the
+ * whole delete over where HEAD points would turn a completed operation into an
+ * error the caller cannot act on, so this warns and leaves HEAD alone.
+ */
+function moveHeadOffDeletedBranch(
+  project: typeof projects.$inferSelect,
+  deletedBranch: string,
+  changeId: string,
+): void {
+  try {
+    if (getCurrentBranch(project.repoPath) !== deletedBranch) return;
+
+    // Ordered by change id, not by branch name: the branch name embeds the
+    // title after the id, so sorting on it would order by title whenever two
+    // ids share a prefix.
+    const survivor = db
+      .select({ id: changes.id, gitBranch: changes.gitBranch })
+      .from(changes)
+      .where(eq(changes.projectId, project.id))
+      .all()
+      .filter((row): row is { id: string; gitBranch: string } => Boolean(row.gitBranch))
+      .sort((left, right) => right.id.localeCompare(left.id))[0]?.gitBranch ?? null;
+
+    const target = survivor ?? project.gitDefaultBranch;
+    if (!target || !branchExists(project.repoPath, target)) {
+      log.warn(
+        { changeId, deletedBranch, target },
+        "HEAD is on the deleted change's branch and no surviving branch was found to move to",
+      );
+      return;
+    }
+
+    checkoutBranch(project.repoPath, target);
+    log.info(
+      { changeId, deletedBranch, movedHeadTo: target },
+      "HEAD was on the deleted change's branch; moved it so the next change does not stack on discarded work",
+    );
+  } catch (error) {
+    log.warn(
+      { changeId, deletedBranch, err: error instanceof Error ? error.message : String(error) },
+      "Could not move HEAD off the deleted change's branch; the next change would stack on discarded work",
+    );
+  }
 }

@@ -7,6 +7,7 @@ import {
   getDefinitionsForPhase,
   isEditablePhaseArtifactFileName,
 } from "./phase-artifact-service";
+import { mapRowsDegrading } from "./per-row-degradation";
 import type { PipelinePhase } from "./stage-authority-service";
 
 export const CONTENT_PHASES = [
@@ -684,13 +685,29 @@ function readKnownFiles(
   }
 
   const result: Record<string, string | undefined> = {};
-  for (const filePath of paths) {
-    if (!isPathSafe(filePath, repoPath) || !fs.existsSync(filePath)) continue;
-    if (isReviewMetadataOnlyPath(filePath)) {
-      result[filePath] = undefined;
-      continue;
-    }
-    result[filePath] = fs.readFileSync(filePath, "utf-8");
+  // existsSync answers true for a directory, so readFileSync below can throw
+  // EISDIR; an unreadable file throws EACCES. Either used to escape this loop
+  // into getChangePhaseReview and out to GET /phases, whose single try/catch
+  // answers 500 PHASE_REVIEW_UNAVAILABLE -- one unreadable file deleted all
+  // fifteen phases from the page.
+  //
+  // A file we cannot read degrades to the same shape as a file that is not
+  // there: its key is left out of the map. That is the pre-existing, already
+  // plumbed meaning of "no content to show" -- toArtifactReview turns an absent
+  // key into `missing: true`, so the row stays visible and flagged rather than
+  // masquerading as healthy -- and the read error itself is logged.
+  const entries = mapRowsDegrading(paths, {
+    operation: "readKnownFiles",
+    identify: (filePath) => filePath,
+    perRow: (filePath): { path: string; content: string | undefined } | null => {
+      if (!isPathSafe(filePath, repoPath) || !fs.existsSync(filePath)) return null;
+      if (isReviewMetadataOnlyPath(filePath)) return { path: filePath, content: undefined };
+      return { path: filePath, content: fs.readFileSync(filePath, "utf-8") };
+    },
+    degrade: () => null,
+  });
+  for (const entry of entries) {
+    if (entry) result[entry.path] = entry.content;
   }
   return result;
 }
