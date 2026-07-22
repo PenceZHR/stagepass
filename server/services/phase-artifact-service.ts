@@ -1,5 +1,7 @@
 import fs from "fs";
 import path from "path";
+import type { ChangeStatus } from "../types";
+import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
 import type { ReviewPhase } from "./change-phase-service";
 
 interface PhaseArtifactDefinitionShape {
@@ -107,21 +109,6 @@ export interface PhaseArtifactMirrorDisplayMetadata {
   };
 }
 
-const RUNNING_CHANGE_STATUSES = new Set([
-  "REFINING",
-  "INTAKE_PENDING",
-  "PLANNING",
-  "IMPLEMENTING",
-  "REVIEWING",
-  "CHECKING",
-  "FIXING",
-  "SPECCING",
-  "TECHSPECCING",
-  "TESTPLANNING",
-  "MERGING",
-  "RETRO_PENDING",
-]);
-
 const EDITABLE_FILE_NAMES: ReadonlySet<string> = new Set(
   PHASE_ARTIFACT_DEFINITIONS.filter((definition) => isEditableDefinition(definition)).map(
     (definition) => definition.fileName
@@ -180,6 +167,29 @@ export function toPhaseArtifactMirrorDisplayMetadata(
   };
 }
 
+/**
+ * Uses the one RUNNING_CHANGE_STATUSES from state-machine/transitions.ts. This
+ * file used to keep a private same-named copy that had drifted to 12 members,
+ * adding REFINING and INTAKE_PENDING. That copy made a REFINING change
+ * simultaneously "too busy to edit one artifact" here and "idle enough to
+ * delete outright" in change-service/change-rework-service, which read the
+ * authoritative set.
+ *
+ * Neither extra member is needed to keep a live run's artifacts safe:
+ *
+ * - INTAKE_PENDING is declared as a stage `runningStatus`, but it has the same
+ *   shape as DELIVERY_PENDING: it covers both "an intake run is executing" and
+ *   "parked waiting for a human". The in-flight half is caught by the
+ *   latestRunStatus check below -- ask the runs table what is actually running
+ *   rather than inferring it from the status, which is the same conclusion
+ *   deleteChange reached. The parked half should be editable.
+ *
+ * - REFINING creates no run row at all (refine-service is a chat turn with no
+ *   run ledger), so it was never protecting against a background writer. It is
+ *   the human's own clarification phase, and spec.md is the artifact that phase
+ *   exists to produce -- blocking the human from editing it while permitting
+ *   them to delete or rework the whole change was backwards.
+ */
 export function canEditPhaseArtifacts({
   status,
   latestRunStatus,
@@ -188,7 +198,7 @@ export function canEditPhaseArtifacts({
   latestRunStatus?: string | null;
 }): boolean {
   if (latestRunStatus === "running") return false;
-  return !status || !RUNNING_CHANGE_STATUSES.has(status);
+  return !status || !RUNNING_CHANGE_STATUSES.has(status as ChangeStatus);
 }
 
 export function resolveEditablePhaseArtifactPath(
