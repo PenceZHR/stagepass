@@ -231,6 +231,58 @@ describe("intake-first Refine entry contract", () => {
     assert.equal(fs.existsSync(path.join(repoPath, ".ship", "changes", CHANGE_ID, "spec.md")), true);
   });
 
+  // Refine allocates ledger ids by asking the table what is already there. It
+  // used to ask with `/\d+$/` -- "the digits at the end of the id" -- but the
+  // ledger tables also hold ids that merely END in digits: artifacts minted as
+  // `ART-<base36 ts>-<hex>` by stage-raw-capture-service, and events named after
+  // a provider process, ending in a UUID fragment. Both ids below are copied
+  // verbatim out of the production database (read-only) on 2026-07-22.
+  //
+  // The consequence is not cosmetic: the minted `EVT-<11 digits>` satisfies the
+  // anchored `^EVT-(\d+)$` that every other EVT minter reads, so one refine turn
+  // moves the whole shared sequence to 25.7 billion and it never comes back.
+  it("mints the next sequenced id, not one derived from a hex or UUID tail", async () => {
+    const now = new Date().toISOString();
+    db.insert(artifacts).values({
+      id: "ART-mrut313g-70f24fb3f0768944", // tail digits: 0768944
+      changeId: CHANGE_ID,
+      runId: null,
+      type: "stage_raw_output",
+      path: path.join(repoPath, "raw.json"),
+      createdAt: now,
+    }).run();
+    db.insert(artifacts).values({
+      id: "ART-074",
+      changeId: CHANGE_ID,
+      runId: null,
+      type: "stage_raw_output",
+      path: path.join(repoPath, "raw2.json"),
+      createdAt: now,
+    }).run();
+
+    await confirmRequirements(PROJECT_ID, CHANGE_ID, [{
+      id: "REQ-1",
+      category: "functional",
+      title: "序号铸造",
+      description: "Ledger ids must follow the sequence, not a random hex tail",
+      status: "confirmed",
+    }]);
+
+    const specArtifact = db
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.changeId, CHANGE_ID))
+      .all()
+      .find((row) => row.type === "spec");
+    assert.ok(specArtifact, "confirmRequirements must store a spec artifact");
+    assert.equal(
+      specArtifact.id,
+      "ART-075",
+      "the spec artifact must continue the ART sequence (max sequenced id 74), "
+        + "not jump to ART-768945 by reading the hex id's trailing digits",
+    );
+  });
+
   it("keeps the legacy REFINING confirmation transition to DRAFT", async () => {
     db.update(changes).set({ status: "REFINING" }).where(eq(changes.id, CHANGE_ID)).run();
 

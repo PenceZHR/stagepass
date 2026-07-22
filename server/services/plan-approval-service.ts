@@ -5,23 +5,7 @@ import { humanDecisions, planApprovals, planSnapshots } from "../db/schema";
 import { getActions } from "./action-contract-service";
 import { latestPlanSnapshot } from "./plan-snapshot-service";
 import { getStageAuthority } from "./stage-authority-service";
-
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
-}
+import { nextSequencedId as nextPrefixedId } from "./record-identity";
 
 function nextHumanDecisionId(): string {
   return nextPrefixedId(

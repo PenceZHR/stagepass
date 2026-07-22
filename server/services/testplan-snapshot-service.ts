@@ -24,6 +24,7 @@ import { getActions } from "./action-contract-service";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
 import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import type { Provider } from "./provider-selection-service";
+import { nextSequencedId as nextPrefixedId } from "./record-identity";
 
 type TestPlanSnapshotDb = typeof import("../db/index").db;
 type TestPlanSnapshotRow = typeof testplanSnapshots.$inferSelect;
@@ -173,22 +174,6 @@ function sortForStableJson(value: unknown): unknown {
 
 function sha256(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
-}
-
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
 }
 
 function nextId(selectIds: () => string[], prefix: string): string {

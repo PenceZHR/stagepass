@@ -24,6 +24,7 @@ import {
 } from "./provider-session-service";
 import type { Provider } from "./provider-selection-service";
 import { validateOutputSchema } from "./output-schema-validator";
+import { nextSequencedId } from "./record-identity";
 import {
   parseRefineLineProtocol,
   stripRefineProtocol,
@@ -36,18 +37,25 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
+/**
+ * `idDb` defaults to the module singleton but is passed the caller's in-flight
+ * transaction handle by confirmRequirements, so allocation observes rows the
+ * transaction has not committed yet.
+ *
+ * This used to read `/\d+$/` -- the digits at the end of the id -- rather than
+ * the id's sequence number. The events table also holds long process ids ending
+ * in a UUID fragment and the artifacts table holds
+ * `ART-<base36 ts>-<hex>` ids, both of which end in digits; against the real
+ * production ledger that spelling minted `EVT-25758540649` and `ART-768945`.
+ * record-identity owns the question now.
+ */
 function nextId(
   table: typeof events | typeof artifacts | typeof findings,
   prefix: string,
   idDb: Pick<typeof db, "select"> = db,
 ): string {
   const rows = idDb.select({ id: table.id }).from(table).all();
-  let maxNum = 0;
-  for (const row of rows) {
-    const match = (row.id as string).match(/\d+$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[0], 10));
-  }
-  return `${prefix}-${String(maxNum + 1).padStart(3, "0")}`;
+  return nextSequencedId(rows.map((row) => row.id as string), prefix);
 }
 
 class StageBoundaryViolationError extends Error {

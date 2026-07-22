@@ -13,15 +13,12 @@ import { deleteChangeRecords } from "./change-service";
 import { ensureFactoryRubrics, PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service";
 import { resolveGitState, syncProjectGitState } from "./project-git-state-service";
 import { resolveProvider } from "./ai-provider-service";
+import { nextSequencedId } from "./record-identity";
 import type { AiProvider } from "../types";
 import fs from "fs";
 import path from "path";
 
 const log = createChildLogger("project-service");
-
-function generateProjectId(seq: number): string {
-  return `PRJ-${String(seq).padStart(3, "0")}`;
-}
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -52,15 +49,10 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
     ? resolveGitState(absPath)
     : { gitEnabled: 0, gitDefaultBranch: null };
 
-  const maxRow = db
-    .select({ id: projects.id })
-    .from(projects)
-    .where(like(projects.id, "PRJ-%"))
-    .orderBy(sql`CAST(SUBSTR(${projects.id}, 5) AS INTEGER) DESC`)
-    .limit(1)
-    .get();
-  const maxSeq = maxRow ? parseInt(maxRow.id.slice(4), 10) : 0;
-  const id = generateProjectId(maxSeq + 1);
+  const id = nextSequencedId(
+    db.select({ id: projects.id }).from(projects).all().map((row) => row.id),
+    "PRJ",
+  );
   const now = nowISO();
 
   const project: Project = {
@@ -81,15 +73,10 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
 
   scaffoldShipDir(absPath);
 
-  const maxEvt = db
-    .select({ id: events.id })
-    .from(events)
-    .where(like(events.id, "EVT-%"))
-    .orderBy(sql`CAST(SUBSTR(${events.id}, 5) AS INTEGER) DESC`)
-    .limit(1)
-    .get();
-  const maxEvtSeq = maxEvt ? parseInt(maxEvt.id.slice(4), 10) : 0;
-  const evtId = `EVT-${String(maxEvtSeq + 1).padStart(3, "0")}`;
+  const evtId = nextSequencedId(
+    db.select({ id: events.id }).from(events).all().map((row) => row.id),
+    "EVT",
+  );
 
   db.insert(events)
     .values({

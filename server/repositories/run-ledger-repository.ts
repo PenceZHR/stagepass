@@ -9,6 +9,7 @@ import {
   currentExecutionFenceContext,
   withCurrentExecutionFenceWrite,
 } from "../services/execution-fence-service";
+import { nextSequencedId } from "../services/record-identity";
 
 /** The default (singleton) connection, or a transaction handle a caller owns. */
 export type RunLedgerDb = typeof db;
@@ -118,22 +119,7 @@ export function nextRunLedgerId(
 ): string {
   const table = ledgerTableForPrefix(prefix);
   const rows = connection.select({ id: table.id }).from(table).all();
-  const used = new Set<string>();
-  let maxNum = 0;
-  for (const row of rows) {
-    const id = row.id as string;
-    used.add(id);
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
+  return nextSequencedId(rows.map((row) => row.id as string), prefix);
 }
 
 /** Inserts the run row into a transaction the caller already owns. */

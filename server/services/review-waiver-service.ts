@@ -11,6 +11,7 @@ import {
   reviewState,
 } from "../db/schema";
 import { settlementFindingsForReviewAttempt } from "./review-report-service";
+import { nextSequencedId as nextPrefixedId } from "./record-identity";
 
 type ReviewWaiverDb = typeof import("../db/index").db;
 
@@ -70,23 +71,6 @@ function getReviewWaiverDb(): ReviewWaiverDb {
 
 function nowISO(): string {
   return new Date().toISOString();
-}
-
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
 }
 
 function nextHumanDecisionId(db: ReviewWaiverDb): string {

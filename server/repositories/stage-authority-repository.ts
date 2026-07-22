@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../db";
 import { changes, stageGates, stageReports, stageRuns, stageStates } from "../db/schema";
 import { withSqliteWriteRetry } from "../db/write-boundary";
+import { nextSequencedId as nextPrefixedId } from "../services/record-identity";
 
 /** One more than the highest of `existingVersions`, or 1 if there are none. */
 export function computeNextGateVersion(existingVersions: number[]): number {
@@ -35,23 +36,6 @@ export function setStageAuthorityRepositoryDbForTest(nextDb: StageAuthorityDb): 
 
 function getStageAuthorityDb(): StageAuthorityDb {
   return stageAuthorityRepositoryDbForTest ?? db;
-}
-
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
 }
 
 function timeMs(value: string | null): number {
