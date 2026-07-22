@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "d008805e6c577e4a5689668715b5cec9af5f607a4b8cef0d8a163f99077c912c",
+  "policySha256": "65426dde6b40976283517ad84aff13a1c16cce565b598aced829c03c4263de54",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -257,6 +257,14 @@
       "table": null,
       "owner": "Task 14",
       "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
+      "symbol": "tx.run",
+      "nodeKind": "CallExpression",
+      "table": "__raw_sql__",
+      "owner": "run-delete-plan",
+      "reason": "run-scoped delete closure: table and column come from RUN_DELETE_PLAN / RUN_POINTER_CLEARS, which run-delete-plan.test.ts derives from schema.ts, so the write targets are contract-checked rather than free-form SQL"
     },
     {
       "file": "server/services/change-rework-service.ts",

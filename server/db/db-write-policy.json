@@ -259,6 +259,14 @@
     },
     {
       "file": "server/services/change-rework-service.ts",
+      "symbol": "tx.run",
+      "nodeKind": "CallExpression",
+      "table": "__raw_sql__",
+      "owner": "run-delete-plan",
+      "reason": "run-scoped delete closure: table and column come from RUN_DELETE_PLAN / RUN_POINTER_CLEARS, which run-delete-plan.test.ts derives from schema.ts, so the write targets are contract-checked rather than free-form SQL"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
       "symbol": "tx.update",
       "nodeKind": "CallExpression",
       "table": null,
@@ -1649,7 +1657,17 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
+      "file": "app/api/projects/[id]/changes/[changeId]/phases/route-row-degradation.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "app/api/projects/[id]/changes/[changeId]/rubrics/route.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "app/api/projects/[id]/changes/[changeId]/terminal-change-route-guard.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
@@ -1684,6 +1702,21 @@
       "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
+      "file": "server/services/action-contract-job-phase-coverage.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/action-contract-merge-policy.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/action-contract-qa-retry-status.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/action-contract-self-heal-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
@@ -1700,6 +1733,11 @@
     },
     {
       "file": "server/services/artifact-mirror-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/build-record-identity.test.ts",
       "mode": "local-memory",
       "reason": "test owns an isolated in-memory SQLite fixture"
     },
@@ -1859,6 +1897,11 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
+      "file": "server/services/recovery-executors.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/refine-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
@@ -1872,6 +1915,11 @@
       "file": "server/services/review-center-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/review-center-state-divergence.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
       "file": "server/services/review-center-state-service.test.ts",
@@ -1947,6 +1995,11 @@
       "file": "server/services/scope-check-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/sequenced-id-poisoning.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
       "file": "server/services/spec-battle-repair-service.test.ts",
