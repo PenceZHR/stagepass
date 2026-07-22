@@ -442,10 +442,10 @@ describe("migration runner", () => {
     const migrationRows = sqlite.prepare("SELECT tag FROM __migrations").all();
 
     assert.deepEqual(second.applied, []);
-    // 25 with 0024_rubric_criterion_key. This is a count of the journal, so it
-    // moves by design every time a migration is added; what the test actually
-    // pins is the line above -- a second run applies nothing further.
-    assert.equal(migrationRows.length, 25);
+    // 26 with 0025_events_change_created_index. This is a count of the journal,
+    // so it moves by design every time a migration is added; what the test
+    // actually pins is the line above -- a second run applies nothing further.
+    assert.equal(migrationRows.length, 26);
   });
 
   it("hands the connection's foreign_keys setting back exactly as it found it", () => {

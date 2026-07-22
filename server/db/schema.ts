@@ -176,15 +176,25 @@ export const changeProviderSessions = sqliteTable(
   ],
 );
 
-export const events = sqliteTable("events", {
-  id: text("id").primaryKey(),
-  changeId: text("change_id").references(() => changes.id),
-  runId: text("run_id").references(() => runs.id),
-  type: text("type").notNull(),
-  message: text("message"),
-  rawJson: text("raw_json"),
-  createdAt: text("created_at").notNull(),
-});
+export const events = sqliteTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    changeId: text("change_id").references(() => changes.id),
+    runId: text("run_id").references(() => runs.id),
+    type: text("type").notNull(),
+    message: text("message"),
+    rawJson: text("raw_json"),
+    createdAt: text("created_at").notNull(),
+  },
+  // Every SSE connection re-reads its change's events every 2 seconds. Without
+  // this the only index is the TEXT primary key, so that poll is a full table
+  // scan whose cost tracks the whole table rather than the one change being
+  // watched. Column order matches the stream's query: equality on change_id,
+  // then the (created_at, id) ordering, which lets the poll's id-only read stay
+  // inside the index.
+  (table) => [index("idx_events_change_created_id").on(table.changeId, table.createdAt, table.id)],
+);
 
 export const artifacts = sqliteTable("artifacts", {
   id: text("id").primaryKey(),

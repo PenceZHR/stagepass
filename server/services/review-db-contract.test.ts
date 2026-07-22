@@ -216,6 +216,7 @@ describe("review DB contract", () => {
       // the same reason as every tag above: this list pins which migrations run
       // on a database that stopped at 0011, and a new migration belongs in it.
       "0024_rubric_criterion_key",
+      "0025_events_change_created_index",
     ]);
     assert.equal(finding.id, "FND-OLD");
     assert.equal(finding.review_attempt_id, null);
