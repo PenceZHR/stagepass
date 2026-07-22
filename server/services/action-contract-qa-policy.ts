@@ -108,7 +108,21 @@ export function retryQaDecision(
   }
 
   const current = gateDecision("QA", snapshot);
-  if (changeStatus !== "CHECK_FAILED" || gate?.status !== "failed") {
+  // No status check here on purpose. The registry's requiredStatus for
+  // retry_qa (CHECKING / CHECK_FAILED / SCOPE_FAILED) is the single authority
+  // on which statuses may retry, and decideOneAction already filters on it --
+  // identically, to not_at_gate -- before this policy is ever called, which is
+  // also exactly what the enqueue fence rejects on (change_status_mismatch).
+  // Restating it here shadowed that list with a narrower one: hard-coding
+  // CHECK_FAILED dropped SCOPE_FAILED, the status a QA run lands on when the
+  // scope check and the local commands fail in the same run
+  // (pipeline-qa-stage-service prefers SCOPE_FAILED when both fail, while
+  // qa-run-service still settles the gate "failed"). That stranded the change:
+  // the contract disabled the button and, because the retry_qa POST clears the
+  // served contract first (check/route.ts -> assertActionAllowedAsync), the
+  // only action that could move it forward 409'd too. CHECKING never reaches
+  // this line -- the qa_running short-circuit above claims it.
+  if (gate?.status !== "failed") {
     return current;
   }
 

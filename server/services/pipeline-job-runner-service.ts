@@ -10,7 +10,32 @@ export type PipelineJobRunner = (
   job: PipelineJobRecord,
   context: JobExecutionContext,
 ) => Promise<unknown>;
-export type PipelineJobRunnerMap = Record<string, PipelineJobRunner>;
+
+/**
+ * "phase:actionId" for exactly the pairs the authority table declares.
+ *
+ * Derived from PipelineJobRecord -- which carries PipelineJobSelection, the
+ * discriminated union built from PIPELINE_JOB_ACTIONS_BY_PHASE in
+ * pipeline-job-types.ts -- rather than restated here. The key set was previously
+ * plain `string`, so adding a pair to the authority table without writing a
+ * runner compiled cleanly and only threw once that job actually executed.
+ */
+export type PipelineJobRunnerKey =
+  PipelineJobRecord extends infer Job
+    ? Job extends { phase: infer P extends string; actionId: infer A extends string }
+      ? `${P}:${A}`
+      : never
+    : never;
+
+/**
+ * Override maps (tests, the acceptance worker barrier) intentionally cover only
+ * the pairs they care about, so the public shape stays partial. The built-in map
+ * below is held to CompletePipelineJobRunnerMap instead.
+ */
+export type PipelineJobRunnerMap = Partial<Record<PipelineJobRunnerKey, PipelineJobRunner>>;
+
+/** Every declared pair must have a runner. A missing one is a compile error. */
+type CompletePipelineJobRunnerMap = Record<PipelineJobRunnerKey, PipelineJobRunner>;
 
 export interface PipelineWorkerStageApi {
   runIntake(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
@@ -48,11 +73,15 @@ export interface RunPipelineJobOptions {
   pipeline?: PipelineWorkerStageApi;
 }
 
-function runnerKey(job: Pick<PipelineJobRecord, "phase" | "actionId">): string {
-  return `${job.phase}:${job.actionId}`;
+// The cast is the one place a validated (phase, actionId) record is flattened
+// into its key: TypeScript does not correlate the two fields across a union, so
+// the raw template type would be every phase crossed with every actionId.
+// parsePipelineJobPayload has already rejected undeclared pairs by this point.
+function runnerKey(job: Pick<PipelineJobRecord, "phase" | "actionId">): PipelineJobRunnerKey {
+  return `${job.phase}:${job.actionId}` as PipelineJobRunnerKey;
 }
 
-function runnerMapForPipeline(pipeline: PipelineWorkerStageApi): PipelineJobRunnerMap {
+function runnerMapForPipeline(pipeline: PipelineWorkerStageApi): CompletePipelineJobRunnerMap {
   return {
     "intake:run_prd": (job, context) => pipeline.runIntake(job.changeId, context, job.provider),
     "intake:retry_prd": (job, context) => pipeline.runIntake(job.changeId, context, job.provider),

@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+import {
+  BATTLE_ROUND_STATUSES,
+} from "./battle-round-status";
+
 export const AiProvider = z.enum(["codex", "claude"]);
 export type AiProvider = z.infer<typeof AiProvider>;
 
@@ -151,18 +155,19 @@ export type BattleUnit = z.infer<typeof BattleUnit>;
 export const BattleTemplate = z.enum(["SPEC_BATTLE_MVP"]);
 export type BattleTemplate = z.infer<typeof BattleTemplate>;
 
-export const BattleRoundStatus = z.enum([
-  "not_started",
-  "red_running",
-  "red_done",
-  "blue_running",
-  "blue_done",
-  "report_ready",
-  "closed",
-  "superseded",
-  "failed",
-]);
+// Derived from the dependency-free canonical list so the two cannot drift, and
+// so client components can import the predicates without pulling zod. See
+// battle-round-status.ts.
+export const BattleRoundStatus = z.enum(BATTLE_ROUND_STATUSES);
 export type BattleRoundStatus = z.infer<typeof BattleRoundStatus>;
+
+export {
+  BATTLE_ROUND_STATUSES,
+  RUNNING_BATTLE_ROUND_STATUSES,
+  OCCUPIED_BATTLE_ROUND_STATUSES,
+  isRunningBattleRoundStatus,
+  isOccupiedBattleRoundStatus,
+} from "./battle-round-status";
 
 export const RequirementGapStatus = z.enum([
   "open",

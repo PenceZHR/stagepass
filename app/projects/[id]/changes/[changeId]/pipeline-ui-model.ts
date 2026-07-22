@@ -1,3 +1,4 @@
+import type { BattleRoundStatus } from "@/server/types/battle-round-status";
 import type { ChangeDetail, PhaseOverview } from "./change-detail-types";
 import type { ReviewPhase } from "./change-phase-map";
 import type { GateStatus } from "./gate-types";
@@ -292,7 +293,22 @@ const RUN_PHASE_TO_STAGE: Record<string, UiStageId> = {
   delivery: "done",
 };
 
-const ACTIVE_SPEC_BATTLE_STATUSES = new Set(["not_started", "running", "red_running", "blue_running"]);
+/**
+ * "The spec battle owns the pipeline's active stage."
+ *
+ * Deliberately NOT the same rule as RUNNING_BATTLE_ROUND_STATUSES in
+ * server/types/enums.ts: `not_started` puts the pipeline on the spec stage
+ * without anything executing, so this set is a superset by design, not by drift.
+ * The `satisfies` clause pins every member to a real BattleRoundStatus -- this
+ * set previously carried a bare "running" that no writer ever writes to
+ * battle_rounds.status, so that member could never match.
+ */
+const ACTIVE_SPEC_BATTLE_STATUS_LIST = [
+  "not_started",
+  "red_running",
+  "blue_running",
+] as const satisfies readonly BattleRoundStatus[];
+const ACTIVE_SPEC_BATTLE_STATUSES = new Set<string>(ACTIVE_SPEC_BATTLE_STATUS_LIST);
 const REVIEW_FAILED_GATE_STATUSES = new Set<ReviewCenterGateStatus>(["invalid_output", "data_inconsistent"]);
 
 export function buildUiPipelineState(input: {

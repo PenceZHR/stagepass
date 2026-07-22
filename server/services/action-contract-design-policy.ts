@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { requirementGaps } from "../db/schema";
+import { isRunningBattleRoundStatus } from "../types/enums";
 import type {
   ActionContractDb,
   ActionDecision,
@@ -110,7 +111,7 @@ export function specRunDecision(
   const latestRound = getSpecBattleState(changeId).latestRound;
   const latestStatus = latestRound?.status ?? null;
 
-  if (latestStatus === "red_running" || latestStatus === "blue_running") {
+  if (isRunningBattleRoundStatus(latestStatus)) {
     return disabled("spec_round_running");
   }
   if (latestStatus === "failed") {

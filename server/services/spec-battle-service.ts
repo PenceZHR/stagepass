@@ -20,6 +20,7 @@ import {
   warReports,
 } from "../db/schema";
 import type { ChangeStatus } from "../types";
+import { isOccupiedBattleRoundStatus, isRunningBattleRoundStatus } from "../types/enums";
 import {
   computeGapCounts,
   effectiveSeverity,
@@ -692,7 +693,7 @@ export async function startSpecBattleRound(
   }
 
   const current = rounds.at(-1);
-  if (current && ["not_started", "red_running", "blue_running"].includes(current.status)) {
+  if (current && isOccupiedBattleRoundStatus(current.status)) {
     throw new SpecBattleError("round_running");
   }
 
@@ -795,7 +796,7 @@ export function claimSpecBattleRedRun(input: {
       };
     }
 
-    if (round.status === "red_running" || round.status === "blue_running") {
+    if (isRunningBattleRoundStatus(round.status)) {
       const activeSpecRun = tx
         .select()
         .from(runs)

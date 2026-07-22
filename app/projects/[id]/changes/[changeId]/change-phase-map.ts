@@ -1,3 +1,4 @@
+import { isRunningBattleRoundStatus } from "@/server/types/battle-round-status";
 import type { RunPhase } from "@/server/types/enums";
 import type { ChangeDetail } from "./change-detail-types";
 import type { ReviewCenterResponse } from "./review-report-center";
@@ -267,7 +268,7 @@ export function shouldPollChangeDetailParent({
   if (change.latestRun?.status === "running") return true;
   if (change.status === "SPECCING" && specBattleState?.latestRound?.status === "not_started") return false;
   if (PARENT_POLLING_CHANGE_STATUSES.has(change.status)) return true;
-  if (["red_running", "blue_running"].includes(specBattleState?.latestRound?.status ?? "")) return true;
+  if (isRunningBattleRoundStatus(specBattleState?.latestRound?.status)) return true;
   return reviewCenterState?.headlineStatus === "running" ||
     reviewCenterState?.latestAttempt?.runStatus === "running" ||
     reviewCenterState?.latestAttempt?.reviewStatus === "running";

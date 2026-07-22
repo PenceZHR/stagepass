@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { isRunningBattleRoundStatus } from "@/server/types/battle-round-status";
 import type {
   BattleDecisionAction,
   RequirementGap,
@@ -232,9 +233,8 @@ export function SpecBattlefield({
   const p1Targets = useMemo(() => selectWaivableP1Gaps(gaps), [gaps]);
   const [selectedP1GapId, setSelectedP1GapId] = useState("");
   const selectedP1Gap = resolveWaiveP1Gap(p1Targets, selectedP1GapId);
-  const runningRoundStatuses = ["red_running", "blue_running"];
-  const specBattleRunningStatus = runningRoundStatuses.includes(specBattle.roundStatus ?? "") ? specBattle.roundStatus : null;
-  const latestRoundRunningStatus = runningRoundStatuses.includes(latestRound?.status ?? "") ? latestRound?.status ?? null : null;
+  const specBattleRunningStatus = isRunningBattleRoundStatus(specBattle.roundStatus) ? specBattle.roundStatus : null;
+  const latestRoundRunningStatus = isRunningBattleRoundStatus(latestRound?.status) ? latestRound?.status ?? null : null;
   const runningRoundStatus = specBattleRunningStatus ?? latestRoundRunningStatus;
   const roundRunning = Boolean(runningRoundStatus);
   const currentRoundStatus = runningRoundStatus ?? specBattle.roundStatus ?? latestRound?.status ?? "";

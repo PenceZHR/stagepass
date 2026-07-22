@@ -37,6 +37,7 @@ import {
   sameFence,
 } from "./recovery-predicates";
 import { fileObservationsMatch } from "./recovery-evidence";
+import { RUNNING_BATTLE_ROUND_STATUSES } from "../types/battle-round-status";
 import {
   captureEvidenceDbSnapshot,
   documentStagePhases,
@@ -65,6 +66,39 @@ type EvidenceDbQueryHook = (
 ) => void;
 
 class RecoveryCasMissError extends Error {}
+
+/**
+ * The statuses a Spec round holds while it claims to be in flight, and the only
+ * definition of that claim in the recovery executors. Every path that settles a
+ * round -- both in-transaction arms and the standalone sweep -- reads it from
+ * here so widening or narrowing the claim cannot land on one path and miss the
+ * others.
+ */
+// Imported, not restated. This was the last local copy of the pair; the
+// inventory test in server/types/enums.test.ts asserts it is gone.
+
+/**
+ * The Spec round a change currently claims to be running, or null.
+ *
+ * Deliberately matched on the round's own status rather than derived from the
+ * recovering run's phase. One round spans two providers but only ever one run
+ * row, and spec-battle-service claims that run with `phase: "spec"` on both
+ * halves -- including the resumeBlue path, which sets the round to blue_running
+ * behind a "spec" run. Deriving the status from the phase therefore looked for
+ * red_running, matched zero rows, and left the round claiming to run for ever;
+ * a round stuck that way blocks run_spec with spec_round_running and has no
+ * other way back.
+ */
+function selectInFlightSpecRound(
+  tx: Pick<RecoveryDb, "select">,
+  changeId: string,
+): typeof battleRounds.$inferSelect | null {
+  return tx.select().from(battleRounds).where(and(
+    eq(battleRounds.changeId, changeId),
+    inArray(battleRounds.phase, ["Spec", "spec"]),
+    inArray(battleRounds.status, [...RUNNING_BATTLE_ROUND_STATUSES]),
+  )).get() ?? null;
+}
 
 const fallbackStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
   intake: "BLOCKED",
@@ -316,18 +350,13 @@ export function recoverMissingProvider(input: {
       }
 
       if (ownsChange && (run.phase === "spec" || run.phase === "spec_critic")) {
-        const runningRoundStatus = run.phase === "spec_critic" ? "blue_running" : "red_running";
-        const currentRound = tx.select().from(battleRounds).where(and(
-          eq(battleRounds.changeId, run.changeId),
-          inArray(battleRounds.phase, ["Spec", "spec"]),
-          eq(battleRounds.status, runningRoundStatus),
-        )).get() ?? null;
+        const currentRound = selectInFlightSpecRound(tx as unknown as RecoveryDb, run.changeId);
         if (currentRound) {
           const roundCas = tx.update(battleRounds)
             .set({ status: "failed", endedAt: recoveredAt, updatedAt: recoveredAt })
             .where(and(
               eq(battleRounds.id, currentRound.id),
-              eq(battleRounds.status, runningRoundStatus),
+              eq(battleRounds.status, currentRound.status),
             ))
             .run();
           if (roundCas.changes !== 1) throw new RecoveryCasMissError();
@@ -970,18 +999,9 @@ export function recoverExistingProvider(input: {
 
       if (ownsChange) {
         if (effectivePhase === "spec" || effectivePhase === "spec_critic") {
-          // Match on whichever half is actually outstanding rather than deriving
-          // it from the provider phase. One round spans two providers, so the
-          // round routinely sits at blue_running while the provider being
-          // reconciled is the red one that just finished. Deriving the status
-          // from the phase looked for red_running, found nothing, and left the
-          // round claiming to run forever -- and a round stuck that way blocks
-          // run_spec with spec_round_running and has no other way back.
-          const currentRound = tx.select().from(battleRounds).where(and(
-            eq(battleRounds.changeId, run.changeId),
-            inArray(battleRounds.phase, ["Spec", "spec"]),
-            inArray(battleRounds.status, ["red_running", "blue_running"]),
-          )).get() ?? null;
+          // Same rule, and the same single definition, as recoverMissingProvider's
+          // spec arm: the round's own status is the claim, never the provider phase.
+          const currentRound = selectInFlightSpecRound(tx as unknown as RecoveryDb, run.changeId);
           if (currentRound) {
             const roundCas = tx.update(battleRounds)
             .set({
@@ -1261,7 +1281,7 @@ export function recoverProviderAfterTerminalRun(input: {
 export function recoverStrandedBattleRounds(observedAt: Date = new Date()): string[] {
   const recoveredAt = observedAt.toISOString();
   const stranded = db.select().from(battleRounds)
-    .where(inArray(battleRounds.status, ["red_running", "blue_running"])).all();
+    .where(inArray(battleRounds.status, [...RUNNING_BATTLE_ROUND_STATUSES])).all();
   const recovered: string[] = [];
   for (const round of stranded) {
     const liveRun = db.select({ id: runs.id }).from(runs).where(and(

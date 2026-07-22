@@ -13,7 +13,6 @@ import {
   resolveWaiveP1Target,
   selectWaivableP1Findings,
   waiveP1TargetHint,
-  type ReviewCenterAction,
   type ReviewCenterResponse,
   type ReviewFindingView,
 } from "./review-report-center";
@@ -122,14 +121,6 @@ function reviewCenterResponse(findings: ReviewFindingView[]): ReviewCenterRespon
     findings,
     waivers: [],
     mirrorWarnings: [],
-    actions: {
-      canRunReview: false,
-      canRetryReview: true,
-      canFixBlockers: true,
-      canWaiveP1: true,
-      canEnterQa: false,
-      canStopChange: true,
-    },
     advancedDetails: { latestAttempt: null, latestValidReview: null },
   };
 }
@@ -237,40 +228,10 @@ function renderSpecBattlefield(gaps: RequirementGap[]): string {
   );
 }
 
-function reviewCenterAction(
-  id: ReviewCenterAction["id"],
-  enabled: boolean,
-  reason: string | null = enabled ? null : "disabled",
-): ReviewCenterAction {
-  return {
-    id,
-    enabled,
-    reason,
-    idempotencyRequired: true,
-  };
-}
-
-function reviewCenterActions(
-  overrides: Partial<ReviewCenterResponse["actions"]> = {},
-): ReviewCenterResponse["actions"] {
-  return {
-    run_review: reviewCenterAction("run_review", true),
-    retry_review: reviewCenterAction("retry_review", false, "Retry is only available for failed or stale Review state."),
-    fix_blockers: reviewCenterAction("fix_blockers", false),
-    waive_review_p1: reviewCenterAction("waive_review_p1", false),
-    enter_qa: reviewCenterAction("enter_qa", false),
-    stop_change: reviewCenterAction("stop_change", true),
-    recompute_report: reviewCenterAction("recompute_report", false),
-    rebuild_mirror: reviewCenterAction("rebuild_mirror", false),
-    canRunReview: true,
-    canRetryReview: false,
-    canFixBlockers: false,
-    canWaiveP1: false,
-    canEnterQa: false,
-    canStopChange: true,
-    ...overrides,
-  };
-}
+// Removed the reviewCenterAction / reviewCenterActions fixture builders. They
+// constructed the review center's second action contract, which no longer
+// exists -- and the fixture had itself drifted from the wire, building a
+// `waive_review_p1` key while the server sent `waive_p1`.
 
 function pipelineAction(actionId: "run_review" | "retry_review", enabled: boolean): PipelineActionContract {
   return reviewPipelineAction(actionId, enabled);
@@ -1463,29 +1424,20 @@ describe("phase review UI", () => {
     assert.doesNotMatch(src, /finding\.severity === "P2"[\s\S]*data-blocker/);
   });
 
-  it("disables the Review retry command from review-center actions while Review is running", () => {
-    const command = resolveReviewRunCommand({
-      gate: "running",
-      centerActions: reviewCenterActions({
-        run_review: reviewCenterAction("run_review", false, "Review is already running."),
-        retry_review: reviewCenterAction(
-          "retry_review",
-          false,
-          "Retry is only available for failed or stale Review state.",
-        ),
-        canRunReview: false,
-        canRetryReview: false,
-      }),
-      pipelineActions: [pipelineAction("retry_review", true)],
-    });
-
-    assert.equal(command.actionId, "retry_review");
-    assert.equal(command.label, "重新审查");
-    assert.equal(command.enabled, false);
-    assert.equal(command.disabledReason, "Retry is only available for failed or stale Review state.");
-  });
-
-  it("keeps Review retry disabled while running before review-center actions load", () => {
+  it("disables the Review retry command from the review gate while Review is running", () => {
+    // Was: "disables the Review retry command from review-center actions while
+    // Review is running". It pinned that the review center's own action block
+    // was the thing that held the retry button down during a run, and that its
+    // veto outranked an action contract that said enabled.
+    //
+    // The behaviour it cared about -- no restarting a Review out from under a
+    // running one -- is unchanged and still asserted below. What changed is
+    // where it comes from: the review gate, which is the fact the center
+    // actually owns. The center's action block was a second implementation of
+    // action enablement, and the very predicate that disabled retry here also
+    // disabled it at blocked_p0/blocked_p1, where retry is the only way
+    // forward. Only the expected reason string moves, from the center's copy to
+    // the gate's.
     const command = resolveReviewRunCommand({
       gate: "running",
       pipelineActions: [pipelineAction("retry_review", true)],
@@ -1497,18 +1449,43 @@ describe("phase review UI", () => {
     assert.equal(command.disabledReason, "Review is still running.");
   });
 
-  it("keeps Review retry enabled after failure when review-center and pipeline contracts allow it", () => {
+  // Removed: "keeps Review retry disabled while running before review-center
+  // actions load". It pinned the fallback used while the review-center fetch
+  // was still in flight and its action block had not arrived -- the resolver
+  // applied its own running check only when centerActions was absent. There is
+  // no centerActions path any more, so that test became byte-for-byte the same
+  // call as the one directly above it, asserting the same four values. The
+  // behaviour is still covered there.
+
+  it("keeps Review retry enabled after failure when the action contract allows it", () => {
+    // Was "...when review-center and pipeline contracts allow it": it required
+    // both the center's copy and the contract to agree. Only the contract is
+    // consulted now, so the center half of the setup is gone; the assertions
+    // are untouched.
     const command = resolveReviewRunCommand({
       gate: "failed",
-      centerActions: reviewCenterActions({
-        retry_review: reviewCenterAction("retry_review", true),
-        canRetryReview: true,
-      }),
       pipelineActions: [pipelineAction("retry_review", true)],
     });
 
     assert.equal(command.actionId, "retry_review");
     assert.equal(command.label, "重新审查");
+    assert.equal(command.enabled, true);
+    assert.equal(command.disabledReason, null);
+  });
+
+  it("keeps Review retry enabled at blocked_p0, the state that most needs it", () => {
+    // Review found a P0, so the change sits at CHECK_FAILED with the gate at
+    // blocked_p0 -- the one state where re-running Review is the whole point.
+    // The action contract and the enqueue authority both allow it there
+    // (retry_review's requiredStatus includes CHECK_FAILED), but the review
+    // center carried its own copy of the retry rule that only listed
+    // failed/invalid_output/data_inconsistent/stale, and that copy vetoed.
+    const command = resolveReviewRunCommand({
+      gate: "blocked_p0",
+      pipelineActions: [pipelineAction("retry_review", true)],
+    });
+
+    assert.equal(command.actionId, "retry_review");
     assert.equal(command.enabled, true);
     assert.equal(command.disabledReason, null);
   });
@@ -1585,9 +1562,16 @@ describe("phase review UI", () => {
   it("does not present running Spec Battle rounds as stale reports", () => {
     const component = readFileSync(resolve(__dirname, "spec-battlefield.tsx"), "utf-8");
 
-    assert.match(component, /const runningRoundStatuses = \["red_running", "blue_running"\]/);
-    assert.match(component, /const specBattleRunningStatus = runningRoundStatuses\.includes\(specBattle\.roundStatus \?\? ""\) \? specBattle\.roundStatus : null/);
-    assert.match(component, /const latestRoundRunningStatus = runningRoundStatuses\.includes\(latestRound\?\.status \?\? ""\) \? latestRound\?\.status \?\? null : null/);
+    // This used to pin a local `const runningRoundStatuses = ["red_running",
+    // "blue_running"]` literal inside the component. That literal was one of four
+    // independent restatements of "a round is executing"; it is now imported from
+    // server/types/enums.ts. The assertion below pins the import instead, because
+    // the import is what stops a fourth copy from growing back. Which statuses
+    // count as running is pinned in server/types/enums.test.ts. The two
+    // derivations keep their original behaviour, only the call spelling changed.
+    assert.match(component, /import \{ isRunningBattleRoundStatus \} from "@\/server\/types\/battle-round-status"/);
+    assert.match(component, /const specBattleRunningStatus = isRunningBattleRoundStatus\(specBattle\.roundStatus\) \? specBattle\.roundStatus : null/);
+    assert.match(component, /const latestRoundRunningStatus = isRunningBattleRoundStatus\(latestRound\?\.status\) \? latestRound\?\.status \?\? null : null/);
     assert.match(component, /const runningRoundStatus = specBattleRunningStatus \?\? latestRoundRunningStatus/);
     assert.match(component, /const roundRunning = Boolean\(runningRoundStatus\)/);
     assert.match(component, /const currentRoundStatus = runningRoundStatus \?\? specBattle\.roundStatus \?\? latestRound\?\.status \?\? ""/);
