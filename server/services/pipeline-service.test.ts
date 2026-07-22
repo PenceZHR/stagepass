@@ -11401,18 +11401,6 @@ describe("pipeline-service v2 stages", () => {
                   status: "pending",
                 },
               ],
-              // Matches the TestPlan's COMMAND! line below. The QA gate now
-              // refuses while the TestPlan leaves a Plan-declared command
-              // uncovered, so a run that ends at DONE has to be one where the
-              // two agree -- this fixture is the pipeline's happy path and has
-              // to show that.
-              //
-              // Not the default `npm test -- server/services/pipeline-service.test.ts`
-              // this helper carries: QA executes required commands through
-              // execSync, so covering that one would have this test run the
-              // whole suite inside itself. The default stays for the Plan-writer
-              // test, which asserts the persisted command list and never runs QA.
-              validationCommands: ["node -e \"console.log('testplan db command')\""],
             }))
             : isReview
             ? reviewLineProtocolText()
