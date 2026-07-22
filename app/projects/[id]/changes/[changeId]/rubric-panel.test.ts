@@ -114,9 +114,19 @@ describe("rubric drawer: verdict display", () => {
     // answer; §4.3 blocks on it regardless of the criterion's blocking flag,
     // because silence is otherwise a free way to skip the questions a model
     // expects to fail. A quiet grey dash would hide that.
-    assert.equal(verdictTone("not_assessed"), verdictTone("no"));
-    assert.equal(verdictToneClass("not_assessed"), verdictToneClass("no"));
-    assert.notEqual(verdictToneClass("not_assessed"), verdictToneClass("yes"));
+    // These three used to be called with one argument. verdictTone now needs
+    // the criterion's blocking flag, because the verdict alone never determined
+    // the answer -- and called with the argument missing they still passed, for
+    // the wrong reason: undefined is falsy, so both sides collapsed to the
+    // advisory tone and compared equal. Pinning both flag values instead.
+    assert.equal(verdictTone("not_assessed", true), verdictTone("no", true));
+    assert.equal(verdictTone("not_assessed", false), verdictTone("no", false));
+    assert.equal(verdictToneClass("not_assessed", true), verdictToneClass("no", true));
+    assert.notEqual(verdictToneClass("not_assessed", true), verdictToneClass("yes", true));
+    // The distinction the panel was missing entirely:
+    assert.equal(verdictTone("no", true), "block");
+    assert.equal(verdictTone("no", false), "recorded");
+    assert.notEqual(verdictToneClass("no", true), verdictToneClass("no", false));
 
     const markup = render(
       panelState({
@@ -145,6 +155,48 @@ describe("rubric drawer: verdict display", () => {
       (markup.match(/data-rubric-blocks-gate/g) ?? []).length,
       2,
       "both blocking verdicts carry the 阻断 tag; the passing one does not",
+    );
+  });
+
+  it("does not call a no on a non-blocking criterion 阻断 (it stops nothing)", () => {
+    // Reproduced in a real browser against a copy of the shipped database:
+    // CHG-003's Spec/verdict tab rendered criterion RBC-1e6ba8ae ("正反双方对同
+    // 一条需求的判断，不存在任何未被处理的直接冲突。") with the red block tone
+    // AND a 阻断 badge -- while that criterion is blocking=0 in the database, so
+    // rubricOutcome files it as advisory and it stops nothing. All 25 recorded
+    // `no` verdicts in that database sit on non-blocking criteria, so every one
+    // of them was mislabelled. The row also drew 非阻断 at the same time,
+    // contradicting its own badge, because the two came from different sources.
+    const markup = render(
+      panelState({
+        roles: [
+          rolePanel({
+            verdicts: [
+              verdict("no", { criterionKey: "RBK-advisory", blocking: false }),
+              verdict("no", { criterionKey: "RBK-blocking", blocking: true }),
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const advisoryLi = /<li[^>]*data-rubric-criterion-key="RBK-advisory"[^>]*>/.exec(markup);
+    const blockingLi = /<li[^>]*data-rubric-criterion-key="RBK-blocking"[^>]*>/.exec(markup);
+    assert.ok(advisoryLi, "advisory row must render");
+    assert.ok(blockingLi, "blocking row must render");
+    assert.match(advisoryLi![0], /data-rubric-tone="recorded"/);
+    assert.match(blockingLi![0], /data-rubric-tone="block"/);
+
+    // Exactly one 阻断 badge on the page: the one that actually blocks.
+    assert.equal(
+      (markup.match(/data-rubric-blocks-gate/g) ?? []).length,
+      1,
+      "only the blocking criterion may claim to block the gate",
+    );
+    assert.equal(
+      (markup.match(/data-rubric-recorded-only/g) ?? []).length,
+      1,
+      "the advisory criterion is marked recorded-only",
     );
   });
 

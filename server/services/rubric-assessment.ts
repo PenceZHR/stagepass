@@ -186,6 +186,34 @@ export interface RubricOutcome {
  * is untouched -- and `notAssessedCriterionIds` still lists every unanswered
  * criterion, so nothing stops being visible.
  */
+/**
+ * What a single verdict does, given the criterion it was recorded against.
+ *
+ * `blocks` stops the pipeline; `recorded` is written down and shown but stops
+ * nothing; `pass` is a satisfied criterion.
+ *
+ * This exists so the rule has exactly one statement. `rubricOutcome` below is
+ * built on it, and so is the rubric panel -- which previously derived its red
+ * "阻断" styling from the verdict ALONE. On production data that made every one
+ * of the 25 recorded `no` verdicts render as blocking, though all 25 sat on
+ * non-blocking criteria (268 of 276 criteria are non-blocking). The panel drew
+ * "阻断" and "非阻断" on the same row, contradicting itself, because the badge
+ * came from the verdict and the label came from the flag.
+ */
+export type RubricVerdictEffect = "pass" | "blocks" | "recorded";
+
+export function rubricVerdictEffect(
+  verdict: RubricVerdict,
+  criterionBlocking: boolean,
+): RubricVerdictEffect {
+  if (verdict === "yes") return "pass";
+  // `no` and `not_assessed` behave identically here, and deliberately so: see
+  // the scoping discussion on rubricOutcome. Silence on a criterion nobody
+  // marked blocking buys a model nothing, because answering it `no` would not
+  // have blocked either.
+  return criterionBlocking ? "blocks" : "recorded";
+}
+
 export function rubricOutcome(
   criteria: readonly RubricCriterion[],
   assessments: readonly RubricAssessmentDraft[],
@@ -201,14 +229,15 @@ export function rubricOutcome(
     // no known `blocking` flag is a bug, and the safe reading of a bug is that
     // it blocks.
     const advisory = blockingById.get(assessment.criterionId) === false;
+    const effect = rubricVerdictEffect(assessment.verdict, !advisory);
     if (assessment.verdict === "not_assessed") {
       notAssessedCriterionIds.push(assessment.criterionId);
-      if (advisory) advisoryCriterionIds.push(assessment.criterionId);
+      if (effect === "recorded") advisoryCriterionIds.push(assessment.criterionId);
       else blockingCriterionIds.push(assessment.criterionId);
       continue;
     }
     if (assessment.verdict !== "no") continue;
-    if (advisory) {
+    if (effect === "recorded") {
       advisoryCriterionIds.push(assessment.criterionId);
     } else {
       failedCriterionIds.push(assessment.criterionId);
