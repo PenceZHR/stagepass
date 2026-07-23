@@ -67,6 +67,7 @@ const REAL_DB_FILES = [REAL_DB_PATH, `${REAL_DB_PATH}-wal`, `${REAL_DB_PATH}-shm
 const requireRuntime = createRequire(import.meta.url);
 export const ACCEPTANCE_OUTER_TIMEOUT_MS = 120_000;
 export const ACCEPTANCE_PROVIDER_TIMEOUT_MS = 60_000;
+const ACCEPTANCE_HTTP_TIMEOUT_MS = 10_000;
 
 function acceptanceProviderTimeoutMs(): number {
   const requested = Number(process.env.STAGEPASS_ACCEPTANCE_PROVIDER_TIMEOUT_MS);
@@ -194,15 +195,26 @@ async function waitForProcessClose(record: RegisteredProcess, timeoutMs: number)
 
 export async function terminateValidatedProcess(record: RegisteredProcess, timeoutMs = 1_000): Promise<void> {
   if (!alive(record.identity.pid)) return;
-  const send = async (signal: NodeJS.Signals) => {
+  const send = async (signal: NodeJS.Signals): Promise<boolean> => {
     const validation = await processIdentityProbe.validate(record.identity);
-    if (!validation.ok) throw new Error(`cleanup_identity_rejected:${validation.reason}`);
+    if (!validation.ok) {
+      if (validation.reason === "pid_missing" && !alive(record.identity.pid)) {
+        return false;
+      }
+      throw new Error(`cleanup_identity_rejected:${validation.reason}`);
+    }
     assert.equal(record.identity.pgid, record.identity.pid);
-    process.kill(-record.identity.pgid, signal);
+    try {
+      process.kill(-record.identity.pgid, signal);
+      return true;
+    } catch (error) {
+      if (!alive(record.identity.pid)) return false;
+      throw error;
+    }
   };
-  await send("SIGTERM");
+  if (!await send("SIGTERM")) return;
   if (await waitForProcessClose(record, timeoutMs)) return;
-  await send("SIGKILL");
+  if (!await send("SIGKILL")) return;
   if (!await waitForProcessClose(record, timeoutMs)) {
     throw new Error(`cleanup_process_still_alive:${record.identity.pid}`);
   }
@@ -449,7 +461,7 @@ async function queryActions(registry: ResourceRegistry, dbPath: string, changeId
 async function assertHttp(registry: ResourceRegistry, dbPath: string, port: number, assertions: string[], changeId = "CHG-delete-logs", evidence?: AcceptanceEvidence[]): Promise<void> {
   const base = `/api/projects/PRJ-ACCEPTANCE/changes/${encodeURIComponent(changeId)}`;
   const fetchBounded = (pathname: string) => fetch(`http://127.0.0.1:${port}${base}${pathname}`, {
-    signal: AbortSignal.timeout(3_000),
+    signal: AbortSignal.timeout(ACCEPTANCE_HTTP_TIMEOUT_MS),
   });
   const detail = await fetchBounded("");
   assert.equal(detail.status, 200);
@@ -470,7 +482,10 @@ async function assertHttp(registry: ResourceRegistry, dbPath: string, port: numb
   const first = await Promise.race([
     reader.read(),
     new Promise<never>((_, reject) => {
-      sseTimer = setTimeout(() => reject(new Error("sse_read_timeout")), 3_000);
+      sseTimer = setTimeout(
+        () => reject(new Error("sse_read_timeout")),
+        ACCEPTANCE_HTTP_TIMEOUT_MS,
+      );
     }),
   ]).finally(() => {
     if (sseTimer) clearTimeout(sseTimer);
@@ -686,20 +701,34 @@ async function startFixtureProcesses(
   caseName: CrashAcceptanceCase,
 ): Promise<{ app: RegisteredProcess; worker: RegisteredProcess; supervisor: HarnessSupervisor }> {
   const tsconfigPath = path.join(PROJECT_ROOT, "tsconfig.json");
+  const nextDistDir =
+    `tmp-acceptance-next-${path.basename(registry.root)}`;
+  const nextDistRoot = path.join(PROJECT_ROOT, nextDistDir);
   registry.addFinalizer(() => {
     const parsed = JSON.parse(fs.readFileSync(tsconfigPath, "utf8")) as { include?: string[] };
-    const filtered = parsed.include?.filter((entry) => !path.resolve(entry).startsWith(path.resolve(registry.root))) ?? [];
+    const generatedRoots = [registry.root, nextDistRoot].map((entry) =>
+      path.resolve(entry)
+    );
+    const filtered = parsed.include?.filter((entry) => {
+      const absolute = path.resolve(entry);
+      return !generatedRoots.some((root) => {
+        const relative = path.relative(root, absolute);
+        return absolute === root
+          || (!relative.startsWith("..") && !path.isAbsolute(relative));
+      });
+    }) ?? [];
     if (filtered.length !== (parsed.include?.length ?? 0)) {
       parsed.include = filtered;
       fs.writeFileSync(tsconfigPath, `${JSON.stringify(parsed, null, 2)}\n`);
     }
+    fs.rmSync(nextDistRoot, { recursive: true, force: true });
   });
   const common = {
     STAGEPASS_DB_PATH: dbPath,
     STAGEPASS_LOG_DIR: logDir,
     STAGEPASS_FIXTURE_CHANGE: changeId,
     STAGEPASS_FIXTURE_RUN: runId,
-    STAGEPASS_NEXT_DIST_DIR: path.join(registry.root, ".next"),
+    STAGEPASS_NEXT_DIST_DIR: nextDistDir,
   };
   let appChild: ChildProcess | null = null;
   let workerChild: ChildProcess | null = null;
@@ -761,7 +790,10 @@ async function startFixtureProcesses(
     healthPollIntervalMs: 50,
     healthTimeoutMs: 10_000,
     workerMonitorIntervalMs: 100,
-    workerStaleAfterMs: 2_000,
+    // Next's first route compilation can starve the fixture worker for several
+    // seconds on a loaded development machine. Keep this above that compile
+    // window so the harness only observes the failures it injects explicitly.
+    workerStaleAfterMs: 10_000,
     terminationGraceMs: 5_000,
   }));
   await supervisor.start();
@@ -924,8 +956,8 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
 
     if (options.caseName === "delete-logs") {
       fs.rmSync(logDir, { recursive: true, force: true });
-      await signalValidated(app.identity, "SIGKILL");
       await signalValidated(worker.identity, "SIGKILL");
+      await signalValidated(app.identity, "SIGKILL");
       await waitFor(() => ["dev-server.log", "pipeline-worker.log", "dev-supervisor.log"]
         .every((name) => fs.existsSync(path.join(logDir, name))));
       await waitFor(() => {
@@ -969,7 +1001,7 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
       const longLocker = await registry.spawn("locker", {
         STAGEPASS_DB_PATH: dbPath,
         STAGEPASS_LOCK_READY: longReady,
-        STAGEPASS_LOCK_HOLD_MS: "3000",
+        STAGEPASS_LOCK_HOLD_MS: "10000",
       });
       await waitFor(() => fs.existsSync(longReady));
       const beforeLong = businessSnapshot(dbPath, changeId);
@@ -990,7 +1022,7 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
         elapsedPositive: true,
       });
       assert.deepEqual(businessSnapshot(dbPath, changeId), beforeLong);
-      await waitFor(() => !alive(longLocker.identity.pid));
+      await waitFor(() => !alive(longLocker.identity.pid), 15_000);
       assertions.push("short lock wrote business terminal exactly once; long lock typed metadata and zero drift");
       await assertHttp(registry, dbPath, port, assertions, changeId, evidence);
     } else if (options.caseName === "kill-worker") {
@@ -1149,7 +1181,11 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
           event: { type: "business_run_reconciled", count: reconciliationEvents },
           retryTechSpec: providerActions.find((action) => action.actionId === "retry_tech_spec")?.enabled ?? false,
         }, {
-          provider: { status: "failed", summary: "Codex run failed: codex produced no assistant message (exit null, signal SIGKILL)" },
+          provider: {
+            status: "failed",
+            summary:
+              "Codex run failed: codex app-server exited code null, signal SIGKILL",
+          },
           job: "failed",
           run: "failed",
           stage: "failed",

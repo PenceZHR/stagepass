@@ -26,6 +26,7 @@ if (mode === "exit1") {
 
 if (mode === "hang") {
   process.on("SIGTERM", () => {});
+  process.stderr.write("fake hang ready\n");
   process.stdin.resume();
   setInterval(() => {}, 60_000);
 } else {

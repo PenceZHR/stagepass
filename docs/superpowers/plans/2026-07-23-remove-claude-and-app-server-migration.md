@@ -467,9 +467,9 @@ export class CodexAppServerError extends Error {
 - 复核（预期多数不改）：`stale-provider-run-recovery-service.ts`、`recovery-executors.ts`、`provider-process-lease-service.ts`、`supervisor-health-service.ts`、`crash-resilience-harness.ts`
 - Modify: `server/services/acceptance-injection-service.ts` —— codex 注入点语义从"exec 假二进制"变为"app-server 假二进制"，A7 改过的 hung/offline fixture 协议无关、直接可用；若 harness 有"成功完成"型 codex fixture，替换为 B1 的 `fake-codex-app-server.cjs`
 
-- [ ] **Step 1**: `pnpm test server/services/crash-resilience-acceptance.test.ts server/services/stale-provider-run-recovery-service.test.ts server/services/pipeline-crash-window.test.ts` → `ℹ fail 0`、`ℹ cancelled 0`。
-- [ ] **Step 2**: 手动演练一次 `scripts/acceptance-crash-resilience.ts`（隔离库）确认 supervisor 杀/重启路径在新进程形态下语义不变（pid 仍每 run 唯一）。
-- [ ] **Step 3: Commit**（如有修改）— `git commit -m "test(recovery): 崩溃恢复链路在 app-server 进程形态下复验"`
+- [x] **Step 1**: `pnpm test server/services/crash-resilience-acceptance.test.ts server/services/stale-provider-run-recovery-service.test.ts server/services/pipeline-crash-window.test.ts` → `ℹ fail 0`、`ℹ cancelled 0`。
+- [x] **Step 2**: 手动演练一次 `scripts/acceptance-crash-resilience.ts`（隔离库）确认 supervisor 杀/重启路径在新进程形态下语义不变（pid 仍每 run 唯一）。
+- [x] **Step 3: Commit**（如有修改）— `git commit -m "test(recovery): 崩溃恢复链路在 app-server 进程形态下复验"`
 
 ### Task B6: 真机冒烟 + 文档收尾
 

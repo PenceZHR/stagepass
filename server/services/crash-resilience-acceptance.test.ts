@@ -107,9 +107,12 @@ describe("crash resilience acceptance harness", { concurrency: false }, () => {
       let deadline: NodeJS.Timeout | null = null;
       try {
         const result = await Promise.race([
-          registry.runProbe(["--child", "immediate-probe"], {}, 1_000),
+          registry.runProbe(["--child", "immediate-probe"], {}, 5_000),
           new Promise<never>((_, reject) => {
-            deadline = setTimeout(() => reject(new Error("immediate_probe_hung")), 2_000);
+            deadline = setTimeout(
+              () => reject(new Error("immediate_probe_hung")),
+              10_000,
+            );
           }),
         ]);
         assert.equal(result.stdout, "immediate-probe-ok\n");

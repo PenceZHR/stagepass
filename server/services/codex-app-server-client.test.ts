@@ -115,9 +115,22 @@ describe("CodexAppServerClient", () => {
   });
 
   it("force-kills an app-server that ignores the graceful close signal", async () => {
-    const client = spawnClient({ mode: "hang" });
+    let readyResolve!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      readyResolve = resolve;
+    });
+    const client = spawnClient({
+      mode: "hang",
+      onStderr: (chunk) => {
+        if (chunk.includes("fake hang ready")) readyResolve();
+      },
+    });
     assert.ok(client.pid);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const readinessTimeout = setTimeout(() => {
+      readyResolve();
+    }, 5_000);
+    await ready;
+    clearTimeout(readinessTimeout);
     const startedAt = Date.now();
     const safetyKill = setTimeout(() => {
       if (client.pid) process.kill(client.pid, "SIGKILL");
