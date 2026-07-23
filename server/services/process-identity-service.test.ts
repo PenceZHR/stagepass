@@ -127,10 +127,14 @@ describe("process-identity-service", () => {
   });
 
   it("maps oversized command output to a typed bounded failure", async () => {
+    const runner: ProcessIdentityCommandRunner = async () => {
+      throw Object.assign(
+        new Error("stdout maxBuffer length exceeded"),
+        { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" },
+      );
+    };
     const probe = createPlatformProcessIdentityProbe({
-      commandRunner: nodeCommandRunner(
-        "process.stdout.write('x'.repeat(Number(process.argv[1]) + 1024))",
-      ),
+      commandRunner: runner,
       timeoutMs: 200,
     });
 
