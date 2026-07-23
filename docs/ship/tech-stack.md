@@ -29,7 +29,7 @@
 
 | 依赖 | 版本 | 用途 |
 |---|---|---|
-| codex CLI（bare-spawn） | — | 唯一 AI 引擎：直接 spawn `codex exec --json` 二进制（非 npm 依赖；路径由 STAGEPASS_CODEX_BIN 或 PATH 解析） |
+| codex CLI（bare-spawn） | ≥ 0.144.4 | 唯一 AI 引擎；版本 floor 由 `codex app-server generate-json-schema` 生成的协议 schema 锚定（非 npm 依赖；路径由 STAGEPASS_CODEX_BIN 或 PATH 解析） |
 
 ## 五、UI 与样式
 

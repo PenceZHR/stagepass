@@ -336,12 +336,14 @@ Expected: 仅剩历史迁移/其测试的合法命中；其余为 0。`package.j
 >
 > **进程模型决定（本方案的核心取舍）**：每个 run 仍旧 spawn 一个独立的 `codex app-server` 子进程，run 结束即退出。理由：完整保留 `provider_run_processes` 的 per-run pid 语义、进程租约/围栏（lease/fencing）、心跳与崩溃恢复的全部现有机制——这套机制是 Stage Pass 可靠性的根基，共享常驻服务会把"一个 run 一个进程一个租约"的模型推翻，属于另一个 Change 的范围。常驻共享 app-server（连接复用、跨 run steering）列为未来可选优化，本方案不做。
 
-## App Server 协议速查（2026-07 版官方文档，执行时以 `codex app-server generate-json-schema` 生成的当版本 schema 为准）
+## App Server 协议速查（Codex CLI 0.144.4；以 `codex app-server generate-json-schema` 生成的 schema 为准）
 
 - 启动：`codex app-server`（stdio JSONL）；消息为 JSON-RPC 2.0（wire 上省略 `"jsonrpc":"2.0"`），request 带 `id`/`method`/`params`，notification 无 `id`。
-- 握手：`initialize`（必须首调，可带 `capabilities: { experimentalApi: true }`）→ `initialized` 通知。
-- 核心方法：`thread/start`（params: `cwd`, `model`, `effort`, `sandbox`(deprecated)/`permissions`, `approvalPolicy`, `outputSchema`）、`thread/resume`、`turn/start`（支持逐 turn 覆盖 `model`/`effort`/`cwd`/sandbox/`outputSchema`）、`turn/interrupt`、`model/list`（含 `supportedReasoningEfforts`/`defaultReasoningEffort`/`isDefault`）。
-- 关键通知：`thread/started`、`turn/started`、`item/started`、`item/completed`、增量流 `item/agentMessage/delta`、`item/reasoning/summaryTextDelta`、`item/commandExecution/outputDelta`、`turn/diff/updated`、`turn/completed`（status: `completed|interrupted|failed`）、`thread/tokenUsage/updated`。
+- 握手：`initialize` 必须首调，且 params 必须含 `clientInfo: { name, version }`；`capabilities.experimentalApi` 可选，本方案不开启；成功后发送 `initialized` 通知。
+- `thread/start`：`cwd`、`model`、`approvalPolicy`，以及 legacy `sandbox: "read-only"|"workspace-write"|"danger-full-access"`；`thread/resume` 需要 `threadId` 并支持同类覆盖。0.144.4 的稳定 schema 没有 `permissions` 字段。
+- `turn/start`：必填 `threadId` 与 `input: [{type:"text", text}]`；可逐 turn 覆盖 `model`、`effort`、`cwd`、`approvalPolicy`、`outputSchema` 与 `sandboxPolicy`。`sandboxPolicy.type` 使用 camelCase：`readOnly|workspaceWrite|dangerFullAccess`。
+- 其它核心方法：`turn/interrupt`（必填 `threadId`、`turnId`）、`model/list`（响应 `data[]`，模型含 `supportedReasoningEfforts`/`defaultReasoningEffort`/`isDefault`）。
+- 关键通知：`thread/started {thread:{id}}`、`turn/started`、`item/started`、`item/completed`、增量流 `item/agentMessage/delta`、`item/reasoning/summaryTextDelta`、`item/commandExecution/outputDelta`、`turn/diff/updated`、`turn/completed {threadId,turn}`（`turn.status: completed|interrupted|failed|inProgress`）、`thread/tokenUsage/updated`。
 - 服务端反向请求（需应答）：`item/commandExecution/requestApproval`、`item/fileChange/requestApproval` 等——应答 `accept|acceptForSession|decline|cancel`。
 - item 类型命名是 camelCase：`agentMessage`/`commandExecution`/`fileChange`/`reasoning`/`mcpToolCall` 等（exec `--json` 旧流是 snake_case `agent_message` 等——**必须归一化**）。
 - 过载错误：JSON-RPC error `-32001`（"Server overloaded; retry later"）。
@@ -349,9 +351,9 @@ Expected: 仅剩历史迁移/其测试的合法命中；其余为 0。`package.j
 
 ### Task B0: 版本锚定与协议 schema 固化
 
-- [ ] **Step 1**: `codex --version` 记录版本；`codex app-server generate-json-schema --out /tmp/codex-schemas` 成功执行即证明子命令可用。
-- [ ] **Step 2**: 把版本floor写进 `.env.example` 注释（`STAGEPASS_CODEX_BIN` 旁）与 `docs/ship/tech-stack.md`；核对速查表中的方法名/参数casing与生成 schema 一致，不一致以 schema 为准并更新本文件。
-- [ ] **Step 3: Commit** — `git commit -m "docs(codex): 锚定 app-server 协议版本与 schema 生成流程"`
+- [x] **Step 1**: `codex --version` 记录版本；`codex app-server generate-json-schema --out /tmp/codex-schemas` 成功执行即证明子命令可用。
+- [x] **Step 2**: 把版本floor写进 `.env.example` 注释（`STAGEPASS_CODEX_BIN` 旁）与 `docs/ship/tech-stack.md`；核对速查表中的方法名/参数casing与生成 schema 一致，不一致以 schema 为准并更新本文件。
+- [x] **Step 3: Commit** — `git commit -m "docs(codex): 锚定 app-server 协议版本与 schema 生成流程"`
 
 ### Task B1: JSON-RPC 协议客户端
 
@@ -413,7 +415,7 @@ export class CodexAppServerError extends Error {
 | 现 exec 行为 | App Server 对应 |
 |---|---|
 | spawn `codex exec --json`，prompt 走 stdin | spawn `codex app-server` → `initialize` → `thread/start` 或 `thread/resume` → `turn/start`（prompt 为 input） |
-| `--sandbox <mode>` | `thread/start.sandbox`：`"read-only"→readOnly`、`"workspace-write"→workspaceWrite`、`"danger-full-access"→dangerFullAccess`（确切 casing 以 B0 生成的 schema 为准） |
+| `--sandbox <mode>` | 新 thread 的 `thread/start.sandbox` 仍用 `"read-only"|"workspace-write"|"danger-full-access"`；逐 turn 覆盖用 `turn/start.sandboxPolicy: {type:"readOnly"|"workspaceWrite"|"dangerFullAccess"}` |
 | `--cd <repoPath>` | `thread/start.cwd` |
 | `--output-schema <file>`（临时文件） | `turn/start.outputSchema`（内联 JSON，**删掉临时文件机制** `createCodexOutputSchemaFile`；`parseStructuredOutputText` 文本兜底保留） |
 | resume 继承 sandbox（write 阶段禁 resume） | `thread/resume` + `turn/start` 逐 turn sandbox 覆盖。**本 Task 保持现有"write 阶段不 resume"策略不变**（行为零漂移）；解禁另立后续 Change |
@@ -425,11 +427,11 @@ export class CodexAppServerError extends Error {
 | 超时 `timeoutMs` | 定时器到期 → `turn/interrupt` → grace 后 `kill()`；错误码仍 `provider_timeout` |
 
 **通知归一化（新引擎内私有函数 `toLegacyStreamEvent`）**：
-- `thread/started {threadId}` → `{type:"thread.started", threadId}`
+- `thread/started {thread:{id}}` → `{type:"thread.started", threadId: thread.id}`
 - `item/started|completed {item}` → `{type:"item.started"|"item.completed", item: normalizeItem(item)}`；`normalizeItem` 做类型名映射 `agentMessage→agent_message`、`commandExecution→command_execution`、`fileChange→file_change`（`reasoning` 不变），其余字段透传
 - `item/agentMessage/delta {delta}` → `{type:"item.updated", item:{type:"agent_message", text:<累计文本>}}`（引擎内按 itemId 累计）
 - `item/commandExecution/outputDelta`、`item/reasoning/summaryTextDelta` 同理归并到 `item.updated`
-- `turn/completed {usage,status}` → `{type:"turn.completed", usage}`；`status:"failed"` 走 `CodexRunFailure`，`"interrupted"` 走 stopped 语义
+- `turn/completed {threadId,turn}` → `{type:"turn.completed", usage:<最近一次 tokenUsage>}`；读取 `turn.status`，`"failed"` 走 `CodexRunFailure`，`"interrupted"` 走 stopped 语义；usage 来自独立的 `thread/tokenUsage/updated` 通知
 - `turn/diff/updated` → 透传新事件类型 `"turn.diff.updated"`（`AiStreamEvent` 的开放联合已允许；changedFiles 仍以 `file_change` item 提取为准，diff 事件仅供展示层）
 
 - [ ] **Step 1: 写失败测试**（fixture 驱动）：`run()` 返回 `AiRunResult{ threadId:"THREAD-1", summary:<两条 delta 拼接>, success:true }`；`runStreamed()` 产出事件序列首个为 `thread.started`、含 `item.completed`(agent_message)、末为 `turn.completed`；lifecycle sink 收到 `onProcessStarted`（pid 非空）与 `onTerminal(completed)`；`FAKE_MODE=exit1` → `success:false` 且 `providerErrorCode` 非空。Run → FAIL。
