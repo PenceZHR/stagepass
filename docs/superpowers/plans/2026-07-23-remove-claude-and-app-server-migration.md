@@ -434,10 +434,10 @@ export class CodexAppServerError extends Error {
 - `turn/completed {threadId,turn}` → `{type:"turn.completed", usage:<最近一次 tokenUsage>}`；读取 `turn.status`，`"failed"` 走 `CodexRunFailure`，`"interrupted"` 走 stopped 语义；usage 来自独立的 `thread/tokenUsage/updated` 通知
 - `turn/diff/updated` → 透传新事件类型 `"turn.diff.updated"`（`AiStreamEvent` 的开放联合已允许；changedFiles 仍以 `file_change` item 提取为准，diff 事件仅供展示层）
 
-- [ ] **Step 1: 写失败测试**（fixture 驱动）：`run()` 返回 `AiRunResult{ threadId:"THREAD-1", summary:<两条 delta 拼接>, success:true }`；`runStreamed()` 产出事件序列首个为 `thread.started`、含 `item.completed`(agent_message)、末为 `turn.completed`；lifecycle sink 收到 `onProcessStarted`（pid 非空）与 `onTerminal(completed)`；`FAKE_MODE=exit1` → `success:false` 且 `providerErrorCode` 非空。Run → FAIL。
-- [ ] **Step 2: 实现引擎** → PASS。
-- [ ] **Step 3**: `getCodexCliEngine()` 工厂切换为返回 app-server 引擎（保持导出名，调用方零改动）；跑引擎全测试：`pnpm test server/services/codex-app-server-client.test.ts server/services/codex-app-server-engine.test.ts server/services/codex-cli-engine.test.ts` —— 旧 exec 单测中纯测 `buildCodexArgs` 等 exec 细节的用例此时标记随 B4 删除，先确认不阻塞。
-- [ ] **Step 4: Commit** — `git commit -m "feat(codex): App Server 引擎上线，工厂切换，exec 路径待删"`
+- [x] **Step 1: 写失败测试**（fixture 驱动）：`run()` 返回 `AiRunResult{ threadId:"THREAD-1", summary:<两条 delta 拼接>, success:true }`；`runStreamed()` 产出事件序列首个为 `thread.started`、含 `item.completed`(agent_message)、末为 `turn.completed`；lifecycle sink 收到 `onProcessStarted`（pid 非空）与 `onTerminal(completed)`；`FAKE_MODE=exit1` → `success:false` 且 `providerErrorCode` 非空。Run → FAIL。
+- [x] **Step 2: 实现引擎** → PASS。
+- [x] **Step 3**: `getCodexCliEngine()` 工厂切换为返回 app-server 引擎（保持导出名，调用方零改动）；跑引擎全测试：`pnpm test server/services/codex-app-server-client.test.ts server/services/codex-app-server-engine.test.ts server/services/codex-cli-engine.test.ts` —— 旧 exec 单测中纯测 `buildCodexArgs` 等 exec 细节的用例此时标记随 B4 删除，先确认不阻塞。
+- [x] **Step 4: Commit** — `git commit -m "feat(codex): App Server 引擎上线，工厂切换，exec 路径待删"`
 
 ### Task B3: 模型与推理强度贯通（解锁需求 6.2 的引擎层）
 

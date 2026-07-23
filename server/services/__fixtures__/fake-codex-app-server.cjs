@@ -82,10 +82,31 @@ if (mode === "hang") {
       return;
     }
 
+    if (message.method === "thread/resume") {
+      const thread = { id: message.params?.threadId || "THREAD-1" };
+      send({ method: "thread/started", params: { thread } });
+      send({ id: message.id, result: { thread } });
+      return;
+    }
+
     if (message.method === "turn/start") {
       const threadId = message.params?.threadId || "THREAD-1";
+      if (mode === "overloaded") {
+        sendError(message.id, -32001, "Server overloaded; retry later");
+        return;
+      }
+      if (
+        process.env.FAKE_EXPECT_OUTPUT_SCHEMA === "1"
+        && !message.params?.outputSchema
+      ) {
+        sendError(message.id, -32602, "turn/start.outputSchema is required");
+        return;
+      }
       const turn = { id: "TURN-1", status: "completed", items: [] };
-      const item = { id: "ITEM-1", type: "agentMessage", text: "Hello world" };
+      const text = process.env.FAKE_STRUCTURED_OUTPUT === "1"
+        ? "{\"ok\":true}"
+        : "Hello world";
+      const item = { id: "ITEM-1", type: "agentMessage", text };
       send({
         method: "turn/started",
         params: {
@@ -93,18 +114,44 @@ if (mode === "hang") {
           turn: { id: "TURN-1", status: "inProgress", items: [] },
         },
       });
+      if (process.env.FAKE_INCLUDE_FILE_CHANGE === "1") {
+        const fileChange = {
+          id: "ITEM-FILE-1",
+          type: "fileChange",
+          changes: [{ path: "server/example.ts" }],
+        };
+        send({
+          method: "item/started",
+          params: {
+            threadId,
+            turnId: "TURN-1",
+            item: fileChange,
+            startedAtMs: Date.now(),
+          },
+        });
+        send({
+          method: "item/completed",
+          params: {
+            threadId,
+            turnId: "TURN-1",
+            item: fileChange,
+            completedAtMs: Date.now(),
+          },
+        });
+      }
       send({
         method: "item/started",
         params: { threadId, turnId: "TURN-1", item, startedAtMs: Date.now() },
       });
-      send({
-        method: "item/agentMessage/delta",
-        params: { threadId, turnId: "TURN-1", itemId: "ITEM-1", delta: "Hello " },
-      });
-      send({
-        method: "item/agentMessage/delta",
-        params: { threadId, turnId: "TURN-1", itemId: "ITEM-1", delta: "world" },
-      });
+      const deltas = process.env.FAKE_STRUCTURED_OUTPUT === "1"
+        ? [text]
+        : ["Hello ", "world"];
+      for (const delta of deltas) {
+        send({
+          method: "item/agentMessage/delta",
+          params: { threadId, turnId: "TURN-1", itemId: "ITEM-1", delta },
+        });
+      }
       send({
         method: "item/completed",
         params: { threadId, turnId: "TURN-1", item, completedAtMs: Date.now() },

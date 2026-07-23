@@ -71,7 +71,7 @@ function getCodexSpawn(): CodexSpawn {
   return codexSpawnForTest ?? spawn;
 }
 
-function getCodexProcessIdentityProbe(): ProcessIdentityProbe {
+export function getCodexProcessIdentityProbe(): ProcessIdentityProbe {
   return codexProcessIdentityProbeForTest ?? processIdentityProbe;
 }
 
@@ -258,7 +258,7 @@ function toToml(agent: CodexAgentDef): string {
   return lines.join("\n") + "\n";
 }
 
-function ensureAgentFiles(repoPath: string, phase: AiRunPhase): string[] {
+export function ensureAgentFiles(repoPath: string, phase: AiRunPhase): string[] {
   const agents = getAgentsForPhase(phase);
   if (agents.length === 0) return [];
 
@@ -276,7 +276,7 @@ function ensureAgentFiles(repoPath: string, phase: AiRunPhase): string[] {
   return written;
 }
 
-function cleanupAgentFiles(repoPath: string): void {
+export function cleanupAgentFiles(repoPath: string): void {
   const agentsDir = path.join(repoPath, ".codex", "agents");
   if (!fs.existsSync(agentsDir)) return;
   try {
@@ -290,7 +290,7 @@ function cleanupAgentFiles(repoPath: string): void {
   }
 }
 
-function buildMultiAgentPrompt(
+export function buildMultiAgentPrompt(
   basePrompt: string,
   agentNames: string[],
   phase: AiRunPhase,
@@ -333,7 +333,7 @@ function toAiStreamEvent(event: CodexThreadEvent): AiStreamEvent {
   return { ...event } as AiStreamEvent;
 }
 
-function extractChangedFiles(items: AiRunItem[]): string[] {
+export function extractChangedFiles(items: AiRunItem[]): string[] {
   const files: string[] = [];
   for (const item of items) {
     if (item.type === "file_change") {
@@ -349,12 +349,12 @@ function extractChangedFiles(items: AiRunItem[]): string[] {
 }
 
 let runCounter = 0;
-function generateRunId(): string {
+export function generateRunId(): string {
   runCounter++;
   return `RUN-${String(runCounter).padStart(3, "0")}`;
 }
 
-function isTimeoutMessage(message: string): boolean {
+export function isTimeoutMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes("timeout") || normalized.includes("aborted");
 }
@@ -377,11 +377,11 @@ const CODEX_TRANSPORT_ERROR_MARKERS = [
 ] as const;
 
 /** Redacted tail of the child's stderr, or "" when it wrote nothing. */
-function codexStderrTail(stderr: string): string {
+export function codexStderrTail(stderr: string): string {
   return stderr.trim().length === 0 ? "" : sanitizeCodexErrorMessage(stderr.slice(-200));
 }
 
-function hasCodexTransportEvidence(message: string): boolean {
+export function hasCodexTransportEvidence(message: string): boolean {
   const normalized = message.toLowerCase();
   return CODEX_TRANSPORT_ERROR_MARKERS.some((marker) => normalized.includes(marker));
 }
@@ -391,7 +391,7 @@ function hasCodexTransportEvidence(message: string): boolean {
  * report WHY the run failed instead of flattening everything to
  * provider_run_failed with a null exit code.
  */
-class CodexRunFailure extends Error {
+export class CodexRunFailure extends Error {
   readonly providerErrorCode: string;
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
@@ -416,7 +416,7 @@ class CodexRunFailure extends Error {
 }
 
 /** Redact obvious secrets from a provider error before it is stored/surfaced. */
-function sanitizeCodexErrorMessage(error: unknown): string {
+export function sanitizeCodexErrorMessage(error: unknown): string {
   const raw =
     error instanceof Error
       ? error.message
@@ -465,7 +465,7 @@ function codexHeartbeatMs(): number {
  * layer, whose `assertCurrentExecutionFence` re-checks ownership at every
  * write boundary, decide what a fence means.
  */
-function startCodexHeartbeat(options: {
+export function startCodexHeartbeat(options: {
   lifecycle: NonNullable<AiRunInput["lifecycle"]>;
   pid: number | null;
   /** Read per tick: the thread id is only learned once codex emits it. */
@@ -1186,11 +1186,11 @@ export class CodexCliEngine implements AiEngineAdapter {
   }
 }
 
-let engineInstance: AiEngineAdapter | null = null;
-
 export function getCodexCliEngine(): AiEngineAdapter {
-  if (!engineInstance) {
-    engineInstance = new CodexCliEngine();
-  }
-  return engineInstance;
+  // Deliberately lazy during B2: the legacy exec implementation remains in
+  // this module until B4, while the public factory has already switched to the
+  // app-server engine.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getCodexAppServerEngine } = require("./codex-app-server-engine");
+  return getCodexAppServerEngine();
 }
