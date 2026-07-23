@@ -67,3 +67,4 @@ server/db/ship.db-journal
 # local runtime logs and scratch dirs
 /logs/
 /var/
+.claude/worktrees/
