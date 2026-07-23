@@ -415,7 +415,7 @@ async function runImplementStreamedInExecutionScope(
           throw new Error(`Build stream start timed out after ${startupTimeoutMs}ms`);
         }
 
-        const engine = await getPipelineEngine(provider as "codex" | "claude");
+        const engine = await getPipelineEngine(provider);
         const stream = engine.runStreamed({
           changeId,
           repoPath: buildRun.workspacePath,
@@ -826,7 +826,7 @@ async function runFixStreamedInExecutionScope(
       });
 
       // Event 5: AI engine starting
-      const engine = await getPipelineEngine(provider as "codex" | "claude");
+      const engine = await getPipelineEngine(provider);
       await emitEvent({
         changeId,
         runId,
@@ -1117,7 +1117,7 @@ export async function runFix(
 
       assertCurrentExecutionFence(context, runId);
       const beforeAi = captureWorkspaceSnapshot(project.repoPath);
-      const engine = await getPipelineEngine(selected as "codex" | "claude");
+      const engine = await getPipelineEngine(selected);
       const result = await engine.run({
         changeId,
         repoPath: project.repoPath,

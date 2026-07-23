@@ -8,7 +8,7 @@ import {
   runs,
 } from "../db/schema";
 import { createChildLogger } from "../logger";
-import type { Change, ChangeStatus } from "../types";
+import type { AiProvider, Change, ChangeStatus } from "../types";
 import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
 import { transitionChangeStatus } from "./change-status-service";
 import { CHANGE_DELETE_PLAN } from "./change-delete-plan";
@@ -154,7 +154,7 @@ interface CreateChangeInput {
   projectId: string;
   title: string;
   specMarkdown?: string;
-  provider?: "codex" | "claude";
+  provider?: AiProvider;
 }
 
 export async function createChange(input: CreateChangeInput): Promise<Change> {

@@ -5,6 +5,7 @@ import { db } from "../db";
 import { events, pipelineJobs, providerRunProcesses, runs } from "../db/schema";
 import { withSqliteWriteRetry } from "../db/write-boundary";
 import { insertEventWithRetry } from "../repositories/run-ledger-repository";
+import type { AiProvider } from "../types/enums";
 import {
   StaleLeaseFenceError,
   type JobExecutionContext,
@@ -50,7 +51,7 @@ export type ProviderRunPhase =
   | "release"
   | "retro";
 
-export type ProviderRunProvider = "codex" | "claude";
+export type ProviderRunProvider = AiProvider;
 export type ProviderRunTerminalStatus = "completed" | "failed" | "stopped" | "orphaned";
 
 export interface ProviderRunStartInput {

@@ -272,7 +272,7 @@ function changeDefaultProvider(
   const change = tx.select({ provider: changes.provider }).from(changes)
     .where(eq(changes.id, changeId)).get();
   if (!change) throw new Error(`Change not found: ${changeId}`);
-  return resolveProviderSelection(undefined, change.provider === "claude" ? "claude" : "codex");
+  return resolveProviderSelection(undefined, "codex");
 }
 
 function resolveAndValidateProvider(

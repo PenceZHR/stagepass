@@ -253,7 +253,7 @@ async function generatePlanInExecutionScope(
     }), stageRubric);
 
     const beforeAi = captureWorkspaceSnapshot(project.repoPath);
-    const engine = await getPipelineEngine(provider as "codex" | "claude");
+    const engine = await getPipelineEngine(provider);
     let result = await engine.run({
       changeId,
       repoPath: project.repoPath,

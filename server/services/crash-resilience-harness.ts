@@ -1183,7 +1183,7 @@ async function childMain(role: string): Promise<void> {
     try {
       if (input.action === "start") {
         startProviderRun({
-          changeId: input.changeId, runId: input.runId, phase: "tech_spec", provider: "claude",
+          changeId: input.changeId, runId: input.runId, phase: "tech_spec", provider: "codex",
           pid: null, ppid: process.ppid, executionContext: context,
         });
       } else {
@@ -1220,7 +1220,7 @@ async function childMain(role: string): Promise<void> {
       import("./pipeline-job-lease-service"),
     ]);
     const context = { jobId: input.jobId, workerId: input.workerId, leaseToken: input.leaseToken, attemptNo: 1 };
-    const engine = await getPipelineEngine("claude");
+    const engine = await getPipelineEngine("codex");
     const result = await engine.run({
       changeId: input.changeId,
       prompt: "acceptance transport barrier",
@@ -1233,7 +1233,7 @@ async function childMain(role: string): Promise<void> {
         changeId: input.changeId,
         runId: input.runId,
         phase: "tech_spec",
-        provider: "claude",
+        provider: "codex",
         closeBusinessRunOnProviderFailure: false,
       }),
     });

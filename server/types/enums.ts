@@ -4,7 +4,7 @@ import {
   BATTLE_ROUND_STATUSES,
 } from "./battle-round-status";
 
-export const AiProvider = z.enum(["codex", "claude"]);
+export const AiProvider = z.enum(["codex"]);
 export type AiProvider = z.infer<typeof AiProvider>;
 
 export const ChangeStatus = z.enum([

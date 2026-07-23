@@ -191,7 +191,7 @@ function buildActions(changeId: string, options: ActionBuildOptions): PipelineAc
         requiresIdempotencyKey: actionRequiresIdempotencyKey(definition.actionId),
         requiresProvider: definition.requiresProvider === true,
         providerSelectable: definition.providerSelectable === true,
-        defaultProvider: (effectiveChange.provider === "claude" ? "claude" : "codex") as "codex" | "claude",
+        defaultProvider: "codex" as const,
       };
     }
   });
@@ -259,7 +259,7 @@ function buildActions(changeId: string, options: ActionBuildOptions): PipelineAc
       requiresIdempotencyKey: actionRequiresIdempotencyKey(definition.actionId),
       requiresProvider: definition.requiresProvider === true,
       providerSelectable: definition.providerSelectable === true,
-      defaultProvider: (effectiveChange.provider === "claude" ? "claude" : "codex") as "codex" | "claude",
+      defaultProvider: "codex" as const,
     };
   }
 

@@ -5,7 +5,7 @@ import type {
 } from "./stage-ai-output-contract";
 import type { ProcessIdentity } from "./process-identity-service";
 
-export type AiProvider = "codex" | "claude";
+export type AiProvider = "codex";
 
 export type AiSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 

@@ -6,7 +6,6 @@ import type { AiProvider } from "./pipeline-action-contract";
 
 const PROVIDER_LABELS: Record<AiProvider, string> = {
   codex: "Codex",
-  claude: "Claude",
 };
 
 export function ProviderPicker({
@@ -24,7 +23,7 @@ export function ProviderPicker({
 }) {
   const handleChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const next = event.target.value;
-    if (next === "codex" || next === "claude") onChange(next);
+    if (next === "codex") onChange(next);
   };
 
   return (
@@ -46,4 +45,3 @@ export function ProviderPicker({
     </div>
   );
 }
-

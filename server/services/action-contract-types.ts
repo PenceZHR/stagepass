@@ -1,3 +1,5 @@
+import type { AiProvider } from "../types/enums";
+
 export interface PipelineActionContract {
   actionId: string;
   phase: "PRD" | "Spec" | "Plan" | "TestPlan" | "Build" | "Review" | "QA" | "Merge";
@@ -12,7 +14,7 @@ export interface PipelineActionContract {
   requiresIdempotencyKey: boolean;
   requiresProvider: boolean;
   providerSelectable: boolean;
-  defaultProvider: "codex" | "claude";
+  defaultProvider: AiProvider;
 }
 
 export type ContractPhase = PipelineActionContract["phase"];

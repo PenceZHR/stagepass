@@ -174,7 +174,7 @@ function PipelinePageHeader({
         )}
         {selectedProvider && (
           <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium text-foreground">
-            本次运行 Provider: {selectedProvider === "claude" ? "Claude" : "Codex"}
+            本次运行 Provider: Codex
           </span>
         )}
         <span>Fix Iterations: {change.fixIterations}</span>

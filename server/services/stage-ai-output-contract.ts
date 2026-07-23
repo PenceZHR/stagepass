@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import type { AiProvider } from "../types/enums";
+
 export type AiOutputMode = "json_schema" | "markdown" | "text";
 
 export type SchemaDelivery = "provider_native" | "schema_prompt" | "none";
@@ -38,8 +40,8 @@ export type StageAiOutputErrorCode =
   | "provider_run_failed"
   /**
    * The transport between stagepass and the model service broke. Only ever set
-   * on HARD evidence (a codex `turn.failed` naming a disconnect, or a claude
-   * HTTP status / connect failure) -- never inferred from "we got nothing back",
+   * on HARD evidence (a Codex `turn.failed` naming a disconnect or transport
+   * failure) -- never inferred from "we got nothing back",
    * which is what provider_empty_response is for.
    */
   | "provider_transport_error"
@@ -178,7 +180,7 @@ export interface StageSourceLineageV1 {
   aiOutput: {
     rawCaptureId: string | null;
     rawOutputArtifactId?: string | null;
-    provider: "codex" | "claude";
+    provider: AiProvider;
     aiOutputMode: AiOutputMode;
     schemaDelivery: SchemaDelivery;
     structuredOutputSource: StructuredOutputSource;
@@ -204,7 +206,7 @@ export interface BuildStageSourceLineageInput {
   legacyRunId: string;
   stageRunId: string;
   attemptNo: number;
-  provider: "codex" | "claude";
+  provider: AiProvider;
   aiOutputMode: AiOutputMode;
   schemaDelivery: SchemaDelivery;
   structuredOutputSource: StructuredOutputSource;

@@ -619,8 +619,8 @@ export async function runDocumentStage(
           externalSessionId: threadId,
           lastRunId: runId,
         });
-        // Preserve the legacy field only for the Codex/general slot. Claude
-        // and specialist sessions must never overwrite it.
+        // Preserve the legacy field only for the general session; specialist
+        // sessions must never overwrite it.
         if (provider === "codex" && sessionKind === "general") {
           runLedgerRepository.patchChange(changeId, { codexThreadId: threadId }, { runId });
         }

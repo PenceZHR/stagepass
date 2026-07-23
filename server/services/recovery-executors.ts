@@ -304,7 +304,7 @@ export function recoverMissingProvider(input: {
       }
 
       const change = tx.select().from(changes).where(eq(changes.id, run.changeId)).get();
-      const syntheticProvider = change?.provider === "claude" ? "claude" : "codex";
+      const syntheticProvider = "codex";
       const syntheticInsert = tx.insert(providerRunProcesses).values({
         id: syntheticProcessId,
         changeId: run.changeId,

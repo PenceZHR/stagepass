@@ -660,7 +660,7 @@ export function preflightReviewRun(changeId: string, provider?: Provider): Revie
   return {
     project,
     reviewRepoPath: buildSource.repoPath,
-    reviewProvider: provider ?? (change.provider === "claude" ? "claude" : "codex") as EngineProvider,
+    reviewProvider: provider ?? "codex",
     sourceBuildRunId: buildSource.record.buildRunId ?? buildSource.record.id,
     sourceHeadSha: buildSource.sourceHeadSha,
     designInputs: reviewDesign.designInputs,

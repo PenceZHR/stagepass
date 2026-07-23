@@ -1,3 +1,7 @@
+import type { AiProvider } from "@/server/services/ai-engine-types";
+
+export type { AiProvider };
+
 export interface PipelineActionContract {
   actionId: string;
   phase: "PRD" | "Spec" | "Plan" | "TestPlan" | "Build" | "Review" | "QA" | "Merge";
@@ -15,11 +19,8 @@ export interface PipelineActionContract {
   defaultProvider: AiProvider;
 }
 
-/** Browser-safe provider type shared by action payloads and UI controls. */
-export type AiProvider = "codex" | "claude";
-
 export function isAiProvider(value: unknown): value is AiProvider {
-  return value === "codex" || value === "claude";
+  return value === "codex";
 }
 
 export function actionAcceptsProvider(action: PipelineActionContract | null | undefined): boolean {

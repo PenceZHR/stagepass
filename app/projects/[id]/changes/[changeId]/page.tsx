@@ -216,7 +216,7 @@ export default function ChangeDetailPage() {
   useEffect(() => {
     if (change?.id !== changeId || providerInitializedForChange.current === changeId) return;
     const initialProvider = change.provider;
-    if (initialProvider !== "codex" && initialProvider !== "claude") return;
+    if (initialProvider !== "codex") return;
     providerInitializedForChange.current = changeId;
     queueMicrotask(() => setSelectedProvider(initialProvider));
   }, [change?.id, change?.provider, changeId]);

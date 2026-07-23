@@ -105,7 +105,7 @@ export function parsePipelineJobPayload(
   const created = "job" in row ? row.created : false;
   const job = "job" in row ? row.job : row;
   const selection = parsePipelineJobSelection(job.phase, job.actionId);
-  const provider = job.provider === "claude" ? "claude" : "codex";
+  const provider = "codex";
   return {
     job: {
       ...job,
