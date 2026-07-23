@@ -982,6 +982,16 @@ export async function lockPrdBriefing(input: {
   getProjectForChange(input.changeId);
   const state = getPrdBriefingState(input.changeId);
   if (!state.briefing) throw new PrdBriefingError("briefing_not_found", `Briefing not found: ${input.changeId}`);
+  // Every other mutator here calls assertMutable; this one did not, and the
+  // lock route has no contract gate to fall back on (there is no `lock_prd`
+  // entry in ACTION_DEFINITIONS at all). computePrdGate additionally
+  // short-circuits `canLock` to true for anything already locked, so a second
+  // POST walked through every check below and re-ran the INTAKE_READY
+  // transition -- rewinding a change that had already reached Spec and
+  // discarding its Spec run. The UI disabling the button once locked was the
+  // only thing standing in the way, which a tab left open across a Spec run
+  // does not have.
+  assertMutable(state.briefing);
   if (state.questions.length === 0) {
     throw new PrdBriefingError("questions_required", "PRD lock requires an AI question round");
   }
