@@ -1674,6 +1674,50 @@ describe("action-contract-service", () => {
     assert.equal(runPlan?.gateVersion, "7");
   });
 
+  /**
+   * Rejecting Intake is the escape from a PRD gate the human does not accept;
+   * it cannot consume that same gate's verdict as a prerequisite. Rubric
+   * projection made the inversion reproducible by changing a previously
+   * passing PRD gate to blocked: the write path still accepted rejectGate at
+   * INTAKE_READY, while the contract disabled reject_intake as gate_blocked and
+   * the route's preflight returned 409 before the write path could run.
+   */
+  it("keeps reject_intake available on a blocked PRD gate, but only at Intake", () => {
+    db.update(changes)
+      .set({ status: "INTAKE_READY", gateState: null })
+      .where(eq(changes.id, CHANGE_ID))
+      .run();
+    seedStageGate("PRD", "blocked", "prd-rubric-blocked-hash", [
+      { id: "rubric:prd:scope", severity: "P0", title: "PRD rubric scope is not satisfied" },
+    ]);
+
+    const reject = getActions(CHANGE_ID).find((action) => action.actionId === "reject_intake");
+    assert.ok(reject);
+    assert.equal(reject.enabled, true, "reject is the exit from a blocked Intake gate");
+    assert.equal(reject.reasonCode, null);
+    assert.equal(reject.gateVersion, "7");
+    assert.equal(reject.sourceDbHash, "prd-rubric-blocked-hash");
+    assert.doesNotThrow(() =>
+      assertActionAllowed({
+        changeId: CHANGE_ID,
+        actionId: "reject_intake",
+        expectedGateVersion: reject.gateVersion ?? "",
+        expectedSourceDbHash: reject.sourceDbHash ?? "",
+        idempotencyKey: "reject-blocked-intake",
+      }),
+    );
+
+    db.update(changes)
+      .set({ status: "INTAKE_PENDING" })
+      .where(eq(changes.id, CHANGE_ID))
+      .run();
+
+    const offGate = getActions(CHANGE_ID).find((action) => action.actionId === "reject_intake");
+    assert.ok(offGate);
+    assert.equal(offGate.enabled, false, "the escape must not become a global rollback");
+    assert.equal(offGate.reasonCode, "not_at_gate");
+  });
+
   it("derives Spec run actions from the approved PRD gate while Intake is ready", () => {
     db.update(changes)
       .set({ status: "INTAKE_READY", gateState: "intake" })

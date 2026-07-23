@@ -179,10 +179,22 @@ const briefingRun: ActionPolicy = ({ db, changeId, definition }) => {
   };
 };
 
+const rejectIntake: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
 const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, ActionPolicy>([
   ["run_prd", ({ snapshot }) => prdRunDecision(snapshot)],
   ["retry_prd", ({ changeStatus, snapshot }) =>
     ["INTAKE_PENDING", "BLOCKED"].includes(changeStatus) ? prdRunDecision(snapshot) : notAtGate()],
+
+  // Rejecting Intake is an exit from the PRD gate, not a consumer of its
+  // verdict. The requiredStatus filter above has already proved the change is
+  // at INTAKE_READY; carrying the snapshot here keeps preflight freshness
+  // checks without letting a blocked rubric verdict disable its own escape.
+  ["reject_intake", rejectIntake],
 
   ["run_prd_briefing_questions", briefingRun],
   ["run_prd_briefing_draft", briefingRun],
