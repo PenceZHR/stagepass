@@ -442,11 +442,11 @@ describe("migration runner", () => {
     const migrationRows = sqlite.prepare("SELECT tag FROM __migrations").all();
 
     assert.deepEqual(second.applied, []);
-    // 27 with 0026_spec_battle_human_intervention. This is a count of the
+    // 28 with 0027_provider_codex_backfill. This is a count of the
     // journal, so it moves by design every time a migration is added; what the
     // test actually pins is the line above -- a second run applies nothing
     // further.
-    assert.equal(migrationRows.length, 27);
+    assert.equal(migrationRows.length, 28);
   });
 
   it("hands the connection's foreign_keys setting back exactly as it found it", () => {

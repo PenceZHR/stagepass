@@ -218,6 +218,7 @@ describe("review DB contract", () => {
       "0024_rubric_criterion_key",
       "0025_events_change_created_index",
       "0026_spec_battle_human_intervention",
+      "0027_provider_codex_backfill",
     ]);
     assert.equal(finding.id, "FND-OLD");
     assert.equal(finding.review_attempt_id, null);
