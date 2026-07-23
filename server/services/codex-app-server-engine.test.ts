@@ -200,6 +200,18 @@ describe("CodexAppServerEngine", () => {
     assert.deepEqual(result.changedFiles, ["server/example.ts"]);
   });
 
+  it("passes model and reasoning effort to turn/start", async () => {
+    const result = await new CodexAppServerEngine().run(
+      baseInput({
+        prompt: "EXPECT_MODEL_EFFORT",
+        model: "gpt-x",
+        reasoningEffort: "high",
+      }),
+    );
+
+    assert.equal(result.success, true);
+  });
+
   it("resumes a read-only thread through thread/resume", async () => {
     const result = await new CodexAppServerEngine().run(
       baseInput({ threadId: "THREAD-EXISTING" }),

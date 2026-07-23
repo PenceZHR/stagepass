@@ -89,10 +89,50 @@ if (mode === "hang") {
       return;
     }
 
+    if (message.method === "model/list") {
+      send({
+        id: message.id,
+        result: {
+          data: [
+            {
+              id: "gpt-x",
+              model: "gpt-x",
+              displayName: "GPT X",
+              description: "Fixture model",
+              isDefault: true,
+              hidden: false,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low", description: "Fast" },
+                { reasoningEffort: "high", description: "Deep" },
+              ],
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+      return;
+    }
+
     if (message.method === "turn/start") {
       const threadId = message.params?.threadId || "THREAD-1";
+      const prompt = message.params?.input?.[0]?.text || "";
       if (mode === "overloaded") {
         sendError(message.id, -32001, "Server overloaded; retry later");
+        return;
+      }
+      if (
+        prompt.includes("EXPECT_MODEL_EFFORT")
+        && message.params?.model !== "gpt-x"
+      ) {
+        sendError(message.id, -32602, "turn/start.model did not match");
+        return;
+      }
+      if (
+        prompt.includes("EXPECT_MODEL_EFFORT")
+        && message.params?.effort !== "high"
+      ) {
+        sendError(message.id, -32602, "turn/start.effort did not match");
         return;
       }
       if (

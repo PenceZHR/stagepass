@@ -241,6 +241,8 @@ function turnParams(
     cwd: input.repoPath,
     approvalPolicy: "never",
     sandboxPolicy: turnSandboxPolicy(sandboxMode(input), input.repoPath),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}),
     ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
   };
 }

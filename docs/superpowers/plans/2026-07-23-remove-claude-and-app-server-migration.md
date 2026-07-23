@@ -447,8 +447,8 @@ export class CodexAppServerError extends Error {
 - Create: `server/services/codex-model-catalog-service.ts`（spawn 短命 app-server 调 `model/list`，带 TTL 缓存）+ 测试（fixture 增加 `model/list` 应答）
 - Modify: `server/services/ai-timeout-policy.ts` 若按 phase 配置——不动；模型默认值不在本 Task 定策略，管道层暂不传参（UI/Change 级配置属需求 6.2 的独立 Change）
 
-- [ ] **Step 1**: 失败测试：`turn/start` 请求体含 `model:"gpt-x"`/`effort:"high"`（fixture 断言收到）；`listCodexModels()` 返回 fixture 目录。→ 实现 → PASS。
-- [ ] **Step 2: Commit** — `git commit -m "feat(codex): 引擎透传 model/effort，模型目录服务就绪"`
+- [x] **Step 1**: 失败测试：`turn/start` 请求体含 `model:"gpt-x"`/`effort:"high"`（fixture 断言收到）；`listCodexModels()` 返回 fixture 目录。→ 实现 → PASS。
+- [x] **Step 2: Commit** — `git commit -m "feat(codex): 引擎透传 model/effort，模型目录服务就绪"`
 
 ### Task B4: 删除 exec 传输路径
 

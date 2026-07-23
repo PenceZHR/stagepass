@@ -73,6 +73,8 @@ export interface AiRunInput {
   outputMode?: AiOutputMode;
   rawCapture?: AiRunRawCaptureInput;
   sandboxMode?: AiSandboxMode;
+  model?: string;
+  reasoningEffort?: "low" | "medium" | "high";
   timeoutMs?: number;
   lifecycle?: AiRunLifecycleSink;
 }
