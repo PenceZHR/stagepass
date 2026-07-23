@@ -1834,6 +1834,11 @@ describe("dev supervisor", () => {
       terminationGraceMs: 80,
       decisionCollector: (decision) => decisions.push(decision),
       now: () => new Date(supervisorNowMs ?? Date.now()),
+      // This scenario exercises stale-heartbeat replacement, not the
+      // production probe's 750 ms command budget. Under full-suite load a real
+      // ps/lsof capture can cross that unrelated budget during finally cleanup
+      // and strand the otherwise identity-valid Next fixture as unmanaged.
+      processIdentityProbe: createPlatformProcessIdentityProbe({ timeoutMs: 5_000 }),
     });
 
     try {
