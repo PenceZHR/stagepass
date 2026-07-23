@@ -1,6 +1,7 @@
 import { execSync, spawnSync } from "child_process";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { createChildLogger } from "../logger";
 import { getDiffSummary, getWorkingTreeStatus } from "./git-service";
 
@@ -8,14 +9,16 @@ const log = createChildLogger("commit-message");
 const CLI_DISCOVERY_TIMEOUT_MS = 30_000;
 const AI_COMMAND_TIMEOUT_MS = 300_000;
 
-function getClaudeBin(): string {
+function getCodexBin(): string {
+  const fromEnv = process.env.STAGEPASS_CODEX_BIN?.trim();
+  if (fromEnv) return fromEnv;
   try {
-    return execSync("which claude", {
+    return execSync("which codex", {
       encoding: "utf-8",
       timeout: CLI_DISCOVERY_TIMEOUT_MS,
     }).trim();
   } catch {
-    return "claude";
+    return "codex";
   }
 }
 
@@ -49,21 +52,25 @@ export async function suggestCommitMessage(
     .replace("{context}", contextStr)
     .replace("{diff}", diff);
 
+  const outFile = path.join(os.tmpdir(), `stagepass-commit-msg-${process.pid}-${Date.now()}.txt`);
   try {
-    const result = spawnSync(getClaudeBin(), [
-      "--print",
-      "--max-turns", "1",
-      "--no-input",
-      prompt,
+    const result = spawnSync(getCodexBin(), [
+      "exec",
+      "--skip-git-repo-check",
+      "--sandbox", "read-only",
+      "--cd", repoPath,
+      "--output-last-message", outFile,
+      "-",
     ], {
       cwd: repoPath,
+      input: prompt,
       encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "ignore", "pipe"],
       timeout: AI_COMMAND_TIMEOUT_MS,
     });
 
-    const output = (result.stdout || "").trim();
-    if (output && result.status === 0) {
+    if (result.status === 0 && fs.existsSync(outFile)) {
+      const output = fs.readFileSync(outFile, "utf-8").trim();
       const cleaned = output
         .replace(/^```[\s\S]*?\n/, "")
         .replace(/\n```$/, "")
@@ -74,6 +81,8 @@ export async function suggestCommitMessage(
     }
   } catch (err) {
     log.warn({ err }, "AI commit message generation failed, using fallback");
+  } finally {
+    fs.rmSync(outFile, { force: true });
   }
 
   const totalFiles = status.staged.length + status.unstaged.length;
