@@ -347,8 +347,25 @@ npx tsx scripts/generate-db-write-inventory-snapshot.ts
   此时已有 spec 草稿，问出的东西比空手问具体得多。
 - **不让 `disputed` 进 `GapStatus`。** 理由见第 3 节。
 - **不做异议轮数上限。** 对质一轮即可解锁否决，人本来就随时能退出。
-- **不改 TechSpec / Plan / TestPlan。** 本次跑通后再复制。
-  （Plan 的 `plan-critique.json` 全仓库无生产者、「接受 P1」按钮永远点不亮，
-  TestPlan 面板零按钮——这两件事在复制阶段处理，已知，不在本次范围。）
+- **不改 TechSpec / Plan / TestPlan。** 本次跑通后再复制，见「后续范围」。
 - **不重做 Merge 界面。** 只加第二把钥匙所需的最小列表和动作。
 - **不改红方（`SPEC_WRITER`）的协议。** 人的输入通过上下文抵达，不需要新的红方输出类型。
+
+## 后续范围（已确认，不在本 spec 内）
+
+Spec 跑通后，**TechSpec / Plan / TestPlan 三个阶段各自补齐同样三件事**，
+每个阶段单独出 spec 与计划：
+
+| 要补的 | 现状 |
+|---|---|
+| **对抗** | 三者都没有反方。`RUBRIC_PHASES_WITH_CRITIC` 只含 PRD/Spec/Build/Fix（`rubric-assessment.ts:56`）；`prompts/` 下只有 `spec-critic.md` 和 `review.md` 两个 critic 提示词；`battle_rounds.phase` 每个写入点都硬编码 `"Spec"` |
+| **人类介入** | TechSpec 只有 approve/reject；Plan 的「接受 P1」按钮**永远点不亮**（`plan-critique.json` 全仓库无生产者，两个 `persistPlanSnapshot` 调用点一个传 `risks: []`、另一个读那个从不存在的文件，`plan-sandbox-service.ts:517` 的注释自己承认了）；TestPlan 面板**零个按钮**（`testplan-sandbox.tsx:36` 只收 `{state, loading}`） |
+| **rubric** | 三者的 `RUBRIC_ROLE_ANSWERED_BY` 只有 producer，没有 critic、没有 verdict（`rubric-defaults.ts:276-295`），对比 Spec 的 `{producer, critic, verdict}` |
+
+三件事是同一件事的三个面：**没有反方就没有 critic rubric 可答，也没有分歧供人裁决。**
+所以每个阶段的顺序都是先接对抗、再接介入与 rubric，与本 spec 相同。
+
+复用面：本 spec 建立的 `briefing_questions.phase`、共享问题卡组件、
+`disputeUnanswered`/`canOverride` 规则函数、gap 表态动作，三个阶段直接沿用；
+增量主要是各自的 critic 提示词、`battle_rounds.phase` 解除硬编码、
+以及 rubric 的 critic/verdict 角色登记。
