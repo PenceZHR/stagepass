@@ -17,7 +17,7 @@
 
 **给想用 AI 写代码、但没受过工程训练的人。**
 
-Codex 和 Claude Code 已经很能写代码了。真正的问题是：如果你没走过正规的开发流程，你**看不出它在哪里糊弄了你**——需求哪里还含糊、验收标准缺了哪条、这个技术方案埋了什么坑。你只能看着它吐出一大段代码，然后点一下"看起来不错"。
+Codex 已经很能写代码了。真正的问题是：如果你没走过正规的开发流程，你**看不出它在哪里糊弄了你**——需求哪里还含糊、验收标准缺了哪条、这个技术方案埋了什么坑。你只能看着它吐出一大段代码，然后点一下"看起来不错"。
 
 stagepass 做的是另一件事：**它不替你写代码，它替你把流程走对。**
 
@@ -27,7 +27,7 @@ stagepass 做的是另一件事：**它不替你写代码，它替你把流程�
 
 ---
 
-## 和直接用 Codex / Claude Code 有什么不同
+## 和直接用 Codex 有什么不同
 
 直接用 CLI，你得到的是**一个 AI 写代码，然后告诉你它写完了**。
 
@@ -84,11 +84,11 @@ Build 阶段 AI 不在你的仓库里写文件，而是在**仓库的兄弟目�
 
 由 `git worktree add` 基于指定基线创建独立分支，产出以 patch 回流。你的主 checkout 全程不被触碰。路径层面禁 symlink、双重 realpath 越界检查，跑飞了也逃不出隔离区。
 
-### 6. 双引擎真平级，且崩得掉、捞得回
+### 6. Codex 进程崩得掉、捞得回
 
-Codex CLI 和 Claude Code **都是本地 spawn 的真进程**，都强制要求拿到真实 pid（拿不到就自杀并报错），都写进同一张进程表、进同一套恢复扫描。没有二等公民——这是刻意做的，代码注释里留着原因：
+Codex CLI 是**本地 spawn 的真进程**，强制要求拿到真实 pid（拿不到就终止并报错），写进进程表，并和每个流水线 run 一样进入恢复扫描：
 
-> Codex 原先用 `@openai/codex-sdk`，那个 SDK 把子进程封死（不暴露 pid、只给 AbortSignal）。自己 spawn 才能拿到真实 pid + 身份 + 信号控制，让 codex 和 claude 进同一套生命周期/恢复机制，而不是当那个 `pid === null` 的二等公民。
+> Codex 原先用 `@openai/codex-sdk`，那个 SDK 把子进程封死（不暴露 pid、只给 AbortSignal）。自己 spawn 才能拿到真实 pid、身份和信号控制。
 
 崩溃恢复由流水线 worker 的定时 sweep 负责（默认 15 秒一轮）：心跳超 45 秒判定失联，探活 pid，必要时 SIGTERM → SIGKILL，**终止前会二次确认进程所有权和身份没变**，然后把 run/job 置为失败、provider 置为 orphaned。杀掉 AI 进程、关掉终端、重启机器，业务状态都能自己收敛。
 
@@ -134,10 +134,9 @@ Refine → PRD → Spec → Tech Spec → Plan → Test Plan
 | Node.js | ≥ 20（开发于 25） |
 | pnpm | 已安装（`npm i -g pnpm`） |
 | 端口 | `3000` 空闲 |
-| **OpenAI Codex CLI** | 自行安装并登录；默认引擎 |
-| **Claude Code** | 随依赖 `@anthropic-ai/claude-code` 装好，只需配置鉴权（`ANTHROPIC_API_KEY` 或 `claude` 登录） |
+| **OpenAI Codex CLI** | 自行安装并登录；唯一引擎 |
 
-> 两个引擎**至少要有一个**可用。新建项目时可以逐项选择用哪个。
+> AI 阶段运行前必须确保 Codex CLI 可用。
 
 ---
 
@@ -168,15 +167,13 @@ curl -X POST http://localhost:3000/api/projects \
 
 ### 不想手动配？把这段贴给 AI
 
-在**克隆好的仓库目录里**，把下面这段贴给 Claude Code（或任意能跑命令的编码 agent）：
+在**克隆好的仓库目录里**，把下面这段贴给 Codex（或任意能跑命令的编码 agent）：
 
 ```text
 你在帮我在本机搭建并运行 "stagepass"（一个本地 Next.js 的 AI 开发流水线控制台）。请按步骤执行，只有某步真的失败时才停下来问我：
 1. 确认 Node ≥ 20、pnpm 已安装（缺 pnpm 就 `npm i -g pnpm`）。
 2. 依次运行 `pnpm install`、`pnpm db:migrate`。
-3. 确认 AI 引擎 CLI 可用且已登录（至少一个）：
-   - Codex：跑 `codex --version`；缺失就按 OpenAI Codex CLI 文档安装并登录；若不在 PATH，提示我设置 `export STAGEPASS_CODEX_BIN=<路径>`。
-   - Claude Code：随 `@anthropic-ai/claude-code` 依赖已装好，确认鉴权（`ANTHROPIC_API_KEY` 或 `claude` 登录）。
+3. 确认 Codex CLI 可用且已登录：跑 `codex --version`；缺失就按 OpenAI Codex CLI 文档安装并登录；若不在 PATH，提示我设置 `export STAGEPASS_CODEX_BIN=<路径>`。
 4. 确认 3000 端口空闲，运行 `pnpm dev`，并验证 http://localhost:3000/api/health 返回 {"ok":true}。
 5. 提示我打开 http://localhost:3000/projects 新建项目，把 repoPath 填成我要处理的仓库绝对路径。
 把你做了什么、以及还需要我手动做什么（例如给某个 CLI 登录）都清楚地告诉我。
@@ -208,7 +205,6 @@ curl -X POST http://localhost:3000/api/projects \
 | 变量 | 默认 | 用途 |
 |---|---|---|
 | `STAGEPASS_CODEX_BIN` | `codex`（走 PATH） | codex 二进制路径（不在 PATH 时才需设置） |
-| `ANTHROPIC_API_KEY` | 无 | Claude Code 鉴权（或改用 `claude` 登录） |
 | `STAGEPASS_DB_PATH` | `server/db/ship.db` | 本地 SQLite 业务库位置 |
 | `STAGEPASS_LOG_DIR` | 仓库内默认日志目录 | 日志目录 |
 | `PIPELINE_WORKER_RECOVERY_SWEEP_MS` | `15000` | 崩溃恢复扫描间隔 |

@@ -29,9 +29,9 @@ projects (1) ──< (N) changes (1) ──< (N) runs (1) ──< (N) events
 | name | TEXT | NOT NULL | 项目名 |
 | repo_path | TEXT | NOT NULL UNIQUE | 本地仓库路径 |
 | context_status | TEXT | NOT NULL default 'pending' | pending/generating/ready/failed |
-| context_provider | TEXT | NOT NULL default 'codex' | codex/claude |
+| context_provider | TEXT | NOT NULL default 'codex' | 兼容列，当前仅为 codex |
 | prd_status | TEXT | NOT NULL default 'none' | none/drafting/ready/revising/failed |
-| prd_provider | TEXT | NOT NULL default 'codex' | codex/claude |
+| prd_provider | TEXT | NOT NULL default 'codex' | 兼容列，当前仅为 codex |
 | prd_json / prd_markdown | TEXT | nullable | 结构化/markdown PRD |
 | git_enabled | INTEGER | NOT NULL default 0 | 0/1；仅当 repo_path 是 Git repo 且已有 commit 时为 1 |
 | git_default_branch | TEXT | nullable | Git 启用时同步真实默认分支，否则为 null |
@@ -45,7 +45,7 @@ projects (1) ──< (N) changes (1) ──< (N) runs (1) ──< (N) events
 | project_id | TEXT | NOT NULL FK→projects | |
 | title | TEXT | NOT NULL | |
 | status | TEXT | NOT NULL | ChangeStatus（见 state-machine.md）|
-| provider | TEXT | NOT NULL default 'codex' | |
+| provider | TEXT | NOT NULL default 'codex' | 当前仅为 codex |
 | codex_thread_id | TEXT | nullable | AI 会话续接 |
 | fix_iterations | INTEGER | default 0 | Fix 轮次（上限 99）|
 | blocked_phase | TEXT | nullable | BLOCKED 时记录阶段 |

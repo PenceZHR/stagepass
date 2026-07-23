@@ -185,7 +185,7 @@ export function setActionContractServiceDbForTest(nextDb: ActionContractDb): () 
 
 - **Preflight 校验**：所有写操作路由必须调用 `PreflightService.assertActionAllowed()` 或等价校验
 - **幂等性**：`run_*`、`retry_*`、`adopt_*`、`waive_*`、`enter_qa`、`merge` 必须携带 `idempotencyKey`
-- **AI provider 透传**：支持按请求指定 `provider: "codex" | "claude"`
+- **AI Provider**：执行链路固定为 `codex`；新接口不得暴露 Provider 选择
 - **SSE 事件流**：`GET /events/stream` 提供 Server-Sent Events 实时流
 
 ## 四、测试规范

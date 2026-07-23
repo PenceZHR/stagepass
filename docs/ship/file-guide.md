@@ -512,33 +512,21 @@
 - `AiRunResult` — { threadId, runId, summary, success, changedFiles, structuredOutput?, items[] }
 
 #### `server/services/ai-engine-adapter.ts`
-**职责**：AI 引擎工厂——按 provider 加载对应引擎。
+**职责**：AI 引擎工厂——加载 Codex 单 Provider 引擎。
 
-**导出**：`getAiEngine(provider): AiEngineAdapter`, `setAiEngineLoaderForTest(provider, loader)`
-
-#### `server/services/claude-engine.ts`
-**职责**：Claude Code 引擎（通过 CLI spawn 调用）。
-
-**导出**：`getClaudeEngine(): AiEngineAdapter`（返回 `ClaudeSdkEngine` 实例，实现 `run()` 和 `runStreamed()`）
-
-**重要**：claude-engine 必须用 stdin 传 prompt，放 argv 会被错解析成 `--allowedTools`。
+**导出**：`getAiEngine(): AiEngineAdapter`, `setAiEngineLoaderForTest(provider, loader)`
 
 #### `server/services/codex-cli-engine.ts`
 **职责**：Codex CLI 引擎（直接 spawn `codex exec --json` 二进制，替代已删除的 `@openai/codex-sdk`）。
 
 **导出**：`getCodexCliEngine(): AiEngineAdapter`（返回 `CodexCliEngine` 实例）
 
-#### `server/services/ai-provider-service.ts`
-**职责**：AI Provider 的解析和持久化策略。
-
-**导出**：`resolveProvider(explicitProvider?, defaultProvider?): AiProvider`, `shouldPersistProvider(explicitProvider, saveAsDefault?): boolean`
-
 ### 4.13 上下文初始化
 
 #### `server/services/context-init-service.ts`
 **职责**：项目上下文初始化——分析代码库生成 baseline 文档。
 
-**导出**：`initializeProjectContext(projectId, provider?): Promise<void>`
+**导出**：`initializeProjectContext(projectId, provider?): Promise<void>`（兼容参数仅接受 `codex`）
 
 **调用链**：→ `static-analyzer` (分析代码库) → `context-parsers` (解析 AI 输出) → `ai-engine-adapter` (调用 AI 生成文档)
 
@@ -684,8 +672,7 @@ API Route
   │           ├─→ StageGuardService (snapshot → diff → validate)
   │           ├─→ PipelineEngineService.getPipelineEngine(provider)
   │           │     └─→ AiEngineAdapter.run(input)
-  │           │           ├─→ CodexCliEngine (codex CLI, bare-spawn)
-  │           │           └─→ ClaudeSdkEngine (claude-code CLI)
+  │           │           └─→ CodexCliEngine (codex CLI, bare-spawn)
   │           ├─→ PipelineRunLedgerService (createRun, writeArtifact, setStatus)
   │           └─→ ArtifactMirrorService.renderMirrorsFromDb()
   │

@@ -10,9 +10,9 @@ stagepass 是一个本地优先（local-first）的 AI 研发流水线控制台�
 
 ## 目标用户
 
-主要用户是**想用 AI 写代码、但没受过系统工程训练的开发者**（vibe coding 使用者），以及重度使用 AI 编码 agent（Codex / Claude Code）的单人开发者与小团队。
+主要用户是**想用 AI 写代码、但没受过系统工程训练的开发者**（vibe coding 使用者），以及重度使用 Codex 编码 agent 的单人开发者与小团队。
 
-核心洞察：他们的困难**不是不会写代码**——Codex / Claude Code 已经能写——而是**看不出 AI 在哪里糊弄了自己**：需求哪里还含糊、验收标准缺了哪条、技术方案埋了什么坑。他们只能看着 AI 吐出一大段代码，然后点一下“看起来不错”。
+核心洞察：他们的困难**不是不会写代码**——Codex 已经能写——而是**看不出 AI 在哪里糊弄了自己**：需求哪里还含糊、验收标准缺了哪条、技术方案埋了什么坑。他们只能看着 AI 吐出一大段代码，然后点一下“看起来不错”。
 
 stagepass 对他们的价值分两层：
 
@@ -120,13 +120,13 @@ MergeReadinessService 汇总 PRD/Spec/Plan/TestPlan/Build/Review/QA 全部 gate�
 - Given 计算 merge readiness，When 汇总，Then 检查 PRD/Spec/Plan/TestPlan/Build/Review/QA 全部 gate、latest adopted build、latest QA run、review state、requirement gaps 与当前 Git HEAD 一致。
 - Given merge readiness 未满足，When `.ship` war report Markdown 显示可合并，Then Merge action 仍为 disabled，执行 API 返回 DB gate 阻断原因。
 
-### FR-010: AI 引擎抽象（Codex / Claude） [must]
+### FR-010: Codex 单 Provider 引擎抽象 [must]
 
-通过 AiEngineAdapter 统一封装 codex 与 claude 两个 provider，输入/输出符合 AiRunInput / AiRunResult 契约；项目可配置 AI provider。claude-engine 必须用 stdin 传 prompt（放 argv 会被错解析成 --allowedTools）。
+通过 AiEngineAdapter 封装 Codex 单 Provider 执行链路，输入/输出符合 AiRunInput / AiRunResult 契约；项目与 Change 不暴露 Provider 选择。
 
 **验收标准：**
-- Given 项目配置了 provider（codex 或 claude），When 执行任一阶段，Then 系统通过 AiEngineAdapter 统一调用，输入/输出符合 AiRunInput / AiRunResult 契约，阶段逻辑不直接耦合具体 provider。
-- Given provider 为 claude，When 传递 prompt，Then prompt 通过 stdin 传递，不得放在 argv 中（避免被 claude CLI 错解析为 --allowedTools）。
+- Given 执行任一 AI 阶段，When 系统启动引擎，Then 通过 AiEngineAdapter 调用 Codex，输入/输出符合 AiRunInput / AiRunResult 契约。
+- Given 用户创建项目或 Change，When 查看 UI 或提交 API，Then 不出现 Provider 选择，执行链路固定为 Codex。
 
 ### FR-011: War Report 与产物镜像（deterministic） [should]
 
@@ -190,7 +190,7 @@ Merge 完成后进入 Retro：生成 retro 产物，将未决问题与改进点�
 
 ### 实现约束
 
-框架：Next.js 16 App Router + React 19 + TypeScript（strict）；后端服务跑在 Node 运行时（route handlers / server services）。数据：SQLite + better-sqlite3 + Drizzle ORM（schema 集中在 server/db/schema.ts，迁移在 server/db/migrations/，迁移到 0013_db_first_pipeline）。AI：Codex CLI（直接 spawn `codex exec --json` 二进制，替代旧 @openai/codex-sdk）与 Claude Code（@anthropic-ai/claude-code），通过 AiEngineAdapter 抽象；不要 top-level await；claude-engine 必须用 stdin 传 prompt。UI：Tailwind + shadcn 风格基础组件（components/ui/）+ lucide-react 图标 + @base-ui/react。测试：node:test + tsx（pnpm test = tsx --test --test-concurrency=1 app/**/*.test.ts server/services/*.test.ts server/db/*.test.ts）。编码规范（.ship/coding-rules.md）：函数 ≤50 行、禁止 any、禁止生产 console.log、文件 kebab-case、变量 camelCase、类/接口 PascalCase、常量 UPPER_SNAKE_CASE、优先 async/await、每个功能模块必须有 *.test.ts 单测。必检命令（.ship/policy.json）：lint/typecheck/test/build；blockedGlobs 含 package.json、lockfile、.github/workflows/**、infra/**、deploy/**、.env*。
+框架：Next.js 16 App Router + React 19 + TypeScript（strict）；后端服务跑在 Node 运行时（route handlers / server services）。数据：SQLite + better-sqlite3 + Drizzle ORM（schema 集中在 server/db/schema.ts，迁移在 server/db/migrations/，迁移到 0013_db_first_pipeline）。AI：Codex CLI 是唯一 Provider，直接 spawn `codex exec --json` 二进制（替代旧 @openai/codex-sdk），通过 AiEngineAdapter 抽象；不要 top-level await。UI：Tailwind + shadcn 风格基础组件（components/ui/）+ lucide-react 图标 + @base-ui/react。测试：node:test + tsx（pnpm test = tsx --test --test-concurrency=1 app/**/*.test.ts server/services/*.test.ts server/db/*.test.ts）。编码规范（.ship/coding-rules.md）：函数 ≤50 行、禁止 any、禁止生产 console.log、文件 kebab-case、变量 camelCase、类/接口 PascalCase、常量 UPPER_SNAKE_CASE、优先 async/await、每个功能模块必须有 *.test.ts 单测。必检命令（.ship/policy.json）：lint/typecheck/test/build；blockedGlobs 含 package.json、lockfile、.github/workflows/**、infra/**、deploy/**、.env*。
 
 ### 影响模块
 
@@ -203,7 +203,7 @@ Merge 完成后进入 Retro：生成 retro 产物，将未决问题与改进点�
 - server/services/build-workspace-service.ts、build-run-record-service.ts
 - server/services/review-run-service.ts、review-report-service.ts、review-center-service.ts、review-qa-gate-service.ts、review-waiver-service.ts、review-artifact-mirror-service.ts
 - server/services/qa-run-service.ts、merge-readiness-service.ts
-- server/services/ai-engine-adapter.ts、ai-engine-types.ts、claude-engine.ts、codex-cli-engine.ts
+- server/services/ai-engine-adapter.ts、ai-engine-types.ts、codex-cli-engine.ts
 - server/db/schema.ts、server/db/migrate.ts、server/db/index.ts
 - server/types/enums.ts、server/types/prd.ts、server/types/api.ts、server/types/models.ts
 - app/api/projects/[id]/changes/[changeId]/*（约 60 个 REST route + SSE）

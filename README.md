@@ -17,7 +17,7 @@ While P1 risks remain, the gate refuses to open — keep fighting or accept the 
 
 **People who want to build with AI but have never been trained as engineers.**
 
-Codex and Claude Code write good code. That isn't the problem. The problem is that if you've never been through a real development process, **you can't tell where the AI is bluffing you** — which requirement is still vague, which acceptance criterion is missing, what landmine that technical approach just buried. All you can do is stare at a wall of generated code and click "looks good."
+Codex writes good code. That isn't the problem. The problem is that if you've never been through a real development process, **you can't tell where the AI is bluffing you** — which requirement is still vague, which acceptance criterion is missing, what landmine that technical approach just buried. All you can do is stare at a wall of generated code and click "looks good."
 
 stagepass does something else: **it doesn't write your code — it makes sure you run the right process.**
 
@@ -27,7 +27,7 @@ You give it one sentence. It walks you and your AI through 12 stages, stopping a
 
 ---
 
-## How this differs from using Codex / Claude Code directly
+## How this differs from using Codex directly
 
 With the CLI, what you get is **one AI writing code and then telling you it's done**.
 
@@ -86,11 +86,11 @@ During Build the AI doesn't write files in your repository. It works in a siblin
 
 An isolated branch is created with `git worktree add` from a pinned baseline, and the result flows back as a patch. Your main checkout is never touched. Symlinks are refused at the path layer and escapes are checked with a double `realpath`, so even a runaway build stays inside the isolation zone.
 
-### 6. Two engines, genuinely equal — and both crash-recoverable
+### 6. The Codex process is crash-recoverable
 
-Codex CLI and Claude Code are **both real locally spawned processes**. Both are required to yield a real pid (if they can't, they kill themselves and report an error), both are written into the same process table, and both go through the same recovery sweep. There are no second-class citizens — this was deliberate, and the reason is preserved in a code comment:
+Codex CLI runs as a **real locally spawned process**. It must yield a real pid (if it can't, it terminates and reports an error), is written into the process table, and goes through the same recovery sweep as every pipeline run:
 
-> Codex previously used `@openai/codex-sdk`, which sealed the child process away (no pid exposed, only an AbortSignal). Spawning it ourselves is the only way to get a real pid, identity, and signal control — so codex and claude share one lifecycle and recovery mechanism instead of codex being the second-class citizen with `pid === null`.
+> Codex previously used `@openai/codex-sdk`, which sealed the child process away (no pid exposed, only an AbortSignal). Spawning it ourselves is the only way to get a real pid, identity, and signal control.
 
 Crash recovery is handled by the pipeline worker's periodic sweep (every 15s by default): a heartbeat older than 45s is treated as lost, the pid is probed, and if necessary SIGTERM → SIGKILL follows — **with process ownership and identity re-confirmed immediately before termination**. The run/job is then marked failed and the provider orphaned. Kill the AI process, close the terminal, reboot the machine: business state converges on its own.
 
@@ -136,10 +136,9 @@ Refine → PRD → Spec → Tech Spec → Plan → Test Plan
 | Node.js | ≥ 20 (developed on 25) |
 | pnpm | Installed (`npm i -g pnpm`) |
 | Port | `3000` free |
-| **OpenAI Codex CLI** | Install and sign in yourself; this is the default engine |
-| **Claude Code** | Installed with the `@anthropic-ai/claude-code` dependency; you only need to configure auth (`ANTHROPIC_API_KEY` or `claude` login) |
+| **OpenAI Codex CLI** | Install and sign in yourself; this is the only engine |
 
-> **At least one** of the two engines must be available. You pick which one to use per item when creating a project.
+> Codex CLI must be available before an AI-backed stage can run.
 
 ---
 
@@ -170,15 +169,13 @@ curl -X POST http://localhost:3000/api/projects \
 
 ### Don't want to set it up by hand? Paste this to an AI
 
-From **inside the cloned repository**, paste the following to Claude Code (or any coding agent that can run commands):
+From **inside the cloned repository**, paste the following to Codex (or any coding agent that can run commands):
 
 ```text
 You are helping me set up and run "stagepass" (a local Next.js control board for an AI development pipeline) on my machine. Work through the steps below, and only stop to ask me if a step actually fails:
 1. Confirm Node >= 20 and pnpm are installed (if pnpm is missing, run `npm i -g pnpm`).
 2. Run `pnpm install`, then `pnpm db:migrate`.
-3. Confirm at least one AI engine CLI is available and signed in:
-   - Codex: run `codex --version`; if missing, install and sign in per the OpenAI Codex CLI docs; if it isn't on PATH, tell me to set `export STAGEPASS_CODEX_BIN=<path>`.
-   - Claude Code: already installed via the `@anthropic-ai/claude-code` dependency — just confirm auth (`ANTHROPIC_API_KEY` or `claude` login).
+3. Confirm Codex CLI is available and signed in: run `codex --version`; if missing, install and sign in per the OpenAI Codex CLI docs; if it isn't on PATH, tell me to set `export STAGEPASS_CODEX_BIN=<path>`.
 4. Confirm port 3000 is free, run `pnpm dev`, and verify that http://localhost:3000/api/health returns {"ok":true}.
 5. Tell me to open http://localhost:3000/projects and create a project, setting repoPath to the absolute path of the repository I want to work on.
 Report clearly what you did and what I still need to do by hand (for example, signing in to a CLI).
@@ -210,7 +207,6 @@ Every setting is an **optional** environment variable; the defaults work out of 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STAGEPASS_CODEX_BIN` | `codex` (via PATH) | Path to the codex binary (only needed if it isn't on PATH) |
-| `ANTHROPIC_API_KEY` | none | Claude Code auth (or use `claude` login instead) |
 | `STAGEPASS_DB_PATH` | `server/db/ship.db` | Location of the local SQLite business database |
 | `STAGEPASS_LOG_DIR` | default log directory in the repo | Log directory |
 | `PIPELINE_WORKER_RECOVERY_SWEEP_MS` | `15000` | Crash-recovery sweep interval |
