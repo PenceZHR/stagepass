@@ -1151,6 +1151,7 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     assert.equal(actionAfter?.sourceDbHash, actionBefore?.sourceDbHash);
   });
 
+
   it("does not leave the briefing locked when the status transition fails", async () => {
     const questionId = await seedQuestion("critical");
     await applyBriefingQuestionAction({
@@ -1180,45 +1181,6 @@ describe("prd-briefing-service", { concurrency: false }, () => {
   });
 
   describe("question generation convergence", () => {
-    /**
-     * Production never reaches `completeQuestionGeneration` without a `runs`
-     * row already on disk: `runPrdBriefingStage` calls `createRun(changeId,
-     * "intake", provider)` before the AI engine even starts, and only calls
-     * `config.complete` (== completeQuestionGeneration) once that run exists
-     * and is still "running" (see pipeline-prd-briefing-stage-service.ts).
-     * `beforeEach` above seeds a project/change but deliberately no run, so
-     * the convergence tests below seed one themselves -- exactly the row
-     * `latestIntakeRun` is supposed to find and stamp onto the event.
-     */
-    function seedIntakeRun(runId: string): void {
-      const now = new Date().toISOString();
-      db.insert(runs).values({
-        id: runId,
-        changeId: CHANGE_ID,
-        phase: "intake",
-        status: "running",
-        startedAt: now,
-        endedAt: null,
-        summary: null,
-      }).run();
-    }
-
-    /**
-     * `runPrdBriefingStage` calls `endRun(runId, ..., true)` immediately after
-     * `completeQuestionGeneration` returns (still inside the same job, before
-     * anything else can observe state), which is what stops
-     * `assertNoRunningPrdBriefingRun` from seeing the just-finished round as a
-     * job still in flight. A test that seeds "running" and never ends it would
-     * be asserting against a run state production never actually leaves lying
-     * around.
-     */
-    function endIntakeRun(runId: string): void {
-      db.update(runs)
-        .set({ status: "completed", endedAt: new Date().toISOString() })
-        .where(eq(runs.id, runId))
-        .run();
-    }
-
     it("refuses convergence on the first round — it would weld the draft gate shut", async () => {
       await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
 
@@ -1240,12 +1202,10 @@ describe("prd-briefing-service", { concurrency: false }, () => {
       });
 
       const before = getPrdBriefingState(CHANGE_ID).questions.length;
-      seedIntakeRun("RUN-CONVERGENCE-ROUND2");
       await completeQuestionGeneration({
         changeId: CHANGE_ID,
         questionsOutput: { questions: [], noNewQuestions: true },
       });
-      endIntakeRun("RUN-CONVERGENCE-ROUND2");
 
       assert.equal(
         getPrdBriefingState(CHANGE_ID).questions.length,
@@ -1260,40 +1220,55 @@ describe("prd-briefing-service", { concurrency: false }, () => {
         changeId: CHANGE_ID,
         questionsOutput: { questions: [question("optional")] },
       });
-      seedIntakeRun("RUN-CONVERGENCE-GATE");
       await completeQuestionGeneration({
         changeId: CHANGE_ID,
         questionsOutput: { questions: [], noNewQuestions: true },
       });
-      endIntakeRun("RUN-CONVERGENCE-GATE");
 
-      // 雷 1 的回归守卫：收敛之后仍必须能进草稿。若这条红了，
-      // 说明 assertQuestionsGenerated 又被 0 卡的轮次饿死了。
+      // This does NOT guard 雷 1 (welding the draft gate shut forever) --
+      // round 1's card alone keeps assertQuestionsGenerated satisfied no
+      // matter what round 2 does, so this test would stay green even with
+      // Step 3's gate deleted outright. "refuses convergence on the first
+      // round" above is what actually guards 雷 1. What this guards: that
+      // completing a converged round does not itself throw when checked
+      // against the draft gate, and that the accumulated card set survives
+      // convergence rather than being cleared or replaced by it.
       assert.doesNotThrow(() => assertCanStartPrdBriefingDraft(CHANGE_ID));
+      assert.ok(getPrdBriefingState(CHANGE_ID).questions.length > 0);
     });
 
-    it("stamps a completed stage_progress carrying the run id", async () => {
+    it("rejects convergence output that also carries new questions", async () => {
+      await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
+
+      await assert.rejects(
+        () => completeQuestionGeneration({
+          changeId: CHANGE_ID,
+          questionsOutput: { questions: [question("critical")], noNewQuestions: true },
+        }),
+        (error: unknown) =>
+          error instanceof PrdBriefingError && error.code === "invalid_briefing_questions",
+      );
+    });
+
+    it("resets a draft-ready briefing back to questions_ready after a converged round", async () => {
       await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
       await completeQuestionGeneration({
         changeId: CHANGE_ID,
-        questionsOutput: { questions: [question("critical")] },
+        questionsOutput: { questions: [question("optional")] },
       });
-      seedIntakeRun("RUN-CONVERGENCE-STAMP");
+      await completePrdDraft({ changeId: CHANGE_ID, markdown: "# PRD\n\n内容" });
+      assert.equal(getPrdBriefingState(CHANGE_ID).briefing?.status, "draft_ready");
+
+      // assertCanStartPrdBriefingQuestions does not gate on briefing status, so
+      // a change that already reached draft_ready can still start (and
+      // converge) another round. ensureBriefing() is a no-op once the row
+      // exists, so nothing else would move status off draft_ready here.
       await completeQuestionGeneration({
         changeId: CHANGE_ID,
         questionsOutput: { questions: [], noNewQuestions: true },
       });
-      endIntakeRun("RUN-CONVERGENCE-STAMP");
 
-      const progress = getPrdBriefingState(CHANGE_ID).stageProgress;
-      assert.equal(progress?.phase, "prd_briefing_questions");
-      assert.equal(progress?.status, "completed");
-      // runId 必须真实且非空：前端 jobMarker 用它区分两次连续收敛，
-      // 空串会让第二次收敛的 marker 与第一次相同，轮询重新报「产物没有更新」。
-      assert.equal(typeof progress?.runId, "string");
-      assert.notEqual(progress?.runId, "");
-      // 不只是「非空」——必须真的是这一轮的 run，而不是随便一个占位符。
-      assert.equal(progress?.runId, "RUN-CONVERGENCE-STAMP");
+      assert.equal(getPrdBriefingState(CHANGE_ID).briefing?.status, "questions_ready");
     });
   });
 });

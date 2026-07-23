@@ -746,6 +746,19 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
   // empty forever, welding that gate shut with no way back. Forcing round 1 to
   // produce cards means the set is non-empty from then on.
   if (parsed.noNewQuestions === true) {
+    // A model reply that declares convergence AND hands back new cards is a
+    // contradiction this layer cannot resolve by silently picking a side.
+    // Task 3's parser rejects the combination, but
+    // pipeline-prd-briefing-stage-service.ts also falls back to bare
+    // BriefingQuestionsOutputSchema.safeParse when line-protocol parsing is
+    // bypassed, and that schema has no refine against this -- so this check
+    // is the last line of defence against silently discarding real cards.
+    if (parsed.questions.length > 0) {
+      throw new PrdBriefingError(
+        "invalid_briefing_questions",
+        "PRD briefing 收敛输出不能同时携带新的疑点卡",
+      );
+    }
     const round = nextQuestionRoundNoWithDb(db, input.changeId);
     if (round === 1) {
       throw new PrdBriefingError(
@@ -753,33 +766,26 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
         "PRD briefing 首轮必须产出疑点卡，不能直接声明收敛",
       );
     }
-    // The run id must be real and distinct per generation. jobMarker() keys the
-    // convergence signal on `${runId}:${status}` — an empty or reused id makes
-    // two consecutive converged rounds produce an identical marker, and the
-    // second one falls through to the "no artifact updated" error all over
-    // again. Question generation runs under phase "intake", so the latest
-    // intake run IS this generation's run.
-    const runId = latestIntakeRun(input.changeId)?.id;
-    if (!runId) {
-      throw new PrdBriefingError(
-        "convergence_run_missing",
-        "PRD briefing 收敛需要一条 intake run 记录，但没有找到",
-      );
-    }
-    await insertEvent({
-      changeId: input.changeId,
-      type: "stage_progress",
-      message: "本轮未发现新的方向性疑点，可以进入 PRD 草稿",
-      rawJson: {
-        stageProgress: {
-          schemaVersion: "stage_progress/v1",
-          phase: "prd_briefing_questions",
-          runId,
-          status: "completed",
-          source: "prd_briefing_convergence",
-        },
-      },
-    });
+    // Convergence writes no card, but it still owes the briefing row the same
+    // status write the normal path makes below (:839): assertCanStartPrdBriefingQuestions
+    // does not require any particular briefing status, so a change that
+    // already reached draft_ready can start another round and converge on it.
+    // Skipping this would leave status stuck at draft_ready while an
+    // otherwise-equivalent non-converged round resets it to questions_ready --
+    // two paths through the same gate disagreeing about where they left the
+    // briefing.
+    db.update(prdBriefings)
+      .set({ status: "questions_ready", updatedAt: nowISO() })
+      .where(eq(prdBriefings.changeId, input.changeId))
+      .run();
+    // Deliberately no stage_progress event here. The orchestrator
+    // (pipeline-prd-briefing-stage-service.ts:565) emits one unconditionally
+    // right after this function returns, carrying the same real runId and
+    // status "completed" -- and latestStageProgress() always prefers the
+    // newest row. An event written here could never be the one anyone reads
+    // in production; it could only ever be a harmless duplicate on the
+    // success path, or -- worse -- a stale "completed" left next to a run the
+    // orchestrator's own catch block just closed as failed.
     syncPrdStageAuthority(input.changeId, input.provider);
     return getPrdBriefingState(input.changeId);
   }
@@ -976,6 +982,16 @@ export async function lockPrdBriefing(input: {
   getProjectForChange(input.changeId);
   const state = getPrdBriefingState(input.changeId);
   if (!state.briefing) throw new PrdBriefingError("briefing_not_found", `Briefing not found: ${input.changeId}`);
+  // Every other mutator here calls assertMutable; this one did not, and the
+  // lock route has no contract gate to fall back on (there is no `lock_prd`
+  // entry in ACTION_DEFINITIONS at all). computePrdGate additionally
+  // short-circuits `canLock` to true for anything already locked, so a second
+  // POST walked through every check below and re-ran the INTAKE_READY
+  // transition -- rewinding a change that had already reached Spec and
+  // discarding its Spec run. The UI disabling the button once locked was the
+  // only thing standing in the way, which a tab left open across a Spec run
+  // does not have.
+  assertMutable(state.briefing);
   if (state.questions.length === 0) {
     throw new PrdBriefingError("questions_required", "PRD lock requires an AI question round");
   }
