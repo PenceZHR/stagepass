@@ -24,8 +24,11 @@ export type NewBriefingQuestion = Omit<
   "createdAt" | "updatedAt"
 >;
 
-/** Anything with drizzle's select/insert/update surface: `db` or a transaction. */
-type Connection = Pick<typeof db, "select" | "insert" | "update">;
+/** A read handle: the `db` singleton, a transaction, or any narrower view. */
+type ReadConnection = Pick<typeof db, "select">;
+/** A write handle. Separate from ReadConnection so a caller holding a
+ *  read-only view is not forced to widen it to call a reader. */
+type WriteConnection = Pick<typeof db, "insert">;
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -39,7 +42,7 @@ function byRound(left: BriefingQuestionRow, right: BriefingQuestionRow): number 
 }
 
 export function listBriefingQuestionsWithDb(
-  connection: Connection,
+  connection: ReadConnection,
   changeId: string,
   phase: BriefingQuestionPhase,
 ): BriefingQuestionRow[] {
@@ -75,7 +78,7 @@ export function getBriefingQuestion(
 }
 
 export function insertBriefingQuestionsWithDb(
-  connection: Connection,
+  connection: WriteConnection,
   rows: NewBriefingQuestion[],
 ): void {
   const now = nowISO();

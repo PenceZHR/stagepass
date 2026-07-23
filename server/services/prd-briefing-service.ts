@@ -190,15 +190,8 @@ type PrdBriefingDb = typeof db;
  * queries, or -- crucially -- their in-flight transaction handle, so a read
  * that a write in the same transaction depends on observes that transaction's
  * own uncommitted rows and is serialised against every other writer.
- *
- * Also carries insert/update: getQuestionsWithDb forwards this handle into
- * briefing-question-store's listBriefingQuestionsWithDb, whose Connection type
- * is shared with its insert helper. Every value actually passed here is the
- * real `db` singleton or a transaction handle, both of which already have the
- * full surface -- this only widens what the type permits, not what the
- * underlying object can do.
  */
-type PrdBriefingReadConnection = Pick<PrdBriefingDb, "select" | "insert" | "update">;
+type PrdBriefingReadConnection = Pick<PrdBriefingDb, "select">;
 
 /**
  * Every card of every round, oldest round first. There is deliberately no

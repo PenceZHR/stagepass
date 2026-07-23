@@ -82,16 +82,7 @@ import { assertAdoptedBuildRunMatchesWorkspace } from "./build-workspace-service
  * query-observation hook rather than importing the orchestrator's option type.
  */
 
-/**
- * Carries insert/update alongside select: two read sites here forward this
- * handle into briefing-question-store's listBriefingQuestionsWithDb, whose
- * Connection type is shared with its insert helper. This module still never
- * calls anything but .select() on it -- every value actually passed in is the
- * real `db` singleton or a transaction handle (see recovery-executors.ts's
- * `tx as unknown as RecoveryDb`), both already having the full surface, so
- * this only widens what the type permits, not what the object can do.
- */
-type EvidenceDb = Pick<typeof db, "select" | "insert" | "update">;
+type EvidenceDb = Pick<typeof db, "select">;
 
 type EvidenceDbQueryHook = (
   phase: string,
