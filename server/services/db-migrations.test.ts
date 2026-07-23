@@ -44,11 +44,17 @@ describe("db migrations", () => {
    */
   it("backfills pre-existing briefing questions to round 1", () => {
     const sqlite = new Database(":memory:");
-    // Rewind to the pre-round shape: unrecord 0022 and undo it, index first --
-    // SQLite refuses to drop a column an index still references.
+    // Rewind to the pre-round shape: unrecord 0022 and undo it, indexes first --
+    // SQLite refuses to drop a column an index still references. Two indexes
+    // cover round_no now: 0022's own idx_briefing_questions_change_round, and
+    // 0026's idx_briefing_questions_change_phase, which added round_no as a
+    // third sort key over the same table. Only 0022 is unrecorded below, so
+    // only its index is expected back after the replay; 0026 stays applied and
+    // its index stays dropped for the rest of this throwaway connection.
     runMigrations(sqlite);
     sqlite.prepare("DELETE FROM __migrations WHERE tag = ?").run("0022_briefing_question_rounds");
     sqlite.exec("DROP INDEX IF EXISTS `idx_briefing_questions_change_round`");
+    sqlite.exec("DROP INDEX IF EXISTS `idx_briefing_questions_change_phase`");
     sqlite.exec("ALTER TABLE `briefing_questions` DROP COLUMN `round_no`");
     // The card is the fixture; its change/project chain is not what is under
     // test, so the row stands alone rather than dragging in two parent tables.

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "c82020b3a5e183c69f05eb26e967b4c0b6b13c2e34f8483a12e6182a9e215f3d",
+  "policySha256": "78c6d294b472c7bf6ff04ef88ca29edb86e8e4e8fd0807c9dbc3379206ad95ef",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -225,6 +225,22 @@
       "table": "artifactMirrors",
       "owner": "Task 14",
       "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/briefing-question-store.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "prd-briefing",
+      "reason": "PRD Briefing 与 Spec Battle 生成的追问卡都在此批量落库，两阶段共用这张表的唯一写入口"
+    },
+    {
+      "file": "server/services/briefing-question-store.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "prd-briefing",
+      "reason": "人类对疑点卡的作答/接受默认/推迟在此落库，是访问器里唯一的更新入口"
     },
     {
       "file": "server/services/build-run-record-service.ts",
@@ -702,23 +718,7 @@
       "file": "server/services/prd-briefing-service.ts",
       "symbol": "db.update",
       "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.update",
-      "nodeKind": "CallExpression",
       "table": "prdBriefings",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "tx.insert",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },

@@ -13,7 +13,6 @@ import {
   artifacts,
   artifactMirrors,
   battleRounds,
-  briefingQuestions,
   buildRunRecords,
   changes,
   findings,
@@ -34,6 +33,7 @@ import {
   techspecSnapshots,
   warReports,
 } from "../db/schema";
+import { listBriefingQuestionsWithDb } from "./briefing-question-store";
 import type { ProviderRunProcess } from "./provider-run-lifecycle-service";
 import type {
   BusinessEvidenceObservation,
@@ -82,7 +82,16 @@ import { assertAdoptedBuildRunMatchesWorkspace } from "./build-workspace-service
  * query-observation hook rather than importing the orchestrator's option type.
  */
 
-type EvidenceDb = Pick<typeof db, "select">;
+/**
+ * Carries insert/update alongside select: two read sites here forward this
+ * handle into briefing-question-store's listBriefingQuestionsWithDb, whose
+ * Connection type is shared with its insert helper. This module still never
+ * calls anything but .select() on it -- every value actually passed in is the
+ * real `db` singleton or a transaction handle (see recovery-executors.ts's
+ * `tx as unknown as RecoveryDb`), both already having the full surface, so
+ * this only widens what the type permits, not what the object can do.
+ */
+type EvidenceDb = Pick<typeof db, "select" | "insert" | "update">;
 
 type EvidenceDbQueryHook = (
   phase: string,
@@ -641,8 +650,7 @@ export function businessEvidenceForCompletedProvider(
       )).get() ?? null;
       if (!artifact || !nonEmpty(artifact.path)) missingEvidence.push("intake_artifact_missing");
     } else if (actionId === "run_prd_briefing_questions") {
-      const questions = evidenceDb.select().from(briefingQuestions)
-        .where(eq(briefingQuestions.changeId, run.changeId)).all();
+      const questions = listBriefingQuestionsWithDb(evidenceDb, run.changeId, "PRD");
       if (questions.length === 0
         || questions.some((question) => !nonEmpty(question.question) || !nonEmpty(question.whyItMatters))) {
         missingEvidence.push("intake_questions_missing");
@@ -942,12 +950,11 @@ export function captureEvidenceDbSnapshot(
         )).orderBy(desc(artifacts.createdAt), desc(artifacts.id)).limit(1).get() ?? null)
         : null,
       questions: actionId === "run_prd_briefing_questions"
-        ? query(() => evidenceDb.select({
-          id: briefingQuestions.id, question: briefingQuestions.question,
-          whyItMatters: briefingQuestions.whyItMatters, status: briefingQuestions.status,
-          answer: briefingQuestions.answer, updatedAt: briefingQuestions.updatedAt,
-        }).from(briefingQuestions).where(eq(briefingQuestions.changeId, run.changeId))
-          .orderBy(asc(briefingQuestions.id)).all())
+        ? query(() => listBriefingQuestionsWithDb(evidenceDb, run.changeId, "PRD").map((row) => ({
+          id: row.id, question: row.question,
+          whyItMatters: row.whyItMatters, status: row.status,
+          answer: row.answer, updatedAt: row.updatedAt,
+        })))
         : null,
       draft: actionId === "run_prd_briefing_draft"
         ? query(() => evidenceDb.select({

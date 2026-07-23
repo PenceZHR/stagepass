@@ -16,6 +16,12 @@ import {
 import { withSqliteWriteRetry } from "../db/write-boundary";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
 import {
+  getBriefingQuestion,
+  insertBriefingQuestionsWithDb,
+  listBriefingQuestionsWithDb,
+  updateBriefingQuestionAnswer,
+} from "./briefing-question-store";
+import {
   applyQuestionAction,
   BriefingQuestionsOutputSchema,
   computePrdGate,
@@ -184,8 +190,15 @@ type PrdBriefingDb = typeof db;
  * queries, or -- crucially -- their in-flight transaction handle, so a read
  * that a write in the same transaction depends on observes that transaction's
  * own uncommitted rows and is serialised against every other writer.
+ *
+ * Also carries insert/update: getQuestionsWithDb forwards this handle into
+ * briefing-question-store's listBriefingQuestionsWithDb, whose Connection type
+ * is shared with its insert helper. Every value actually passed here is the
+ * real `db` singleton or a transaction handle, both of which already have the
+ * full surface -- this only widens what the type permits, not what the
+ * underlying object can do.
  */
-type PrdBriefingReadConnection = Pick<PrdBriefingDb, "select">;
+type PrdBriefingReadConnection = Pick<PrdBriefingDb, "select" | "insert" | "update">;
 
 /**
  * Every card of every round, oldest round first. There is deliberately no
@@ -201,11 +214,7 @@ function getQuestionsWithDb(
   connection: PrdBriefingReadConnection,
   changeId: string,
 ): Array<typeof briefingQuestions.$inferSelect> {
-  return connection.select().from(briefingQuestions).where(eq(briefingQuestions.changeId, changeId)).all()
-    .sort((a, b) =>
-      a.roundNo - b.roundNo
-      || a.createdAt.localeCompare(b.createdAt)
-      || a.id.localeCompare(b.id));
+  return listBriefingQuestionsWithDb(connection, changeId, "PRD");
 }
 
 function getQuestions(changeId: string): Array<typeof briefingQuestions.$inferSelect> {
@@ -806,7 +815,6 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
   for (let index = 0; index < parsed.questions.length; index += 1) {
     mintedIds.push(await nextId(briefingQuestions, "BQ"));
   }
-  const now = nowISO();
 
   withSqliteWriteRetry("prd-briefing.append-question-round", () =>
     db.transaction((tx) => {
@@ -820,27 +828,23 @@ export async function completeQuestionGeneration(input: CompleteQuestionGenerati
       // answer that was never in danger.
       const preservedDecisions = recordedDecisionsWithDb(readConnection, input.changeId);
       const roundNo = nextQuestionRoundNoWithDb(readConnection, input.changeId);
-      parsed.questions.forEach((item, index) => {
-        tx.insert(briefingQuestions).values({
-          id: mintedIds[index],
-          changeId: input.changeId,
-          roundNo,
-          category: item.category,
-          severity: item.severity,
-          question: item.question,
-          whyItMatters: item.whyItMatters,
-          suggestedDefault: item.suggestedDefault,
-          status: "open",
-          answer: null,
-          source: "ai_blue",
-          createdAt: now,
-          updatedAt: now,
-        }).run();
-      });
+      insertBriefingQuestionsWithDb(tx, parsed.questions.map((item, index) => ({
+        id: mintedIds[index],
+        changeId: input.changeId,
+        phase: "PRD",
+        roundNo,
+        category: item.category,
+        severity: item.severity,
+        question: item.question,
+        whyItMatters: item.whyItMatters,
+        suggestedDefault: item.suggestedDefault,
+        status: "open",
+        answer: null,
+        source: "ai_blue",
+      })));
       assertRecordedDecisionsPreserved(
         preservedDecisions,
-        tx.select().from(briefingQuestions)
-          .where(eq(briefingQuestions.changeId, input.changeId)).all(),
+        listBriefingQuestionsWithDb(tx, input.changeId, "PRD"),
       );
       tx.update(prdBriefings)
         .set({ status: "questions_ready", updatedAt: nowISO() })
@@ -863,11 +867,7 @@ export async function applyBriefingQuestionAction(input: {
   getProjectForChange(input.changeId);
   assertMutable(currentBriefing(input.changeId));
 
-  const question = db
-    .select()
-    .from(briefingQuestions)
-    .where(and(eq(briefingQuestions.changeId, input.changeId), eq(briefingQuestions.id, input.questionId)))
-    .get();
+  const question = getBriefingQuestion(input.changeId, input.questionId, "PRD");
   if (!question) throw new PrdBriefingError("question_not_found", `Question not found: ${input.questionId}`);
 
   let actionResult: ReturnType<typeof applyQuestionAction>;
@@ -877,14 +877,13 @@ export async function applyBriefingQuestionAction(input: {
     throw new PrdBriefingError("invalid_question_action", error instanceof Error ? error.message : undefined);
   }
 
-  db.update(briefingQuestions)
-    .set({
-      status: actionResult.status,
-      answer: actionResult.answer,
-      updatedAt: nowISO(),
-    })
-    .where(and(eq(briefingQuestions.changeId, input.changeId), eq(briefingQuestions.id, input.questionId)))
-    .run();
+  updateBriefingQuestionAnswer({
+    changeId: input.changeId,
+    questionId: input.questionId,
+    phase: "PRD",
+    status: actionResult.status,
+    answer: actionResult.answer,
+  });
   updateSourceHashes(input.changeId);
   syncPrdStageAuthority(input.changeId);
   await refreshPrdBriefingMirrors(input.changeId);

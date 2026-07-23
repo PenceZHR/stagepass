@@ -183,6 +183,13 @@
       "when": 1784505600000,
       "tag": "0025_events_change_created_index",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1784592000000,
+      "tag": "0026_spec_battle_human_intervention",
+      "breakpoints": true
     }
   ]
 }

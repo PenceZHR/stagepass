@@ -515,6 +515,15 @@ export const requirementGaps = sqliteTable("requirement_gaps", {
   waiverReason: text("waiver_reason"),
   downgradeReason: text("downgrade_reason"),
   overrideReason: text("override_reason"),
+  /**
+   * The second of two keys for an overridden P0. `override_reason` clears the
+   * Spec gate; this one clears the Merge gate, and is turned separately at the
+   * Merge stage. isMergeBlockingGap() reads it -- see spec-battle-rules.ts.
+   * Without it an overridden P0 blocks merge forever: merge-readiness only
+   * releases on status 'resolved', which only blue can grant, and blue stops
+   * rechecking overridden gaps.
+   */
+  mergeOverrideReason: text("merge_override_reason"),
   specBlocking: integer("spec_blocking").notNull().default(0),
   mergeBlocking: integer("merge_blocking").notNull().default(0),
   sourceHashesJson: text("source_hashes_json").notNull(),
@@ -1153,6 +1162,17 @@ export const briefingQuestions = sqliteTable("briefing_questions", {
    * rows (and fixtures that predate the column) read as the first round.
    */
   roundNo: integer("round_no").notNull().default(1),
+  /**
+   * Which pipeline phase's interrogation produced this card. PRD Briefing and
+   * Spec Battle both ask the human questions in the same shape, so they share
+   * this table -- but nothing may read it without saying which phase it wants:
+   * a Spec card reaching computePrdGate reads as an unhandled critical question
+   * and welds the PRD draft gate shut. briefing-question-store.ts is the only
+   * module allowed to touch this table, and every one of its readers takes a
+   * phase argument. Defaults to 'PRD' so every pre-existing row keeps its
+   * meaning.
+   */
+  phase: text("phase").notNull().default("PRD"),
   category: text("category").notNull(),
   severity: text("severity").notNull(),
   question: text("question").notNull(),

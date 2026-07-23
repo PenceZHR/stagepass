@@ -226,6 +226,22 @@
       "reason": "owned by Task 14"
     },
     {
+      "file": "server/services/briefing-question-store.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "prd-briefing",
+      "reason": "PRD Briefing 与 Spec Battle 生成的追问卡都在此批量落库，两阶段共用这张表的唯一写入口"
+    },
+    {
+      "file": "server/services/briefing-question-store.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "prd-briefing",
+      "reason": "人类对疑点卡的作答/接受默认/推迟在此落库，是访问器里唯一的更新入口"
+    },
+    {
       "file": "server/services/build-run-record-service.ts",
       "symbol": "db.insert",
       "nodeKind": "CallExpression",
@@ -701,23 +717,7 @@
       "file": "server/services/prd-briefing-service.ts",
       "symbol": "db.update",
       "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.update",
-      "nodeKind": "CallExpression",
       "table": "prdBriefings",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "tx.insert",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },
@@ -1687,6 +1687,11 @@
       "file": "server/services/artifact-mirror-service.test.ts",
       "mode": "local-memory",
       "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/briefing-question-store.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
       "file": "server/services/build-record-identity.test.ts",

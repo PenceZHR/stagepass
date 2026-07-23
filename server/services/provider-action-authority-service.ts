@@ -6,7 +6,6 @@ import path from "node:path";
 import {
   artifacts,
   apiSnapshots,
-  briefingQuestions,
   buildRunRecords,
   changes,
   pipelineJobs,
@@ -29,6 +28,7 @@ import {
   testplanSnapshots,
   techspecSnapshots,
 } from "../db/schema";
+import { listBriefingQuestions } from "./briefing-question-store";
 import {
   compareBuildRecordRecency,
   isApprovedBuildStatus,
@@ -510,7 +510,7 @@ export function resolveBriefingActionAuthority(
   )).get();
   if (active) return disabled(actionId, "provider_job_running");
 
-  const questions = db.select().from(briefingQuestions).where(eq(briefingQuestions.changeId, changeId)).all();
+  const questions = listBriefingQuestions(changeId, "PRD");
   const draft = db.select().from(prdDrafts).where(eq(prdDrafts.changeId, changeId))
     .orderBy(desc(prdDrafts.version), desc(prdDrafts.createdAt)).get();
 

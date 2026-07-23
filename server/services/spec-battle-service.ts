@@ -7,7 +7,6 @@ import { withSqliteWriteRetry } from "../db/write-boundary";
 import {
   battleRounds,
   blueGapReviews,
-  briefingQuestions,
   changes,
   events,
   humanDecisions,
@@ -19,6 +18,7 @@ import {
   runs,
   warReports,
 } from "../db/schema";
+import { listBriefingQuestions } from "./briefing-question-store";
 import type { ChangeStatus } from "../types";
 import { isOccupiedBattleRoundStatus, isRunningBattleRoundStatus } from "../types/enums";
 import {
@@ -257,15 +257,7 @@ function prdAuthorityRows(changeId: string) {
   // stage hash no longer depends on this (prdStageHashQuestionRows normalizes
   // its own order), but `deferredQuestions` below is handed to Spec Battle as a
   // list, and it should reach it in the order the briefing room shows it.
-  const questions = db
-    .select()
-    .from(briefingQuestions)
-    .where(eq(briefingQuestions.changeId, changeId))
-    .all()
-    .sort((a, b) =>
-      a.roundNo - b.roundNo
-      || a.createdAt.localeCompare(b.createdAt)
-      || a.id.localeCompare(b.id));
+  const questions = listBriefingQuestions(changeId, "PRD");
   return {
     briefing,
     questions,
