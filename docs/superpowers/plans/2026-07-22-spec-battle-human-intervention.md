@@ -43,6 +43,11 @@ node:test（`node --test`）、Tailwind、zod。
 - **本 repo 没有共享测试夹具目录。** 每个测试文件自带建库的
   `before`/`beforeEach`。需要夹具时照抄同目录邻近测试文件的写法，不要新建
   `test-support/` 之类的模块。
+- **计划里测试代码中的 seed 辅助函数名是示意，不是既有 API。**
+  `seedRoundReadyForBlue` / `seedReportReadyWithOpenP1` /
+  `seedMergeReadyExceptOverriddenP0` 等一律不存在。实现时**先读目标测试文件
+  已有的建库与推进写法，复用或就地扩展它们**，不要照字面新建这些函数。
+  重要的是断言主体，不是这些名字。
 
 ---
 
@@ -419,40 +424,45 @@ Expected: PASS，`ℹ fail 0`、`ℹ cancelled 0`。
 
 - [ ] **Step 8: 登记 DB 写入点并重算快照**
 
-`briefing-question-store.ts` 里的 insert / update 是新的生产写入点。
-在 `server/db/db-write-policy.json` 的 `productionEntries` 加两条：
+写入点从 `prd-briefing-service.ts` 迁到了 `briefing-question-store.ts`，
+两边的 `productionEntries` 都要动。
 
-```json
-    {
-      "file": "server/services/briefing-question-store.ts",
-      "symbol": "insertBriefingQuestionsWithDb",
-      "nodeKind": "FunctionDeclaration",
-      "table": "briefing_questions",
-      "owner": "prd-briefing",
-      "reason": "追问卡落库的唯一入口，PRD 与 Spec 共用，写入必须带 phase"
-    },
-    {
-      "file": "server/services/briefing-question-store.ts",
-      "symbol": "updateBriefingQuestionAnswer",
-      "nodeKind": "FunctionDeclaration",
-      "table": "briefing_questions",
-      "owner": "prd-briefing",
-      "reason": "人对追问卡表态后回写 status/answer，按 phase 限定"
-    }
+**条目的键是 AST 扫描出来的四元组**，不是你自己起的名字：
+`{file, symbol, nodeKind, table}`，其中 `symbol` 形如 `"db.insert"` /
+`"tx.insert"` / `"connection.update"`（**调用点的写法**，不是函数名），
+`nodeKind` 恒为 `"CallExpression"`，`table` 是 drizzle 的**变量名**
+`"briefingQuestions"`（不是 SQL 表名）。参照文件里现有的
+`server/services/prd-briefing-service.ts` 那几条。
+
+**不要凭空猜四元组。** 按这个顺序做：
+
+```bash
+# 1. 先跑，让它把实际扫描结果与快照的差异报出来
+npx tsx scripts/run-tests-isolated.ts server/db/db-write-inventory.test.ts
 ```
 
-在 `testFixtures` 加：
+失败输出会给出**精确的键**：新出现的（`briefing-question-store.ts` 的两处）
+与已消失的（`prd-briefing-service.ts` 的 `db.update`/`briefingQuestions`
+和 `tx.insert`/`briefingQuestions`）。
+
+2. 按报出的键改 `db-write-policy.json`：新条目补
+`"owner": "prd-briefing"` 与中文 `reason`（说明为什么这里要写库）；
+删掉已消失的旧条目。`owner` 缺失会让第 3 步直接抛
+`Cannot snapshot unowned production DB writes`。
+
+3. `testFixtures` 加一条：
 
 ```json
     {
       "file": "server/services/briefing-question-store.test.ts",
       "mode": "suite-env",
-      "reason": "访问器行为与跨阶段隔离的验证需要真实表"
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     }
 ```
 
-同时**删掉**已不再直接写表的旧条目（`prd-briefing-service.ts` 的
-`briefing_questions` 写入记录）——AST 扫描是精确比对，多一条也会红。
+（照抄同文件里既有条目的 `reason` 措辞，这一栏是套话。）
+
+4. 重算并复验：
 
 ```bash
 npx tsx scripts/generate-db-write-inventory-snapshot.ts
@@ -2461,11 +2471,40 @@ Requirement Gaps 那一块（`spec-battlefield.tsx:558-586`）整块移出折叠
 
 Spec 问题卡的表态 POST 到新路由
 `/api/projects/{id}/changes/{changeId}/spec-battle/questions/{questionId}`，
-body `{ action, value }`——该路由照抄
-`app/api/projects/[id]/changes/[changeId]/prd-briefing/questions/[questionId]/route.ts`，
-把服务调用换成一个新导出 `applySpecQuestionAction`（实现照抄
-`applyBriefingQuestionAction`，`phase` 传 `"Spec"`，末尾不调 PRD 的
-`syncPrdStageAuthority` / `refreshPrdBriefingMirrors`，改调 `refreshMirrors`）。
+body `{ action, value }`。
+
+服务层新增 `applySpecQuestionAction`。**不要拷贝 `applyBriefingQuestionAction` 的函数体**：
+它与 Spec 版本共用的两块本就已经是可复用的独立件——
+`applyQuestionAction`（`prd-briefing-ledger.ts:281`，纯函数，输入
+`{action, value}` 返回 `{status, answer}`）与 Task 1 的
+`updateBriefingQuestionAnswer`。两个阶段各写一个薄适配器调用这两件即可，
+差异部分（权限断言、认证同步、镜像刷新、返回值）本来就不同，无共同体可抽：
+
+```typescript
+export async function applySpecQuestionAction(input: {
+  changeId: string;
+  questionId: string;
+  action: "answer" | "accept_assumption" | "defer";
+  value: string;
+}): Promise<void> {
+  getProjectForChange(input.changeId);
+  const question = getBriefingQuestion(input.changeId, input.questionId, "Spec");
+  if (!question) throw new SpecBattleError("question_not_found");
+  const result = applyQuestionAction({ action: input.action, value: input.value });
+  updateBriefingQuestionAnswer({
+    changeId: input.changeId,
+    questionId: input.questionId,
+    phase: "Spec",
+    status: result.status,
+    answer: result.answer,
+  });
+  refreshMirrors(input.changeId);
+}
+```
+
+路由文件的 guard / 错误映射结构参照
+`app/api/projects/[id]/changes/[changeId]/spec-battle/decision/route.ts`
+（同目录，同错误类型），不是参照 PRD 那个。
 
 - [ ] **Step 6: 跑测试与类型检查**
 
