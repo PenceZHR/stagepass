@@ -25,9 +25,8 @@ import type {
  * the @openai/codex-sdk wrapper it previously used. That SDK spawned the same
  * binary internally but seals the child process away: its public API exposes no
  * pid and no signal control (only an AbortSignal). Spawning ourselves is the only
- * way to get the real pid + identity + SIGTERM/SIGKILL that let codex runs join
- * the same process-lifecycle/recovery machinery as claude-engine, instead of
- * being the `pid === null` second-class citizen the recovery service special-cases.
+ * way to get the real pid + identity + SIGTERM/SIGKILL required by the shared
+ * process-lifecycle and crash-recovery machinery.
  */
 
 const log = createChildLogger("codex-cli-engine");
@@ -455,17 +454,16 @@ function codexHeartbeatMs(): number {
  * codex heartbeats killed the replacement in turn. Attaching a bare
  * `.catch()` to the call would NOT have fixed it: `onHeartbeat` throws before
  * it returns a promise to attach to. Wrapping in `Promise.resolve().then()`
- * converts the synchronous throw into a rejection, which is exactly the shape
- * claude-engine.ts:1008 already uses -- this engine was the only one missing
- * it.
+ * converts the synchronous throw into a rejection that the lifecycle failure
+ * path can handle.
  *
  * The failure is reported, never swallowed. Losing the lease means the run no
  * longer owns its slot, so `onLifecycleFailure` aborts it: silently streaming
  * on would turn a real ownership loss into invisible zombie work. The engine
- * stays deliberately lease-agnostic (it does not import StaleLeaseFenceError,
- * and neither does claude-engine) -- it reports the error it was handed and
- * lets the stage layer, whose `assertCurrentExecutionFence` re-checks
- * ownership at every write boundary, decide what a fence means.
+ * stays deliberately lease-agnostic (it does not import
+ * StaleLeaseFenceError): it reports the error it was handed and lets the stage
+ * layer, whose `assertCurrentExecutionFence` re-checks ownership at every
+ * write boundary, decide what a fence means.
  */
 function startCodexHeartbeat(options: {
   lifecycle: NonNullable<AiRunInput["lifecycle"]>;
@@ -1034,8 +1032,8 @@ export class CodexCliEngine implements AiEngineAdapter {
       // kind and `build` was bounded only on its FIRST event
       // (consumeBuildStreamWithStartupTimeout); a provider that went quiet after
       // event one hung the stage forever. No default is invented here: the
-      // budget is exactly what the caller passes, matching run() and claude's
-      // runStreamed, so a legitimately long build keeps its full allowance.
+      // budget is exactly what the caller passes, matching run(), so a
+      // legitimately long build keeps its full allowance.
       if (typeof input.timeoutMs === "number" && input.timeoutMs > 0) {
         timeout = setTimeout(() => {
           timedOut = true;
@@ -1099,8 +1097,7 @@ export class CodexCliEngine implements AiEngineAdapter {
       // The error code is carried in the message text as well as on the error,
       // because a streamed stage has no AiRunResult to put providerErrorCode on
       // -- the run summary is the only channel action-contract's
-      // extractKnownCodeFromText can read it from. claude's runStreamed does the
-      // same ("provider_run_failed: Claude SDK stream exited with code N").
+      // extractKnownCodeFromText can read it from.
       const failure = (providerErrorCode: string, what: string): CodexRunFailure =>
         new CodexRunFailure(`${providerErrorCode}: ${what} ${evidence}`, {
           ...processFacts,
@@ -1126,9 +1123,8 @@ export class CodexCliEngine implements AiEngineAdapter {
         // A signal is unambiguous: nothing completes a turn by dying to one.
         // This is the RUN-230 shape (macOS DarkWake -> supervisor SIGTERM).
         // A nonzero EXIT CODE is deliberately not a failure here: run() does not
-        // treat it as one either, and this system has recorded claude runs that
-        // exited 1 having delivered their whole result, so failing on it would
-        // discard good build patches.
+        // treat it as one either, and a process may deliver its whole result
+        // before exiting nonzero. Failing on it would discard good build patches.
         throw failure(classify("provider_run_failed"), "codex was killed mid-stream");
       }
 

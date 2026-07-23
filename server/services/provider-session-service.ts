@@ -32,9 +32,8 @@ function findSession(input: ProviderSessionKey): typeof changeProviderSessions.$
 /**
  * Resolve a provider-scoped external session. A legacy thread is imported
  * into the Codex/general slot only when a completed Codex lifecycle row proves
- * its provider provenance. Historically the field also held Claude sessions;
- * migration 0027 clears those rows, but the field name alone is still not
- * sufficient provenance evidence.
+ * its provider provenance. Migration 0027 clears legacy non-Codex rows, but the
+ * field name alone is still not sufficient provenance evidence.
  */
 export function resolveProviderSession(input: ProviderSessionKey): string | null {
   const existing = findSession(input);
