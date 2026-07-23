@@ -16,6 +16,7 @@ import {
   type StageViolationResult,
 } from "./stage-guard-service";
 import {
+  readStoredStructuredPrd,
   readStructuredPrd,
   savePrd,
   validatePrd,
@@ -133,6 +134,36 @@ async function failPrdTurn(
 }
 
 const PRD_ALLOWED_FILES = [".ship/prd.md", ".ship/prd.json", ".ship/prd-sources.md"];
+
+/**
+ * The structured-PRD half of the confirm gate, or null when it does not block.
+ *
+ * This was written out twice -- once in confirmPrd, once in confirmPrdRevision --
+ * with the same hole in both: `readStructuredPrd` returns null for a document
+ * that fails to parse AND for one that fails StructuredPrdSchema, and the guard
+ * read that null as "nothing structured to validate" and confirmed the project
+ * ready. So the one case the gate exists to catch was the one it skipped.
+ *
+ * The trigger is not exotic: adding a required field to StructuredPrdSchema
+ * makes every stored PRD invalid, and validation would silently stop running
+ * for all of them rather than failing loudly.
+ */
+function structuredPrdBlockingConfirm(projectId: string): PrdValidationResult | null {
+  const stored = readStoredStructuredPrd(projectId);
+  if (stored.kind === "missing") return null;
+  if (stored.kind === "invalid") {
+    return {
+      valid: false,
+      issues: [{
+        field: "prdJson",
+        severity: "error",
+        message: `PRD 结构化内容无法解析或不符合当前 schema，请重新生成 PRD：${stored.detail}`,
+      }],
+    };
+  }
+  const validation = validatePrd(stored.prd);
+  return validation.valid ? null : validation;
+}
 
 export function validatePrdStage(mutations: WorkspaceMutation[]): StageViolationResult {
   const violatingFiles = mutations
@@ -517,13 +548,10 @@ export async function confirmPrd(projectId: string): Promise<PrdValidationResult
   }
 
   // Try structured validation if available
+  const structuredIssue = structuredPrdBlockingConfirm(projectId);
+  if (structuredIssue) return structuredIssue;
+  // Safe after the guard above: a broken document has already returned.
   const structured = readStructuredPrd(projectId);
-  if (structured) {
-    const validation = validatePrd(structured);
-    if (!validation.valid) {
-      return validation;
-    }
-  }
 
   updatePrdStatus(projectId, "ready");
 
@@ -603,13 +631,8 @@ export async function confirmPrdRevision(projectId: string): Promise<PrdValidati
     throw new Error("Cannot confirm PRD revision: no PRD content found");
   }
 
-  const structured = readStructuredPrd(projectId);
-  if (structured) {
-    const validation = validatePrd(structured);
-    if (!validation.valid) {
-      return validation;
-    }
-  }
+  const structuredIssue = structuredPrdBlockingConfirm(projectId);
+  if (structuredIssue) return structuredIssue;
 
   const suspendedChanges = db
     .select()

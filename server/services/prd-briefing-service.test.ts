@@ -1087,6 +1087,45 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     );
   });
 
+  it("refuses to re-lock an already locked briefing, so the pipeline cannot be rewound", async () => {
+    // The lock route has no contract gate at all (there is no `lock_prd` action
+    // in ACTION_DEFINITIONS), and computePrdGate short-circuits `canLock` to
+    // true for anything already locked -- so a second POST walked through every
+    // check and re-ran the INTAKE_READY transition. On a change that had moved
+    // on to Spec that rewinds the pipeline: SPEC_READY -> INTAKE_READY, the
+    // Intake gate reopens and the Spec run is discarded.
+    //
+    // The UI disables the button once locked, which is why this was never seen:
+    // a frontend check was the only thing guarding the route, and a tab left
+    // open across a Spec run does not have it. Every sibling mutator
+    // (completeFinalReview, completePrdDraft, ...) calls assertMutable; this one
+    // did not.
+    const questionId = await seedQuestion("critical");
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID,
+      questionId,
+      action: "answer",
+      value: "面向普通开发者。",
+    });
+    await completePrdDraft({ changeId: CHANGE_ID, markdown: "# PRD\n\n## 目标\n做战前会议室。" });
+    await completeFinalReview({ changeId: CHANGE_ID, reviewJson: finalReviewJson() });
+    await lockPrdBriefing({ changeId: CHANGE_ID });
+
+    // The change advances past intake, exactly as a real Spec run would leave it.
+    db.update(changes).set({ status: "SPEC_READY" }).where(eq(changes.id, CHANGE_ID)).run();
+
+    await assert.rejects(
+      () => lockPrdBriefing({ changeId: CHANGE_ID }),
+      (error) => error instanceof PrdBriefingError && error.code === "prd_briefing_locked",
+    );
+
+    assert.equal(
+      db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status,
+      "SPEC_READY",
+      "the refused lock must not rewind the change",
+    );
+  });
+
   it("locks PRD, writes gate mirror, registers artifacts, and transitions change to INTAKE_READY", async () => {
     const questionId = await seedQuestion("critical");
     await applyBriefingQuestionAction({

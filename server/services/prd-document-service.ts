@@ -28,15 +28,35 @@ function ensureShipDir(repoPath: string): void {
 
 // --- Read ---
 
-export function readStructuredPrd(projectId: string): StructuredPrd | null {
+/**
+ * The stored structured PRD, distinguishing "there is none" from "there is one
+ * and it is broken".
+ *
+ * `readStructuredPrd` collapses both to null, which is right for callers that
+ * only want the document if it is usable -- but wrong for the confirm gate,
+ * which read that null as "no structured PRD to check" and skipped validation
+ * entirely, marking the project ready. Unparseable JSON and a document that
+ * fails StructuredPrdSchema both took that path.
+ */
+export type StoredStructuredPrd =
+  | { kind: "missing" }
+  | { kind: "invalid"; detail: string }
+  | { kind: "ok"; prd: StructuredPrd };
+
+export function readStoredStructuredPrd(projectId: string): StoredStructuredPrd {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
-  if (!project?.prdJson) return null;
+  if (!project?.prdJson) return { kind: "missing" };
   try {
-    return StructuredPrdSchema.parse(JSON.parse(project.prdJson));
+    return { kind: "ok", prd: StructuredPrdSchema.parse(JSON.parse(project.prdJson)) };
   } catch (err) {
     log.warn({ projectId, err }, "Failed to parse stored prdJson");
-    return null;
+    return { kind: "invalid", detail: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export function readStructuredPrd(projectId: string): StructuredPrd | null {
+  const stored = readStoredStructuredPrd(projectId);
+  return stored.kind === "ok" ? stored.prd : null;
 }
 
 // --- Write (single point of truth) ---
