@@ -2982,8 +2982,17 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
         );
       }
 
-      await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+      const result = await recoverStaleProviderRuns({
+        changeId: CHANGE_ID,
+        execute: true,
+        observedAt: RECOVERY_OBSERVED_AT,
+        // This table verifies business-evidence reconciliation. Deadline
+        // behavior has dedicated monotonic-clock tests below, so do not let
+        // host load turn this semantic assertion into a 1 s budget probe.
+        timeBudgetMs: 10_000,
+      });
 
+      assert.deepEqual(result.deferred, []);
       assert.equal(db.select().from(providerRunProcesses).where(eq(providerRunProcesses.id, "PRP-MATRIX")).get()?.status, "completed");
       assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-MATRIX")).get()?.status, "failed");
       assert.equal(db.select().from(runs).where(eq(runs.id, "RUN-MATRIX")).get()?.status, "failed");
@@ -3008,8 +3017,14 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       await seedCompletedProviderFixture(phase, true);
       const artifactCountBefore = db.select().from(artifacts).where(eq(artifacts.changeId, CHANGE_ID)).all().length;
 
-      await recoverStaleProviderRuns({ changeId: CHANGE_ID, execute: true, observedAt: RECOVERY_OBSERVED_AT });
+      const result = await recoverStaleProviderRuns({
+        changeId: CHANGE_ID,
+        execute: true,
+        observedAt: RECOVERY_OBSERVED_AT,
+        timeBudgetMs: 10_000,
+      });
 
+      assert.deepEqual(result.deferred, []);
       const event = db.select().from(events).where(eq(events.type, "business_run_reconciled")).get();
       const raw = JSON.parse(event?.rawJson ?? "{}") as { providerTerminal?: string; businessEvidenceComplete?: boolean; missingEvidence?: string[] };
       assert.equal(
