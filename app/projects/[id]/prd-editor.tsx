@@ -21,8 +21,6 @@ interface PrdEditorProps {
   chatHistory: Message[];
   structured: Record<string, unknown> | null;
   validation: { valid: boolean; issues: ValidationIssue[] } | null;
-  provider: "codex" | "claude";
-  onProviderChange: (provider: "codex" | "claude") => void;
   onConfirm: () => void;
   onStatusChange: () => void;
   onContentUpdate: (content: string | null, newMessages: Message[]) => void;
@@ -45,8 +43,6 @@ export function PrdEditor({
   chatHistory,
   structured,
   validation,
-  provider,
-  onProviderChange,
   onConfirm,
   onStatusChange,
   onContentUpdate,
@@ -56,7 +52,6 @@ export function PrdEditor({
   const [slowNotice, setSlowNotice] = useState(false);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [upgrading, setUpgrading] = useState(false);
-  const [saveAsDefault, setSaveAsDefault] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "preview">("chat");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -72,7 +67,7 @@ export function PrdEditor({
       await fetch(`/api/projects/${projectId}/prd`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start", provider, saveAsDefault }),
+        body: JSON.stringify({ action: "start" }),
       });
       onStatusChange();
     } finally {
@@ -94,7 +89,7 @@ export function PrdEditor({
       const res = await fetch(`/api/projects/${projectId}/prd`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "turn", message: userMsg, provider, saveAsDefault }),
+        body: JSON.stringify({ action: "turn", message: userMsg }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.error) {
@@ -145,7 +140,7 @@ export function PrdEditor({
       const res = await fetch(`/api/projects/${projectId}/prd/revise`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, saveAsDefault }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (data.error) {
@@ -179,12 +174,7 @@ export function PrdEditor({
     return (
       <div className="rounded-lg border p-6 text-center">
         <p className="mb-4 text-muted-foreground">项目需要先完成 PRD（产品需求文档）才能创建 Change</p>
-        <ProviderSelect provider={provider} onProviderChange={onProviderChange} disabled={loading} />
-        <label className="my-3 inline-flex items-center gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" checked={saveAsDefault} onChange={(event) => setSaveAsDefault(event.target.checked)} disabled={loading} />
-          记为项目默认 Provider
-        </label>
-        <Button onClick={handleStart} disabled={loading}>
+        <Button className="mt-3" onClick={handleStart} disabled={loading}>
           {loading ? "启动中..." : "开始编写 PRD"}
         </Button>
       </div>
@@ -210,11 +200,6 @@ export function PrdEditor({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <ProviderSelect provider={provider} onProviderChange={onProviderChange} disabled={loading} />
-            <label className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <input type="checkbox" checked={saveAsDefault} onChange={(event) => setSaveAsDefault(event.target.checked)} disabled={loading} />
-              记为默认
-            </label>
             <Button variant="outline" size="sm" onClick={handleStartRevision} disabled={loading}>
               编辑 PRD
             </Button>
@@ -255,11 +240,6 @@ export function PrdEditor({
             <p className="mt-1 text-xs text-muted-foreground">上次失败后可继续发送消息重试，已保存的草稿仍可预览。</p>
           </div>
           <div className="flex items-center gap-2">
-            <ProviderSelect provider={provider} onProviderChange={onProviderChange} disabled={loading} />
-            <label className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <input type="checkbox" checked={saveAsDefault} onChange={(event) => setSaveAsDefault(event.target.checked)} disabled={loading} />
-              记为默认
-            </label>
             <button
               className={`rounded px-2 py-1 text-xs ${activeTab === "chat" ? "bg-primary text-primary-foreground" : "bg-muted"}`}
               onClick={() => setActiveTab("chat")}
@@ -338,11 +318,6 @@ export function PrdEditor({
           {prdStatus === "drafting" ? "PRD 编写" : "PRD 修改"}
         </h3>
         <div className="flex items-center gap-2">
-          <ProviderSelect provider={provider} onProviderChange={onProviderChange} disabled={loading} />
-          <label className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <input type="checkbox" checked={saveAsDefault} onChange={(event) => setSaveAsDefault(event.target.checked)} disabled={loading} />
-            记为默认
-          </label>
           <button
             className={`rounded px-2 py-1 text-xs ${activeTab === "chat" ? "bg-primary text-primary-foreground" : "bg-muted"}`}
             onClick={() => setActiveTab("chat")}
@@ -427,30 +402,5 @@ export function PrdEditor({
         </Button>
       </div>
     </div>
-  );
-}
-
-function ProviderSelect({
-  provider,
-  onProviderChange,
-  disabled,
-}: {
-  provider: "codex" | "claude";
-  onProviderChange: (provider: "codex" | "claude") => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-      引擎
-      <select
-        value={provider}
-        onChange={(e) => onProviderChange(e.target.value as "codex" | "claude")}
-        disabled={disabled}
-        className="h-8 rounded-md border bg-background px-2 text-xs text-foreground"
-      >
-        <option value="codex">Codex</option>
-        <option value="claude">Claude Code</option>
-      </select>
-    </label>
   );
 }

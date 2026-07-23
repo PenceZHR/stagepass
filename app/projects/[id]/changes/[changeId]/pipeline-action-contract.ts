@@ -1,7 +1,3 @@
-import type { AiProvider } from "@/server/services/ai-engine-types";
-
-export type { AiProvider };
-
 export interface PipelineActionContract {
   actionId: string;
   phase: "PRD" | "Spec" | "Plan" | "TestPlan" | "Build" | "Review" | "QA" | "Merge";
@@ -16,15 +12,7 @@ export interface PipelineActionContract {
   requiresIdempotencyKey: boolean;
   requiresProvider: boolean;
   providerSelectable: boolean;
-  defaultProvider: AiProvider;
-}
-
-export function isAiProvider(value: unknown): value is AiProvider {
-  return value === "codex";
-}
-
-export function actionAcceptsProvider(action: PipelineActionContract | null | undefined): boolean {
-  return action?.requiresProvider === true && action.providerSelectable === true;
+  defaultProvider: "codex";
 }
 
 export function findPipelineAction(
@@ -56,13 +44,12 @@ export function createPipelinePreflightPayload(
   action: PipelineActionContract | null,
   extra?: Record<string, unknown>,
 ): Record<string, unknown> {
-  const { provider, ...safeExtra } = extra ?? {};
+  const { provider: _provider, ...safeExtra } = extra ?? {};
   return {
     actionId: action?.actionId,
     expectedGateVersion: action?.gateVersion,
     expectedSourceDbHash: action?.sourceDbHash,
     idempotencyKey: createIdempotencyKey(action?.actionId ?? "missing-action"),
     ...safeExtra,
-    ...(actionAcceptsProvider(action) && isAiProvider(provider) ? { provider } : {}),
   };
 }

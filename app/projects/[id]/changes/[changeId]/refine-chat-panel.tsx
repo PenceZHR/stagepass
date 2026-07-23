@@ -3,8 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { EventItem } from "./change-event-types";
-import { ProviderPicker } from "./provider-picker";
-import type { AiProvider } from "./pipeline-action-contract";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -36,23 +34,17 @@ export function RefineChatPanel({
   projectId,
   changeId,
   onSpecReady,
-  selectedProvider,
-  onProviderChange,
 }: {
   projectId: string;
   changeId: string;
   onSpecReady: () => void;
-  selectedProvider?: AiProvider;
-  onProviderChange?: (provider: AiProvider) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [localProvider, setLocalProvider] = useState<AiProvider>("codex");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const provider = selectedProvider ?? localProvider;
 
   // Load existing chat history and requirements from events
   useEffect(() => {
@@ -100,7 +92,7 @@ export function RefineChatPanel({
       const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg, provider }),
+        body: JSON.stringify({ message: userMsg }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -179,14 +171,6 @@ export function RefineChatPanel({
           <div ref={bottomRef} />
         </div>
         <div className="border-t p-3">
-          <div className="mb-2">
-            <ProviderPicker
-              value={provider}
-              onChange={onProviderChange ?? setLocalProvider}
-              disabled={sending}
-              id="refine-provider-picker"
-            />
-          </div>
           <form onSubmit={(e) => { e.preventDefault(); sendMessage(); }} className="flex gap-2">
             <input
               type="text"

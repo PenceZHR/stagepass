@@ -10,7 +10,6 @@ import type {
   StageProgressDto,
 } from "./prd-briefing-types";
 import type { StageActionView } from "./stage-action-bar";
-import type { AiProvider } from "./pipeline-action-contract";
 
 type QuestionAction = "answer" | "accept_assumption" | "defer";
 
@@ -326,14 +325,12 @@ export function PrdBriefingRoom({
   initialState,
   onLocked,
   onStageActionsChange,
-  selectedProvider,
 }: {
   projectId: string;
   changeId: string;
   initialState: PrdBriefingState | null;
   onLocked: () => void;
   onStageActionsChange?: (actions: StageActionView[]) => void;
-  selectedProvider?: AiProvider;
 }) {
   const [state, setState] = useState<PrdBriefingState | null>(initialState);
   const [rawText, setRawText] = useState(initialState?.briefing?.intentText ?? "");
@@ -499,7 +496,7 @@ export function PrdBriefingRoom({
       await requestCommandJson(`/api/projects/${projectId}/changes/${changeId}/prd-briefing/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: selectedProvider }),
+        body: JSON.stringify({}),
       });
       startPolling(kind, previousMarker, baseline);
     } catch (err) {

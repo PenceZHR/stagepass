@@ -16,9 +16,7 @@ interface Project {
   name: string;
   repoPath: string;
   contextStatus?: string;
-  contextProvider?: "codex" | "claude";
   prdStatus?: string;
-  prdProvider?: "codex" | "claude";
   gitEnabled?: number;
   gitDefaultBranch?: string | null;
 }
@@ -27,7 +25,6 @@ interface Change {
   id: string;
   title: string;
   status: string;
-  provider?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,12 +34,10 @@ interface ContextProgress {
   percent: number;
   currentFile?: string;
   message: string;
-  provider?: "codex" | "claude";
 }
 
 interface ContextData {
   contextStatus: string;
-  contextProvider?: "codex" | "claude";
   docs: Record<string, string | null>;
   progress?: ContextProgress | null;
 }
@@ -113,16 +108,12 @@ export default function ProjectDetailPage() {
   const [prdHistory, setPrdHistory] = useState<Array<{role: "user"|"assistant"; content: string}>>([]);
   const [prdStructured, setPrdStructured] = useState<Record<string, unknown> | null>(null);
   const [prdValidation, setPrdValidation] = useState<{ valid: boolean; issues: Array<{ field: string; severity: string; message: string }> } | null>(null);
-  const [contextProvider, setContextProvider] = useState<"codex" | "claude">("codex");
-  const [prdProvider, setPrdProvider] = useState<"codex" | "claude">("codex");
   const [activeSection, setActiveSection] = useState<NavSection>("changes");
 
   const loadProject = useCallback(() => {
     fetch(`/api/projects/${projectId}`).then((r) => r.json()).then((data) => {
       setProject(data);
       setPrdStatus(data.prdStatus || "none");
-      setContextProvider(data.contextProvider || "codex");
-      setPrdProvider(data.prdProvider || "codex");
     });
   }, [projectId]);
 
@@ -133,7 +124,6 @@ export default function ProjectDetailPage() {
   const loadContext = useCallback(() => {
     fetch(`/api/projects/${projectId}/context`).then((r) => r.json()).then((data) => {
       setContext(data);
-      setContextProvider(data.contextProvider || "codex");
     });
   }, [projectId]);
 
@@ -148,7 +138,6 @@ export default function ProjectDetailPage() {
       setPrdHistory(data.history || []);
       setPrdStructured(data.structured || null);
       setPrdValidation(data.validation || null);
-      setPrdProvider(data.prdProvider || "codex");
     });
   }, [projectId]);
 
@@ -173,7 +162,7 @@ export default function ProjectDetailPage() {
     await fetch(`/api/projects/${projectId}/context`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: contextProvider, saveAsDefault: true }),
+      body: JSON.stringify({}),
     });
     loadContext();
     loadProject();
@@ -346,17 +335,6 @@ export default function ProjectDetailPage() {
                           <Badge variant={statusVariant(c.status)} className="ml-auto">
                             {c.status}
                           </Badge>
-                          {c.provider && (
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                                c.provider === "claude"
-                                  ? "bg-orange-100 text-orange-700"
-                                  : "bg-blue-100 text-blue-700"
-                              }`}
-                            >
-                              {c.provider === "claude" ? "Claude" : "Codex"}
-                            </span>
-                          )}
                         </CardTitle>
                         <CardDescription className="text-xs">
                           Created {new Date(c.createdAt).toLocaleString()}
@@ -383,8 +361,6 @@ export default function ProjectDetailPage() {
               chatHistory={prdHistory}
               structured={prdStructured}
               validation={prdValidation}
-              provider={prdProvider}
-              onProviderChange={setPrdProvider}
               onConfirm={() => { loadPrd(); loadContext(); }}
               onStatusChange={loadPrd}
               onContentUpdate={(content) => {
@@ -418,16 +394,6 @@ export default function ProjectDetailPage() {
                 {context.contextStatus === "ready" && (
                   <span className="text-sm text-green-600">已就绪</span>
                 )}
-                <select
-                  value={contextProvider}
-                  onChange={(e) => setContextProvider(e.target.value as "codex" | "claude")}
-                  className="h-8 rounded-md border bg-background px-2 text-xs"
-                  disabled={context.contextStatus === "generating"}
-                  title="Context 引擎"
-                >
-                  <option value="codex">Codex</option>
-                  <option value="claude">Claude Code</option>
-                </select>
                 <Button
                   variant="outline"
                   size="sm"

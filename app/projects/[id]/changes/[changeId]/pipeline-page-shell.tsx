@@ -9,7 +9,6 @@ import { visibleChangeStatus } from "./change-phase-map";
 import { PhaseBar, VerticalPhaseRail } from "./phase-rail";
 import type { UiStage } from "./pipeline-ui-model";
 import type { ReviewCenterResponse } from "./review-report-center";
-import type { AiProvider } from "./pipeline-action-contract";
 
 export function PipelinePageShell({
   projectId,
@@ -24,7 +23,6 @@ export function PipelinePageShell({
   deleteError,
   onDeleteChange,
   onSelectPhase,
-  selectedProvider,
   children,
 }: {
   projectId: string;
@@ -40,7 +38,6 @@ export function PipelinePageShell({
   deleteError: string;
   onDeleteChange: () => void;
   onSelectPhase: (phase: ReviewPhase) => void;
-  selectedProvider?: AiProvider;
   children: ReactNode;
 }) {
   // Closed by default: the rail used to be a permanent 13rem column, and the
@@ -67,7 +64,6 @@ export function PipelinePageShell({
             deleteBusy={deleteBusy}
             deleteError={deleteError}
             onDeleteChange={onDeleteChange}
-            selectedProvider={selectedProvider}
           />
 
           <div className="mb-5 lg:hidden">
@@ -120,7 +116,6 @@ function PipelinePageHeader({
   deleteBusy,
   deleteError,
   onDeleteChange,
-  selectedProvider,
 }: {
   change: ChangeDetail;
   selectedStage: UiStage;
@@ -128,7 +123,6 @@ function PipelinePageHeader({
   deleteBusy: boolean;
   deleteError: string;
   onDeleteChange: () => void;
-  selectedProvider?: AiProvider;
 }) {
   return (
     <div className="mb-5">
@@ -161,22 +155,6 @@ function PipelinePageHeader({
       <div className="mt-2 flex flex-wrap gap-4 text-sm text-muted-foreground">
         <span>Status: <strong className="text-foreground">{visibleChangeStatus(change)}</strong></span>
         <span>Stage: <strong className="text-foreground">{selectedStage.label}</strong></span>
-        {change.provider && (
-          <span
-            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-              change.provider === "claude"
-                ? "bg-orange-100 text-orange-700"
-                : "bg-blue-100 text-blue-700"
-            }`}
-          >
-            Change 默认 Provider: {change.provider === "claude" ? "Claude" : "Codex"}
-          </span>
-        )}
-        {selectedProvider && (
-          <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium text-foreground">
-            本次运行 Provider: Codex
-          </span>
-        )}
         <span>Fix Iterations: {change.fixIterations}</span>
         {change.gitBranch && (
           <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">

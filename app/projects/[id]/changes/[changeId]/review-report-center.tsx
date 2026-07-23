@@ -11,7 +11,6 @@ import {
   createPipelinePreflightPayload,
   findPipelineAction,
   pipelineActionDisabledReason,
-  type AiProvider,
   type PipelineActionContract,
 } from "./pipeline-action-contract";
 
@@ -370,7 +369,6 @@ export function ReviewReportCenter({
   changeId,
   busy,
   actions,
-  selectedProvider,
   initialState,
   onRunReview,
   onEnterQa,
@@ -384,7 +382,6 @@ export function ReviewReportCenter({
   changeId: string;
   busy: boolean;
   actions?: PipelineActionContract[];
-  selectedProvider?: AiProvider;
   initialState?: ReviewCenterResponse | null;
   onRunReview: (actionId: "run_review" | "retry_review") => void;
   onEnterQa: () => void;
@@ -432,7 +429,7 @@ export function ReviewReportCenter({
         const res = await fetch(`/api/projects/${projectId}/changes/${changeId}${endpoint}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(createPipelinePreflightPayload(action, { provider: selectedProvider })),
+          body: JSON.stringify(createPipelinePreflightPayload(action)),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Review command failed");
@@ -443,7 +440,7 @@ export function ReviewReportCenter({
         setLoading(false);
       }
     },
-    [projectId, changeId, actions, selectedProvider, loadState]
+    [projectId, changeId, actions, loadState]
   );
 
   const gate = state?.headlineStatus ?? state?.gate.status ?? "not_started";

@@ -10,7 +10,6 @@ import {
   createPipelinePreflightPayload,
   findPipelineAction,
   pipelineActionDisabledReason,
-  type AiProvider,
 } from "./pipeline-action-contract";
 
 const GATE_NEXT_STAGE_ENDPOINTS: Record<GateName, string> = {
@@ -47,7 +46,6 @@ export async function startNextStage(input: {
   changeId: string;
   actionId: string;
   endpoint: string;
-  selectedProvider?: AiProvider;
   setGateStatus: Dispatch<SetStateAction<GateStatus | null>>;
 }): Promise<void> {
   const gateRes = await fetch(`/api/projects/${input.projectId}/changes/${input.changeId}/gate`);
@@ -61,9 +59,6 @@ export async function startNextStage(input: {
   if (nextDisabledReason) throw new Error(nextDisabledReason);
 
   const payload = createPipelinePreflightPayload(nextAction);
-  if (nextAction?.requiresProvider && nextAction.providerSelectable && input.selectedProvider) {
-    payload.provider = input.selectedProvider;
-  }
   const stageRes = await fetch(
     `/api/projects/${input.projectId}/changes/${input.changeId}/${input.endpoint}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
@@ -93,7 +88,6 @@ interface UseChangeCommandsOptions {
   setGateStatus: Dispatch<SetStateAction<GateStatus | null>>;
   setPhaseOverviews: Dispatch<SetStateAction<PhaseOverview[] | undefined>>;
   setSelectedPhase: Dispatch<SetStateAction<SelectedPhaseState>>;
-  selectedProvider?: AiProvider;
 }
 
 export function useChangeCommands({
@@ -110,7 +104,6 @@ export function useChangeCommands({
   setGateStatus,
   setPhaseOverviews,
   setSelectedPhase,
-  selectedProvider,
 }: UseChangeCommandsOptions) {
   const refreshGateSurfaces = useCallback(() => {
     load();
@@ -172,9 +165,6 @@ export function useChangeCommands({
         const nextDisabledReason = nextActionId ? pipelineActionDisabledReason(contractAction) : null;
         if (nextDisabledReason) throw new Error(nextDisabledReason);
         const nextStagePayload = nextAction ? createPipelinePreflightPayload(nextAction) : null;
-        if (nextStagePayload && nextAction?.requiresProvider && nextAction.providerSelectable && selectedProvider) {
-          nextStagePayload.provider = selectedProvider;
-        }
         const nextStageBody = nextStagePayload ? JSON.stringify(nextStagePayload) : undefined;
         const stageRes = await fetch(
           `/api/projects/${projectId}/changes/${changeId}/${nextEndpoint}`,
@@ -195,7 +185,7 @@ export function useChangeCommands({
       setGateBusy(false);
       refreshGateSurfaces();
     }
-  }, [projectId, changeId, gateStatus, refreshGateSurfaces, resetPhaseReview, selectedProvider, setGateBusy, setGateError, setGateStatus]);
+  }, [projectId, changeId, gateStatus, refreshGateSurfaces, resetPhaseReview, setGateBusy, setGateError, setGateStatus]);
 
   const handleRejectGate = useCallback(async () => {
     if (!gateStatus?.gate) return;
@@ -245,7 +235,7 @@ export function useChangeCommands({
       const specRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(action, { provider: selectedProvider })),
+        body: JSON.stringify(createPipelinePreflightPayload(action)),
       });
       const specData = await specRes.json();
       if (!specRes.ok) throw new Error(specData.error || "Spec battle restart failed");
@@ -256,7 +246,7 @@ export function useChangeCommands({
       setGateBusy(false);
       refreshGateSurfaces();
     }
-  }, [projectId, changeId, gateStatus?.actions, refreshGateSurfaces, resetPhaseReview, selectedProvider, setGateBusy, setGateError]);
+  }, [projectId, changeId, gateStatus?.actions, refreshGateSurfaces, resetPhaseReview, setGateBusy, setGateError]);
 
   const handleApprovePlanSandbox = useCallback(async () => {
     const approveAction = findPipelineAction(gateStatus?.actions, "approve_plan");
@@ -292,7 +282,6 @@ export function useChangeCommands({
           changeId,
           actionId: "run_build",
           endpoint: "implement",
-          selectedProvider,
           setGateStatus,
         });
       }
@@ -306,7 +295,7 @@ export function useChangeCommands({
       loadPlanSandboxState();
       loadTestPlanSandboxState();
     }
-  }, [projectId, changeId, gateStatus?.actions, gateStatus?.status, load, loadGateStatus, loadPlanSandboxState, loadTestPlanSandboxState, resetPhaseReview, selectedProvider, setGateBusy, setGateError, setGateStatus]);
+  }, [projectId, changeId, gateStatus?.actions, gateStatus?.status, load, loadGateStatus, loadPlanSandboxState, loadTestPlanSandboxState, resetPhaseReview, setGateBusy, setGateError, setGateStatus]);
 
   return {
     handleApproveGate,

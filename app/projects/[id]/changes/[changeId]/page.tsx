@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,6 @@ import { PhaseReviewPanel, type PhaseReviewResponse } from "./phase-review-panel
 import { PipelinePageShell } from "./pipeline-page-shell";
 import { PhaseStageShell } from "./phase-stage-shell";
 import { RubricPanel } from "./rubric-panel";
-import { ProviderPicker } from "./provider-picker";
 import { StageGitPanel } from "./stage-git-panel";
 import { selectVisibleGitStageActions } from "./git-action-policy";
 import { buildUiPipelineState } from "./pipeline-ui-model";
@@ -44,7 +43,6 @@ import {
   createPipelinePreflightPayload,
   findPipelineAction,
   pipelineActionDisabledReason,
-  type AiProvider,
   type PipelineActionContract,
 } from "./pipeline-action-contract";
 import { buildDeliveryStageActions } from "./delivery-stage-actions";
@@ -199,9 +197,6 @@ export default function ChangeDetailPage() {
   const [reviewStageActions, setReviewStageActions] = useState<StageActionView[]>([]);
   const [reviewStageActionError, setReviewStageActionError] = useState<string | null>(null);
   const [prdStageActions, setPrdStageActions] = useState<StageActionView[]>([]);
-  // This is intentionally ephemeral: a reload rehydrates from the Change default.
-  const [selectedProvider, setSelectedProvider] = useState<AiProvider>("codex");
-  const providerInitializedForChange = useRef<string | null>(null);
   const {
     change, phaseOverviews, setPhaseOverviews,
     gateStatus, setGateStatus, gateLoading, gateError, setGateError,
@@ -213,19 +208,10 @@ export default function ChangeDetailPage() {
     refreshChangeDetailPage, refreshAfterAction,
   } = useChangeDetailData(projectId, changeId);
 
-  useEffect(() => {
-    if (change?.id !== changeId || providerInitializedForChange.current === changeId) return;
-    const initialProvider = change.provider;
-    if (initialProvider !== "codex") return;
-    providerInitializedForChange.current = changeId;
-    queueMicrotask(() => setSelectedProvider(initialProvider));
-  }, [change?.id, change?.provider, changeId]);
-
   const { running, actionError, handleAction } = usePipelineActions({
     projectId,
     changeId,
     actions: gateStatus?.actions,
-    selectedProvider,
     refresh: refreshAfterAction,
   });
   const pipelineActions = gateStatus?.actions ?? EMPTY_PIPELINE_ACTIONS;
@@ -297,7 +283,6 @@ export default function ChangeDetailPage() {
     setGateStatus,
     setPhaseOverviews,
     setSelectedPhase,
-    selectedProvider,
   });
 
   /**
@@ -432,7 +417,7 @@ export default function ChangeDetailPage() {
         const specRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(createPipelinePreflightPayload(runSpecAction, { provider: selectedProvider })),
+          body: JSON.stringify(createPipelinePreflightPayload(runSpecAction)),
         });
         await specRes.json().catch(() => null);
         if (!specRes.ok) {
@@ -450,7 +435,7 @@ export default function ChangeDetailPage() {
       loadSpecBattleState();
       loadPlanSandboxState();
     }
-  }, [projectId, changeId, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, selectedProvider, setGateError, setPhaseOverviews]);
+  }, [projectId, changeId, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, setGateError, setPhaseOverviews]);
 
   const handleAcceptSpecBattleRisk = useCallback(async (targetId?: string | null) => {
     const needsWaiverReason = gateStatus?.specBattle?.actions.waiveP1.available
@@ -476,7 +461,7 @@ export default function ChangeDetailPage() {
       const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/tech-spec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(runAction, { provider: selectedProvider })),
+        body: JSON.stringify(createPipelinePreflightPayload(runAction)),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "TechSpec start failed");
@@ -540,7 +525,7 @@ export default function ChangeDetailPage() {
       loadSpecBattleState();
       loadPlanSandboxState();
     }
-  }, [projectId, changeId, gateStatus, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, selectedProvider, setGateError, setGateStatus, setPhaseOverviews]);
+  }, [projectId, changeId, gateStatus, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, setGateError, setGateStatus, setPhaseOverviews]);
 
   const submitAcceptSpecBattleRisk = useCallback(async (targetId: string, reason: string) => {
     setGateBusy(true);
@@ -558,7 +543,7 @@ export default function ChangeDetailPage() {
       const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/tech-spec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(runAction, { provider: selectedProvider })),
+        body: JSON.stringify(createPipelinePreflightPayload(runAction)),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "TechSpec start failed");
@@ -637,7 +622,7 @@ export default function ChangeDetailPage() {
       loadSpecBattleState();
       loadPlanSandboxState();
     }
-  }, [projectId, changeId, gateStatus, load, specBattleDecisionBody, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, selectedProvider, setGateError, setGateStatus, setPhaseOverviews]);
+  }, [projectId, changeId, gateStatus, load, specBattleDecisionBody, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, setGateError, setGateStatus, setPhaseOverviews]);
 
   const handleRegeneratePlanSandboxReport = useCallback(async () => {
     const reportAction = findPipelineAction(gateStatus?.actions, "regenerate_plan_report");
@@ -696,16 +681,6 @@ export default function ChangeDetailPage() {
 
   const planStageBusy = gateBusy || running;
   const planStageActionError = gateError || actionError;
-  const providerControlProps = {
-    provider: selectedProvider,
-    onProviderChange: setSelectedProvider,
-    providerDisabled: running || gateBusy,
-    providerSelectable: Boolean(
-      selectedStage?.actionIds?.some((actionId) =>
-        findPipelineAction(pipelineActions, actionId)?.providerSelectable === true,
-      ),
-    ),
-  } as const;
   const planStageActions = useMemo<StageActionView[]>(() => {
     const makePlanStageAction = (
       actionId: string,
@@ -1214,7 +1189,6 @@ export default function ChangeDetailPage() {
         deleteError={deleteError}
         onDeleteChange={handleDeleteChange}
         onSelectPhase={handleSelectPhase}
-        selectedProvider={selectedProvider}
       >
         {latestFailedRun && (
           <FailedRunBanner
@@ -1229,7 +1203,6 @@ export default function ChangeDetailPage() {
         {/* Refining: Chat UI — constrained to viewport */}
         {showingRetroStage ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase="Retro"
@@ -1255,7 +1228,6 @@ export default function ChangeDetailPage() {
               // records and the rubric drawer, all three of which a StageFrame has
               // no way to render.
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase="Done"
@@ -1280,7 +1252,6 @@ export default function ChangeDetailPage() {
               </PhaseStageShell>
             ) : showingBuildSandbox ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase={activeSelectedPhase === "Fix" ? "Fix" : "Build"}
@@ -1295,7 +1266,6 @@ export default function ChangeDetailPage() {
                   projectId={projectId}
                   changeId={changeId}
                   actions={pipelineActions}
-                  selectedProvider={selectedProvider}
                   refreshToken={`${change.status}:${change.latestRun?.id ?? "none"}:${change.latestRun?.status ?? "none"}:${change.updatedAt ?? ""}`}
                   onStageActionsChange={setBuildStageActions}
                   onStageActionError={setBuildStageActionError}
@@ -1304,7 +1274,6 @@ export default function ChangeDetailPage() {
               </PhaseStageShell>
             ) : showingTestPlanSandbox ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase="TestPlan"
@@ -1322,7 +1291,6 @@ export default function ChangeDetailPage() {
               </PhaseStageShell>
             ) : showingPlanSandbox ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase="Plan"
@@ -1345,7 +1313,6 @@ export default function ChangeDetailPage() {
               </PhaseStageShell>
             ) : showingPrdBriefingRoom ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase="Intake"
@@ -1359,14 +1326,12 @@ export default function ChangeDetailPage() {
                   projectId={projectId}
                   changeId={changeId}
                   initialState={prdBriefingState}
-                  selectedProvider={selectedProvider}
                   onLocked={handlePrdBriefingLocked}
                   onStageActionsChange={setPrdStageActions}
                 />
               </PhaseStageShell>
             ) : showingSpecOrTechSpecGate ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase={activeSelectedPhase}
@@ -1395,7 +1360,6 @@ export default function ChangeDetailPage() {
               </PhaseStageShell>
             ) : showingReviewReportCenter ? (
               <PhaseStageShell
-                {...providerControlProps}
                 projectId={projectId}
                 changeId={changeId}
                 phase="Review"
@@ -1412,7 +1376,6 @@ export default function ChangeDetailPage() {
                   changeId={changeId}
                   initialState={reviewCenterState}
                   actions={pipelineActions}
-                  selectedProvider={selectedProvider}
                   busy={gateBusy || running}
                   onRunReview={handleRunReviewAction}
                   onEnterQa={handleEnterQaAction}
@@ -1426,7 +1389,6 @@ export default function ChangeDetailPage() {
             ) : showingReviewPhase ? (
               showingOperationalPhaseSummary ? (
                 <PhaseStageShell
-                  {...providerControlProps}
                   projectId={projectId}
                   changeId={changeId}
                   phase={activeSelectedPhase}
@@ -1446,7 +1408,6 @@ export default function ChangeDetailPage() {
                 </PhaseStageShell>
               ) : (
                 <PhaseStageShell
-                  {...providerControlProps}
                   projectId={projectId}
                   changeId={changeId}
                   phase={activeSelectedPhase}
@@ -1460,15 +1421,6 @@ export default function ChangeDetailPage() {
             ) : (
               <>
                 {/* Action Buttons */}
-                {providerControlProps.providerSelectable && (
-                  <div className="mb-3">
-                    <ProviderPicker
-                      value={selectedProvider}
-                      onChange={setSelectedProvider}
-                      disabled={providerControlProps.providerDisabled}
-                    />
-                  </div>
-                )}
                 <div className="mb-8 flex flex-wrap gap-2">
                   {visibleContractActions.map((action) => (
                     <Button

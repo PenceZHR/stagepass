@@ -22,7 +22,6 @@ import {
   shouldShowBuildStartAction,
 } from "./build-action-policy";
 import { ProducedFile } from "./produced-file";
-import type { AiProvider } from "./pipeline-action-contract";
 import type { StageActionView } from "./stage-action-bar";
 
 type BaseCampStatus = "ready" | "blocked" | "dirty";
@@ -78,7 +77,6 @@ interface BuildSandboxProps {
   projectId: string;
   changeId: string;
   actions?: PipelineActionContract[];
-  selectedProvider?: AiProvider;
   refreshToken?: string | number | null;
   onStageActionsChange?: (actions: StageActionView[]) => void;
   onStageActionError?: (error: string | null) => void;
@@ -161,7 +159,6 @@ export function BuildSandbox({
   projectId,
   changeId,
   actions,
-  selectedProvider,
   refreshToken,
   onStageActionsChange,
   onStageActionError,
@@ -222,7 +219,6 @@ export function BuildSandbox({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(createPipelinePreflightPayload(contractAction, {
-            provider: selectedProvider,
             action,
             expectedHeadSha: state?.baseCamp.headSha ?? undefined,
           })),
@@ -240,7 +236,7 @@ export function BuildSandbox({
         setBusyAction(null);
       }
     },
-    [projectId, changeId, actions, selectedProvider, state?.baseCamp.headSha, state?.buildRun?.purpose, load, onChanged]
+    [projectId, changeId, actions, state?.baseCamp.headSha, state?.buildRun?.purpose, load, onChanged]
   );
 
   const runBuildStart = useCallback(async () => {
@@ -258,7 +254,6 @@ export function BuildSandbox({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(createPipelinePreflightPayload(contractAction, {
-          provider: selectedProvider,
           expectedHeadSha: state?.baseCamp.headSha ?? undefined,
         })),
       });
@@ -274,7 +269,7 @@ export function BuildSandbox({
       await Promise.resolve(onChanged());
       setBusyAction(null);
     }
-  }, [projectId, changeId, actions, selectedProvider, state?.baseCamp.headSha, load, onChanged]);
+  }, [projectId, changeId, actions, state?.baseCamp.headSha, load, onChanged]);
 
   const buildRun = state?.buildRun ?? null;
   const baseCamp = state?.baseCamp ?? null;

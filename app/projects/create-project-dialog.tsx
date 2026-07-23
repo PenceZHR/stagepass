@@ -30,8 +30,6 @@ export function CreateProjectDialog({ onCreated }: CreateProjectDialogProps) {
   const [name, setName] = useState("");
   const [repoPath, setRepoPath] = useState("");
   const [gitEnabled, setGitEnabled] = useState(false);
-  const [contextProvider, setContextProvider] = useState<"codex" | "claude">("codex");
-  const [prdProvider, setPrdProvider] = useState<"codex" | "claude">("codex");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -44,7 +42,7 @@ export function CreateProjectDialog({ onCreated }: CreateProjectDialogProps) {
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, repoPath, gitEnabled, contextProvider, prdProvider }),
+        body: JSON.stringify({ name, repoPath, gitEnabled }),
       });
       const project = await readJsonResponse(res);
 
@@ -62,8 +60,6 @@ export function CreateProjectDialog({ onCreated }: CreateProjectDialogProps) {
       setName("");
       setRepoPath("");
       setGitEnabled(false);
-      setContextProvider("codex");
-      setPrdProvider("codex");
       onCreated({ id: project.id });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create project");
@@ -116,32 +112,6 @@ export function CreateProjectDialog({ onCreated }: CreateProjectDialogProps) {
             <span className="text-xs text-muted-foreground">
               每个 Change 自动创建分支
             </span>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="contextProvider">Context 引擎</Label>
-              <select
-                id="contextProvider"
-                value={contextProvider}
-                onChange={(e) => setContextProvider(e.target.value as "codex" | "claude")}
-                className="h-9 rounded-md border bg-background px-3 text-sm"
-              >
-                <option value="codex">Codex</option>
-                <option value="claude">Claude Code</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="prdProvider">PRD 引擎</Label>
-              <select
-                id="prdProvider"
-                value={prdProvider}
-                onChange={(e) => setPrdProvider(e.target.value as "codex" | "claude")}
-                className="h-9 rounded-md border bg-background px-3 text-sm"
-              >
-                <option value="codex">Codex</option>
-                <option value="claude">Claude Code</option>
-              </select>
-            </div>
           </div>
           {error && <p className="text-sm text-red-500">{error}</p>}
           <Button type="submit" disabled={loading}>
