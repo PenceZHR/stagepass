@@ -217,6 +217,7 @@ describe("review DB contract", () => {
       // on a database that stopped at 0011, and a new migration belongs in it.
       "0024_rubric_criterion_key",
       "0025_events_change_created_index",
+      "0026_spec_battle_human_intervention",
     ]);
     assert.equal(finding.id, "FND-OLD");
     assert.equal(finding.review_attempt_id, null);
