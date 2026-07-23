@@ -95,10 +95,58 @@ describe("briefing question store", { concurrency: false }, () => {
     assert.deepEqual(spec.map((row) => row.id), ["BQ-spec-1"]);
   });
 
-  it("is the only module that reads the briefing_questions table", () => {
+  it("keeps the phase-required-on-insert regression pin in place", () => {
+    // NewBriefingQuestion.phase must stay required: `phase` carries a
+    // `.notNull().default("PRD")` column definition, and drizzle-orm's
+    // `$inferInsert` makes any defaulted column optional regardless of
+    // `.notNull()`. Without the explicit re-narrowing in
+    // briefing-question-store.ts, a caller could omit `phase`, type-check
+    // clean, and have the row land silently on `phase: 'PRD'` -- exactly the
+    // failure this store exists to make inexpressible for a Spec-phase insert.
+    //
+    // This cannot be pinned as a runtime assertion here: TypeScript types are
+    // erased at runtime, so no node:test assertion can observe whether `phase`
+    // is optional. It also cannot be a `@ts-expect-error` comment in *this*
+    // file: tsconfig.json's `exclude` drops every file named `*.test.ts` from
+    // the `tsc --noEmit` project (confirmed empirically -- a
+    // deliberately-wrong `@ts-expect-error` placed in a .test.ts file produced
+    // zero tsc diagnostics), and the isolated test runner invokes `node --test`
+    // directly with no type-checking step, so a directive placed here would
+    // never be evaluated by anything.
+    //
+    // The actual pin lives in briefing-question-store.typecheck.ts, a
+    // non-test .ts file for exactly that reason: its name doesn't match
+    // `*.test.ts`, so tsconfig's `include` picks it up like any other
+    // production file, and `npx tsc --noEmit` -- already part of this repo's
+    // verification gate -- checks it as a root file whether or not anything
+    // imports it, and fails the build if `phase` ever becomes optional again.
+    // What we CAN check at runtime is that the pin itself hasn't quietly been
+    // deleted or defanged (e.g. "fixed" by adding `phase` back to the fixture
+    // row, which would make the `@ts-expect-error` directive unused and fail
+    // `tsc --noEmit` for the opposite reason).
+    const fixturePath = path.join("server", "services", "briefing-question-store.typecheck.ts");
+    const source = fs.readFileSync(fixturePath, "utf-8");
+    assert.match(source, /@ts-expect-error/, "the compile-time pin's directive must still be present");
+    // Anchored to the start of a (trimmed) line so this only matches an actual
+    // `phase: "PRD"` object-literal property -- not the doc comment above,
+    // which discusses that exact string in prose.
+    assert.doesNotMatch(
+      source,
+      /^\s*phase:\s*["'](PRD|Spec)["']/m,
+      "the fixture row must still omit `phase` -- adding it back defeats the pin",
+    );
+  });
+
+  it("is the only module that touches the briefing_questions table", () => {
     // The invariant this locks: a reader that forgets the phase filter puts
     // Spec cards in front of computePrdGate, which counts an open critical card
     // as a reason to refuse the PRD draft -- and welds that gate shut for good.
+    // A raw insert/update/delete reaching the table directly is exactly as
+    // dangerous as a raw select -- none of the four go through the phase
+    // argument the accessor forces -- so this matches all four Drizzle verbs,
+    // not just `.from(...)` reads. (A prior version of this test matched only
+    // `from(briefingQuestions)`, which let a raw `db.insert(briefingQuestions)`
+    // bypass the accessor silently.)
     // Discipline cannot hold this line across future edits; a test can.
     const roots = ["server", "app"];
     const allowed = new Set([
@@ -106,6 +154,7 @@ describe("briefing question store", { concurrency: false }, () => {
       path.join("server", "db", "schema.ts"),
     ]);
     const offenders: string[] = [];
+    const tableAccess = /\b(from|insert|update|delete)\(briefingQuestions\)/;
 
     const walk = (dir: string) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -119,7 +168,7 @@ describe("briefing question store", { concurrency: false }, () => {
         if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".test.tsx")) continue;
         if (allowed.has(full)) continue;
         const source = fs.readFileSync(full, "utf-8");
-        if (source.includes("from(briefingQuestions)")) offenders.push(full);
+        if (tableAccess.test(source)) offenders.push(full);
       }
     };
 
@@ -127,8 +176,8 @@ describe("briefing question store", { concurrency: false }, () => {
     assert.deepEqual(
       offenders,
       [],
-      `These modules select from briefing_questions directly. Use briefing-question-store.ts, `
-        + `which forces every reader to name its phase: ${offenders.join(", ")}`,
+      `These modules touch briefing_questions directly (select/insert/update/delete). Use `
+        + `briefing-question-store.ts, which forces every caller to name its phase: ${offenders.join(", ")}`,
     );
   });
 });

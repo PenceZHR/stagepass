@@ -13,16 +13,22 @@ import { briefingQuestions } from "../db/schema";
  *
  * Every reader here takes `phase` as a required argument -- there is no default
  * and no "all phases" reader -- so forgetting the filter is not expressible.
+ * `NewBriefingQuestion` holds the same line for inserts: `phase` carries a
+ * DB-level default (so pre-migration rows keep reading as 'PRD'), but
+ * drizzle-orm's `$inferInsert` makes any column with `.default(...)` optional
+ * regardless of `.notNull()` -- so the insert type re-narrows `phase` back to
+ * required. Without that, a caller could omit it entirely, type-check clean,
+ * and land silently on `phase: 'PRD'`.
  * briefing-question-store.test.ts additionally fails the build if any other
- * module selects from the table.
+ * module selects, inserts, updates, or deletes on the table directly.
  */
 
 export type BriefingQuestionPhase = "PRD" | "Spec";
 export type BriefingQuestionRow = typeof briefingQuestions.$inferSelect;
 export type NewBriefingQuestion = Omit<
   typeof briefingQuestions.$inferInsert,
-  "createdAt" | "updatedAt"
->;
+  "createdAt" | "updatedAt" | "phase"
+> & { phase: BriefingQuestionPhase };
 
 /** A read handle: the `db` singleton, a transaction, or any narrower view. */
 type ReadConnection = Pick<typeof db, "select">;
