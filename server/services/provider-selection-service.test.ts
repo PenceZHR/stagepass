@@ -46,28 +46,32 @@ describe("provider selection policy", () => {
     assert.equal(isProviderBackedAction("approve_plan"), false);
   });
 
-  it("parses only codex and claude and preserves omitted provider", () => {
+  it("parses only codex and preserves omitted provider", () => {
     assert.equal(parseRequestedProvider(undefined), undefined);
     assert.equal(parseRequestedProvider("codex"), "codex");
-    assert.equal(parseRequestedProvider("claude"), "claude");
     assert.throws(
-      () => parseRequestedProvider("openai"),
-      (error: unknown) => error instanceof Error && "code" in error && error.code === "invalid_provider",
+      () => parseRequestedProvider("claude"),
+      (error: unknown) =>
+        error instanceof Error
+        && "code" in error
+        && error.code === "invalid_provider"
+        && error.message === "provider must be codex",
     );
   });
 
-  it("falls back to the change provider only when the request omits one", () => {
-    assert.equal(resolveProviderSelection(undefined, "claude"), "claude");
-    assert.equal(resolveProviderSelection("codex", "claude"), "codex");
+  it("always resolves to codex", () => {
+    assert.equal(resolveProviderSelection(undefined, undefined), "codex");
+    assert.equal(resolveProviderSelection(undefined, "codex"), "codex");
+    assert.equal(resolveProviderSelection("codex", "codex"), "codex");
   });
 
   it("rejects a provider on local or human actions", () => {
     assert.throws(
-      () => assertProviderApplicable("run_qa", "claude"),
+      () => assertProviderApplicable("run_qa", "codex"),
       (error: unknown) => error instanceof Error && "code" in error && error.code === "provider_not_applicable",
     );
     assert.doesNotThrow(() => assertProviderApplicable("run_qa", undefined));
-    assert.doesNotThrow(() => assertProviderApplicable("run_spec", "claude"));
+    assert.doesNotThrow(() => assertProviderApplicable("run_spec", "codex"));
   });
 
   it("rejects an invalid provider at the shared action preflight boundary", async () => {

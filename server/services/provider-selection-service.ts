@@ -48,17 +48,17 @@ export function parseRequestedProvider(value: unknown): Provider | undefined {
   if (!parsed.success) {
     throw new ProviderSelectionError(
       "invalid_provider",
-      "provider must be exactly codex or claude",
+      "provider must be codex",
     );
   }
   return parsed.data;
 }
 
 export function resolveProviderSelection(
-  requested: Provider | undefined,
-  changeDefault: Provider | null | undefined,
+  _requested: Provider | undefined,
+  _changeDefault: Provider | null | undefined,
 ): Provider {
-  return requested ?? changeDefault ?? "codex";
+  return "codex";
 }
 
 export function assertProviderApplicable(

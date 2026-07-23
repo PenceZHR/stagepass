@@ -12,7 +12,7 @@ import { initializeProjectContext } from "./context-init-service";
 import { deleteChangeRecords } from "./change-service";
 import { ensureFactoryRubrics, PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service";
 import { resolveGitState, syncProjectGitState } from "./project-git-state-service";
-import { resolveProvider } from "./ai-provider-service";
+import { resolveProviderSelection } from "./provider-selection-service";
 import { nextSequencedId } from "./record-identity";
 import type { AiProvider } from "../types";
 import fs from "fs";
@@ -180,6 +180,6 @@ export async function regenerateProjectContext(id: string, provider?: AiProvider
 
   await initializeProjectContext(
     id,
-    resolveProvider(provider, project.contextProvider as AiProvider | null | undefined)
+    resolveProviderSelection(provider, project.contextProvider as AiProvider | null | undefined)
   );
 }

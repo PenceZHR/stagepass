@@ -140,7 +140,7 @@ export async function initializeProjectContext(
       provider,
     });
 
-    const engine = getAiEngine(provider);
+    const engine = getAiEngine();
     const timeoutMs = getContextTimeoutMs();
     const selectTemplate = readPromptTemplate("init-context-select");
     const selectPrompt = selectTemplate

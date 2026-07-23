@@ -16,7 +16,7 @@ const defaultLoader: AiEngineLoader = () => {
 
 let loaderOverride: AiEngineLoader | null = null;
 
-export function getAiEngine(_provider?: AiProvider): AiEngineAdapter {
+export function getAiEngine(): AiEngineAdapter {
   return (loaderOverride ?? defaultLoader)();
 }
 

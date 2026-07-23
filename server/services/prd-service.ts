@@ -7,7 +7,7 @@ import { getAiEngine } from "./ai-engine-adapter";
 import type { AiEngineAdapter, AiRunInput, AiRunResult } from "./ai-engine-types";
 import { assemblePrompt } from "./prompt-service";
 import { initializeProjectContext } from "./context-init-service";
-import { resolveProvider } from "./ai-provider-service";
+import { resolveProviderSelection } from "./provider-selection-service";
 import { createChildLogger } from "../logger";
 import {
   captureWorkspaceSnapshot,
@@ -94,8 +94,8 @@ function readPrd(repoPath: string): string | null {
   return fs.readFileSync(prdPath, "utf-8");
 }
 
-function getPrdEngine(provider: AiProvider): AiEngineAdapter {
-  return getAiEngine(provider);
+function getPrdEngine(): AiEngineAdapter {
+  return getAiEngine();
 }
 
 async function writePrdAssistantEvent(
@@ -405,7 +405,7 @@ export async function prdTurn(
     updatePrdStatus(projectId, activePrdStatus);
   }
 
-  const resolvedProvider = resolveProvider(
+  const resolvedProvider = resolveProviderSelection(
     provider,
     project.prdProvider as AiProvider | null | undefined
   );
@@ -425,7 +425,7 @@ export async function prdTurn(
     createdAt: nowISO(),
   }).run();
 
-  const engine = getPrdEngine(resolvedProvider);
+  const engine = getPrdEngine();
   const prdContent = readPrd(project.repoPath);
   const contextBlock = prdContent ? `\n\n## 当前 PRD 内容\n\n${prdContent}\n` : "";
 
@@ -573,7 +573,7 @@ export async function confirmPrd(projectId: string): Promise<PrdValidationResult
 
   initializeProjectContext(
     projectId,
-    resolveProvider(undefined, project.contextProvider as AiProvider | null | undefined)
+    resolveProviderSelection(undefined, project.contextProvider as AiProvider | null | undefined)
   ).catch((err) => {
     log.error({ projectId, err }, "Context init after PRD confirm failed");
   });
@@ -692,7 +692,7 @@ export async function getPrdStatus(projectId: string): Promise<{
   const validation = structured ? validatePrd(structured) : null;
   return {
     status: project.prdStatus as PrdStatus,
-    prdProvider: resolveProvider(undefined, project.prdProvider as AiProvider | null | undefined),
+    prdProvider: resolveProviderSelection(undefined, project.prdProvider as AiProvider | null | undefined),
     content,
     structured,
     validation,
