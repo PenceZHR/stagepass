@@ -7,11 +7,12 @@
 
 在 CHECKING(静态检查)之后、MERGE_READY 之前插入一个独立的 **Live QA** 阶段:AI 拉起真实浏览器,**严格按照使用说明**逐场景实测本次变更;后台并行一个监控 agent 实时判读错误;发现问题经人工门控后进 Fix 或回退重走;整体流程仍由状态机写死,QA 只产出"判定 + 提案",走哪条边永远由人决定。
 
-不引入 LangChain/LangGraph——效果优先,全部沿用现有 spawn-CLI 架构。
+架构分两层:**Live QA 阶段内部用 LangGraph.js 建图编排**(解析说明 → 逐场景测 → 监控判读 → 分诊提案,`interrupt()` 做门控驻留,SQLite checkpointer 做断点续跑);**图节点内真正干活的执行体是 spawn 的 Codex/Claude CLI agent**(带浏览器 MCP 工具),复用订阅授权与现有引擎架构。LangGraph 只编排、不直调模型 API,因此无需额外配置 API key。
 
 ## 非目标
 
 - 不替代现有 CHECKING 阶段(lint/typecheck/test/build 静态门保持原样,继续作为便宜的前置门)。
+- LangGraph 只用于 Live QA 阶段内部;外层 change 状态机与其他阶段不迁移到 LangGraph。
 - 不做嵌入页面的浏览器画面流/帧回放。
 - 不改动现有删除式 rework(`change-rework-service`);Live QA 的回退走独立的非破坏路径。
 
@@ -72,20 +73,31 @@ LIVE_QA_BLOCKED → LIVE_QA_RUNNING   人工驳回误报,继续测
 - QA 测试 agent 与监控 agent 均跟随现有 provider 选择机制(主用 Codex 则都跑 Codex),不为 Live QA 特设 provider 逻辑。
 - 实施核查项:Codex `--sandbox` 模式下 MCP 子进程的权限边界需实测(浏览器 MCP 要连本机 CDP 端口、写截图文件);若被拦截,该阶段单独使用放宽的 sandbox 配置。
 
-## 6. 双 agent 编排
+## 6. LangGraph 编排 + 双 agent 执行
 
-Live QA job(现有 pipeline worker 领取)拉起三个子进程:
+Live QA job(现有 pipeline worker 领取)的 job 体是一张 **LangGraph.js 状态图**。新依赖:`@langchain/langgraph` + `@langchain/langgraph-checkpoint-sqlite`(仅编排,不引入 langchain 模型绑定)。
 
-1. **dev server**(按 HOW_TO_RUN);
-2. **QA 测试 agent**(CLI agent + browser MCP):逐场景照剧本测;
-3. **监控 agent**(第二个 CLI agent):实时读 server 日志 tail + console/network 错误流,判读严重度;持有 `halt_qa` 工具,判定阻断级可**直接叫停** QA agent 进程,写 blocking finding + 证据链。
+图结构(节点内干活的执行体 = spawn 的 CLI agent):
 
-保险丝(非 LLM):dev server 崩溃、QA agent 进程死亡等硬故障直接判阻断,不经监控 agent。监控 agent 自身崩溃时 QA 降级继续,标记"监控缺位",收尾时提示。
+```
+prepare_env(起 Chrome + dev server,非 LLM)
+  → parse_usage(CLI agent:usage.md → 场景清单落 qa_scenarios)
+  → run_scenario(CLI agent + browser MCP,逐场景照剧本测)──循环边:还有 pending 场景 → 回自身
+  →(并行分支)monitor(第二个 CLI agent:实时读 server 日志 tail + console/network 错误流,
+     判读严重度;持有 halt_qa 工具,阻断级可直接叫停 run_scenario 并写 blocking finding + 证据链)
+  → triage(CLI agent:汇总发现,产出判定 + 提案:进 Fix / 回 Spec / 通过)
+  → interrupt() 门控驻留(见第 7 节)
+  → finalize(通过则收尾)
+```
+
+- **断点续跑**:图状态经 SqliteSaver 落盘;急停 / 门控 / job 重试后从 checkpoint 恢复,配合 `qa_scenarios` 表(DB 仍是场景状态的对外真相源,供 UI/SSE 读取;checkpointer 只管图内部状态)。
+- **保险丝(非 LLM)**:dev server 崩溃、QA agent 进程死亡等硬故障由 `prepare_env`/节点包装层直接判阻断,不经监控 agent。监控 agent 自身崩溃时 QA 降级继续,标记"监控缺位",收尾时提示。
 
 ## 7. 门控与修复循环
 
-- **阻断即停**:急停后 job 收尾,change → `LIVE_QA_BLOCKED`,gate 面板展示判定 + 提案 + 证据(截图、日志摘录)。
-- **其余攒批**:非阻断问题继续测完;收尾时若有未决清单,同样驻留 `LIVE_QA_BLOCKED`,人工批量处理。
+- **阻断即停**:急停后图走到门控节点 `interrupt()`,checkpoint 落盘、job 退出,change → `LIVE_QA_BLOCKED`,gate 面板展示判定 + 提案 + 证据(截图、日志摘录)。
+- **其余攒批**:非阻断问题继续测完;收尾时若有未决清单,同样经 `interrupt()` 驻留 `LIVE_QA_BLOCKED`,人工批量处理。
+- **恢复**:decision API 把人工决定写库后投递一个 resume job,worker 以 `Command(resume=决定)` 从 checkpoint 续跑图——`dismiss` 回到 `run_scenario` 循环,`approve_fix`/`rollback_to_spec` 则图收尾、由外层状态机转移到 FIXING/SPECCING。
 - 新 API `live-qa/decision`,actions:
   - `approve_fix` — 批准进 Fix;
   - `rollback_to_spec` — 批准结构性回退(四阶段重走);
@@ -118,6 +130,7 @@ Live QA job(现有 pipeline worker 领取)拉起三个子进程:
 ## 11. 测试策略
 
 - 状态机新边、场景恢复、回退记录:单测,走 `run-tests-isolated`(禁止裸跑测试,防写生产库);
+- LangGraph 图:节点执行体全部 mock(不 spawn 真 CLI),单测图的流转——循环边、interrupt/resume、checkpoint 恢复、监控叫停路径;
 - `qa-browser-service`:本地 fixture 静态页面测工具封装;
 - 端到端:沙盒 change 手动走通全环(测→急停→门控→Fix→续测→通过)。
 
@@ -125,7 +138,7 @@ Live QA job(现有 pipeline worker 领取)拉起三个子进程:
 
 | 决策点 | 结论 |
 | --- | --- |
-| LangGraph | 不引入,效果优先,沿用 spawn-CLI 架构 |
+| LangGraph | 引入,作为 Live QA 阶段内部编排层(图 + interrupt + checkpointer);执行体仍是 spawn 的 CLI agent,LangGraph 不直调模型 API |
 | 使用说明来源 | Build 阶段必交产物,QA 前就有 |
 | 浏览器可视化 | 不嵌页面,真 Chrome + 跳转按钮 |
 | 错误监测形态 | 独立第二个 LLM agent 实时判读,可叫停 |
