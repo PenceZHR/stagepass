@@ -394,10 +394,10 @@ export class CodexAppServerError extends Error {
 
 实现要点：`spawn(bin, ["app-server"], {cwd, stdio:["pipe","pipe","pipe"]})`；stdout 按行 split 解析 JSON（沿用 codex-cli-engine 现有的行缓冲手法）；`id` 自增整数做 request/response 关联；带 `id`+`method` 的入站消息是**服务端反向请求**，路由到 `onServerRequest` 并把结果以 `{id, result}` 回写 stdin；无 `id` 的是通知，路由 `onNotification`；解析失败的行走 `onStderr` 同款告警日志不中断流。secrets 过滤复用 `sanitizeCodexErrorMessage`。
 
-- [ ] **Step 1: 写假 app-server fixture**（`fake-codex-app-server.cjs`，node 可执行脚本）：读 stdin 按行解析；对 `initialize` 回 `{id, result:{}}`；对 `thread/start` 回 `{id, result:{thread:{id:"THREAD-1"}}}` 并发 `thread/started` 通知；对 `turn/start` 依次发 `turn/started`、`item/started`(agentMessage)、两条 `item/agentMessage/delta`、`item/completed`、`turn/completed`，再回 `{id, result:{}}`。支持环境变量 `FAKE_MODE=hang|exit1|approval` 切换行为（approval 模式发一条 `item/commandExecution/requestApproval` 反向请求并断言收到 decline）。
-- [ ] **Step 2: 写失败测试**：spawn fake → initialize → thread/start → 断言通知回调收到 `thread/started`；`FAKE_MODE=exit1` 断言 request 拒绝且 `close()` 返回 code 1；`FAKE_MODE=approval` 断言 `onServerRequest` 被调用且应答回写。Run: `pnpm test server/services/codex-app-server-client.test.ts` → 先 FAIL（模块不存在）。
-- [ ] **Step 3: 实现客户端** → 同命令测试 PASS（`ℹ fail 0`）。
-- [ ] **Step 4: Commit** — `git commit -m "feat(codex): app-server JSON-RPC stdio 协议客户端"`
+- [x] **Step 1: 写假 app-server fixture**（`fake-codex-app-server.cjs`，node 可执行脚本）：读 stdin 按行解析；对 `initialize` 回 `{id, result:{}}`；对 `thread/start` 回 `{id, result:{thread:{id:"THREAD-1"}}}` 并发 `thread/started` 通知；对 `turn/start` 依次发 `turn/started`、`item/started`(agentMessage)、两条 `item/agentMessage/delta`、`item/completed`、`turn/completed`，再回 `{id, result:{}}`。支持环境变量 `FAKE_MODE=hang|exit1|approval` 切换行为（approval 模式发一条 `item/commandExecution/requestApproval` 反向请求并断言收到 decline）。
+- [x] **Step 2: 写失败测试**：spawn fake → initialize → thread/start → 断言通知回调收到 `thread/started`；`FAKE_MODE=exit1` 断言 request 拒绝且 `close()` 返回 code 1；`FAKE_MODE=approval` 断言 `onServerRequest` 被调用且应答回写。Run: `pnpm test server/services/codex-app-server-client.test.ts` → 先 FAIL（模块不存在）。
+- [x] **Step 3: 实现客户端** → 同命令测试 PASS（`ℹ fail 0`）。
+- [x] **Step 4: Commit** — `git commit -m "feat(codex): app-server JSON-RPC stdio 协议客户端"`
 
 ### Task B2: App Server 引擎（实现 AiEngineAdapter）
 
