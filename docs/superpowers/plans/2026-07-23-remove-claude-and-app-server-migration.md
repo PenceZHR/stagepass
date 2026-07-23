@@ -457,9 +457,9 @@ export class CodexAppServerError extends Error {
 - Modify: `server/services/codex-cli-engine.test.ts` / `codex-cli-engine.run.test.ts` —— exec 细节用例删除，共享工具用例迁移
 - **决定**：保留文件名 `codex-cli-engine.ts` 作薄壳转发（`export { getCodexAppServerEngine as getCodexCliEngine }`）**不採用**——直接全仓改 import 到新名字，避免永久双名。`grep -rn "codex-cli-engine" server app scripts` 逐个改。
 
-- [ ] **Step 1**: 迁移共享工具 → 改 import → 删 exec 代码与测试。
-- [ ] **Step 2**: `npx tsc --noEmit` 清零；`pnpm test`（全量重定向文件）→ `ℹ fail 0`、`ℹ cancelled 0`。
-- [ ] **Step 3: Commit** — `git commit -m "refactor(codex): 删除 exec 传输路径，App Server 成为唯一链路"`
+- [x] **Step 1**: 迁移共享工具 → 改 import → 删 exec 代码与测试。
+- [x] **Step 2**: `npx tsc --noEmit` 清零；`pnpm test`（全量重定向文件）→ `ℹ fail 0`、`ℹ cancelled 0`。
+- [x] **Step 3: Commit** — `git commit -m "refactor(codex): 删除 exec 传输路径，App Server 成为唯一链路"`
 
 ### Task B5: 崩溃恢复与验收链路复核
 

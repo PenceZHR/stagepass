@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import { defaultDatabasePath, resolveDatabasePath } from "../db/config";
 import { parseCrashAcceptanceArgs } from "../../scripts/acceptance-crash-resilience";
 import { resolveAcceptanceInjection } from "./acceptance-injection-service";
-import { resolveCodexBin } from "./codex-cli-engine";
+import { resolveCodexBin } from "./codex-engine-shared";
 import {
   CRASH_ACCEPTANCE_CASES,
   ACCEPTANCE_OUTER_TIMEOUT_MS,

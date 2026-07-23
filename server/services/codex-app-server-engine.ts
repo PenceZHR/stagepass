@@ -20,7 +20,7 @@ import {
   resolveCodexBin,
   sanitizeCodexErrorMessage,
   startCodexHeartbeat,
-} from "./codex-cli-engine";
+} from "./codex-engine-shared";
 import type {
   AiEngineAdapter,
   AiRunInput,

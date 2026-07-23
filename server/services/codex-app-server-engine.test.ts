@@ -6,7 +6,7 @@ import {
   CodexAppServerEngine,
   getCodexAppServerEngine,
 } from "./codex-app-server-engine.ts";
-import { getCodexCliEngine } from "./codex-cli-engine.ts";
+import { getAiEngine } from "./ai-engine-adapter.ts";
 import type {
   AiRunInput,
   AiRunLifecycleSink,
@@ -221,7 +221,7 @@ describe("CodexAppServerEngine", () => {
     assert.equal(result.threadId, "THREAD-EXISTING");
   });
 
-  it("switches the compatibility factory to the app-server engine", () => {
-    assert.equal(getCodexCliEngine(), getCodexAppServerEngine());
+  it("uses the app-server engine from the shared adapter factory", () => {
+    assert.equal(getAiEngine(), getCodexAppServerEngine());
   });
 });

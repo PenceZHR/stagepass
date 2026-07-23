@@ -3,15 +3,13 @@ import type { AiEngineAdapter, AiProvider } from "./ai-engine-types";
 type AiEngineLoader = () => AiEngineAdapter;
 
 /**
- * The require() is deliberate: it defers loading codex-cli-engine (which
- * lazily spawns the codex CLI) until an engine is actually requested, and
- * keeps getAiEngine synchronous. Keep the sync require until the engine API
- * is intentionally made async.
+ * The require() is deliberate: it defers loading the app-server engine until
+ * an engine is actually requested and keeps getAiEngine synchronous.
  */
 const defaultLoader: AiEngineLoader = () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getCodexCliEngine } = require("./codex-cli-engine");
-  return getCodexCliEngine();
+  const { getCodexAppServerEngine } = require("./codex-app-server-engine");
+  return getCodexAppServerEngine();
 };
 
 let loaderOverride: AiEngineLoader | null = null;

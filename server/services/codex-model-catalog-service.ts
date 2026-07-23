@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 import { CodexAppServerClient } from "./codex-app-server-client";
-import { resolveCodexBin } from "./codex-cli-engine";
+import { resolveCodexBin } from "./codex-engine-shared";
 
 const DEFAULT_CATALOG_TTL_MS = 60_000;
 const MODEL_LIST_PAGE_SIZE = 100;

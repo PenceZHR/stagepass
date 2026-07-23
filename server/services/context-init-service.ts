@@ -25,7 +25,7 @@ const TRUNCATED_LINES = 300;
 const DEFAULT_CONTEXT_TIMEOUT_MS = DEFAULT_AI_PROVIDER_TIMEOUT_MS;
 const DEFAULT_SELECTED_FILES = [
   "server/services/pipeline-service.ts",
-  "server/services/codex-cli-engine.ts",
+  "server/services/codex-app-server-engine.ts",
   "server/services/context-init-service.ts",
   "server/db/schema.ts",
   "server/types/enums.ts",
