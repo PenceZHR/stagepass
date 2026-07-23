@@ -18,7 +18,6 @@
     "test:all": "tsx scripts/run-tests-isolated.ts --all"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.181",
     "@base-ui/react": "^1.5.0",
     "better-sqlite3": "^12.11.1",
     "class-variance-authority": "^0.7.1",
