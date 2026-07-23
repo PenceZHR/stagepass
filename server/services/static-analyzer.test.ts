@@ -51,7 +51,7 @@ export class MyEngine implements IEngine {
 
 export const VERSION = "1.0.0";
 
-export type EngineType = "codex" | "claude";
+export type EngineType = "codex";
 `);
 
       const result = await runStaticAnalysis(tmpDir);

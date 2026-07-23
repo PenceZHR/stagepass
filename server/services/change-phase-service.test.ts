@@ -1041,7 +1041,7 @@ describe("phase review page source", () => {
     assert.match(restartSource, /pipelineActionDisabledReason\(action\)/);
     assert.match(restartSource, /\/spec`/);
     assert.match(restartSource, /headers: \{ "Content-Type": "application\/json" \}/);
-    assert.match(restartSource, /createPipelinePreflightPayload\(action, \{ provider: selectedProvider \}\)/);
+    assert.match(restartSource, /createPipelinePreflightPayload\(action\)/);
     assert.doesNotMatch(restartSource, /fetch\(`[^`]+\/spec`,\s*\{\s*method: "POST",\s*\}\)/);
     assert.match(pageSource, /onRestartBattle=\{handleRestartSpecBattle\}/);
   });

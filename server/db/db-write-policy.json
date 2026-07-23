@@ -389,6 +389,14 @@
       "file": "server/services/crash-resilience-harness.ts",
       "symbol": "db.prepare.run",
       "nodeKind": "CallExpression",
+      "table": "artifacts",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
       "table": "changes",
       "owner": "Task 11 acceptance owner",
       "reason": "isolated crash-resilience fixture setup write"

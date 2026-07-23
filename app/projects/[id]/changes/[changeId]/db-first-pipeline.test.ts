@@ -161,7 +161,7 @@ describe("db-first pipeline UI contracts", () => {
     );
 
     assert.match(actionContract, /interface PipelineActionContract/);
-    assert.match(actionHook, /type PipelineActionContract/);
+    assert.match(actionHook, /import type \{ PipelineActionContract \}/);
     assert.match(actionHook, /actions\?: PipelineActionContract\[\]/);
     assert.match(checkRoute, /assertCanRunCheck/);
     assert.match(checkRoute, /PreflightBlockedError/);
@@ -221,7 +221,7 @@ describe("db-first pipeline UI contracts", () => {
     assert.match(actionRunner, /resolvePipelineActionCommand\(actionId\)/);
     // The payload is still built from the contract, and both the first attempt
     // and the drift retry go through this one expression.
-    assert.match(actionRunner, /withSelectedProvider\(createPipelinePreflightPayload\(contractAction\), contractAction, provider\)/);
+    assert.match(actionRunner, /createPipelinePreflightPayload\(contractAction\)/);
     assert.match(actionHook, /body: JSON\.stringify\(payload\)/);
     assert.match(actionContract, /actionId: action\?\.actionId/);
     assert.match(changeCommands, /const approveAction = findPipelineAction\(gateStatus\?\.actions, "approve_plan"\)/);

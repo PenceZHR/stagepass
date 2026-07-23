@@ -1039,14 +1039,14 @@ describe("PRD turn artifact extraction and failed state", () => {
         changeId: null,
         runId: null,
         type: "prd_assistant",
-        message: "older Claude timeout",
+        message: "older Codex timeout",
         rawJson: JSON.stringify({
           projectId,
           phase: "prd",
-          provider: "claude",
+          provider: "codex",
           status: "failed",
           reason: "provider_timeout",
-          engineThreadId: "older-claude-session",
+          engineThreadId: "older-codex-session",
           failedFrom: "revising",
         }),
         createdAt,
@@ -1201,43 +1201,6 @@ describe("PRD turn artifact extraction and failed state", () => {
     });
 
     await prdTurn(projectId, "retry legacy timeout without a real session");
-
-    assert.equal(observedThreadId, undefined);
-  });
-
-  it("does not resume a timeout session from a different provider", async () => {
-    seedRealProject(projectId, tmpDir, "failed");
-    await appDb.insert(events).values({
-      id: `${projectId}-EVT-CLAUDE-TIMEOUT`,
-      changeId: null,
-      runId: null,
-      type: "prd_assistant",
-      message: "Claude PRD generation timed out",
-      rawJson: JSON.stringify({
-        projectId,
-        phase: "prd",
-        provider: "claude",
-        status: "failed",
-        reason: "provider_timeout",
-        engineThreadId: "claude-timeout-session",
-        failedFrom: "drafting",
-      }),
-      createdAt: new Date().toISOString(),
-    }).run();
-    let observedThreadId: string | undefined;
-    restoreEngine = mockPrdEngine(async (input) => {
-      observedThreadId = input.threadId;
-      return {
-        threadId: "codex-fresh-session",
-        runId: "run-codex-provider-switch",
-        summary: prdLineProtocolText(validStructuredPrd("Codex Provider Switch PRD")),
-        success: true,
-        changedFiles: [],
-        items: [],
-      };
-    });
-
-    await prdTurn(projectId, "retry with Codex", "codex");
 
     assert.equal(observedThreadId, undefined);
   });

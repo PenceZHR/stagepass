@@ -56,28 +56,19 @@ describe("ai-engine-adapter", () => {
     assert.match(source, /lifecycle\?: AiRunLifecycleSink/);
   });
 
-  it("returns the selected provider engine without loading the other provider", () => {
+  it("returns the Codex engine through the test loader", () => {
     const calls: string[] = [];
     const codexEngine = fakeEngine("codex");
-    const claudeEngine = fakeEngine("claude");
-    const restoreCodex = setAiEngineLoaderForTest("codex", () => {
+    const restore = setAiEngineLoaderForTest("codex", () => {
       calls.push("codex");
       return codexEngine;
     });
-    const restoreClaude = setAiEngineLoaderForTest("claude", () => {
-      calls.push("claude");
-      return claudeEngine;
-    });
 
     try {
-      assert.equal(getAiEngine("codex"), codexEngine);
+      assert.equal(getAiEngine(), codexEngine);
       assert.deepEqual(calls, ["codex"]);
-
-      assert.equal(getAiEngine("claude"), claudeEngine);
-      assert.deepEqual(calls, ["codex", "claude"]);
     } finally {
-      restoreClaude();
-      restoreCodex();
+      restore();
     }
   });
 
@@ -90,8 +81,8 @@ describe("ai-engine-adapter", () => {
     });
 
     try {
-      assert.equal(await getPipelineEngine("claude"), engine);
-      assert.deepEqual(seenProviders, ["claude"]);
+      assert.equal(await getPipelineEngine("codex"), engine);
+      assert.deepEqual(seenProviders, ["codex"]);
     } finally {
       setPipelineEngineFactoryForTest(null);
     }

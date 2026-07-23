@@ -69,7 +69,7 @@ describe("pipeline-job-runner-service", () => {
     });
 
     await runPipelineJob(
-      payload({ provider: "claude", phase: "spec", actionId: "run_spec" }),
+      payload({ provider: "codex", phase: "spec", actionId: "run_spec" }),
       executionContext,
       { pipeline } as never,
     );
@@ -77,7 +77,7 @@ describe("pipeline-job-runner-service", () => {
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0]?.[2], {
       idempotencyKey: "runner-key",
-      provider: "claude",
+      provider: "codex",
     });
   });
 

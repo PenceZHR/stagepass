@@ -74,7 +74,6 @@ describe("approval hand-off to the next stage", () => {
       changeId: "CHG-001",
       actionId: "run_build",
       endpoint: "implement",
-      selectedProvider: "claude",
       setGateStatus: () => {},
     });
 
@@ -87,7 +86,7 @@ describe("approval hand-off to the next stage", () => {
     assert.equal(calls[1].body?.actionId, "run_build");
     assert.equal(calls[1].body?.expectedGateVersion, "7");
     assert.equal(calls[1].body?.expectedSourceDbHash, "hash-7");
-    assert.equal(calls[1].body?.provider, "claude");
+    assert.equal(calls[1].body?.provider, undefined);
   });
 
   it("surfaces the backend reason instead of leaving the approval to go nowhere", async () => {
@@ -112,24 +111,6 @@ describe("approval hand-off to the next stage", () => {
     // It must stop before posting: an approval that cannot start Build should say
     // why, not fire a request the backend will refuse.
     assert.equal(calls.length, 1);
-  });
-
-  it("leaves the provider off when the action does not take one", async () => {
-    const calls = stubFetch([
-      () => gateResponse(buildAction({ requiresProvider: false, providerSelectable: false })),
-      () => ({ ok: true, json: { success: true } }),
-    ]);
-
-    await startNextStage({
-      projectId: "PRJ-001",
-      changeId: "CHG-001",
-      actionId: "run_build",
-      endpoint: "implement",
-      selectedProvider: "claude",
-      setGateStatus: () => {},
-    });
-
-    assert.equal(calls[1].body?.provider, undefined);
   });
 
   it("publishes the refreshed gate so the page stops rendering the stale contract", async () => {

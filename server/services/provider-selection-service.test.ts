@@ -50,7 +50,7 @@ describe("provider selection policy", () => {
     assert.equal(parseRequestedProvider(undefined), undefined);
     assert.equal(parseRequestedProvider("codex"), "codex");
     assert.throws(
-      () => parseRequestedProvider("claude"),
+      () => parseRequestedProvider("anthropic"),
       (error: unknown) =>
         error instanceof Error
         && "code" in error

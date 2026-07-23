@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "78c6d294b472c7bf6ff04ef88ca29edb86e8e4e8fd0807c9dbc3379206ad95ef",
+  "policySha256": "9a71174ef4cb22efd941bfa348f4208366eba8e33d7f3db777e6f58ff73799a9",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -383,6 +383,14 @@
       "symbol": "db.exec",
       "nodeKind": "CallExpression",
       "table": "provider_run_processes",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
       "owner": "Task 11 acceptance owner",
       "reason": "isolated crash-resilience fixture setup write"
     },

@@ -185,10 +185,10 @@ describe("provider-process-lease-service", { concurrency: false }, () => {
       pid: 2_147_483_647,
       ppid: globalThis.process.pid,
       pgid: globalThis.process.pid,
-      nonce: "claude-captured-identity",
+      nonce: "codex-captured-identity",
       processStartTime: "2026-07-10T00:01:30.000Z",
       cwd: globalThis.process.cwd(),
-      command: ["claude", "--print"],
+      command: ["codex", "exec"],
     };
 
     const providerProcess = await leaseProviderProcess({
@@ -196,7 +196,7 @@ describe("provider-process-lease-service", { concurrency: false }, () => {
       changeId: CHANGE_ID,
       runId: RUN_ID,
       phase: "implement",
-      provider: "claude",
+      provider: "codex",
       pid: identity.pid,
       ppid: identity.ppid,
       identity,
@@ -215,7 +215,7 @@ describe("provider-process-lease-service", { concurrency: false }, () => {
       changeId: CHANGE_ID,
       runId: RUN_ID,
       phase: "implement",
-      provider: "claude",
+      provider: "codex",
       pid: identity.pid,
       ppid: identity.ppid,
       identity,

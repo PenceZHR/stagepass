@@ -230,9 +230,9 @@ describe("change deletion provider sessions", () => {
   it("deletes a change that has provider sessions", async () => {
     db.insert(changeProviderSessions).values({
       changeId: CHANGE_ID,
-      provider: "claude",
+      provider: "codex",
       sessionKind: "general",
-      externalSessionId: "claude-session",
+      externalSessionId: "codex-session",
       lastRunId: null,
       createdAt: NOW,
       updatedAt: NOW,

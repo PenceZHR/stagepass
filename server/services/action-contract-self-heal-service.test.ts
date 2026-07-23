@@ -12,7 +12,7 @@ function checkingChange(): typeof changes.$inferSelect {
     projectId: "PRJ-ACTION-SELF-HEAL",
     title: "Action self heal",
     status: "CHECKING",
-    provider: "claude",
+    provider: "codex",
     codexThreadId: null,
     fixIterations: 0,
     blockedPhase: null,

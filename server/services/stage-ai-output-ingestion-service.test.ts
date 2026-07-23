@@ -42,7 +42,7 @@ describe("stage AI output ingestion service foundations", () => {
       legacyRunId: "RUN-1",
       stageRunId: "STAGE-1",
       attemptNo: 1,
-      provider: "claude",
+      provider: "codex",
       aiOutputMode: "json_schema",
       schemaDelivery: "schema_prompt",
       structuredOutputSource: "text_extracted",
@@ -904,7 +904,7 @@ describe("failure attribution: delivery before format", () => {
 
   /**
    * The belt to the engine's brace. Any engine that reports success while
-   * delivering nothing (claude's exit-0-with-no-result path, and anything added
+   * delivering nothing (a provider's exit-0-with-no-result path, and anything added
    * later) is caught here rather than falling through to a format verdict.
    */
   it("reports an empty reply as an empty response even when the engine claimed success", async () => {

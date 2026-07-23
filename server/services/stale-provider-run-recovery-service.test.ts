@@ -233,7 +233,7 @@ function seedRun(input: {
     changeId: CHANGE_ID,
     runId,
     phase: providerPhase,
-    provider: "claude",
+    provider: "codex",
     pid: input.pid ?? null,
     ppid: process.pid,
     roundId: null,
@@ -325,7 +325,7 @@ function seedReconciliationFixture(input: {
   runLeaseToken?: string;
   jobLeaseToken?: string;
   providerLeaseToken?: string;
-  provider?: "claude" | "codex";
+  provider?: "codex";
   pid?: number | null;
   externalRef?: string | null;
 } = {}): void {
@@ -382,7 +382,7 @@ function seedReconciliationFixture(input: {
     changeId: CHANGE_ID,
     runId: "RUN-MATRIX",
     phase,
-    provider: input.provider ?? "claude",
+    provider: input.provider ?? "codex",
     pid,
     ppid: identity?.ppid ?? process.pid,
     roundId: null,
@@ -542,7 +542,7 @@ function seedFixBlockersReviewSource(): void {
   const now = "2026-07-10T00:00:30.000Z";
   db.insert(reviewAttempts).values({
     id: "REV-LEGACY-FIX", changeId: CHANGE_ID, runId: null, attemptNo: 1, status: "completed",
-    provider: "claude", reviewStatus: "changes_requested", idempotencyKey: "legacy-fix-review",
+    provider: "codex", reviewStatus: "changes_requested", idempotencyKey: "legacy-fix-review",
     sourceBuildRunId: "build-legacy-fix", sourceHeadSha: "legacy-fix-head",
     startedAt: now, endedAt: now, completedAt: now, createdAt: now, updatedAt: now,
   }).run();
@@ -710,7 +710,7 @@ async function seedCompletedProviderFixture(
     }
     db.insert(reviewAttempts).values({
       id: "REV-COMPLETED-PROVIDER", changeId: CHANGE_ID, runId: "RUN-MATRIX", attemptNo: 1,
-      status: evidenceComplete ? "completed" : "running", provider: "claude",
+      status: evidenceComplete ? "completed" : "running", provider: "codex",
       reviewStatus: evidenceComplete ? "passed" : "running", idempotencyKey: "review-1",
       sourceBuildRunId: evidenceComplete ? "build-1" : null,
       sourceHeadSha: evidenceComplete ? "review-head" : null,
@@ -961,7 +961,7 @@ function seedIntakeProviderFixture(
     changeId: CHANGE_ID,
     runId: "RUN-INTAKE",
     phase: "intake",
-    provider: "claude",
+    provider: "codex",
     pid: null,
     ppid: process.pid,
     roundId: null,
@@ -1032,7 +1032,7 @@ function seedGenericDocumentStageProviderFixture(input: {
   }).run();
   db.insert(providerRunProcesses).values({
     id: "PRP-DOCSTAGE", changeId: CHANGE_ID, runId: "RUN-DOCSTAGE", phase: input.phase,
-    provider: "claude", pid: null, ppid: process.pid, roundId: null, status: "completed",
+    provider: "codex", pid: null, ppid: process.pid, roundId: null, status: "completed",
     startedAt, lastHeartbeatAt: startedAt, endedAt, exitCode: 0, signal: null, summary: "done",
     jobId: "JOB-DOCSTAGE", workerId: "worker-docstage", leaseToken: "lease-docstage", attemptNo: 1,
     externalRef: null, processNonce: null, processStartTime: null, processPpid: null,
@@ -2932,7 +2932,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
     assert.equal(db.select().from(events).where(eq(events.changeId, CHANGE_ID)).all().length, 0);
   });
 
-  it("derives a synthetic provider from the Codex change instead of hard-coding Claude", async () => {
+  it("derives a synthetic provider from the Codex change", async () => {
     seedChange("TECHSPECCING");
     db.update(changes).set({ provider: "codex" }).where(eq(changes.id, CHANGE_ID)).run();
     db.insert(runs).values({
@@ -4651,7 +4651,7 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       db.insert(providerRunProcesses).values({
         id: `PRP-HISTORY-${String(index).padStart(3, "0")}`,
         changeId: CHANGE_ID, runId: "RUN-PROVIDER-HISTORY", phase: "tech_spec",
-        provider: "claude", pid: null, ppid: process.pid, roundId: null,
+        provider: "codex", pid: null, ppid: process.pid, roundId: null,
         status: "stopped", startedAt: "2026-07-10T00:00:00.000Z",
         lastHeartbeatAt: "2026-07-10T00:00:00.000Z", endedAt: "2026-07-10T00:00:01.000Z",
         exitCode: null, signal: null, summary: "historical", attemptNo: 0,

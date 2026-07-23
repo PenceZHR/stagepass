@@ -29,7 +29,7 @@ function clearFixture(): void {
 
 function insertProviderRun(input: {
   id: string;
-  provider: "codex" | "claude";
+  provider: "codex";
   status: "completed" | "failed";
   externalRef: string;
 }): void {
@@ -78,14 +78,7 @@ describe("provider session service", () => {
     clearFixture();
   });
 
-  it("does not treat an unproven legacy thread as a Codex session", () => {
-    db.update(changes).set({ provider: "claude" }).where(eq(changes.id, CHANGE_ID)).run();
-    insertProviderRun({
-      id: "PRP-LEGACY-CLAUDE",
-      provider: "claude",
-      status: "completed",
-      externalRef: "legacy-codex-thread",
-    });
+  it("does not backfill a session without completed Codex lifecycle proof", () => {
     insertProviderRun({
       id: "PRP-FAILED-CODEX-RESUME",
       provider: "codex",
@@ -95,6 +88,7 @@ describe("provider session service", () => {
 
     assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "general" }), null);
     assert.equal(db.select().from(changeProviderSessions).all().length, 0);
+    assert.equal(db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.provider, "codex");
   });
 
   it("backfills a legacy Codex session only with completed Codex lifecycle proof", () => {
@@ -106,14 +100,13 @@ describe("provider session service", () => {
     });
 
     assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "general" }), "legacy-codex-thread");
-    assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "claude", sessionKind: "general" }), null);
     assert.equal(db.select().from(changeProviderSessions).all().length, 1);
     assert.equal(db.select().from(changeProviderSessions).get()?.provider, "codex");
   });
 
-  it("never resumes a session from another provider", () => {
-    recordProviderSession({ changeId: CHANGE_ID, provider: "claude", sessionKind: "general", externalSessionId: "claude-session" });
-    assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "claude", sessionKind: "general" }), "claude-session");
+  it("never resumes a session from another session kind", () => {
+    recordProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "general", externalSessionId: "codex-session" });
+    assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "general" }), "codex-session");
     assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "spec" }), null);
   });
 });

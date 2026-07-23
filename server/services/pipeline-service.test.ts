@@ -6694,7 +6694,7 @@ describe("pipeline-service v2 stages", () => {
     );
   });
 
-  it("uses the change provider for Review instead of forcing codex changes to claude", async () => {
+  it("uses the Codex provider for Review", async () => {
     let reviewProvider: string | null = null;
     setPipelineEngineFactoryForTest((provider) => ({
       async run(input) {
@@ -8866,7 +8866,7 @@ describe("pipeline-service v2 stages", () => {
     const adversarialWriterSessions = [
       { id: "ZZZZ-red-malformed", rawJson: "{not-json" },
       { id: "ZZZY-red-wrong-schema", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v0", roundId: failedRound.id, provider: "codex", threadId: "wrong-schema", errorCode: "provider_timeout" } }) },
-      { id: "ZZZX-red-wrong-provider", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v1", roundId: failedRound.id, provider: "claude", threadId: "wrong-provider", errorCode: "provider_timeout" } }) },
+      { id: "ZZZX-red-wrong-provider", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v1", roundId: failedRound.id, provider: "anthropic", threadId: "wrong-provider", errorCode: "provider_timeout" } }) },
       { id: "ZZZW-red-wrong-round", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v1", roundId: "wrong-round", provider: "codex", threadId: "wrong-round", errorCode: "provider_timeout" } }) },
     ];
     for (const candidate of adversarialWriterSessions) {
@@ -9086,7 +9086,7 @@ describe("pipeline-service v2 stages", () => {
             assert.ok(input.lifecycle);
             await input.lifecycle.onProcessStarted({ provider: "codex", pid: null, ppid: process.pid, externalRef: "durable-red-timeout", startedAt: new Date().toISOString() });
             await input.lifecycle.onTerminal({ provider: "codex", pid: null, status: "stopped", signal: "SIGTERM", summary: "Provider stopped after parent received SIGTERM", endedAt: new Date().toISOString() });
-            return { threadId: "durable-red-timeout", runId: "RED-SIGTERM", summary: "Claude SDK run failed: Claude SDK exited with code 143:", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
+            return { threadId: "durable-red-timeout", runId: "RED-SIGTERM", summary: "provider_run_failed: provider exited with code 143", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
           }
           return { threadId: "durable-red-timeout", runId: "RED-RESUMED", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
@@ -9572,7 +9572,7 @@ describe("pipeline-service v2 stages", () => {
       },
       {
         id: "ZZY-wrong-provider",
-        payload: { schemaVersion: "spec_critic_retry_session/v1", roundId: failedRound?.id, provider: "claude", threadId: "wrong-provider", errorCode: "provider_timeout" },
+        payload: { schemaVersion: "spec_critic_retry_session/v1", roundId: failedRound?.id, provider: "anthropic", threadId: "wrong-provider", errorCode: "provider_timeout" },
       },
       {
         id: "ZZX-wrong-round",
@@ -9847,7 +9847,7 @@ describe("pipeline-service v2 stages", () => {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
-            summary: "provider_timeout: Claude SDK timed out after 10ms",
+            summary: "provider_timeout: Codex timed out after 10ms",
             success: false,
             changedFiles: [],
             structuredOutput: undefined,
