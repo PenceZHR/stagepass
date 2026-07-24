@@ -63,24 +63,25 @@ export function StageFrame({
   const resolvedState = state ?? stage?.state ?? "waiting";
   const stageLabel = label ?? stage?.label ?? title;
   const stageDescription = description ?? stage?.description;
+  const hasActions = actions.length > 0 || actionError;
 
   return (
-    <section className="space-y-4" data-stage-frame>
-      <header className="border-b pb-4" aria-label={`${stageLabel} 阶段概览`}>
+    <section className="space-y-6" data-stage-frame>
+      <header className="border-b border-white/10 pb-5" aria-label={`${stageLabel} 阶段概览`}>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <p className="stagepass-kicker">
               {eyebrow}
             </p>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">
-              <span className="rounded-md border bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground">
+              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-semibold text-muted-foreground">
                 {stageLabel}
               </span>
-              <h2 className="text-xl font-semibold tracking-normal">{title}</h2>
+              <h2 className="stagepass-serif text-2xl font-normal tracking-normal">{title}</h2>
               <StageStatusBadge state={resolvedState} />
             </div>
             {stageDescription ? (
-              <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{stageDescription}</p>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{stageDescription}</p>
             ) : null}
           </div>
 
@@ -95,11 +96,6 @@ export function StageFrame({
                 ))}
               </dl>
             ) : null}
-            <StageActionBar
-              actions={actions}
-              actionError={actionError}
-              ariaLabel={`${stageLabel} actions`}
-            />
           </div>
         </div>
 
@@ -111,8 +107,8 @@ export function StageFrame({
       </header>
 
       {blockers.length > 0 ? (
-        <section className="rounded-md border border-dashed bg-muted/30 p-3" aria-label={`${stageLabel} blockers`}>
-          <h3 className="text-sm font-semibold">阻断项</h3>
+        <section className="border-l-2 border-destructive/60 bg-destructive/[0.045] px-4 py-3" aria-label={`${stageLabel} blockers`}>
+          <h3 className="stagepass-kicker text-destructive">阻断项</h3>
           <ul className="mt-2 space-y-2">
             {blockers.map((blocker) => (
               <li
@@ -154,6 +150,26 @@ export function StageFrame({
           </aside>
         ) : null}
       </div>
+
+      {hasActions ? (
+        <footer
+          className="stagepass-surface-subtle rounded-xl p-4 sm:p-5"
+          aria-label={`${stageLabel} decision area`}
+          data-stage-decision-area
+        >
+          <div className="mb-3">
+            <p className="stagepass-kicker">Decision</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              主动作只改变明确标注的当前门禁；风险接受会保留审计记录。
+            </p>
+          </div>
+          <StageActionBar
+            actions={actions}
+            actionError={actionError}
+            ariaLabel={`${stageLabel} actions`}
+          />
+        </footer>
+      ) : null}
     </section>
   );
 }

@@ -134,9 +134,9 @@ export function PhaseStageShell({
   // reviewPhaseToRubricPhase); every real pipeline stage maps to one.
   const rubricPhase = reviewPhaseToRubricPhase(phase);
   const evidence = records ? (
-    <details className="rounded-lg border bg-background p-4">
+    <details id="stage-evidence" className="stagepass-surface-subtle rounded-xl p-4">
       <summary className="cursor-pointer text-sm font-medium">{resolvedRecordsLabel}</summary>
-      <div className="mt-4 border-t pt-4">{records}</div>
+      <div className="mt-4 border-t border-white/10 pt-4">{records}</div>
     </details>
   ) : null;
 

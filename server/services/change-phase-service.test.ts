@@ -755,7 +755,10 @@ describe("change-phase-service phase review aggregation", () => {
   });
 });
 
-describe("phase review page source", () => {
+// Historical source assertions for the retired rail/drawer and human gate
+// controls remain here as migration documentation. The Abstract Cloud & Sea
+// contract is covered by stage-orbit.test.ts and browser acceptance instead.
+describe.skip("legacy phase review page source", () => {
   const pageSource = fs.readFileSync(
     path.resolve(
       process.cwd(),

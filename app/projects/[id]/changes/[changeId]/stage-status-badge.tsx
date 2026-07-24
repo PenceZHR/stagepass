@@ -6,43 +6,43 @@ export const STAGE_STATUS_BADGE_COPY: Record<
 > = {
   not_started: {
     label: "未开始",
-    tone: "border-border bg-muted text-muted-foreground",
-    dot: "bg-muted-foreground/60",
+    tone: "border-white/10 bg-white/5 text-muted-foreground",
+    dot: "border border-muted-foreground/60 bg-transparent",
   },
   waiting: {
     label: "等待中",
-    tone: "border-border bg-background text-muted-foreground",
-    dot: "bg-muted-foreground",
+    tone: "border-white/12 bg-black/10 text-muted-foreground",
+    dot: "bg-muted-foreground/70",
   },
   running: {
     label: "运行中",
-    tone: "border-primary/30 bg-primary/10 text-primary",
+    tone: "border-primary/35 bg-primary/10 text-primary",
     dot: "bg-primary",
   },
   needs_review: {
     label: "待审核",
-    tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    dot: "bg-amber-500",
+    tone: "border-primary/35 bg-primary/10 text-primary",
+    dot: "bg-primary",
   },
   blocked: {
     label: "已阻断",
-    tone: "border-destructive/30 bg-destructive/10 text-destructive",
+    tone: "border-destructive/35 bg-destructive/10 text-destructive",
     dot: "bg-destructive",
   },
   failed: {
     label: "失败",
-    tone: "border-destructive/30 bg-destructive/10 text-destructive",
+    tone: "border-destructive/35 bg-destructive/10 text-destructive",
     dot: "bg-destructive",
   },
   stale: {
     label: "已过期",
-    tone: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
-    dot: "bg-orange-500",
+    tone: "border-primary/25 bg-primary/5 text-primary/80",
+    dot: "bg-primary/70",
   },
   complete: {
     label: "已完成",
-    tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    dot: "bg-emerald-500",
+    tone: "border-success/35 bg-success/10 text-success",
+    dot: "bg-success",
   },
 };
 

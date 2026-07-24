@@ -68,6 +68,14 @@ function render(questions: BriefingQuestion[]): string {
 }
 
 describe("PRD briefing response boundaries", () => {
+  it("passes a stable Codex open callback into the stage-action synchronization effect", () => {
+    assert.match(source, /const onOpenInCodexRef = useRef\(onOpenInCodex\)/);
+    assert.match(source, /onOpenInCodexRef\.current = onOpenInCodex/);
+    assert.match(source, /const openInCodex = useCallback\(\(\) => onOpenInCodexRef\.current\?\.\(\), \[\]\)/);
+    assert.match(source, /onAction: codexDecisionEnabled \? openInCodex : lockPrd/);
+    assert.match(source, /lockPrd,[\s\S]*openInCodex,[\s\S]*\]\);/);
+  });
+
   it("keeps asynchronous queue receipts out of page state", () => {
     const commandStart = source.indexOf("const requestCommandJson");
     const stateStart = source.indexOf("const requestStateJson");

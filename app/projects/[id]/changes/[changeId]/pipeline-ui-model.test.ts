@@ -345,7 +345,7 @@ describe("pipeline UI model", () => {
     assert.equal(result.stages.filter((stage) => stage.selected).length, 1);
   });
 
-  it("does not mark missing future phase overviews as available", () => {
+  it("keeps future stages selectable without claiming evidence availability", () => {
     const result = buildUiPipelineState({
       change: change({ status: "PLAN_READY" }),
       phaseOverviews: overviews(["Plan"]),
@@ -357,7 +357,8 @@ describe("pipeline UI model", () => {
     assert.equal(plan?.available, true);
     assert.equal(plan?.selectable, true);
     assert.equal(build?.available, false);
-    assert.equal(build?.selectable, false);
+    assert.equal(build?.selectable, true);
+    assert.equal(build?.state, "not_started");
   });
 
   it("falls back to the failed run phase unless a newer active Spec Battle is the active fact", () => {

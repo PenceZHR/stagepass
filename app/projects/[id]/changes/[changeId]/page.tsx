@@ -22,7 +22,7 @@ import { PhaseReviewPanel, type PhaseReviewResponse } from "./phase-review-panel
 import { PipelinePageShell } from "./pipeline-page-shell";
 import { PhaseStageShell } from "./phase-stage-shell";
 import { RubricPanel } from "./rubric-panel";
-import { buildUiPipelineState } from "./pipeline-ui-model";
+import { buildUiPipelineState, UI_STAGE_ORDER } from "./pipeline-ui-model";
 import type { StageActionView } from "./stage-action-bar";
 import type { StageBlockerView } from "./stage-frame";
 import {
@@ -664,6 +664,9 @@ export default function ChangeDetailPage() {
   }
 
   const selectedStageState = selectedStage.state;
+  const selectedIsFuture =
+    UI_STAGE_ORDER.indexOf(selectedStage.id)
+    > UI_STAGE_ORDER.indexOf(uiPipelineState.activeStage.id);
   const showingRetroStage = selectedStage.id === "retro";
   const showingDoneStage = selectedStage.id === "done";
   const latestFailedRun = change.latestRun?.status === "failed" ? change.latestRun : null;
@@ -703,8 +706,10 @@ export default function ChangeDetailPage() {
   return (
     <>
       <PipelinePageShell
+        key={changeId}
         projectId={projectId}
         change={change}
+        activeStage={uiPipelineState.activeStage}
         selectedStage={selectedStage}
         stages={uiPipelineState.stages}
         selectedPhase={activeSelectedPhase}
@@ -720,6 +725,7 @@ export default function ChangeDetailPage() {
         <CodexTaskControl
           control={codexControl}
           health={codexHealth}
+          readOnly={selectedIsFuture}
           busy={codexBusy}
           onOpen={() => runCodexControlAction(() => codexApi.openCodexTask())}
           onInterrupt={() => runCodexControlAction(() => codexApi.interruptCodexTurn())}
@@ -735,28 +741,30 @@ export default function ChangeDetailPage() {
           onSaveSettings={(settings) =>
             runCodexControlAction(() => codexApi.saveCodexSettings(settings))}
         />
-        <EmergencyInteractionPanel
-          health={codexHealth}
-          codexDecisionEnabled={codexControl.codexDecisionEnabled}
-          interaction={currentInteraction}
-          busy={codexBusy}
-          onSubmit={({ actionId, reason }) => runCodexControlAction(async () => {
-            if (
-              !currentInteraction?.gateVersion
-              || !currentInteraction.sourceDbHash
-            ) {
-              throw new Error("Emergency interaction envelope is incomplete");
-            }
-            await codexApi.executeCommand({
-              actionId,
-              expectedGateVersion: currentInteraction.gateVersion,
-              expectedSourceDbHash: currentInteraction.sourceDbHash,
-              expectedHeadSha: currentInteraction.expectedHeadSha ?? null,
-              idempotencyKey: `web-emergency:${currentInteraction.id}:${actionId}`,
-              payload: { reason, interactionId: currentInteraction.id },
-            });
-          })}
-        />
+        {!selectedIsFuture ? (
+          <EmergencyInteractionPanel
+            health={codexHealth}
+            codexDecisionEnabled={codexControl.codexDecisionEnabled}
+            interaction={currentInteraction}
+            busy={codexBusy}
+            onSubmit={({ actionId, reason }) => runCodexControlAction(async () => {
+              if (
+                !currentInteraction?.gateVersion
+                || !currentInteraction.sourceDbHash
+              ) {
+                throw new Error("Emergency interaction envelope is incomplete");
+              }
+              await codexApi.executeCommand({
+                actionId,
+                expectedGateVersion: currentInteraction.gateVersion,
+                expectedSourceDbHash: currentInteraction.sourceDbHash,
+                expectedHeadSha: currentInteraction.expectedHeadSha ?? null,
+                idempotencyKey: `web-emergency:${currentInteraction.id}:${actionId}`,
+                payload: { reason, interactionId: currentInteraction.id },
+              });
+            })}
+          />
+        ) : null}
         {latestFailedRun && (
           <FailedRunBanner
             run={latestFailedRun}

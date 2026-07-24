@@ -307,7 +307,7 @@ export function buildUiPipelineState(input: {
   selectedStage: UiStage;
 } {
   const fallbackResolution = resolvePipelineStage(input);
-  const selectedStageId = resolveExplicitSelectedStage(input, fallbackResolution.id) ?? fallbackResolution.id;
+  const selectedStageId = resolveExplicitSelectedStage(input) ?? fallbackResolution.id;
   const selectedResolution = selectedStageId === fallbackResolution.id
     ? fallbackResolution
     : { id: selectedStageId, state: stageStateForSelectedOverride(selectedStageId, fallbackResolution.id) };
@@ -375,12 +375,11 @@ function resolveExplicitSelectedStage(
     selectedPhase?: ReviewPhase | null;
     phaseOverviews?: PhaseOverview[];
   },
-  activeStageId: UiStageId,
 ): UiStageId | null {
   if (!input.selectedPhase) return null;
   const stageId = REVIEW_PHASE_TO_STAGE[input.selectedPhase];
   if (!stageId) return null;
-  return isStageSelectable(stageId, activeStageId, input.phaseOverviews) ? stageId : null;
+  return isStageSelectable(stageId) ? stageId : null;
 }
 
 function resolveReviewGateStage(
@@ -445,7 +444,7 @@ function createUiStage(input: {
   return {
     ...definition,
     state,
-    selectable: isStageSelectable(input.stageId, input.activeStageId, input.phaseOverviews),
+    selectable: isStageSelectable(input.stageId),
     selected,
     available: isStageAvailable(input.stageId, input.activeStageId, input.phaseOverviews, selected),
     artifactCount: overview?.artifactCount ?? 0,
@@ -462,17 +461,13 @@ function inactiveStageState(stageId: UiStageId, selectedStageId: UiStageId): UiS
 
 function stageStateForSelectedOverride(stageId: UiStageId, fallbackStageId: UiStageId): UiStageState {
   if (stageId === fallbackStageId) return "waiting";
-  return UI_STAGE_ORDER.indexOf(stageId) < UI_STAGE_ORDER.indexOf(fallbackStageId) ? "complete" : "waiting";
+  return UI_STAGE_ORDER.indexOf(stageId) < UI_STAGE_ORDER.indexOf(fallbackStageId)
+    ? "complete"
+    : "not_started";
 }
 
-function isStageSelectable(stageId: UiStageId, activeStageId: UiStageId, phaseOverviews?: PhaseOverview[]): boolean {
-  const definition = STAGE_DEFINITIONS[stageId];
-  if (!definition.reviewPhase) return false;
-  if (!phaseOverviews) return true;
-
-  const overview = phaseOverviewForStage(definition, phaseOverviews);
-  if (overview?.available) return true;
-  return UI_STAGE_ORDER.indexOf(stageId) <= UI_STAGE_ORDER.indexOf(activeStageId);
+function isStageSelectable(stageId: UiStageId): boolean {
+  return STAGE_DEFINITIONS[stageId].reviewPhase !== null;
 }
 
 function isStageAvailable(

@@ -79,10 +79,10 @@ const RUNNING_STATES = new Set([
 type NavSection = "changes" | "prd" | "context" | "baseline";
 
 const NAV_ITEMS: { key: NavSection; label: string; icon: string }[] = [
-  { key: "changes", label: "Changes", icon: "⚡" },
-  { key: "prd", label: "PRD", icon: "📋" },
-  { key: "context", label: "上下文", icon: "🧠" },
-  { key: "baseline", label: "基线文档", icon: "📚" },
+  { key: "changes", label: "Changes", icon: "01" },
+  { key: "prd", label: "PRD", icon: "02" },
+  { key: "context", label: "上下文", icon: "03" },
+  { key: "baseline", label: "基线文档", icon: "04" },
 ];
 
 export default function ProjectDetailPage() {
@@ -213,33 +213,34 @@ export default function ProjectDetailPage() {
   const needsPrdBeforeChange = !prdStatusLoading && !canCreateChange;
 
   return (
-    <div className="flex h-screen">
+    <div className="stagepass-page flex min-h-screen flex-col lg:h-screen lg:flex-row">
       {/* Sidebar */}
-      <aside className="flex w-56 flex-col border-r bg-muted/30">
-        <div className="border-b p-4">
-          <Link href="/projects" className="text-xs text-muted-foreground hover:text-foreground">
-            ← 项目列表
+      <aside className="stagepass-surface-subtle z-10 flex w-full flex-col border-b border-white/10 lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-r">
+        <div className="border-b border-white/10 p-5">
+          <Link href="/projects" className="stagepass-wordmark">
+            stagepass
           </Link>
           {project && (
-            <div className="mt-2">
-              <h1 className="truncate text-sm font-bold">{project.name}</h1>
-              <p className="truncate text-xs text-muted-foreground">{project.id}</p>
+            <div className="mt-7">
+              <p className="stagepass-kicker">Current project</p>
+              <h1 className="stagepass-serif mt-2 truncate text-xl">{project.name}</h1>
+              <p className="mt-1 truncate font-mono text-[0.68rem] text-primary/75">{project.id}</p>
             </div>
           )}
         </div>
 
-        <nav className="flex-1 p-2">
+        <nav className="flex gap-1 overflow-x-auto p-2 lg:flex-1 lg:flex-col lg:p-3" aria-label="Project sections">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.key}
               onClick={() => setActiveSection(item.key)}
-              className={`mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
+              className={`flex min-h-11 shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors lg:w-full ${
                 activeSection === item.key
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  ? "bg-primary/14 text-primary ring-1 ring-primary/25"
+                  : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
               }`}
             >
-              <span className="text-base">{item.icon}</span>
+              <span className="font-mono text-[0.62rem] opacity-70">{item.icon}</span>
               {item.label}
               {item.key === "changes" && changes.length > 0 && (
                 <span className="ml-auto rounded-full bg-muted-foreground/20 px-1.5 py-0.5 text-xs">
@@ -252,21 +253,27 @@ export default function ProjectDetailPage() {
 
         {/* Sidebar footer: project path */}
         {project && (
-          <div className="border-t p-3">
-            <p className="truncate text-xs text-muted-foreground" title={project.repoPath}>
+          <div className="hidden border-t border-white/10 p-4 lg:block">
+            <p className="truncate text-[0.68rem] text-muted-foreground" title={project.repoPath}>
               {project.repoPath}
             </p>
+            <Link href="/projects" className="mt-3 inline-block text-xs text-primary/80 hover:text-primary">
+              ← All projects
+            </Link>
           </div>
         )}
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="min-w-0 flex-1 overflow-y-auto">
         {/* Changes Section */}
         {activeSection === "changes" && (
-          <div className="mx-auto max-w-4xl px-8 py-10">
-            <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Changes</h2>
+          <div className="mx-auto max-w-5xl px-5 py-10 sm:px-8 lg:py-14">
+            <div className="mb-8 flex items-end justify-between gap-4">
+              <div>
+                <p className="stagepass-kicker">Gate archive</p>
+                <h2 className="stagepass-serif mt-2 text-3xl">Changes</h2>
+              </div>
               {canCreateChange ? (
                 <CreateChangeDialog projectId={projectId} onCreated={handleChangeCreated} />
               ) : (
@@ -282,9 +289,9 @@ export default function ProjectDetailPage() {
             </div>
 
             {needsPrdBeforeChange ? (
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-5 text-sm text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+              <div className="stagepass-surface rounded-xl border-l-2 border-l-primary p-5 text-sm">
                 <h3 className="font-medium">先完成项目 PRD</h3>
-                <p className="mt-1 text-blue-800 dark:text-blue-200">
+                <p className="mt-1 text-muted-foreground">
                   Change 需要基于已确认的项目 PRD 执行。先到 PRD 阶段确认产品边界，再回来创建 Change。
                 </p>
                 <Button
@@ -297,21 +304,24 @@ export default function ProjectDetailPage() {
                 </Button>
               </div>
             ) : changes.length === 0 ? (
-              <p className="text-muted-foreground">No changes found.</p>
+              <div className="stagepass-surface rounded-xl px-6 py-14 text-center">
+                <p className="stagepass-serif text-xl">No changes found</p>
+                <p className="mt-2 text-sm text-muted-foreground">Create a Change to begin its gate orbit.</p>
+              </div>
             ) : (
-              <div className="grid gap-3">
+              <div className="stagepass-surface divide-y divide-white/10 overflow-hidden rounded-2xl">
                 {changes.map((c) => (
                   <Link key={c.id} href={`/projects/${projectId}/changes/${c.id}`}>
-                    <Card className="group transition-colors hover:bg-muted/50">
+                    <Card className="group rounded-none border-0 bg-transparent shadow-none transition-colors hover:bg-white/[0.045]">
                       <CardHeader className="py-4">
                         <CardTitle className="flex items-center gap-3 text-base">
-                          <span className="font-mono text-sm text-muted-foreground">
+                          <span className="font-mono text-xs text-primary/70">
                             {c.id}
                           </span>
-                          {c.title}
+                          <span className="stagepass-serif text-lg font-normal">{c.title}</span>
                           {!RUNNING_STATES.has(c.status) && (
                             <button
-                              className="ml-2 inline-flex items-center gap-1 rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
+                              className="ml-2 inline-flex items-center gap-1 rounded border border-destructive/25 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                               onClick={(e) => handleDelete(e, c.id)}
                               aria-label={`删除 ${c.id}`}
                               title="删除"
@@ -338,8 +348,11 @@ export default function ProjectDetailPage() {
 
         {/* PRD Section */}
         {activeSection === "prd" && project && (
-          <div className="flex h-[calc(100vh-2rem)] flex-col px-8 pt-6 pb-4">
-            <h2 className="mb-4 shrink-0 text-xl font-semibold">PRD</h2>
+          <div className="flex min-h-[calc(100vh-8rem)] flex-col px-5 pb-4 pt-8 sm:px-8 lg:h-[calc(100vh-2rem)]">
+            <div className="mb-5 shrink-0">
+              <p className="stagepass-kicker">Product boundary</p>
+              <h2 className="stagepass-serif mt-2 text-3xl">PRD</h2>
+            </div>
             <div className="relative min-h-0 flex-1">
               <div className="absolute inset-0">
               <PrdEditor
@@ -355,9 +368,12 @@ export default function ProjectDetailPage() {
 
         {/* Context Section */}
         {activeSection === "context" && context && (
-          <div className="mx-auto max-w-4xl px-8 py-10">
+          <div className="mx-auto max-w-5xl px-5 py-10 sm:px-8 lg:py-14">
             <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">项目上下文</h2>
+              <div>
+                <p className="stagepass-kicker">Repository evidence</p>
+                <h2 className="stagepass-serif mt-2 text-3xl">项目上下文</h2>
+              </div>
               <div className="flex items-center gap-2">
                 {context.contextStatus === "generating" && (
                   <div className="flex items-center gap-2">
@@ -462,9 +478,12 @@ export default function ProjectDetailPage() {
 
         {/* Baseline Section */}
         {activeSection === "baseline" && baseline && (
-          <div className="mx-auto max-w-4xl px-8 py-10">
+          <div className="mx-auto max-w-5xl px-5 py-10 sm:px-8 lg:py-14">
             <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">基线文档</h2>
+              <div>
+                <p className="stagepass-kicker">Project memory</p>
+                <h2 className="stagepass-serif mt-2 text-3xl">基线文档</h2>
+              </div>
               <span className="text-sm text-muted-foreground">{baselineDocs.length} docs</span>
             </div>
 

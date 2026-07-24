@@ -349,6 +349,13 @@ export function PrdBriefingRoom({
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rawTextDirtyRef = useRef(false);
+  const onOpenInCodexRef = useRef(onOpenInCodex);
+
+  useEffect(() => {
+    onOpenInCodexRef.current = onOpenInCodex;
+  }, [onOpenInCodex]);
+
+  const openInCodex = useCallback(() => onOpenInCodexRef.current?.(), []);
 
   const syncState = useCallback((nextState: PrdBriefingState) => {
     setState(nextState);
@@ -606,7 +613,7 @@ export function PrdBriefingRoom({
     providerBusy: actionLocked,
     disabledReason: codexDecisionEnabled ? null : lockDisabledReason,
     sourceActionId: codexDecisionEnabled ? "open_codex" : "lock_prd_briefing",
-    onAction: codexDecisionEnabled ? (onOpenInCodex ?? (() => {})) : lockPrd,
+    onAction: codexDecisionEnabled ? openInCodex : lockPrd,
   }], [
     actionLocked,
     busyAction,
@@ -614,7 +621,7 @@ export function PrdBriefingRoom({
     isLocked,
     lockDisabledReason,
     lockPrd,
-    onOpenInCodex,
+    openInCodex,
   ]);
 
   useEffect(() => {
@@ -633,7 +640,7 @@ export function PrdBriefingRoom({
           data-codex-decision-status
         >
           <span>{interactionStatus ?? "等待 Codex 中的操作"}</span>
-          <Button type="button" size="sm" onClick={onOpenInCodex}>
+          <Button type="button" size="sm" onClick={openInCodex}>
             Open in Codex
           </Button>
         </div>

@@ -16,7 +16,7 @@ describe("Codex task control", () => {
     assert.match(source, /Retry|重试/);
     assert.match(source, /Interrupt current turn|中断当前执行/);
     assert.match(source, /Evidence/);
-    assert.match(source, /Desktop:/);
+    assert.match(source, /Desktop /);
     assert.doesNotMatch(source, /stop_change/);
     assert.doesNotMatch(source, /onApprove|批准 Merge|批准收编/);
   });
