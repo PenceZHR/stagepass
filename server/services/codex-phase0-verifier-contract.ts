@@ -452,7 +452,7 @@ export function reconcileConsumedRestartCompletion(
   try {
     assertExactCompletedOutput(
       resumedSnapshot,
-      "PHASE0_RESTART_RESUME_OK",
+      "PHASE0_RESTART_RESUME_OK.",
     );
   } catch {
     throw new Error("Phase 0 consumed restart terminal is invalid");
