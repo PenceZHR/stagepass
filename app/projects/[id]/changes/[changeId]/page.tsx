@@ -4,13 +4,10 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { CodexTaskControl } from "./codex-task-control";
+import { EmergencyInteractionPanel } from "./emergency-interaction-panel";
+import { changeApi } from "./change-api-client";
 import { ArtifactsPanel } from "./artifacts-panel";
-import { ActionReasonDialog } from "./action-reason-dialog";
-import {
-  selectPlanRiskWaiverContext,
-  selectSpecBattleDecisionContext,
-  selectSpecRiskWaiverContext,
-} from "./action-reason-context";
 import { BuildSandbox } from "./build-sandbox";
 import { ChangedFilesPanel } from "./changed-files-panel";
 import { EventStreamPanel } from "./event-stream-panel";
@@ -25,16 +22,13 @@ import { PhaseReviewPanel, type PhaseReviewResponse } from "./phase-review-panel
 import { PipelinePageShell } from "./pipeline-page-shell";
 import { PhaseStageShell } from "./phase-stage-shell";
 import { RubricPanel } from "./rubric-panel";
-import { StageGitPanel } from "./stage-git-panel";
-import { selectVisibleGitStageActions } from "./git-action-policy";
 import { buildUiPipelineState } from "./pipeline-ui-model";
 import type { StageActionView } from "./stage-action-bar";
 import type { StageBlockerView } from "./stage-frame";
 import {
   GatePanel,
-  buildGateStageActions,
   buildRunningSpecBattleGateState,
-  gateApprovalAction,
+  selectRoutableStageRunActions,
 } from "./gate-panel";
 import { usePipelineActions } from "./use-pipeline-actions";
 import { useChangeDetailData } from "./use-change-detail-data";
@@ -55,10 +49,8 @@ import {
 } from "./change-phase-map";
 import type { ChangeDetail } from "./change-detail-types";
 import type { GateStatus } from "./gate-types";
-import type { BattleDecisionAction } from "./spec-battle-types";
 
 const GENERAL_ACTION_IDS = [
-  "approve_intake",
   "run_plan",
   "retry_plan",
   "run_test_plan",
@@ -67,36 +59,18 @@ const GENERAL_ACTION_IDS = [
   "retry_build",
   "run_review",
   "retry_review",
-  "enter_qa",
   "run_qa",
   "retry_qa",
   "run_retro",
   "run_tech_spec",
   "retry_tech_spec",
-  "merge",
 ];
 
 const EMPTY_PIPELINE_ACTIONS: PipelineActionContract[] = [];
 
-type ReasonDialogState =
-  | {
-      kind: "spec_battle_decision";
-      action: BattleDecisionAction;
-      targetId?: string | null;
-    }
-  | {
-      kind: "accept_spec_risk";
-      targetId: string;
-    }
-  | {
-      kind: "waive_plan_risk";
-      riskId: string;
-    };
-
 function operationalActionRole(actionId: string): StageActionView["role"] {
-  if (actionId.startsWith("reject_")) return "destructive";
-  if (actionId.startsWith("retry_") || actionId === "enter_qa") return "secondary";
-  if (actionId.startsWith("approve_") || actionId.startsWith("run_") || actionId === "merge") {
+  if (actionId.startsWith("retry_")) return "secondary";
+  if (actionId.startsWith("run_")) {
     return "primary";
   }
   return "secondary";
@@ -191,18 +165,19 @@ export default function ChangeDetailPage() {
   const [gateBusy, setGateBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
-  const [reasonDialog, setReasonDialog] = useState<ReasonDialogState | null>(null);
   const [buildStageActions, setBuildStageActions] = useState<StageActionView[]>([]);
   const [buildStageActionError, setBuildStageActionError] = useState<string | null>(null);
   const [reviewStageActions, setReviewStageActions] = useState<StageActionView[]>([]);
   const [reviewStageActionError, setReviewStageActionError] = useState<string | null>(null);
   const [prdStageActions, setPrdStageActions] = useState<StageActionView[]>([]);
+  const [codexBusy, setCodexBusy] = useState(false);
   const {
     change, phaseOverviews, setPhaseOverviews,
-    gateStatus, setGateStatus, gateLoading, gateError, setGateError,
+    gateStatus, gateLoading, gateError, setGateError,
     specBattleState, planSandboxState, testPlanSandboxState, prdBriefingState,
     reviewCenterState, setReviewCenterState,
-    changeError, load, loadGateStatus, loadSpecBattleState,
+    changeError, codexHealth, currentInteraction,
+    load, loadGateStatus, loadSpecBattleState,
     loadPlanSandboxState, loadTestPlanSandboxState, loadPrdBriefingState,
     loadReviewCenterState,
     refreshChangeDetailPage, refreshAfterAction,
@@ -264,101 +239,18 @@ export default function ChangeDetailPage() {
       .catch(() => {});
   }, [projectId, changeId, change, fetchPhase, setPhaseOverviews]);
 
-  const {
-    handleApproveGate,
-    handleRejectGate,
-    handleRestartSpecBattle,
-    handleApprovePlanSandbox,
-  } = useChangeCommands({
+  const { handleRestartSpecBattle } = useChangeCommands({
     projectId,
     changeId,
     gateStatus,
     load,
     loadGateStatus,
     loadSpecBattleState,
-    loadPlanSandboxState,
-    loadTestPlanSandboxState,
     setGateBusy,
     setGateError,
-    setGateStatus,
     setPhaseOverviews,
     setSelectedPhase,
   });
-
-  /**
-   * The body for POST /spec-battle/decision.
-   *
-   * One route serves three decisions and only one of them, `waive_p1`, has an
-   * action contract behind it (`waive_spec_p1`). That branch runs the full
-   * preflight, so the gate snapshot has to travel with the request; the other
-   * two carry no contract action and are checked server-side on the terminal
-   * rule alone.
-   *
-   * Measured the hard way: the route was hardened to call
-   * assertRequestActionAllowed while both callers here still hand-wrote
-   * `{action, targetType, targetId, reason}`, so 接受风险并通过 answered
-   * 422 invalid_preflight_input on every click -- a live dead button, found by
-   * driving the real UI. Adding a server-side guard is only half the change
-   * when the client composes its own body.
-   */
-  const specBattleDecisionBody = useCallback(
-    (payload: {
-      action: BattleDecisionAction;
-      targetType: "gate" | "requirement_gap" | "finding" | null;
-      // Both callers reach here from optional dialog state, so undefined is a
-      // real input; the route treats it the same as null.
-      targetId: string | null | undefined;
-      reason: string | null | undefined;
-    }) => ({
-      ...payload,
-      ...(payload.action === "waive_p1"
-        ? createPipelinePreflightPayload(findPipelineAction(gateStatus?.actions, "waive_spec_p1"))
-        : {}),
-    }),
-    [gateStatus?.actions],
-  );
-
-  const handleStopSpecBattle = useCallback(async () => {
-    // block/route.ts requires a preflight envelope (assertRequestActionAllowed).
-    // This body used to be hand-written as just {phase, reason}, so the route
-    // answered 422 every time and the button could not stop a battle at all --
-    // and because 422 fires before the handler runs, it also hid the 400 that
-    // stop_change produced with nothing to stop. spec-battle/decision's
-    // waive_p1 branch later joined the same list and broke the same way; both
-    // now go through createPipelinePreflightPayload.
-    const stopAction = findPipelineAction(gateStatus?.actions, "stop_change");
-    const disabledReason = pipelineActionDisabledReason(stopAction);
-    if (disabledReason) {
-      setGateError(disabledReason);
-      return;
-    }
-    setGateBusy(true);
-    setGateError("");
-
-    try {
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/block`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(stopAction, {
-          phase: "spec",
-          reason: "Spec Battle terminated by human",
-        })),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Spec Battle stop failed");
-      setSelectedPhase(null);
-      setPhaseOverviews(undefined);
-    } catch (err) {
-      setGateError(String(err));
-    } finally {
-      setGateBusy(false);
-      load();
-      loadGateStatus();
-      loadSpecBattleState();
-      loadPlanSandboxState();
-      loadTestPlanSandboxState();
-    }
-  }, [projectId, changeId, gateStatus, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, setGateError, setPhaseOverviews]);
 
 
   const handleRegenerateSpecBattleReport = useCallback(async () => {
@@ -380,249 +272,6 @@ export default function ChangeDetailPage() {
       loadTestPlanSandboxState();
     }
   }, [projectId, changeId, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, setGateError]);
-
-  const handleSpecBattleDecision = useCallback(async (
-    action: BattleDecisionAction,
-    targetId?: string | null,
-    reason?: string
-  ) => {
-    if (reason === undefined) {
-      setReasonDialog({ kind: "spec_battle_decision", action, targetId });
-      return;
-    }
-    if (action === "waive_p1" && !targetId) return;
-    setGateBusy(true);
-    setGateError("");
-    try {
-      const continueActions: BattleDecisionAction[] = ["request_changes", "return_to_spec"];
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec-battle/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(specBattleDecisionBody({
-          action,
-          targetType: action === "waive_p1" ? "requirement_gap" : null,
-          targetId,
-          reason,
-        })),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Spec battle decision failed");
-      if (continueActions.includes(action)) {
-        const gateRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/gate`);
-        const latestGateStatus = (await gateRes.json()) as GateStatus;
-        if (!gateRes.ok) throw new Error("Gate status refresh failed");
-        const runSpecAction = findPipelineAction(latestGateStatus.actions, "run_spec");
-        const disabledReason = pipelineActionDisabledReason(runSpecAction);
-        if (disabledReason) throw new Error(disabledReason);
-        const specRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(createPipelinePreflightPayload(runSpecAction)),
-        });
-        await specRes.json().catch(() => null);
-        if (!specRes.ok) {
-          throw new Error("新一轮已创建，但启动失败，请点击启动本轮重试。");
-        }
-      }
-      setSelectedPhase(null);
-      setPhaseOverviews(undefined);
-    } catch (err) {
-      setGateError(String(err));
-    } finally {
-      setGateBusy(false);
-      load();
-      loadGateStatus();
-      loadSpecBattleState();
-      loadPlanSandboxState();
-    }
-  }, [projectId, changeId, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, setGateError, setPhaseOverviews]);
-
-  const handleAcceptSpecBattleRisk = useCallback(async (targetId?: string | null) => {
-    const needsWaiverReason = gateStatus?.specBattle?.actions.waiveP1.available
-      && targetId
-      && gateApprovalAction(gateStatus)?.enabled !== true
-      && findPipelineAction(gateStatus?.actions, "run_tech_spec")?.enabled !== true;
-    if (needsWaiverReason) {
-      setReasonDialog({ kind: "accept_spec_risk", targetId });
-      return;
-    }
-    setGateBusy(true);
-    setGateError("");
-
-    const startTechSpecAfterSpecApproval = async () => {
-      const latestGateRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/gate`);
-      const latestGateData = await latestGateRes.json();
-      if (!latestGateRes.ok) throw new Error(latestGateData.error || "Gate status refresh failed");
-      const latestGateStatus = latestGateData as GateStatus;
-      setGateStatus(latestGateStatus);
-      const runAction = findPipelineAction(latestGateStatus.actions, "run_tech_spec");
-      const disabledReason = pipelineActionDisabledReason(runAction);
-      if (disabledReason) throw new Error(disabledReason);
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/tech-spec`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(runAction)),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "TechSpec start failed");
-    };
-
-    const postGateApprove = async (nextGateStatus: GateStatus | null) => {
-      const approveAction = gateApprovalAction(nextGateStatus);
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/gate/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          gate: "spec",
-          expectedGateVersion: approveAction?.gateVersion,
-          expectedSourceDbHash: approveAction?.sourceDbHash,
-          idempotencyKey:
-            typeof crypto !== "undefined" && "randomUUID" in crypto
-              ? crypto.randomUUID()
-              : `spec-${Date.now()}`,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(
-          data.action?.reason ??
-            data.action?.reasonCode ??
-            data.error ??
-            "Spec gate approval failed",
-        );
-      }
-    };
-
-    try {
-      const runTechSpecAction = findPipelineAction(gateStatus?.actions, "run_tech_spec");
-      const canRunTechSpec = runTechSpecAction?.enabled === true;
-      const canApprove = gateApprovalAction(gateStatus)?.enabled === true;
-      const canWaiveP1 = gateStatus?.specBattle?.actions.waiveP1.available;
-      let techSpecStarted = false;
-
-      if (canApprove) {
-        await postGateApprove(gateStatus);
-      } else if (canRunTechSpec) {
-        await startTechSpecAfterSpecApproval();
-        techSpecStarted = true;
-      } else if (canWaiveP1 && targetId) {
-        throw new Error("接受 P1 风险需要填写理由");
-      } else {
-        throw new Error("当前战况不能接受风险并通过");
-      }
-
-      if (!techSpecStarted) {
-        await startTechSpecAfterSpecApproval();
-      }
-      setSelectedPhase(null);
-      setPhaseOverviews(undefined);
-    } catch (err) {
-      setGateError(String(err));
-    } finally {
-      setGateBusy(false);
-      load();
-      loadGateStatus();
-      loadSpecBattleState();
-      loadPlanSandboxState();
-    }
-  }, [projectId, changeId, gateStatus, load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, setGateError, setGateStatus, setPhaseOverviews]);
-
-  const submitAcceptSpecBattleRisk = useCallback(async (targetId: string, reason: string) => {
-    setGateBusy(true);
-    setGateError("");
-
-    const startTechSpecAfterSpecApproval = async () => {
-      const latestGateRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/gate`);
-      const latestGateData = await latestGateRes.json();
-      if (!latestGateRes.ok) throw new Error(latestGateData.error || "Gate status refresh failed");
-      const latestGateStatus = latestGateData as GateStatus;
-      setGateStatus(latestGateStatus);
-      const runAction = findPipelineAction(latestGateStatus.actions, "run_tech_spec");
-      const disabledReason = pipelineActionDisabledReason(runAction);
-      if (disabledReason) throw new Error(disabledReason);
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/tech-spec`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(runAction)),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "TechSpec start failed");
-    };
-
-    const postGateApprove = async (nextGateStatus: GateStatus | null) => {
-      const approveAction = gateApprovalAction(nextGateStatus);
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/gate/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          gate: "spec",
-          expectedGateVersion: approveAction?.gateVersion,
-          expectedSourceDbHash: approveAction?.sourceDbHash,
-          idempotencyKey:
-            typeof crypto !== "undefined" && "randomUUID" in crypto
-              ? crypto.randomUUID()
-              : `spec-${Date.now()}`,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(
-          data.action?.reason ??
-            data.action?.reasonCode ??
-            data.error ??
-            "Spec gate approval failed",
-        );
-      }
-    };
-
-    const postDecision = async (payload: {
-      action: BattleDecisionAction;
-      targetType: "gate" | "requirement_gap" | "finding" | null;
-      targetId: string | null;
-      reason: string | null;
-    }) => {
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec-battle/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(specBattleDecisionBody(payload)),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Spec battle decision failed");
-    };
-
-    try {
-      const canWaiveP1 = gateStatus?.specBattle?.actions.waiveP1.available;
-      if (!canWaiveP1) throw new Error("当前战况不能接受风险并通过");
-      await postDecision({
-        action: "waive_p1",
-        targetType: "requirement_gap",
-        targetId,
-        reason,
-      });
-
-      const reportRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/spec-battle/report`, {
-        method: "POST",
-      });
-      const reportData = await reportRes.json();
-      if (!reportRes.ok) throw new Error(reportData.error || "Report generation failed");
-
-      const gateRes = await fetch(`/api/projects/${projectId}/changes/${changeId}/gate`);
-      const latestGateStatus = (await gateRes.json()) as GateStatus;
-      if (!gateRes.ok) throw new Error("Gate status refresh failed");
-      await postGateApprove(latestGateStatus);
-      await startTechSpecAfterSpecApproval();
-      setSelectedPhase(null);
-      setPhaseOverviews(undefined);
-    } catch (err) {
-      setGateError(String(err));
-    } finally {
-      setGateBusy(false);
-      load();
-      loadGateStatus();
-      loadSpecBattleState();
-      loadPlanSandboxState();
-    }
-  }, [projectId, changeId, gateStatus, load, specBattleDecisionBody, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, setGateError, setGateStatus, setPhaseOverviews]);
 
   const handleRegeneratePlanSandboxReport = useCallback(async () => {
     const reportAction = findPipelineAction(gateStatus?.actions, "regenerate_plan_report");
@@ -646,36 +295,6 @@ export default function ChangeDetailPage() {
     } finally {
       setGateBusy(false);
       loadPlanSandboxState();
-    }
-  }, [projectId, changeId, gateStatus?.actions, loadPlanSandboxState, setGateError]);
-
-  const handleWaivePlanRisk = useCallback(async (riskId: string, reason?: string) => {
-    const waiveAction = findPipelineAction(gateStatus?.actions, "waive_plan_p1");
-    const disabledReason = pipelineActionDisabledReason(waiveAction);
-    if (disabledReason) {
-      setGateError(disabledReason);
-      return;
-    }
-    if (reason === undefined) {
-      setReasonDialog({ kind: "waive_plan_risk", riskId });
-      return;
-    }
-
-    setGateBusy(true);
-    setGateError("");
-    try {
-      const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/plan-sandbox/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPipelinePreflightPayload(waiveAction, { riskId, reason })),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Plan risk decision failed");
-      loadPlanSandboxState();
-    } catch (err) {
-      setGateError(String(err));
-    } finally {
-      setGateBusy(false);
     }
   }, [projectId, changeId, gateStatus?.actions, loadPlanSandboxState, setGateError]);
 
@@ -714,7 +333,6 @@ export default function ChangeDetailPage() {
         // on the stage and in GENERAL_ACTION_IDS, but that fallback bar is
         // unreachable here: showingTestPlanSandbox short-circuits ahead of it.
         makePlanStageAction("retry_test_plan", "重新生成测试计划", "secondary", () => handleAction("retry_test_plan")),
-        makePlanStageAction("approve_plan", "确认测试计划", "primary", handleApprovePlanSandbox),
       ];
     }
 
@@ -728,7 +346,6 @@ export default function ChangeDetailPage() {
         // one stage over. retry_plan is in GENERAL_ACTION_IDS but that fallback
         // bar is unreachable here: showingPlanSandbox short-circuits ahead of it.
         makePlanStageAction("retry_plan", "重新生成计划", "secondary", () => handleAction("retry_plan")),
-        makePlanStageAction("approve_plan", "批准计划", "primary", handleApprovePlanSandbox),
         makePlanStageAction("regenerate_plan_report", "刷新计划审查", "secondary", handleRegeneratePlanSandboxReport),
       ];
     }
@@ -739,59 +356,10 @@ export default function ChangeDetailPage() {
     gateStatus?.actions,
     planStageBusy,
     handleAction,
-    handleApprovePlanSandbox,
     handleRegeneratePlanSandboxReport,
   ]);
 
-  /**
-   * The git actions on the Build/Fix stage bar -- the "next step" after the
-   * working tree has moved. Which ones are visible is decided by
-   * selectVisibleGitStageActions; see git-action-policy for the rule.
-   */
-  const gitStageActions = useMemo<StageActionView[]>(() => {
-    return selectVisibleGitStageActions(pipelineActions).map((action) => {
-      const disabledReason = pipelineActionDisabledReason(action);
-      return {
-        id: `git-${action.actionId}`,
-        label: action.label,
-        role: "secondary" as const,
-        enabled: disabledReason === null,
-        busy: running,
-        disabledReason,
-        sourceActionId: action.actionId,
-        onAction: () => handleAction(action.actionId),
-      };
-    });
-  }, [handleAction, pipelineActions, running]);
-
-  const buildOrFixStageActions = useMemo<StageActionView[]>(() => {
-    if (activeSelectedPhase !== "Fix") return [...buildStageActions, ...gitStageActions];
-
-    const fixBlockersAction = findPipelineAction(gateStatus?.actions, "fix_blockers");
-    const disabledReason = pipelineActionDisabledReason(fixBlockersAction);
-    const hasFixBlockerAction = disabledReason === null;
-    if (!hasFixBlockerAction) return [...buildStageActions, ...gitStageActions];
-
-    const fixBlockersStageAction: StageActionView = {
-      id: "fix-fix_blockers",
-      label: fixBlockersAction?.label ?? "修复阻断项",
-      role: "primary",
-      enabled: disabledReason === null,
-      busy: running,
-      disabledReason,
-      sourceActionId: "fix_blockers",
-      onAction: () => handleAction("fix_blockers"),
-    };
-
-    return [fixBlockersStageAction, ...buildStageActions, ...gitStageActions];
-  }, [
-    activeSelectedPhase,
-    buildStageActions,
-    gateStatus?.actions,
-    gitStageActions,
-    handleAction,
-    running,
-  ]);
+  const buildOrFixStageActions = buildStageActions;
   const buildOrFixStageActionError = activeSelectedPhase === "Fix"
     ? [buildStageActionError, actionError].filter(Boolean).join("；") || null
     : buildStageActionError;
@@ -842,38 +410,30 @@ export default function ChangeDetailPage() {
     }),
     [deliveryStageAction, handleAction, running],
   );
-  const gateApproveLabel = activeSelectedPhase === "Spec"
-    ? "批准 Spec"
-    : activeSelectedPhase === "TechSpec"
-      ? "批准 Tech Spec"
-      : "批准 PRD";
-  const gateRejectLabel = activeSelectedPhase === "Spec"
-    ? "退回 Spec"
-    : activeSelectedPhase === "TechSpec"
-      ? "退回 Tech Spec"
-      : "退回 PRD";
   const gateStageActions = useMemo<StageActionView[]>(
-    () => buildGateStageActions({
-      phase: activeSelectedPhase,
-      gateStatus,
-      approveLabel: gateApproveLabel,
-      rejectLabel: gateRejectLabel,
-      gateBusy: gateBusy || gateLoading,
-      runBusy: running || gateBusy,
-      onApprove: handleApproveGate,
-      onReject: handleRejectGate,
-      onRunAction: handleAction,
+    () => selectRoutableStageRunActions(
+      gateStatus?.actions,
+      activeSelectedPhase === "TechSpec"
+        ? ["run_tech_spec", "retry_tech_spec"]
+        : ["run_spec", "retry_spec"],
+    ).map((action) => {
+      const disabledReason = pipelineActionDisabledReason(action);
+      return {
+        id: `gate-${action.actionId}`,
+        label: action.label,
+        role: operationalActionRole(action.actionId),
+        enabled: disabledReason === null,
+        busy: running || gateBusy,
+        disabledReason,
+        sourceActionId: action.actionId,
+        onAction: () => handleAction(action.actionId),
+      };
     }),
     [
       activeSelectedPhase,
-      gateApproveLabel,
       gateBusy,
-      gateLoading,
-      gateRejectLabel,
-      gateStatus,
+      gateStatus?.actions,
       handleAction,
-      handleApproveGate,
-      handleRejectGate,
       running,
     ],
   );
@@ -887,6 +447,7 @@ export default function ChangeDetailPage() {
     () => operationalContractPhase
       ? pipelineActions.filter((action) => action.phase === operationalContractPhase)
         .filter((action) => operationalActionIds.includes(action.actionId))
+        .filter((action) => action.actionId.startsWith("run_") || action.actionId.startsWith("retry_"))
       : [],
     [operationalActionIds, operationalContractPhase, pipelineActions],
   );
@@ -894,13 +455,6 @@ export default function ChangeDetailPage() {
   const operationalStageActions = useMemo<StageActionView[]>(() => {
     return operationalActions.map((action) => {
       const disabledReason = pipelineActionDisabledReason(action);
-      const onAction =
-        action.actionId === "approve_merge"
-          ? handleApproveGate
-          : action.actionId === "reject_merge"
-            ? handleRejectGate
-            : () => handleAction(action.actionId);
-
       return {
         id: `operational-${action.actionId}`,
         label: action.label,
@@ -909,10 +463,10 @@ export default function ChangeDetailPage() {
         busy: operationalStageBusy,
         disabledReason,
         sourceActionId: action.actionId,
-        onAction,
+        onAction: () => handleAction(action.actionId),
       };
     });
-  }, [handleAction, handleApproveGate, handleRejectGate, operationalActions, operationalStageBusy]);
+  }, [handleAction, operationalActions, operationalStageBusy]);
   const operationalStageActionError = activeSelectedPhase === "Merge"
     ? [actionError, gateError].filter(Boolean).join("；") || null
     : actionError;
@@ -975,18 +529,6 @@ export default function ChangeDetailPage() {
     handleAction(actionId);
   }, [handleAction]);
 
-  const handleEnterQaAction = useCallback(() => {
-    handleAction("enter_qa");
-  }, [handleAction]);
-
-  const handleFixBlockersAction = useCallback(() => {
-    handleAction("fix_blockers");
-  }, [handleAction]);
-
-  const handleStopChangeAction = useCallback(() => {
-    handleAction("stop_change");
-  }, [handleAction]);
-
   const handleBuildSandboxChanged = useCallback(() => {
     setPhaseOverviews(undefined);
     load();
@@ -1023,38 +565,6 @@ export default function ChangeDetailPage() {
     loadPrdBriefingState();
   }, [load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, loadPrdBriefingState, setPhaseOverviews]);
 
-  const handleReasonConfirm = useCallback(async (reason: string) => {
-    const pending = reasonDialog;
-    if (!pending) return;
-    setReasonDialog(null);
-    if (pending.kind === "spec_battle_decision") {
-      await handleSpecBattleDecision(pending.action, pending.targetId, reason);
-      return;
-    }
-    if (pending.kind === "accept_spec_risk") {
-      await submitAcceptSpecBattleRisk(pending.targetId, reason);
-      return;
-    }
-    await handleWaivePlanRisk(pending.riskId, reason);
-  }, [handleSpecBattleDecision, handleWaivePlanRisk, reasonDialog, submitAcceptSpecBattleRisk]);
-
-  // The reason is a binding judgement, so the dialog has to carry the findings it
-  // rules on. Each kind gets only what it acts on: a waiver shows its single
-  // target, continuing the battle shows every still-open gap.
-  const reasonDialogContext = useMemo(() => {
-    if (!reasonDialog) return null;
-    const gaps = specBattleState?.gaps;
-    if (reasonDialog.kind === "spec_battle_decision") {
-      return reasonDialog.action === "waive_p1"
-        ? selectSpecRiskWaiverContext(gaps, reasonDialog.targetId)
-        : selectSpecBattleDecisionContext(gaps);
-    }
-    if (reasonDialog.kind === "accept_spec_risk") {
-      return selectSpecRiskWaiverContext(gaps, reasonDialog.targetId);
-    }
-    return selectPlanRiskWaiverContext(planSandboxState?.risks, reasonDialog.riskId);
-  }, [reasonDialog, specBattleState?.gaps, planSandboxState?.risks]);
-
   if (!change && changeError) {
     return (
       <div className="mx-auto max-w-2xl p-8">
@@ -1077,11 +587,6 @@ export default function ChangeDetailPage() {
   }
 
   const currentChange = change;
-  const reasonDialogTitle = reasonDialog?.kind === "spec_battle_decision" && reasonDialog.action !== "waive_p1"
-    ? "填写处理意见"
-    : "填写 P1 风险接受理由";
-  const reasonDialogRequired = reasonDialog?.kind !== "spec_battle_decision"
-    || reasonDialog.action === "waive_p1";
   const visibleContractActions = pipelineActions.filter(
     (action) => GENERAL_ACTION_IDS.includes(action.actionId) && action.enabled,
   );
@@ -1096,6 +601,41 @@ export default function ChangeDetailPage() {
     "TESTPLANNING",
     "MERGING",
   ].includes(change.status);
+  const codexControl = change.codexControl ?? {
+    bindingTitle: null,
+    bindingStatus: "detached",
+    threadId: null,
+    lastTurnId: null,
+    lastObservationCursor: null,
+    lastSeenAt: null,
+    lastErrorCode: null,
+    currentInteractionId: null,
+    codexDecisionEnabled: false,
+    model: null,
+    reasoningEffort: null,
+    decisionPhase: null,
+    interactionKind: null,
+  };
+  const codexApi = changeApi(projectId, changeId);
+  const startControlAction = pipelineActions.find(
+    (action) => action.enabled && action.actionId.startsWith("run_"),
+  );
+  const retryControlAction = pipelineActions.find(
+    (action) => action.enabled && action.actionId.startsWith("retry_"),
+  );
+
+  async function runCodexControlAction(action: () => Promise<unknown>) {
+    setCodexBusy(true);
+    setGateError("");
+    try {
+      await action();
+      await refreshChangeDetailPage();
+    } catch (error) {
+      setGateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCodexBusy(false);
+    }
+  }
 
   async function handleDeleteChange() {
     if (isRunning || deleteBusy) return;
@@ -1162,19 +702,6 @@ export default function ChangeDetailPage() {
 
   return (
     <>
-      <ActionReasonDialog
-        open={reasonDialog !== null}
-        title={reasonDialogTitle}
-        description="提交前请写明本次人工处理依据。"
-        confirmLabel="提交"
-        required={reasonDialogRequired}
-        context={reasonDialogContext}
-        busy={gateBusy}
-        onOpenChange={(open) => {
-          if (!open) setReasonDialog(null);
-        }}
-        onConfirm={handleReasonConfirm}
-      />
       <PipelinePageShell
         projectId={projectId}
         change={change}
@@ -1190,6 +717,46 @@ export default function ChangeDetailPage() {
         onDeleteChange={handleDeleteChange}
         onSelectPhase={handleSelectPhase}
       >
+        <CodexTaskControl
+          control={codexControl}
+          health={codexHealth}
+          busy={codexBusy}
+          onOpen={() => runCodexControlAction(() => codexApi.openCodexTask())}
+          onInterrupt={() => runCodexControlAction(() => codexApi.interruptCodexTurn())}
+          onStart={() => runCodexControlAction(async () => {
+            if (!startControlAction) throw new Error("No start action is available");
+            await handleAction(startControlAction.actionId);
+          })}
+          onRetry={() => runCodexControlAction(async () => {
+            if (!retryControlAction) throw new Error("No retry action is available");
+            await handleAction(retryControlAction.actionId);
+          })}
+          onRepair={() => runCodexControlAction(refreshChangeDetailPage)}
+          onSaveSettings={(settings) =>
+            runCodexControlAction(() => codexApi.saveCodexSettings(settings))}
+        />
+        <EmergencyInteractionPanel
+          health={codexHealth}
+          codexDecisionEnabled={codexControl.codexDecisionEnabled}
+          interaction={currentInteraction}
+          busy={codexBusy}
+          onSubmit={({ actionId, reason }) => runCodexControlAction(async () => {
+            if (
+              !currentInteraction?.gateVersion
+              || !currentInteraction.sourceDbHash
+            ) {
+              throw new Error("Emergency interaction envelope is incomplete");
+            }
+            await codexApi.executeCommand({
+              actionId,
+              expectedGateVersion: currentInteraction.gateVersion,
+              expectedSourceDbHash: currentInteraction.sourceDbHash,
+              expectedHeadSha: currentInteraction.expectedHeadSha ?? null,
+              idempotencyKey: `web-emergency:${currentInteraction.id}:${actionId}`,
+              payload: { reason, interactionId: currentInteraction.id },
+            });
+          })}
+        />
         {latestFailedRun && (
           <FailedRunBanner
             run={latestFailedRun}
@@ -1305,10 +872,7 @@ export default function ChangeDetailPage() {
                   projectId={projectId}
                   changeId={changeId}
                   state={planSandboxState}
-                  actions={pipelineActions}
-                  busy={gateBusy || running}
                   loading={gateLoading}
-                  onWaiveRisk={handleWaivePlanRisk}
                 />
               </PhaseStageShell>
             ) : showingPrdBriefingRoom ? (
@@ -1328,6 +892,11 @@ export default function ChangeDetailPage() {
                   initialState={prdBriefingState}
                   onLocked={handlePrdBriefingLocked}
                   onStageActionsChange={setPrdStageActions}
+                  codexDecisionEnabled={codexControl.codexDecisionEnabled}
+                  interactionStatus={currentInteraction ? "pending" : null}
+                  onOpenInCodex={() => {
+                    void runCodexControlAction(() => codexApi.openCodexTask());
+                  }}
                 />
               </PhaseStageShell>
             ) : showingSpecOrTechSpecGate ? (
@@ -1350,9 +919,6 @@ export default function ChangeDetailPage() {
                   loading={gateLoading}
                   busy={gateBusy}
                   error={gateError}
-                  onStopBattle={handleStopSpecBattle}
-                  onAcceptRisk={handleAcceptSpecBattleRisk}
-                  onBattleDecision={handleSpecBattleDecision}
                   onRestartBattle={handleRestartSpecBattle}
                   onRegenerateReport={handleRegenerateSpecBattleReport}
                   specBattleState={specBattleState}
@@ -1378,9 +944,6 @@ export default function ChangeDetailPage() {
                   actions={pipelineActions}
                   busy={gateBusy || running}
                   onRunReview={handleRunReviewAction}
-                  onEnterQa={handleEnterQaAction}
-                  onFixBlockers={handleFixBlockersAction}
-                  onBlockChange={handleStopChangeAction}
                   onStateChange={setReviewCenterState}
                   onStageActionsChange={setReviewStageActions}
                   onStageActionError={setReviewStageActionError}
@@ -1464,19 +1027,6 @@ export default function ChangeDetailPage() {
                 </div>
               </>
             )}
-        {/*
-          Deliberately outside every stage branch: the panel is on screen for
-          every phase of the change, so committing never means leaving the stage
-          you are working on. The Build/Fix stage bar additionally carries the
-          same two actions as one-click contract actions (gitStageActions).
-        */}
-        <StageGitPanel
-          projectId={projectId}
-          changeId={changeId}
-          selectedPhase={activeSelectedPhase}
-          commitAction={findPipelineAction(pipelineActions, "commit_changes")}
-          initAction={findPipelineAction(pipelineActions, "init_git_repo")}
-        />
       </PipelinePageShell>
     </>
   );

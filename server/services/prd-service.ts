@@ -31,6 +31,21 @@ import {
   DEFAULT_AI_PROVIDER_TIMEOUT_MS,
   resolveAiProviderTimeoutMs,
 } from "./ai-timeout-policy";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import {
+  acquireProjectAiRunLease,
+  createProjectAiRun,
+  markProjectAiRunFailed,
+  markProjectAiRunRunning,
+  markProjectAiRunSucceeded,
+  type ProjectAiRunFence,
+} from "./project-ai-run-service";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
+import {
+  ensureCodexThreadBinding,
+  readCodexThreadBinding,
+} from "./codex-thread-binding-service";
+import { getProductionCodexDesktopBridge } from "./codex-desktop-engine";
 
 const log = createChildLogger("prd-service");
 
@@ -409,7 +424,8 @@ export async function prdTurn(
     provider,
     project.prdProvider as AiProvider | null | undefined
   );
-  const retryThreadId = project.prdStatus === "failed"
+  const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+  const retryThreadId = !desktopBridgeEnabled && project.prdStatus === "failed"
     ? getProviderTimeoutResumeThreadId(projectId, resolvedProvider)
     : undefined;
 
@@ -424,6 +440,9 @@ export async function prdTurn(
     rawJson: JSON.stringify({ projectId, phase: "prd", provider: resolvedProvider }),
     createdAt: nowISO(),
   }).run();
+
+  let projectRunFence: ProjectAiRunFence | null = null;
+  let logicalTurnId: string | null = null;
 
   const engine = getPrdEngine();
   const prdContent = readPrd(project.repoPath);
@@ -442,6 +461,43 @@ export async function prdTurn(
 
   const snapshotBefore = captureWorkspaceSnapshot(project.repoPath);
 
+  if (desktopBridgeEnabled) {
+    const run = await createProjectAiRun({
+      projectId,
+      kind: "prd_turn",
+      requestKey: userEvtId,
+    });
+    const leased = await acquireProjectAiRunLease(
+      run.id,
+      `prd:${process.pid}`,
+      { leaseMs: 15 * 60_000 },
+    );
+    projectRunFence = leased.fence;
+    await markProjectAiRunRunning(projectRunFence);
+    if (!readCodexThreadBinding({
+      kind: "project_prd",
+      scopeId: projectId,
+      projectId,
+    })) {
+      await ensureCodexThreadBinding({
+        scope: {
+          kind: "project_prd",
+          scopeId: projectId,
+          projectId,
+        },
+        bridge: await getProductionCodexDesktopBridge(),
+      });
+    }
+    logicalTurnId = (await resolveLogicalTurn({
+      owner: { kind: "project_ai_run", projectAiRunId: run.id },
+      phase: "PRD",
+      role: "prd_turn",
+      round: 0,
+      ordinal: 0,
+      request: { prompt, sandboxMode: "read-only" },
+    })).logicalTurnId;
+  }
+
   const input: AiRunInput = {
     changeId: "__prd__",
     repoPath: project.repoPath,
@@ -458,8 +514,11 @@ export async function prdTurn(
 
   let result: AiRunResult;
   try {
-    result = await engine.run(input);
+    result = await engine.run(desktopBridgeEnabled
+      ? { logicalTurnId: logicalTurnId! } as AiRunInput
+      : input);
   } catch (err) {
+    if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
     const message = err instanceof Error ? err.message : String(err);
     return failPrdTurn(projectId, `PRD 生成失败：${message}`, resolvedProvider, activePrdStatus, {
       reason: "engine_exception",
@@ -467,6 +526,7 @@ export async function prdTurn(
   }
 
   if (result.success !== true) {
+    if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
     const message = prdEngineFailureMessage(result);
     const reason = isProviderTimeoutResult(result) ? "provider_timeout" : "engine_failed";
     return failPrdTurn(projectId, message, resolvedProvider, activePrdStatus, {
@@ -486,6 +546,7 @@ export async function prdTurn(
   if (mutations.length > 0) {
     const violation = validatePrdStage(mutations);
     if (violation.blocked) {
+      if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
       log.warn({ projectId, files: violation.files }, "PRD stage boundary violation");
       return failPrdTurn(
         projectId,
@@ -505,6 +566,7 @@ export async function prdTurn(
 
   const { candidate, parseError } = resolvePrdCandidate(result);
   if (!candidate) {
+    if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
     const reason = result.summary?.trim() ? "unparseable_prd_content" : "empty_prd_content";
     const message = reason === "empty_prd_content"
       ? "PRD 生成没有返回有效回复。PRD 生成没有产出文档内容，请补充需求后重试。"
@@ -530,6 +592,7 @@ export async function prdTurn(
     validation: candidate.validation,
     rawCapture: prdRawCapture(result, null),
   });
+  if (projectRunFence) await markProjectAiRunSucceeded(projectRunFence);
 
   return {
     assistantMessage: finalAssistantMessage,
@@ -573,7 +636,8 @@ export async function confirmPrd(projectId: string): Promise<PrdValidationResult
 
   initializeProjectContext(
     projectId,
-    resolveProviderSelection(undefined, project.contextProvider as AiProvider | null | undefined)
+    resolveProviderSelection(undefined, project.contextProvider as AiProvider | null | undefined),
+    evtId,
   ).catch((err) => {
     log.error({ projectId, err }, "Context init after PRD confirm failed");
   });
@@ -675,6 +739,26 @@ export async function confirmPrdRevision(projectId: string): Promise<PrdValidati
   }
 
   updatePrdStatus(projectId, "ready");
+  const confirmedRevisionEventId = await nextEventId();
+  db.insert(events).values({
+    id: confirmedRevisionEventId,
+    changeId: null,
+    runId: null,
+    type: "change_status_changed",
+    message: `PRD revision confirmed for project ${projectId}`,
+    rawJson: JSON.stringify({ projectId, prdStatus: "ready", revision: true }),
+    createdAt: nowISO(),
+  }).run();
+  initializeProjectContext(
+    projectId,
+    resolveProviderSelection(
+      undefined,
+      project.contextProvider as AiProvider | null | undefined,
+    ),
+    confirmedRevisionEventId,
+  ).catch((err) => {
+    log.error({ projectId, err }, "Context init after PRD revision failed");
+  });
   log.info({ projectId, restoredCount: suspendedChanges.length }, "PRD revision confirmed, changes restored");
   return { valid: true, issues: [] };
 }

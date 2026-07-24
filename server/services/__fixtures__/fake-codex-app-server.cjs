@@ -54,8 +54,26 @@ if (mode === "hang") {
     if (!message.method) return;
 
     if (message.method === "initialize") {
-      if (!message.params?.clientInfo?.name || !message.params?.clientInfo?.version) {
+      if (
+        !message.params?.clientInfo?.name
+        || message.params.clientInfo.title !== null
+        || !message.params.clientInfo.version
+      ) {
         sendError(message.id, -32602, "initialize.clientInfo is required");
+        return;
+      }
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          message.params,
+          "capabilities",
+        )
+        || message.params.capabilities !== null
+      ) {
+        sendError(
+          message.id,
+          -32602,
+          "initialize.capabilities must be explicit null",
+        );
         return;
       }
       send({ id: message.id, result: { userAgent: "stagepass-fake/1" } });

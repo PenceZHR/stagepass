@@ -18,6 +18,7 @@ import {
 } from "./provider-run-lifecycle-service";
 
 export interface ProviderProcessLeaseInput extends JobExecutionContext {
+  lifecycleKind?: "process" | "desktop_follower_turn";
   changeId: string;
   runId: string;
   phase: ProviderRunPhase;
@@ -100,6 +101,11 @@ function executionContext(input: JobExecutionContext): JobExecutionContext {
 }
 
 export async function leaseProviderProcess(input: ProviderProcessLeaseInput) {
+  if (input.lifecycleKind === "desktop_follower_turn") {
+    throw new Error(
+      "provider process leases reject desktop_follower_turn lifecycle",
+    );
+  }
   const leasedAt = input.leasedAt ?? new Date();
   const processIdentity = input.identity ?? (input.pid === null
     ? null

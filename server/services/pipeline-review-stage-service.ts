@@ -99,8 +99,12 @@ import type { Change, ChangeStatus } from "../types";
 import type { Provider } from "./provider-selection-service";
 import {
   recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
 
 const log = createChildLogger("pipeline-review-stage-service");
 
@@ -774,16 +778,35 @@ export async function runReview(
 
       const engine = await getPipelineEngine(reviewProvider);
       const reviewCandidateBeforeRun = readReviewCandidateFileState(project.repoPath, changeId);
+      const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+      const { executableThreadId } = resolveCodexStageThreadRoute({
+        desktopBridgeEnabled,
+        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+        resolveLegacyGeneralThread: () => resolveProviderSession({
+          changeId,
+          provider: "codex",
+          sessionKind: "general",
+        }),
+      });
+      const logicalTurnId = desktopBridgeEnabled
+        ? (await resolveLogicalTurn({
+            owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
+            phase: "Review",
+            role: "stage",
+            round: 0,
+            ordinal: 0,
+            request: { prompt: reviewPrompt, sandboxMode: "read-only" },
+          })).logicalTurnId
+        : undefined;
 
-      let result = await engine.run({
+      let result = await engine.run(desktopBridgeEnabled ? {
+        logicalTurnId: logicalTurnId!,
+      } as never : {
         changeId,
         repoPath: reviewRepoPath,
         phase: "review",
-        threadId: resolveProviderSession({
-          changeId,
-          provider: reviewProvider,
-          sessionKind: "general",
-        }) ?? undefined,
+        logicalTurnId,
+        threadId: executableThreadId,
         prompt: reviewPrompt,
         sandboxMode: "read-only",
         // Line-protocol stage: the model writes FINDING/PRIOR/APPROVED/SUMMARY
@@ -826,7 +849,7 @@ export async function runReview(
         assertCurrentExecutionFence(context, runId);
       }
       const reviewThreadId = normalizedProviderThreadId(result.threadId);
-      if (reviewThreadId) {
+      if (!logicalTurnId && reviewThreadId) {
         recordProviderSession({
           changeId,
           provider: reviewProvider,

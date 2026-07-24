@@ -132,6 +132,12 @@ function readEvents(type: string) {
 }
 
 describe("provider-process-lease-service", { concurrency: false }, () => {
+  it("rejects Desktop follower lifecycle before creating a fake process row", async () => {
+    await assert.rejects(
+      leaseProviderProcess({ lifecycleKind: "desktop_follower_turn" } as never),
+      /reject desktop_follower_turn lifecycle/,
+    );
+  });
   beforeEach(() => {
     cleanupRows();
     seedRun();

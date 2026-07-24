@@ -4,7 +4,6 @@ import { AiProvider, Phase } from "./enums";
 export const CreateProjectInput = z.object({
   name: z.string().min(1),
   repoPath: z.string().min(1),
-  gitEnabled: z.boolean().optional().default(false),
   contextProvider: AiProvider.default("codex"),
   prdProvider: AiProvider.default("codex"),
 });

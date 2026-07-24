@@ -9,9 +9,11 @@ import { createChildLogger } from "../logger";
 import type { Project, CreateProjectInput } from "../types";
 import { scaffoldShipDir } from "./template-service";
 import { initializeProjectContext } from "./context-init-service";
-import { deleteChangeRecords } from "./change-service";
 import { ensureFactoryRubrics, PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service";
-import { resolveGitState, syncProjectGitState } from "./project-git-state-service";
+import { PROJECT_DELETE_PLAN } from "./project-delete-plan";
+import { CHANGE_DELETE_PLAN } from "./change-delete-plan";
+import { syncProjectGitState } from "./project-git-state-service";
+import { getDefaultBranch, hasCommits, isGitRepo } from "./repository-evidence-service";
 import { resolveProviderSelection } from "./provider-selection-service";
 import { nextSequencedId } from "./record-identity";
 import type { AiProvider } from "../types";
@@ -45,9 +47,9 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
     throw new Error(`Project already initialized: .ship/ exists at ${absPath}`);
   }
 
-  const { gitEnabled, gitDefaultBranch } = input.gitEnabled
-    ? resolveGitState(absPath)
-    : { gitEnabled: 0, gitDefaultBranch: null };
+  const repositoryReady = isGitRepo(absPath) && hasCommits(absPath);
+  const gitEnabled = repositoryReady ? 1 : 0;
+  const gitDefaultBranch = repositoryReady ? getDefaultBranch(absPath) : null;
 
   const id = nextSequencedId(
     db.select({ id: projects.id }).from(projects).all().map((row) => row.id),
@@ -117,34 +119,40 @@ export async function listProjects(): Promise<Project[]> {
   return db.select().from(projects).all() as Project[];
 }
 
-export async function deleteProject(id: string): Promise<void> {
+export interface DeleteProjectOptions {
+  /** Test-only transaction failpoint; throwing here must roll back every row. */
+  readonly beforeCommit?: () => void;
+}
+
+export async function deleteProject(id: string, options: DeleteProjectOptions = {}): Promise<void> {
   const project = db.select().from(projects).where(eq(projects.id, id)).get();
   if (!project) throw new Error(`Project not found: ${id}`);
 
-  const projectChanges = db
-    .select()
-    .from(changes)
-    .where(eq(changes.projectId, id))
-    .all();
+  db.transaction((tx) => {
+    const projectChanges = tx
+      .select()
+      .from(changes)
+      .where(eq(changes.projectId, id))
+      .all();
 
-  for (const change of projectChanges) {
-    deleteChangeRecords(change.id);
-  }
+    for (const change of projectChanges) {
+      for (const step of CHANGE_DELETE_PLAN) {
+        tx.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(change.id)}`);
+      }
+      tx.delete(changes).where(eq(changes.id, change.id)).run();
+    }
 
-  db.delete(changes).where(eq(changes.projectId, id)).run();
-  db.delete(events)
-    .where(and(isNull(events.changeId), like(events.rawJson, `%${id}%`)))
-    .run();
-  // Project-level rubrics (change_id IS NULL) belong to no change, so
-  // deleteChangeRecords above never reaches them, and rubrics.project_id
-  // references projects.id -- without this the DELETE below raises
-  // SQLITE_CONSTRAINT_FOREIGNKEY on any project that ever had a rubric.
-  // The DELETE stays a tagged template at the call site so db-write-inventory
-  // still sees it, same reason as deleteChangeRecordsWithDb.
-  for (const step of PROJECT_RUBRIC_DELETE_PLAN) {
-    db.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(id)}`);
-  }
-  db.delete(projects).where(eq(projects.id, id)).run();
+    tx.delete(events)
+      .where(and(isNull(events.changeId), like(events.rawJson, `%${id}%`)))
+      .run();
+    for (const step of PROJECT_RUBRIC_DELETE_PLAN) {
+      tx.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(id)}`);
+    }
+    for (const step of PROJECT_DELETE_PLAN) {
+      tx.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(id)}`);
+    }
+    options.beforeCommit?.();
+  });
 
   const shipDir = path.join(project.repoPath, ".ship");
   if (fs.existsSync(shipDir)) {

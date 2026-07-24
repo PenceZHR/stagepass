@@ -135,10 +135,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     reviewPhase: "Build",
     recordPhase: "Build",
     actionPhase: "Build",
-    // init_git_repo/commit_changes ride the Build and Fix stages because those
-    // are the two the working tree actually moves under: Build writes the
-    // adopted patch, Fix rewrites it. Committing is the step that follows both.
-    actionIds: ["run_build", "retry_build", "adopt_build", "reject_build", "init_git_repo", "commit_changes"],
+    actionIds: ["run_build", "retry_build", "adopt_build", "reject_build"],
   },
   review: {
     id: "review",
@@ -166,7 +163,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     recordPhase: "Fix",
     actionPhase: "Build",
     actionPhases: ["Build", "Review"],
-    actionIds: ["adopt_fix", "reject_build", "fix_blockers", "init_git_repo", "commit_changes"],
+    actionIds: ["adopt_fix", "reject_build", "fix_blockers"],
   },
   qa: {
     id: "qa",

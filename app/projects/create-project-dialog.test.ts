@@ -28,4 +28,8 @@ describe("create project flow", () => {
     assert.match(pageSrc, /router\.push\(`\/projects\/\$\{project\.id\}`\)/);
     assert.doesNotMatch(pageSrc, /<CreateProjectDialog onCreated=\{load\} \/>/);
   });
+
+  it("does not send or render a Git-enabled project option", () => {
+    assert.doesNotMatch(dialogSrc, /gitEnabled|启用 Git 集成/);
+  });
 });

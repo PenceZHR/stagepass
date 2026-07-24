@@ -6,7 +6,7 @@
 
 ## 0. 文档状态与阅读方式
 
-> 修订于 2026-07-23：对照代码实际状态盘点后重写。原稿把多项"目标"误写成了"已完成"，本版为每条关键需求标注真实状态。
+> 修订于 2026-07-24：产品基线调整为 Codex 原生控制面。原有 1–18 项验收结果继续作为不可回退的非回归要求。
 
 状态标记含义：
 
@@ -16,13 +16,13 @@
 - **【不做】** 明确排除在产品范围之外；
 - **【持续要求】** 不是一次性交付物，而是所有后续工作都要遵守的约束。
 
-当前重构优先级（依据 2026-07-23 决策）：
+当前迁移优先级：
 
-1. **第一优先：删除 Claude**，收敛为 Codex 单链路（见 6.1）；
-2. **第二优先：Server 通用化解耦**，使 Web 与未来 TUI 成为对等客户端（见 5.2）；
-3. **第三优先：开放 Codex 模型与推理强度选择**（见 6.2）；
+1. **第一优先：Codex 原生控制面**，把 Server、Web、Codex Hybrid Bridge 与 StagePass MCP App 组成一条可恢复的完整链路；
+2. **第二优先：持久 Codex task 与统一 Server 命令权威**，覆盖 Change、Project PRD 和 Project Context；
+3. **第三优先：按阶段迁移人工决策面并精简 Web/Git 表面**；
 4. **预留（暂缓）：** Tech Spec / Plan / Test Plan 三阶段补齐对抗+人工介入+rubric（见 7.3–7.5）；
-5. **预留（暂缓）：** Live QA 阶段（见 7.9），待重构完成后重新评估。
+5. **预留（暂缓）：** Live QA 阶段（见 7.9），待本轮迁移完成后重新评估。
 
 ## 1. 核心需求
 
@@ -157,41 +157,42 @@ Stage Pass 不能等待用户自己发现问题。
 
 ## 5. 产品形态
 
-### 5.1 当前只包含 Server 和 Web
+### 5.1 产品由四个协作组件组成
 
-当前产品只需要两个组成部分：
+- **Stage Pass Server**：唯一业务权威，承载阶段、gate、命令、审计、恢复和 rollout 判断；
+- **Stage Pass Web**：项目与 Change 的运营控制面，展示状态、证据和健康度，提供 start/retry/interrupt/recover/settings 等操作；
+- **Codex Hybrid Bridge**：以 app-server 负责 shell control，以 Codex Desktop follower 在持久 task 中执行受管 turn；
+- **StagePass MCP App**：在 Codex task 内展示人类交互卡并提交经过 Server 校验的决定。
 
-- **Stage Pass Server**：承载完整的 Stage Pass 流程和业务能力；
-- **Stage Pass Web**：提供网页交互界面。
+这四个组件是当前产品形态。MCP App 是人工决策主表面的一部分，不是可选的未来客户端。
 
-Server 是产品本体，Web 是第一个客户端。
+### 5.2 Server 是唯一流程与命令权威【待实施 · 持续要求】
 
-**现状【待实施】**：当前代码是一个单体 Next.js 应用，Server 与 Web 通过内部分层（`app/api` + `server/services`）区分，尚不是"产品本体 + 客户端"的关系。这是重构第二优先事项。
+- 阶段判断、放行规则、风险结算、动作合约、Codex 上下文、幂等与恢复只存在于 Server；
+- Web、Hybrid Bridge 与 MCP App 都只能调用 Server 提供的稳定能力，不复制业务判断；
+- Server 不依赖 Web 在线也能持续执行和恢复 Change；
+- 客户端投影与 Server 冲突时，以 Server 当前事实为准。
 
-### 5.2 前后端必须真正解耦【待实施】
+### 5.3 Web 是控制面，不是主要人工决策面【待实施】
 
-解耦的目标不是拆分技术框架，而是让 **TUI 和 Web 可以调用同一个通用 Server**。是否拆分进程或代码包属于技术选型，由 Tech Spec 决定，本文不规定。
+Web 保留项目/Change 管理、流程状态、运行控制、模型与推理设置、bridge/MCP 健康、证据和只读决策审计。需要用户理解内容后作出的批准、拒绝、风险接受、采纳、返工等业务决定，主路径在 Codex task 内的 StagePass MCP App 完成。
 
-解耦达成与否，以下列可验收标准为准：
+迁移允许部分 rollout：尚未启用的阶段继续保留原 Web 决策路径；已启用阶段的默认 Web 决策入口只读并引导用户打开 Codex。只有 bridge/MCP 不健康且用户显式展开时，才允许经过审计的 Web 紧急表面。
 
-- Server 提供一套完整、稳定的公开能力接口，任何客户端只依赖这套接口就能完成一个 Change 从 PRD 到 Done 的全部操作，不存在"只有 Web 内部才能触发"的能力；
-- Web 自身也只通过这套公开接口与 Server 交互，不走任何私有捷径；
-- 阶段判断、放行规则、风险结算、Codex 上下文组织**只存在于 Server**；客户端可以做展示层的派生和乐观校验，但任何客户端派生结论都不具备裁决效力，与 Server 冲突时以 Server 为准；
-- Server 不依赖任何客户端在线也能持续管理和执行 Change（后台执行部分**【已达成】**：pipeline worker 与 supervisor 已具备无 Web 运行能力）；
-- 用户更换前端后，项目、Change、流程状态和执行结果保持一致；
-- 未来增加 TUI 时，只需实现新的交互界面，不需要重新实现或复制任何 Stage Pass 判断逻辑。
+### 5.4 持久 Codex task 模型【待实施】
 
-**现状**：Web 端目前存在阶段状态派生、动作可用性策略等逻辑（权威 gate 在服务端）。重构需将其明确降级为纯展示派生，并保证公开接口的完整性。
+- 一个 Change 始终映射到一个持久、可复用的 Codex task；
+- 每个 Project 另外拥有一个可复用的 Project PRD task 和一个可复用的 Project Context task；
+- Project PRD/Context 使用 durable project run 作为 owner，不得通过 synthetic Change id 伪装成 Change；
+- 各阶段 role 是同一 canonical task 上的顺序 turn，不得为 writer/critic/build/fix 等角色创建第二个用户可见 task。
 
-### 5.3 当前不开发 TUI【不做（当前）】
+### 5.5 当前不开发 TUI【不做（当前）】
 
-TUI 是未来可能增加的客户端，不属于当前交付内容。
-
-当前只需保证产品能力不与 Web 界面绑死（即满足 5.2）。
+TUI 不是当前交付内容；当前架构仍不得把流程权威绑在 Web 中。
 
 ## 6. Agent 范围与 Codex 能力
 
-### 6.1 只支持 Codex【待实施 · 重构第一优先】
+### 6.1 只支持 Codex【已达成 · 持续要求】
 
 目标态：
 
@@ -201,11 +202,22 @@ TUI 是未来可能增加的客户端，不属于当前交付内容。
 - 产品中不提供 Agent Provider 选择；
 - 不为已删除的 Claude 能力保留兼容入口。
 
-**现状**：Claude 是当前代码中一条完整在用的执行链路（引擎、Provider 选择服务、UI 下拉框、依赖包、测试均存在）。"删除 Claude"是**已决定但尚未开始**的工作，也是本次重构的第一项，范围包括：Claude 引擎、Provider 枚举与选择逻辑、相关 UI、依赖与测试。
+Codex-only Provider 收敛已经完成，不再是本轮迁移优先事项。本轮重点是把现有 Codex 执行迁移到可见、持久、可恢复的 Desktop task 与 MCP 人工决策链路。
 
-删除 Claude 的目的不是声明 Claude 能力不足，而是让产品集中维护一条最符合 Stage Pass 哲学的执行链路。
+### 6.2 Codex 原生能力 rollout【待实施】
 
-### 6.2 用户可以控制 Codex 的关键运行选项【待实施】
+四个迁移配置只能由 Server 的统一配置模块读取，且只有字面量 `on` 表示启用；未配置时全部关闭：
+
+- `STAGEPASS_CODEX_DESKTOP_BRIDGE`：统一控制 Change、Project PRD、Project Context 三类 managed scope；
+- `STAGEPASS_MCP_INTERACTIONS`：控制 MCP interaction 能力；
+- `STAGEPASS_CODEX_DECISION_SURFACE`：人工决策面的全局 master；
+- `STAGEPASS_CODEX_DECISION_PHASES`：严格阶段 allowlist。
+
+阶段 allowlist 固定为 `PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge`。缺失表示空集；解析时允许 trim 与去重，但空 token、未知 token 或空白值必须清空 allowlist、报告 `codex_decision_rollout_invalid` 并 fail closed。
+
+所有 Gateway actor 分类、Web Server projection、Broker presentation、wakeup 与 recovery 必须调用同一个 Server helper。只有 master 开启、阶段在 allowlist 中、interaction kind 与阶段映射有效时，Codex 决策面才启用；不得出现 caller 自行读环境变量或复制布尔判断。
+
+### 6.3 用户可以控制 Codex 的关键运行选项【待实施】
 
 Stage Pass 需要允许用户在合理范围内控制：
 
@@ -218,7 +230,7 @@ Stage Pass 需要允许用户在合理范围内控制：
 
 **现状**：底层存在推理强度字段但为硬编码，调用参数未暴露模型选择，无任何用户可操作入口。列为重构第三优先事项。
 
-### 6.3 Stage Pass 负责准备上下文【已达成 · 持续要求】
+### 6.4 Stage Pass 负责准备上下文【已达成 · 持续要求】
 
 - 用户主要提供需求、回答、反馈、理由和决策；
 - 用户不需要为每个阶段重复粘贴项目背景；
@@ -227,7 +239,7 @@ Stage Pass 需要允许用户在合理范围内控制：
 - 会话无法继续时，系统应能根据已保存的项目事实重新建立有效上下文；
 - 浏览器页面不能成为唯一的上下文来源。
 
-### 6.4 用户可以看到有用的 Codex 输出【已达成 · 持续要求】
+### 6.5 用户可以看到有用的 Codex 输出【已达成 · 持续要求】
 
 用户需要看到：
 
@@ -329,7 +341,7 @@ Spec 阶段的"对抗产出 + Gap 跟踪 + rubric 评分 + 人工介入"是其�
 - 代码发生变化导致结果过期时，旧 QA 不能继续用于放行；
 - QA 未满足条件时不能进入 Merge。
 
-**【预留】** Live QA（浏览器实测）阶段：已有初步设计文档，2026-07-23 决定**暂缓**——先完成重构（删 Claude、Server 解耦）再重新评估。已有设计文档保留作参考，不进入实施。
+**【预留】** Live QA（浏览器实测）阶段：已有初步设计文档，当前决定**暂缓**——先完成 Codex Hybrid Bridge、统一 Server 权威和人工决策面迁移后再重新评估。已有设计文档保留作参考，不进入实施。
 
 ### 7.10 Merge【已达成 · 持续要求】
 
@@ -374,7 +386,7 @@ Spec 阶段的"对抗产出 + Gap 跟踪 + rubric 评分 + 人工介入"是其�
 - 操作不可用的原因；
 - 需要用户决定的事项。
 
-系统不能要求 Web 或未来 TUI 自己猜测这些结论——这些结论必须由 Server 以结构化形式提供（与 5.2 一致）。
+系统不能要求 Web、Hybrid Bridge 或 MCP App 自己猜测这些结论——这些结论必须由 Server 以结构化形式提供（与 5.2 一致）。
 
 ### 8.3 人工决策
 
@@ -398,9 +410,9 @@ Spec 阶段的"对抗产出 + Gap 跟踪 + rubric 评分 + 人工介入"是其�
 - 审查、测试、代码变化和人工决定都能形成可回看的证据；
 - 已过期的证据必须明确标识，不能继续伪装成当前结果。
 
-## 9. Web 体验需求【持续要求】
+## 9. Web 控制面体验需求【持续要求】
 
-Web 不以自由聊天为主界面，而以 Change 的工程流程为主界面。
+Web 不以自由聊天或主要业务决策为主界面，而以 Change 的工程控制面为主界面。
 
 网页需要让用户快速理解：
 
@@ -415,7 +427,10 @@ Web 还需要：
 
 - 用一致方式展示阶段、风险、证据和人工决策；
 - 在执行过程中持续反馈进度；
-- 在 Server 或 Codex 不可用时清楚说明原因；
+- 提供 start、retry、interrupt、recover、settings、bridge repair 和“在 Codex 中打开”等运营控制；
+- 对已启用的 Codex 决策阶段展示 interaction 状态和只读审计，不保留默认直接决策入口；
+- 对尚未启用的阶段保留迁移期 Web 路径，确保 partial rollout 不阻断 Change；
+- 在 Server、Hybrid Bridge、Codex Desktop 或 MCP 不可用时清楚说明原因；
 - 避免向普通用户暴露不必要的底层实现细节；
 - 不要求语音交互或强对话体验。
 
@@ -444,24 +459,37 @@ Web 还需要：
 - 页面显示必须与系统掌握的当前事实一致；
 - 关键流程必须能够解释为什么允许或拒绝某项操作。
 
+### 10.4 Codex Desktop Phase 0 发布闸门【持续要求】
+
+Codex Hybrid Bridge 依赖的 private IPC、持久 shell、Desktop follower、同 task 连续 turn、Host/MCP source-thread 绑定和崩溃恢复，必须在目标 Codex Desktop 版本上通过真实客户端验证。单元测试、callback 模拟或仅 SQLite 证据不能替代发布验证；Phase 0 private-IPC viability 是 Codex 原生控制面的硬发布闸门。
+
+### 10.5 Git 表面与内部证据分离【待实施】
+
+- Stage Pass 不提供面向用户的 Git UI 或通用 Git 操作；
+- 用户在 Codex/外部工具中完成日常 Git 操作；
+- Stage Pass 继续在内部读取和保存 base commit、HEAD、patch/diff identity、changed-files hash、adoption、review/QA freshness 和 merge readiness 等证据；
+- 移除 Git UI 不得削弱隔离施工、越界阻断、结果新鲜度或可追溯性。
+
 ## 11. 范围排除与暂缓
 
 ### 11.1 明确不做
 
-- 多 Provider 或通用模型路由（Claude 删除后不再引入任何第二 Provider）；
-- MCP Server；
+- 多 Provider 或通用模型路由；
 - 远程 SaaS；
 - 多租户和权限系统；
 - 语音交互；
 - Chat-first 主界面；
 - 完整私有思维链展示；
+- 面向用户的 Stage Pass Git UI 与通用 Git 操作；
 - 对 Stage Pass 核心流程的重新发明。
 
 ### 11.2 已决定、待实施（重构范围）
 
-- 删除 Claude Runtime 及其兼容层（当前代码中仍完整存在，见 6.1）；
-- Server 通用化解耦（见 5.2）；
-- Codex 模型与推理强度用户可选（见 6.2）。
+- Codex Hybrid Bridge 与三类 persistent managed scope（见 5.1、5.4）；
+- StagePass MCP App 人工交互与统一 Server 命令权威（见 5.1–5.3）；
+- 严格、可部分发布的 Codex decision rollout（见 6.2）；
+- Codex 模型与推理强度用户可选（见 6.3）；
+- 移除 Stage Pass Git UI/operations，同时保留内部 Git evidence（见 10.5）。
 
 ### 11.3 预留（暂缓，未来做）
 
@@ -475,12 +503,12 @@ Web 还需要：
 
 | # | 验收条件 | 现状 |
 |---|---|---|
-| 1 | 用户可以只通过 Web 完成一个 Change 从 PRD 到 Done 的完整流程 | 已达成 |
+| 1 | 用户可以通过 Web 控制加 Codex task 决策完成一个 Change 从 PRD 到 Done 的完整流程 | 已达成基线；Codex 原生决策面迁移中 |
 | 2 | Web 关闭后，流程状态和正在执行的工作不会丢失 | 已达成 |
 | 3 | Web 不再承担阶段判断、风险结算、执行控制或 Codex 上下文管理 | **待实施**（Web 端仍有派生判断逻辑） |
-| 4 | 未来增加 TUI 时，可以使用同一套项目、Change、流程和执行能力 | **待实施**（依赖 5.2 解耦） |
-| 5 | 产品中只存在 Codex 一条 Agent 执行链路 | **待实施**（Claude 链路完整在用） |
-| 6 | 用户不再看到 Claude、Provider 选择或相关兼容功能 | **待实施**（Provider 下拉框在用） |
+| 4 | Web、Hybrid Bridge、MCP App 以及未来客户端使用同一套项目、Change、流程和执行能力 | **待实施**（依赖 5.2 的统一 Server 权威） |
+| 5 | 产品中只存在 Codex 一条 Agent 执行链路 | 已达成 |
+| 6 | 用户不再看到 Claude、Provider 选择或相关兼容功能 | 已达成 |
 | 7 | 用户可以为 Codex 选择模型和推理强度 | **待实施**（仅底层硬编码） |
 | 8 | 用户无需为每个阶段手工组织完整上下文 | 已达成 |
 | 9 | 用户能看到 Codex 的执行状态、有效输出、代码变化和失败原因 | 已达成 |
@@ -494,20 +522,23 @@ Web 还需要：
 | 17 | 每个 Change 最终都有基于真实成果和已知风险生成的独立交付说明 | 已达成 |
 | 18 | 用户始终能够理解当前状态、阻塞原因和下一步操作 | 持续要求 |
 
-其中 3–7 即本次重构要翻转的五项；1、2、8–17 在重构中**不得回退**。
+1–18 全部继续作为本次迁移的非回归要求。原条件中的“只通过 Web”统一解释并替换为“通过 Web 控制加 Codex task 决策”；迁移新表面不得削弱已经成立的流程、证据、安全、恢复和人类裁决能力。
 
 ## 13. 已确认的产品决定
 
-按 2026-07-23 决策更新：
+按 2026-07-24 决策更新：
 
-- 当前只做 Stage Pass Server 和 Web；
-- Server 是完整产品内核，Web 是客户端；
-- 前后端解耦的标准是"TUI 与 Web 调用同一个通用 Server"（见 5.2），技术形态由 Tech Spec 决定；
+- 当前产品组件是 Server、Web、Codex Hybrid Bridge 和 StagePass MCP App；
+- Server 是完整产品内核和唯一命令权威，Web 是运营控制面；
+- 人类业务决定的主表面是 Codex task 内的 MCP App，partial rollout 期间 disabled phase 保留 Web 路径；
+- 一个 Change 对应一个持久 Codex task；每个 Project 另有 Project PRD 与 Project Context 两个可复用 task；
 - 未来可以增加 TUI，但当前不实现；
-- 只支持 Codex；删除 Claude 是重构第一优先事项（当前尚未实施）；
+- 只支持 Codex；Provider 收敛已经完成，不再是迁移优先事项；
 - Live QA 暂缓，重构后重新评估；已有设计文档保留作参考；
 - Tech Spec / Plan / Test Plan 的对抗+介入+rubric 是预留目标，当前暂缓但设计必须为其留出空间；
-- 不做 MCP；
+- MCP 是 human-interaction cards 的必需组件；
+- 移除 Stage Pass Git UI/operations，但保留内部 Git evidence；
+- Codex Desktop Phase 0 private-IPC viability 是硬发布闸门；
 - 不做多 Agent Provider 适配；
 - 本地优先、单用户；
 - 核心卖点是 Stage Pass 的软件工程流程与人类裁决机制。

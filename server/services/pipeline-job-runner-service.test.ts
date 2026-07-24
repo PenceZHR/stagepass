@@ -42,6 +42,67 @@ function payload(overrides: Partial<PipelineJobRecord> = {}) {
 }
 
 describe("pipeline-job-runner-service", () => {
+  it("routes a typed interaction_present effect through the production handler", async () => {
+    const calls: string[] = [];
+    await runPipelineJob({
+      job: {
+        ...job(),
+        phase: "Intake",
+        actionId: "present_interaction",
+        jobKind: "interaction_present",
+        interactionId: "INT-1",
+        commandId: null,
+        effectSchemaVersion: "stagepass.pipeline-effect/v1",
+        effectPayloadJson: JSON.stringify({
+          schemaVersion: "stagepass.pipeline-effect/v1",
+          kind: "interaction_present",
+          interactionId: "INT-1",
+        }),
+        effectDeadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      created: false,
+    } as never, context(), {
+      interactionPresentationOrchestrator: {
+        async run(jobId) {
+          calls.push(jobId);
+          return {} as never;
+        },
+      },
+    });
+    assert.deepEqual(calls, ["PJOB-RUNNER"]);
+  });
+
+  it("routes a typed interaction_wakeup effect through its exhaustive handler", async () => {
+    const calls: string[] = [];
+    await runPipelineJob({
+      job: {
+        ...job(),
+        phase: "Intake",
+        actionId: "continue_stagepass_interaction",
+        jobKind: "interaction_wakeup",
+        interactionId: "INT-1",
+        commandId: "CMD-1",
+        effectSchemaVersion: "stagepass.pipeline-effect/v1",
+        effectPayloadJson: JSON.stringify({
+          schemaVersion: "stagepass.pipeline-effect/v1",
+          kind: "interaction_wakeup",
+          interactionId: "INT-1",
+          commandId: "CMD-1",
+        }),
+        effectDeadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      created: false,
+    } as never, context(), {
+      interactionWakeupOrchestrator: {
+        async run(jobId) {
+          calls.push(jobId);
+          return {} as never;
+        },
+      },
+    });
+    assert.deepEqual(calls, ["PJOB-RUNNER"]);
+  });
+
   it("dispatches to an injected runner map by phase and action", async () => {
     const calls: string[] = [];
     const executionContext = context();

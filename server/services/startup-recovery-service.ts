@@ -8,6 +8,7 @@ import {
   type ProviderRunRecoveryReport,
   type RecoveryCursor,
 } from "./stale-provider-run-recovery-service";
+import type { CodexNativeRecoverySummary } from "./codex-native-recovery-service";
 
 export interface StartupRecoveryResult {
   ok: boolean;
@@ -36,6 +37,7 @@ interface StartupRecoveryDeps {
   ensureLogs: (logDir: string) => void;
   checkDb: () => void;
   recover: (execute: boolean, cursor?: RecoveryCursor) => Promise<ProviderRunRecoveryReport>;
+  recoverCodexNative: () => Promise<CodexNativeRecoverySummary>;
   writeLog: (logDir: string, line: string) => void;
 }
 
@@ -52,6 +54,21 @@ let snapshot: StartupRecoverySnapshot = {
 };
 
 let depsForTest: Partial<StartupRecoveryDeps> | null = null;
+let codexNativeRecoveryRunner:
+  | (() => Promise<CodexNativeRecoverySummary>)
+  | null = null;
+
+/**
+ * Installed by the server composition root once the production Codex recovery
+ * ports are available. Keeping this explicit prevents startup from creating a
+ * second Desktop/app-server transport.
+ */
+export function registerCodexNativeStartupRecovery(
+  runner: (() => Promise<CodexNativeRecoverySummary>) | null,
+): void {
+  codexNativeRecoveryRunner = runner;
+  startupRecoveryPromise = null;
+}
 
 function defaultDeps(): StartupRecoveryDeps {
   return {
@@ -64,6 +81,14 @@ function defaultDeps(): StartupRecoveryDeps {
       db.select({ id: changes.id }).from(changes).limit(1).all();
     },
     recover: (execute, cursor) => recoverStaleProviderRuns({ execute, cursor }),
+    recoverCodexNative: () => codexNativeRecoveryRunner
+      ? codexNativeRecoveryRunner()
+      : Promise.resolve({
+          recovered: [],
+          failed: [],
+          deferred: [],
+          truncated: false,
+        }),
     writeLog: (logDir, line) => {
       fs.appendFileSync(path.join(logDir, "startup-recovery.log"), `${line}\n`, "utf-8");
     },
@@ -77,6 +102,7 @@ function activeDeps(): StartupRecoveryDeps {
 export function resetStartupRecoveryForTest(): void {
   startupRecoveryPromise = null;
   startupRecoveryCursor = undefined;
+  codexNativeRecoveryRunner = null;
   snapshot = {
     status: "idle",
     lastRunAt: null,
@@ -128,23 +154,32 @@ async function runStartupRecovery(): Promise<StartupRecoveryResult> {
     deps.ensureLogs(deps.logDir);
     deps.checkDb();
     const recoveryResults = await deps.recover(true, startupRecoveryCursor);
+    const codexNativeResults = await deps.recoverCodexNative();
     startupRecoveryCursor = recoveryResults.nextCursor ?? undefined;
     const staleResults = await deps.recover(false);
     const recoveryDeferred = recoveryResults.deferred ?? [];
     const staleDeferred = staleResults.deferred ?? [];
-    recoveredCount = recoveryResults.recovered.length;
-    failedCount = recoveryResults.failed.length;
+    recoveredCount = recoveryResults.recovered.length
+      + codexNativeResults.recovered.length;
+    failedCount = recoveryResults.failed.length
+      + codexNativeResults.failed.length;
     deferredCount = recoveryDeferred.reduce((total, item) => total + item.count, 0)
-      + staleDeferred.reduce((total, item) => total + item.count, 0);
+      + staleDeferred.reduce((total, item) => total + item.count, 0)
+      + codexNativeResults.deferred.length;
     staleCount = staleResults.observed.filter((result) => result.kind === "stale").length;
     if (failedCount > 0) {
-      const failedRuns = recoveryResults.failed.map((failure) => failure.runId).join(", ");
+      const failedRuns = [
+        ...recoveryResults.failed.map((failure) => failure.runId),
+        ...codexNativeResults.failed.map((failure) => failure.attemptId),
+      ].join(", ");
       throw new Error(`${failedCount} run recovery failed: ${failedRuns}`);
     }
     const partial = Boolean(recoveryResults.truncated)
       || Boolean(staleResults.truncated)
+      || codexNativeResults.truncated
       || recoveryDeferred.length > 0
-      || staleDeferred.length > 0;
+      || staleDeferred.length > 0
+      || codexNativeResults.deferred.length > 0;
     const result: StartupRecoveryResult = {
       ok: !partial,
       partial,

@@ -6,6 +6,14 @@ import {
 const DEFAULT_CLOSE_GRACE_MS = 2_000;
 const FORCE_KILL_GRACE_MS = 250;
 const STDERR_TAIL_LIMIT = 500;
+const CONTROL_METHODS = new Set([
+  "initialize",
+  "thread/start",
+  "thread/name/set",
+  "thread/list",
+  "thread/read",
+  "model/list",
+]);
 
 type RpcId = number | string;
 
@@ -115,8 +123,10 @@ export class CodexAppServerClient {
     const result = await this.request("initialize", {
       clientInfo: {
         name: "stagepass",
+        title: null,
         version: "0.1.0",
       },
+      capabilities: null,
       ...params,
     });
     this.notify("initialized");
@@ -128,6 +138,11 @@ export class CodexAppServerClient {
     params: Record<string, unknown> = {},
     timeoutMs?: number,
   ): Promise<unknown> {
+    if (!CONTROL_METHODS.has(method)) {
+      return Promise.reject(new CodexAppServerError(
+        `app-server method is outside the shell/read-control boundary: ${method}`,
+      ));
+    }
     if (this.exitFacts) {
       return Promise.reject(this.exitedError());
     }

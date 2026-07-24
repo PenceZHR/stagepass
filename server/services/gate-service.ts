@@ -22,7 +22,10 @@ import {
 import { applySpecBattleDecision, getSpecBattleState } from "./spec-battle-service";
 import { getSpecActionAvailability, type RuleGap } from "./spec-battle-rules";
 import { computeMergeReadiness, type MergeReadiness } from "./merge-readiness-service";
-import { transitionChangeStatus } from "./change-status-service";
+import {
+  transitionChangeStatus,
+  transitionChangeStatusWithDb,
+} from "./change-status-service";
 import {
   getStageAuthority,
   peekStageAuthority,
@@ -51,6 +54,7 @@ export interface MergeChecks {
 }
 
 type GateServiceDb = typeof import("../db/index").db;
+type GateMutationDb = Pick<GateServiceDb, "select" | "insert" | "update">;
 
 const requireDefaultDb = createRequire(import.meta.url);
 let gateServiceDbForTest: GateServiceDb | null = null;
@@ -425,6 +429,62 @@ export async function approveGate(
     })
     .where(eq(changes.id, change.id))
     .run();
+}
+
+/**
+ * Transaction port used by PipelineCommandGateway after the current action
+ * contract has already been validated. It deliberately performs only the
+ * authoritative domain write; the gateway owns the human-decision row.
+ */
+export function approveGateWithDb(
+  gateDb: GateMutationDb,
+  input: {
+    changeId: string;
+    gate: GateName;
+    decisionId: string | null;
+  },
+): void {
+  const change = gateDb
+    .select()
+    .from(changes)
+    .where(eq(changes.id, input.changeId))
+    .get();
+  if (!change) throw new Error(`Change not found: ${input.changeId}`);
+  if (change.status !== GATE_STATES[input.gate]) {
+    throw new Error(`Not at gate: ${input.gate}`);
+  }
+  const now = nowISO();
+  if (input.gate === "merge" && input.decisionId) {
+    gateDb
+      .insert(mergeApprovals)
+      .values({
+        id: `MAP-${randomUUID()}`,
+        changeId: input.changeId,
+        decisionId: input.decisionId,
+        actor: "human",
+        approvedAt: now,
+      })
+      .onConflictDoNothing()
+      .run();
+  }
+  gateDb
+    .update(changes)
+    .set({ gateState: input.gate, updatedAt: now })
+    .where(eq(changes.id, input.changeId))
+    .run();
+}
+
+export function rejectGateWithDb(
+  gateDb: GateMutationDb,
+  input: { changeId: string; gate: GateName; reason?: string },
+): void {
+  transitionChangeStatusWithDb(gateDb as Parameters<typeof transitionChangeStatusWithDb>[0], {
+    changeId: input.changeId,
+    to: GATE_REJECT_PREVIOUS[input.gate],
+    gateState: null,
+    message: `Gate rejected: ${input.gate}`,
+    rawJson: { gate: input.gate, reason: input.reason ?? null },
+  });
 }
 
 export async function rejectGate(changeId: string, gate: GateName, reason?: string): Promise<void> {

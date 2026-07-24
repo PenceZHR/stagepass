@@ -5,6 +5,13 @@ import {
 } from "./pipeline-job-types";
 import type { JobExecutionContext } from "./job-execution-context";
 import type { Provider } from "./provider-selection-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { db } from "../db";
+import { codexLogicalTurns, codexTurnExecutions } from "../db/schema";
+import { and, eq } from "drizzle-orm";
+import { parsePipelineJobEffect } from "../types/models";
+import type { InteractionPresentationOrchestrator } from "./interaction-presentation-orchestrator";
+import type { InteractionWakeupOrchestrator } from "./interaction-wakeup-orchestrator";
 
 export type PipelineJobRunner = (
   job: PipelineJobRecord,
@@ -71,6 +78,8 @@ export interface PipelineWorkerStageApi {
 export interface RunPipelineJobOptions {
   runnerMap?: PipelineJobRunnerMap;
   pipeline?: PipelineWorkerStageApi;
+  interactionPresentationOrchestrator?: Pick<InteractionPresentationOrchestrator, "run">;
+  interactionWakeupOrchestrator?: Pick<InteractionWakeupOrchestrator, "run">;
 }
 
 // The cast is the one place a validated (phase, actionId) record is flattened
@@ -147,6 +156,62 @@ export async function runPipelineJob(
   context: JobExecutionContext,
   options: RunPipelineJobOptions = {},
 ): Promise<void> {
+  const rawJob = ("job" in job ? job.job : job) as typeof job.job & {
+    jobKind?: "stage" | "interaction_present" | "interaction_wakeup";
+    interactionId?: string | null;
+    commandId?: string | null;
+    effectSchemaVersion?: string | null;
+    effectPayloadJson?: string | null;
+    effectDeadlineAt?: string | null;
+  };
+  const jobKind = rawJob.jobKind ?? "stage";
+  if (jobKind === "interaction_present") {
+    const effect = parsePipelineJobEffect({
+      jobKind,
+      interactionId: rawJob.interactionId,
+      commandId: rawJob.commandId,
+      effectSchemaVersion: rawJob.effectSchemaVersion,
+      effectPayloadJson: rawJob.effectPayloadJson,
+    });
+    if (effect?.kind !== "interaction_present") {
+      throw new Error("interaction_presentation_payload_invalid");
+    }
+    if (
+      !rawJob.effectDeadlineAt
+      || !Number.isFinite(Date.parse(rawJob.effectDeadlineAt))
+      || Date.parse(rawJob.effectDeadlineAt) <= Date.now()
+    ) throw new Error("interaction_presentation_deadline_exhausted");
+    const orchestrator = options.interactionPresentationOrchestrator
+      ?? new (await import("./interaction-presentation-orchestrator"))
+        .InteractionPresentationOrchestrator();
+    await orchestrator.run(rawJob.id, context);
+    return;
+  }
+  if (jobKind === "interaction_wakeup") {
+    const effect = parsePipelineJobEffect({
+      jobKind,
+      interactionId: rawJob.interactionId,
+      commandId: rawJob.commandId,
+      effectSchemaVersion: rawJob.effectSchemaVersion,
+      effectPayloadJson: rawJob.effectPayloadJson,
+    });
+    if (effect?.kind !== "interaction_wakeup") {
+      throw new Error("interaction_wakeup_payload_invalid");
+    }
+    if (
+      !rawJob.effectDeadlineAt
+      || !Number.isFinite(Date.parse(rawJob.effectDeadlineAt))
+      || Date.parse(rawJob.effectDeadlineAt) <= Date.now()
+    ) throw new Error("interaction_wakeup_deadline_exhausted");
+    const orchestrator = options.interactionWakeupOrchestrator
+      ?? new (await import("./interaction-wakeup-orchestrator"))
+        .InteractionWakeupOrchestrator();
+    await orchestrator.run(rawJob.id, context);
+    return;
+  }
+  if (jobKind !== "stage") {
+    throw new Error(`Unsupported pipeline job kind: ${jobKind}`);
+  }
   const payload = parsePipelineJobPayload(job);
   const parsedJob = payload.job;
   const runners = options.runnerMap ?? await defaultRunnerMap(options.pipeline);
@@ -154,6 +219,31 @@ export async function runPipelineJob(
   const runner = runners[key];
   if (!runner) {
     throw new Error(`Unsupported pipeline job action: ${key}`);
+  }
+  if (readCodexNativeFlags().desktopBridge) {
+    const recoverable = db.select({ id: codexLogicalTurns.logicalTurnId })
+      .from(codexLogicalTurns)
+      .innerJoin(
+        codexTurnExecutions,
+        eq(codexTurnExecutions.logicalTurnId, codexLogicalTurns.logicalTurnId),
+      )
+      .where(and(
+        eq(codexLogicalTurns.pipelineJobId, parsedJob.id),
+        eq(codexTurnExecutions.status, "running"),
+      )).get();
+    if (recoverable) {
+      const [
+        { getProductionCodexDesktopBridge },
+        { recoverDesktopFollowerTurnsForPipelineJob },
+      ] = await Promise.all([
+        import("./codex-desktop-engine"),
+        import("./stale-provider-run-recovery-service"),
+      ]);
+      await recoverDesktopFollowerTurnsForPipelineJob(
+        parsedJob.id,
+        await getProductionCodexDesktopBridge(),
+      );
+    }
   }
   await runner(parsedJob, context);
 }

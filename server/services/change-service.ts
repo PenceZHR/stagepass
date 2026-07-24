@@ -12,7 +12,16 @@ import type { AiProvider, Change, ChangeStatus } from "../types";
 import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
 import { transitionChangeStatus } from "./change-status-service";
 import { CHANGE_DELETE_PLAN } from "./change-delete-plan";
-import { branchExists, checkoutBranch, createBranch, generateChangeBranchName, getCurrentBranch, getDefaultBranch } from "./git-service";
+import {
+  branchExists,
+  generateChangeBranchName,
+  getCurrentBranch,
+  getDefaultBranch,
+} from "./repository-evidence-service";
+import {
+  checkoutInternalBranch,
+  createInternalBranch,
+} from "./workspace-versioning-service";
 import { syncProjectGitState } from "./project-git-state-service";
 import { nextSequencedId } from "./record-identity";
 import fs from "fs";
@@ -191,7 +200,7 @@ export async function createChange(input: CreateChangeInput): Promise<Change> {
   let gitBranch: string | null = null;
   if (project.gitEnabled) {
     gitBranch = resolveFreeChangeBranchName(project.repoPath, id, input.title);
-    createBranch(project.repoPath, gitBranch);
+    createInternalBranch(project.repoPath, gitBranch);
     log.info({ changeId: id, gitBranch }, "Git branch created for change");
   }
 
@@ -422,7 +431,7 @@ function moveHeadOffDeletedBranch(
       return;
     }
 
-    checkoutBranch(project.repoPath, target);
+    checkoutInternalBranch(project.repoPath, target);
     log.info(
       { changeId, deletedBranch, movedHeadTo: target },
       "HEAD was on the deleted change's branch; moved it so the next change does not stack on discarded work",

@@ -1,4 +1,5 @@
 import type { ReviewPhase } from "./change-phase-map";
+import type { CodexControlProjection } from "./codex-task-control";
 
 export interface ChangeDetail {
   id: string;
@@ -19,6 +20,10 @@ export interface ChangeDetail {
   latestRun?: { id: string; phase: string; status: string; summary?: string | null } | null;
   testPlanCompleted?: boolean;
   artifactCount?: number;
+  codexControl?: CodexControlProjection & {
+    decisionPhase: string | null;
+    interactionKind: string | null;
+  };
 }
 
 export interface PhaseOverview {

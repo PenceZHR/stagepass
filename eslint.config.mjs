@@ -14,6 +14,12 @@ const eslintConfig = defineConfig([
     "logs/**",
     "var/**",
     ".pnpm-store/**",
+    ".claude/**",
+    ".stagepass/**",
+    ".agents/**",
+    "plugins/**",
+    "mcp/dist/**",
+    "server/services/__fixtures__/**",
     "next-env.d.ts",
   ]),
 ]);

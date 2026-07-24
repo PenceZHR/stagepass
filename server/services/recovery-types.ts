@@ -21,6 +21,22 @@ export const DEFAULT_MAX_REVIEW_FINDINGS = 500;
 
 export type ProviderRunRecoveryKind = "active" | "stale" | "recovered" | "skipped";
 
+export type AiExecutionRecoveryTarget =
+  | {
+      kind: "process";
+      processId: string;
+      identity: ProcessIdentity | null;
+    }
+  | {
+      kind: "desktop_follower_turn";
+      logicalTurnId: string;
+      bindingId: string;
+      threadId: string;
+      turnId: string;
+      observationCursor: number;
+      semanticSnapshotHash: string | null;
+    };
+
 export interface StaleProviderRunRecoveryResult {
   kind: ProviderRunRecoveryKind;
   processId: string;

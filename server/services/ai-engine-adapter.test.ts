@@ -5,6 +5,7 @@ import path from "node:path";
 
 import {
   getAiEngine,
+  setCodexDesktopEngineLoaderForTest,
   setAiEngineLoaderForTest,
 } from "./ai-engine-adapter.ts";
 import type { AiEngineAdapter } from "./ai-engine-types.ts";
@@ -69,6 +70,22 @@ describe("ai-engine-adapter", () => {
       assert.deepEqual(calls, ["codex"]);
     } finally {
       restore();
+    }
+  });
+
+  it("uses the Desktop follower engine regardless of the retired rollout flag", () => {
+    const desktop = fakeEngine("desktop");
+    const restoreDesktop = setCodexDesktopEngineLoaderForTest(() => desktop);
+    try {
+      delete process.env.STAGEPASS_CODEX_DESKTOP_BRIDGE;
+      assert.equal(getAiEngine(), desktop);
+      process.env.STAGEPASS_CODEX_DESKTOP_BRIDGE = "on";
+      assert.equal(getAiEngine(), desktop);
+      process.env.STAGEPASS_CODEX_DESKTOP_BRIDGE = "true";
+      assert.equal(getAiEngine(), desktop);
+    } finally {
+      restoreDesktop();
+      delete process.env.STAGEPASS_CODEX_DESKTOP_BRIDGE;
     }
   });
 

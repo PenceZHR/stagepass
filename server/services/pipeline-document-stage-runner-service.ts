@@ -41,9 +41,14 @@ import { transitionChangeStatus } from "./change-status-service";
 import { runStageWithLedger } from "./stage-orchestrator-service";
 import {
   recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
   type ProviderSessionKind,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
+import type { CodexLogicalTurnRole } from "./codex-desktop-bridge-types";
 import type { Provider } from "./provider-selection-service";
 import { ingestStageAiOutput } from "./stage-ai-output-ingestion-service";
 import { persistStageRawCapture } from "./stage-raw-capture-service";
@@ -78,6 +83,9 @@ export interface DocumentStageConfig {
   provider?: Provider;
   /** Provider-scoped session slot. Defaults to the shared general session. */
   sessionKind?: ProviderSessionKind;
+  logicalRole?: Exclude<CodexLogicalTurnRole, "shell_materialization">;
+  logicalRound?: number;
+  logicalOrdinal?: number;
   runId?: string;
   deferRunCompletion?: boolean;
   additionalPromptFileName?: string;
@@ -481,8 +489,6 @@ export async function runDocumentStage(
   if (!project) throw new Error(`Project not found: ${change.projectId}`);
 
   const provider = config.provider ?? executionContext.provider ?? (change.provider as Provider);
-  const sessionKind = config.sessionKind ?? "general";
-
   return runStageWithLedger({
     changeId,
     phase: config.phase,
@@ -511,17 +517,39 @@ export async function runDocumentStage(
 
       const beforeAi = captureWorkspaceSnapshot(project.repoPath);
       const engine = await getPipelineEngine(provider as EngineProvider);
-      const sessionThreadId = config.threadId
-        ?? (config.resumeThread === false
-          ? undefined
-          : resolveProviderSession({ changeId, provider, sessionKind }) ?? undefined);
+      const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+      const { executableThreadId } = resolveCodexStageThreadRoute({
+        desktopBridgeEnabled,
+        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+        resolveLegacyGeneralThread: () => resolveProviderSession({
+          changeId,
+          provider: "codex",
+          sessionKind: "general",
+        }),
+      });
+      const logicalTurnId = desktopBridgeEnabled
+        ? (await resolveLogicalTurn({
+            owner: {
+              kind: "pipeline_job",
+              pipelineJobId: executionContext.jobId,
+            },
+            phase: config.phase,
+            role: config.logicalRole ?? "stage",
+            round: config.logicalRound ?? 0,
+            ordinal: config.logicalOrdinal ?? 0,
+            request: { prompt, sandboxMode: "read-only" },
+          })).logicalTurnId
+        : undefined;
       const stageTimeoutMs = documentStageTimeoutMs(config.phase);
       let result = await withDocumentStageWatchdog(
-        engine.run({
+        engine.run(desktopBridgeEnabled ? {
+          logicalTurnId: logicalTurnId!,
+        } as never : {
           changeId,
           repoPath: project.repoPath,
           phase: config.phase,
-          threadId: sessionThreadId,
+          logicalTurnId,
+          threadId: executableThreadId,
           prompt,
           // Line-protocol stages keep the schema server-side only: the model
           // must never see JSON guidance, it writes protocol lines instead.
@@ -611,17 +639,15 @@ export async function runDocumentStage(
 
       assertCurrentExecutionFence(executionContext, runId);
       const threadId = result.threadId?.trim();
-      if (threadId && threadId.toLowerCase() !== "unknown") {
+      if (!logicalTurnId && threadId && threadId.toLowerCase() !== "unknown") {
         recordProviderSession({
           changeId,
           provider,
-          sessionKind,
+          sessionKind: "general",
           externalSessionId: threadId,
           lastRunId: runId,
         });
-        // Preserve the legacy field only for the general session; specialist
-        // sessions must never overwrite it.
-        if (provider === "codex" && sessionKind === "general") {
+        if (provider === "codex") {
           runLedgerRepository.patchChange(changeId, { codexThreadId: threadId }, { runId });
         }
       }

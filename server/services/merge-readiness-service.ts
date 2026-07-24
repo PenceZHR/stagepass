@@ -19,7 +19,7 @@ import {
   stageGates,
 } from "../db/schema";
 import { recomputeStageGate, type PipelinePhase } from "./stage-authority-service";
-import { hasUncommittedChanges } from "./git-service";
+import { hasUncommittedChanges } from "./repository-evidence-service";
 import { assertTrustedAdoptedBuildState } from "./build-workspace-service";
 import {
   buildRecordSourceHead,

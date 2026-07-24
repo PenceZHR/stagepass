@@ -6,6 +6,9 @@ import {
   battleRounds,
   buildRunRecords,
   changes,
+  codexFollowerStartAttempts,
+  codexLogicalTurns,
+  codexThreadBindings,
   events,
   pipelineJobs,
   providerRunProcesses,
@@ -15,6 +18,13 @@ import {
   runs,
   stageRuns,
 } from "../db/schema";
+import type { CodexDesktopBridge } from "./codex-desktop-bridge";
+import {
+  readCodexTurnExecution,
+  recordCodexTurnNotYetVisible,
+  recordCodexTurnSnapshot,
+  startCodexTurnExecution,
+} from "./codex-turn-lifecycle-service";
 import type { ChangeStatus } from "../types";
 import { ALLOWED_TRANSITIONS } from "../state-machine/transitions";
 import { transitionChangeStatusWithDb } from "./change-status-service";
@@ -1265,6 +1275,94 @@ export function recoverProviderAfterTerminalRun(input: {
     reason: decision.reasonCode,
     reasonCode: decision.reasonCode,
   } : null;
+}
+
+/**
+ * Desktop lifecycle recovery is deliberately separate from PID recovery. It
+ * reuses/adopts the one durable follower attempt, then resumes only app-server
+ * full-turn observation from the persisted cursor/hash.
+ */
+export async function recoverDesktopFollowerExecution(input: {
+  logicalTurnId: string;
+  bridge: Pick<CodexDesktopBridge, "recoverTurn" | "pollTurn">;
+}): Promise<{
+  kind: "active" | "recovered" | "quarantined";
+  logicalTurnId: string;
+  turnId?: string;
+}> {
+  const logical = db.select().from(codexLogicalTurns)
+    .where(eq(codexLogicalTurns.logicalTurnId, input.logicalTurnId)).get();
+  if (!logical) throw new Error("logical_turn_not_found");
+  if (logical.dispatchSurface !== "follower_ipc") {
+    throw new Error("dispatch_surface_mismatch");
+  }
+  const binding = db.select().from(codexThreadBindings)
+    .where(eq(codexThreadBindings.bindingId, logical.bindingId)).get();
+  if (!binding?.threadId) throw new Error("binding_not_ready");
+  let execution = readCodexTurnExecution(logical.logicalTurnId);
+  if (!execution) {
+    const recovered = await input.bridge.recoverTurn({
+      logicalTurnId: logical.logicalTurnId,
+    });
+    if (recovered.state !== "succeeded" || !recovered.turnId) {
+      return { kind: "quarantined", logicalTurnId: logical.logicalTurnId };
+    }
+    const attempt = db.select().from(codexFollowerStartAttempts)
+      .where(eq(codexFollowerStartAttempts.attemptId, recovered.attemptId)).get();
+    if (!attempt || attempt.state !== "succeeded") {
+      throw new Error("start_attempt_not_succeeded");
+    }
+    execution = startCodexTurnExecution({
+      logicalTurnId: logical.logicalTurnId,
+      attemptId: attempt.attemptId,
+      threadId: binding.threadId,
+      turnId: recovered.turnId,
+    });
+  }
+  if (execution.dispatchSurface !== logical.dispatchSurface) {
+    throw new Error("dispatch_surface_mismatch");
+  }
+  for await (const result of input.bridge.pollTurn({
+    threadId: execution.threadId,
+    turnId: execution.turnId,
+    afterCursor: execution.lastObservationCursor,
+    lastSnapshotHash: execution.lastSemanticSnapshotHash ?? undefined,
+    lastNormalizedSnapshot: execution.normalizedItemsJson === "[]"
+      ? undefined
+      : {
+          threadId: execution.threadId,
+          turnId: execution.turnId,
+          status: "inProgress",
+          items: JSON.parse(execution.normalizedItemsJson),
+          metadata: { observedAt: execution.lastObservedAt ?? execution.updatedAt },
+        },
+    deadlineAt: db.select().from(codexFollowerStartAttempts)
+      .where(eq(codexFollowerStartAttempts.attemptId, execution.startAttemptId))
+      .get()?.budgetDeadline ?? new Date().toISOString(),
+  })) {
+    if (result.kind === "turn_not_yet_visible") {
+      recordCodexTurnNotYetVisible(logical.logicalTurnId);
+      continue;
+    }
+    recordCodexTurnSnapshot({
+      logicalTurnId: logical.logicalTurnId,
+      snapshot: result.snapshot,
+      cursor: result.cursor,
+      semanticHash: result.semanticSnapshotHash,
+    });
+    if (result.snapshot.status !== "inProgress") {
+      return {
+        kind: "recovered",
+        logicalTurnId: logical.logicalTurnId,
+        turnId: execution.turnId,
+      };
+    }
+  }
+  return {
+    kind: "active",
+    logicalTurnId: logical.logicalTurnId,
+    turnId: execution.turnId,
+  };
 }
 
 /**

@@ -17,6 +17,18 @@ function identity(pid: number, nonce = `nonce-${pid}`): ProcessIdentity {
 }
 
 describe("active provider registry", () => {
+  it("rejects desktop follower lifecycles instead of inventing process identity", () => {
+    const registry = new ActiveProviderRegistry();
+    assert.throws(
+      () => registry.register({
+        kind: "desktop_follower_turn",
+        registrationId: "follower-turn",
+      }),
+      /active_provider_registry_process_only/,
+    );
+    assert.equal(registry.size, 0);
+  });
+
   it("registers and unregisters the same entry idempotently", () => {
     const registry = new ActiveProviderRegistry();
     const entry = {

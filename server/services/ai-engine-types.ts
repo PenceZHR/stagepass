@@ -63,7 +63,26 @@ export interface AiRunLifecycleSink {
   onTerminal(event: AiRunLifecycleTerminal): void | Promise<void>;
 }
 
+export interface AiRunLifecycleTurnStarted {
+  provider: AiProvider;
+  threadId: string;
+  turnId: string;
+  logicalTurnId: string;
+  startedAt: string;
+}
+
+export type AiExecutionLifecycle =
+  | { kind: "process"; onProcessStarted: AiRunLifecycleSink["onProcessStarted"] }
+  | {
+      kind: "desktop_follower_turn";
+      onTurnStarted(
+        event: AiRunLifecycleTurnStarted,
+      ): void | Promise<void>;
+    };
+
 export interface AiRunInput {
+  /** Server-resolved durable identity for the Codex Hybrid adapter. */
+  logicalTurnId?: string;
   changeId: string;
   repoPath: string;
   phase: AiRunPhase;

@@ -44,7 +44,8 @@ export function createPipelinePreflightPayload(
   action: PipelineActionContract | null,
   extra?: Record<string, unknown>,
 ): Record<string, unknown> {
-  const { provider: _provider, ...safeExtra } = extra ?? {};
+  const safeExtra = { ...(extra ?? {}) };
+  delete safeExtra.provider;
   return {
     actionId: action?.actionId,
     expectedGateVersion: action?.gateVersion,

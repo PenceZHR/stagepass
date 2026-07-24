@@ -38,6 +38,19 @@ function spawnClient(input: {
 }
 
 describe("CodexAppServerClient", () => {
+  it("fails closed on methods outside shell/read control", async () => {
+    const client = spawnClient();
+    try {
+      await client.initialize();
+      await assert.rejects(
+        client.request("managed/write", { threadId: "THREAD-1" }),
+        /outside the shell\/read-control boundary/,
+      );
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
   it("initializes and routes thread notifications while correlating responses", async () => {
     const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
     const client = spawnClient({

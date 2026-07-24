@@ -27,7 +27,6 @@ import {
   retryBuildDecision,
   reviewBuildAdoptionDecision,
 } from "./action-contract-build-policy";
-import { commitChangesDecision, initGitRepoDecision } from "./action-contract-git-policy";
 import { reviewControlDecision } from "./action-contract-review-policy";
 import { enterQaDecision, retryQaDecision } from "./action-contract-qa-policy";
 import {
@@ -185,6 +184,30 @@ const rejectIntake: ActionPolicy = ({ snapshot }) =>
     snapshot,
   );
 
+// PRD question cards and the lock command are producers of the Intake gate.
+// They carry the current PRD authority identity but never consume a blocked
+// downstream stage gate as their own precondition.
+const prdInteraction: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
+// Design-stage correction, rejection, and P1-waiver commands are exits from a
+// blocked gate, not consumers of the passing verdict. Their transaction
+// handlers revalidate the concrete target (gap/risk/snapshot) before writing.
+const designGateExit: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
+const releaseDecisionExit: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
 const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, ActionPolicy>([
   ["run_prd", ({ snapshot }) => prdRunDecision(snapshot)],
   ["retry_prd", ({ changeStatus, snapshot }) =>
@@ -195,6 +218,17 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
   // at INTAKE_READY; carrying the snapshot here keeps preflight freshness
   // checks without letting a blocked rubric verdict disable its own escape.
   ["reject_intake", rejectIntake],
+  ["answer_prd_question", prdInteraction],
+  ["accept_prd_assumption", prdInteraction],
+  ["defer_prd_question", prdInteraction],
+  ["lock_prd_briefing", prdInteraction],
+  ["request_spec_changes", designGateExit],
+  ["return_to_spec", designGateExit],
+  ["reject_spec", designGateExit],
+  ["reject_tech_spec", designGateExit],
+  ["waive_plan_p1", designGateExit],
+  ["reject_plan", designGateExit],
+  ["reject_test_plan", designGateExit],
 
   ["run_prd_briefing_questions", briefingRun],
   ["run_prd_briefing_draft", briefingRun],
@@ -244,11 +278,14 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
     }],
   ["retry_qa", ({ db, changeId, changeStatus, snapshot, readStageAuthority }) =>
     retryQaDecision(db, changeId, changeStatus, snapshot, readStageAuthority(changeId, "TestPlan"))],
+  ["record_qa_manual_check", releaseDecisionExit],
 
   ["approve_merge", ({ db, changeId, options }) =>
     options.recomputeMergeReadiness
       ? approveMergeDecision(db, changeId)
       : approveMergeDecisionFromPersistedReadiness(db, changeId)],
+  ["override_merge", releaseDecisionExit],
+  ["request_rework", releaseDecisionExit],
   ["merge", ({ db, changeId, options }) =>
     options.recomputeMergeReadiness
       ? mergeDecision(changeId, true)
@@ -290,12 +327,6 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
   ["adopt_fix", buildAdopt],
   ["reject_build", ({ db, changeId }) => rejectBuildRunDecision(db, changeId)],
 
-  // Decided purely from the working tree; they never consult base(), because the
-  // Build stage gate has no bearing on whether a path is a repository or whether
-  // there is anything to commit. See action-contract-git-policy for why they
-  // also carry their own (gateVersion, sourceDbHash) instead of the gate's.
-  ["init_git_repo", ({ changeId, repoPath }) => initGitRepoDecision(repoPath, changeId)],
-  ["commit_changes", ({ changeId, repoPath }) => commitChangesDecision(repoPath, changeId)],
 ]);
 
 /**
@@ -318,7 +349,6 @@ const TERMINAL_CHANGE_STATUSES: ReadonlySet<string> = new Set(["DONE"]);
 const ACTIONS_REFUSED_ON_TERMINAL_CHANGE: ReadonlySet<string> = new Set([
   "enter_qa",
   "stop_change",
-  "commit_changes",
   "waive_spec_p1",
   "waive_plan_p1",
   // The two operations below have no ACTION_DEFINITIONS entry, so they never

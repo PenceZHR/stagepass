@@ -17,9 +17,11 @@ import { withSqliteWriteRetry } from "../db/write-boundary";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
 import {
   getBriefingQuestion,
+  getBriefingQuestionWithDb,
   insertBriefingQuestionsWithDb,
   listBriefingQuestionsWithDb,
   updateBriefingQuestionAnswer,
+  updateBriefingQuestionAnswerWithDb,
 } from "./briefing-question-store";
 import {
   applyQuestionAction,
@@ -883,6 +885,87 @@ export async function applyBriefingQuestionAction(input: {
   return getPrdBriefingState(input.changeId);
 }
 
+export type PrdQuestionCommandAction =
+  | { action: "answer"; answer: string }
+  | { action: "accept_assumption" }
+  | { action: "defer"; reason: string };
+
+/**
+ * The command-gateway transaction port for PRD question cards. It deliberately
+ * re-reads the row inside the caller's transaction: accepting an assumption
+ * can only use the Server-stored suggested default and critical questions can
+ * never be deferred.
+ */
+export function applyBriefingQuestionCommandWithDb(
+  connection: Pick<PrdBriefingDb, "select" | "update">,
+  input: {
+    changeId: string;
+    questionId: string;
+    command: PrdQuestionCommandAction;
+  },
+): typeof briefingQuestions.$inferSelect {
+  const briefing = connection.select().from(prdBriefings)
+    .where(eq(prdBriefings.changeId, input.changeId)).get() ?? null;
+  assertMutable(briefing);
+  const question = getBriefingQuestionWithDb(
+    connection,
+    input.changeId,
+    input.questionId,
+    "PRD",
+  );
+  if (!question) {
+    throw new PrdBriefingError(
+      "question_not_found",
+      `Question not found: ${input.questionId}`,
+    );
+  }
+  if (question.status !== "open") {
+    throw new PrdBriefingError(
+      "question_already_resolved",
+      `Question is already ${question.status}`,
+    );
+  }
+
+  let status: "answered" | "assumption_accepted" | "deferred";
+  let answer: string;
+  if (input.command.action === "answer") {
+    status = "answered";
+    answer = input.command.answer.trim();
+  } else if (input.command.action === "accept_assumption") {
+    const suggestedDefault = question.suggestedDefault?.trim();
+    if (!suggestedDefault) {
+      throw new PrdBriefingError(
+        "suggested_default_missing",
+        "Question has no Server-stored suggested default",
+      );
+    }
+    status = "assumption_accepted";
+    answer = suggestedDefault;
+  } else {
+    if (question.severity === "critical") {
+      throw new PrdBriefingError(
+        "critical_question_cannot_defer",
+        "Critical PRD questions cannot be deferred",
+      );
+    }
+    status = "deferred";
+    answer = input.command.reason.trim();
+  }
+  if (!answer) {
+    throw new PrdBriefingError(
+      "invalid_question_action",
+      "Question action requires a non-empty value",
+    );
+  }
+  return updateBriefingQuestionAnswerWithDb(connection, {
+    changeId: input.changeId,
+    questionId: input.questionId,
+    phase: "PRD",
+    status,
+    answer,
+  });
+}
+
 export async function completePrdDraft(input: {
   changeId: string;
   markdown: string;
@@ -973,7 +1056,42 @@ export async function lockPrdBriefing(input: {
 }): Promise<PrdBriefingState> {
   getProjectForChange(input.changeId);
   const state = getPrdBriefingState(input.changeId);
-  if (!state.briefing) throw new PrdBriefingError("briefing_not_found", `Briefing not found: ${input.changeId}`);
+  assertPrdBriefingLockReady(state, input.changeId);
+
+  const now = nowISO();
+  withSqliteWriteRetry("prd-briefing.lock", () =>
+    db.transaction((tx) => {
+      tx.update(prdBriefings)
+        .set({ status: "locked", lockedAt: now, updatedAt: now })
+        .where(eq(prdBriefings.changeId, input.changeId))
+        .run();
+      transitionChangeStatusWithDb(tx as unknown as typeof db, {
+        changeId: input.changeId,
+        to: "INTAKE_READY",
+        gateState: "intake",
+        message: "PRD briefing locked",
+        rawJson: { source: "prd_briefing_lock" },
+      });
+    })
+  );
+
+  syncPrdStageAuthority(input.changeId);
+  await refreshPrdBriefingMirrors(input.changeId);
+  const lockedState = getPrdBriefingState(input.changeId);
+  await insertEvent({
+    changeId: input.changeId,
+    type: "prd_briefing_locked",
+    message: `PRD briefing locked for ${input.changeId}`,
+    rawJson: { gate: lockedState.gate },
+  });
+  return lockedState;
+}
+
+export function assertPrdBriefingLockReady(
+  state: PrdBriefingState,
+  changeId: string,
+): void {
+  if (!state.briefing) throw new PrdBriefingError("briefing_not_found", `Briefing not found: ${changeId}`);
   // Every other mutator here calls assertMutable; this one did not, and the
   // lock route has no contract gate to fall back on (there is no `lock_prd`
   // entry in ACTION_DEFINITIONS at all). computePrdGate additionally
@@ -1030,31 +1148,4 @@ export async function lockPrdBriefing(input: {
     throw new PrdBriefingError("final_review_blocks_lock", "Final review does not allow PRD lock");
   }
 
-  const now = nowISO();
-  withSqliteWriteRetry("prd-briefing.lock", () =>
-    db.transaction((tx) => {
-      tx.update(prdBriefings)
-        .set({ status: "locked", lockedAt: now, updatedAt: now })
-        .where(eq(prdBriefings.changeId, input.changeId))
-        .run();
-      transitionChangeStatusWithDb(tx as unknown as typeof db, {
-        changeId: input.changeId,
-        to: "INTAKE_READY",
-        gateState: "intake",
-        message: "PRD briefing locked",
-        rawJson: { source: "prd_briefing_lock" },
-      });
-    })
-  );
-
-  syncPrdStageAuthority(input.changeId);
-  await refreshPrdBriefingMirrors(input.changeId);
-  const lockedState = getPrdBriefingState(input.changeId);
-  await insertEvent({
-    changeId: input.changeId,
-    type: "prd_briefing_locked",
-    message: `PRD briefing locked for ${input.changeId}`,
-    rawJson: { gate: lockedState.gate },
-  });
-  return lockedState;
 }

@@ -292,3 +292,16 @@ export function refreshActions(changeId: string): PipelineActionContract[] {
 }
 
 export const getActions = refreshActions;
+
+export function requireCurrentActionContract(
+  changeId: string,
+  canonicalActionId: string,
+): PipelineActionContract {
+  const action = getActions(changeId).find(
+    (candidate) => candidate.actionId === canonicalActionId,
+  );
+  if (!action) {
+    throw new Error(`Unknown action: ${canonicalActionId}`);
+  }
+  return action;
+}

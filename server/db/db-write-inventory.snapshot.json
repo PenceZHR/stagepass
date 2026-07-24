@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policySha256": "9a71174ef4cb22efd941bfa348f4208366eba8e33d7f3db777e6f58ff73799a9",
+  "policySha256": "ddc30581bb16493e94e41cf712a68cf377be2c7d01b6bd8edc18a139a176989d",
   "entries": [
     {
       "file": "server/db/migrate.ts",
@@ -361,6 +361,118 @@
       "table": "changes",
       "owner": "Task 14",
       "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "OF",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "candidate immutability and ready identity triggers"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "phase0_pipeline_jobs",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "disposable isolated verification journal schema"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "__native_sql__",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "fenced disposable verification journal transition"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_interactions",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable verification interaction decision"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_logical_turns",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable verification logical turn identity"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_restart_checkpoints",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable restart checkpoint and consumed tombstone CAS"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_start_attempts",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "fenced verification dispatch attempt"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_thread_bindings",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "canonical verification thread binding"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_turn_executions",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "exactly-once verification execution"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_verification_wakeups",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "run-scoped persistent MCP verification authority"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_effects",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "exactly-once Host wakeup effect"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_jobs",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host wakeup job"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_outbox",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host marker outbox"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_receipts",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host marker acknowledgement"
     },
     {
       "file": "server/services/context-init-service.ts",

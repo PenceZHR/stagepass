@@ -50,8 +50,12 @@ import type { Change, ChangeStatus, Project } from "../types";
 import type { Provider } from "./provider-selection-service";
 import {
   recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
 
 const log = createChildLogger("pipeline-service");
 
@@ -254,11 +258,34 @@ async function generatePlanInExecutionScope(
 
     const beforeAi = captureWorkspaceSnapshot(project.repoPath);
     const engine = await getPipelineEngine(provider);
-    let result = await engine.run({
+    const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+    const { executableThreadId } = resolveCodexStageThreadRoute({
+      desktopBridgeEnabled,
+      resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+      resolveLegacyGeneralThread: () => resolveProviderSession({
+        changeId,
+        provider: "codex",
+        sessionKind: "general",
+      }),
+    });
+    const logicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
+          phase: "Plan",
+          role: "stage",
+          round: 0,
+          ordinal: 0,
+          request: { prompt, sandboxMode: "read-only" },
+        })).logicalTurnId
+      : undefined;
+    let result = await engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: logicalTurnId!,
+    } as never : {
       changeId,
       repoPath: project.repoPath,
       phase: "plan",
-      threadId: resolveProviderSession({ changeId, provider, sessionKind: "general" }) ?? undefined,
+      logicalTurnId,
+      threadId: executableThreadId,
       prompt,
       // Line-protocol stage: the model writes protocol lines, never JSON;
       // PLAN_JSON_SCHEMA stays server-side as the second gate.
@@ -298,7 +325,7 @@ async function generatePlanInExecutionScope(
 
     // Persist a provider-scoped session; only Codex/general mirrors the legacy field.
     const threadId = result.threadId?.trim();
-    if (threadId && threadId.toLowerCase() !== "unknown") {
+    if (!logicalTurnId && threadId && threadId.toLowerCase() !== "unknown") {
       recordProviderSession({
         changeId,
         provider,

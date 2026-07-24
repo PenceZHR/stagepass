@@ -139,7 +139,7 @@ import {
 import { readBuildRunByNumber } from "./build-workspace-run-store.ts";
 import { PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service.ts";
 import { computeMergeReadiness } from "./merge-readiness-service.ts";
-import { hasUncommittedChanges } from "./git-service.ts";
+import { hasUncommittedChanges } from "./repository-evidence-service.ts";
 import { getReviewCenterState } from "./review-center-service.ts";
 import type { StageProgressEventPayload } from "./stage-ai-output-contract.ts";
 import type { AiRunLifecycleSink } from "./ai-engine-types.ts";

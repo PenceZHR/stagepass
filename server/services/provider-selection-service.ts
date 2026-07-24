@@ -58,6 +58,8 @@ export function resolveProviderSelection(
   _requested: Provider | undefined,
   _changeDefault: Provider | null | undefined,
 ): Provider {
+  void _requested;
+  void _changeDefault;
   return "codex";
 }
 

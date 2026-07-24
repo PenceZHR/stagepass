@@ -78,6 +78,141 @@ export interface SpecBattleDecisionInput {
   reason: string | null;
 }
 
+type SpecBattleDecisionDb = Pick<typeof db, "select" | "update" | "insert">;
+
+export function applySpecBattleDecisionWithDb(
+  battleDb: SpecBattleDecisionDb,
+  input: {
+    changeId: string;
+    action: "approve" | "request_changes" | "return_to_spec" | "waive_p1";
+    decisionId: string;
+    targetId?: string | null;
+    reason?: string | null;
+    expectedReportHash?: string | null;
+  },
+): void {
+  const change = battleDb
+    .select()
+    .from(changes)
+    .where(eq(changes.id, input.changeId))
+    .get();
+  if (!change) throw new SpecBattleError("change_not_found");
+  if (change.status !== "SPEC_READY") {
+    throw new SpecBattleError("round_not_ready");
+  }
+  const round = battleDb
+    .select()
+    .from(battleRounds)
+    .where(eq(battleRounds.changeId, input.changeId))
+    .all()
+    .sort(
+      (left, right) =>
+        right.roundNo - left.roundNo ||
+        right.createdAt.localeCompare(left.createdAt),
+    )[0];
+  if (!round || round.status !== "report_ready") {
+    throw new SpecBattleError("round_not_ready");
+  }
+  const report = battleDb
+    .select()
+    .from(warReports)
+    .where(eq(warReports.roundId, round.id))
+    .all()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  if (
+    input.expectedReportHash
+    && report?.reportHash !== input.expectedReportHash
+  ) {
+    throw new SpecBattleError("design_report_hash_drift");
+  }
+  const gaps = battleDb
+    .select()
+    .from(requirementGaps)
+    .where(eq(requirementGaps.changeId, input.changeId))
+    .all();
+  const counts = computeGapCounts(gaps.map(toRuleGap));
+  if (input.action === "waive_p1") {
+    if (!input.reason?.trim() || !input.targetId) {
+      throw new SpecBattleError("decision_reason_required");
+    }
+    const gap = gaps.find(
+      (row) =>
+        row.id === input.targetId
+        || row.canonicalGapId === input.targetId,
+    );
+    if (
+      !gap
+      || effectiveSeverity(toRuleGap(gap)) === "P0"
+    ) {
+      throw new SpecBattleError("p0_cannot_be_waived");
+    }
+    if (
+      effectiveSeverity(toRuleGap(gap)) !== "P1"
+      || !["open", "downgraded"].includes(gap.status)
+    ) {
+      throw new SpecBattleError("waive_not_allowed");
+    }
+    const now = nowISO();
+    battleDb.update(requirementGaps).set({
+      status: "waived",
+      waiverReason: input.reason,
+      specBlocking: 0,
+      mergeBlocking: 0,
+      updatedAt: now,
+      closedAt: now,
+    }).where(eq(requirementGaps.id, gap.id)).run();
+    battleDb.update(warReports).set({
+      status: "stale",
+      updatedAt: now,
+    }).where(eq(warReports.id, report?.id ?? "")).run();
+    return;
+  }
+  if (
+    input.action === "request_changes"
+    || input.action === "return_to_spec"
+  ) {
+    if (!input.reason?.trim()) {
+      throw new SpecBattleError("decision_reason_required");
+    }
+    const now = nowISO();
+    battleDb.update(battleRounds).set({
+      status: "superseded",
+      updatedAt: now,
+    }).where(eq(battleRounds.id, round.id)).run();
+    transitionChangeStatusWithDb(
+      battleDb as Parameters<typeof transitionChangeStatusWithDb>[0],
+      {
+        changeId: input.changeId,
+        to: "INTAKE_READY",
+        gateState: null,
+        message: "Spec changes requested",
+        rawJson: {
+          source: "pipeline_command",
+          action: input.action,
+          decisionId: input.decisionId,
+          targetId: input.targetId ?? null,
+          reason: input.reason,
+        },
+      },
+    );
+    return;
+  }
+  if (counts.blockingP0 > 0 || counts.blockingP1 > 0) {
+    throw new SpecBattleError("gate_blocked");
+  }
+  const now = nowISO();
+  battleDb
+    .update(battleRounds)
+    .set({ status: "closed", endedAt: now, updatedAt: now })
+    .where(eq(battleRounds.id, round.id))
+    .run();
+  battleDb
+    .update(changes)
+    .set({ gateState: "spec", updatedAt: now })
+    .where(eq(changes.id, input.changeId))
+    .run();
+}
+
 export interface StartSpecBattleRoundResult {
   roundId: string;
   roundNo: number;

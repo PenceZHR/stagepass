@@ -284,6 +284,19 @@ export function buildBaseCampDecision(
       }],
     };
   }
+  if (baseCamp.blockers.includes("Path is not a git repository.")) {
+    return {
+      ...current,
+      enabled: false,
+      reasonCode: "repository_required_for_protected_build",
+      reason: "Initialize Git in Codex, then run repository recovery in StagePass.",
+      blockers: [{
+        id: "repository_required_for_protected_build",
+        severity: "P1",
+        title: "Protected Build requires a Git repository.",
+      }],
+    };
+  }
   if (!buildBaseCampHasBlockingProblem(baseCamp, options)) return current;
   const details =
     baseCamp.blockers.length > 0

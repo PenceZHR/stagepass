@@ -35,6 +35,7 @@ type ReadConnection = Pick<typeof db, "select">;
 /** A write handle. Separate from ReadConnection so a caller holding a
  *  read-only view is not forced to widen it to call a reader. */
 type WriteConnection = Pick<typeof db, "insert">;
+type UpdateConnection = Pick<typeof db, "select" | "update">;
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -72,7 +73,16 @@ export function getBriefingQuestion(
   questionId: string,
   phase: BriefingQuestionPhase,
 ): BriefingQuestionRow | undefined {
-  return db
+  return getBriefingQuestionWithDb(db, changeId, questionId, phase);
+}
+
+export function getBriefingQuestionWithDb(
+  connection: ReadConnection,
+  changeId: string,
+  questionId: string,
+  phase: BriefingQuestionPhase,
+): BriefingQuestionRow | undefined {
+  return connection
     .select()
     .from(briefingQuestions)
     .where(and(
@@ -100,12 +110,34 @@ export function updateBriefingQuestionAnswer(input: {
   status: string;
   answer: string | null;
 }): void {
-  db.update(briefingQuestions)
-    .set({ status: input.status, answer: input.answer, updatedAt: nowISO() })
+  updateBriefingQuestionAnswerWithDb(db, input);
+}
+
+export function updateBriefingQuestionAnswerWithDb(
+  connection: UpdateConnection,
+  input: {
+    changeId: string;
+    questionId: string;
+    phase: BriefingQuestionPhase;
+    status: string;
+    answer: string | null;
+  },
+): BriefingQuestionRow {
+  const existing = getBriefingQuestionWithDb(
+    connection,
+    input.changeId,
+    input.questionId,
+    input.phase,
+  );
+  if (!existing) throw new Error(`Question not found: ${input.questionId}`);
+  const updatedAt = nowISO();
+  connection.update(briefingQuestions)
+    .set({ status: input.status, answer: input.answer, updatedAt })
     .where(and(
       eq(briefingQuestions.changeId, input.changeId),
       eq(briefingQuestions.id, input.questionId),
       eq(briefingQuestions.phase, input.phase),
     ))
     .run();
+  return { ...existing, status: input.status, answer: input.answer, updatedAt };
 }

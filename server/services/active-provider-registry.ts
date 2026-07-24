@@ -5,10 +5,16 @@ import type {
 import { processIdentityProbe } from "./process-identity-service";
 
 export interface ActiveProviderEntry {
+  kind?: "process";
   registrationId: string;
   ownerPid: number;
   identity: ProcessIdentity;
   onStopped(signal: NodeJS.Signals): void | Promise<void>;
+}
+
+export interface DesktopFollowerProviderEntry {
+  kind: "desktop_follower_turn";
+  registrationId: string;
 }
 
 export interface ActiveProviderRegistryOptions {
@@ -35,7 +41,12 @@ export class ActiveProviderRegistry {
     return this.entries.size;
   }
 
-  register(entry: ActiveProviderEntry): void {
+  register(entry: ActiveProviderEntry | DesktopFollowerProviderEntry): void {
+    if (entry.kind === "desktop_follower_turn") {
+      throw new Error(
+        "active_provider_registry_process_only: desktop follower turns are not processes",
+      );
+    }
     if (this.entries.has(entry.registrationId)) return;
     this.entries.set(entry.registrationId, entry);
   }

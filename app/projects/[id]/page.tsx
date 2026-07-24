@@ -8,8 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CreateChangeDialog } from "./create-change-dialog";
 import { PrdEditor } from "./prd-editor";
-import { GitSetupPanel } from "./git-setup-panel";
-import { GitWorkspacePanel } from "./git-workspace-panel";
 
 interface Project {
   id: string;
@@ -17,8 +15,6 @@ interface Project {
   repoPath: string;
   contextStatus?: string;
   prdStatus?: string;
-  gitEnabled?: number;
-  gitDefaultBranch?: string | null;
 }
 
 interface Change {
@@ -80,14 +76,13 @@ const RUNNING_STATES = new Set([
   "RETRO_PENDING",
 ]);
 
-type NavSection = "changes" | "prd" | "context" | "baseline" | "git";
+type NavSection = "changes" | "prd" | "context" | "baseline";
 
 const NAV_ITEMS: { key: NavSection; label: string; icon: string }[] = [
   { key: "changes", label: "Changes", icon: "⚡" },
   { key: "prd", label: "PRD", icon: "📋" },
   { key: "context", label: "上下文", icon: "🧠" },
   { key: "baseline", label: "基线文档", icon: "📚" },
-  { key: "git", label: "Git", icon: "🔀" },
 ];
 
 export default function ProjectDetailPage() {
@@ -105,7 +100,6 @@ export default function ProjectDetailPage() {
   const [saving, setSaving] = useState(false);
   const [prdStatus, setPrdStatus] = useState<string>("none");
   const [prdContent, setPrdContent] = useState<string | null>(null);
-  const [prdHistory, setPrdHistory] = useState<Array<{role: "user"|"assistant"; content: string}>>([]);
   const [prdStructured, setPrdStructured] = useState<Record<string, unknown> | null>(null);
   const [prdValidation, setPrdValidation] = useState<{ valid: boolean; issues: Array<{ field: string; severity: string; message: string }> } | null>(null);
   const [activeSection, setActiveSection] = useState<NavSection>("changes");
@@ -135,7 +129,6 @@ export default function ProjectDetailPage() {
     fetch(`/api/projects/${projectId}/prd`).then((r) => r.json()).then((data) => {
       setPrdStatus(data.status || "none");
       setPrdContent(data.content || null);
-      setPrdHistory(data.history || []);
       setPrdStructured(data.structured || null);
       setPrdValidation(data.validation || null);
     });
@@ -263,11 +256,6 @@ export default function ProjectDetailPage() {
             <p className="truncate text-xs text-muted-foreground" title={project.repoPath}>
               {project.repoPath}
             </p>
-            {project.gitEnabled ? (
-              <Badge variant="success" className="mt-1">
-                Git {project.gitDefaultBranch && `(${project.gitDefaultBranch})`}
-              </Badge>
-            ) : null}
           </div>
         )}
       </aside>
@@ -355,17 +343,10 @@ export default function ProjectDetailPage() {
             <div className="relative min-h-0 flex-1">
               <div className="absolute inset-0">
               <PrdEditor
-              projectId={projectId}
               prdStatus={prdStatus}
               prdContent={prdContent}
-              chatHistory={prdHistory}
               structured={prdStructured}
               validation={prdValidation}
-              onConfirm={() => { loadPrd(); loadContext(); }}
-              onStatusChange={loadPrd}
-              onContentUpdate={(content) => {
-                if (content) setPrdContent(content);
-              }}
             />
               </div>
             </div>
@@ -518,14 +499,6 @@ export default function ProjectDetailPage() {
           </div>
         )}
 
-        {/* Git Section */}
-        {activeSection === "git" && project && (
-          <div className="mx-auto max-w-4xl space-y-6 px-8 py-10">
-            <h2 className="text-xl font-semibold">Git</h2>
-            <GitSetupPanel projectId={projectId} />
-            <GitWorkspacePanel projectId={projectId} />
-          </div>
-        )}
       </main>
     </div>
   );

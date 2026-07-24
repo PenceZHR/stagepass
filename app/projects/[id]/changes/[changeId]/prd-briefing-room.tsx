@@ -237,12 +237,14 @@ function QuestionCard({
   question,
   value,
   busy,
+  readOnly,
   onChange,
   onAction,
 }: {
   question: BriefingQuestion;
   value: string;
   busy: boolean;
+  readOnly?: boolean;
   onChange: (value: string) => void;
   onAction: (action: QuestionAction, value: string) => void;
 }) {
@@ -276,7 +278,7 @@ function QuestionCard({
           处理: {question.answer}
         </p>
       )}
-      {isOpen && (
+      {isOpen && !readOnly && (
         <div className="mt-3 space-y-2">
           <textarea
             className="min-h-20 w-full resize-y rounded border bg-background px-3 py-2 text-sm text-foreground"
@@ -325,12 +327,18 @@ export function PrdBriefingRoom({
   initialState,
   onLocked,
   onStageActionsChange,
+  codexDecisionEnabled = false,
+  interactionStatus = null,
+  onOpenInCodex,
 }: {
   projectId: string;
   changeId: string;
   initialState: PrdBriefingState | null;
   onLocked: () => void;
   onStageActionsChange?: (actions: StageActionView[]) => void;
+  codexDecisionEnabled?: boolean;
+  interactionStatus?: string | null;
+  onOpenInCodex?: () => void;
 }) {
   const [state, setState] = useState<PrdBriefingState | null>(initialState);
   const [rawText, setRawText] = useState(initialState?.briefing?.intentText ?? "");
@@ -589,15 +597,25 @@ export function PrdBriefingRoom({
         : "PRD 草稿和终审通过后才能锁定。";
   const stageActions = useMemo<StageActionView[]>(() => [{
     id: "prd-lock",
-    label: isLocked ? "PRD 已锁定" : "锁定 PRD",
+    label: codexDecisionEnabled
+      ? "Open in Codex"
+      : isLocked ? "PRD 已锁定" : "锁定 PRD",
     role: "primary",
-    enabled: lockDisabledReason === null,
+    enabled: codexDecisionEnabled ? true : lockDisabledReason === null,
     busy: busyAction === "lock",
     providerBusy: actionLocked,
-    disabledReason: lockDisabledReason,
-    sourceActionId: "lock_prd",
-    onAction: lockPrd,
-  }], [actionLocked, busyAction, isLocked, lockDisabledReason, lockPrd]);
+    disabledReason: codexDecisionEnabled ? null : lockDisabledReason,
+    sourceActionId: codexDecisionEnabled ? "open_codex" : "lock_prd_briefing",
+    onAction: codexDecisionEnabled ? (onOpenInCodex ?? (() => {})) : lockPrd,
+  }], [
+    actionLocked,
+    busyAction,
+    codexDecisionEnabled,
+    isLocked,
+    lockDisabledReason,
+    lockPrd,
+    onOpenInCodex,
+  ]);
 
   useEffect(() => {
     onStageActionsChange?.(stageActions);
@@ -609,6 +627,17 @@ export function PrdBriefingRoom({
 
   return (
     <section className="space-y-5" data-prd-briefing-workspace>
+      {codexDecisionEnabled && (
+        <div
+          className="flex items-center justify-between rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900"
+          data-codex-decision-status
+        >
+          <span>{interactionStatus ?? "等待 Codex 中的操作"}</span>
+          <Button type="button" size="sm" onClick={onOpenInCodex}>
+            Open in Codex
+          </Button>
+        </div>
+      )}
       <div className="space-y-3 border-b pb-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
@@ -764,6 +793,7 @@ export function PrdBriefingRoom({
                       question={question}
                       value={answers[question.id] ?? ""}
                       busy={actionLocked}
+                      readOnly={codexDecisionEnabled}
                       onChange={(value) => setAnswers((prev) => ({ ...prev, [question.id]: value }))}
                       onAction={(action, value) => handleQuestionAction(question.id, action, value)}
                     />

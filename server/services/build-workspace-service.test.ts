@@ -12,17 +12,19 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 
 import * as schema from "../db/schema.ts";
 import {
-  applyPatch,
-  commitAll,
-  commitWithMessage,
-  createGitWorktree,
   getBinaryDiff,
   getCommitSubject,
   getHeadSha,
   getPorcelainStatus,
   isWorkingTreeClean,
-  removeGitWorktree,
-} from "./git-service";
+} from "./repository-evidence-service";
+import {
+  applyAdoptionPatch as applyPatch,
+  commitAdoptedPatch as commitWithMessage,
+  commitPipelineChanges as commitAll,
+  createBuildWorktree as createGitWorktree,
+  removeBuildWorktree as removeGitWorktree,
+} from "./workspace-versioning-service";
 import {
   absorbBuildPatch,
   adoptFixPatch,

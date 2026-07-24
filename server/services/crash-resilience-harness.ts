@@ -1294,13 +1294,36 @@ async function childMain(role: string): Promise<void> {
     const input = JSON.parse(process.env.STAGEPASS_PROVIDER_EXECUTION!) as {
       changeId: string; runId: string; jobId: string; workerId: string; leaseToken: string;
     };
-    const [{ getPipelineEngine, createProviderLifecycleSink }, { failPipelineJob }] = await Promise.all([
+    const [
+      { getPipelineEngine, createProviderLifecycleSink },
+      { failPipelineJob },
+      { readCodexNativeFlags },
+      { resolveLogicalTurn },
+    ] = await Promise.all([
       import("./pipeline-engine-service"),
       import("./pipeline-job-lease-service"),
+      import("../config/codex-native-flags"),
+      import("./codex-logical-turn-service"),
     ]);
     const context = { jobId: input.jobId, workerId: input.workerId, leaseToken: input.leaseToken, attemptNo: 1 };
     const engine = await getPipelineEngine("codex");
-    const result = await engine.run({
+    const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+    const logicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "pipeline_job", pipelineJobId: input.jobId },
+          phase: "TechSpec",
+          role: "stage",
+          round: 0,
+          ordinal: 0,
+          request: {
+            prompt: "acceptance transport barrier",
+            sandboxMode: "read-only",
+          },
+        })).logicalTurnId
+      : null;
+    const result = await engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: logicalTurnId!,
+    } as never : {
       changeId: input.changeId,
       prompt: "acceptance transport barrier",
       repoPath: PROJECT_ROOT,

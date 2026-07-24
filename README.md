@@ -1,257 +1,174 @@
-# stagepass
+# StagePass
 
 **English** · [简体中文](README.zh-CN.md)
 
-> Take one sentence of intent and walk it through a real software delivery process. Local-first. You approve every gate.
->
-> *把一句需求，押着走完一条真正的软件工程流程。本地优先，每一关都由你拍板。*
+StagePass is a local, Codex-native control plane for moving a software change from intent to delivery through explicit stages, evidence, review, and human decisions.
 
-![Spec battle: the adversary raises 3 P1 risks, the Spec gate refuses to open, and whether to accept the risk is your decision](docs/images/spec-battle.png)
+The Web app is the operator dashboard. Codex Desktop is where managed work runs and where the StagePass MCP App presents human decision cards. The StagePass Server remains the only authority for workflow state, commands, idempotency, audit, and recovery.
 
-<p align="center"><em>An adversarial round in the Spec stage: your agent closes gaps, the adversary finds holes, and the battle report is settled deterministically.<br>
-While P1 risks remain, the gate refuses to open — keep fighting or accept the risk is your call, not the AI's.</em></p>
+> Current status: developer preview. The production build and Codex-native boundary suites pass, but a release still requires Phase 0 verification against the exact supported Codex Desktop build.
 
----
+## What changed in the Codex-native edition
 
-## Who this is for
+- One persistent Codex task per Change.
+- One reusable Project PRD task and one reusable Project Context task per Project.
+- Codex app-server provisions, names, lists, and reads persistent task shells.
+- Codex Desktop follower IPC exclusively starts and interrupts managed turns.
+- The StagePass MCP App presents approvals, rejections, risk acceptance, adoption, and other human decisions inside the bound Codex task.
+- Web retains status, evidence, health, settings, start/retry, interrupt, and recovery controls.
+- StagePass no longer exposes Git setup, stage, commit, push, or remote-management UI. Use Codex or your normal Git tooling.
+- SQLite is the business authority; files under `.ship/` are readable mirrors and audit artifacts.
 
-**People who want to build with AI but have never been trained as engineers.**
-
-Codex writes good code. That isn't the problem. The problem is that if you've never been through a real development process, **you can't tell where the AI is bluffing you** — which requirement is still vague, which acceptance criterion is missing, what landmine that technical approach just buried. All you can do is stare at a wall of generated code and click "looks good."
-
-stagepass does something else: **it doesn't write your code — it makes sure you run the right process.**
-
-You give it one sentence. It walks you and your AI through 12 stages, stopping at every critical junction to wait for your decision. Go through it once and you've actually learned the process — and along the way the AI can't wander off, can't hide, and can be recovered when it crashes.
-
-> Advancing in stages with a human decision point between each one is called **Stage-Gate**, and product organizations have used it for decades. stagepass didn't invent new rules; it just applies them to AI coding. So what you learn is a genuine industry process, not something a tool made up.
-
----
-
-## How this differs from using Codex directly
-
-With the CLI, what you get is **one AI writing code and then telling you it's done**.
-
-stagepass gives you **a second AI whose only job is to prove the first one wrong** — plus a process in which no party is allowed to grade its own work.
-
-### 1. You are the principal, not a spectator
-
-This isn't marketing copy. It's a hard constraint baked into the prompt (`server/templates/prompts/spec.md`, translated from the Chinese original):
-
-> The red side refers only to the human user — the source of the requirements and the final arbiter.
-> You are not the red side. You are our execution agent, serving the red side.
-> The opposing side is responsible for interrogation, criticism, and re-review.
-
-The AI that writes the spec (`SPEC_WRITER`) is **your** execution agent. A separate adversary AI (`REQUIREMENT_CRITIC`) exists purely to attack its output. Approval authority lives only with you — the adversary's own prompt spells it out: **"You cannot approve the PRD; locking can only be performed by a human."**
-
-For a beginner this is the whole point. You don't need to be able to spot the holes in your own requirements. **An AI is assigned to point them out to you.** You just decide.
-
-> Naming note: in the Chinese wargame convention used throughout the code and UI, 红方 ("red side") is *your* side — you, the principal — and the adversary is the opposing side. This is the reverse of the Western security convention where red team means the attacker.
-
-### 2. Specs have to survive an adversarial fight — 3 rounds by default
-
-The Spec stage isn't "the AI writes a spec, next." It's fought round by round (3 by default, configurable 1–5):
-
-- `SPEC_WRITER` produces a PRD delta and declares, for each gap raised last round, that it has been fixed.
-- `REQUIREMENT_CRITIC` **must re-review the old gaps before it is allowed to raise new ones**, giving a verdict on each (resolved / still open / downgraded / needs human decision), and only then reports newly discovered requirement gaps.
-
-Gaps come in three severities, and the rules are hard: **P0 blocks and cannot be waived**; **P1 blocks, but you may waive it manually**; **P2 doesn't block, but it must be put in front of you.**
-
-Before all of this there's a **PRD Briefing** round: the adversary AI interrogates your requirement itself and issues up to 7 "challenge cards" (critical / important / optional). Questions you defer don't disappear — they must be written into the "human gate" section of the PRD delta. **Silently dropping them is not allowed.**
-
-### 3. No AI grades its own work
-
-- **Battle reports are computed, not written by an AI.** The Spec reports (`spec-report.md` / `war-report.md`) are generated by deterministic code from the adversarial record in the database — not an AI writing "I think I did well."
-- **A stale report blocks approval.** Report freshness is judged by a hash of its source data. If the source data changes, the report becomes `stale` and the approve button goes dead.
-- **Old problems are assumed to still be live.** The hard rule in Review is `prior blocker remains authoritative` — if last round's blocker wasn't explicitly re-reviewed, it is still open by default. An AI can't get away with "forgetting" to mention it.
-
-### 4. The gates protect against your slip-ups too, not just the AI's
-
-On every approval, the server compares the contract snapshot your page was rendered from against a fresh recomputation from the database (`server/services/preflight-service.ts`):
-
-| Check | Error on drift | What it prevents |
-|---|---|---|
-| `gateVersion` | `gate_version_drift` | The gate verdict was recomputed after your page loaded |
-| `sourceDbHash` | `source_db_hash_drift` | The DB data the verdict rests on has changed |
-| git `HEAD` | `git_head_drift` | The repository HEAD moved after the page was rendered |
-
-In other words: **you cannot approve based on a stale screen.** Leave the page open for an hour while background state moves on, and your click gets blocked rather than silently executing against the old state.
-
-### 5. Build never touches your working tree
-
-During Build the AI doesn't write files in your repository. It works in a sibling directory:
+## Architecture
 
 ```text
-<parent of your repo>/.stagepass-workspaces/<repo name>/<changeId>/build-<n>/
+                              ┌────────────────────────────┐
+                              │ Persistent Codex task      │
+                              │ work + MCP decision cards  │
+                              └─────────────┬──────────────┘
+                                            │
+                     follower IPC / Host ui/message / task reads
+                                            │
+┌──────────────────┐      commands      ┌───▼────────────────────┐
+│ StagePass Web    ├────────────────────► StagePass Server        │
+│ operator control │◄────────────────────┤ workflow authority     │
+└──────────────────┘   state/evidence    └───┬───────────┬───────┘
+                                             │           │
+                                  app-server │           │ SQLite
+                                  shell/read │           │ authority
+                                             ▼           ▼
+                                      persistent     durable state,
+                                      task shells    audit, recovery
 ```
 
-An isolated branch is created with `git worktree add` from a pinned baseline, and the result flows back as a patch. Your main checkout is never touched. Symlinks are refused at the path layer and escapes are checked with a double `realpath`, so even a runaway build stays inside the isolation zone.
+The important boundary is intentional:
 
-### 6. The Codex process is crash-recoverable
+- app-server may manage persistent shells, read turns, and list models;
+- app-server must not start managed turns;
+- Desktop follower IPC starts managed turns only after a durable, fenced attempt exists;
+- Web and MCP submit through the same Server command gateway;
+- recovery never redispatches an ambiguous attempt.
 
-Codex CLI runs as a **real locally spawned process**. It must yield a real pid (if it can't, it terminates and reports an error), is written into the process table, and goes through the same recovery sweep as every pipeline run:
+The full rationale is in the [Codex-native design](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md).
 
-> Codex previously used `@openai/codex-sdk`, which sealed the child process away (no pid exposed, only an AbortSignal). Spawning it ourselves is the only way to get a real pid, identity, and signal control.
-
-Crash recovery is handled by the pipeline worker's periodic sweep (every 15s by default): a heartbeat older than 45s is treated as lost, the pid is probed, and if necessary SIGTERM → SIGKILL follows — **with process ownership and identity re-confirmed immediately before termination**. The run/job is then marked failed and the provider orphaned. Kill the AI process, close the terminal, reboot the machine: business state converges on its own.
-
-### 7. The database is the referee; files are only mirrors
-
-SQLite is the single source of business authority. The JSON and Markdown under `.ship/` are mirrors and audit material for you and the AI to read. **When they disagree with the database, the database wins.**
-
----
-
-## 12 stages · 4 formal gates
+## Workflow
 
 ```text
-Refine → PRD → Spec → Tech Spec → Plan → Test Plan
-       → Build → Review → Fix → QA → Merge → Retro
+PRD → Spec → Tech Spec → Plan → Test Plan
+    → Build → Review → Fix → QA → Merge → Retro → Done
 ```
 
-| Stage | What the AI produces | What you do |
-|---|---|---|
-| **Refine** | — (you describe the requirement yourself) | Say what you want, in plain language |
-| **PRD** | Follow-up questions → draft → final review; briefing-room interrogation | 🚦 **Intake Gate**: approve the PRD / send it back |
-| **Spec** | Adversarial rounds producing a PRD delta + gap list | 🚦 **Spec Gate**: approve / reject / fight another round / waive a P1 |
-| **Tech Spec** | Technical design delta | 🚦 **Tech Spec Gate**: approve / send back |
-| **Plan** | Battle plan: which files are expected to change, which are off-limits, how many steps | Approve the battle plan |
-| **Test Plan** | Test cases | Confirm the test plan |
-| **Build** | Writes code inside an isolated worktree | Absorb this build / reject this build |
-| **Review** | P0 / P1 / P2 findings; P0 and P1 must come with a required fix | Read the findings, decide whether to proceed |
-| **Fix** | Fixes the blockers | Same as above |
-| **QA** | QA record | Same as above |
-| **Merge** | Readiness checks (QA / Review / Docs / Requirements) | 🚦 **Merge Gate**: approve merge / send back |
-| **Retro** | Release note + retrospective | Accept |
+Codex produces artifacts and performs work. StagePass records facts, checks freshness and gates, and presents the decisions that only a human may make.
 
-**Sending work back comes in two flavours:**
-
-- **Rework (redo this stage)** is available only in the document-producing stages — **Refine / Plan / Test Plan / Build / Fix** (plus the internal `Implement` and `Check` execution states).
-- **Intake / Spec / Tech Spec / Review / Merge / Retro have no rework path.** To go back you use the gate's reject button, which rolls the state back to the previous checkpoint.
-
----
+P0 findings block and cannot be waived. P1 findings block unless a human explicitly accepts the risk with a reason. A stale card, stale gate version, changed source hash, or mismatched task binding fails closed.
 
 ## Requirements
 
-| Dependency | Requirement |
-|---|---|
-| Node.js | ≥ 20 (developed on 25) |
-| pnpm | Installed (`npm i -g pnpm`) |
-| Port | `3000` free |
-| **OpenAI Codex CLI** | Install and sign in yourself; this is the only engine |
+- macOS with Codex Desktop installed, running, and signed in
+- Node.js 20 or newer
+- pnpm
+- an existing local Git repository for each managed Project
 
-> Codex CLI must be available before an AI-backed stage can run.
-
----
+The Hybrid Bridge uses a private, capability-gated Codex Desktop interface. The currently pinned compatibility fingerprint is documented in the [design specification](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md). Unknown builds are rejected until explicitly verified.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/PenceZHR/stagepass.git && cd stagepass
+git clone https://github.com/PenceZHR/stagepass.git
+cd stagepass
 pnpm install
-pnpm dev            # starts Next + the pipeline worker (runs db migrations automatically)
+cp .env.example .env
 ```
 
-Open <http://localhost:3000> → go to **/projects** → **New project**:
+Enable the Codex-native surfaces in `.env`:
 
-- **Name**: anything you like
-- **Repository path (repoPath)**: the **absolute path to the local repository** you want the pipeline to operate on. The directory must already exist and must **not** already contain a `.ship/` directory.
+```dotenv
+STAGEPASS_CODEX_DESKTOP_BRIDGE=on
+STAGEPASS_MCP_INTERACTIONS=on
+STAGEPASS_CODEX_DECISION_SURFACE=on
+STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge
+```
 
-On creation, stagepass scaffolds a `.ship/` directory inside that repository and uses AI to analyse the codebase and generate baseline documentation.
-
-> **Pointing the project at your own repository path is the only thing you are required to change.** Everything else works out of the box.
-
-You can also register a project through the API (handy for scripting):
+Then build the MCP App and start StagePass:
 
 ```bash
-curl -X POST http://localhost:3000/api/projects \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"my-app","repoPath":"/absolute/path/to/your/repo","gitEnabled":true}'
+pnpm db:migrate
+pnpm mcp:build
+pnpm dev
 ```
 
-### Don't want to set it up by hand? Paste this to an AI
+Open [http://localhost:3000/projects](http://localhost:3000/projects), create a Project, and point it at the absolute path of an existing local Git repository.
 
-From **inside the cloned repository**, paste the following to Codex (or any coding agent that can run commands):
-
-```text
-You are helping me set up and run "stagepass" (a local Next.js control board for an AI development pipeline) on my machine. Work through the steps below, and only stop to ask me if a step actually fails:
-1. Confirm Node >= 20 and pnpm are installed (if pnpm is missing, run `npm i -g pnpm`).
-2. Run `pnpm install`, then `pnpm db:migrate`.
-3. Confirm Codex CLI is available and signed in: run `codex --version`; if missing, install and sign in per the OpenAI Codex CLI docs; if it isn't on PATH, tell me to set `export STAGEPASS_CODEX_BIN=<path>`.
-4. Confirm port 3000 is free, run `pnpm dev`, and verify that http://localhost:3000/api/health returns {"ok":true}.
-5. Tell me to open http://localhost:3000/projects and create a project, setting repoPath to the absolute path of the repository I want to work on.
-Report clearly what you did and what I still need to do by hand (for example, signing in to a CLI).
-```
-
----
-
-## How to use it
-
-1. **Create a project** → point it at your local repository and wait for the baseline to be generated.
-2. **Create a Change** (one change = one pipeline run).
-3. **Refine**: describe what you want in plain language. No AI action here — this step is you talking.
-4. **PRD**: the AI asks follow-up questions and writes a draft; the briefing-room adversary interrogates your requirement (up to 7 challenge cards). Read it → pass the **Intake Gate**.
-5. **Spec**: 3 adversarial rounds by default. Read the gap list: P0 must be resolved, P1 you may waive, P2 you must at least look at. Not satisfied? Click "fight another round." Satisfied → pass the **Spec Gate**.
-6. **Tech Spec → Plan → Test Plan**: technical design, battle plan (which files are expected to change and which are off-limits), test cases. Confirm each in turn.
-7. **Build**: the AI works in an isolated worktree. You can absorb the result or reject this build.
-8. **Review → Fix → QA**: findings are graded P0/P1/P2, and blockers must be cleared to proceed.
-9. **Merge Gate**: readiness checks must be fully green before it opens.
-10. **Retro**: take the release note and the retrospective.
-
-At every stage, **the produced files are clickable** — changed files, plans, Spec battle reports, review findings. Open them and read the contents inline instead of hunting through directories.
-
----
+`mcp:start` is designed for a Codex Host-attested launch. Starting it as an arbitrary standalone process fails closed because it does not possess the inherited broker channel and Host evidence.
 
 ## Configuration
 
-Every setting is an **optional** environment variable; the defaults work out of the box. Export what you need before starting (both Next and the worker inherit your shell environment) — see [`.env.example`](.env.example):
+| Variable | Purpose |
+|---|---|
+| `STAGEPASS_CODEX_DESKTOP_BRIDGE` | Enables persistent Codex task execution through the Desktop bridge when set to `on`. |
+| `STAGEPASS_MCP_INTERACTIONS` | Enables MCP interaction presentation when set to `on`. |
+| `STAGEPASS_CODEX_DECISION_SURFACE` | Global master switch for Codex-hosted human decisions. |
+| `STAGEPASS_CODEX_DECISION_PHASES` | Exact comma-separated decision rollout allowlist. Invalid or unknown values fail closed. |
+| `STAGEPASS_CODEX_BIN` | Optional path to the Codex binary used for app-server shell/read control. |
+| `STAGEPASS_DB_PATH` | Optional SQLite path; defaults to `server/db/ship.db`. |
+| `STAGEPASS_LOG_DIR` | Optional runtime log directory. |
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `STAGEPASS_CODEX_BIN` | `codex` (via PATH) | Path to the codex binary (only needed if it isn't on PATH) |
-| `STAGEPASS_DB_PATH` | `server/db/ship.db` | Location of the local SQLite business database |
-| `STAGEPASS_LOG_DIR` | default log directory in the repo | Log directory |
-| `PIPELINE_WORKER_RECOVERY_SWEEP_MS` | `15000` | Crash-recovery sweep interval |
+All Codex-native flags are disabled unless their value is exactly `on`.
 
-Export them all at once:
+## Commands
+
+| Command | Description |
+|---|---|
+| `pnpm dev` | Run Next.js, migrations, and the pipeline worker. |
+| `pnpm build` | Create a production Web build. |
+| `pnpm start` | Start the production Web server. |
+| `pnpm test` | Run the isolated unit suite. |
+| `pnpm test:acceptance` | Run heavyweight process/recovery acceptance tests. |
+| `pnpm lint` | Run ESLint on source files. |
+| `pnpm exec tsc --noEmit` | Type-check the project. |
+| `pnpm mcp:build` | Build the StagePass MCP server and App UI bundle. |
+| `pnpm test:phase0-verifier` | Run the Phase 0 bridge contract suites. |
+
+The real-client release verifier consumes explicit evidence and never prints a fake pass:
 
 ```bash
-cp .env.example .env      # fill in what you need
-set -a && source .env && set +a && pnpm dev
+STAGEPASS_REAL_CODEX_NATIVE_E2E_EVIDENCE=/absolute/path/evidence.json \
+  node --import tsx scripts/verify-codex-native-e2e.ts
 ```
 
-> There are more `STAGEPASS_*` timeout and internal knobs (see the code). You normally shouldn't need to touch them.
+Without real-client evidence it exits with a skip/fail-closed status.
 
----
+## Repository layout
 
-## Common commands
+| Path | Responsibility |
+|---|---|
+| `app/` | Next.js operator dashboard and HTTP APIs. |
+| `server/` | Workflow authority, SQLite/Drizzle, Codex bridge, gateway, recovery, and evidence services. |
+| `mcp/` | StagePass MCP server, supervisor, signer, and interaction App UI. |
+| `scripts/` | Development, build, migration, bridge verification, and E2E utilities. |
+| `docs/` | Product requirements, architecture, migration plan, and follow-up hardening work. |
+| `spikes/` | Self-contained bridge experiments retained as compatibility evidence. |
 
-```bash
-pnpm dev              # development: Next + pipeline worker (with automatic migrations)
-pnpm build            # production build
-pnpm test             # unit tests
-pnpm test:acceptance  # heavyweight acceptance tests (starts real services/processes)
-pnpm lint             # ESLint
-```
+## Safety model
 
----
+- Server-owned logical turn identities prevent callers from choosing arbitrary tasks or slots.
+- Durable prepared/dispatching attempt rows fence every external follower start.
+- Canonical task bindings are re-read before dispatch, settlement, and recovery.
+- Known-turn visibility lag is read-only; it never starts another turn or advances the local cursor.
+- Ambiguous dispatches reconcile from app-server snapshots or quarantine without redispatch.
+- Build work remains isolated in controlled worktrees; repository facts and adoption versioning are retained without a user-facing Git operation surface.
+- MCP decision submission is bound to the interaction, command, source task, nonce, and Host-attested transport.
 
-## Layout and documentation
+## Documentation
 
-- `app/` — Next frontend + API routes
-- `server/` — service layer, SQLite + Drizzle schema, pipeline execution, AI engine adapters
-- `server/templates/prompts/` — prompt templates for each stage and for both sides of the adversarial rounds
-- `scripts/` — dev supervisor / pipeline worker / migration scripts
-- Architecture and per-file notes live in [`docs/ship/`](docs/ship/) (`architecture.md` · `file-guide.md` · `tech-stack.md`)
+- [Actual product requirements](docs/STAGEPASS-ACTUAL-REQUIREMENTS.md)
+- [Codex-native architecture](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md)
+- [Migration implementation plan](docs/superpowers/plans/2026-07-23-codex-native-control-plane-migration.md)
+- [Deferred hardening and follow-ups](docs/superpowers/plans/2026-07-23-codex-native-control-plane-migration-followups.md)
 
----
+## Local files
 
-## Local files (don't commit these)
-
-- The runtime SQLite database lives at `server/db/ship.db` (its `-wal` / `-shm` sidecars are ignored too). Never commit `dev.db`, `server/db/db.sqlite`, or `server/db/ship.db*`.
-- The Build isolation zone is `.stagepass-workspaces/`, a sibling of the repository, and is not under version control.
-- Don't commit scratch screenshots: `tmp-review-*.png`, `tmp-user-flow-*.png`, `tmp-spec-battle-*.png`.
-- Generated artifacts and local runtime state stay out of git unless deliberately promoted to project documentation.
-
----
+Do not commit local databases, `.env` files, `.next/`, MCP build output, runtime logs, or Host-specific plugin/agent bundles. See [`.gitignore`](.gitignore).
 
 ## License
 

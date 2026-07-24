@@ -55,6 +55,7 @@ export type ProviderRunProvider = AiProvider;
 export type ProviderRunTerminalStatus = "completed" | "failed" | "stopped" | "orphaned";
 
 export interface ProviderRunStartInput {
+  lifecycleKind?: "process" | "desktop_follower_turn";
   changeId: string;
   runId: string;
   phase: ProviderRunPhase;
@@ -424,6 +425,11 @@ function processIsUnfenced(process: ProviderRunProcess): boolean {
 }
 
 export function startProviderRun(input: ProviderRunStartInput): ProviderRunProcess {
+  if (input.lifecycleKind === "desktop_follower_turn") {
+    throw new Error(
+      "provider_run_processes reject desktop_follower_turn lifecycle",
+    );
+  }
   const startedAt = iso(input.startedAt ?? new Date());
   const context = input.executionContext;
   const identity = input.processIdentity ?? null;

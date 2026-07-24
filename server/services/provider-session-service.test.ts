@@ -6,12 +6,14 @@ import { db } from "../db";
 import {
   changeProviderSessions,
   changes,
+  codexThreadBindings,
   projects,
   providerRunProcesses,
   runs,
 } from "../db/schema";
 import {
   recordProviderSession,
+  resolveCanonicalChangeThread,
   resolveProviderSession,
 } from "./provider-session-service";
 
@@ -22,6 +24,7 @@ const NOW = "2026-07-13T00:00:00.000Z";
 function clearFixture(): void {
   db.delete(providerRunProcesses).where(eq(providerRunProcesses.changeId, CHANGE_ID)).run();
   db.delete(changeProviderSessions).where(eq(changeProviderSessions.changeId, CHANGE_ID)).run();
+  db.delete(codexThreadBindings).where(eq(codexThreadBindings.scopeId, CHANGE_ID)).run();
   db.delete(runs).where(eq(runs.changeId, CHANGE_ID)).run();
   db.delete(changes).where(eq(changes.id, CHANGE_ID)).run();
   db.delete(projects).where(eq(projects.id, PROJECT_ID)).run();
@@ -108,5 +111,51 @@ describe("provider session service", () => {
     recordProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "general", externalSessionId: "codex-session" });
     assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "general" }), "codex-session");
     assert.equal(resolveProviderSession({ changeId: CHANGE_ID, provider: "codex", sessionKind: "spec" }), null);
+  });
+
+  it("repairs divergent compatibility mirrors from the authoritative binding", () => {
+    db.insert(codexThreadBindings).values({
+      bindingId: "BIND-PROVIDER-SESSION",
+      scopeKind: "change",
+      scopeId: CHANGE_ID,
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      codexProjectId: null,
+      threadId: "canonical-binding-thread",
+      title: `[${CHANGE_ID}] Session isolation`,
+      status: "ready",
+      bridgeProtocolVersion: "test",
+      provisionClaimToken: null,
+      provisionLeaseOwner: null,
+      provisionLeaseExpiresAt: null,
+      followerStartProvedAt: null,
+      lastTurnId: null,
+      lastObservationCursor: 0,
+      lastSemanticSnapshotHash: null,
+      lastSeenAt: NOW,
+      lastErrorCode: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }).run();
+    recordProviderSession({
+      changeId: CHANGE_ID,
+      provider: "codex",
+      sessionKind: "general",
+      externalSessionId: "divergent-legacy-thread",
+    });
+
+    assert.equal(resolveCanonicalChangeThread(CHANGE_ID), "canonical-binding-thread");
+    assert.equal(
+      resolveProviderSession({
+        changeId: CHANGE_ID,
+        provider: "codex",
+        sessionKind: "general",
+      }),
+      "canonical-binding-thread",
+    );
+    assert.equal(
+      db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.codexThreadId,
+      "canonical-binding-thread",
+    );
   });
 });

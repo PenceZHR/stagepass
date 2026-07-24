@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { createChildLogger } from "../logger";
 import { isShipArtifact } from "./build-gate-service";
-import { getWorkingTreeStatus, hasCommits, isGitRepo } from "./git-service";
+import { getWorkingTreeStatus, hasCommits, isGitRepo } from "./repository-evidence-service";
 import type { Finding } from "./local-check-service";
 import { loadDbPlanScope, loadPolicy, matchesGlob } from "./stage-guard-service";
 

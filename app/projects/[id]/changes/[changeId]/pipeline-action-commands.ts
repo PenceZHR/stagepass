@@ -1,18 +1,12 @@
 export const ACTION_ENDPOINTS = {
-  approve_intake: "intake",
   run_plan: "plan",
   retry_plan: "plan",
-  approve_plan: "approve-plan",
   run_test_plan: "test-plan",
   retry_test_plan: "test-plan",
   run_build: "implement",
   retry_build: "implement",
   run_review: "review",
   retry_review: "review",
-  enter_qa: "check",
-  merge: "release",
-  fix_blockers: "fix",
-  stop_change: "block",
   run_qa: "check",
   retry_qa: "check",
   run_retro: "retro",
@@ -23,32 +17,19 @@ export const ACTION_ENDPOINTS = {
   retry_spec: "spec",
   run_tech_spec: "tech-spec",
   retry_tech_spec: "tech-spec",
-  regenerate_plan_report: "plan-sandbox/report",
-  waive_plan_p1: "plan-sandbox/decision",
-  init_git_repo: "git",
-  commit_changes: "git",
 } as const;
 
 /**
- * Stage-table action ids that deliberately do NOT resolve through ACTION_ENDPOINTS
- * because a dedicated route owns them:
- *
- *   approve_/reject_ gates -> POST /gate/approve, POST /gate/reject
- *   waive_spec_p1          -> POST /spec-battle/decision
- *   adopt_build/adopt_fix/reject_build -> POST /build-workspace
- *   waive_review_p1/recompute_report/rebuild_mirror -> POST /review-center/*
- *
- * Anything listed in a stage's `actionIds` that is in neither this set nor
- * ACTION_ENDPOINTS has no way to reach the server: routing it through
- * `handleAction` would produce a button that silently does nothing. The
- * routability test in phase-review.test.ts fails on exactly that gap, so a newly
- * added action id has to declare which of the two routes it takes.
+ * Decision action ids intentionally do not resolve in Web. They are submitted
+ * through the Codex MCP interaction gateway (or its disclosed emergency path).
  */
 export const NON_POST_ROUTED_ACTION_IDS: ReadonlySet<string> = new Set([
+  "approve_intake",
   "approve_spec",
   "reject_spec",
   "approve_tech_spec",
   "reject_tech_spec",
+  "approve_plan",
   "approve_merge",
   "reject_merge",
   "waive_spec_p1",
@@ -56,7 +37,13 @@ export const NON_POST_ROUTED_ACTION_IDS: ReadonlySet<string> = new Set([
   "adopt_fix",
   "reject_build",
   "waive_review_p1",
+  "waive_plan_p1",
+  "fix_blockers",
+  "enter_qa",
+  "merge",
+  "stop_change",
   "recompute_report",
+  "regenerate_plan_report",
   "rebuild_mirror",
 ]);
 

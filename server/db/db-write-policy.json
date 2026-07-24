@@ -34,6 +34,118 @@
       "reason": "native SQLite schema migration write"
     },
     {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "phase0_pipeline_jobs",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "disposable isolated verification journal schema"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "OF",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "candidate immutability and ready identity triggers"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "__native_sql__",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "fenced disposable verification journal transition"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_interactions",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable verification interaction decision"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_logical_turns",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable verification logical turn identity"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_restart_checkpoints",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable restart checkpoint and consumed tombstone CAS"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_start_attempts",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "fenced verification dispatch attempt"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_thread_bindings",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "canonical verification thread binding"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_turn_executions",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "exactly-once verification execution"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_verification_wakeups",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "run-scoped persistent MCP verification authority"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_effects",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "exactly-once Host wakeup effect"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_jobs",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host wakeup job"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_outbox",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host marker outbox"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_receipts",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host marker acknowledgement"
+    },
+    {
       "file": "server/repositories/action-contract-repository.ts",
       "symbol": "connection.insert",
       "nodeKind": "CallExpression",
@@ -1700,6 +1812,11 @@
       "file": "server/services/briefing-question-store.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.test.ts",
+      "mode": "local-temp",
+      "reason": "test owns isolated temporary-file SQLite journals, including an incompatible legacy-schema fixture"
     },
     {
       "file": "server/services/build-record-identity.test.ts",

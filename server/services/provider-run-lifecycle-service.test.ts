@@ -158,6 +158,12 @@ function startInput(runId: string) {
 }
 
 describe("provider-run-lifecycle-service", { concurrency: false }, () => {
+  it("rejects Desktop follower lifecycle instead of inserting a null PID process", () => {
+    assert.throws(
+      () => startProviderRun({ lifecycleKind: "desktop_follower_turn" } as never),
+      /reject desktop_follower_turn lifecycle/,
+    );
+  });
   beforeEach(() => {
     cleanupRows();
   });

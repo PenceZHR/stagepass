@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,8 +22,6 @@ interface Project {
   id: string;
   name: string;
   repoPath: string;
-  gitEnabled?: number;
-  gitDefaultBranch?: string | null;
   createdAt: string;
 }
 
@@ -132,9 +129,6 @@ export default function ProjectsPage() {
                 <div className="flex items-baseline gap-2">
                   <span className="text-base font-medium">{p.name}</span>
                   <span className="font-mono text-xs text-muted-foreground">{p.id}</span>
-                  {p.gitEnabled ? (
-                    <Badge variant="success">Git</Badge>
-                  ) : null}
                 </div>
                 <p className="mt-0.5 text-sm text-muted-foreground truncate">{p.repoPath}</p>
               </Link>

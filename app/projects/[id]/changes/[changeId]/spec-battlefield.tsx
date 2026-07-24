@@ -1,8 +1,6 @@
 "use client";
 
 import {
-  AlertTriangle,
-  CheckCircle2,
   ChevronDown,
   ClipboardCheck,
   FileText,
@@ -10,20 +8,13 @@ import {
   RotateCcw,
   ShieldAlert,
   Swords,
-  XCircle,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { isRunningBattleRoundStatus } from "@/server/types/battle-round-status";
-import type {
-  BattleDecisionAction,
-  RequirementGap,
-  SpecBattleGateState,
-  SpecBattleState,
-} from "./spec-battle-types";
-import { effectiveSeverity, isActiveGap, severityTone } from "./action-reason-context";
+import type { RequirementGap, SpecBattleGateState, SpecBattleState } from "./spec-battle-types";
 import { ProducedFile } from "./produced-file";
 
 interface SpecBattlefieldProps {
@@ -31,24 +22,28 @@ interface SpecBattlefieldProps {
   changeId: string;
   specBattle: SpecBattleGateState;
   battleState: SpecBattleState | null;
-  approveAction?: {
-    enabled: boolean;
-    reasonCode: string | null;
-    reason: string | null;
-  } | null;
-  runTechSpecAction?: {
-    enabled: boolean;
-    reasonCode: string | null;
-    reason: string | null;
-  } | null;
   busy: boolean;
   loading: boolean;
   error?: string;
-  onAcceptRisk: (targetId?: string | null) => void;
-  onStopBattle: () => void;
-  onBattleDecision: (action: BattleDecisionAction, targetId?: string | null) => void;
   onRestartBattle: () => void;
   onRegenerateReport: () => void;
+}
+
+const ACTIVE_GAP_STATUSES = ["open", "downgraded", "overridden"] as const;
+
+function effectiveSeverity(gap: Pick<RequirementGap, "severity" | "downgradedTo">): string {
+  return gap.downgradedTo ?? gap.severity;
+}
+
+function isActiveGap(gap: Pick<RequirementGap, "status">): boolean {
+  return (ACTIVE_GAP_STATUSES as readonly string[]).includes(gap.status);
+}
+
+function severityTone(severity: string | null | undefined): string {
+  if (severity === "P0") return "border-red-200 bg-red-50 text-red-900";
+  if (severity === "P1") return "border-orange-200 bg-orange-50 text-orange-900";
+  if (severity === "P2") return "border-yellow-200 bg-yellow-50 text-yellow-900";
+  return "border-slate-200 bg-slate-50 text-slate-900";
 }
 
 function displayPath(value: string | null | undefined): string {
@@ -203,14 +198,9 @@ export function SpecBattlefield({
   changeId,
   specBattle,
   battleState,
-  approveAction,
-  runTechSpecAction,
   busy,
   loading,
   error,
-  onAcceptRisk,
-  onStopBattle,
-  onBattleDecision,
   onRestartBattle,
   onRegenerateReport,
 }: SpecBattlefieldProps) {
@@ -230,9 +220,6 @@ export function SpecBattlefield({
   const openGaps = gaps.filter(isActiveGap);
   const latestRoundFixClaims = latestRound ? fixClaims.filter((claim) => claim.roundId === latestRound.id) : [];
   const latestRoundGapReviews = latestRound ? gapReviews.filter((review) => review.roundId === latestRound.id) : [];
-  const p1Targets = useMemo(() => selectWaivableP1Gaps(gaps), [gaps]);
-  const [selectedP1GapId, setSelectedP1GapId] = useState("");
-  const selectedP1Gap = resolveWaiveP1Gap(p1Targets, selectedP1GapId);
   const specBattleRunningStatus = isRunningBattleRoundStatus(specBattle.roundStatus) ? specBattle.roundStatus : null;
   const latestRoundRunningStatus = isRunningBattleRoundStatus(latestRound?.status) ? latestRound?.status ?? null : null;
   const runningRoundStatus = specBattleRunningStatus ?? latestRoundRunningStatus;
@@ -249,35 +236,7 @@ export function SpecBattlefield({
         }
       : specBattle
   );
-  const continueAction: BattleDecisionAction | null = specBattle.actions.returnToSpec.available
-    ? "return_to_spec"
-    : specBattle.actions.requestChanges.available
-      ? "request_changes"
-      : null;
-  const canContinue = Boolean(continueAction) && !roundRunning;
   const reportStale = !roundRunning && !roundWaitingToStart && !specBattle.reportFresh;
-  const canApproveGate = approveAction?.enabled === true;
-  const canRunTechSpec = runTechSpecAction?.enabled === true;
-  const canAcceptP1Risk = specBattle.actions.waiveP1.available && Boolean(selectedP1Gap);
-  const canAcceptRisk = !reportStale && (canApproveGate || canRunTechSpec || canAcceptP1Risk);
-  const approveLabel = roundRunning
-    ? "等待战报"
-    : reportStale
-      ? "先刷新战报"
-      : canApproveGate
-      ? "批准进入 TechSpec"
-      : canRunTechSpec
-      ? "生成 TechSpec"
-      : "接受风险并通过";
-  const approveHint = roundRunning
-    ? "回合完成后再判断是否可以进入 TechSpec"
-    : reportStale
-      ? "战报已过期，重新结算后再判断"
-      : canApproveGate
-      ? "批准 Spec Gate，并自动启动 TechSpec"
-      : canRunTechSpec
-      ? "Spec 已批准，启动 TechSpec"
-      : "先接受一个 P1 风险";
   const roundLabel = latestRound ? `第 ${latestRound.roundNo} 轮` : "开战前";
   const roundFailed = currentRoundStatus === "failed";
   const maxRoundBlocked = specBattle.actions.returnToSpec.reason === "max_round_blocked" ||
@@ -288,26 +247,12 @@ export function SpecBattlefield({
       : roundFailed
       ? "重跑本轮"
       : maxRoundBlocked
-      ? "继续追加一轮"
-      : "继续对抗一轮";
+      ? "重跑本轮"
+      : "重跑本轮";
 
   const handleContinue = () => {
     if (roundRunning) return;
-    if (roundWaitingToStart || roundFailed) {
-      onRestartBattle();
-      return;
-    }
-    if (continueAction) onBattleDecision(continueAction);
-  };
-
-  const handleAcceptRisk = () => {
-    const target = selectedP1Gap?.id ?? null;
-    // Pin the pick before the reason dialog opens. The waiver itself travels by
-    // value, but the picker below keeps re-deriving its fallback, so a
-    // background refresh that reorders the gaps would otherwise leave the screen
-    // naming a different one than the dialog is about to waive.
-    if (target) setSelectedP1GapId(target);
-    onAcceptRisk(target);
+    onRestartBattle();
   };
 
   return (
@@ -469,8 +414,8 @@ export function SpecBattlefield({
             <div className="grid gap-2 sm:grid-cols-2">
               <CommandButton
                 label={continueLabel}
-                hint={roundRunning ? "等待本轮完成后再继续对抗" : roundWaitingToStart ? "通过 /spec 启动本轮我方修订" : roundFailed ? "重新进入我方代理出招和反方审查" : canContinue ? "让我方代理修、反方再审" : "当前没有可继续的阻断目标"}
-                disabled={disabled || roundRunning || (!roundWaitingToStart && !roundFailed && !canContinue)}
+                hint={roundRunning ? "等待本轮完成" : "重新运行本轮 Spec"}
+                disabled={disabled || roundRunning}
                 icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}
                 onClick={handleContinue}
               />
@@ -480,22 +425,6 @@ export function SpecBattlefield({
                 disabled={disabled || roundRunning}
                 icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
                 onClick={onRegenerateReport}
-              />
-              <CommandButton
-                label={approveLabel}
-                hint={approveHint}
-                disabled={disabled || roundRunning || !canAcceptRisk}
-                variant={canApproveGate || canRunTechSpec ? "default" : "outline"}
-                icon={<CheckCircle2 className="h-4 w-4" aria-hidden="true" />}
-                onClick={handleAcceptRisk}
-              />
-              <CommandButton
-                label="终止 Battle"
-                hint="停止本 change 的 Spec 推进"
-                disabled={disabled}
-                variant="destructive"
-                icon={<XCircle className="h-4 w-4" aria-hidden="true" />}
-                onClick={onStopBattle}
               />
             </div>
 
@@ -585,28 +514,6 @@ export function SpecBattlefield({
                   )}
                 </div>
 
-                {p1Targets.length > 0 && (
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="accept-risk-gap">
-                      接受风险目标
-                    </label>
-                    <select
-                      id="accept-risk-gap"
-                      className="h-8 w-full rounded border bg-background px-2 text-xs"
-                      value={selectedP1Gap?.id ?? ""}
-                      disabled={disabled || !specBattle.actions.waiveP1.available}
-                      onChange={(event) => setSelectedP1GapId(event.target.value)}
-                    >
-                      {p1Targets.map((gap) => (
-                        <option key={gap.id} value={gap.id}>
-                          {gap.canonicalGapId} · {gap.title}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-1 text-xs text-muted-foreground">{waiveP1GapHint(p1Targets.length)}</p>
-                  </div>
-                )}
-
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
                     <h5 className="text-sm font-semibold">回合历史</h5>
@@ -661,12 +568,6 @@ export function SpecBattlefield({
                   </p>
                 </div>
 
-                {approveAction?.enabled === false && (
-                  <p className="flex items-start gap-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    <span>通过暂不可用：{approveAction.reason ?? approveAction.reasonCode ?? "not_available"}</span>
-                  </p>
-                )}
               </div>
             </details>
           </div>

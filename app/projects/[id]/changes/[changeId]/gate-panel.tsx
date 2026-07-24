@@ -11,7 +11,7 @@ import { ProducedFile } from "./produced-file";
 import type { GateName, GateStatus } from "./gate-types";
 import type { ReviewPhase } from "./change-phase-map";
 import type { StageActionView } from "./stage-action-bar";
-import type { BattleDecisionAction, SpecBattleGateState, SpecBattleState } from "./spec-battle-types";
+import type { SpecBattleGateState, SpecBattleState } from "./spec-battle-types";
 
 function formatGateName(gate: GateName | null): string {
   if (gate === "intake") return "Intake";
@@ -204,9 +204,6 @@ export function GatePanel({
   loading,
   busy,
   error,
-  onStopBattle,
-  onAcceptRisk,
-  onBattleDecision,
   onRestartBattle,
   onRegenerateReport,
 }: {
@@ -218,15 +215,10 @@ export function GatePanel({
   loading: boolean;
   busy: boolean;
   error: string;
-  onStopBattle: () => void;
-  onAcceptRisk: (targetId?: string | null) => void;
-  onBattleDecision: (action: BattleDecisionAction, targetId?: string | null) => void;
   onRestartBattle: () => void;
   onRegenerateReport: () => void;
 }) {
   const specBattle = gateStatus?.specBattle ?? specBattleFallback;
-  const approveAction = gateApprovalAction(gateStatus);
-  const runTechSpecAction = findPipelineAction(gateStatus?.actions, "run_tech_spec");
   if (((gateStatus?.gate === "spec" && specBattle) || specBattleFallback) && specBattle) {
     return (
       <SpecBattlefield
@@ -234,14 +226,9 @@ export function GatePanel({
         changeId={changeId}
         specBattle={specBattle}
         battleState={specBattleState}
-        approveAction={approveAction}
-        runTechSpecAction={runTechSpecAction}
         busy={busy}
         loading={loading}
         error={error}
-        onAcceptRisk={onAcceptRisk}
-        onStopBattle={onStopBattle}
-        onBattleDecision={onBattleDecision}
         onRestartBattle={onRestartBattle}
         onRegenerateReport={onRegenerateReport}
       />

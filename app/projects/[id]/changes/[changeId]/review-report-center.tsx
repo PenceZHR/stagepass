@@ -2,12 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ActionReasonDialog } from "./action-reason-dialog";
-import { selectReviewFindingWaiverContext, waivableFindingLocator } from "./action-reason-context";
 import { ProducedFile } from "./produced-file";
 import type { StageActionView } from "./stage-action-bar";
 import {
-  createIdempotencyKey,
   createPipelinePreflightPayload,
   findPipelineAction,
   pipelineActionDisabledReason,
@@ -244,26 +241,11 @@ export function resolveReviewRunCommand(input: {
 export function buildReviewStageActions(input: {
   runReviewCommand: ReturnType<typeof resolveReviewRunCommand>;
   actionBusy: boolean;
-  p1Target: string | null;
-  waiveReason: string | null;
-  fixReason: string | null;
-  enterQaReason: string | null;
-  stopReason: string | null;
   recomputeReason: string | null;
-  waiveAction: PipelineActionContract | null;
-  fixAction: PipelineActionContract | null;
-  enterQaAction: PipelineActionContract | null;
-  stopAction: PipelineActionContract | null;
   recomputeAction: PipelineActionContract | null;
   onRunReview: (actionId: "run_review" | "retry_review") => void;
-  onWaiveP1: () => void | Promise<void>;
-  onFixBlockers: () => void;
   onRecomputeReport: () => void | Promise<void>;
-  onEnterQa: () => void;
-  onBlockChange: () => void;
 }): StageActionView[] {
-  const waiveDisabledReason = input.waiveReason ?? (input.p1Target ? null : "No open waivable P1 finding.");
-
   return [
     {
       id: "review-run",
@@ -276,26 +258,6 @@ export function buildReviewStageActions(input: {
       onAction: () => input.onRunReview(input.runReviewCommand.actionId),
     },
     {
-      id: "review-waive-p1",
-      label: input.waiveAction?.label ?? "接受 P1 风险",
-      role: "secondary",
-      enabled: !input.actionBusy && waiveDisabledReason === null,
-      busy: input.actionBusy,
-      disabledReason: waiveDisabledReason,
-      sourceActionId: input.waiveAction?.actionId ?? "waive_review_p1",
-      onAction: input.onWaiveP1,
-    },
-    {
-      id: "review-fix-blockers",
-      label: input.fixAction?.label ?? "修复阻断项",
-      role: "primary",
-      enabled: !input.actionBusy && input.fixReason === null,
-      busy: input.actionBusy,
-      disabledReason: input.fixReason,
-      sourceActionId: input.fixAction?.actionId ?? "fix_blockers",
-      onAction: input.onFixBlockers,
-    },
-    {
       id: "review-recompute-report",
       label: input.recomputeAction?.label ?? "重新计算 Review 结果",
       role: "secondary",
@@ -304,26 +266,6 @@ export function buildReviewStageActions(input: {
       disabledReason: input.recomputeReason,
       sourceActionId: input.recomputeAction?.actionId ?? "recompute_report",
       onAction: input.onRecomputeReport,
-    },
-    {
-      id: "review-enter-qa",
-      label: input.enterQaAction?.label ?? "进入 QA",
-      role: "primary",
-      enabled: !input.actionBusy && input.enterQaReason === null,
-      busy: input.actionBusy,
-      disabledReason: input.enterQaReason,
-      sourceActionId: input.enterQaAction?.actionId ?? "enter_qa",
-      onAction: input.onEnterQa,
-    },
-    {
-      id: "review-stop-change",
-      label: input.stopAction?.label ?? "终止 Change",
-      role: "destructive",
-      enabled: !input.actionBusy && input.stopReason === null,
-      busy: input.actionBusy,
-      disabledReason: input.stopReason,
-      sourceActionId: input.stopAction?.actionId ?? "stop_change",
-      onAction: input.onBlockChange,
     },
   ];
 }
@@ -371,9 +313,6 @@ export function ReviewReportCenter({
   actions,
   initialState,
   onRunReview,
-  onEnterQa,
-  onFixBlockers,
-  onBlockChange,
   onStateChange,
   onStageActionsChange,
   onStageActionError,
@@ -384,9 +323,6 @@ export function ReviewReportCenter({
   actions?: PipelineActionContract[];
   initialState?: ReviewCenterResponse | null;
   onRunReview: (actionId: "run_review" | "retry_review") => void;
-  onEnterQa: () => void;
-  onFixBlockers: () => void;
-  onBlockChange: () => void;
   onStateChange?: (state: ReviewCenterResponse) => void;
   onStageActionsChange?: (actions: StageActionView[]) => void;
   onStageActionError?: (error: string | null) => void;
@@ -394,9 +330,6 @@ export function ReviewReportCenter({
   const state = initialState ?? null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [waiving, setWaiving] = useState(false);
-  const [waiveDialogOpen, setWaiveDialogOpen] = useState(false);
-  const [selectedP1FindingId, setSelectedP1FindingId] = useState("");
 
   const loadState = useCallback(async () => {
     setLoading(true);
@@ -455,109 +388,30 @@ export function ReviewReportCenter({
       waived: all.filter((finding) => finding.severity === "P1" && finding.status === "waived").length,
     };
   }, [state]);
-  const p1Targets = useMemo(() => selectWaivableP1Findings(state?.findings), [state?.findings]);
-  const p1Target = resolveWaiveP1Target(p1Targets, selectedP1FindingId)?.id ?? null;
-  // The waiver is binding, so the dialog shows the finding it waives — and only that one.
-  const waiverContext = useMemo(
-    () => selectReviewFindingWaiverContext(state?.findings, p1Target),
-    [state?.findings, p1Target],
-  );
-  const actionBusy = busy || loading || waiving;
+  const actionBusy = busy || loading;
   const runReviewCommand = useMemo(() => resolveReviewRunCommand({
     gate,
     pipelineActions: actions,
   }), [gate, actions]);
-  const waiveAction = findPipelineAction(actions, "waive_review_p1");
-  const fixAction = findPipelineAction(actions, "fix_blockers");
-  const enterQaAction = findPipelineAction(actions, "enter_qa");
-  const stopAction = findPipelineAction(actions, "stop_change");
   const recomputeAction = findPipelineAction(actions, "recompute_report");
   const rebuildAction = findPipelineAction(actions, "rebuild_mirror");
-  const waiveReason = pipelineActionDisabledReason(waiveAction);
-  const fixReason = pipelineActionDisabledReason(fixAction);
-  const enterQaReason = pipelineActionDisabledReason(enterQaAction);
-  const stopReason = pipelineActionDisabledReason(stopAction);
   const recomputeReason = pipelineActionDisabledReason(recomputeAction);
   const rebuildReason = pipelineActionDisabledReason(rebuildAction);
-
-  const submitP1Waiver = async (reason: string) => {
-    if (!p1Target) return;
-    setWaiveDialogOpen(false);
-    setWaiving(true);
-    setError("");
-    try {
-      const res = await fetch(
-        `/api/projects/${projectId}/changes/${changeId}/findings/${p1Target}/waive`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            reason,
-            ...createPipelinePreflightPayload(waiveAction, {
-              idempotencyKey: createIdempotencyKey("waive_review_p1"),
-            }),
-          }),
-        }
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "P1 waiver failed");
-      await loadState();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setWaiving(false);
-    }
-  };
-
-  const waiveP1 = useCallback(async () => {
-    if (!p1Target) return;
-    // Pin the target before the dialog opens. From here it is a human choice, so
-    // a background refresh that reorders the findings must not slide the waiver
-    // onto a different one while the reason is being typed.
-    setSelectedP1FindingId(p1Target);
-    setWaiveDialogOpen(true);
-  }, [p1Target]);
 
   const stageActions = useMemo<StageActionView[]>(() => buildReviewStageActions({
     runReviewCommand,
     actionBusy,
-    p1Target,
-    waiveReason,
-    fixReason,
-    enterQaReason,
-    stopReason,
     recomputeReason,
-    waiveAction,
-    fixAction,
-    enterQaAction,
-    stopAction,
     recomputeAction,
     onRunReview,
-    onWaiveP1: waiveP1,
-    onFixBlockers,
     onRecomputeReport: () => postReviewCommand("/review-report/recompute"),
-    onEnterQa,
-    onBlockChange,
   }), [
     runReviewCommand,
     actionBusy,
-    p1Target,
-    waiveReason,
-    fixReason,
-    enterQaReason,
-    stopReason,
     recomputeReason,
-    waiveAction,
-    fixAction,
-    enterQaAction,
-    stopAction,
     recomputeAction,
     onRunReview,
-    waiveP1,
-    onFixBlockers,
     postReviewCommand,
-    onEnterQa,
-    onBlockChange,
   ]);
 
   useEffect(() => {
@@ -582,17 +436,6 @@ export function ReviewReportCenter({
 
   return (
     <div className="space-y-4">
-      <ActionReasonDialog
-        open={waiveDialogOpen}
-        title="填写 P1 风险接受理由"
-        description="提交前请写明本次人工接受 Review P1 风险的依据。"
-        confirmLabel="提交"
-        required
-        context={waiverContext}
-        busy={waiving}
-        onOpenChange={setWaiveDialogOpen}
-        onConfirm={submitP1Waiver}
-      />
       <section className="space-y-2" aria-label="Review facts">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review 事实</p>
         <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-5">
@@ -621,31 +464,6 @@ export function ReviewReportCenter({
           {countLabel("P2 记录", counts.p2, "border-yellow-200 bg-yellow-50 text-yellow-900")}
           {countLabel("P1 已接受", counts.waived, "border-emerald-200 bg-emerald-50 text-emerald-900")}
         </div>
-
-        {p1Targets.length > 0 && (
-          <div>
-            <label
-              className="mb-1 block text-xs font-medium text-muted-foreground"
-              htmlFor="waive-review-p1-target"
-            >
-              接受风险目标
-            </label>
-            <select
-              id="waive-review-p1-target"
-              className="h-8 w-full rounded border bg-background px-2 text-xs"
-              value={p1Target ?? ""}
-              disabled={actionBusy || waiveReason !== null}
-              onChange={(event) => setSelectedP1FindingId(event.target.value)}
-            >
-              {p1Targets.map((finding) => (
-                <option key={finding.id} value={finding.id}>
-                  {waivableFindingLocator(finding)} · {finding.title}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-muted-foreground">{waiveP1TargetHint(p1Targets.length)}</p>
-          </div>
-        )}
 
         <div className="space-y-2">
           {(state?.findings ?? []).length === 0 ? (

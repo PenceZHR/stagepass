@@ -1,13 +1,47 @@
 import { NextResponse } from "next/server";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc, inArray } from "drizzle-orm";
 import {
   getChangeForProject,
   deleteChange,
 } from "@/server/services/change-service";
 import { db } from "@/server/db";
-import { runs, findings, artifacts, projects } from "@/server/db/schema";
+import {
+  runs,
+  findings,
+  artifacts,
+  projects,
+  codexInteractions,
+  codexThreadBindings,
+} from "@/server/db/schema";
+import { readCodexNativeFlags } from "@/server/config/codex-native-flags";
+import {
+  CODEX_DECISION_INTERACTION_KINDS,
+  CODEX_DECISION_PHASES,
+  isCodexDecisionSurfaceEnabled,
+  type CodexDecisionInteractionKind,
+  type CodexDecisionPhase,
+} from "@/server/config/codex-decision-rollout";
 import fs from "fs";
 import path from "path";
+
+function rolloutTargetForStatus(status: string): {
+  phase: CodexDecisionPhase;
+  kind: CodexDecisionInteractionKind;
+} | null {
+  if (status.startsWith("INTAKE")) return { phase: "Intake", kind: "gate_decision" };
+  if (status.startsWith("SPEC") || status === "SPECCING") return { phase: "Spec", kind: "gate_decision" };
+  if (status.startsWith("TECHSPEC")) return { phase: "TechSpec", kind: "gate_decision" };
+  if (status.startsWith("PLAN") || status === "PLANNING") return { phase: "Plan", kind: "risk_waiver" };
+  if (status.startsWith("TESTPLAN")) return { phase: "TestPlan", kind: "gate_decision" };
+  if (status === "IMPLEMENTING" || status === "IMPLEMENTED") return { phase: "Build", kind: "build_adoption" };
+  if (status === "FIXING") return { phase: "Fix", kind: "build_adoption" };
+  if (status === "REVIEWING" || status === "LOCAL_READY" || status === "BLOCKED") {
+    return { phase: "Review", kind: "review_resolution" };
+  }
+  if (status === "CHECKING" || status === "CHECK_FAILED") return { phase: "QA", kind: "gate_decision" };
+  if (status === "MERGE_READY" || status === "MERGING") return { phase: "Merge", kind: "merge_decision" };
+  return null;
+}
 
 export async function GET(
   _request: Request,
@@ -51,6 +85,33 @@ export async function GET(
     .where(eq(artifacts.changeId, changeId))
     .all();
 
+  const binding = db.select().from(codexThreadBindings).where(and(
+    eq(codexThreadBindings.scopeKind, "change"),
+    eq(codexThreadBindings.scopeId, changeId),
+    eq(codexThreadBindings.projectId, projectId),
+    eq(codexThreadBindings.changeId, changeId),
+  )).get();
+  const interaction = db.select().from(codexInteractions).where(and(
+    eq(codexInteractions.changeId, changeId),
+    inArray(codexInteractions.status, ["pending", "presented", "submitting"]),
+  )).orderBy(desc(codexInteractions.createdAt)).limit(1).get();
+  const interactionTarget =
+    interaction
+    && CODEX_DECISION_PHASES.includes(interaction.phase as CodexDecisionPhase)
+    && CODEX_DECISION_INTERACTION_KINDS.includes(
+      interaction.kind as CodexDecisionInteractionKind,
+    )
+      ? {
+          phase: interaction.phase as CodexDecisionPhase,
+          kind: interaction.kind as CodexDecisionInteractionKind,
+        }
+      : null;
+  const rolloutTarget = interactionTarget ?? rolloutTargetForStatus(change.status);
+  const flags = readCodexNativeFlags();
+  const codexDecisionEnabled = rolloutTarget
+    ? isCodexDecisionSurfaceEnabled(rolloutTarget, flags)
+    : false;
+
   // Try to read changed-files.json from .ship
   let changedFiles: string[] = [];
   const project = db
@@ -81,6 +142,21 @@ export async function GET(
     findingsSummary: { open: openFindings, total: totalFindings },
     changedFiles,
     artifactCount: allArtifacts.length,
+    codexControl: {
+      bindingTitle: binding?.title ?? null,
+      bindingStatus: binding?.status ?? "detached",
+      threadId: binding?.threadId ?? null,
+      lastTurnId: binding?.lastTurnId ?? null,
+      lastObservationCursor: binding?.lastObservationCursor ?? null,
+      lastSeenAt: binding?.lastSeenAt ?? null,
+      lastErrorCode: binding?.lastErrorCode ?? null,
+      currentInteractionId: interaction?.id ?? null,
+      codexDecisionEnabled,
+      decisionPhase: rolloutTarget?.phase ?? null,
+      interactionKind: rolloutTarget?.kind ?? null,
+      model: recoveredChange.codexModel ?? null,
+      reasoningEffort: recoveredChange.reasoningEffort ?? null,
+    },
   });
 }
 

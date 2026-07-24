@@ -13,12 +13,15 @@ import { fileURLToPath } from "node:url";
 import * as schema from "../db/schema.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { db as appDb } from "../db/index.ts";
-import { getProject } from "./project-service.ts";
+import { deleteProject, getProject } from "./project-service.ts";
 import { createChange } from "./change-service.ts";
-import { branchExists } from "./git-service.ts";
-import { GET as gitRouteGet } from "../../app/api/projects/[id]/git/route.ts";
+import { branchExists } from "./repository-evidence-service.ts";
 
-const { projects, changes, runs, events, artifacts, findings } = schema;
+const {
+  projects, changes, runs, events, artifacts, findings,
+  codexThreadBindings, projectAiRuns, codexLogicalTurns,
+  codexFollowerStartAttempts, codexBindingRunLeases, codexTurnExecutions,
+} = schema;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function setupTestDb() {
@@ -217,6 +220,279 @@ function cleanupRealProject(id: string, repoPath: string) {
   fs.rmSync(repoPath, { recursive: true, force: true });
 }
 
+function seedRealProjectNativeGraph(id: string, repoPath: string) {
+  seedRealProject(id, repoPath);
+  fs.mkdirSync(path.join(repoPath, ".ship"), { recursive: true });
+  const now = new Date().toISOString();
+  const bindingId = `${id}-B`;
+  const runId = `${id}-AIR`;
+  const logicalTurnId = crypto.randomUUID();
+  const attemptId = `${id}-ATT`;
+  appDb.insert(codexThreadBindings).values({
+    bindingId,
+    scopeKind: "project_prd",
+    scopeId: id,
+    projectId: id,
+    changeId: null,
+    codexProjectId: null,
+    threadId: `${id}-THREAD`,
+    title: "PRD",
+    status: "ready",
+    bridgeProtocolVersion: "v1",
+    provisionClaimToken: null,
+    provisionLeaseOwner: null,
+    provisionLeaseExpiresAt: null,
+    followerStartProvedAt: null,
+    lastTurnId: null,
+    lastObservationCursor: 0,
+    lastSemanticSnapshotHash: null,
+    lastSeenAt: now,
+    lastErrorCode: null,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+  appDb.insert(projectAiRuns).values({
+    id: runId,
+    projectId: id,
+    kind: "prd_turn",
+    requestKey: "request",
+    sequence: 1,
+    status: "pending",
+    workerId: null,
+    leaseToken: null,
+    ownerAttempt: 0,
+    ownerEpoch: 0,
+    leaseExpiresAt: null,
+    deadlineAt: "9999-01-01T00:00:00.000Z",
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+  }).run();
+  appDb.insert(codexLogicalTurns).values({
+    logicalTurnId,
+    pipelineJobId: null,
+    projectAiRunId: runId,
+    bindingId,
+    interactionId: null,
+    commandId: null,
+    phase: "PRD",
+    role: "prd_turn",
+    round: 0,
+    ordinal: 0,
+    turnSlot: `${id}-slot`,
+    runCorrelationId: `${id}-corr`,
+    canonicalRequestJson: "{}",
+    canonicalRequestHash: `${id}-hash`,
+    dispatchSurface: "follower_ipc",
+    status: "ready",
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+  appDb.insert(codexFollowerStartAttempts).values({
+    attemptId,
+    logicalTurnId,
+    runCorrelationId: `${id}-corr`,
+    pipelineJobId: null,
+    projectAiRunId: runId,
+    workerId: "worker",
+    leaseToken: "token",
+    ownerAttempt: 1,
+    ownerEpoch: 1,
+    threadId: `${id}-THREAD`,
+    purpose: "test",
+    dispatchSurface: "follower_ipc",
+    normalizedPromptHash: `${id}-prompt`,
+    correlationMarker: `${id}-marker`,
+    cwd: repoPath,
+    model: null,
+    reasoningEffort: null,
+    sandboxMode: "read-only",
+    approvalPolicy: "never",
+    preStartTurnIdsJson: "[]",
+    preStartSemanticHash: "base",
+    state: "succeeded",
+    dispatchOrdinal: 0,
+    dispatchCount: 1,
+    budgetDeadline: "9999-01-01T00:00:00.000Z",
+    followerTurnId: `${id}-TURN`,
+    recoveryOwnerId: null,
+    recoveryLeaseToken: null,
+    recoveryEpoch: 0,
+    lastResult: null,
+    lastErrorCode: null,
+    preparedAt: now,
+    dispatchedAt: now,
+    completedAt: now,
+  }).run();
+  appDb.insert(codexBindingRunLeases).values({
+    bindingId,
+    logicalTurnId,
+    attemptId,
+    workerId: "worker",
+    leaseToken: "token",
+    ownerEpoch: 1,
+    leaseExpiresAt: "9999-01-01T00:00:00.000Z",
+    deadlineAt: "9999-01-01T00:00:00.000Z",
+  }).run();
+  appDb.insert(codexTurnExecutions).values({
+    id: `${id}-EX`,
+    startAttemptId: attemptId,
+    logicalTurnId,
+    pipelineJobId: null,
+    projectAiRunId: runId,
+    threadId: `${id}-THREAD`,
+    turnId: `${id}-TURN`,
+    dispatchSurface: "follower_ipc",
+    leaseToken: "token",
+    ownerAttempt: 1,
+    ownerEpoch: 1,
+    lastObservationCursor: 0,
+    normalizedItemsJson: "[]",
+    lastSemanticSnapshotHash: null,
+    status: "completed",
+    lastObservedAt: now,
+    terminalSemanticHash: "terminal",
+    reconnectCount: 0,
+    notYetVisibleCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+
+  const contextBindingId = `${id}-CTX-B`;
+  const contextRunId = `${id}-CTX-AIR`;
+  const contextLogicalTurnId = crypto.randomUUID();
+  const contextAttemptId = `${id}-CTX-ATT`;
+  appDb.insert(codexThreadBindings).values({
+    bindingId: contextBindingId,
+    scopeKind: "project_context",
+    scopeId: id,
+    projectId: id,
+    changeId: null,
+    codexProjectId: null,
+    threadId: `${id}-CTX-THREAD`,
+    title: "Context",
+    status: "ready",
+    bridgeProtocolVersion: "v1",
+    provisionClaimToken: null,
+    provisionLeaseOwner: null,
+    provisionLeaseExpiresAt: null,
+    followerStartProvedAt: null,
+    lastTurnId: null,
+    lastObservationCursor: 0,
+    lastSemanticSnapshotHash: null,
+    lastSeenAt: now,
+    lastErrorCode: null,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+  appDb.insert(projectAiRuns).values({
+    id: contextRunId,
+    projectId: id,
+    kind: "context_init",
+    requestKey: "context-request",
+    sequence: 2,
+    status: "pending",
+    workerId: null,
+    leaseToken: null,
+    ownerAttempt: 0,
+    ownerEpoch: 0,
+    leaseExpiresAt: null,
+    deadlineAt: "9999-01-01T00:00:00.000Z",
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+  }).run();
+  appDb.insert(codexLogicalTurns).values({
+    logicalTurnId: contextLogicalTurnId,
+    pipelineJobId: null,
+    projectAiRunId: contextRunId,
+    bindingId: contextBindingId,
+    interactionId: null,
+    commandId: null,
+    phase: "Context",
+    role: "context_generate",
+    round: 0,
+    ordinal: 0,
+    turnSlot: `${id}-context-slot`,
+    runCorrelationId: `${id}-context-corr`,
+    canonicalRequestJson: "{}",
+    canonicalRequestHash: `${id}-context-hash`,
+    dispatchSurface: "follower_ipc",
+    status: "ready",
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+  appDb.insert(codexFollowerStartAttempts).values({
+    attemptId: contextAttemptId,
+    logicalTurnId: contextLogicalTurnId,
+    runCorrelationId: `${id}-context-corr`,
+    pipelineJobId: null,
+    projectAiRunId: contextRunId,
+    workerId: "worker",
+    leaseToken: "context-token",
+    ownerAttempt: 1,
+    ownerEpoch: 1,
+    threadId: `${id}-CTX-THREAD`,
+    purpose: "test-context",
+    dispatchSurface: "follower_ipc",
+    normalizedPromptHash: `${id}-context-prompt`,
+    correlationMarker: `${id}-context-marker`,
+    cwd: repoPath,
+    model: null,
+    reasoningEffort: null,
+    sandboxMode: "read-only",
+    approvalPolicy: "never",
+    preStartTurnIdsJson: "[]",
+    preStartSemanticHash: "base",
+    state: "succeeded",
+    dispatchOrdinal: 0,
+    dispatchCount: 1,
+    budgetDeadline: "9999-01-01T00:00:00.000Z",
+    followerTurnId: `${id}-CTX-TURN`,
+    recoveryOwnerId: null,
+    recoveryLeaseToken: null,
+    recoveryEpoch: 0,
+    lastResult: null,
+    lastErrorCode: null,
+    preparedAt: now,
+    dispatchedAt: now,
+    completedAt: now,
+  }).run();
+  appDb.insert(codexBindingRunLeases).values({
+    bindingId: contextBindingId,
+    logicalTurnId: contextLogicalTurnId,
+    attemptId: contextAttemptId,
+    workerId: "worker",
+    leaseToken: "context-token",
+    ownerEpoch: 1,
+    leaseExpiresAt: "9999-01-01T00:00:00.000Z",
+    deadlineAt: "9999-01-01T00:00:00.000Z",
+  }).run();
+  appDb.insert(codexTurnExecutions).values({
+    id: `${id}-CTX-EX`,
+    startAttemptId: contextAttemptId,
+    logicalTurnId: contextLogicalTurnId,
+    pipelineJobId: null,
+    projectAiRunId: contextRunId,
+    threadId: `${id}-CTX-THREAD`,
+    turnId: `${id}-CTX-TURN`,
+    dispatchSurface: "follower_ipc",
+    leaseToken: "context-token",
+    ownerAttempt: 1,
+    ownerEpoch: 1,
+    lastObservationCursor: 0,
+    normalizedItemsJson: "[]",
+    lastSemanticSnapshotHash: null,
+    status: "completed",
+    lastObservedAt: now,
+    terminalSemanticHash: "terminal",
+    reconnectCount: 0,
+    notYetVisibleCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+}
+
 function initCommittedRepo(repoPath: string) {
   execSync("git init -b main", { cwd: repoPath, stdio: "pipe" });
   execSync("git config user.email test@example.com", { cwd: repoPath, stdio: "pipe" });
@@ -289,6 +565,37 @@ describe("deleteProject", () => {
 
     assert.equal(db.select().from(projects).all().length, 0);
   });
+
+  it("production delete removes Project native owners in one transaction", async () => {
+    const id = realProjectId("native-delete");
+    seedRealProjectNativeGraph(id, tmpDir);
+
+    await deleteProject(id);
+
+    assert.equal(appDb.select().from(projects).where(eq(projects.id, id)).get(), undefined);
+    assert.equal(appDb.select().from(projectAiRuns).where(eq(projectAiRuns.projectId, id)).all().length, 0);
+    assert.equal(appDb.select().from(codexThreadBindings).where(eq(codexThreadBindings.projectId, id)).all().length, 0);
+    assert.equal(fs.existsSync(path.join(tmpDir, ".ship")), false);
+  });
+
+  it("rolls back domain and native rows when the before-commit failpoint throws", async () => {
+    const id = realProjectId("native-rollback");
+    seedRealProjectNativeGraph(id, tmpDir);
+
+    await assert.rejects(
+      deleteProject(id, {
+        beforeCommit() {
+          throw new Error("task2_before_commit");
+        },
+      }),
+      /task2_before_commit/,
+    );
+
+    assert.ok(appDb.select().from(projects).where(eq(projects.id, id)).get());
+    assert.equal(appDb.select().from(projectAiRuns).where(eq(projectAiRuns.projectId, id)).all().length, 2);
+    assert.equal(appDb.select().from(codexThreadBindings).where(eq(codexThreadBindings.projectId, id)).all().length, 2);
+    await deleteProject(id);
+  });
 });
 
 describe("project git state synchronization", () => {
@@ -349,20 +656,6 @@ describe("project git state synchronization", () => {
     assert.equal(project!.gitDefaultBranch, null);
   });
 
-  it("Git GET route synchronizes stale project state before returning", async () => {
-    initCommittedRepo(tmpDir);
-    seedRealProject(projectId, tmpDir, { gitEnabled: 0, gitDefaultBranch: null });
-
-    const response = await gitRouteGet(
-      new Request("http://localhost/api/projects/test/git"),
-      { params: Promise.resolve({ id: projectId }) },
-    );
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(body.gitEnabled, true);
-    assert.equal(body.defaultBranch, "main");
-  });
 });
 
 describe("createProject", () => {

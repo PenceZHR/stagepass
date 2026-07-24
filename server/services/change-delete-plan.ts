@@ -107,7 +107,6 @@ export const CHANGE_DELETE_PLAN: readonly ChangeDeleteStep[] = [
   { table: "findings", where: byChangeId },
   { table: "review_reports", where: byChangeId },
   { table: "review_attempts", where: byChangeId },
-  { table: "human_decisions", where: byChangeId },
   // release_note_state.artifact_id -> artifacts.id and .run_id -> runs.id, so it
   // must be deleted before artifacts and runs below.
   { table: "release_note_state", where: byChangeId },
@@ -116,7 +115,50 @@ export const CHANGE_DELETE_PLAN: readonly ChangeDeleteStep[] = [
   { table: "artifacts", where: byChangeId },
   { table: "events", where: byChangeId },
   { table: "provider_run_processes", where: byChangeId },
+
+  {
+    table: "pipeline_command_outbox",
+    where: (changeId) => sql`
+      command_id IN (
+        SELECT command_id FROM pipeline_command_receipts WHERE change_id = ${changeId}
+      )
+    `,
+  },
+  {
+    table: "codex_turn_executions",
+    where: (changeId) => sql`
+      pipeline_job_id IN (SELECT id FROM pipeline_jobs WHERE change_id = ${changeId})
+    `,
+  },
+  {
+    table: "codex_follower_start_attempts",
+    where: (changeId) => sql`
+      pipeline_job_id IN (SELECT id FROM pipeline_jobs WHERE change_id = ${changeId})
+    `,
+  },
+  {
+    table: "codex_binding_run_leases",
+    where: (changeId) => sql`
+      binding_id IN (
+        SELECT binding_id FROM codex_thread_bindings
+        WHERE scope_kind = 'change' AND change_id = ${changeId}
+      )
+    `,
+  },
+  {
+    table: "codex_logical_turns",
+    where: (changeId) => sql`
+      pipeline_job_id IN (SELECT id FROM pipeline_jobs WHERE change_id = ${changeId})
+    `,
+  },
   { table: "pipeline_jobs", where: byChangeId },
+  { table: "human_decisions", where: byChangeId },
+  { table: "codex_interactions", where: byChangeId },
+  { table: "pipeline_command_receipts", where: byChangeId },
+  {
+    table: "codex_thread_bindings",
+    where: (changeId) => sql`scope_kind = 'change' AND change_id = ${changeId}`,
+  },
   { table: "change_provider_sessions", where: byChangeId },
   { table: "runs", where: byChangeId },
 ];
