@@ -6,6 +6,7 @@ import {
   assertExactCompletedOutput,
   parseBootstrapReadyCrashChildEvidence,
   parseRealCrashChildEvidence,
+  PHASE0_RESTART_RESUME_OUTPUT,
   reconcileConsumedRestartCompletion,
   reconcileRestartCheckpointEvidence,
   upsertStartAttemptEvidence,
@@ -33,19 +34,22 @@ describe("Codex Phase 0 verifier executable contracts", () => {
   it("accepts only a byte-exact completed terminal output", () => {
     assert.doesNotThrow(() =>
       assertExactCompletedOutput(
-        terminal("PHASE0_RESTART_RESUME_OK."),
-        "PHASE0_RESTART_RESUME_OK.",
+        terminal(PHASE0_RESTART_RESUME_OUTPUT),
+        PHASE0_RESTART_RESUME_OUTPUT,
       ));
     for (const snapshot of [
-      terminal(" PHASE0_RESTART_RESUME_OK."),
-      terminal("PHASE0_RESTART_RESUME_OK.\n"),
+      terminal(` ${PHASE0_RESTART_RESUME_OUTPUT}`),
+      terminal(`${PHASE0_RESTART_RESUME_OUTPUT}\n`),
       terminal("PHASE0_RESTART_RESUME_WRONG."),
-      { ...terminal("PHASE0_RESTART_RESUME_OK."), status: "inProgress" as const },
       {
-        ...terminal("PHASE0_RESTART_RESUME_OK."),
+        ...terminal(PHASE0_RESTART_RESUME_OUTPUT),
+        status: "inProgress" as const,
+      },
+      {
+        ...terminal(PHASE0_RESTART_RESUME_OUTPUT),
         status: "failed" as const,
         terminal: {
-          output: "PHASE0_RESTART_RESUME_OK.",
+          output: PHASE0_RESTART_RESUME_OUTPUT,
           errorCode: "failed",
         },
       },
@@ -54,7 +58,7 @@ describe("Codex Phase 0 verifier executable contracts", () => {
         () =>
           assertExactCompletedOutput(
             snapshot,
-            "PHASE0_RESTART_RESUME_OK.",
+            PHASE0_RESTART_RESUME_OUTPUT,
           ),
         /exact completed output/,
       );
@@ -499,7 +503,7 @@ describe("Codex Phase 0 verifier executable contracts", () => {
       resumedTurnId: "TURN-RESUMED",
       consumedAt: "2026-07-23T12:01:00.000Z",
     };
-    const resumedTerminal = terminal("PHASE0_RESTART_RESUME_OK.");
+    const resumedTerminal = terminal(PHASE0_RESTART_RESUME_OUTPUT);
     resumedTerminal.turnId = "TURN-RESUMED";
     const completion = reconcileConsumedRestartCompletion(
       consumed,
@@ -529,7 +533,7 @@ describe("Codex Phase 0 verifier executable contracts", () => {
         attempt: resumedAttempt,
         snapshot: {
           ...resumedTerminal,
-          terminal: { output: "PHASE0_RESTART_RESUME_OK.\n" },
+          terminal: { output: `${PHASE0_RESTART_RESUME_OUTPUT}\n` },
         },
       },
     ]) {

@@ -9,6 +9,8 @@ import type {
 
 export const PHASE0_REPORT_SCHEMA_VERSION = 1;
 export const PHASE0_STRICT_EVIDENCE_VERSION = 1;
+export const PHASE0_RESTART_RESUME_OUTPUT =
+  "PHASE0_RESTART_RESUME_OK.";
 
 export const PHASE0_STRICT_EVIDENCE_KINDS = [
   "real_shell_materialization",
@@ -452,7 +454,7 @@ export function reconcileConsumedRestartCompletion(
   try {
     assertExactCompletedOutput(
       resumedSnapshot,
-      "PHASE0_RESTART_RESUME_OK.",
+      PHASE0_RESTART_RESUME_OUTPUT,
     );
   } catch {
     throw new Error("Phase 0 consumed restart terminal is invalid");

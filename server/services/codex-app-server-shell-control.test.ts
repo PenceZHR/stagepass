@@ -486,12 +486,13 @@ describe("Codex app-server shell control", () => {
     assert.match(verifier, /validateRealCrashRecoveryBranch/);
     assert.match(
       verifier,
-      /prompt:\s*"Reply exactly PHASE0_RESTART_RESUME_OK\."/,
+      /prompt:\s*`Reply exactly \$\{PHASE0_RESTART_RESUME_OUTPUT\}`/,
     );
     assert.match(
       verifier,
-      /expectedOutput:\s*"PHASE0_RESTART_RESUME_OK\."/,
+      /expectedOutput:\s*PHASE0_RESTART_RESUME_OUTPUT/,
     );
+    assert.doesNotMatch(verifier, /PHASE0_RESTART_RESUME_OK\./);
   });
 
   it("accepts only the exact generated-schema runtime fingerprint", async () => {

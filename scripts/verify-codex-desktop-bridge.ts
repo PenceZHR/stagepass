@@ -44,6 +44,7 @@ import {
   assertExactCompletedOutput,
   parseBootstrapReadyCrashChildEvidence,
   parseRealCrashChildEvidence,
+  PHASE0_RESTART_RESUME_OUTPUT,
   PHASE0_REPORT_SCHEMA_VERSION,
   PHASE0_STRICT_EVIDENCE_VERSION,
   reconcileConsumedRestartCompletion,
@@ -2713,7 +2714,7 @@ async function main(): Promise<void> {
       },
       request: {
         cwd: root,
-        prompt: "Reply exactly PHASE0_RESTART_RESUME_OK.",
+        prompt: `Reply exactly ${PHASE0_RESTART_RESUME_OUTPUT}`,
         model: selectedModel.model,
         ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
         approvalPolicy: "never",
@@ -2754,7 +2755,7 @@ async function main(): Promise<void> {
         turnId: resumedTurn.turnId,
         deadlineAt: new Date(Date.now() + 5 * 60_000).toISOString(),
         report,
-        expectedOutput: "PHASE0_RESTART_RESUME_OK.",
+        expectedOutput: PHASE0_RESTART_RESUME_OUTPUT,
       });
       const durableResumedAttempt = await inspectAndRecordStartAttempt({
         journal,
