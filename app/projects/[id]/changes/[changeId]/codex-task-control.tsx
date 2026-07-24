@@ -148,41 +148,57 @@ export function CodexTaskControl({
             <dd className="mt-1 break-all font-mono">{control.currentInteractionId ?? "none"}</dd>
           </div>
         </dl>
-        <div className="mt-4 flex flex-wrap items-end gap-2">
-          <label className="text-xs">
-            <span className="block text-muted-foreground">Model override</span>
-            <input
-              className="mt-1 rounded-md border bg-background/60 px-2 py-1.5"
-              value={model}
-              placeholder="Codex default"
-              onChange={(event) => setModel(event.target.value)}
-            />
-          </label>
-          <label className="text-xs">
-            <span className="block text-muted-foreground">Reasoning effort</span>
-            <input
-              className="mt-1 rounded-md border bg-background/60 px-2 py-1.5"
-              value={effort}
-              placeholder="Model default"
-              onChange={(event) => setEffort(event.target.value)}
-            />
-          </label>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => onSaveSettings({
-              model: model.trim() || null,
-              reasoningEffort: effort.trim() || null,
-            })}
+        {readOnly ? (
+          <dl
+            className="mt-4 grid gap-3 text-xs sm:grid-cols-2"
+            data-codex-readonly-settings
           >
-            Save settings
-          </Button>
-          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onRepair}>
-            Repair binding
-          </Button>
-        </div>
+            <div>
+              <dt className="text-muted-foreground">Model override</dt>
+              <dd className="mt-1 font-mono">{control.model ?? "Codex default"}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Reasoning effort</dt>
+              <dd className="mt-1 font-mono">{control.reasoningEffort ?? "Model default"}</dd>
+            </div>
+          </dl>
+        ) : (
+          <div className="mt-4 flex flex-wrap items-end gap-2">
+            <label className="text-xs">
+              <span className="block text-muted-foreground">Model override</span>
+              <input
+                className="mt-1 rounded-md border bg-background/60 px-2 py-1.5"
+                value={model}
+                placeholder="Codex default"
+                onChange={(event) => setModel(event.target.value)}
+              />
+            </label>
+            <label className="text-xs">
+              <span className="block text-muted-foreground">Reasoning effort</span>
+              <input
+                className="mt-1 rounded-md border bg-background/60 px-2 py-1.5"
+                value={effort}
+                placeholder="Model default"
+                onChange={(event) => setEffort(event.target.value)}
+              />
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => onSaveSettings({
+                model: model.trim() || null,
+                reasoningEffort: effort.trim() || null,
+              })}
+            >
+              Save settings
+            </Button>
+            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onRepair}>
+              Repair binding
+            </Button>
+          </div>
+        )}
       </details>
     </section>
   );
