@@ -484,6 +484,14 @@ describe("Codex app-server shell control", () => {
     assert.match(verifier, /orchestratePhase0RestartResume/);
     assert.match(verifier, /assertStartAttemptEvidenceMatchesJournal/);
     assert.match(verifier, /validateRealCrashRecoveryBranch/);
+    assert.match(
+      verifier,
+      /prompt:\s*"Reply exactly PHASE0_RESTART_RESUME_OK\."/,
+    );
+    assert.match(
+      verifier,
+      /expectedOutput:\s*"PHASE0_RESTART_RESUME_OK\."/,
+    );
   });
 
   it("accepts only the exact generated-schema runtime fingerprint", async () => {

@@ -2713,7 +2713,7 @@ async function main(): Promise<void> {
       },
       request: {
         cwd: root,
-        prompt: "Reply exactly PHASE0_RESTART_RESUME_OK",
+        prompt: "Reply exactly PHASE0_RESTART_RESUME_OK.",
         model: selectedModel.model,
         ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}),
         approvalPolicy: "never",
@@ -2754,7 +2754,7 @@ async function main(): Promise<void> {
         turnId: resumedTurn.turnId,
         deadlineAt: new Date(Date.now() + 5 * 60_000).toISOString(),
         report,
-        expectedOutput: "PHASE0_RESTART_RESUME_OK",
+        expectedOutput: "PHASE0_RESTART_RESUME_OK.",
       });
       const durableResumedAttempt = await inspectAndRecordStartAttempt({
         journal,
