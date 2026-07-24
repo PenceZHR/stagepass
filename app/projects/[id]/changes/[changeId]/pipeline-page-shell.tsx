@@ -142,6 +142,7 @@ export function PipelinePageShell({
                   selectedStage={selectedStage}
                   activeStage={activeStage}
                   isRunning={isRunning}
+                  readOnly={selectedIsFuture}
                   deleteBusy={deleteBusy}
                   deleteError={deleteError}
                   onDeleteChange={onDeleteChange}
@@ -206,6 +207,7 @@ function PipelinePageHeader({
   selectedStage,
   activeStage,
   isRunning,
+  readOnly,
   deleteBusy,
   deleteError,
   onDeleteChange,
@@ -214,6 +216,7 @@ function PipelinePageHeader({
   selectedStage: UiStage;
   activeStage: UiStage;
   isRunning: boolean;
+  readOnly: boolean;
   deleteBusy: boolean;
   deleteError: string;
   onDeleteChange: () => void;
@@ -243,7 +246,7 @@ function PipelinePageHeader({
           <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-muted-foreground">
             {visibleChangeStatus(change)}
           </span>
-          {!isRunning && (
+          {!readOnly && !isRunning && (
             <Button
               type="button"
               variant="ghost"
@@ -260,7 +263,7 @@ function PipelinePageHeader({
         </div>
       </div>
 
-      {deleteError ? (
+      {!readOnly && deleteError ? (
         <p className="mt-4 text-sm text-destructive" role="alert">
           {deleteError}
         </p>

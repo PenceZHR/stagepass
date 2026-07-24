@@ -60,6 +60,17 @@ describe("Abstract Cloud & Sea stage orbit", () => {
     );
   });
 
+  it("removes the destructive Change action only from future previews", () => {
+    assert.match(
+      shellSource,
+      /<PipelinePageHeader[\s\S]*?readOnly=\{selectedIsFuture\}/,
+    );
+    assert.match(
+      shellSource,
+      /\{!readOnly && !isRunning && \([\s\S]*?aria-label=\{`删除 \$\{change\.id\}`\}/,
+    );
+  });
+
   it("uses the generated cloud-sea asset and reduced-motion fallback", () => {
     assert.match(globalsSource, /url\("\/assets\/stagepass\/abstract-cloud-sea\.png"\)/);
     assert.match(globalsSource, /@media \(prefers-reduced-motion: reduce\)/);
