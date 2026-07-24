@@ -329,11 +329,23 @@ Read `/tmp/stagepass-card.log` after the recorded cursor. Require:
 - `resources/read` for `ui://stagepass/desktop-bridge-card`;
 - `ui/probe` via `window.openai.callTool`;
 - `ui/probe` via `mcp-apps-tools-call`;
-- host capabilities include `message`, `serverResources`, and `serverTools`.
+- record the Stable `hostCapabilities` fields that are present. MCP Apps 2026-01-26
+  defines only `experimental`, `openLinks`, `serverTools`, `serverResources`,
+  `logging`, and `sandbox`; `message` is not a Stable capability field;
+- prove `ui/message` independently with a real JSON-RPC request carrying an `id`,
+  a matching Host success/error response, and—after a success response—a newly
+  observed turn in the same Codex Desktop task;
+- if a Host reports a `message` capability as a private or legacy extension,
+  record it only as an optional interoperability signal and never use it as a
+  Stable pass/fail gate.
 
 - [ ] **Step 4: Save the verification report**
 
-Write the exact Project, task name, thread ID, turn ID, plugin version, tool call, resource read, probe routes, test commands and limitations to `.stagepass/verification/codex-desktop-plugin-card-${CARD_RUN_ID}.json`.
+Write the exact Project, task name, thread ID, originating turn ID, resulting
+turn ID, plugin version, tool call, resource read, probe routes,
+`ui/message` request ID and matching Host response, test commands, and
+limitations to
+`.stagepass/verification/codex-desktop-plugin-card-${CARD_RUN_ID}.json`.
 
 - [ ] **Step 5: Commit repository-owned probe changes**
 
