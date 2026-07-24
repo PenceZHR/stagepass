@@ -690,7 +690,11 @@ export default function ChangeDetailPage() {
   );
   const stageStatusLabel = visibleChangeStatus(change);
   const latestRunStatusLabel = change.latestRun?.status ?? null;
-  const renderPhaseRecords = (phase: ReviewPhase, keySuffix = "records") => (
+  const renderPhaseRecords = (
+    phase: ReviewPhase,
+    keySuffix = "records",
+    readOnly = false,
+  ) => (
     <PhaseReviewPanel
       key={`${phase}-${keySuffix}`}
       projectId={projectId}
@@ -698,8 +702,9 @@ export default function ChangeDetailPage() {
       phase={phase}
       changeStatus={change.status}
       latestRunStatus={latestRunStatusLabel}
+      readOnly={readOnly}
       onReviewLoaded={setPhaseOverviews}
-      onReworked={handleReworked}
+      onReworked={readOnly ? undefined : handleReworked}
     />
   );
 
@@ -776,7 +781,33 @@ export default function ChangeDetailPage() {
         )}
 
         {/* Refining: Chat UI — constrained to viewport */}
-        {showingRetroStage ? (
+        {selectedIsFuture ? (
+              <PhaseStageShell
+                projectId={projectId}
+                changeId={changeId}
+                phase={activeSelectedPhase}
+                state={selectedStageState}
+                statusLabel={stageStatusLabel}
+                latestRunStatus={latestRunStatusLabel}
+                readOnly
+                records={renderPhaseRecords(
+                  activeSelectedPhase,
+                  "future-preview-records",
+                  true,
+                )}
+              >
+                <div
+                  className="rounded-lg border border-dashed bg-muted/10 p-4"
+                  data-future-stage-overview
+                >
+                  <h3 className="text-sm font-semibold">未来阶段概览</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    当前 Change 尚未进入此阶段。这里仅展示阶段目标、评判标准和已有记录；
+                    执行工作区会在流程到达后开放。
+                  </p>
+                </div>
+              </PhaseStageShell>
+            ) : showingRetroStage ? (
               <PhaseStageShell
                 projectId={projectId}
                 changeId={changeId}

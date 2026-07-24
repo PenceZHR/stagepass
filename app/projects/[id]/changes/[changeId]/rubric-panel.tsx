@@ -122,12 +122,14 @@ export function RubricPanel({
   changeId,
   phase,
   initialState = null,
+  readOnly = false,
 }: {
   projectId: string;
   changeId: string;
   phase: RubricPhase;
   /** Server state. Tests render with this; the browser fetches it. */
   initialState?: RubricPanelState | null;
+  readOnly?: boolean;
 }) {
   const [state, setState] = useState<RubricPanelState | null>(initialState);
   const [activeRole, setActiveRole] = useState<RubricRole>("producer");
@@ -283,7 +285,7 @@ export function RubricPanel({
 
       <div role="tabpanel" data-rubric-role-panel={panel.role} className="mt-3 space-y-3">
         <RubricVerdictList panel={panel} roundId={state.roundId} />
-        {editing ? (
+        {editing && !readOnly ? (
           <RubricEditor
             draft={draft}
             draftScope={draftScope}
@@ -315,7 +317,7 @@ export function RubricPanel({
             onSave={save}
           />
         ) : (
-          <RubricCriteriaList panel={panel} onEdit={startEditing} />
+          <RubricCriteriaList panel={panel} onEdit={readOnly ? null : startEditing} />
         )}
       </div>
     </section>
@@ -525,7 +527,7 @@ function RubricCriteriaList({
   onEdit,
 }: {
   panel: RubricRolePanel;
-  onEdit: () => void;
+  onEdit: (() => void) | null;
 }) {
   return (
     <div className="space-y-2">
@@ -533,10 +535,12 @@ function RubricCriteriaList({
         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           标准清单（{panel.criteria.length}）
         </h4>
-        {/* Always rendered, never behind a disclosure — §7.3. */}
-        <Button type="button" variant="outline" size="sm" onClick={onEdit} data-rubric-edit-open>
-          编辑评判标准
-        </Button>
+        {/* Writable stages keep the editor entry outside any disclosure (§7.3). */}
+        {onEdit ? (
+          <Button type="button" variant="outline" size="sm" onClick={onEdit} data-rubric-edit-open>
+            编辑评判标准
+          </Button>
+        ) : null}
       </div>
       {panel.criteria.length === 0 ? (
         <p className="text-xs text-muted-foreground" data-rubric-criteria="empty">

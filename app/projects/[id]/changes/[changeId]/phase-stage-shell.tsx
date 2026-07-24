@@ -109,6 +109,7 @@ export function PhaseStageShell({
   actionError,
   error,
   blockers,
+  readOnly = false,
 }: {
   projectId: string;
   changeId: string;
@@ -123,6 +124,7 @@ export function PhaseStageShell({
   actionError?: ReactNode;
   error?: ReactNode;
   blockers?: StageBlockerView[];
+  readOnly?: boolean;
 }) {
   const copy = PHASE_STAGE_COPY[phase] ?? {
     label: phase,
@@ -158,7 +160,12 @@ export function PhaseStageShell({
         blockers={blockers}
         rubric={
           rubricPhase ? (
-            <RubricPanel projectId={projectId} changeId={changeId} phase={rubricPhase} />
+            <RubricPanel
+              projectId={projectId}
+              changeId={changeId}
+              phase={rubricPhase}
+              readOnly={readOnly}
+            />
           ) : null
         }
         evidence={evidence}

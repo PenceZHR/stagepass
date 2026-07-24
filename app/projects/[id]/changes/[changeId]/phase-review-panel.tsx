@@ -58,6 +58,7 @@ export function PhaseReviewPanel({
   latestRunStatus,
   onReviewLoaded,
   onReworked,
+  readOnly = false,
 }: {
   projectId: string;
   changeId: string;
@@ -66,6 +67,7 @@ export function PhaseReviewPanel({
   latestRunStatus?: string | null;
   onReviewLoaded?: (phases: PhaseOverview[]) => void;
   onReworked?: () => void;
+  readOnly?: boolean;
 }) {
   const {
     selectedRunId,
@@ -128,9 +130,9 @@ export function PhaseReviewPanel({
       reworkError={reworkError}
       reworking={reworking}
       isChangeRunning={isChangeRunning}
-      phaseArtifactReadOnly={phaseArtifactReadOnly}
+      phaseArtifactReadOnly={readOnly || phaseArtifactReadOnly}
       hasContent={hasContent}
-      onRework={handleRework}
+      onRework={readOnly ? null : handleRework}
       onArtifactSaved={reloadPhaseReview}
     />
   );
@@ -237,7 +239,7 @@ function PhaseEvidenceView({
   isChangeRunning: boolean;
   phaseArtifactReadOnly: boolean;
   hasContent: boolean;
-  onRework: () => void;
+  onRework: (() => void) | null;
   onArtifactSaved: () => void;
 }) {
   const commonEmptyLabel = "No evidence for this section yet.";
@@ -331,7 +333,7 @@ function PhaseEvidenceView({
               ))}
             </select>
           ) : null}
-          {canRework && (
+          {canRework && onRework ? (
             <Button
               variant="outline"
               size="sm"
@@ -340,7 +342,7 @@ function PhaseEvidenceView({
             >
               Rework This Phase
             </Button>
-          )}
+          ) : null}
         </>
       }
       sections={sections}

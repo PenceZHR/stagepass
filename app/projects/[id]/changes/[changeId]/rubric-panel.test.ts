@@ -344,6 +344,23 @@ describe("rubric drawer: the editor is reachable (§7.2, §7.3)", () => {
     assert.match(markup, /空 rubric 是合法的/);
     assert.match(markup, /data-rubric-edit-open/, "an empty rubric still offers the editor");
   });
+
+  it("keeps a future-stage rubric visible without mounting its editor entry", () => {
+    const state = panelState();
+    const markup = renderToStaticMarkup(
+      createElement(RubricPanel, {
+        projectId: "PRJ-1",
+        changeId: "CHG-1",
+        phase: state.phase,
+        initialState: state,
+        readOnly: true,
+      }),
+    );
+
+    assert.match(markup, /data-rubric-panel/);
+    assert.match(markup, /Every requirement has an acceptance criterion/);
+    assert.doesNotMatch(markup, /data-rubric-edit-open/);
+  });
 });
 
 describe("the drawer is on every phase panel (§7.1)", () => {

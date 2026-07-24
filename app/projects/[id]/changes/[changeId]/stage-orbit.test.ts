@@ -45,6 +45,21 @@ describe("Abstract Cloud & Sea stage orbit", () => {
     assert.match(globalsSource, /\[data-future-preview="true"\] \[data-stage-decision-area\]/);
   });
 
+  it("renders a dedicated future preview instead of the current gate workspace", () => {
+    assert.match(
+      pageSource,
+      /\{selectedIsFuture \? \(\s*<PhaseStageShell[\s\S]*?data-future-stage-overview[\s\S]*?\) : showingRetroStage \? \(/,
+    );
+    assert.match(
+      pageSource,
+      /phase=\{activeSelectedPhase\}[\s\S]*?readOnly[\s\S]*?records=\{renderPhaseRecords\([\s\S]*?"future-preview-records",[\s\S]*?true,[\s\S]*?\)\}/,
+    );
+    assert.match(
+      pageSource,
+      /\) : showingSpecOrTechSpecGate \? \([\s\S]*?<GatePanel/,
+    );
+  });
+
   it("uses the generated cloud-sea asset and reduced-motion fallback", () => {
     assert.match(globalsSource, /url\("\/assets\/stagepass\/abstract-cloud-sea\.png"\)/);
     assert.match(globalsSource, /@media \(prefers-reduced-motion: reduce\)/);
