@@ -109,6 +109,7 @@ import {
 import { recordBuildRunFromWorkspaceFile } from "./build-run-record-service.ts";
 import { approveGate, gateApprovalActionId, type GateName } from "./gate-service.ts";
 import { computeActions, getActions } from "./action-contract-service.ts";
+import { stageRawOutputPath } from "./stage-raw-output-path.ts";
 import { runStageWithLedger } from "./stage-orchestrator-service.ts";
 import { StageBoundaryViolationError } from "./pipeline-run-ledger-service.ts";
 import {
@@ -138,7 +139,7 @@ import {
 import { readBuildRunByNumber } from "./build-workspace-run-store.ts";
 import { PROJECT_RUBRIC_DELETE_PLAN } from "./rubric-service.ts";
 import { computeMergeReadiness } from "./merge-readiness-service.ts";
-import { hasUncommittedChanges } from "./git-service.ts";
+import { hasUncommittedChanges } from "./repository-evidence-service.ts";
 import { getReviewCenterState } from "./review-center-service.ts";
 import type { StageProgressEventPayload } from "./stage-ai-output-contract.ts";
 import type { AiRunLifecycleSink } from "./ai-engine-types.ts";
@@ -150,6 +151,7 @@ import { runLedgerRepository } from "../repositories/run-ledger-repository.ts";
 import { getPlanSandboxState } from "./plan-sandbox-service.ts";
 import { ActionContractDriftError, enqueueProviderActionAtomically } from "./job-dispatch-service.ts";
 import { evaluateProviderActionAuthority } from "./provider-action-authority-service.ts";
+import { setReviewQaGateHeadProbeForTest } from "./review-qa-gate-service.ts";
 
 const PROJECT_ID = "PRJ-T27";
 const CHANGE_ID = "CHG-T27";
@@ -463,7 +465,7 @@ function seedChange(repoPath: string, status: ChangeStatus) {
     createdAt: now,
     updatedAt: now,
   }).run();
-  if (status !== "INTAKE_PENDING" && status !== "DRAFT") {
+  if (status !== "INTAKE_PENDING") {
     seedLockedPrdAuthority(repoPath);
   }
   if (
@@ -869,20 +871,23 @@ function latestStageRawOutputPayload(): Record<string, unknown> {
   return parsed.stageRawOutput;
 }
 
-function latestSpecRunRawCapturePath(repoPath: string): string {
+/**
+ * A capture written by one role of the latest spec run.
+ *
+ * `phase` used to be implicit: the path was built with the constant
+ * "raw-ai-output.json", so the red author and the blue critic of the same run
+ * wrote to one file and the critic's output simply replaced the author's. Every
+ * caller below wants the critic, and every one of them was silently relying on
+ * that overwrite to get it. Captures are per-phase now, so the role has to be
+ * named -- and the path is derived from the same function the writer uses,
+ * rather than being a fourth hand-written copy of the rule.
+ */
+function latestSpecRunRawCapturePath(repoPath: string, phase: string): string {
   const specRun = db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all()
     .filter((run) => run.phase === "spec")
     .at(-1);
   assert.ok(specRun);
-  return path.join(
-    repoPath,
-    ".ship",
-    "changes",
-    CHANGE_ID,
-    "runs",
-    specRun.id,
-    "raw-ai-output.json",
-  );
+  return stageRawOutputPath({ repoPath, changeId: CHANGE_ID, runId: specRun.id, phase });
 }
 
 function sha256Text(value: string): string {
@@ -2728,7 +2733,7 @@ describe("pipeline-service v2 stages", () => {
   });
 
   it("rejects spec from an invalid status", async () => {
-    seedChange(repoPath, "DRAFT");
+    seedChange(repoPath, "PLAN_READY");
 
     await assert.rejects(
       () => runSpec(CHANGE_ID, makeTestJobExecutionContext("spec-invalid-status")),
@@ -3682,6 +3687,12 @@ describe("pipeline-service v2 stages", () => {
         assert.equal(envelope?.error, "action_not_allowed");
         assert.equal(envelope?.action?.actionId, "enter_qa");
         assert.equal(envelope?.action?.enabled, false);
+        // The 409 has to say WHICH rule refused. The envelope used to be rebuilt
+        // from the current contract with no override, so on a change whose
+        // contract still read enabled it came back stating `action_not_allowed`
+        // and `enabled: true, reasonCode: null` in the same body -- and
+        // persistActionContract wrote that contradiction down.
+        assert.equal(envelope?.action?.reasonCode, "test_plan_gate_missing");
         return true;
       },
     );
@@ -3693,6 +3704,54 @@ describe("pipeline-service v2 stages", () => {
       .all()
       .filter((run) => run.phase === "local_check");
     assert.equal(localCheckRuns.length, 0);
+  });
+
+  /**
+   * The counterpart to the test above. `error instanceof Error` used to sit in
+   * the same condition as ReviewQaGateError, and that is true for essentially
+   * everything JS throws -- so a real fault was relabelled "action_not_allowed"
+   * and its message and stack were discarded. The worker reaches this function
+   * with no preflight ahead of it, so the only record of the failure was a 409
+   * naming a rule that had not actually refused.
+   */
+  it("lets an unexpected fault out of QA preflight instead of relabelling it action_not_allowed", async () => {
+    setPipelineEngineFactoryForTest(() => ({
+      async run() {
+        return {
+          threadId: `${CHANGE_ID}-thread`,
+          runId: "ENGINE-RUN",
+          summary: reviewLineProtocolText(),
+          success: true,
+          changedFiles: [],
+          structuredOutput: undefined,
+          items: [],
+        };
+      },
+      async *runStreamed(input) {
+        fs.writeFileSync(path.join(input.repoPath, "src", "app.ts"), "export const value = 2;\n");
+        yield { type: "thread.started", threadId: `${CHANGE_ID}-thread` } as unknown as AiStreamEvent;
+      },
+    }));
+    await prepareAdoptedBuild(repoPath);
+    await runReview(CHANGE_ID, makeTestJobExecutionContext("review-qa-fault-passthrough"));
+
+    const restoreProbe = setReviewQaGateHeadProbeForTest(() => {
+      throw new Error("git exploded while resolving HEAD");
+    });
+    try {
+      assert.throws(
+        () => assertCanRunCheck(CHANGE_ID, { entrypoint: "api_check_route", actor: "human" }),
+        (err) => {
+          // Travels with its own message, and is not dressed up as a refusal.
+          assert.match(String((err as Error).message), /git exploded while resolving HEAD/);
+          assert.equal((err as { status?: number }).status, undefined);
+          assert.equal((err as { envelope?: unknown }).envelope, undefined);
+          return true;
+        },
+      );
+    } finally {
+      restoreProbe();
+    }
   });
 
   it("allows Review reruns from CHECK_FAILED while open Review blockers need re-review", async () => {
@@ -3735,15 +3794,18 @@ describe("pipeline-service v2 stages", () => {
     assert.equal(db.select().from(findings).where(eq(findings.id, "FND-RERUN-P1")).get()?.status, "fixed");
   });
 
-  it("rejects plan generation from DRAFT before starting a run", async () => {
-    seedChange(repoPath, "DRAFT");
+  it("rejects plan generation from INTAKE_PENDING before starting a run", async () => {
+    // Was DRAFT, a status that no longer exists. This test needs a status plan
+    // generation genuinely refuses -- PLAN_READY is not one, it is exactly when
+    // a plan may be regenerated. INTAKE_PENDING is before the TechSpec gate.
+    seedChange(repoPath, "INTAKE_PENDING");
 
     await assert.rejects(
       () => generatePlan(CHANGE_ID, makeTestJobExecutionContext("plan-invalid-status")),
       /Invalid status/,
     );
 
-    assert.equal(currentStatus(), "DRAFT");
+    assert.equal(currentStatus(), "INTAKE_PENDING");
     assert.equal(db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all().length, 0);
   });
 
@@ -6632,7 +6694,7 @@ describe("pipeline-service v2 stages", () => {
     );
   });
 
-  it("uses the change provider for Review instead of forcing codex changes to claude", async () => {
+  it("uses the Codex provider for Review", async () => {
     let reviewProvider: string | null = null;
     setPipelineEngineFactoryForTest((provider) => ({
       async run(input) {
@@ -7203,8 +7265,36 @@ describe("pipeline-service v2 stages", () => {
     assert.match(attempt?.sanitizedErrorSummary ?? "", /Review provider timed out or was aborted after 42 ms/);
     assert.ok(attempt?.rawOutputArtifactId);
 
-    const reviewCenter = getReviewCenterState(CHANGE_ID);
-    assert.equal(reviewCenter.actions.retry_review.enabled, true);
+    // Was: assert.equal(getReviewCenterState(CHANGE_ID).actions.retry_review.enabled, true).
+    // "Retry stays available" is the point of this test, but the review center
+    // is no longer where that question is answered -- it used to publish its
+    // own copy of the rule, and that copy never consulted pipeline_jobs at all,
+    // which is why it answered `true` here regardless. Asserting against the
+    // action contract is strictly stronger: it is the same evaluation the write
+    // path enforces through assertRequestActionAllowed, so this pins that the
+    // button and the POST agree.
+    //
+    // makeTestJobExecutionContext inserts a pipeline_jobs row as `running` to
+    // stand in for the worker's lease, and calling runReview directly skips the
+    // worker's settlement, so the row is still `running` here. A real worker
+    // settles the job before any contract is served. Settle it the same way,
+    // otherwise this assertion only proves that an unsettled lease blocks
+    // retry -- which is true, and not what this test is about.
+    db.update(pipelineJobs)
+      .set({ status: "failed", endedAt: "2026-07-10T10:00:01.000Z" })
+      .where(and(
+        eq(pipelineJobs.changeId, CHANGE_ID),
+        eq(pipelineJobs.phase, "review"),
+        inArray(pipelineJobs.status, ["queued", "leased", "running"]),
+      ))
+      .run();
+
+    const retryReview = computeActions(CHANGE_ID).find((action) => action.actionId === "retry_review");
+    assert.equal(
+      retryReview?.enabled,
+      true,
+      `retry_review disabled after provider timeout: ${retryReview?.reasonCode} / ${retryReview?.reason}`,
+    );
   });
 
   it("records raw output artifact for successful Review", async () => {
@@ -8776,7 +8866,7 @@ describe("pipeline-service v2 stages", () => {
     const adversarialWriterSessions = [
       { id: "ZZZZ-red-malformed", rawJson: "{not-json" },
       { id: "ZZZY-red-wrong-schema", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v0", roundId: failedRound.id, provider: "codex", threadId: "wrong-schema", errorCode: "provider_timeout" } }) },
-      { id: "ZZZX-red-wrong-provider", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v1", roundId: failedRound.id, provider: "claude", threadId: "wrong-provider", errorCode: "provider_timeout" } }) },
+      { id: "ZZZX-red-wrong-provider", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v1", roundId: failedRound.id, provider: "anthropic", threadId: "wrong-provider", errorCode: "provider_timeout" } }) },
       { id: "ZZZW-red-wrong-round", rawJson: JSON.stringify({ specWriterRetrySession: { schemaVersion: "spec_writer_retry_session/v1", roundId: "wrong-round", provider: "codex", threadId: "wrong-round", errorCode: "provider_timeout" } }) },
     ];
     for (const candidate of adversarialWriterSessions) {
@@ -8996,7 +9086,7 @@ describe("pipeline-service v2 stages", () => {
             assert.ok(input.lifecycle);
             await input.lifecycle.onProcessStarted({ provider: "codex", pid: null, ppid: process.pid, externalRef: "durable-red-timeout", startedAt: new Date().toISOString() });
             await input.lifecycle.onTerminal({ provider: "codex", pid: null, status: "stopped", signal: "SIGTERM", summary: "Provider stopped after parent received SIGTERM", endedAt: new Date().toISOString() });
-            return { threadId: "durable-red-timeout", runId: "RED-SIGTERM", summary: "Claude SDK run failed: Claude SDK exited with code 143:", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
+            return { threadId: "durable-red-timeout", runId: "RED-SIGTERM", summary: "provider_run_failed: provider exited with code 143", success: false, changedFiles: [], structuredOutput: undefined, providerErrorCode: "provider_run_failed", items: [] };
           }
           return { threadId: "durable-red-timeout", runId: "RED-RESUMED", summary: redSpecLineProtocolText(), success: true, changedFiles: [], structuredOutput: undefined, items: [] };
         }
@@ -9482,7 +9572,7 @@ describe("pipeline-service v2 stages", () => {
       },
       {
         id: "ZZY-wrong-provider",
-        payload: { schemaVersion: "spec_critic_retry_session/v1", roundId: failedRound?.id, provider: "claude", threadId: "wrong-provider", errorCode: "provider_timeout" },
+        payload: { schemaVersion: "spec_critic_retry_session/v1", roundId: failedRound?.id, provider: "anthropic", threadId: "wrong-provider", errorCode: "provider_timeout" },
       },
       {
         id: "ZZX-wrong-round",
@@ -9673,7 +9763,7 @@ describe("pipeline-service v2 stages", () => {
     }
 
     assert.equal(currentStatus(), "BLOCKED");
-    const rawCapturePath = latestSpecRunRawCapturePath(repoPath);
+    const rawCapturePath = latestSpecRunRawCapturePath(repoPath, "spec_critic");
     assert.equal(fs.existsSync(rawCapturePath), true);
     const rawCapture = JSON.parse(fs.readFileSync(rawCapturePath, "utf-8"));
     assert.equal(rawCapture.errorCode, "provider_timeout");
@@ -9708,7 +9798,7 @@ describe("pipeline-service v2 stages", () => {
     assert.equal(currentChange().blockedPhase, "spec");
     const round = db.select().from(battleRounds).where(eq(battleRounds.changeId, CHANGE_ID)).get();
     assert.equal(round?.status, "failed");
-    const rawCapturePath = latestSpecRunRawCapturePath(repoPath);
+    const rawCapturePath = latestSpecRunRawCapturePath(repoPath, "spec_critic");
     assert.equal(fs.existsSync(rawCapturePath), true);
     const rawCapture = JSON.parse(fs.readFileSync(rawCapturePath, "utf-8"));
     assert.equal(rawCapture.phase, "spec_critic");
@@ -9757,7 +9847,7 @@ describe("pipeline-service v2 stages", () => {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
-            summary: "provider_timeout: Claude SDK timed out after 10ms",
+            summary: "provider_timeout: Codex timed out after 10ms",
             success: false,
             changedFiles: [],
             structuredOutput: undefined,
@@ -9847,7 +9937,7 @@ describe("pipeline-service v2 stages", () => {
     const round = db.select().from(battleRounds).where(eq(battleRounds.changeId, CHANGE_ID)).get();
     assert.equal(round?.status, "failed");
     assert.equal(artifactExists(repoPath, path.join("reports", "spec-report.md")), false);
-    const rawCapturePath = latestSpecRunRawCapturePath(repoPath);
+    const rawCapturePath = latestSpecRunRawCapturePath(repoPath, "spec_critic");
     assert.equal(fs.existsSync(rawCapturePath), true);
     const rawCapture = JSON.parse(fs.readFileSync(rawCapturePath, "utf-8"));
     assert.equal(rawCapture.phase, "spec_critic");

@@ -1,0 +1,67 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 12px;
+}
+
+#stagepass-interaction {
+  display: grid;
+  gap: 12px;
+}
+
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+.stagepass-phase,
+small {
+  color: color-mix(in srgb, currentColor 65%, transparent);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin-block: 10px;
+}
+
+input,
+textarea,
+select,
+button {
+  box-sizing: border-box;
+  font: inherit;
+}
+
+input:not([type="checkbox"]),
+textarea,
+select {
+  width: 100%;
+  padding: 8px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+button {
+  min-height: 36px;
+  padding: 8px 12px;
+}
+
+.blockers {
+  border-inline-start: 4px solid #c33;
+  padding-inline-start: 10px;
+}
+
+.status {
+  flex-basis: 100%;
+}

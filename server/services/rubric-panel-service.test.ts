@@ -513,11 +513,11 @@ describe("scope and role visibility", () => {
     for (const phase of ["PRD", "Spec", "Build", "Fix"] as const) {
       assert.equal(criticApplicable(phase), true, `${phase} has a critic in §3`);
     }
-    for (const phase of ["Refine", "TechSpec", "Plan", "TestPlan", "QA", "Merge", "Retro"] as const) {
+    for (const phase of ["TechSpec", "Plan", "TestPlan", "QA", "Merge", "Retro"] as const) {
       assert.equal(criticApplicable(phase), false, `${phase} has no critic, so §7.1 hides the tab`);
     }
     // Producer and verdict are always answerable, so their tabs never hide.
-    for (const phase of ["Refine", "Merge"] as const) {
+    for (const phase of ["Merge"] as const) {
       const state = buildRubricPanelState({ projectId: PROJECT_ID, changeId: CHANGE_ID, phase });
       assert.equal(state.roles.find((role) => role.role === "producer")!.applicable, true);
       assert.equal(state.roles.find((role) => role.role === "verdict")!.applicable, true);

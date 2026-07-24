@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { db } from "../db";
 import { events } from "../db/schema";
+import { nextSequencedId } from "./record-identity";
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -18,22 +19,7 @@ export interface EmitEventInput {
 
 function nextEventId(): string {
   const rows = db.select({ id: events.id }).from(events).all();
-  const used = new Set<string>();
-  let maxNum = 0;
-  for (const row of rows) {
-    const id = row.id as string;
-    used.add(id);
-    const match = id.match(/^EVT-(\d+)$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
+  return nextSequencedId(rows.map((row) => row.id as string), "EVT");
 }
 
 /**

@@ -2,7 +2,7 @@ import { desc, eq } from "drizzle-orm";
 
 import { mergeApprovals, mergeReadiness } from "../db/schema";
 import type { ActionContractDb, ActionDecision, Blocker } from "./action-contract-types";
-import { MISSING_GATE_SOURCE_DB_HASH, normalizeSeverity } from "./action-contract-common-policy";
+import { MISSING_GATE_SOURCE_DB_HASH, normalizeSeverity, readJson } from "./action-contract-common-policy";
 import { computeMergeReadiness } from "./merge-readiness-service";
 
 export function mergeDecision(changeId: string, requireApproval: boolean): ActionDecision {
@@ -59,24 +59,55 @@ function latestPersistedMergeReadiness(db: ActionContractDb, changeId: string): 
     .get() ?? null;
 }
 
-function parseMergeReadinessBlockers(
-  readiness: typeof mergeReadiness.$inferSelect,
-): Array<{
+type RawMergeBlocker = {
   id?: unknown;
   reasonCode?: unknown;
   severity?: unknown;
   title?: unknown;
-}> {
-  try {
-    const parsed = JSON.parse(readiness.blockersJson ?? "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+};
+
+/**
+ * Reads the stored blocker payload, or null when it cannot be read as a list.
+ *
+ * Parsing is delegated to the shared `readJson` so this module does not carry a
+ * second, independently-drifting JSON.parse of the same column. What is *not*
+ * shared is the reaction to failure, and deliberately so: in `gateDecision` the
+ * blocker list is only the explanation for a verdict `gate.status` already
+ * decided, so degrading to an empty list there loses detail and nothing more.
+ * Here the list *is* the verdict -- emptiness is the enable predicate -- so the
+ * caller has to be able to tell "no blockers" from "no readable answer".
+ * Collapsing those two used to hand a corrupt row more permission than a
+ * well-formed one.
+ */
+function readMergeReadinessBlockers(
+  readiness: typeof mergeReadiness.$inferSelect,
+): RawMergeBlocker[] | null {
+  const parsed = readJson(readiness.blockersJson);
+  return Array.isArray(parsed) ? (parsed as RawMergeBlocker[]) : null;
+}
+
+/**
+ * A readiness row that says "blocked" but cannot show why. Fail closed: the
+ * stored blockers are the only evidence the persisted path has, and unreadable
+ * evidence must never read as "nothing is wrong". P0 because the row is
+ * corrupt, not merely unsatisfied -- a human has to look at the database.
+ */
+function unreadableMergeBlockersDecision(
+  readiness: typeof mergeReadiness.$inferSelect,
+  reasonCode: "merge_blockers_unreadable" | "merge_blockers_inconsistent",
+  reason: string,
+): ActionDecision {
+  return {
+    enabled: false,
+    reasonCode,
+    reason,
+    blockers: [{ id: reasonCode, severity: "P0", title: reason }],
+    sourceDbHash: readiness.sourceDbHash ?? MISSING_GATE_SOURCE_DB_HASH,
+  };
 }
 
 function mergeBlockersFromParsedReadiness(
-  blockers: ReturnType<typeof parseMergeReadinessBlockers>,
+  blockers: RawMergeBlocker[],
 ): Blocker[] {
   return blockers.map((blocker, index) => ({
     id:
@@ -95,7 +126,7 @@ function mergeBlockersFromParsedReadiness(
 
 function mergeDecisionFromPersistedReadinessBlockers(
   readiness: typeof mergeReadiness.$inferSelect,
-  rawBlockers: ReturnType<typeof parseMergeReadinessBlockers>,
+  rawBlockers: RawMergeBlocker[],
 ): ActionDecision {
   if (rawBlockers.length === 0) {
     return {
@@ -130,10 +161,31 @@ export function mergeDecisionFromPersistedReadiness(db: ActionContractDb, change
   if (!readiness) {
     return mergeReadinessMissingDecision();
   }
-  return mergeDecisionFromPersistedReadinessBlockers(
-    readiness,
-    readiness.status === "ready" ? [] : parseMergeReadinessBlockers(readiness),
-  );
+  // A "ready" row never consults the payload, so a corrupt one cannot
+  // retroactively block a change that genuinely passed.
+  if (readiness.status === "ready") {
+    return mergeDecisionFromPersistedReadinessBlockers(readiness, []);
+  }
+  const rawBlockers = readMergeReadinessBlockers(readiness);
+  if (!rawBlockers) {
+    return unreadableMergeBlockersDecision(
+      readiness,
+      "merge_blockers_unreadable",
+      "Merge readiness blockers could not be read",
+    );
+  }
+  // computeMergeReadiness derives status as `blockers.length === 0 ? ready :
+  // blocked`, so "blocked" with an empty list cannot be written by the normal
+  // path. If it shows up anyway the two encodings of the same fact disagree,
+  // and the permissive reading is the one that must not win.
+  if (rawBlockers.length === 0) {
+    return unreadableMergeBlockersDecision(
+      readiness,
+      "merge_blockers_inconsistent",
+      "Merge readiness is blocked but lists no blockers",
+    );
+  }
+  return mergeDecisionFromPersistedReadinessBlockers(readiness, rawBlockers);
 }
 
 export function approveMergeDecisionFromPersistedReadiness(db: ActionContractDb, changeId: string): ActionDecision {
@@ -154,10 +206,19 @@ export function approveMergeDecisionFromPersistedReadiness(db: ActionContractDb,
   if (!readiness) {
     return mergeReadinessMissingDecision();
   }
+  const rawBlockers = readMergeReadinessBlockers(readiness);
+  if (!rawBlockers) {
+    return unreadableMergeBlockersDecision(
+      readiness,
+      "merge_blockers_unreadable",
+      "Merge readiness blockers could not be read",
+    );
+  }
+  // Unlike the merge decision, an empty list here is legitimate: the missing
+  // approval is exactly what this action exists to clear, so a readiness
+  // blocked on nothing else must still let the approval through.
   return mergeDecisionFromPersistedReadinessBlockers(
     readiness,
-    parseMergeReadinessBlockers(readiness).filter(
-      (blocker) => blocker.reasonCode !== "merge_approval_missing",
-    ),
+    rawBlockers.filter((blocker) => blocker.reasonCode !== "merge_approval_missing"),
   );
 }

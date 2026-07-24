@@ -866,7 +866,7 @@ describe("prd-briefing-service", { concurrency: false }, () => {
       changeId: CHANGE_ID,
       runId: "RUN-PRD-DELETE",
       phase: "spec",
-      provider: "claude",
+      provider: "codex",
       ppid: process.pid,
       status: "failed",
       startedAt: lifecycleNow,
@@ -931,7 +931,7 @@ describe("prd-briefing-service", { concurrency: false }, () => {
       changeId: CHANGE_ID,
       runId: "RUN-PRD-DELETE-ROLLBACK",
       phase: "spec",
-      provider: "claude",
+      provider: "codex",
       ppid: process.pid,
       status: "failed",
       startedAt: now,
@@ -1087,6 +1087,45 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     );
   });
 
+  it("refuses to re-lock an already locked briefing, so the pipeline cannot be rewound", async () => {
+    // The lock route has no contract gate at all (there is no `lock_prd` action
+    // in ACTION_DEFINITIONS), and computePrdGate short-circuits `canLock` to
+    // true for anything already locked -- so a second POST walked through every
+    // check and re-ran the INTAKE_READY transition. On a change that had moved
+    // on to Spec that rewinds the pipeline: SPEC_READY -> INTAKE_READY, the
+    // Intake gate reopens and the Spec run is discarded.
+    //
+    // The UI disables the button once locked, which is why this was never seen:
+    // a frontend check was the only thing guarding the route, and a tab left
+    // open across a Spec run does not have it. Every sibling mutator
+    // (completeFinalReview, completePrdDraft, ...) calls assertMutable; this one
+    // did not.
+    const questionId = await seedQuestion("critical");
+    await applyBriefingQuestionAction({
+      changeId: CHANGE_ID,
+      questionId,
+      action: "answer",
+      value: "面向普通开发者。",
+    });
+    await completePrdDraft({ changeId: CHANGE_ID, markdown: "# PRD\n\n## 目标\n做战前会议室。" });
+    await completeFinalReview({ changeId: CHANGE_ID, reviewJson: finalReviewJson() });
+    await lockPrdBriefing({ changeId: CHANGE_ID });
+
+    // The change advances past intake, exactly as a real Spec run would leave it.
+    db.update(changes).set({ status: "SPEC_READY" }).where(eq(changes.id, CHANGE_ID)).run();
+
+    await assert.rejects(
+      () => lockPrdBriefing({ changeId: CHANGE_ID }),
+      (error) => error instanceof PrdBriefingError && error.code === "prd_briefing_locked",
+    );
+
+    assert.equal(
+      db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.status,
+      "SPEC_READY",
+      "the refused lock must not rewind the change",
+    );
+  });
+
   it("locks PRD, writes gate mirror, registers artifacts, and transitions change to INTAKE_READY", async () => {
     const questionId = await seedQuestion("critical");
     await applyBriefingQuestionAction({
@@ -1151,6 +1190,7 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     assert.equal(actionAfter?.sourceDbHash, actionBefore?.sourceDbHash);
   });
 
+
   it("does not leave the briefing locked when the status transition fails", async () => {
     const questionId = await seedQuestion("critical");
     await applyBriefingQuestionAction({
@@ -1177,5 +1217,97 @@ describe("prd-briefing-service", { concurrency: false }, () => {
     } finally {
       db.run(sql`DROP TRIGGER IF EXISTS task_d_block_status_transition`);
     }
+  });
+
+  describe("question generation convergence", () => {
+    it("refuses convergence on the first round — it would weld the draft gate shut", async () => {
+      await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
+
+      await assert.rejects(
+        () => completeQuestionGeneration({
+          changeId: CHANGE_ID,
+          questionsOutput: { questions: [], noNewQuestions: true },
+        }),
+        (error: unknown) =>
+          error instanceof PrdBriefingError && error.code === "first_round_cannot_converge",
+      );
+    });
+
+    it("accepts convergence on a later round without writing cards", async () => {
+      await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [question("critical")] },
+      });
+
+      const before = getPrdBriefingState(CHANGE_ID).questions.length;
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [], noNewQuestions: true },
+      });
+
+      assert.equal(
+        getPrdBriefingState(CHANGE_ID).questions.length,
+        before,
+        "收敛轮不应写入任何卡片",
+      );
+    });
+
+    it("keeps the draft gate passable after a converged round", async () => {
+      await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [question("optional")] },
+      });
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [], noNewQuestions: true },
+      });
+
+      // This does NOT guard 雷 1 (welding the draft gate shut forever) --
+      // round 1's card alone keeps assertQuestionsGenerated satisfied no
+      // matter what round 2 does, so this test would stay green even with
+      // Step 3's gate deleted outright. "refuses convergence on the first
+      // round" above is what actually guards 雷 1. What this guards: that
+      // completing a converged round does not itself throw when checked
+      // against the draft gate, and that the accumulated card set survives
+      // convergence rather than being cleared or replaced by it.
+      assert.doesNotThrow(() => assertCanStartPrdBriefingDraft(CHANGE_ID));
+      assert.ok(getPrdBriefingState(CHANGE_ID).questions.length > 0);
+    });
+
+    it("rejects convergence output that also carries new questions", async () => {
+      await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
+
+      await assert.rejects(
+        () => completeQuestionGeneration({
+          changeId: CHANGE_ID,
+          questionsOutput: { questions: [question("critical")], noNewQuestions: true },
+        }),
+        (error: unknown) =>
+          error instanceof PrdBriefingError && error.code === "invalid_briefing_questions",
+      );
+    });
+
+    it("resets a draft-ready briefing back to questions_ready after a converged round", async () => {
+      await savePrdIntent({ changeId: CHANGE_ID, rawText: "把追问收敛掉" });
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [question("optional")] },
+      });
+      await completePrdDraft({ changeId: CHANGE_ID, markdown: "# PRD\n\n内容" });
+      assert.equal(getPrdBriefingState(CHANGE_ID).briefing?.status, "draft_ready");
+
+      // assertCanStartPrdBriefingQuestions does not gate on briefing status, so
+      // a change that already reached draft_ready can still start (and
+      // converge) another round. ensureBriefing() is a no-op once the row
+      // exists, so nothing else would move status off draft_ready here.
+      await completeQuestionGeneration({
+        changeId: CHANGE_ID,
+        questionsOutput: { questions: [], noNewQuestions: true },
+      });
+
+      assert.equal(getPrdBriefingState(CHANGE_ID).briefing?.status, "questions_ready");
+    });
   });
 });

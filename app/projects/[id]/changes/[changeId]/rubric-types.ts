@@ -11,7 +11,6 @@ export const RUBRIC_ROLES = ["producer", "critic", "verdict"] as const;
 export type RubricRole = (typeof RUBRIC_ROLES)[number];
 
 export type RubricPhase =
-  | "Refine"
   | "PRD"
   | "Spec"
   | "TechSpec"

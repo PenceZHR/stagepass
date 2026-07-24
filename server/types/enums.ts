@@ -1,11 +1,13 @@
 import { z } from "zod";
 
-export const AiProvider = z.enum(["codex", "claude"]);
+import {
+  BATTLE_ROUND_STATUSES,
+} from "./battle-round-status";
+
+export const AiProvider = z.enum(["codex"]);
 export type AiProvider = z.infer<typeof AiProvider>;
 
 export const ChangeStatus = z.enum([
-  "REFINING",
-  "DRAFT",
   "PLANNING",
   "PLAN_READY",
   "PLAN_APPROVED",
@@ -38,7 +40,7 @@ export const ChangeStatus = z.enum([
 export type ChangeStatus = z.infer<typeof ChangeStatus>;
 
 export const RunPhase = z.enum([
-  "refine",
+
   "generate_plan",
   "implement",
   "review",
@@ -74,10 +76,13 @@ export const EventType = z.enum([
   "finding_waived",
   "scope_check_passed",
   "scope_check_failed",
-  "chat_user",
-  "chat_assistant",
   "prd_briefing_locked",
   "stage_progress",
+  "interaction_created",
+  "interaction_presented",
+  "interaction_expired",
+  "interaction_completed",
+  "interaction_failed",
 ]);
 export type EventType = z.infer<typeof EventType>;
 
@@ -151,18 +156,19 @@ export type BattleUnit = z.infer<typeof BattleUnit>;
 export const BattleTemplate = z.enum(["SPEC_BATTLE_MVP"]);
 export type BattleTemplate = z.infer<typeof BattleTemplate>;
 
-export const BattleRoundStatus = z.enum([
-  "not_started",
-  "red_running",
-  "red_done",
-  "blue_running",
-  "blue_done",
-  "report_ready",
-  "closed",
-  "superseded",
-  "failed",
-]);
+// Derived from the dependency-free canonical list so the two cannot drift, and
+// so client components can import the predicates without pulling zod. See
+// battle-round-status.ts.
+export const BattleRoundStatus = z.enum(BATTLE_ROUND_STATUSES);
 export type BattleRoundStatus = z.infer<typeof BattleRoundStatus>;
+
+export {
+  BATTLE_ROUND_STATUSES,
+  RUNNING_BATTLE_ROUND_STATUSES,
+  OCCUPIED_BATTLE_ROUND_STATUSES,
+  isRunningBattleRoundStatus,
+  isOccupiedBattleRoundStatus,
+} from "./battle-round-status";
 
 export const RequirementGapStatus = z.enum([
   "open",
@@ -180,6 +186,92 @@ export const HumanDecisionAction = z.enum([
   "waive_p1",
 ]);
 export type HumanDecisionAction = z.infer<typeof HumanDecisionAction>;
+
+export const CodexBindingStatus = z.enum([
+  "provisioning",
+  "ready",
+  "running",
+  "waiting_human",
+  "failed",
+  "detached",
+]);
+export type CodexBindingStatus = z.infer<typeof CodexBindingStatus>;
+
+export const CodexInteractionStatus = z.enum([
+  "pending",
+  "presented",
+  "submitting",
+  "completed",
+  "expired",
+  "superseded",
+  "cancelled",
+  "failed",
+]);
+export type CodexInteractionStatus = z.infer<typeof CodexInteractionStatus>;
+
+export const ActorSurface = z.enum([
+  "codex_mcp_app",
+  "stagepass_web_emergency",
+  "stagepass_web_ops",
+  "legacy_web_migration",
+  "recovery",
+]);
+export type ActorSurface = z.infer<typeof ActorSurface>;
+
+export const PipelineCommandReceiptStatus = z.enum([
+  "accepted",
+  "completed",
+  "rejected",
+  "failed",
+]);
+export type PipelineCommandReceiptStatus = z.infer<typeof PipelineCommandReceiptStatus>;
+
+export const DispatchSurfaceSchema = z.enum(["follower_ipc", "host_ui_message"]);
+export type DispatchSurface = z.infer<typeof DispatchSurfaceSchema>;
+
+export const CodexLogicalRoleSchema = z.enum([
+  "stage",
+  "spec_writer",
+  "spec_critic",
+  "spec_verdict",
+  "build",
+  "fix",
+  "prd_turn",
+  "context_select",
+  "context_generate",
+  "interaction_present",
+  "interaction_wakeup",
+]);
+export type CodexLogicalRole = z.infer<typeof CodexLogicalRoleSchema>;
+
+export const STAGEPASS_DISPATCH_SURFACE_BY_ROLE = {
+  stage: "follower_ipc",
+  spec_writer: "follower_ipc",
+  spec_critic: "follower_ipc",
+  spec_verdict: "follower_ipc",
+  build: "follower_ipc",
+  fix: "follower_ipc",
+  prd_turn: "follower_ipc",
+  context_select: "follower_ipc",
+  context_generate: "follower_ipc",
+  interaction_present: "follower_ipc",
+  interaction_wakeup: "host_ui_message",
+} as const satisfies Record<CodexLogicalRole, DispatchSurface>;
+
+export const PipelineJobEffectPayload = z.discriminatedUnion("kind", [
+  z.object({
+    schemaVersion: z.literal("stagepass.pipeline-effect/v1"),
+    kind: z.literal("interaction_present"),
+    interactionId: z.string().min(1),
+  }).strict(),
+  z.object({
+    schemaVersion: z.literal("stagepass.pipeline-effect/v1"),
+    kind: z.literal("interaction_wakeup"),
+    interactionId: z.string().min(1),
+    commandId: z.string().min(1),
+  }).strict(),
+]);
+export type PipelineJobEffectPayload = z.infer<typeof PipelineJobEffectPayload>;
 
 export const WarReportStatus = z.enum(["generated", "stale", "approved"]);
 export type WarReportStatus = z.infer<typeof WarReportStatus>;

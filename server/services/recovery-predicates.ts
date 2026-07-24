@@ -1,6 +1,7 @@
 import type { pipelineJobs, runs } from "../db/schema";
 import type { ProviderRunProcess } from "./provider-run-lifecycle-service";
 import type { ProcessIdentity } from "./process-identity-service";
+import type { AiExecutionRecoveryTarget } from "./recovery-types";
 
 /**
  * Pure predicates for stale-provider-run recovery: ownership/identity/fence and
@@ -12,6 +13,21 @@ import type { ProcessIdentity } from "./process-identity-service";
 
 export function inArrayValue<T>(value: T, allowed: readonly T[]): boolean {
   return allowed.includes(value);
+}
+
+export function recoveryRequiresProcessProbe(
+  target: AiExecutionRecoveryTarget,
+): target is Extract<AiExecutionRecoveryTarget, { kind: "process" }> {
+  return target.kind === "process";
+}
+
+export function recoveryRequiresFollowerObservation(
+  target: AiExecutionRecoveryTarget,
+): target is Extract<
+  AiExecutionRecoveryTarget,
+  { kind: "desktop_follower_turn" }
+> {
+  return target.kind === "desktop_follower_turn";
 }
 
 export function nonEmpty(value: string | null | undefined): boolean {

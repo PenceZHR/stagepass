@@ -4,7 +4,6 @@ import { AiProvider, Phase } from "./enums";
 export const CreateProjectInput = z.object({
   name: z.string().min(1),
   repoPath: z.string().min(1),
-  gitEnabled: z.boolean().optional().default(false),
   contextProvider: AiProvider.default("codex"),
   prdProvider: AiProvider.default("codex"),
 });
@@ -32,6 +31,6 @@ export const CreateChangeInput = z.object({
 export type CreateChangeInput = z.infer<typeof CreateChangeInput>;
 
 export const ReworkChangeInput = z.object({
-  phase: Phase.extract(["Refine", "Plan", "TestPlan", "Build", "Implement", "Check", "Fix"]),
+  phase: Phase.extract(["Plan", "TestPlan", "Build", "Implement", "Check", "Fix"]),
 });
 export type ReworkChangeInput = z.infer<typeof ReworkChangeInput>;

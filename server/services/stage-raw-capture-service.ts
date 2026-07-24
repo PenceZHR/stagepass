@@ -4,10 +4,10 @@ import path from "node:path";
 
 import { runLedgerRepository } from "../repositories/run-ledger-repository";
 import type { StageAiRawCaptureEnvelope } from "./stage-ai-output-contract";
+import { stageRawOutputPath } from "./stage-raw-output-path";
 
 const STAGE_RAW_OUTPUT_EVENT_SCHEMA_VERSION = "stage_raw_output_event/v1";
 const STAGE_RAW_OUTPUT_ARTIFACT_TYPE = "stage_raw_output";
-const DEFAULT_RAW_OUTPUT_FILE_NAME = "raw-ai-output.json";
 const MAX_LEDGER_INSERT_ATTEMPTS = 5;
 
 type LedgerPrefix = "ART" | "EVT";
@@ -170,15 +170,15 @@ function isDuplicateLedgerIdError(error: unknown): boolean {
 }
 
 function rawCaptureArtifactPath(input: PersistStageRawCaptureInput): string {
-  return path.join(
-    input.repoPath,
-    ".ship",
-    "changes",
-    input.changeId,
-    "runs",
-    input.runId,
-    DEFAULT_RAW_OUTPUT_FILE_NAME,
-  );
+  // Keyed on the phase, because one run can capture more than once: the Spec
+  // battle's author, critic and report passes all share a `runs` row, and a
+  // constant file name meant each overwrote the last.
+  return stageRawOutputPath({
+    repoPath: input.repoPath,
+    changeId: input.changeId,
+    runId: input.runId,
+    phase: input.envelope.phase,
+  });
 }
 
 function stageRawOutputEventPayload(input: {

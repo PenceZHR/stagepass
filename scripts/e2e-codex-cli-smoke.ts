@@ -1,14 +1,14 @@
 #!/usr/bin/env tsx
 /**
- * E2E smoke: drive a REAL `codex` process through CodexCliEngine end-to-end.
- * Verifies the bare-spawn engine against the installed codex CLI (0.144+):
- * real pid capture, JSONL parsing, structured result. read-only sandbox +
+ * E2E smoke: drive a REAL `codex app-server` process end-to-end.
+ * Verifies the app-server engine against the installed codex CLI (0.144+):
+ * real pid capture, JSON-RPC notifications, structured result. read-only sandbox +
  * trivial prompt to keep it cheap and side-effect free.
  */
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { CodexCliEngine } from "../server/services/codex-cli-engine";
+import { CodexAppServerEngine } from "../server/services/codex-app-server-engine";
 import type { AiRunInput, AiRunLifecycleSink } from "../server/services/ai-engine-types";
 
 async function main() {
@@ -37,8 +37,8 @@ async function main() {
     lifecycle,
   };
 
-  console.log(`Spawning real codex via CodexCliEngine (read-only, cwd=${repoPath})...`);
-  const engine = new CodexCliEngine();
+  console.log(`Spawning real codex app-server (read-only, cwd=${repoPath})...`);
+  const engine = new CodexAppServerEngine();
   const started = Date.now();
   const result = await engine.run(input);
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);

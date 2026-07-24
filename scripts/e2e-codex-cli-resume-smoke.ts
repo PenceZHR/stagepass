@@ -1,21 +1,18 @@
 #!/usr/bin/env tsx
 /**
- * E2E smoke: drive a REAL `codex exec resume` through CodexCliEngine.
- * Regression check for the `--sandbox`/`--cd` fix in buildCodexArgs — codex's
- * `resume` subcommand doesn't accept either flag and used to exit 2
- * ("unexpected argument '--sandbox' found"). This does a fresh run to obtain a
- * real threadId, then resumes it. read-only sandbox + trivial prompts to keep
- * it cheap and side-effect free.
+ * E2E smoke: drive a REAL `thread/start` then `thread/resume` through
+ * `codex app-server`. This obtains a real threadId, resumes it, and verifies
+ * read-only thread continuity with trivial side-effect-free prompts.
  */
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { CodexCliEngine } from "../server/services/codex-cli-engine";
+import { CodexAppServerEngine } from "../server/services/codex-app-server-engine";
 import type { AiRunInput } from "../server/services/ai-engine-types";
 
 async function main() {
   const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "codex-resume-e2e-"));
-  const engine = new CodexCliEngine();
+  const engine = new CodexAppServerEngine();
 
   try {
     console.log(`Fresh run (cwd=${repoPath})...`);
@@ -50,9 +47,8 @@ async function main() {
     console.log("summary:            ", JSON.stringify(resumed.summary).slice(0, 300));
     console.log("providerErrorCode:  ", resumed.providerErrorCode ?? "(none)");
 
-    const hitTheArgBug = /unexpected argument '--sandbox'/i.test(resumed.summary ?? "");
-    const ok = resumed.success && !hitTheArgBug;
-    console.log(`\nE2E ${ok ? "PASS ✓" : "FAIL ✗"} (hit the --sandbox arg bug: ${hitTheArgBug})`);
+    const ok = resumed.success && resumed.threadId === fresh.threadId;
+    console.log(`\nE2E ${ok ? "PASS ✓" : "FAIL ✗"} (thread preserved: ${resumed.threadId === fresh.threadId})`);
     process.exit(ok ? 0 : 1);
   } finally {
     fs.rmSync(repoPath, { recursive: true, force: true });

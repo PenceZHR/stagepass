@@ -10,7 +10,6 @@ import type {
   StageProgressDto,
 } from "./prd-briefing-types";
 import type { StageActionView } from "./stage-action-bar";
-import type { AiProvider } from "./pipeline-action-contract";
 
 type QuestionAction = "answer" | "accept_assumption" | "defer";
 
@@ -88,9 +87,14 @@ function stageProgressText(progress: StageProgressDto | null | undefined) {
   return `${phase}: ${status}`;
 }
 
-function statusText(state: PrdBriefingState | null) {
-  const progress = stageProgressText(state?.stageProgress);
-  if (progress) return progress;
+export function statusText(state: PrdBriefingState | null) {
+  // The durable briefing state comes first. This used to open with the last
+  // stage_progress event, which never expires -- so once a change had run any
+  // PRD job the headline was stuck on that run's outcome, and 已锁定 / 终审完成 /
+  // 草稿就绪 / 追问就绪 / 意图已保存 all became unreachable. Measured on the shipped
+  // database: CHG-003 is locked at 18:29:20 while its last progress event is
+  // 18:08:38, and the panel still reads "PRD 终审: 已完成". Progress is still
+  // shown, by stageProgressNotice, where it belongs.
   if (state?.activeRun?.status === "running") return "反方行动中";
   if (state?.activeRun?.status === "failed") return "反方行动失败";
   if (!state?.briefing?.intentText) return "等待输入";
@@ -118,17 +122,74 @@ function jobMarker(kind: "questions" | "draft" | "final-review", state: PrdBrief
   return state?.briefing?.finalReviewJson ?? "";
 }
 
-function runFailed(state: PrdBriefingState): string | null {
-  if (state.stageProgress?.status === "failed" || state.stageProgress?.status === "invalid_output") {
-    return state.stageProgress.message || stageProgressText(state.stageProgress) || "PRD AI job failed";
-  }
-  if (state.activeRun?.status !== "failed") return null;
-  return state.activeRun.summary || "PRD AI job failed";
+/**
+ * What the panel already knew before this job was asked for.
+ *
+ * `activeRun` is "the newest intake run for this change" and `stageProgress` is
+ * "the last stage_progress event ever recorded for it" -- neither is scoped to
+ * the job the user just started. Polling read them as if they were, so the
+ * second AI request on a change immediately saw the PREVIOUS run sitting at
+ * `completed`, concluded "the job ended and produced nothing", showed that error
+ * and stopped refreshing -- while the real job was still queued. The worker is a
+ * single-threaded loop, so queueing behind another change's job is the ordinary
+ * case, not a race.
+ *
+ * Capturing the baseline makes "is this mine?" answerable: a run or a progress
+ * event only speaks for this job once it differs from what was already there.
+ */
+export interface PrdJobBaseline {
+  runId: string | null;
+  progressRunId: string | null;
+  progressStatus: string | null;
 }
 
-function stageProgressNotice(state: PrdBriefingState | null): { tone: "info" | "success" | "error"; text: string } | null {
+export function prdJobBaseline(state: PrdBriefingState | null): PrdJobBaseline {
+  return {
+    runId: state?.activeRun?.id ?? null,
+    progressRunId: state?.stageProgress?.runId ?? null,
+    progressStatus: state?.stageProgress?.status ?? null,
+  };
+}
+
+/** The run, only if it is not the one that was already there when polling began. */
+export function runForThisJob(
+  state: PrdBriefingState,
+  baseline: PrdJobBaseline,
+): PrdBriefingState["activeRun"] {
+  const run = state.activeRun;
+  if (!run) return null;
+  return run.id === baseline.runId ? null : run;
+}
+
+/** The progress event, only if it is not the one already on screen. */
+export function progressForThisJob(
+  state: PrdBriefingState,
+  baseline: PrdJobBaseline,
+): PrdBriefingState["stageProgress"] {
+  const progress = state.stageProgress;
+  if (!progress) return null;
+  const sameEvent =
+    progress.runId === baseline.progressRunId && progress.status === baseline.progressStatus;
+  return sameEvent ? null : progress;
+}
+
+export function runFailed(state: PrdBriefingState, baseline: PrdJobBaseline): string | null {
+  const progress = progressForThisJob(state, baseline);
+  if (progress?.status === "failed" || progress?.status === "invalid_output") {
+    return progress.message || stageProgressText(progress) || "PRD AI job failed";
+  }
+  const run = runForThisJob(state, baseline);
+  if (run?.status !== "failed") return null;
+  return run.summary || "PRD AI job failed";
+}
+
+export function stageProgressNotice(state: PrdBriefingState | null): { tone: "info" | "success" | "error"; text: string } | null {
   const progress = state?.stageProgress;
   if (!progress) return null;
+  // Once the briefing is locked the PRD stage is finished; a banner about the
+  // run that got it there is no longer news, and it used to stay up forever --
+  // through Spec and beyond -- because nothing ever cleared it.
+  if (state?.briefing?.status === "locked") return null;
   const label = stageProgressText(progress);
   const text = progress.message ? `${label}: ${progress.message}` : label;
   if (!text) return null;
@@ -176,12 +237,14 @@ function QuestionCard({
   question,
   value,
   busy,
+  readOnly,
   onChange,
   onAction,
 }: {
   question: BriefingQuestion;
   value: string;
   busy: boolean;
+  readOnly?: boolean;
   onChange: (value: string) => void;
   onAction: (action: QuestionAction, value: string) => void;
 }) {
@@ -215,7 +278,7 @@ function QuestionCard({
           处理: {question.answer}
         </p>
       )}
-      {isOpen && (
+      {isOpen && !readOnly && (
         <div className="mt-3 space-y-2">
           <textarea
             className="min-h-20 w-full resize-y rounded border bg-background px-3 py-2 text-sm text-foreground"
@@ -264,14 +327,18 @@ export function PrdBriefingRoom({
   initialState,
   onLocked,
   onStageActionsChange,
-  selectedProvider,
+  codexDecisionEnabled = false,
+  interactionStatus = null,
+  onOpenInCodex,
 }: {
   projectId: string;
   changeId: string;
   initialState: PrdBriefingState | null;
   onLocked: () => void;
   onStageActionsChange?: (actions: StageActionView[]) => void;
-  selectedProvider?: AiProvider;
+  codexDecisionEnabled?: boolean;
+  interactionStatus?: string | null;
+  onOpenInCodex?: () => void;
 }) {
   const [state, setState] = useState<PrdBriefingState | null>(initialState);
   const [rawText, setRawText] = useState(initialState?.briefing?.intentText ?? "");
@@ -318,7 +385,11 @@ export function PrdBriefingRoom({
     return jobMarker(kind, nextState) !== previousMarker;
   }, []);
 
-  const startPolling = useCallback((kind: "questions" | "draft" | "final-review", previousMarker: string) => {
+  const startPolling = useCallback((
+    kind: "questions" | "draft" | "final-review",
+    previousMarker: string,
+    baseline: PrdJobBaseline,
+  ) => {
     stopPolling();
     setPollingAction(kind);
     let ticks = 0;
@@ -326,7 +397,7 @@ export function PrdBriefingRoom({
       ticks += 1;
       loadState()
         .then((nextState) => {
-          const failure = runFailed(nextState);
+          const failure = runFailed(nextState, baseline);
           if (jobComplete(kind, previousMarker, nextState)) {
             stopPolling();
             return;
@@ -336,7 +407,11 @@ export function PrdBriefingRoom({
             stopPolling();
             return;
           }
-          if (nextState.activeRun?.status === "completed") {
+          // Only a run that is actually this job's can mean "finished without
+          // producing anything". Reading the newest run unconditionally made the
+          // previous, already-completed run answer for a job that had not even
+          // been picked up yet.
+          if (runForThisJob(nextState, baseline)?.status === "completed") {
             setError("AI job 已结束，但 PRD 产物没有更新。请重试这一招。");
             stopPolling();
             return;
@@ -422,13 +497,16 @@ export function PrdBriefingRoom({
     setBusyAction(kind);
     setError("");
     const previousMarker = jobMarker(kind, state);
+    // Snapshot before the POST: whatever run or progress event is on screen now
+    // belongs to some earlier job, and must not be allowed to answer for this one.
+    const baseline = prdJobBaseline(state);
     try {
       await requestCommandJson(`/api/projects/${projectId}/changes/${changeId}/prd-briefing/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: selectedProvider }),
+        body: JSON.stringify({}),
       });
-      startPolling(kind, previousMarker);
+      startPolling(kind, previousMarker, baseline);
     } catch (err) {
       stopPolling();
       setError(String(err));
@@ -519,15 +597,25 @@ export function PrdBriefingRoom({
         : "PRD 草稿和终审通过后才能锁定。";
   const stageActions = useMemo<StageActionView[]>(() => [{
     id: "prd-lock",
-    label: isLocked ? "PRD 已锁定" : "锁定 PRD",
+    label: codexDecisionEnabled
+      ? "Open in Codex"
+      : isLocked ? "PRD 已锁定" : "锁定 PRD",
     role: "primary",
-    enabled: lockDisabledReason === null,
+    enabled: codexDecisionEnabled ? true : lockDisabledReason === null,
     busy: busyAction === "lock",
     providerBusy: actionLocked,
-    disabledReason: lockDisabledReason,
-    sourceActionId: "lock_prd",
-    onAction: lockPrd,
-  }], [actionLocked, busyAction, isLocked, lockDisabledReason, lockPrd]);
+    disabledReason: codexDecisionEnabled ? null : lockDisabledReason,
+    sourceActionId: codexDecisionEnabled ? "open_codex" : "lock_prd_briefing",
+    onAction: codexDecisionEnabled ? (onOpenInCodex ?? (() => {})) : lockPrd,
+  }], [
+    actionLocked,
+    busyAction,
+    codexDecisionEnabled,
+    isLocked,
+    lockDisabledReason,
+    lockPrd,
+    onOpenInCodex,
+  ]);
 
   useEffect(() => {
     onStageActionsChange?.(stageActions);
@@ -539,6 +627,17 @@ export function PrdBriefingRoom({
 
   return (
     <section className="space-y-5" data-prd-briefing-workspace>
+      {codexDecisionEnabled && (
+        <div
+          className="flex items-center justify-between rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900"
+          data-codex-decision-status
+        >
+          <span>{interactionStatus ?? "等待 Codex 中的操作"}</span>
+          <Button type="button" size="sm" onClick={onOpenInCodex}>
+            Open in Codex
+          </Button>
+        </div>
+      )}
       <div className="space-y-3 border-b pb-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
@@ -694,6 +793,7 @@ export function PrdBriefingRoom({
                       question={question}
                       value={answers[question.id] ?? ""}
                       busy={actionLocked}
+                      readOnly={codexDecisionEnabled}
                       onChange={(value) => setAnswers((prev) => ({ ...prev, [question.id]: value }))}
                       onAction={(action, value) => handleQuestionAction(question.id, action, value)}
                     />

@@ -15,10 +15,17 @@
     "lint": "eslint",
     "test": "tsx scripts/run-tests-isolated.ts",
     "test:acceptance": "tsx scripts/run-tests-isolated.ts --acceptance",
-    "test:all": "tsx scripts/run-tests-isolated.ts --all"
+    "test:all": "tsx scripts/run-tests-isolated.ts --all",
+    "test:phase0-verifier": "tsx --test --test-concurrency=1 server/services/codex-phase0-verifier-contract.test.ts server/services/codex-phase0-restart-resume.test.ts",
+    "typecheck:phase0-verifier": "tsc --project tsconfig.phase0-verifier.json",
+    "mcp:build": "tsx scripts/build-mcp-app.ts",
+    "mcp:start": "tsx mcp/supervisor.ts",
+    "premcp:start": "pnpm mcp:build",
+    "build:codex-desktop-mcp-spike": "tsx scripts/build-codex-desktop-mcp-spike.ts",
+    "preverify:codex-desktop-bridge": "pnpm build:codex-desktop-mcp-spike",
+    "verify:codex-desktop-bridge": "tsx scripts/verify-codex-desktop-bridge.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.181",
     "@base-ui/react": "^1.5.0",
     "better-sqlite3": "^12.11.1",
     "class-variance-authority": "^0.7.1",
@@ -36,12 +43,15 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "drizzle-kit": "^0.31.10",
+    "esbuild": "^0.28.1",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",

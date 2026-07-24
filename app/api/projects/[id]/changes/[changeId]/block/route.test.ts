@@ -38,7 +38,6 @@ const ID_PREFIX = "CHG-BLOCK-";
  * actually produce -- not an arbitrary status that merely happens to be legal.
  */
 const RUNNING_STATUS_FOR_PHASE: Record<RunPhase, string> = {
-  refine: "REFINING",
   intake: "INTAKE_PENDING",
   spec: "SPECCING",
   tech_spec: "TECHSPECCING",

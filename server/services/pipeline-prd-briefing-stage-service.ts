@@ -21,6 +21,7 @@ import {
   getPrdBriefingState,
 } from "./prd-briefing-service";
 import {
+  BRIEFING_QUESTION_CATEGORIES,
   BriefingQuestionsOutputSchema,
   FinalReviewOutputSchema,
   PrdBriefingDraftOutputSchema,
@@ -61,8 +62,12 @@ import {
 import { persistStageRawCapture } from "./stage-raw-capture-service";
 import {
   recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
 import type { Provider } from "./provider-selection-service";
 import { terminalStageProgressStatus } from "./stage-ai-output-contract";
 import type {
@@ -157,7 +162,7 @@ function okValidation(result: { success: boolean; error?: unknown }) {
   return result.success ? { ok: true } : { ok: false, error: result.error };
 }
 
-function questionOutputSchema(): Record<string, unknown> {
+export function questionOutputSchema(): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
@@ -173,7 +178,7 @@ function questionOutputSchema(): Record<string, unknown> {
           properties: {
             category: {
               type: "string",
-              enum: ["goal", "user", "scope", "success", "negative_case", "risk", "constraint", "spec_blocker"],
+              enum: [...BRIEFING_QUESTION_CATEGORIES],
             },
             severity: { type: "string", enum: ["critical", "important", "optional"] },
             question: { type: "string", minLength: 1 },
@@ -183,6 +188,7 @@ function questionOutputSchema(): Record<string, unknown> {
           required: ["category", "severity", "question", "whyItMatters", "suggestedDefault"],
         },
       },
+      noNewQuestions: { type: "boolean" },
     },
     required: ["unit", "changeId", "phase", "questions"],
   };
@@ -361,6 +367,29 @@ async function runPrdBriefingStage(
 
     const beforeAi = captureWorkspaceSnapshot(project.repoPath);
     const engine = await getPipelineEngine(provider as EngineProvider);
+    const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+    const { executableThreadId } = resolveCodexStageThreadRoute({
+      desktopBridgeEnabled,
+      resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+      resolveLegacyGeneralThread: () => resolveProviderSession({
+        changeId,
+        provider: "codex",
+        sessionKind: "general",
+      }),
+    });
+    const logicalOrdinal = config.promptPhase === "prd_briefing_questions"
+      ? 0
+      : config.promptPhase === "prd_briefing_draft" ? 1 : 2;
+    const logicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
+          phase: "Intake",
+          role: "stage",
+          round: 0,
+          ordinal: logicalOrdinal,
+          request: { prompt, sandboxMode: "read-only" },
+        })).logicalTurnId
+      : undefined;
     const stageTimeoutMs = documentStageTimeoutMs();
     await emitProgress({
       changeId,
@@ -371,11 +400,14 @@ async function runPrdBriefingStage(
       source: "none",
       message: `${config.label} provider running`,
     });
-    let result = await engine.run({
+    let result = await engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: logicalTurnId!,
+    } as never : {
       changeId,
       repoPath: project.repoPath,
       phase: "intake",
-      threadId: resolveProviderSession({ changeId, provider, sessionKind: "general" }) ?? undefined,
+      logicalTurnId,
+      threadId: executableThreadId,
       prompt,
       // Line-protocol stages hand the engine no schema: a schema in the request
       // is the invitation to author JSON by hand. config.outputSchema stays
@@ -418,7 +450,7 @@ async function runPrdBriefingStage(
     }
 
     const threadId = result.threadId?.trim();
-    if (threadId && threadId.toLowerCase() !== "unknown") {
+    if (!logicalTurnId && threadId && threadId.toLowerCase() !== "unknown") {
       recordProviderSession({
         changeId,
         provider,

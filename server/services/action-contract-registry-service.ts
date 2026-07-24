@@ -2,6 +2,10 @@ import type { ActionDefinition } from "./action-contract-types";
 import { isProviderBackedAction } from "./provider-selection-service";
 
 export const ACTION_DEFINITIONS: ActionDefinition[] = [
+  { actionId: "answer_prd_question", phase: "PRD", label: "回答 PRD 追问", requiredStatus: "INTAKE_PENDING" },
+  { actionId: "accept_prd_assumption", phase: "PRD", label: "接受 PRD 默认假设", requiredStatus: "INTAKE_PENDING" },
+  { actionId: "defer_prd_question", phase: "PRD", label: "推迟 PRD 追问", requiredStatus: "INTAKE_PENDING" },
+  { actionId: "lock_prd_briefing", phase: "PRD", label: "锁定 PRD", requiredStatus: "INTAKE_PENDING" },
   { actionId: "approve_intake", phase: "PRD", label: "批准 Intake", requiredStatus: "INTAKE_READY" },
   { actionId: "reject_intake", phase: "PRD", label: "打回 Intake", requiredStatus: "INTAKE_READY" },
   { actionId: "run_prd", phase: "PRD", label: "生成 PRD", requiredStatus: "INTAKE_PENDING" },
@@ -11,6 +15,8 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   { actionId: "run_prd_briefing_final_review", phase: "PRD", label: "执行 PRD 终审", requiredStatus: ["INTAKE_PENDING", "INTAKE_READY", "BLOCKED"] },
   { actionId: "approve_spec", phase: "Spec", label: "批准 Spec", requiredStatus: "SPEC_READY" },
   { actionId: "reject_spec", phase: "Spec", label: "打回 Spec", requiredStatus: "SPEC_READY" },
+  { actionId: "request_spec_changes", phase: "Spec", label: "补充 Spec 事实", requiredStatus: "SPEC_READY" },
+  { actionId: "return_to_spec", phase: "Spec", label: "返回 Spec", requiredStatus: "SPEC_READY" },
   { actionId: "run_spec", phase: "Spec", label: "开始 Spec 对抗", snapshotPhase: "PRD", requiredStatus: ["INTAKE_READY", "SPECCING"] },
   { actionId: "retry_spec", phase: "Spec", label: "重新 Spec 对抗", snapshotPhase: "PRD", requiredStatus: ["INTAKE_READY", "SPECCING", "BLOCKED"] },
   { actionId: "waive_spec_p1", phase: "Spec", label: "接受 Spec P1 风险" },
@@ -32,19 +38,20 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   },
   {
     actionId: "approve_tech_spec",
-    phase: "Plan",
+    phase: "TechSpec",
     label: "批准 TechSpec",
     snapshotPhase: "TechSpec",
     requiredStatus: "TECHSPEC_READY",
   },
   {
     actionId: "reject_tech_spec",
-    phase: "Plan",
+    phase: "TechSpec",
     label: "打回 TechSpec",
     snapshotPhase: "TechSpec",
     requiredStatus: "TECHSPEC_READY",
   },
   { actionId: "approve_plan", phase: "Plan", label: "批准作战计划", requiredStatus: ["PLAN_READY", "TESTPLAN_DONE"] },
+  { actionId: "reject_plan", phase: "Plan", label: "打回作战计划", requiredStatus: "PLAN_READY" },
   { actionId: "run_plan", phase: "Plan", label: "生成作战计划", snapshotPhase: "TechSpec", requiredStatus: ["TECHSPEC_READY", "PLAN_READY"] },
   // Mirrors what generatePlan actually accepts (pipeline-plan-stage-service
   // assertStatus): TECHSPEC_READY is the normal entry, PLAN_READY the
@@ -84,6 +91,7 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
     snapshotPhase: "Plan",
     requiredStatus: ["PLAN_APPROVED", "TESTPLANNING"],
   },
+  { actionId: "reject_test_plan", phase: "TestPlan", label: "打回测试计划", requiredStatus: "TESTPLAN_DONE" },
   { actionId: "run_build", phase: "Build", label: "开始 Build", snapshotPhase: "TestPlan", requiredStatus: "PLAN_APPROVED" },
   // The two statuses retryBuildStreamed can reach a run from: PLAN_APPROVED
   // straight through, and IMPLEMENTING once recoverStaleBuildRun has taken over
@@ -105,22 +113,6 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   { actionId: "adopt_build", phase: "Build", label: "收编 Build" },
   { actionId: "adopt_fix", phase: "Build", label: "收编 Fix" },
   { actionId: "reject_build", phase: "Build", label: "拒绝本轮施工" },
-  // Git is the pipeline's substrate, not one of its stages, so both entries are
-  // deliberately left without requiredStatus. That is the OPPOSITE of the
-  // a9a953f2 phantom-button shape rather than a relapse into it: the phantom
-  // case is an action advertised at statuses where its *runner* would reject it,
-  // and git has no status precondition to mirror -- `git init` succeeds on any
-  // change status, and so does a commit. The git facts alone decide these
-  // (action-contract-git-policy), and a status filter here could only hide
-  // init_git_repo at the statuses where it is most needed: a project whose
-  // repoPath is not a repository stalls at run_build/PLAN_APPROVED with
-  // build_base_camp_blocked, and this is the only action that clears it.
-  //
-  // They are filed under the Build phase because that is where the pipeline
-  // first touches the working tree, which puts them on the Build and Fix stages
-  // in the UI (pipeline-ui-model maps both onto actionPhase "Build").
-  { actionId: "init_git_repo", phase: "Build", label: "初始化 Git 仓库" },
-  { actionId: "commit_changes", phase: "Build", label: "提交改动" },
   { actionId: "run_review", phase: "Review", label: "开始反方审查", requiredStatus: "IMPLEMENTED" },
   { actionId: "retry_review", phase: "Review", label: "重新反方审查", requiredStatus: ["IMPLEMENTED", "CHECK_FAILED", "SCOPE_FAILED", "BLOCKED"] },
   // Mirrors runFixStreamed's FIX_ALLOWED_STATUSES (pipeline-build-stage-service)
@@ -142,8 +134,16 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   { actionId: "enter_qa", phase: "Review", label: "进入 QA" },
   { actionId: "run_qa", phase: "QA", label: "执行 QA", requiredStatus: ["IMPLEMENTED", "CHECK_FAILED", "SCOPE_FAILED"] },
   { actionId: "retry_qa", phase: "QA", label: "重新执行 QA", requiredStatus: ["CHECKING", "CHECK_FAILED", "SCOPE_FAILED"] },
+  {
+    actionId: "record_qa_manual_check",
+    phase: "QA",
+    label: "记录 QA 人工检查",
+    requiredStatus: ["CHECKING", "CHECK_FAILED", "SCOPE_FAILED"],
+  },
   { actionId: "approve_merge", phase: "Merge", label: "批准 Merge", requiredStatus: "MERGE_READY" },
   { actionId: "reject_merge", phase: "Merge", label: "打回 Merge", requiredStatus: "MERGE_READY" },
+  { actionId: "override_merge", phase: "Merge", label: "覆盖 Merge 阻断", requiredStatus: "MERGE_READY" },
+  { actionId: "request_rework", phase: "Merge", label: "请求返工", requiredStatus: "MERGE_READY" },
   { actionId: "merge", phase: "Merge", label: "合并", requiredStatus: "MERGE_READY" },
   { actionId: "run_retro", phase: "Merge", label: "运行 Retro", requiredStatus: "RETRO_PENDING" },
   // The Done stage's only action. Filed under Merge for the same reason
@@ -165,4 +165,14 @@ for (const definition of ACTION_DEFINITIONS) {
   const providerBacked = isProviderBackedAction(definition.actionId);
   definition.requiresProvider = providerBacked;
   definition.providerSelectable = providerBacked;
+}
+
+const ACTION_DEFINITION_BY_ID = new Map(
+  ACTION_DEFINITIONS.map((definition) => [definition.actionId, definition]),
+);
+
+export function requireActionDefinition(actionId: string): ActionDefinition {
+  const definition = ACTION_DEFINITION_BY_ID.get(actionId);
+  if (!definition) throw new Error(`Unknown action definition: ${actionId}`);
+  return definition;
 }

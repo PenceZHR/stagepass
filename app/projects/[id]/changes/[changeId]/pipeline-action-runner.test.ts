@@ -88,7 +88,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: [contract({ gateVersion: "7", sourceDbHash: "hash-7" })],
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -123,7 +122,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: frozen,
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -142,7 +140,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: [contract()],
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -162,7 +159,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: [contract({ gateVersion: "7", sourceDbHash: "hash-7" })],
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -192,7 +188,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: [contract()],
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -210,7 +205,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: [contract()],
-      provider: undefined,
       retryAfterDrift: false,
       postAction,
     });
@@ -225,7 +219,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "approve_spec",
       actions: [contract({ actionId: "approve_spec" })],
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -241,7 +234,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: [contract({ enabled: false, reason: "Merge is not complete" })],
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -256,7 +248,6 @@ describe("pipeline action runner", () => {
     const result = await runPipelineAction({
       actionId: "run_retro",
       actions: undefined,
-      provider: undefined,
       retryAfterDrift: true,
       postAction,
     });
@@ -265,7 +256,7 @@ describe("pipeline action runner", () => {
     assert.deepEqual(result, { outcome: "blocked", error: "Action contract unavailable." });
   });
 
-  it("carries the selected provider on both the first attempt and the retry", async () => {
+  it("omits provider from both the first attempt and the retry", async () => {
     const { sent, postAction } = recorder([
       { ok: false, body: driftEnvelope("8") },
       { ok: true, body: null },
@@ -276,13 +267,12 @@ describe("pipeline action runner", () => {
       actions: [
         contract({ actionId: "run_build", requiresProvider: true, providerSelectable: true }),
       ],
-      provider: "claude",
       retryAfterDrift: true,
       postAction,
     });
 
-    assert.equal(sent[0].payload.provider, "claude");
-    assert.equal(sent[1].payload.provider, "claude", "the retry must not silently change provider");
+    assert.equal(sent[0].payload.provider, undefined);
+    assert.equal(sent[1].payload.provider, undefined);
     assert.equal(sent[1].payload.expectedGateVersion, "8");
   });
 });

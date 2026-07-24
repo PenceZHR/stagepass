@@ -320,8 +320,21 @@ function sameObservation(before: ObservedProcess, after: ObservedProcess): boole
 }
 
 function identityNonce(identity: Omit<ProcessIdentity, "nonce">): string {
+  // The command is normalised before hashing, not after: the nonce is a second,
+  // independent encoding of the same command string, so normalising only the
+  // command comparison would still leave the nonce differing across env's
+  // in-place exec and the mismatch would simply move from `command_mismatch` to
+  // `nonce_mismatch`. Every other field is hashed exactly as observed.
+  //
+  // Nothing already persisted moves: normalisation is identity for a command
+  // with no leading `env` token, which is 60 of the 61 rows in the shipped
+  // database. The one that does move is RUN-039, whose nonce was computed from
+  // an argv the process no longer had -- the row this fix exists for.
   return createHash("sha256")
-    .update(JSON.stringify(identity))
+    .update(JSON.stringify({
+      ...identity,
+      command: normalizeProcessCommandForComparison(identity.command),
+    }))
     .digest("hex")
     .slice(0, 32);
 }
@@ -340,13 +353,59 @@ function processExists(pid: number): boolean {
   }
 }
 
+/**
+ * One process can report two different command lines over its own lifetime.
+ *
+ * `/opt/homebrew/bin/codex` is a symlink to a `.js` whose shebang is
+ * `#!/usr/bin/env node`. The kernel execs `/usr/bin/env` first, so argv briefly
+ * reads `/usr/bin/env node /opt/homebrew/bin/codex exec ...`; `env` then resolves
+ * node and execs it **in place**, keeping the same pid, and argv becomes
+ * `node /opt/homebrew/bin/codex exec ...`. Which one `ps` returns depends only
+ * on which side of that exec the probe lands.
+ *
+ * isUnreadableProcessCommand already covers the window where `ps` cannot read
+ * argv at all and prints the accounting name. This is the other half of the same
+ * race: `ps` read a complete, real argv -- just the pre-exec one -- and an exact
+ * comparison then rejects the process forever.
+ *
+ * Measured in the shipped database: of 61 provider_run_processes rows exactly one
+ * (RUN-039) recorded the `/usr/bin/env` form, and that one row is the only
+ * `orphaned` row in the table. RUN-040 -- same worker, same change, same phase,
+ * same external_ref, differing only by the prefix -- completed normally.
+ *
+ * Only the leading `env` token is dropped, nothing else. A shebang line carries
+ * at most one interpreter argument, so the form this race produces is exactly
+ * `env <interpreter> <script> ...` with no options and no NAME=VALUE assignments;
+ * anything richer did not come from this race and is left alone to be compared
+ * literally. Identity is also pinned by pid, ppid, pgid, cwd, processStartTime
+ * and nonce, so this does not become the only thing separating two processes.
+ */
+export function normalizeProcessCommandForComparison(command: string[] | null): string[] | null {
+  if (!command) return command;
+  return command.map((entry) => {
+    const trimmed = entry.trim();
+    const firstSpace = trimmed.indexOf(" ");
+    if (firstSpace <= 0) return entry;
+    const head = trimmed.slice(0, firstSpace);
+    // Basename, so `/usr/bin/env` and a bare `env` are both recognised, and a
+    // program that merely ends in "env" (`/usr/local/bin/myenv`) is not.
+    const base = head.slice(head.lastIndexOf("/") + 1);
+    if (base !== "env") return entry;
+    const rest = trimmed.slice(firstSpace + 1).trim();
+    return rest.length > 0 ? rest : entry;
+  });
+}
+
 function identityFieldMatches(
   field: ProcessIdentityField,
   expected: ProcessIdentity[ProcessIdentityField],
   observed: ProcessIdentity[ProcessIdentityField],
 ): boolean {
   if (field === "command") {
-    return JSON.stringify(observed) === JSON.stringify(expected);
+    // Normalised only for the comparison. The stored identity keeps whatever
+    // `ps` actually returned, because that is the evidence.
+    return JSON.stringify(normalizeProcessCommandForComparison(observed as string[] | null))
+      === JSON.stringify(normalizeProcessCommandForComparison(expected as string[] | null));
   }
   return observed === expected;
 }
@@ -461,7 +520,14 @@ class PlatformProcessIdentityProbe implements ProcessIdentityProbe {
     if (observed.cwd !== expected.cwd) {
       return { ok: false, reason: "cwd_mismatch", observed };
     }
-    if (JSON.stringify(observed.command) !== JSON.stringify(expected.command)) {
+    // Same normalisation identityFieldMatches applies. This comparison is a
+    // second copy of that rule and has to move with it: capture's expected-check
+    // goes through identityFieldMatches, validate comes through here, and the
+    // env/exec race reaches both.
+    if (
+      JSON.stringify(normalizeProcessCommandForComparison(observed.command))
+      !== JSON.stringify(normalizeProcessCommandForComparison(expected.command))
+    ) {
       return { ok: false, reason: "command_mismatch", observed };
     }
     if (observed.nonce !== expected.nonce) {

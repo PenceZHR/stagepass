@@ -12,17 +12,19 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 
 import * as schema from "../db/schema.ts";
 import {
-  applyPatch,
-  commitAll,
-  commitWithMessage,
-  createGitWorktree,
   getBinaryDiff,
   getCommitSubject,
   getHeadSha,
   getPorcelainStatus,
   isWorkingTreeClean,
-  removeGitWorktree,
-} from "./git-service";
+} from "./repository-evidence-service";
+import {
+  applyAdoptionPatch as applyPatch,
+  commitAdoptedPatch as commitWithMessage,
+  commitPipelineChanges as commitAll,
+  createBuildWorktree as createGitWorktree,
+  removeBuildWorktree as removeGitWorktree,
+} from "./workspace-versioning-service";
 import {
   absorbBuildPatch,
   adoptFixPatch,
@@ -338,11 +340,19 @@ describe("git worktree primitives", () => {
   });
 
   it("maps oversized git output to a typed bounded failure", () => {
-    const runner: BuildWorkspaceGitCommandRunner = (_args, options) => spawnSync(
-      process.execPath,
-      ["-e", "process.stdout.write('x'.repeat(Number(process.argv[1]) + 1024))", String(options.maxBuffer)],
-      options,
+    const outputLimitError = Object.assign(
+      new Error("stdout maxBuffer length exceeded"),
+      { code: "ENOBUFS" },
     );
+    const runner: BuildWorkspaceGitCommandRunner = () => ({
+      pid: 1,
+      output: [null, "", ""],
+      stdout: "",
+      stderr: "",
+      status: null,
+      signal: null,
+      error: outputLimitError,
+    });
     restoreBuildWorkspaceGitRunner = setBuildWorkspaceGitRunnerForTest(runner, 200);
 
     assert.throws(

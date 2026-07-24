@@ -2,114 +2,40 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import * as schema from "../db/schema.ts";
+import { runMigrations } from "../db/migrate.ts";
 import { ReworkChangeInput } from "../types/api.ts";
 import { reworkChangeWithDb } from "./change-rework-service.ts";
 
-const { projects, changes, runs, events, artifacts, findings } = schema;
+const {
+  projects, changes, runs, events, artifacts, findings,
+  rubrics, rubricCriteria, rubricAssessments, reviewState, reviewAttempts, reviewReports,
+  reviewArtifactMirrors, reviewPriorFindingReviews, buildRunRecords, providerRunProcesses,
+  releaseNoteState, qaRuns, qaCommandResults, qaEvidence, qaFailures, changeProviderSessions,
+} = schema;
 
+/**
+ * The real schema, migrated, with foreign keys enforced.
+ *
+ * This used to be a hand-written CREATE TABLE for the six tables the test
+ * happened to touch, run with `foreign_keys = OFF`. Both halves of that hid the
+ * bug this file now covers: the other ten tables that reference a run did not
+ * exist to be left behind, and even if they had, nothing would have objected.
+ * /rework was failing on SQLITE_CONSTRAINT_FOREIGNKEY for all 21 phase/change
+ * combinations in production while this suite stayed green.
+ *
+ * `runMigrations` takes the connection it is handed, so the fixture still owns
+ * a private in-memory database and never opens a file -- local-memory, as
+ * db-write-policy.json records.
+ */
 function setupTestDb() {
   const sqlite = new Database(":memory:");
-  sqlite.pragma("foreign_keys = OFF");
-  sqlite.exec(`
-    CREATE TABLE projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      repo_path TEXT NOT NULL UNIQUE,
-      context_status TEXT NOT NULL DEFAULT 'pending',
-      context_provider TEXT NOT NULL DEFAULT 'codex',
-      prd_status TEXT NOT NULL DEFAULT 'none',
-      prd_provider TEXT NOT NULL DEFAULT 'codex',
-      prd_json TEXT,
-      prd_markdown TEXT,
-      git_enabled INTEGER NOT NULL DEFAULT 0,
-      git_default_branch TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE changes (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      status TEXT NOT NULL,
-      provider TEXT NOT NULL DEFAULT 'codex',
-      codex_thread_id TEXT,
-      fix_iterations INTEGER DEFAULT 0,
-      blocked_phase TEXT,
-      rework_from_phase TEXT,
-      suspended_by_prd INTEGER NOT NULL DEFAULT 0,
-      pre_suspend_status TEXT,
-      git_branch TEXT,
-      gate_state TEXT,
-      docs_complete INTEGER NOT NULL DEFAULT 0,
-      retro_done INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE runs (
-      id TEXT PRIMARY KEY,
-      change_id TEXT NOT NULL,
-      phase TEXT NOT NULL,
-      status TEXT NOT NULL,
-      started_at TEXT,
-      ended_at TEXT,
-      summary TEXT,
-      job_id TEXT,
-      worker_id TEXT,
-      lease_token TEXT,
-      attempt_no INTEGER,
-      provider TEXT
-    );
-    CREATE TABLE events (
-      id TEXT PRIMARY KEY,
-      change_id TEXT,
-      run_id TEXT,
-      type TEXT NOT NULL,
-      message TEXT,
-      raw_json TEXT,
-      created_at TEXT NOT NULL
-    );
-    CREATE TABLE artifacts (
-      id TEXT PRIMARY KEY,
-      change_id TEXT NOT NULL,
-      run_id TEXT,
-      type TEXT NOT NULL,
-      path TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE TABLE findings (
-      id TEXT PRIMARY KEY,
-      change_id TEXT NOT NULL,
-      run_id TEXT,
-      round_id TEXT,
-      phase TEXT,
-      source TEXT NOT NULL,
-      severity TEXT NOT NULL,
-      category TEXT NOT NULL,
-      title TEXT NOT NULL,
-      file TEXT,
-      line INTEGER,
-      evidence TEXT,
-      required_fix TEXT,
-      status TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT,
-      review_attempt_id TEXT,
-      source_build_run_id TEXT,
-      source_head_sha TEXT,
-      waivable INTEGER NOT NULL DEFAULT 0,
-      waived_by TEXT,
-      waived_at TEXT,
-      waiver_decision_id TEXT,
-      legacy_state TEXT,
-      legacy_finding_key TEXT,
-      finding_version INTEGER NOT NULL DEFAULT 1
-    );
-  `);
+  runMigrations(sqlite);
+  sqlite.pragma("foreign_keys = ON");
   return drizzle(sqlite, { schema });
 }
 
@@ -216,7 +142,11 @@ describe("change-rework-service", () => {
 
     const updated = await reworkChangeWithDb(db, "PRJ-001", "CHG-001", "Plan");
 
-    assert.equal(updated.status, "DRAFT");
+    // Was DRAFT. Reworking Plan used to park the change in a status whose only
+    // non-BLOCKED edge went to REFINING -- so once Refine was deleted, rework
+    // Plan led into a dead end. PLAN_READY is what it meant all along: the plan
+    // is there and waiting to be regenerated or re-approved.
+    assert.equal(updated.status, "PLAN_READY");
     assert.equal(updated.reworkFromPhase, "generate_plan");
     assert.equal(updated.blockedPhase, null);
     assert.deepEqual(db.select().from(runs).where(eq(runs.changeId, "CHG-001")).all().map((run) => run.id), ["RUN-001"]);
@@ -314,10 +244,12 @@ describe("change-rework-service", () => {
         `expected rework to be rejected while status is ${status}`,
       );
 
-      db.delete(runs).where(eq(runs.changeId, "CHG-001")).run();
-      db.delete(events).where(eq(events.changeId, "CHG-001")).run();
-      db.delete(artifacts).where(eq(artifacts.changeId, "CHG-001")).run();
+      // Children before parents: with the fixture on the real schema these
+      // deletes are foreign-key checked, and `runs` last is the whole point.
       db.delete(findings).where(eq(findings.changeId, "CHG-001")).run();
+      db.delete(artifacts).where(eq(artifacts.changeId, "CHG-001")).run();
+      db.delete(events).where(eq(events.changeId, "CHG-001")).run();
+      db.delete(runs).where(eq(runs.changeId, "CHG-001")).run();
       db.delete(changes).where(eq(changes.id, "CHG-001")).run();
       db.delete(projects).where(eq(projects.id, "PRJ-001")).run();
     }
@@ -400,5 +332,188 @@ describe("change-rework-service", () => {
     assert.deepEqual(remainingPaths, [path.join(changeDir, "runs", "RUN-001", "plan.md")]);
     assert.equal(fs.existsSync(path.join(changeDir, "test-plan-delta.md")), false);
     assert.equal(fs.readdirSync(changeDir).some((name) => name.startsWith(".rework-staging-")), true);
+  });
+
+  /**
+   * Everything below covers the run-scoped cascade itself. `seedChange` only
+   * populates four of the tables that reference a run; these seed all of them,
+   * which is what it takes to see SQLITE_CONSTRAINT_FOREIGNKEY.
+   */
+  describe("run-scoped cascade", () => {
+    /** One row in every table that references RUN-003 (implement) or RUN-004 (local_check). */
+    function seedRunClosure(db: ReturnType<typeof setupTestDb>) {
+      const now = "2026-06-20T00:00:00.000Z";
+      db.insert(rubrics).values({
+        id: "RUB-001", projectId: "PRJ-001", changeId: "CHG-001", phase: "review", role: "reviewer", createdAt: now,
+      }).run();
+      db.insert(rubricCriteria).values({
+        id: "RC-001", rubricId: "RUB-001", criterionKey: "k", ordinal: 1, text: "t", createdAt: now,
+      }).run();
+      db.insert(reviewState).values({ changeId: "CHG-001", updatedAt: now }).run();
+
+      for (const [index, runId] of ["RUN-003", "RUN-004"].entries()) {
+        const n = index + 1;
+        db.insert(buildRunRecords).values({
+          id: `BRR-00${n}`, changeId: "CHG-001", runId, buildRunId: `build-${n}`, status: "ok", createdAt: now, updatedAt: now,
+        }).run();
+        db.insert(providerRunProcesses).values({
+          id: `PRP-00${n}`, changeId: "CHG-001", runId, phase: "implement", provider: "codex", ppid: 1, status: "exited", startedAt: now,
+        }).run();
+        db.insert(releaseNoteState).values({
+          id: `RNS-00${n}`, changeId: "CHG-001", runId, artifactId: "ART-003", approvedContentHash: "h", createdAt: now,
+        }).run();
+        db.insert(reviewAttempts).values({
+          id: `RAT-00${n}`, changeId: "CHG-001", runId, attemptNo: n, status: "done",
+          idempotencyKey: `idem-${n}`, startedAt: now, createdAt: now, updatedAt: now,
+        }).run();
+        db.insert(reviewReports).values({
+          id: `RRP-00${n}`, attemptId: `RAT-00${n}`, changeId: "CHG-001", reportVersion: 1,
+          reportDbHash: "h", gateStatus: "pass", generatedAt: now, createdAt: now,
+        }).run();
+        db.insert(reviewArtifactMirrors).values({
+          id: `RAM-00${n}`, reportId: `RRP-00${n}`, changeId: "CHG-001", artifactId: "ART-003", kind: "report", createdAt: now,
+        }).run();
+        db.insert(qaRuns).values({
+          id: `QAR-00${n}`, changeId: "CHG-001", sourceReviewReportId: `RRP-00${n}`, status: "passed", startedAt: now,
+        }).run();
+        db.insert(qaCommandResults).values({
+          id: `QCR-00${n}`, qaRunId: `QAR-00${n}`, command: "pnpm test", commandOrder: 1, status: "passed",
+        }).run();
+        db.insert(qaEvidence).values({
+          id: `QEV-00${n}`, qaRunId: `QAR-00${n}`, evidenceType: "log", createdAt: now,
+        }).run();
+        db.insert(qaFailures).values({
+          id: `QAF-00${n}`, qaRunId: `QAR-00${n}`, severity: "P1", status: "open", createdAt: now,
+        }).run();
+        db.insert(changeProviderSessions).values({
+          changeId: "CHG-001", provider: "codex", sessionKind: `kind-${n}`,
+          externalSessionId: `ext-${n}`, lastRunId: runId, createdAt: now, updatedAt: now,
+        }).run();
+        db.insert(rubricAssessments).values({
+          id: `RA-00${n}`, changeId: "CHG-001", runId, rubricId: "RUB-001",
+          criterionId: "RC-001", verdict: "yes", createdAt: now,
+        }).run();
+      }
+      // A review finding on RUN-003, re-reviewed by the RUN-004 attempt.
+      db.insert(findings).values({
+        id: "FND-REVIEW", changeId: "CHG-001", runId: "RUN-003", source: "review", severity: "P1",
+        category: "correctness", title: "review finding", status: "open", createdAt: now,
+      }).run();
+      db.insert(reviewPriorFindingReviews).values({
+        id: "RPF-001", attemptId: "RAT-002", priorFindingId: "FND-REVIEW", verdict: "keep", createdAt: now,
+      }).run();
+      db.update(reviewState).set({
+        latestAttemptId: "RAT-002", latestReportId: "RRP-002", latestValidReviewReportId: "RRP-002",
+      }).where(eq(reviewState.changeId, "CHG-001")).run();
+    }
+
+    const foreignKeyViolations = (db: ReturnType<typeof setupTestDb>) =>
+      db.all(sql`PRAGMA foreign_key_check`) as unknown[];
+
+    /**
+     * The headline bug. The service deleted findings, artifacts, events and runs
+     * -- four of the sixteen tables that reference a run -- so the transaction
+     * hit SQLITE_CONSTRAINT_FOREIGNKEY and rolled back, and every /rework
+     * returned 400.
+     */
+    it("deletes a run's whole closure without tripping a foreign key", async () => {
+      const db = setupTestDb();
+      seedChange(db, repoPath);
+      seedRunClosure(db);
+
+      await reworkChangeWithDb(db, "PRJ-001", "CHG-001", "Build");
+
+      assert.deepEqual(foreignKeyViolations(db), []);
+      assert.deepEqual(
+        db.select().from(runs).where(eq(runs.changeId, "CHG-001")).all().map((run) => run.id),
+        ["RUN-001", "RUN-002"],
+      );
+      assert.equal(db.select().from(reviewAttempts).all().length, 0);
+      assert.equal(db.select().from(reviewReports).all().length, 0);
+      assert.equal(db.select().from(providerRunProcesses).all().length, 0);
+      assert.equal(db.select().from(buildRunRecords).all().length, 0);
+      assert.equal(db.select().from(releaseNoteState).all().length, 0);
+    });
+
+    /**
+     * rubric_assessments.run_id is NOT NULL and carries no foreign key, so
+     * SQLite would never have objected to leaving these rows behind. Before the
+     * closure was fixed they were invisible -- the transaction always rolled
+     * back first -- which means fixing the foreign keys is exactly what would
+     * have activated them.
+     */
+    it("leaves no rubric assessment pointing at a deleted run", async () => {
+      const db = setupTestDb();
+      seedChange(db, repoPath);
+      seedRunClosure(db);
+
+      await reworkChangeWithDb(db, "PRJ-001", "CHG-001", "Build");
+
+      const survivingRunIds = new Set(db.select().from(runs).all().map((run) => run.id));
+      const orphans = db.select().from(rubricAssessments).all()
+        .filter((assessment) => !survivingRunIds.has(assessment.runId));
+      assert.deepEqual(orphans, [], "a rubric assessment outlived the run it judged");
+    });
+
+    /**
+     * review_state is one row per change and change_provider_sessions one row
+     * per change+provider+kind: both outlive the runs they point at, so the
+     * pointer is what has to go, not the row.
+     */
+    it("clears pointers into deleted runs instead of deleting the rows that hold them", async () => {
+      const db = setupTestDb();
+      seedChange(db, repoPath);
+      seedRunClosure(db);
+
+      await reworkChangeWithDb(db, "PRJ-001", "CHG-001", "Build");
+
+      const state = db.select().from(reviewState).where(eq(reviewState.changeId, "CHG-001")).get();
+      assert.ok(state, "review_state row was deleted; it belongs to the change, not the run");
+      assert.equal(state.latestAttemptId, null);
+      assert.equal(state.latestReportId, null);
+      assert.equal(state.latestValidReviewReportId, null);
+
+      const sessions = db.select().from(changeProviderSessions).all();
+      assert.equal(sessions.length, 2, "provider session rows were deleted rather than unpointed");
+      assert.deepEqual(sessions.map((session) => session.lastRunId), [null, null]);
+
+      // A QA run keeps its evidence; merge-readiness reads the null source
+      // report as "QA source Review report is stale".
+      const qa = db.select().from(qaRuns).all();
+      assert.equal(qa.length, 2);
+      assert.deepEqual(qa.map((run) => run.sourceReviewReportId), [null, null]);
+      assert.equal(db.select().from(qaEvidence).all().length, 2);
+    });
+
+    /**
+     * pipeline-qa-stage-service deliberately skips `source === "review"` when it
+     * clears a change's findings, because those rows are Review lineage rather
+     * than local-check output. Rework did the same clear without the filter, so
+     * it destroyed that lineage -- and, since
+     * review_prior_finding_reviews.prior_finding_id is NOT NULL, raised
+     * SQLITE_CONSTRAINT_FOREIGNKEY whenever a surviving attempt had re-reviewed
+     * one of them. Reworking to Check deletes no review run at all, so nothing
+     * else in the cascade covers this.
+     */
+    it("keeps review findings when clearing a change's findings for a Check rework", async () => {
+      const db = setupTestDb();
+      seedChange(db, repoPath, "CHECK_FAILED");
+      seedRunClosure(db);
+
+      await reworkChangeWithDb(db, "PRJ-001", "CHG-001", "Check");
+
+      assert.deepEqual(foreignKeyViolations(db), []);
+      const remaining = db.select().from(findings).where(eq(findings.changeId, "CHG-001")).all();
+      assert.deepEqual(
+        remaining.map((finding) => finding.id),
+        ["FND-REVIEW"],
+        "the lint finding should be cleared and the review finding kept",
+      );
+      assert.equal(
+        db.select().from(reviewPriorFindingReviews).all().length,
+        1,
+        "the lineage row referencing the review finding should survive with it",
+      );
+    });
   });
 });

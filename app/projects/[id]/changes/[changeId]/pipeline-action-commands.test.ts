@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolvePipelineActionCommand } from "./pipeline-action-commands";
 
-const TASK_14_ACTION_IDS = [
+const OPERATIONAL_RUN_ACTION_IDS = [
   "run_prd",
   "retry_prd",
   "run_spec",
@@ -11,7 +11,6 @@ const TASK_14_ACTION_IDS = [
   "retry_tech_spec",
   "run_plan",
   "retry_plan",
-  "approve_plan",
   "run_test_plan",
   "retry_test_plan",
   "run_build",
@@ -20,19 +19,13 @@ const TASK_14_ACTION_IDS = [
   "retry_review",
   "run_qa",
   "retry_qa",
-  "fix_blockers",
-  "merge",
   "run_retro",
-  "regenerate_plan_report",
-  "waive_plan_p1",
-  "approve_intake",
-  "enter_qa",
-  "stop_change",
+  "run_delivery",
 ] as const;
 
 describe("pipeline action command mapping", () => {
-  it("resolves every Task 14 action id to an endpoint", () => {
-    for (const actionId of TASK_14_ACTION_IDS) {
+  it("resolves every operational run/retry action id to an endpoint", () => {
+    for (const actionId of OPERATIONAL_RUN_ACTION_IDS) {
       assert.ok(resolvePipelineActionCommand(actionId)?.endpoint, `${actionId} should resolve`);
     }
   });
@@ -41,28 +34,22 @@ describe("pipeline action command mapping", () => {
     const expectedEndpoints: Record<string, string> = {
       run_prd: "intake",
       retry_prd: "intake",
-      approve_intake: "intake",
       run_spec: "spec",
       retry_spec: "spec",
       run_tech_spec: "tech-spec",
       retry_tech_spec: "tech-spec",
       run_plan: "plan",
       retry_plan: "plan",
-      approve_plan: "approve-plan",
       run_test_plan: "test-plan",
       retry_test_plan: "test-plan",
       run_build: "implement",
       retry_build: "implement",
       run_review: "review",
       retry_review: "review",
-      enter_qa: "check",
       run_qa: "check",
       retry_qa: "check",
-      fix_blockers: "fix",
-      merge: "release",
       run_retro: "retro",
-      regenerate_plan_report: "plan-sandbox/report",
-      waive_plan_p1: "plan-sandbox/decision",
+      run_delivery: "delivery",
     };
 
     for (const [actionId, endpoint] of Object.entries(expectedEndpoints)) {
@@ -72,5 +59,19 @@ describe("pipeline action command mapping", () => {
 
   it("returns null for unknown action ids", () => {
     assert.equal(resolvePipelineActionCommand("missing_action"), null);
+  });
+
+  it("does not route business decisions from Web", () => {
+    for (const actionId of [
+      "approve_intake",
+      "approve_plan",
+      "enter_qa",
+      "fix_blockers",
+      "merge",
+      "stop_change",
+      "waive_plan_p1",
+    ]) {
+      assert.equal(resolvePipelineActionCommand(actionId), null);
+    }
   });
 });

@@ -6,6 +6,9 @@ import {
   battleRounds,
   buildRunRecords,
   changes,
+  codexFollowerStartAttempts,
+  codexLogicalTurns,
+  codexThreadBindings,
   events,
   pipelineJobs,
   providerRunProcesses,
@@ -15,6 +18,13 @@ import {
   runs,
   stageRuns,
 } from "../db/schema";
+import type { CodexDesktopBridge } from "./codex-desktop-bridge";
+import {
+  readCodexTurnExecution,
+  recordCodexTurnNotYetVisible,
+  recordCodexTurnSnapshot,
+  startCodexTurnExecution,
+} from "./codex-turn-lifecycle-service";
 import type { ChangeStatus } from "../types";
 import { ALLOWED_TRANSITIONS } from "../state-machine/transitions";
 import { transitionChangeStatusWithDb } from "./change-status-service";
@@ -37,6 +47,7 @@ import {
   sameFence,
 } from "./recovery-predicates";
 import { fileObservationsMatch } from "./recovery-evidence";
+import { RUNNING_BATTLE_ROUND_STATUSES } from "../types/battle-round-status";
 import {
   captureEvidenceDbSnapshot,
   documentStagePhases,
@@ -65,6 +76,39 @@ type EvidenceDbQueryHook = (
 ) => void;
 
 class RecoveryCasMissError extends Error {}
+
+/**
+ * The statuses a Spec round holds while it claims to be in flight, and the only
+ * definition of that claim in the recovery executors. Every path that settles a
+ * round -- both in-transaction arms and the standalone sweep -- reads it from
+ * here so widening or narrowing the claim cannot land on one path and miss the
+ * others.
+ */
+// Imported, not restated. This was the last local copy of the pair; the
+// inventory test in server/types/enums.test.ts asserts it is gone.
+
+/**
+ * The Spec round a change currently claims to be running, or null.
+ *
+ * Deliberately matched on the round's own status rather than derived from the
+ * recovering run's phase. One round spans two providers but only ever one run
+ * row, and spec-battle-service claims that run with `phase: "spec"` on both
+ * halves -- including the resumeBlue path, which sets the round to blue_running
+ * behind a "spec" run. Deriving the status from the phase therefore looked for
+ * red_running, matched zero rows, and left the round claiming to run for ever;
+ * a round stuck that way blocks run_spec with spec_round_running and has no
+ * other way back.
+ */
+function selectInFlightSpecRound(
+  tx: Pick<RecoveryDb, "select">,
+  changeId: string,
+): typeof battleRounds.$inferSelect | null {
+  return tx.select().from(battleRounds).where(and(
+    eq(battleRounds.changeId, changeId),
+    inArray(battleRounds.phase, ["Spec", "spec"]),
+    inArray(battleRounds.status, [...RUNNING_BATTLE_ROUND_STATUSES]),
+  )).get() ?? null;
+}
 
 const fallbackStatusByProviderPhase: Partial<Record<string, ChangeStatus>> = {
   intake: "BLOCKED",
@@ -270,7 +314,7 @@ export function recoverMissingProvider(input: {
       }
 
       const change = tx.select().from(changes).where(eq(changes.id, run.changeId)).get();
-      const syntheticProvider = change?.provider === "claude" ? "claude" : "codex";
+      const syntheticProvider = "codex";
       const syntheticInsert = tx.insert(providerRunProcesses).values({
         id: syntheticProcessId,
         changeId: run.changeId,
@@ -316,18 +360,13 @@ export function recoverMissingProvider(input: {
       }
 
       if (ownsChange && (run.phase === "spec" || run.phase === "spec_critic")) {
-        const runningRoundStatus = run.phase === "spec_critic" ? "blue_running" : "red_running";
-        const currentRound = tx.select().from(battleRounds).where(and(
-          eq(battleRounds.changeId, run.changeId),
-          inArray(battleRounds.phase, ["Spec", "spec"]),
-          eq(battleRounds.status, runningRoundStatus),
-        )).get() ?? null;
+        const currentRound = selectInFlightSpecRound(tx as unknown as RecoveryDb, run.changeId);
         if (currentRound) {
           const roundCas = tx.update(battleRounds)
             .set({ status: "failed", endedAt: recoveredAt, updatedAt: recoveredAt })
             .where(and(
               eq(battleRounds.id, currentRound.id),
-              eq(battleRounds.status, runningRoundStatus),
+              eq(battleRounds.status, currentRound.status),
             ))
             .run();
           if (roundCas.changes !== 1) throw new RecoveryCasMissError();
@@ -970,18 +1009,9 @@ export function recoverExistingProvider(input: {
 
       if (ownsChange) {
         if (effectivePhase === "spec" || effectivePhase === "spec_critic") {
-          // Match on whichever half is actually outstanding rather than deriving
-          // it from the provider phase. One round spans two providers, so the
-          // round routinely sits at blue_running while the provider being
-          // reconciled is the red one that just finished. Deriving the status
-          // from the phase looked for red_running, found nothing, and left the
-          // round claiming to run forever -- and a round stuck that way blocks
-          // run_spec with spec_round_running and has no other way back.
-          const currentRound = tx.select().from(battleRounds).where(and(
-            eq(battleRounds.changeId, run.changeId),
-            inArray(battleRounds.phase, ["Spec", "spec"]),
-            inArray(battleRounds.status, ["red_running", "blue_running"]),
-          )).get() ?? null;
+          // Same rule, and the same single definition, as recoverMissingProvider's
+          // spec arm: the round's own status is the claim, never the provider phase.
+          const currentRound = selectInFlightSpecRound(tx as unknown as RecoveryDb, run.changeId);
           if (currentRound) {
             const roundCas = tx.update(battleRounds)
             .set({
@@ -1248,6 +1278,94 @@ export function recoverProviderAfterTerminalRun(input: {
 }
 
 /**
+ * Desktop lifecycle recovery is deliberately separate from PID recovery. It
+ * reuses/adopts the one durable follower attempt, then resumes only app-server
+ * full-turn observation from the persisted cursor/hash.
+ */
+export async function recoverDesktopFollowerExecution(input: {
+  logicalTurnId: string;
+  bridge: Pick<CodexDesktopBridge, "recoverTurn" | "pollTurn">;
+}): Promise<{
+  kind: "active" | "recovered" | "quarantined";
+  logicalTurnId: string;
+  turnId?: string;
+}> {
+  const logical = db.select().from(codexLogicalTurns)
+    .where(eq(codexLogicalTurns.logicalTurnId, input.logicalTurnId)).get();
+  if (!logical) throw new Error("logical_turn_not_found");
+  if (logical.dispatchSurface !== "follower_ipc") {
+    throw new Error("dispatch_surface_mismatch");
+  }
+  const binding = db.select().from(codexThreadBindings)
+    .where(eq(codexThreadBindings.bindingId, logical.bindingId)).get();
+  if (!binding?.threadId) throw new Error("binding_not_ready");
+  let execution = readCodexTurnExecution(logical.logicalTurnId);
+  if (!execution) {
+    const recovered = await input.bridge.recoverTurn({
+      logicalTurnId: logical.logicalTurnId,
+    });
+    if (recovered.state !== "succeeded" || !recovered.turnId) {
+      return { kind: "quarantined", logicalTurnId: logical.logicalTurnId };
+    }
+    const attempt = db.select().from(codexFollowerStartAttempts)
+      .where(eq(codexFollowerStartAttempts.attemptId, recovered.attemptId)).get();
+    if (!attempt || attempt.state !== "succeeded") {
+      throw new Error("start_attempt_not_succeeded");
+    }
+    execution = startCodexTurnExecution({
+      logicalTurnId: logical.logicalTurnId,
+      attemptId: attempt.attemptId,
+      threadId: binding.threadId,
+      turnId: recovered.turnId,
+    });
+  }
+  if (execution.dispatchSurface !== logical.dispatchSurface) {
+    throw new Error("dispatch_surface_mismatch");
+  }
+  for await (const result of input.bridge.pollTurn({
+    threadId: execution.threadId,
+    turnId: execution.turnId,
+    afterCursor: execution.lastObservationCursor,
+    lastSnapshotHash: execution.lastSemanticSnapshotHash ?? undefined,
+    lastNormalizedSnapshot: execution.normalizedItemsJson === "[]"
+      ? undefined
+      : {
+          threadId: execution.threadId,
+          turnId: execution.turnId,
+          status: "inProgress",
+          items: JSON.parse(execution.normalizedItemsJson),
+          metadata: { observedAt: execution.lastObservedAt ?? execution.updatedAt },
+        },
+    deadlineAt: db.select().from(codexFollowerStartAttempts)
+      .where(eq(codexFollowerStartAttempts.attemptId, execution.startAttemptId))
+      .get()?.budgetDeadline ?? new Date().toISOString(),
+  })) {
+    if (result.kind === "turn_not_yet_visible") {
+      recordCodexTurnNotYetVisible(logical.logicalTurnId);
+      continue;
+    }
+    recordCodexTurnSnapshot({
+      logicalTurnId: logical.logicalTurnId,
+      snapshot: result.snapshot,
+      cursor: result.cursor,
+      semanticHash: result.semanticSnapshotHash,
+    });
+    if (result.snapshot.status !== "inProgress") {
+      return {
+        kind: "recovered",
+        logicalTurnId: logical.logicalTurnId,
+        turnId: execution.turnId,
+      };
+    }
+  }
+  return {
+    kind: "active",
+    logicalTurnId: logical.logicalTurnId,
+    turnId: execution.turnId,
+  };
+}
+
+/**
  * A Spec round claims to be running until the run behind it ends it. When that
  * run is already terminal the round is stranded, and nothing will ever settle
  * it: `run_spec` stays blocked on `spec_round_running`, and the battlefield
@@ -1261,7 +1379,7 @@ export function recoverProviderAfterTerminalRun(input: {
 export function recoverStrandedBattleRounds(observedAt: Date = new Date()): string[] {
   const recoveredAt = observedAt.toISOString();
   const stranded = db.select().from(battleRounds)
-    .where(inArray(battleRounds.status, ["red_running", "blue_running"])).all();
+    .where(inArray(battleRounds.status, [...RUNNING_BATTLE_ROUND_STATUSES])).all();
   const recovered: string[] = [];
   for (const round of stranded) {
     const liveRun = db.select({ id: runs.id }).from(runs).where(and(

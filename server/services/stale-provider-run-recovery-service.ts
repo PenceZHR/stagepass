@@ -2,11 +2,14 @@ import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
+  codexLogicalTurns,
+  codexTurnExecutions,
   events,
   pipelineJobs,
   providerRunProcesses,
   runs,
 } from "../db/schema";
+import type { CodexDesktopBridge } from "./codex-desktop-bridge";
 import { runLedgerRepository } from "../repositories/run-ledger-repository";
 import {
   type ProviderRunProcess,
@@ -53,6 +56,7 @@ import {
 import {
   determineRecoveryOwnership,
   recoverExistingProvider,
+  recoverDesktopFollowerExecution,
   recoverMissingProvider,
   recoverProviderAfterTerminalRun,
 } from "./recovery-executors";
@@ -106,6 +110,7 @@ export interface RecoveryCursor {
 }
 
 export interface StaleProviderRunRecoveryOptions {
+  desktopFollowerBridge?: Pick<CodexDesktopBridge, "recoverTurn" | "pollTurn">;
   changeId?: string;
   execute?: boolean;
   staleAfterMs?: number;
@@ -746,6 +751,53 @@ export async function recoverStaleProviderRuns(
     ...(options.cursor && !cursorIsValid ? { cursorResetReason: "invalid_cursor" as const } : {}),
   };
 
+  if (options.desktopFollowerBridge) {
+    const followerRows = db.select({
+      logicalTurnId: codexTurnExecutions.logicalTurnId,
+      turnId: codexTurnExecutions.turnId,
+      pipelineJobId: codexLogicalTurns.pipelineJobId,
+    }).from(codexTurnExecutions)
+      .innerJoin(
+        codexLogicalTurns,
+        eq(codexLogicalTurns.logicalTurnId, codexTurnExecutions.logicalTurnId),
+      )
+      .where(eq(codexTurnExecutions.status, "running"))
+      .all();
+    for (const row of followerRows.slice(0, maxCandidates)) {
+      const job = row.pipelineJobId
+        ? db.select().from(pipelineJobs)
+            .where(eq(pipelineJobs.id, row.pipelineJobId)).get()
+        : null;
+      if (options.changeId && job?.changeId !== options.changeId) continue;
+      report.processedCandidates += 1;
+      try {
+        const result = await recoverDesktopFollowerExecution({
+          logicalTurnId: row.logicalTurnId,
+          bridge: options.desktopFollowerBridge,
+        });
+        const projected: StaleProviderRunRecoveryResult = {
+          kind: result.kind === "recovered" ? "recovered" : "active",
+          processId: `desktop:${row.logicalTurnId}`,
+          runId: row.logicalTurnId,
+          changeId: job?.changeId ?? "project_scope",
+          phase: "desktop_follower_turn",
+          reason: result.kind,
+          reasonCode: result.kind,
+        };
+        if (result.kind === "recovered") report.recovered.push(projected);
+        else report.observed.push(projected);
+      } catch (error) {
+        report.failed.push({
+          runId: row.logicalTurnId,
+          changeId: job?.changeId ?? "project_scope",
+          phase: "desktop_follower_turn",
+          code: "recovery_failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   const startGraceMs = options.providerStartGraceMs ?? DEFAULT_PROVIDER_START_GRACE_MS;
   const legacyGraceMs = options.legacyLifecycleGraceMs ?? DEFAULT_LEGACY_LIFECYCLE_GRACE_MS;
   if (remainingBudgetMs() <= 0) {
@@ -1040,6 +1092,30 @@ export async function recoverStaleProviderRuns(
   if (!report.truncated) report.nextCursor = null;
 
   return report;
+}
+
+export async function recoverDesktopFollowerTurnsForPipelineJob(
+  pipelineJobId: string,
+  bridge: Pick<CodexDesktopBridge, "recoverTurn" | "pollTurn">,
+): Promise<number> {
+  const logicalTurns = db.select({ id: codexLogicalTurns.logicalTurnId })
+    .from(codexLogicalTurns)
+    .innerJoin(
+      codexTurnExecutions,
+      eq(codexTurnExecutions.logicalTurnId, codexLogicalTurns.logicalTurnId),
+    )
+    .where(and(
+      eq(codexLogicalTurns.pipelineJobId, pipelineJobId),
+      eq(codexTurnExecutions.status, "running"),
+    ))
+    .all();
+  for (const row of logicalTurns) {
+    await recoverDesktopFollowerExecution({
+      logicalTurnId: row.id,
+      bridge,
+    });
+  }
+  return logicalTurns.length;
 }
 
 export async function recoverStaleProviderRunsBestEffort(

@@ -8,26 +8,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CreateChangeDialog } from "./create-change-dialog";
 import { PrdEditor } from "./prd-editor";
-import { GitSetupPanel } from "./git-setup-panel";
-import { GitWorkspacePanel } from "./git-workspace-panel";
 
 interface Project {
   id: string;
   name: string;
   repoPath: string;
   contextStatus?: string;
-  contextProvider?: "codex" | "claude";
   prdStatus?: string;
-  prdProvider?: "codex" | "claude";
-  gitEnabled?: number;
-  gitDefaultBranch?: string | null;
 }
 
 interface Change {
   id: string;
   title: string;
   status: string;
-  provider?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,12 +30,10 @@ interface ContextProgress {
   percent: number;
   currentFile?: string;
   message: string;
-  provider?: "codex" | "claude";
 }
 
 interface ContextData {
   contextStatus: string;
-  contextProvider?: "codex" | "claude";
   docs: Record<string, string | null>;
   progress?: ContextProgress | null;
 }
@@ -64,10 +55,10 @@ function statusVariant(status: string): "default" | "success" | "warning" | "des
   if (["DONE", "TESTPLAN_DONE", "IMPLEMENTED", "SPEC_DONE", "TECH_SPEC_DONE", "LOCAL_READY", "MERGE_READY"].includes(status)) return "success";
   if (["BLOCKED"].includes(status)) return "blocked";
   if (["CHECKING", "FIXING", "FIX_REVIEW", "REVIEWING"].includes(status)) return "pending";
-  if (["REFINING", "PLAN_APPROVED", "PLAN_READY", "INTAKE_READY", "SPEC_READY", "TECHSPEC_READY"].includes(status)) return "info";
+  if (["PLAN_APPROVED", "PLAN_READY", "INTAKE_READY", "SPEC_READY", "TECHSPEC_READY"].includes(status)) return "info";
   // DELIVERY_PENDING pairs with RETRO_PENDING: both mean "the pipeline is
   // parked waiting for a human to press a button", so they must read the same.
-  if (["DRAFT", "PLANNING", "IMPLEMENTING", "SPECCING", "TECHSPECCING", "TESTPLANNING", "MERGING", "RETRO_PENDING", "DELIVERY_PENDING"].includes(status)) return "default";
+  if (["PLANNING", "IMPLEMENTING", "SPECCING", "TECHSPECCING", "TESTPLANNING", "MERGING", "RETRO_PENDING", "DELIVERY_PENDING"].includes(status)) return "default";
   if (["CANCELLED", "CHECK_FAILED", "SCOPE_FAILED"].includes(status)) return "destructive";
   return "outline";
 }
@@ -85,14 +76,13 @@ const RUNNING_STATES = new Set([
   "RETRO_PENDING",
 ]);
 
-type NavSection = "changes" | "prd" | "context" | "baseline" | "git";
+type NavSection = "changes" | "prd" | "context" | "baseline";
 
 const NAV_ITEMS: { key: NavSection; label: string; icon: string }[] = [
   { key: "changes", label: "Changes", icon: "⚡" },
   { key: "prd", label: "PRD", icon: "📋" },
   { key: "context", label: "上下文", icon: "🧠" },
   { key: "baseline", label: "基线文档", icon: "📚" },
-  { key: "git", label: "Git", icon: "🔀" },
 ];
 
 export default function ProjectDetailPage() {
@@ -110,19 +100,14 @@ export default function ProjectDetailPage() {
   const [saving, setSaving] = useState(false);
   const [prdStatus, setPrdStatus] = useState<string>("none");
   const [prdContent, setPrdContent] = useState<string | null>(null);
-  const [prdHistory, setPrdHistory] = useState<Array<{role: "user"|"assistant"; content: string}>>([]);
   const [prdStructured, setPrdStructured] = useState<Record<string, unknown> | null>(null);
   const [prdValidation, setPrdValidation] = useState<{ valid: boolean; issues: Array<{ field: string; severity: string; message: string }> } | null>(null);
-  const [contextProvider, setContextProvider] = useState<"codex" | "claude">("codex");
-  const [prdProvider, setPrdProvider] = useState<"codex" | "claude">("codex");
   const [activeSection, setActiveSection] = useState<NavSection>("changes");
 
   const loadProject = useCallback(() => {
     fetch(`/api/projects/${projectId}`).then((r) => r.json()).then((data) => {
       setProject(data);
       setPrdStatus(data.prdStatus || "none");
-      setContextProvider(data.contextProvider || "codex");
-      setPrdProvider(data.prdProvider || "codex");
     });
   }, [projectId]);
 
@@ -133,7 +118,6 @@ export default function ProjectDetailPage() {
   const loadContext = useCallback(() => {
     fetch(`/api/projects/${projectId}/context`).then((r) => r.json()).then((data) => {
       setContext(data);
-      setContextProvider(data.contextProvider || "codex");
     });
   }, [projectId]);
 
@@ -145,10 +129,8 @@ export default function ProjectDetailPage() {
     fetch(`/api/projects/${projectId}/prd`).then((r) => r.json()).then((data) => {
       setPrdStatus(data.status || "none");
       setPrdContent(data.content || null);
-      setPrdHistory(data.history || []);
       setPrdStructured(data.structured || null);
       setPrdValidation(data.validation || null);
-      setPrdProvider(data.prdProvider || "codex");
     });
   }, [projectId]);
 
@@ -173,7 +155,7 @@ export default function ProjectDetailPage() {
     await fetch(`/api/projects/${projectId}/context`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: contextProvider, saveAsDefault: true }),
+      body: JSON.stringify({}),
     });
     loadContext();
     loadProject();
@@ -274,11 +256,6 @@ export default function ProjectDetailPage() {
             <p className="truncate text-xs text-muted-foreground" title={project.repoPath}>
               {project.repoPath}
             </p>
-            {project.gitEnabled ? (
-              <Badge variant="success" className="mt-1">
-                Git {project.gitDefaultBranch && `(${project.gitDefaultBranch})`}
-              </Badge>
-            ) : null}
           </div>
         )}
       </aside>
@@ -346,17 +323,6 @@ export default function ProjectDetailPage() {
                           <Badge variant={statusVariant(c.status)} className="ml-auto">
                             {c.status}
                           </Badge>
-                          {c.provider && (
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                                c.provider === "claude"
-                                  ? "bg-orange-100 text-orange-700"
-                                  : "bg-blue-100 text-blue-700"
-                              }`}
-                            >
-                              {c.provider === "claude" ? "Claude" : "Codex"}
-                            </span>
-                          )}
                         </CardTitle>
                         <CardDescription className="text-xs">
                           Created {new Date(c.createdAt).toLocaleString()}
@@ -377,19 +343,10 @@ export default function ProjectDetailPage() {
             <div className="relative min-h-0 flex-1">
               <div className="absolute inset-0">
               <PrdEditor
-              projectId={projectId}
               prdStatus={prdStatus}
               prdContent={prdContent}
-              chatHistory={prdHistory}
               structured={prdStructured}
               validation={prdValidation}
-              provider={prdProvider}
-              onProviderChange={setPrdProvider}
-              onConfirm={() => { loadPrd(); loadContext(); }}
-              onStatusChange={loadPrd}
-              onContentUpdate={(content) => {
-                if (content) setPrdContent(content);
-              }}
             />
               </div>
             </div>
@@ -418,16 +375,6 @@ export default function ProjectDetailPage() {
                 {context.contextStatus === "ready" && (
                   <span className="text-sm text-green-600">已就绪</span>
                 )}
-                <select
-                  value={contextProvider}
-                  onChange={(e) => setContextProvider(e.target.value as "codex" | "claude")}
-                  className="h-8 rounded-md border bg-background px-2 text-xs"
-                  disabled={context.contextStatus === "generating"}
-                  title="Context 引擎"
-                >
-                  <option value="codex">Codex</option>
-                  <option value="claude">Claude Code</option>
-                </select>
                 <Button
                   variant="outline"
                   size="sm"
@@ -552,14 +499,6 @@ export default function ProjectDetailPage() {
           </div>
         )}
 
-        {/* Git Section */}
-        {activeSection === "git" && project && (
-          <div className="mx-auto max-w-4xl space-y-6 px-8 py-10">
-            <h2 className="text-xl font-semibold">Git</h2>
-            <GitSetupPanel projectId={projectId} />
-            <GitWorkspacePanel projectId={projectId} />
-          </div>
-        )}
       </main>
     </div>
   );

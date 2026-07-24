@@ -39,7 +39,6 @@ import {
   createPipelinePreflightPayload,
   findPipelineAction,
   pipelineActionDisabledReason,
-  type AiProvider,
   type PipelineActionContract,
 } from "./pipeline-action-contract";
 import { resolvePipelineActionCommand } from "./pipeline-action-commands";
@@ -144,7 +143,6 @@ export function refreshedContractFromRejection(
 export async function runPipelineAction(input: {
   actionId: string;
   actions: PipelineActionContract[] | undefined;
-  provider: AiProvider | undefined;
   /** False disables the automatic drift retry (used by callers that retry themselves). */
   retryAfterDrift: boolean;
   postAction: (
@@ -152,7 +150,7 @@ export async function runPipelineAction(input: {
     payload: Record<string, unknown>,
   ) => Promise<PipelineActionPostResult>;
 }): Promise<PipelineActionRunResult> {
-  const { actionId, actions, provider, retryAfterDrift, postAction } = input;
+  const { actionId, actions, retryAfterDrift, postAction } = input;
 
   const command = resolvePipelineActionCommand(actionId);
   if (!command) {
@@ -171,7 +169,7 @@ export async function runPipelineAction(input: {
   const send = (contractAction: PipelineActionContract) =>
     postAction(
       command.endpoint,
-      withSelectedProvider(createPipelinePreflightPayload(contractAction), contractAction, provider),
+      createPipelinePreflightPayload(contractAction),
     );
 
   const first = await send(initialAction);
@@ -232,15 +230,4 @@ export function pipelineActionResultEffect(result: PipelineActionRunResult): Pip
     refresh: result.outcome === "rejected",
     startWatch: false,
   };
-}
-
-export function withSelectedProvider(
-  payload: Record<string, unknown>,
-  action: PipelineActionContract | null,
-  provider: AiProvider | undefined,
-): Record<string, unknown> {
-  if (action?.requiresProvider === true && action.providerSelectable === true && provider) {
-    payload.provider = provider;
-  }
-  return payload;
 }

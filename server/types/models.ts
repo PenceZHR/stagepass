@@ -13,6 +13,13 @@ import {
   BattleRoundStatus,
   BattleTemplate,
   HumanDecisionAction,
+  ActorSurface,
+  CodexBindingStatus,
+  CodexInteractionStatus,
+  DispatchSurfaceSchema,
+  CodexLogicalRoleSchema,
+  PipelineCommandReceiptStatus,
+  PipelineJobEffectPayload,
   RequirementGapStatus,
   WarReportStatus,
 } from "./enums";
@@ -32,6 +39,8 @@ export const ProjectSchema = z.object({
   prdMarkdown: z.string().nullable().optional(),
   gitEnabled: z.number().int().default(0),
   gitDefaultBranch: z.string().nullable().optional(),
+  defaultCodexModel: z.string().nullable().optional(),
+  defaultReasoningEffort: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -44,6 +53,8 @@ export const ChangeSchema = z.object({
   status: ChangeStatus,
   provider: AiProvider,
   codexThreadId: z.string().nullable(),
+  codexModel: z.string().nullable().optional(),
+  reasoningEffort: z.string().nullable().optional(),
   fixIterations: z.number().int().min(0),
   blockedPhase: RunPhase.nullable().optional(),
   reworkFromPhase: RunPhase.nullable().optional(),
@@ -176,9 +187,254 @@ export const HumanDecisionSchema = z.object({
   reason: z.string().nullable(),
   reportHash: z.string().nullable(),
   createdBy: z.literal("human"),
+  interactionId: z.string().nullable().optional(),
+  actorSurface: ActorSurface.nullable().optional(),
+  codexThreadId: z.string().nullable().optional(),
+  commandId: z.string().nullable().optional(),
   createdAt: z.string(),
 });
 export type HumanDecision = z.infer<typeof HumanDecisionSchema>;
+
+export const CodexBindingScopeSchema = z.discriminatedUnion("scopeKind", [
+  z.object({
+    scopeKind: z.literal("change"),
+    scopeId: z.string(),
+    projectId: z.string(),
+    changeId: z.string(),
+  }),
+  z.object({
+    scopeKind: z.enum(["project_prd", "project_context"]),
+    scopeId: z.string(),
+    projectId: z.string(),
+    changeId: z.null(),
+  }),
+]);
+export type CodexBindingScope = z.infer<typeof CodexBindingScopeSchema>;
+
+export const CodexThreadBindingSchema = z.object({
+  bindingId: z.string(),
+  codexProjectId: z.string().nullable(),
+  threadId: z.string().nullable(),
+  title: z.string(),
+  status: CodexBindingStatus,
+  bridgeProtocolVersion: z.string(),
+  provisionClaimToken: z.string().nullable(),
+  provisionLeaseOwner: z.string().nullable(),
+  provisionLeaseExpiresAt: z.string().nullable(),
+  followerStartProvedAt: z.string().nullable(),
+  lastTurnId: z.string().nullable(),
+  lastObservationCursor: z.number().int().min(0),
+  lastSemanticSnapshotHash: z.string().nullable(),
+  lastSeenAt: z.string(),
+  lastErrorCode: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).and(CodexBindingScopeSchema);
+export type CodexThreadBinding = z.infer<typeof CodexThreadBindingSchema>;
+
+export const CodexLogicalTurnOwnerSchema = z.union([
+  z.object({ pipelineJobId: z.string(), projectAiRunId: z.null() }),
+  z.object({ pipelineJobId: z.null(), projectAiRunId: z.string() }),
+]);
+export type CodexLogicalTurnOwner = z.infer<typeof CodexLogicalTurnOwnerSchema>;
+
+export const CodexLogicalTurnSchema = z.object({
+  logicalTurnId: z.string().uuid(),
+  bindingId: z.string(),
+  interactionId: z.string().nullable(),
+  commandId: z.string().nullable(),
+  phase: z.string(),
+  role: CodexLogicalRoleSchema,
+  round: z.number().int().min(0),
+  ordinal: z.number().int().min(0),
+  turnSlot: z.string(),
+  runCorrelationId: z.string(),
+  canonicalRequestJson: z.string(),
+  canonicalRequestHash: z.string(),
+  dispatchSurface: DispatchSurfaceSchema,
+  status: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).and(CodexLogicalTurnOwnerSchema);
+export type CodexLogicalTurn = z.infer<typeof CodexLogicalTurnSchema>;
+
+export const CodexFollowerStartAttemptSchema = z.object({
+  attemptId: z.string(),
+  logicalTurnId: z.string().uuid(),
+  runCorrelationId: z.string(),
+  workerId: z.string(),
+  leaseToken: z.string(),
+  ownerAttempt: z.number().int().min(0),
+  ownerEpoch: z.number().int().min(0),
+  threadId: z.string(),
+  purpose: z.string(),
+  dispatchSurface: DispatchSurfaceSchema,
+  normalizedPromptHash: z.string(),
+  correlationMarker: z.string(),
+  cwd: z.string(),
+  model: z.string().nullable(),
+  reasoningEffort: z.string().nullable(),
+  sandboxMode: z.string(),
+  approvalPolicy: z.string(),
+  preStartTurnIdsJson: z.string(),
+  preStartSemanticHash: z.string(),
+  state: z.enum([
+    "prepared",
+    "dispatching",
+    "no_client_found",
+    "ambiguous",
+    "succeeded",
+    "quarantined",
+  ]),
+  dispatchOrdinal: z.number().int().min(0),
+  dispatchCount: z.number().int().min(0),
+  budgetDeadline: z.string(),
+  followerTurnId: z.string().nullable(),
+  recoveryOwnerId: z.string().nullable(),
+  recoveryLeaseToken: z.string().nullable(),
+  recoveryEpoch: z.number().int().min(0),
+  lastResult: z.string().nullable(),
+  lastErrorCode: z.string().nullable(),
+  preparedAt: z.string(),
+  dispatchedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+}).and(CodexLogicalTurnOwnerSchema);
+export type CodexFollowerStartAttempt = z.infer<typeof CodexFollowerStartAttemptSchema>;
+
+export const CodexTurnExecutionSchema = z.object({
+  id: z.string(),
+  startAttemptId: z.string(),
+  logicalTurnId: z.string().uuid(),
+  threadId: z.string(),
+  turnId: z.string(),
+  dispatchSurface: DispatchSurfaceSchema,
+  leaseToken: z.string(),
+  ownerAttempt: z.number().int().min(0),
+  ownerEpoch: z.number().int().min(0),
+  lastObservationCursor: z.number().int().min(0),
+  normalizedItemsJson: z.string(),
+  lastSemanticSnapshotHash: z.string().nullable(),
+  status: z.string(),
+  lastObservedAt: z.string().nullable(),
+  terminalSemanticHash: z.string().nullable(),
+  reconnectCount: z.number().int().min(0),
+  notYetVisibleCount: z.number().int().min(0),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).and(CodexLogicalTurnOwnerSchema);
+export type CodexTurnExecution = z.infer<typeof CodexTurnExecutionSchema>;
+
+export const CodexInteractionSchema = z.object({
+  id: z.string(),
+  changeId: z.string(),
+  bindingId: z.string(),
+  codexThreadId: z.string(),
+  phase: z.string(),
+  kind: z.string(),
+  gateVersion: z.number().int(),
+  sourceDbHash: z.string(),
+  payloadJson: z.string(),
+  formJson: z.string().nullable(),
+  status: CodexInteractionStatus,
+  idempotencyKey: z.string(),
+  invocationNonceHash: z.string().nullable(),
+  sourceThreadId: z.string().nullable(),
+  nonceExpiresAt: z.string().nullable(),
+  nonceConsumedAt: z.string().nullable(),
+  expectedHeadSha: z.string().nullable(),
+  requestHash: z.string(),
+  supersededById: z.string().nullable(),
+  presentedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  expiresAt: z.string(),
+  supersededAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type CodexInteraction = z.infer<typeof CodexInteractionSchema>;
+
+export const PipelineCommandReceiptSchema = z.object({
+  commandId: z.string(),
+  changeId: z.string(),
+  interactionId: z.string().nullable(),
+  codexThreadId: z.string().nullable(),
+  action: z.string(),
+  actorKind: z.string(),
+  actorSurface: ActorSurface,
+  idempotencyKey: z.string(),
+  requestHash: z.string(),
+  status: PipelineCommandReceiptStatus,
+  resultJson: z.string().nullable(),
+  errorCode: z.string().nullable(),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+export type PipelineCommandReceipt = z.infer<typeof PipelineCommandReceiptSchema>;
+
+export interface ProjectAiRunLeaseLike {
+  readonly status: string;
+  readonly workerId?: string | null;
+  readonly leaseToken?: string | null;
+  readonly leaseExpiresAt?: string | null;
+  readonly deadlineAt: string;
+}
+
+export function isLiveProjectAiRunLease(
+  run: ProjectAiRunLeaseLike,
+  now: string | Date,
+  expected?: { readonly workerId: string; readonly leaseToken: string },
+): boolean {
+  const nowMs = typeof now === "string" ? Date.parse(now) : now.getTime();
+  const leaseMs = run.leaseExpiresAt == null ? Number.NaN : Date.parse(run.leaseExpiresAt);
+  const deadlineMs = Date.parse(run.deadlineAt);
+  return (
+    (run.status === "leased" || run.status === "running") &&
+    run.workerId != null &&
+    run.leaseToken != null &&
+    (!expected ||
+      (run.workerId === expected.workerId && run.leaseToken === expected.leaseToken)) &&
+    Number.isFinite(nowMs) &&
+    leaseMs > nowMs &&
+    deadlineMs > nowMs
+  );
+}
+
+export interface PipelineJobEffectRow {
+  readonly jobKind: "stage" | "interaction_present" | "interaction_wakeup";
+  readonly interactionId?: string | null;
+  readonly commandId?: string | null;
+  readonly effectSchemaVersion?: string | null;
+  readonly effectPayloadJson?: string | null;
+}
+
+export function parsePipelineJobEffect(
+  row: PipelineJobEffectRow,
+): z.infer<typeof PipelineJobEffectPayload> | null {
+  if (row.jobKind === "stage") {
+    if (
+      row.interactionId != null ||
+      row.commandId != null ||
+      row.effectSchemaVersion != null ||
+      row.effectPayloadJson != null
+    ) {
+      throw new Error("pipeline_job_effect_identity_mismatch");
+    }
+    return null;
+  }
+  if (row.effectSchemaVersion !== "stagepass.pipeline-effect/v1" || row.effectPayloadJson == null) {
+    throw new Error("pipeline_job_effect_identity_mismatch");
+  }
+  const payload = PipelineJobEffectPayload.parse(JSON.parse(row.effectPayloadJson));
+  if (
+    payload.kind !== row.jobKind ||
+    payload.interactionId !== row.interactionId ||
+    (payload.kind === "interaction_wakeup" && payload.commandId !== row.commandId) ||
+    (payload.kind === "interaction_present" && row.commandId != null)
+  ) {
+    throw new Error("pipeline_job_effect_identity_mismatch");
+  }
+  return payload;
+}
 
 export const WarReportSchema = z.object({
   id: z.string(),

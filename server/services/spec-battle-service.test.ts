@@ -715,6 +715,48 @@ describe("spec-battle-service", { concurrency: false }, () => {
     assert.equal(gap?.resolutionEvidence, "PRD 已包含状态矩阵和转换规则");
   });
 
+  /**
+   * Severity decides whether a gap BLOCKS the gate; it does not decide whether
+   * the gap is owed an answer. The round-delta filter used to keep only P0/P1,
+   * so a P2 fell out of both stillOpen and notRechecked and the ledger read as
+   * "nothing outstanding" for a gap nobody had rechecked. Both P2s ever raised
+   * in the shipped database sit at status=open with zero blue_gap_reviews and
+   * zero red_fix_claims, while all six P1s are resolved.
+   */
+  it("keeps an unrechecked old P2 gap visible in the round ledger without blocking the gate", async () => {
+    await readyRoundWithGap("P2");
+    await applySpecBattleDecision({
+      changeId: CHANGE_ID,
+      action: "request_changes",
+      targetType: "requirement_gap",
+      targetId: "missing-state",
+      reason: "反方漏复核 P2",
+    });
+    const nextRound = getSpecBattleState(CHANGE_ID).latestRound;
+    assert.ok(nextRound);
+    claimRoundForTest(nextRound.id);
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: nextRound.id, redOutput: redPayload() });
+
+    await completeBlueCritique({
+      changeId: CHANGE_ID,
+      roundId: nextRound.id,
+      blueJson: JSON.stringify({ gapReviews: [], requirementGaps: [] }),
+    });
+
+    const state = getSpecBattleState(CHANGE_ID);
+    const gap = db.select().from(requirementGaps).where(eq(requirementGaps.canonicalGapId, "missing-state")).get();
+
+    // The ledger now tells the truth about it.
+    assert.equal(state.roundDelta.stillOpen, 1);
+    assert.equal(state.roundDelta.notRechecked, 1);
+    assert.equal(state.roundDelta.resolvedThisRound, 0);
+    assert.equal(gap?.status, "open");
+
+    // And the gate is untouched -- this is a ledger fix, not a new blocker.
+    assert.equal(state.counts.blockingP0, 0);
+    assert.equal(state.counts.blockingP1, 0);
+  });
+
   it("keeps an old P1 gap open when blue omits a gap review", async () => {
     await readyRoundWithGap("P1");
     await applySpecBattleDecision({

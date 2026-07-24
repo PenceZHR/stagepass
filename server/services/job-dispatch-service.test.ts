@@ -199,74 +199,19 @@ describe("job-dispatch-service", { concurrency: false }, () => {
     assert.equal(payload.actionId, "run_spec");
   });
 
-  it("persists the requested provider and returns it in the queue audit", () => {
+  it("persists Codex and returns it in the queue audit", () => {
     const result = enqueuePipelineJob({
-      changeId: CHANGE_ID,
-      phase: "spec",
-      actionId: "run_spec",
-      provider: "claude",
-      idempotencyKey: "provider-claude-1",
-    });
-
-    assert.equal(result.job.provider, "claude");
-    const event = db.select().from(events).where(eq(events.changeId, CHANGE_ID)).all()
-      .find((row) => row.type === "pipeline_job_queued");
-    assert.equal(JSON.parse(event?.rawJson ?? "{}").pipelineJob.provider, "claude");
-  });
-
-  it("rejects reusing an idempotency key with a different provider", () => {
-    enqueuePipelineJob({
       changeId: CHANGE_ID,
       phase: "spec",
       actionId: "run_spec",
       provider: "codex",
-      idempotencyKey: "provider-conflict-1",
+      idempotencyKey: "provider-codex-1",
     });
 
-    assert.throws(
-      () => enqueuePipelineJob({
-        changeId: CHANGE_ID,
-        phase: "spec",
-        actionId: "run_spec",
-        provider: "claude",
-        idempotencyKey: "provider-conflict-1",
-      }),
-      (error: unknown) => error instanceof Error && "code" in error && error.code === "provider_selection_conflict",
-    );
-  });
-
-  it("resolves omitted provider from the Change once and keeps the queued value immutable", () => {
-    db.update(changes).set({ provider: "claude" }).where(eq(changes.id, CHANGE_ID)).run();
-    const result = enqueuePipelineJob({
-      changeId: CHANGE_ID,
-      phase: "spec",
-      actionId: "run_spec",
-      idempotencyKey: "provider-fallback-1",
-    });
-    db.update(changes).set({ provider: "codex" }).where(eq(changes.id, CHANGE_ID)).run();
-    assert.equal(result.job.provider, "claude");
-    assert.equal(db.select().from(pipelineJobs).where(eq(pipelineJobs.id, result.job.id)).get()?.provider, "claude");
-  });
-
-  it("treats an omitted provider as the current default for idempotency conflicts", () => {
-    enqueuePipelineJob({
-      changeId: CHANGE_ID,
-      phase: "spec",
-      actionId: "run_spec",
-      provider: "claude",
-      idempotencyKey: "provider-default-drift-1",
-    });
-    db.update(changes).set({ provider: "codex" }).where(eq(changes.id, CHANGE_ID)).run();
-
-    assert.throws(
-      () => enqueuePipelineJob({
-        changeId: CHANGE_ID,
-        phase: "spec",
-        actionId: "run_spec",
-        idempotencyKey: "provider-default-drift-1",
-      }),
-      (error: unknown) => error instanceof Error && "code" in error && error.code === "provider_selection_conflict",
-    );
+    assert.equal(result.job.provider, "codex");
+    const event = db.select().from(events).where(eq(events.changeId, CHANGE_ID)).all()
+      .find((row) => row.type === "pipeline_job_queued");
+    assert.equal(JSON.parse(event?.rawJson ?? "{}").pipelineJob.provider, "codex");
   });
 
   it("returns an explicit conflict for active same-phase jobs instead of leaking SQLite errors", () => {
@@ -282,10 +227,9 @@ describe("job-dispatch-service", { concurrency: false }, () => {
         changeId: CHANGE_ID,
         phase: "spec",
         actionId: "retry_spec",
-        provider: "claude",
+        provider: "codex",
       }),
-      (error: unknown) => error instanceof Error && "code" in error &&
-        (error.code === "provider_selection_conflict" || error.code === "pipeline_job_conflict"),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "pipeline_job_conflict",
     );
   });
 
@@ -295,7 +239,7 @@ describe("job-dispatch-service", { concurrency: false }, () => {
         changeId: CHANGE_ID,
         phase: "local_check",
         actionId: "run_qa",
-        provider: "claude",
+        provider: "codex",
       }),
       (error: unknown) => error instanceof Error && "code" in error && error.code === "provider_not_applicable",
     );

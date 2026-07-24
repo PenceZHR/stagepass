@@ -36,6 +36,8 @@ function createTestDb() {
       prd_markdown TEXT,
       git_enabled INTEGER NOT NULL DEFAULT 0,
       git_default_branch TEXT,
+      default_codex_model TEXT,
+      default_reasoning_effort TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -46,6 +48,8 @@ function createTestDb() {
       status TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'codex',
       codex_thread_id TEXT,
+      codex_model TEXT,
+      reasoning_effort TEXT,
       fix_iterations INTEGER DEFAULT 0,
       blocked_phase TEXT,
       rework_from_phase TEXT,
@@ -139,6 +143,10 @@ function createTestDb() {
       reason TEXT,
       report_hash TEXT,
       created_by TEXT NOT NULL,
+      interaction_id TEXT,
+      actor_surface TEXT,
+      codex_thread_id TEXT,
+      command_id TEXT,
       created_at TEXT NOT NULL
     );
     CREATE TABLE review_reports (

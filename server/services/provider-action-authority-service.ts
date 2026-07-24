@@ -6,7 +6,6 @@ import path from "node:path";
 import {
   artifacts,
   apiSnapshots,
-  briefingQuestions,
   buildRunRecords,
   changes,
   pipelineJobs,
@@ -29,6 +28,11 @@ import {
   testplanSnapshots,
   techspecSnapshots,
 } from "../db/schema";
+import { listBriefingQuestions } from "./briefing-question-store";
+import {
+  compareBuildRecordRecency,
+  isApprovedBuildStatus,
+} from "./build-record-identity";
 import { ACTION_DEFINITIONS } from "./action-contract-registry-service";
 import { prdBriefingInputHash, readPrdBriefingSourceHashes } from "./prd-briefing-ledger";
 import type { EnqueuePipelineJobInput } from "./pipeline-job-types";
@@ -222,14 +226,14 @@ function resolveBuildSnapshotSource(db: AuthorityDb, changeId: string): string |
   const project = db.select({ repoPath: projects.repoPath }).from(projects)
     .where(eq(projects.id, change.projectId)).get();
   if (!project) return null;
+  // The whole ordered list, not just its head: the ambiguity check below needs
+  // the runner-up to spot a tie. Ordering comes from the shared comparator so
+  // that `approved[0]` and `latestApprovedBuildRecord` below cannot disagree --
+  // if they did, the `approved[0]?.id !== latest.id` guard would reject a
+  // perfectly healthy build on nothing but a sort difference.
   const approved = db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted")
-    .sort((left, right) => {
-      const byAdopted = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-      if (byAdopted !== 0) return byAdopted;
-      const byUpdated = right.updatedAt.localeCompare(left.updatedAt);
-      return byUpdated !== 0 ? byUpdated : right.id.localeCompare(left.id);
-    });
+    .filter((record) => isApprovedBuildStatus(record.status))
+    .sort(compareBuildRecordRecency);
   const latest = latestApprovedBuildRecord(db as unknown as Parameters<typeof latestApprovedBuildRecord>[0], changeId);
   if (!latest || latest.status !== "adopted" || approved[0]?.id !== latest.id) return null;
   if (approved[1] &&
@@ -506,7 +510,7 @@ export function resolveBriefingActionAuthority(
   )).get();
   if (active) return disabled(actionId, "provider_job_running");
 
-  const questions = db.select().from(briefingQuestions).where(eq(briefingQuestions.changeId, changeId)).all();
+  const questions = listBriefingQuestions(changeId, "PRD");
   const draft = db.select().from(prdDrafts).where(eq(prdDrafts.changeId, changeId))
     .orderBy(desc(prdDrafts.version), desc(prdDrafts.createdAt)).get();
 

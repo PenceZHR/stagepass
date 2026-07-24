@@ -7,10 +7,11 @@ import {
   scanProtocolLines,
   splitFields,
 } from "./ai-line-protocol";
-import type {
-  BriefingQuestionsOutput,
-  FinalReviewOutput,
-  PrdBriefingDraftOutput,
+import {
+  BRIEFING_QUESTION_CATEGORIES,
+  type BriefingQuestionsOutput,
+  type FinalReviewOutput,
+  type PrdBriefingDraftOutput,
 } from "./prd-briefing-ledger";
 
 /**
@@ -32,16 +33,7 @@ export type PrdBriefingLineProtocolResult<T> =
   | { ok: true; payload: T }
   | { ok: false; message: string };
 
-const QUESTION_CATEGORIES = new Set([
-  "goal",
-  "user",
-  "scope",
-  "success",
-  "negative_case",
-  "risk",
-  "constraint",
-  "spec_blocker",
-]);
+const QUESTION_CATEGORIES = new Set<string>(BRIEFING_QUESTION_CATEGORIES);
 const QUESTION_SEVERITIES = new Set(["critical", "important", "optional"]);
 const VERDICTS = new Set(["ready", "needs_answer", "risky_but_allowed"]);
 const NEXT_ACTIONS = new Set(["lock_prd", "answer_questions", "cancel_change"]);
@@ -59,7 +51,13 @@ export function parseBriefingQuestionsLineProtocol(
   const questions: BriefingQuestionsOutput["questions"] = [];
   const errors: string[] = [];
 
-  for (const { lineNo, rest } of scanProtocolLines(rawText, ["QUESTION"])) {
+  let noNewQuestions = false;
+  for (const { lineNo, keyword, rest } of scanProtocolLines(rawText, ["QUESTION", "NO_NEW_QUESTIONS"])) {
+    if (keyword === "NO_NEW_QUESTIONS") {
+      if (rest === "true") noNewQuestions = true;
+      else errors.push(`line ${lineNo}: NO_NEW_QUESTIONS must be true, got "${rest}"`);
+      continue;
+    }
     const fields = splitFields(rest);
     if (fields.length !== QUESTION_FIELDS) {
       errors.push(
@@ -72,7 +70,7 @@ export function parseBriefingQuestionsLineProtocol(
     ];
     if (!QUESTION_CATEGORIES.has(category)) {
       errors.push(
-        `line ${lineNo}: QUESTION category must be one of goal/user/scope/success/negative_case/risk/constraint/spec_blocker, got "${category}"`,
+        `line ${lineNo}: QUESTION category must be one of ${BRIEFING_QUESTION_CATEGORIES.join("/")}, got "${category}"`,
       );
       continue;
     }
@@ -99,11 +97,18 @@ export function parseBriefingQuestionsLineProtocol(
     });
   }
 
-  // A prose-only reply parses to zero questions, which would settle the stage
-  // with an empty question set that lockPrdBriefing() can never lock. Requiring
-  // one line makes "protocol ignored" a loud, retryable failure instead.
-  if (questions.length === 0) {
-    errors.push("expected at least 1 QUESTION line");
+  // Three-state, not "at least one".
+  //
+  // A reply truncated just before its first QUESTION line and a reply that
+  // genuinely has nothing left to ask are indistinguishable on "zero QUESTION
+  // lines" alone. Requiring an explicit marker makes truncation a loud failure
+  // instead of a silently swallowed round. Same reasoning as PRD_DONE in
+  // prd-line-protocol.ts:328.
+  if (questions.length === 0 && !noNewQuestions) {
+    errors.push("expected at least 1 QUESTION line, or NO_NEW_QUESTIONS: true to declare convergence");
+  }
+  if (questions.length > 0 && noNewQuestions) {
+    errors.push("NO_NEW_QUESTIONS: true cannot appear alongside QUESTION lines");
   }
 
   if (errors.length > 0) {
@@ -117,6 +122,7 @@ export function parseBriefingQuestionsLineProtocol(
       changeId: ctx.changeId,
       phase: PRD_PHASE,
       questions,
+      ...(noNewQuestions ? { noNewQuestions: true } : {}),
     },
   };
 }

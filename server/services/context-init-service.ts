@@ -17,6 +17,21 @@ import {
   DEFAULT_AI_PROVIDER_TIMEOUT_MS,
   resolveAiProviderTimeoutMs,
 } from "./ai-timeout-policy";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import {
+  acquireProjectAiRunLease,
+  createProjectAiRun,
+  markProjectAiRunFailed,
+  markProjectAiRunRunning,
+  markProjectAiRunSucceeded,
+  type ProjectAiRunFence,
+} from "./project-ai-run-service";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
+import {
+  ensureCodexThreadBinding,
+  readCodexThreadBinding,
+} from "./codex-thread-binding-service";
+import { getProductionCodexDesktopBridge } from "./codex-desktop-engine";
 
 const log = createChildLogger("context-init-service");
 
@@ -25,7 +40,7 @@ const TRUNCATED_LINES = 300;
 const DEFAULT_CONTEXT_TIMEOUT_MS = DEFAULT_AI_PROVIDER_TIMEOUT_MS;
 const DEFAULT_SELECTED_FILES = [
   "server/services/pipeline-service.ts",
-  "server/services/codex-cli-engine.ts",
+  "server/services/codex-desktop-engine.ts",
   "server/services/context-init-service.ts",
   "server/db/schema.ts",
   "server/types/enums.ts",
@@ -80,12 +95,46 @@ function readFileWithTruncation(filePath: string): string {
 
 export async function initializeProjectContext(
   projectId: string,
-  provider: AiProvider = "codex"
+  provider: AiProvider = "codex",
+  requestKey?: string,
 ): Promise<void> {
   const project = db.select().from(projects).where(eq(projects.id, projectId)).get();
   if (!project) throw new Error(`Project not found: ${projectId}`);
 
   const shipDir = path.join(project.repoPath, ".ship");
+  const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+  let projectRunFence: ProjectAiRunFence | null = null;
+  let projectAiRunId: string | null = null;
+
+  if (desktopBridgeEnabled) {
+    const run = await createProjectAiRun({
+      projectId,
+      kind: "context_init",
+      requestKey: requestKey ?? `context:${project.updatedAt}`,
+    });
+    const leased = await acquireProjectAiRunLease(
+      run.id,
+      `context:${process.pid}`,
+      { leaseMs: 15 * 60_000 },
+    );
+    projectRunFence = leased.fence;
+    projectAiRunId = run.id;
+    await markProjectAiRunRunning(projectRunFence);
+    if (!readCodexThreadBinding({
+      kind: "project_context",
+      scopeId: projectId,
+      projectId,
+    })) {
+      await ensureCodexThreadBinding({
+        scope: {
+          kind: "project_context",
+          scopeId: projectId,
+          projectId,
+        },
+        bridge: await getProductionCodexDesktopBridge(),
+      });
+    }
+  }
 
   db.update(projects)
     .set({ contextStatus: "generating", updatedAt: nowISO() })
@@ -140,14 +189,26 @@ export async function initializeProjectContext(
       provider,
     });
 
-    const engine = getAiEngine(provider);
+    const engine = getAiEngine();
     const timeoutMs = getContextTimeoutMs();
     const selectTemplate = readPromptTemplate("init-context-select");
     const selectPrompt = selectTemplate
       .replace("{directoryTree}", analysisResult.tree)
       .replace("{analysisData}", analysisData);
 
-    const selectResult = await engine.run({
+    const selectLogicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "project_ai_run", projectAiRunId: projectAiRunId! },
+          phase: "Context",
+          role: "context_select",
+          round: 0,
+          ordinal: 0,
+          request: { prompt: selectPrompt, sandboxMode: "read-only" },
+        })).logicalTurnId
+      : null;
+    const selectResult = await engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: selectLogicalTurnId!,
+    } as never : {
       changeId: `${projectId}-context-select`,
       repoPath: project.repoPath,
       phase: "plan",
@@ -214,7 +275,19 @@ export async function initializeProjectContext(
       provider,
     });
 
-    const generateResult = await engine.run({
+    const generateLogicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "project_ai_run", projectAiRunId: projectAiRunId! },
+          phase: "Context",
+          role: "context_generate",
+          round: 0,
+          ordinal: 0,
+          request: { prompt: generatePrompt, sandboxMode: "read-only" },
+        })).logicalTurnId
+      : null;
+    const generateResult = await engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: generateLogicalTurnId!,
+    } as never : {
       changeId: `${projectId}-context-generate`,
       repoPath: project.repoPath,
       phase: "plan",
@@ -283,9 +356,13 @@ export async function initializeProjectContext(
       .set({ contextStatus: "ready", updatedAt: nowISO() })
       .where(eq(projects.id, projectId))
       .run();
+    if (projectRunFence) await markProjectAiRunSucceeded(projectRunFence);
 
     log.info({ projectId, docsWritten }, "Context initialization completed (4-stage)");
   } catch (err) {
+    if (projectRunFence) {
+      await markProjectAiRunFailed(projectRunFence).catch(() => {});
+    }
     log.error({ projectId, err }, "Context initialization failed");
     writeProgress(shipDir, {
       stage: "merge",

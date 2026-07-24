@@ -1,3 +1,5 @@
+import { parseSequencedId } from "./record-identity";
+
 export type ReviewRunStatus =
   | "running"
   | "passed"
@@ -29,8 +31,7 @@ export const REVIEW_SUMMARY_STATUSES = new Set<Exclude<ReviewRunStatus, "running
 export const VALID_REVIEW_STATUSES = new Set<ReviewRunStatus>(["passed", "issues_found"]);
 
 export function runSequence(runId: string): number {
-  const match = runId.match(/^RUN-(\d+)$/);
-  return match ? Number.parseInt(match[1], 10) : 0;
+  return parseSequencedId(runId, "RUN") ?? 0;
 }
 
 export function compareRunsDesc(

@@ -16,7 +16,6 @@ const now = "2026-06-20T00:00:00.000Z";
 describe("change-phase-service phase review aggregation", () => {
   it("exposes content-backed v2 review phases", () => {
     assert.deepEqual(CONTENT_PHASES, [
-      "Refine",
       "Intake",
       "Spec",
       "TechSpec",
@@ -43,7 +42,7 @@ describe("change-phase-service phase review aggregation", () => {
     const result = buildPhaseReview({
       changeId,
       repoPath,
-      selectedPhase: "Refine",
+      selectedPhase: "Intake",
       runs: [],
       events: [],
       artifacts: [],
@@ -52,7 +51,6 @@ describe("change-phase-service phase review aggregation", () => {
     assert.deepEqual(
       result.phases.map((phase) => phase.phase),
       [
-        "Refine",
         "Intake",
         "Spec",
         "TechSpec",
@@ -460,12 +458,12 @@ describe("change-phase-service phase review aggregation", () => {
     assert.equal(result.selected.artifacts[1].content, "# Run PRD");
   });
 
-  it("assigns refine spec artifact and chat events without requiring a run", () => {
+  it("assigns the spec artifact to Intake without requiring a run", () => {
     const specPath = path.join(changeDir, "spec.md");
     const result = buildPhaseReview({
       changeId,
       repoPath,
-      selectedPhase: "Refine",
+      selectedPhase: "Intake",
       runs: [],
       events: [
         {
@@ -502,10 +500,15 @@ describe("change-phase-service phase review aggregation", () => {
       },
     });
 
-    assert.equal(result.selected.phase, "Refine");
+    // Was "Refine". The spec.md artifact type used to map to the Refine stage;
+    // Refine is deleted and that artifact type now belongs to Intake.
+    assert.equal(result.selected.phase, "Intake");
     assert.equal(result.selected.artifacts.length, 1);
     assert.equal(result.selected.artifacts[0].type, "spec");
-    assert.deepEqual(result.selected.events.map((event) => event.id), ["EVT-001"]);
+    // Dropped the chat-event half. This pinned that chat_user/chat_assistant
+    // events landed on Refine without a run row; Refine and the chat feature
+    // are both deleted, so those event types are no longer produced or
+    // classified. The artifact half above is the part that still has a subject.
   });
 
   it("creates current check artifacts from known change files and omits missing files", () => {
@@ -864,7 +867,7 @@ describe("phase review page source", () => {
     assert.match(pageSource, /<PipelinePageShell[\s\S]*selectedPhase=\{activeSelectedPhase\}[\s\S]*onSelectPhase=\{handleSelectPhase\}/);
   });
 
-  it("renders a desktop vertical phase rail in a sticky right sidebar", () => {
+  it("renders the vertical phase rail in a toggleable right drawer", () => {
     const railStart = phaseRailSource.indexOf("function VerticalPhaseRail");
     assert.notEqual(railStart, -1, "VerticalPhaseRail should exist");
 
@@ -873,8 +876,13 @@ describe("phase review page source", () => {
     assert.match(railSource, /onSelectPhase/);
     assert.match(railSource, /selectedPhase/);
     assert.match(railSource, /<PipelineStageItem/);
-    assert.match(pipelinePageShellSource, /<aside className="hidden lg:block">/);
-    assert.match(pipelinePageShellSource, /className="sticky top-6"/);
+    // Was: a permanent `<aside className="hidden lg:block">` with `sticky top-6`
+    // (a second copy of the same assertion also lived in phase-review.test.ts).
+    // The rail is a drawer now; what still has to hold is that it is reachable
+    // and that opening it is a real toggle.
+    assert.match(pipelinePageShellSource, /data-pipeline-rail-toggle/);
+    assert.match(pipelinePageShellSource, /aria-expanded=\{open\}/);
+    assert.match(pipelinePageShellSource, /translate-x-full/);
   });
 
   it("fetches read-only phase review data through the phases endpoint", () => {
@@ -1033,7 +1041,7 @@ describe("phase review page source", () => {
     assert.match(restartSource, /pipelineActionDisabledReason\(action\)/);
     assert.match(restartSource, /\/spec`/);
     assert.match(restartSource, /headers: \{ "Content-Type": "application\/json" \}/);
-    assert.match(restartSource, /createPipelinePreflightPayload\(action, \{ provider: selectedProvider \}\)/);
+    assert.match(restartSource, /createPipelinePreflightPayload\(action\)/);
     assert.doesNotMatch(restartSource, /fetch\(`[^`]+\/spec`,\s*\{\s*method: "POST",\s*\}\)/);
     assert.match(pageSource, /onRestartBattle=\{handleRestartSpecBattle\}/);
   });

@@ -38,7 +38,7 @@
 - Next.js 16 + React 19 + TypeScript
 - SQLite + better-sqlite3 + Drizzle ORM
 - `node:test` + `tsx` 测试
-- Codex CLI / Claude Code CLI 作为 AI provider（两者都是本地 `spawn` 的真实子进程、有真实 pid，进同一套生命周期/恢复机制；`@openai/codex-sdk` 已于 2026-07 移除）
+- Codex CLI 是唯一 AI Provider（本地 `spawn` 的真实子进程，有真实 pid，进入统一生命周期与崩溃恢复机制；`@openai/codex-sdk` 已于 2026-07 移除）
 - Tailwind + shadcn 风格基础组件
 - lucide-react 用于图标
 
@@ -732,4 +732,3 @@ server/db/schema/
 本次阅读时 `git status --short` 无输出，说明工作区干净。
 
 本报告只做静态阅读和结构分析，没有运行 `pnpm test` 或 `pnpm build`。
-

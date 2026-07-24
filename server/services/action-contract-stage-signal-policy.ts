@@ -13,6 +13,7 @@ import type {
   StageProgressEventPayload,
 } from "./stage-ai-output-contract";
 import { readJson, sortNewestRun } from "./action-contract-common-policy";
+import { pipelineJobSelectionForAction } from "./pipeline-job-types";
 
 /**
  * The stage-output signal engine: it reads the newest stage run, its progress
@@ -106,31 +107,29 @@ export function activePipelineJobPhases(db: ActionContractDb, changeId: string):
   )).all().map((job) => job.phase));
 }
 
+/**
+ * The job phase an action would enqueue into, or null for actions that never
+ * become pipeline jobs (human decisions, approvals, local controls).
+ *
+ * Derived from PIPELINE_JOB_ACTIONS_BY_PHASE -- the same table the dispatcher
+ * enqueues from -- rather than restated here. This used to be a hand-written
+ * second copy of that mapping, and it had drifted: the three
+ * run_prd_briefing_* steps were missing, so `provider_job_running` was skipped
+ * for them entirely. The briefing authority overlay could not cover the gap
+ * either (it only inspects the `runs` table, and a queued job has no run row
+ * yet), so the contract advertised the action, the user clicked a second time,
+ * and uq_pipeline_jobs_one_active_change_phase folded the POST into the job
+ * already queued -- a 202 that enqueued nothing.
+ *
+ * Keeping this derived means a newly added action is guarded the moment it
+ * joins the dispatcher table, instead of the next time someone remembers to
+ * update a parallel list.
+ *
+ * `db` is unused but retained: the policy-module convention is that these
+ * exports take the ActionContractDb first, and the caller passes it.
+ */
 export function activeJobPhaseForAction(db: ActionContractDb, actionId: string): string | null {
-  const phaseByAction: Record<string, string> = {
-    run_prd: "intake",
-    retry_prd: "intake",
-    run_spec: "spec",
-    retry_spec: "spec",
-    run_tech_spec: "tech_spec",
-    retry_tech_spec: "tech_spec",
-    run_plan: "generate_plan",
-    retry_plan: "generate_plan",
-    run_test_plan: "test_plan",
-    retry_test_plan: "test_plan",
-    run_build: "implement",
-    retry_build: "implement",
-    run_review: "review",
-    retry_review: "review",
-    fix_blockers: "fix_findings",
-    enter_qa: "local_check",
-    run_qa: "local_check",
-    retry_qa: "local_check",
-    merge: "release",
-    run_retro: "retro",
-    run_delivery: "delivery",
-  };
-  return phaseByAction[actionId] ?? null;
+  return pipelineJobSelectionForAction(actionId)?.phase ?? null;
 }
 
 export function warningPhaseForDefinition(

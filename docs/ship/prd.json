@@ -3,7 +3,7 @@
   "body": {
     "title": "stagepass — 产品需求文档",
     "overview": "stagepass 是一个本地优先（local-first）的 AI 研发流水线控制台，采用 Stage-Gate 方法论（分阶段推进、每个阶段之间设一道人工决策 gate），用于在单一界面中管理本地项目、PRD、change、AI 辅助研发流水线阶段、人工 gate，以及 Build / Review / QA / Merge 流程。产品主张是不替用户写代码，而是替用户把流程走对：一句需求被押着走完 12 个阶段，每道 gate 由人拍板放行；用户不追日志，而是在一个控制台里处理战报、风险、gate 和人工裁决。AI 不只是单路生成，而是通过 PRD Briefing、Spec Battle、Review 等对抗机制主动把风险暴露给使用者——这是让经验不足的人也能做出老手级裁决的关键。语义上红方只指人类用户本人（需求源头与最终裁决者），SPEC_WRITER 是服务红方的我方执行代理，REQUIREMENT_CRITIC 是负责质询挑刺的反方；批准权只在人类手里。系统正在从“文件产物驱动”迁移到“DB-first pipeline”：DB 是裁判，Git 当前事实是现场，`.ship` / JSON / Markdown 只作为 AI 上下文、人工阅读和审计的镜像。核心流水线为 Project → PRD ready → Change → PRD Briefing Room → Spec Battle → TechSpec/API snapshot → Plan Sandbox → TestPlan snapshot → Build Sandbox → Review Center → QA → Merge → Retro。本 PRD 描述 stagepass 项目自身作为一款产品的需求，事实取自仓库当前状态（DB migration 已到 0013_db_first_pipeline，约 48 张表，85 个后端 service 文件，64 个测试文件）。",
-    "targetUsers": "主要用户是想用 AI 写代码、但没受过系统工程训练的开发者（vibe coding 使用者），以及重度使用 AI 编码 agent（Codex / Claude Code）的单人开发者与小团队。核心洞察：他们的困难不是不会写代码——Codex / Claude Code 已经能写——而是看不出 AI 在哪里糊弄了自己：需求哪里还含糊、验收标准缺了哪条、技术方案埋了什么坑。他们只能看着 AI 吐出一大段代码，然后点一下“看起来不错”。stagepass 对他们的价值分两层：第一层（主张）是把流程教给他们——一句需求被押着走完 12 个阶段，每个关键路口停下来等他们拍板：在 PRD 阶段先清除需求迷雾，在 Spec 阶段用红蓝对抗暴露需求漏洞，在 Plan 阶段明确该改哪些文件、禁止碰哪些，在 Review 阶段用 P0/P1/P2 战报决定是否进入 QA；走完一遍，这条真实的工程流程（即 Stage-Gate）本身也就学会了。对抗机制的意义正在于：用户不需要自己就能看出坑，有个 AI 专门负责把坑指给他看，他只需要裁决。第二层（随之而来）是管住 AI——隔离 worktree 安全施工、DB 权威 gate 兜底、真实进程 pid 与崩溃恢复，让 AI 跑不掉、瞒不住、崩了能捞回来。使用者兼具“裁决者”（红方，做放行决定）与“学习者”（通过走流程理解代码与风险）双重角色。",
+    "targetUsers": "主要用户是想用 AI 写代码、但没受过系统工程训练的开发者（vibe coding 使用者），以及重度使用 Codex 编码 agent 的单人开发者与小团队。核心洞察：他们的困难不是不会写代码——Codex 已经能写——而是看不出 AI 在哪里糊弄了自己：需求哪里还含糊、验收标准缺了哪条、技术方案埋了什么坑。他们只能看着 AI 吐出一大段代码，然后点一下“看起来不错”。stagepass 对他们的价值分两层：第一层（主张）是把流程教给他们——一句需求被押着走完 12 个阶段，每个关键路口停下来等他们拍板：在 PRD 阶段先清除需求迷雾，在 Spec 阶段用红蓝对抗暴露需求漏洞，在 Plan 阶段明确该改哪些文件、禁止碰哪些，在 Review 阶段用 P0/P1/P2 战报决定是否进入 QA；走完一遍，这条真实的工程流程（即 Stage-Gate）本身也就学会了。对抗机制的意义正在于：用户不需要自己就能看出坑，有个 AI 专门负责把坑指给他看，他只需要裁决。第二层（随之而来）是管住 AI——隔离 worktree 安全施工、DB 权威 gate 兜底、真实进程 pid 与崩溃恢复，让 AI 跑不掉、瞒不住、崩了能捞回来。使用者兼具“裁决者”（红方，做放行决定）与“学习者”（通过走流程理解代码与风险）双重角色。",
     "userStories": [
       {
         "id": "US-001",
@@ -289,18 +289,18 @@
       },
       {
         "id": "FR-010",
-        "title": "AI 引擎抽象（Codex / Claude）",
-        "description": "通过 AiEngineAdapter 统一封装 codex 与 claude 两个 provider，输入/输出符合 AiRunInput / AiRunResult 契约；项目可配置 AI provider。claude-engine 必须用 stdin 传 prompt（放 argv 会被错解析成 --allowedTools）。",
+        "title": "Codex 单 Provider 引擎抽象",
+        "description": "通过 AiEngineAdapter 封装 Codex 单 Provider 执行链路，输入/输出符合 AiRunInput / AiRunResult 契约；项目与 Change 不暴露 Provider 选择。",
         "priority": "must",
         "acceptanceCriteria": [
           {
             "id": "AC-001",
-            "description": "Given 项目配置了 provider（codex 或 claude），When 执行任一阶段，Then 系统通过 AiEngineAdapter 统一调用，输入/输出符合 AiRunInput / AiRunResult 契约，阶段逻辑不直接耦合具体 provider。",
+            "description": "Given 执行任一 AI 阶段，When 系统启动引擎，Then 通过 AiEngineAdapter 调用 Codex，输入/输出符合 AiRunInput / AiRunResult 契约。",
             "testable": true
           },
           {
             "id": "AC-002",
-            "description": "Given provider 为 claude，When 传递 prompt，Then prompt 通过 stdin 传递，不得放在 argv 中（避免被 claude CLI 错解析为 --allowedTools）。",
+            "description": "Given 用户创建项目或 Change，When 查看 UI 或提交 API，Then 不出现 Provider 选择，执行链路固定为 Codex。",
             "testable": true
           }
         ]
@@ -415,7 +415,7 @@
     ]
   },
   "aiAppendix": {
-    "implementationConstraints": "框架：Next.js 16 App Router + React 19 + TypeScript（strict）；后端服务跑在 Node 运行时（route handlers / server services）。数据：SQLite + better-sqlite3 + Drizzle ORM（schema 集中在 server/db/schema.ts，迁移在 server/db/migrations/，迁移到 0013_db_first_pipeline）。AI：Codex CLI（直接 spawn `codex exec --json` 二进制，替代旧 @openai/codex-sdk）与 Claude Code（@anthropic-ai/claude-code），通过 AiEngineAdapter 抽象；不要 top-level await；claude-engine 必须用 stdin 传 prompt。UI：Tailwind + shadcn 风格基础组件（components/ui/）+ lucide-react 图标 + @base-ui/react。测试：node:test + tsx（pnpm test = tsx --test --test-concurrency=1 app/**/*.test.ts server/services/*.test.ts server/db/*.test.ts）。编码规范（.ship/coding-rules.md）：函数 ≤50 行、禁止 any、禁止生产 console.log、文件 kebab-case、变量 camelCase、类/接口 PascalCase、常量 UPPER_SNAKE_CASE、优先 async/await、每个功能模块必须有 *.test.ts 单测。必检命令（.ship/policy.json）：lint/typecheck/test/build；blockedGlobs 含 package.json、lockfile、.github/workflows/**、infra/**、deploy/**、.env*。",
+    "implementationConstraints": "框架：Next.js 16 App Router + React 19 + TypeScript（strict）；后端服务跑在 Node 运行时（route handlers / server services）。数据：SQLite + better-sqlite3 + Drizzle ORM（schema 集中在 server/db/schema.ts，迁移在 server/db/migrations/，迁移到 0013_db_first_pipeline）。AI：Codex CLI 是唯一 Provider，直接 spawn `codex exec --json` 二进制（替代旧 @openai/codex-sdk），通过 AiEngineAdapter 抽象；不要 top-level await。UI：Tailwind + shadcn 风格基础组件（components/ui/）+ lucide-react 图标 + @base-ui/react。测试：node:test + tsx（pnpm test = tsx --test --test-concurrency=1 app/**/*.test.ts server/services/*.test.ts server/db/*.test.ts）。编码规范（.ship/coding-rules.md）：函数 ≤50 行、禁止 any、禁止生产 console.log、文件 kebab-case、变量 camelCase、类/接口 PascalCase、常量 UPPER_SNAKE_CASE、优先 async/await、每个功能模块必须有 *.test.ts 单测。必检命令（.ship/policy.json）：lint/typecheck/test/build；blockedGlobs 含 package.json、lockfile、.github/workflows/**、infra/**、deploy/**、.env*。",
     "affectedModules": [
       "server/services/pipeline-service.ts（阶段编排核心，当前最重）",
       "server/services/project-service.ts、change-service.ts、change-rework-service.ts",
@@ -426,7 +426,7 @@
       "server/services/build-workspace-service.ts、build-run-record-service.ts",
       "server/services/review-run-service.ts、review-report-service.ts、review-center-service.ts、review-qa-gate-service.ts、review-waiver-service.ts、review-artifact-mirror-service.ts",
       "server/services/qa-run-service.ts、merge-readiness-service.ts",
-      "server/services/ai-engine-adapter.ts、ai-engine-types.ts、claude-engine.ts、codex-cli-engine.ts",
+      "server/services/ai-engine-adapter.ts、ai-engine-types.ts、codex-cli-engine.ts",
       "server/db/schema.ts、server/db/migrate.ts、server/db/index.ts",
       "server/types/enums.ts、server/types/prd.ts、server/types/api.ts、server/types/models.ts",
       "app/api/projects/[id]/changes/[changeId]/*（约 60 个 REST route + SSE）",
@@ -508,7 +508,7 @@
       "name": "AI 引擎接口",
       "url": "server/services/ai-engine-types.ts",
       "adopted": [
-        "AiProvider（codex/claude）",
+        "AiProvider（仅 codex）",
         "AiRunInput/AiRunResult",
         "AiEngineAdapter 契约"
       ],

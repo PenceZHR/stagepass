@@ -1,7 +1,26 @@
-import { eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { db } from "@/server/db";
 import { events } from "@/server/db/schema";
+import { advanceStreamCursor } from "@/server/services/change-event-stream-cursor";
 import { requireProjectChange } from "../../route-guard";
+
+/**
+ * SQLite's bound-parameter ceiling is far higher than this, but a poll that
+ * found thousands of new rows at once would build one enormous statement for no
+ * gain; the steady state is a handful of ids.
+ */
+const ID_FETCH_CHUNK = 500;
+
+function readEventsByIds(ids: string[]): Map<string, typeof events.$inferSelect> {
+  const byId = new Map<string, typeof events.$inferSelect>();
+  for (let start = 0; start < ids.length; start += ID_FETCH_CHUNK) {
+    const chunk = ids.slice(start, start + ID_FETCH_CHUNK);
+    for (const row of db.select().from(events).where(inArray(events.id, chunk)).all()) {
+      byId.set(row.id, row);
+    }
+  }
+  return byId;
+}
 
 export async function GET(
   _request: Request,
@@ -33,11 +52,15 @@ export async function GET(
         } catch {}
       };
 
-      // Send existing events first
+      // Send existing events first. The explicit order matters: without it
+      // SQLite is free to return rows however the chosen plan produces them,
+      // and idx_events_change_created_id makes an index scan the likely plan,
+      // so replay order would quietly stop matching insertion order.
       const existing = db
         .select()
         .from(events)
         .where(eq(events.changeId, changeId))
+        .orderBy(asc(events.createdAt), asc(events.id))
         .all();
 
       for (const evt of existing) {
@@ -46,29 +69,47 @@ export async function GET(
         );
       }
 
-      // Poll for new events every 2 seconds
-      let lastCount = existing.length;
+      // Track which events were sent, not how many. See
+      // change-event-stream-cursor.ts for why a count (or a (created_at, id)
+      // comparison) loses events here.
+      let delivered = new Set(existing.map((evt) => evt.id));
       interval = setInterval(() => {
         try {
           if (closed) {
             closeStream();
             return;
           }
-          const all = db
-            .select()
+          // Ids only -- idx_events_change_created_id covers this, so the poll
+          // never touches the table and never re-reads raw_json.
+          const currentIds = db
+            .select({ id: events.id })
             .from(events)
             .where(eq(events.changeId, changeId))
-            .all();
+            .orderBy(asc(events.createdAt), asc(events.id))
+            .all()
+            .map((row) => row.id);
 
-          if (all.length > lastCount) {
-            const newEvents = all.slice(lastCount);
-            for (const evt of newEvents) {
+          const { newIds, nextDelivered } = advanceStreamCursor(currentIds, delivered);
+          if (newIds.length > 0) {
+            const byId = readEventsByIds(newIds);
+            for (const id of newIds) {
+              const evt = byId.get(id);
+              // A row deleted between the id scan and this read has nothing to
+              // send; leaving it out of `delivered` lets a re-created id
+              // through on a later poll.
+              if (!evt) {
+                nextDelivered.delete(id);
+                continue;
+              }
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(evt)}\n\n`)
               );
             }
-            lastCount = all.length;
           }
+          // Assigned every poll, not only when something new arrived: this is
+          // what drops deleted ids and keeps the cursor from growing for the
+          // life of the connection.
+          delivered = nextDelivered;
         } catch (err) {
           closeStream(err);
         }

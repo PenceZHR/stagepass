@@ -521,7 +521,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.latestAttempt, null);
     assert.equal(state.latestValidReview, null);
     assert.deepEqual(state.findings, []);
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("reports running when the latest review run is running", () => {
@@ -599,9 +599,13 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.gate.status, "stale");
     assert.equal(state.gate.latestBuildRunId, null);
     assert.equal(state.gate.canEnterQa, false);
-    assert.equal(state.actions.canRunReview, false);
-    assert.equal(state.actions.canRetryReview, false);
-    assert.equal(state.actions.run_review.reason, "Review requires an approved Build run before starting.");
+    // Dropped: canRunReview, canRetryReview and run_review.reason. They pinned
+    // the review center's private copy of the run/retry enablement rule -- the
+    // copy that had drifted from the action contract, which is what the write
+    // path actually enforces via assertRequestActionAllowed. That block is
+    // gone. This test's subject is the gate (no DB build record => stale, and
+    // an adopted .ship mirror must not stand in for one), and those three
+    // assertions above still pin it.
   });
 
   it("does not select a valid DB report by generatedAt when review_state lacks latestValidReviewReportId", () => {
@@ -680,8 +684,11 @@ describe("review-center-service", { concurrency: false }, () => {
     const state = getReviewCenterState(CHANGE_ID);
 
     assert.equal(state.gate.status, "blocked_p0");
-    assert.equal(state.actions.canWaiveP1, false);
-    assert.equal(state.actions.canEnterQa, false);
+    // Dropped canWaiveP1: it was the center's copy of the waiver rule. The
+    // gate status it was derived from (blocked_p0, i.e. not blocked_p1) is
+    // asserted directly above, and that gate is what the action contract's
+    // waive_review_p1 policy reads.
+    assert.equal(state.qaAllowed, false);
     assert.equal(state.findings[0]?.id, "FND-P0");
   });
 
@@ -692,8 +699,9 @@ describe("review-center-service", { concurrency: false }, () => {
     const state = getReviewCenterState(CHANGE_ID);
 
     assert.equal(state.gate.status, "blocked_p1");
-    assert.equal(state.actions.canWaiveP1, true);
-    assert.equal(state.actions.canEnterQa, false);
+    // Dropped canWaiveP1 (see the blocked_p0 case above): blocked_p1 is the
+    // gate fact the waiver policy keys on, and it is asserted directly above.
+    assert.equal(state.qaAllowed, false);
   });
 
   it("marks the review stale and blocks QA when a latest valid P1 finding is waived", () => {
@@ -704,9 +712,12 @@ describe("review-center-service", { concurrency: false }, () => {
 
     assert.equal(state.gate.status, "stale");
     assert.equal(state.gate.reason, "P1 waiver requires a fresh Review run before QA.");
-    assert.equal(state.actions.canWaiveP1, false);
-    assert.equal(state.actions.canEnterQa, false);
-    assert.equal(state.actions.canRetryReview, true);
+    // Dropped canWaiveP1 and canRetryReview. Both read the center's copy of
+    // rules the action contract owns. canRetryReview === true here was the
+    // *benign* half of the drifted retry predicate (stale is on the center's
+    // list); the harmful half was blocked_p0/blocked_p1 being absent from it,
+    // which is now pinned as a symptom in phase-review.test.ts.
+    assert.equal(state.qaAllowed, false);
   });
 
   it("shows legacy P2-only review data but does not allow QA without a DB Review report", () => {
@@ -717,7 +728,7 @@ describe("review-center-service", { concurrency: false }, () => {
 
     assert.equal(state.latestValidReview?.runId, REVIEW_RUN_ID);
     assert.equal(state.gate.status, "stale");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("reports stale when review sourceBuildRunId does not match the latest adopted build run", () => {
@@ -727,7 +738,7 @@ describe("review-center-service", { concurrency: false }, () => {
     const state = getReviewCenterState(CHANGE_ID);
 
     assert.equal(state.gate.status, "stale");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
     assert.equal(state.gate.latestBuildRunId, "build-1");
   });
 
@@ -741,10 +752,11 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.gate.status, "stale");
     assert.equal(state.gate.reason, "Review requires an approved Build run before QA.");
     assert.equal(state.gate.latestBuildRunId, null);
-    assert.equal(state.actions.canEnterQa, false);
-    assert.equal(state.actions.canRunReview, false);
-    assert.equal(state.actions.canRetryReview, false);
-    assert.equal(state.actions.retry_review.reason, "Review requires an approved Build run before starting.");
+    assert.equal(state.qaAllowed, false);
+    // Dropped canRunReview, canRetryReview and retry_review.reason: the
+    // center's copy of the run/retry rule again. "No adopted Build run" is
+    // asserted as a gate fact above (status, reason, latestBuildRunId), and
+    // that gate is what the action contract's review policy reads.
   });
 
   it("reports stale when the latest valid review is missing sourceBuildRunId", () => {
@@ -755,7 +767,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.gate.status, "stale");
     assert.equal(state.gate.reason, "Review is missing its source Build run.");
     assert.equal(state.gate.latestBuildRunId, "build-1");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   for (const reviewStatus of ["failed", "invalid_output", "data_inconsistent"] as const) {
@@ -798,7 +810,7 @@ describe("review-center-service", { concurrency: false }, () => {
       assert.equal(state.latestAttempt?.reviewStatus, reviewStatus);
       assert.equal(state.latestValidReview?.runId, validRunId);
       assert.equal(state.gate.status, "blocked_p1");
-      assert.equal(state.actions.canEnterQa, false);
+      assert.equal(state.qaAllowed, false);
     });
   }
 
@@ -813,7 +825,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.latestValidReview?.runId, REVIEW_RUN_ID);
     assert.equal(state.latestValidReview?.reviewStatus, "passed");
     assert.equal(state.gate.status, "blocked_p0");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("does not use missing mirrored review findings as authority over DB findings", () => {
@@ -848,7 +860,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.latestAttempt?.runId, REVIEW_RUN_ID);
     assert.equal(state.latestValidReview, null);
     assert.equal(state.gate.status, "data_inconsistent");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("rejects passed and issues_found summaries that omit findingCount", () => {
@@ -866,7 +878,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.latestAttempt?.reviewStatus, "failed");
     assert.equal(state.latestValidReview, null);
     assert.equal(state.gate.status, "failed");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("keeps a latest finding count mismatch separate from the previous valid review", () => {
@@ -885,7 +897,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.latestAttempt?.reviewStatus, "data_inconsistent");
     assert.equal(state.latestValidReview?.runId, "RUN-900000");
     assert.equal(state.gate.status, "stale");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("blocks on DB open P1 even when latest valid review summary passed", () => {
@@ -899,7 +911,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.latestValidReview?.runId, REVIEW_RUN_ID);
     assert.equal(state.latestValidReview?.reviewStatus, "passed");
     assert.equal(state.gate.status, "blocked_p1");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("reports stale when latest valid review sourceBuildRunId is older than latest adopted build run", () => {
@@ -919,7 +931,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.equal(state.gate.status, "stale");
     assert.equal(state.gate.sourceBuildRunId, "build-1");
     assert.equal(state.gate.latestBuildRunId, "build-2");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
   });
 
   it("blocks on old open P1 findings that the latest valid review did not recheck", () => {
@@ -942,7 +954,7 @@ describe("review-center-service", { concurrency: false }, () => {
 
     assert.equal(state.latestValidReview?.runId, REVIEW_RUN_ID);
     assert.equal(state.gate.status, "blocked_p1");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
     assert.equal(oldFinding?.isNotRechecked, true);
   });
 
@@ -957,7 +969,7 @@ describe("review-center-service", { concurrency: false }, () => {
     const state = getReviewCenterState(CHANGE_ID);
 
     assert.equal(state.gate.status, "blocked_p1");
-    assert.equal(state.actions.canEnterQa, false);
+    assert.equal(state.qaAllowed, false);
     assert.equal(state.findings[0]?.id, "FND-LEGACY-P1");
     assert.equal(state.findings[0]?.isLegacyIncomplete, true);
   });
@@ -1061,7 +1073,7 @@ describe("review-center-service", { concurrency: false }, () => {
     assert.doesNotMatch(serialized, /raw-output\.json/);
   });
 
-  it("exposes stable ReviewCenter action ids with idempotency metadata while keeping legacy booleans", () => {
+  it("serves no action block, leaving action enablement to the action contract", () => {
     seedReviewAttempt({ id: "RAT-DB-1", attemptNo: 1, reviewStatus: "passed" });
     seedReviewReport({
       id: "RRP-DB-1",
@@ -1083,23 +1095,25 @@ describe("review-center-service", { concurrency: false }, () => {
 
     const state = getReviewCenterState(CHANGE_ID);
 
-    assert.deepEqual(Object.keys(state.actions).filter((key) => key.includes("_")).sort(), [
-      "enter_qa",
-      "fix_blockers",
-      "rebuild_mirror",
-      "recompute_report",
-      "retry_review",
-      "run_review",
-      "stop_change",
-      "waive_p1",
-    ]);
-    assert.equal(state.actions.run_review.id, "run_review");
-    assert.equal(state.actions.run_review.idempotencyRequired, true);
-    assert.equal(state.actions.recompute_report.enabled, true);
-    assert.equal(state.actions.recompute_report.idempotencyRequired, true);
-    assert.equal(state.actions.rebuild_mirror.enabled, true);
-    assert.equal(state.actions.enter_qa.enabled, true);
-    assert.equal(state.actions.canEnterQa, true);
+    // Was "exposes stable ReviewCenter action ids with idempotency metadata
+    // while keeping legacy booleans". It pinned the shape of a second,
+    // independently computed action contract that this service published
+    // alongside the real one: eight action objects plus six legacy canX
+    // booleans. Two had already drifted from the action contract -- retry_review
+    // refused blocked_p0/blocked_p1 (the states that most need it), and
+    // canStopChange was still a bare `true` after the contract learned
+    // no_active_run -- and only run_review/retry_review ever reached a button,
+    // so the other six were drift waiting for someone to wire them up.
+    //
+    // The key list this test used to assert is itself evidence of the cost: it
+    // names `waive_p1`, while the client's own copy of the response type
+    // declared `waive_review_p1`. That entry was permanently undefined on the
+    // wire and nobody noticed, because nobody read it.
+    //
+    // Deliberately inverted: the assertion now pins that the block is *absent*,
+    // so re-introducing a second opinion has to break this test first.
+    assert.equal(Object.hasOwn(state, "actions"), false);
+    assert.equal(state.qaAllowed, true);
   });
 
   it("lists waived P1 review findings with decision reason but without internal paths", () => {

@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 
 import { runMigrations } from "../db/migrate";
 import * as dbSchema from "../db/schema";
-import { reviewState } from "../db/schema";
+import { reviewAttempts, reviewState } from "../db/schema";
 import {
   getReviewCenterState,
   setReviewCenterStateServiceDbForTest,
@@ -14,6 +14,7 @@ import {
 
 describe("review-center-state-service injectable connection", { concurrency: false }, () => {
   const SEAM_CHANGE_ID = "CHG-REVIEW-CENTER-STATE-SEAM";
+  const SEAM_ATTEMPT_ID = "RA-REVIEW-CENTER-STATE-SEAM";
 
   function createTestDb(): ReviewCenterStateDb {
     const sqlite = new Database(":memory:");
@@ -24,10 +25,33 @@ describe("review-center-state-service injectable connection", { concurrency: fal
 
   it("derives Review center state from the injected db, not the global singleton", () => {
     const seamDb = createTestDb();
+    // The attempt row is what makes this fixture DISCRIMINATING, and it is the
+    // whole point of seeding it. A bare `review_state` row used to be enough --
+    // `gateStatus: "failed"` alone produced gate `failed` -- but a stored
+    // verdict with no Review run behind it now reads as `not_started`, which is
+    // also what the empty singleton returns. Both halves of the assertion would
+    // then be "not_started" and the test would pass whether or not the seam was
+    // ever consulted. Seeding the attempt keeps the injected answer distinct.
+    seamDb
+      .insert(reviewAttempts)
+      .values({
+        id: SEAM_ATTEMPT_ID,
+        changeId: SEAM_CHANGE_ID,
+        attemptNo: 1,
+        status: "completed",
+        reviewStatus: "failed",
+        idempotencyKey: `IK-${SEAM_CHANGE_ID}`,
+        startedAt: "2026-07-15T00:00:00.000Z",
+        endedAt: "2026-07-15T00:00:00.000Z",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T00:00:00.000Z",
+      })
+      .run();
     seamDb
       .insert(reviewState)
       .values({
         changeId: SEAM_CHANGE_ID,
+        latestAttemptId: SEAM_ATTEMPT_ID,
         gateStatus: "failed",
         updatedAt: "2026-07-15T00:00:00.000Z",
       })

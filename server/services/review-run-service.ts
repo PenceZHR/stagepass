@@ -20,6 +20,10 @@ import {
   testplanSnapshots,
 } from "../db/schema";
 import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
+} from "./build-record-identity";
+import {
   completePriorFindingCoverage,
   InvalidReviewOutputError,
   parsePriorBlockingFindingIds,
@@ -30,6 +34,7 @@ import type {
   ReviewStructuredOutput,
   ReviewStructuredPriorFindingReview,
 } from "./review-structured-output-parser";
+import { nextSequencedId as nextPrefixedId } from "./record-identity";
 
 export { parseReviewStructuredOutput } from "./review-structured-output-parser";
 export type {
@@ -188,23 +193,6 @@ function nextFindingId(db: ReviewRunDb): string {
   );
 }
 
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
-}
-
 function nextAttemptNo(db: ReviewRunDb, changeId: string): number {
   return db
     .select({ attemptNo: reviewAttempts.attemptNo })
@@ -317,20 +305,10 @@ function latestDesignSnapshot<T extends { status: string; createdAt: string; id:
 }
 
 function latestApprovedBuildRun(db: ReviewRunDb, changeId: string) {
-  const records = db
-    .select()
-    .from(buildRunRecords)
-    .where(eq(buildRunRecords.changeId, changeId))
-    .all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted");
-  records.sort((left, right) => {
-    const adopted = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-    if (adopted !== 0) return adopted;
-    const updated = right.updatedAt.localeCompare(left.updatedAt);
-    if (updated !== 0) return updated;
-    return right.id.localeCompare(left.id);
-  });
-  return records[0] ?? null;
+  const records = selectLatestApprovedBuildRecord(
+    db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all(),
+  );
+  return records;
 }
 
 function buildIdentity(record: typeof buildRunRecords.$inferSelect | null): string | null {
@@ -466,9 +444,7 @@ export function buildReviewInputSnapshot(
 
   return {
     sourceBuildRunId: buildIdentity(latestBuild),
-    sourceHeadSha: latestBuild?.status === "approved_for_absorb"
-      ? latestBuild.baseCommit ?? latestBuild.baseHeadSha ?? null
-      : latestBuild?.adoptedHeadSha ?? latestBuild?.headSha ?? latestBuild?.baseCommit ?? null,
+    sourceHeadSha: latestBuild ? buildRecordSourceHead(latestBuild) : null,
     inputSourceDbHash: sha256(sourceFacts),
     inputSourceLineageJson: stableJson(lineage),
   };

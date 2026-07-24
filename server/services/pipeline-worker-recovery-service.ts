@@ -5,6 +5,31 @@ export interface PipelineWorkerRecoveryReport {
   truncated: boolean;
 }
 
+export interface PipelineWorkerRecoveryRunner {
+  (): Promise<PipelineWorkerRecoveryReport>;
+}
+
+/**
+ * One worker sweep owns both legacy process recovery and Codex-native
+ * reconciliation. Running them behind the same scheduler avoids a second
+ * competing timer and keeps leasing independent from recovery failures.
+ */
+export function composePipelineWorkerRecovery(
+  recoverProviderRuns: PipelineWorkerRecoveryRunner,
+  recoverCodexNative: PipelineWorkerRecoveryRunner,
+): PipelineWorkerRecoveryRunner {
+  return async () => {
+    const provider = await recoverProviderRuns();
+    const codexNative = await recoverCodexNative();
+    return {
+      recovered: [...provider.recovered, ...codexNative.recovered],
+      failed: [...provider.failed, ...codexNative.failed],
+      deferred: [...provider.deferred, ...codexNative.deferred],
+      truncated: provider.truncated || codexNative.truncated,
+    };
+  };
+}
+
 interface PipelineWorkerRecoverySweeperOptions {
   intervalMs: number;
   nowMs?: () => number;

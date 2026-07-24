@@ -44,8 +44,6 @@ export const RUNNING_CHANGE_STATUSES = new Set<ChangeStatus>([
 ]);
 
 export const ALLOWED_TRANSITIONS: ReadonlyMap<ChangeStatus, ReadonlySet<ChangeStatus>> = new Map([
-  ["REFINING", new Set(["DRAFT", "BLOCKED"])],
-  ["DRAFT", new Set(["REFINING", "BLOCKED"])],
   ["INTAKE_PENDING", new Set(["INTAKE_READY", "BLOCKED"])],
   ["INTAKE_READY", new Set(["SPECCING", "BLOCKED"])],
   ["SPECCING", new Set(["SPECCING", "SPEC_READY", "BLOCKED"])],
@@ -73,8 +71,6 @@ export const ALLOWED_TRANSITIONS: ReadonlyMap<ChangeStatus, ReadonlySet<ChangeSt
   [
     "BLOCKED",
     new Set([
-      "REFINING",
-      "DRAFT",
       "INTAKE_PENDING",
       "INTAKE_READY",
       "SPECCING",

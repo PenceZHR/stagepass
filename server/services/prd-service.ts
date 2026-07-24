@@ -7,7 +7,7 @@ import { getAiEngine } from "./ai-engine-adapter";
 import type { AiEngineAdapter, AiRunInput, AiRunResult } from "./ai-engine-types";
 import { assemblePrompt } from "./prompt-service";
 import { initializeProjectContext } from "./context-init-service";
-import { resolveProvider } from "./ai-provider-service";
+import { resolveProviderSelection } from "./provider-selection-service";
 import { createChildLogger } from "../logger";
 import {
   captureWorkspaceSnapshot,
@@ -16,6 +16,7 @@ import {
   type StageViolationResult,
 } from "./stage-guard-service";
 import {
+  readStoredStructuredPrd,
   readStructuredPrd,
   savePrd,
   validatePrd,
@@ -25,10 +26,26 @@ import { StructuredPrdSchema, type StructuredPrd, type PrdValidationResult } fro
 import { parsePrdLineProtocol, stripPrdProtocol } from "./prd-line-protocol";
 import type { PrdStatus, ChangeStatus, AiProvider } from "../types";
 import { transitionChangeStatus } from "./change-status-service";
+import { nextSequencedId } from "./record-identity";
 import {
   DEFAULT_AI_PROVIDER_TIMEOUT_MS,
   resolveAiProviderTimeoutMs,
 } from "./ai-timeout-policy";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import {
+  acquireProjectAiRunLease,
+  createProjectAiRun,
+  markProjectAiRunFailed,
+  markProjectAiRunRunning,
+  markProjectAiRunSucceeded,
+  type ProjectAiRunFence,
+} from "./project-ai-run-service";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
+import {
+  ensureCodexThreadBinding,
+  readCodexThreadBinding,
+} from "./codex-thread-binding-service";
+import { getProductionCodexDesktopBridge } from "./codex-desktop-engine";
 
 const log = createChildLogger("prd-service");
 
@@ -38,21 +55,7 @@ function nowISO(): string {
 
 async function nextEventId(): Promise<string> {
   const rows = db.select({ id: events.id }).from(events).all();
-  const used = new Set<string>();
-  let maxNum = 0;
-  for (const row of rows) {
-    const id = row.id as string;
-    used.add(id);
-    const match = id.match(/^EVT-(\d+)$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
-  }
-  let nextNum = maxNum + 1;
-  let candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
+  return nextSequencedId(rows.map((row) => row.id as string), "EVT");
 }
 
 export interface PrdTurnResult {
@@ -106,8 +109,8 @@ function readPrd(repoPath: string): string | null {
   return fs.readFileSync(prdPath, "utf-8");
 }
 
-function getPrdEngine(provider: AiProvider): AiEngineAdapter {
-  return getAiEngine(provider);
+function getPrdEngine(): AiEngineAdapter {
+  return getAiEngine();
 }
 
 async function writePrdAssistantEvent(
@@ -147,6 +150,36 @@ async function failPrdTurn(
 
 const PRD_ALLOWED_FILES = [".ship/prd.md", ".ship/prd.json", ".ship/prd-sources.md"];
 
+/**
+ * The structured-PRD half of the confirm gate, or null when it does not block.
+ *
+ * This was written out twice -- once in confirmPrd, once in confirmPrdRevision --
+ * with the same hole in both: `readStructuredPrd` returns null for a document
+ * that fails to parse AND for one that fails StructuredPrdSchema, and the guard
+ * read that null as "nothing structured to validate" and confirmed the project
+ * ready. So the one case the gate exists to catch was the one it skipped.
+ *
+ * The trigger is not exotic: adding a required field to StructuredPrdSchema
+ * makes every stored PRD invalid, and validation would silently stop running
+ * for all of them rather than failing loudly.
+ */
+function structuredPrdBlockingConfirm(projectId: string): PrdValidationResult | null {
+  const stored = readStoredStructuredPrd(projectId);
+  if (stored.kind === "missing") return null;
+  if (stored.kind === "invalid") {
+    return {
+      valid: false,
+      issues: [{
+        field: "prdJson",
+        severity: "error",
+        message: `PRD 结构化内容无法解析或不符合当前 schema，请重新生成 PRD：${stored.detail}`,
+      }],
+    };
+  }
+  const validation = validatePrd(stored.prd);
+  return validation.valid ? null : validation;
+}
+
 export function validatePrdStage(mutations: WorkspaceMutation[]): StageViolationResult {
   const violatingFiles = mutations
     .map((m) => m.path)
@@ -154,7 +187,7 @@ export function validatePrdStage(mutations: WorkspaceMutation[]): StageViolation
 
   return {
     blocked: violatingFiles.length > 0,
-    stage: "refine" as const,
+    stage: "intake" as const,
     files: violatingFiles,
     message: violatingFiles.length > 0
       ? `PRD stage modified files outside allowed set: ${violatingFiles.join(", ")}`
@@ -387,11 +420,12 @@ export async function prdTurn(
     updatePrdStatus(projectId, activePrdStatus);
   }
 
-  const resolvedProvider = resolveProvider(
+  const resolvedProvider = resolveProviderSelection(
     provider,
     project.prdProvider as AiProvider | null | undefined
   );
-  const retryThreadId = project.prdStatus === "failed"
+  const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+  const retryThreadId = !desktopBridgeEnabled && project.prdStatus === "failed"
     ? getProviderTimeoutResumeThreadId(projectId, resolvedProvider)
     : undefined;
 
@@ -407,7 +441,10 @@ export async function prdTurn(
     createdAt: nowISO(),
   }).run();
 
-  const engine = getPrdEngine(resolvedProvider);
+  let projectRunFence: ProjectAiRunFence | null = null;
+  let logicalTurnId: string | null = null;
+
+  const engine = getPrdEngine();
   const prdContent = readPrd(project.repoPath);
   const contextBlock = prdContent ? `\n\n## 当前 PRD 内容\n\n${prdContent}\n` : "";
 
@@ -423,6 +460,43 @@ export async function prdTurn(
   }) + contextBlock + historyBlock + `\n\n## 用户最新消息\n\n${userMessage}`;
 
   const snapshotBefore = captureWorkspaceSnapshot(project.repoPath);
+
+  if (desktopBridgeEnabled) {
+    const run = await createProjectAiRun({
+      projectId,
+      kind: "prd_turn",
+      requestKey: userEvtId,
+    });
+    const leased = await acquireProjectAiRunLease(
+      run.id,
+      `prd:${process.pid}`,
+      { leaseMs: 15 * 60_000 },
+    );
+    projectRunFence = leased.fence;
+    await markProjectAiRunRunning(projectRunFence);
+    if (!readCodexThreadBinding({
+      kind: "project_prd",
+      scopeId: projectId,
+      projectId,
+    })) {
+      await ensureCodexThreadBinding({
+        scope: {
+          kind: "project_prd",
+          scopeId: projectId,
+          projectId,
+        },
+        bridge: await getProductionCodexDesktopBridge(),
+      });
+    }
+    logicalTurnId = (await resolveLogicalTurn({
+      owner: { kind: "project_ai_run", projectAiRunId: run.id },
+      phase: "PRD",
+      role: "prd_turn",
+      round: 0,
+      ordinal: 0,
+      request: { prompt, sandboxMode: "read-only" },
+    })).logicalTurnId;
+  }
 
   const input: AiRunInput = {
     changeId: "__prd__",
@@ -440,8 +514,11 @@ export async function prdTurn(
 
   let result: AiRunResult;
   try {
-    result = await engine.run(input);
+    result = await engine.run(desktopBridgeEnabled
+      ? { logicalTurnId: logicalTurnId! } as AiRunInput
+      : input);
   } catch (err) {
+    if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
     const message = err instanceof Error ? err.message : String(err);
     return failPrdTurn(projectId, `PRD 生成失败：${message}`, resolvedProvider, activePrdStatus, {
       reason: "engine_exception",
@@ -449,6 +526,7 @@ export async function prdTurn(
   }
 
   if (result.success !== true) {
+    if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
     const message = prdEngineFailureMessage(result);
     const reason = isProviderTimeoutResult(result) ? "provider_timeout" : "engine_failed";
     return failPrdTurn(projectId, message, resolvedProvider, activePrdStatus, {
@@ -468,6 +546,7 @@ export async function prdTurn(
   if (mutations.length > 0) {
     const violation = validatePrdStage(mutations);
     if (violation.blocked) {
+      if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
       log.warn({ projectId, files: violation.files }, "PRD stage boundary violation");
       return failPrdTurn(
         projectId,
@@ -487,6 +566,7 @@ export async function prdTurn(
 
   const { candidate, parseError } = resolvePrdCandidate(result);
   if (!candidate) {
+    if (projectRunFence) await markProjectAiRunFailed(projectRunFence);
     const reason = result.summary?.trim() ? "unparseable_prd_content" : "empty_prd_content";
     const message = reason === "empty_prd_content"
       ? "PRD 生成没有返回有效回复。PRD 生成没有产出文档内容，请补充需求后重试。"
@@ -512,6 +592,7 @@ export async function prdTurn(
     validation: candidate.validation,
     rawCapture: prdRawCapture(result, null),
   });
+  if (projectRunFence) await markProjectAiRunSucceeded(projectRunFence);
 
   return {
     assistantMessage: finalAssistantMessage,
@@ -530,13 +611,10 @@ export async function confirmPrd(projectId: string): Promise<PrdValidationResult
   }
 
   // Try structured validation if available
+  const structuredIssue = structuredPrdBlockingConfirm(projectId);
+  if (structuredIssue) return structuredIssue;
+  // Safe after the guard above: a broken document has already returned.
   const structured = readStructuredPrd(projectId);
-  if (structured) {
-    const validation = validatePrd(structured);
-    if (!validation.valid) {
-      return validation;
-    }
-  }
 
   updatePrdStatus(projectId, "ready");
 
@@ -558,7 +636,8 @@ export async function confirmPrd(projectId: string): Promise<PrdValidationResult
 
   initializeProjectContext(
     projectId,
-    resolveProvider(undefined, project.contextProvider as AiProvider | null | undefined)
+    resolveProviderSelection(undefined, project.contextProvider as AiProvider | null | undefined),
+    evtId,
   ).catch((err) => {
     log.error({ projectId, err }, "Context init after PRD confirm failed");
   });
@@ -616,13 +695,8 @@ export async function confirmPrdRevision(projectId: string): Promise<PrdValidati
     throw new Error("Cannot confirm PRD revision: no PRD content found");
   }
 
-  const structured = readStructuredPrd(projectId);
-  if (structured) {
-    const validation = validatePrd(structured);
-    if (!validation.valid) {
-      return validation;
-    }
-  }
+  const structuredIssue = structuredPrdBlockingConfirm(projectId);
+  if (structuredIssue) return structuredIssue;
 
   const suspendedChanges = db
     .select()
@@ -637,7 +711,17 @@ export async function confirmPrdRevision(projectId: string): Promise<PrdValidati
 
   const now = nowISO();
   for (const change of suspendedChanges) {
-    const restoreStatus = (change.preSuspendStatus || "DRAFT") as ChangeStatus;
+    // No fallback. This used to default to DRAFT, a status nothing could leave
+    // (its only non-BLOCKED edge went to REFINING, and both are gone) -- so a
+    // change whose pre-suspend status was never recorded got silently buried in
+    // a dead end. An empty preSuspendStatus means the suspend itself did not
+    // record enough to undo, and that has to be visible rather than guessed at.
+    if (!change.preSuspendStatus) {
+      throw new Error(
+        `Cannot restore ${change.id} after PRD revision: it was suspended without recording preSuspendStatus`,
+      );
+    }
+    const restoreStatus = change.preSuspendStatus as ChangeStatus;
     transitionChangeStatus({
       changeId: change.id,
       to: restoreStatus,
@@ -655,6 +739,26 @@ export async function confirmPrdRevision(projectId: string): Promise<PrdValidati
   }
 
   updatePrdStatus(projectId, "ready");
+  const confirmedRevisionEventId = await nextEventId();
+  db.insert(events).values({
+    id: confirmedRevisionEventId,
+    changeId: null,
+    runId: null,
+    type: "change_status_changed",
+    message: `PRD revision confirmed for project ${projectId}`,
+    rawJson: JSON.stringify({ projectId, prdStatus: "ready", revision: true }),
+    createdAt: nowISO(),
+  }).run();
+  initializeProjectContext(
+    projectId,
+    resolveProviderSelection(
+      undefined,
+      project.contextProvider as AiProvider | null | undefined,
+    ),
+    confirmedRevisionEventId,
+  ).catch((err) => {
+    log.error({ projectId, err }, "Context init after PRD revision failed");
+  });
   log.info({ projectId, restoredCount: suspendedChanges.length }, "PRD revision confirmed, changes restored");
   return { valid: true, issues: [] };
 }
@@ -672,7 +776,7 @@ export async function getPrdStatus(projectId: string): Promise<{
   const validation = structured ? validatePrd(structured) : null;
   return {
     status: project.prdStatus as PrdStatus,
-    prdProvider: resolveProvider(undefined, project.prdProvider as AiProvider | null | undefined),
+    prdProvider: resolveProviderSelection(undefined, project.prdProvider as AiProvider | null | undefined),
     content,
     structured,
     validation,

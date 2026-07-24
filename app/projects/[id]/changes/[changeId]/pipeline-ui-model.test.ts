@@ -20,7 +20,7 @@ function change(overrides: Partial<ChangeDetail> = {}): ChangeDetail {
     id: "change-1",
     projectId: "project-1",
     title: "Unify pipeline UI",
-    status: "DRAFT",
+    status: "INTAKE_PENDING",
     codexThreadId: null,
     fixIterations: 0,
     createdAt: "2026-07-07T00:00:00.000Z",
@@ -56,14 +56,6 @@ function reviewCenter(gateStatus: ReviewCenterGateStatus): ReviewCenterResponse 
     findings: [],
     waivers: [],
     mirrorWarnings: [],
-    actions: {
-      canRunReview: true,
-      canRetryReview: false,
-      canFixBlockers: gateStatus === "blocked_p0" || gateStatus === "blocked_p1",
-      canWaiveP1: gateStatus === "blocked_p1",
-      canEnterQa: gateStatus === "passed",
-      canStopChange: true,
-    },
     advancedDetails: {
       latestAttempt: null,
       latestValidReview: null,
@@ -132,7 +124,6 @@ function pipelineAction(actionId: string, phase: PipelineActionContract["phase"]
 describe("pipeline UI model", () => {
   it("defines the user-facing stage order, labels, and separated integration phases", () => {
     assert.deepEqual(UI_STAGE_ORDER, [
-      "refine",
       "prd",
       "spec",
       "tech_spec",
@@ -216,8 +207,6 @@ describe("pipeline UI model", () => {
 
   it("maps every current change status to a user-facing stage and canonical UI state", () => {
     const cases: Array<[string, UiStageId, UiStageState]> = [
-      ["REFINING", "refine", "running"],
-      ["DRAFT", "plan", "waiting"],
       ["INTAKE_PENDING", "prd", "waiting"],
       ["INTAKE_READY", "prd", "needs_review"],
       ["SPECCING", "spec", "running"],
@@ -372,12 +361,14 @@ describe("pipeline UI model", () => {
   });
 
   it("falls back to the failed run phase unless a newer active Spec Battle is the active fact", () => {
-    const failedRefine = selected(change({
-      status: "REFINING",
-      latestRun: { id: "run-refine", phase: "refine", status: "failed" },
+    // Was a failed `refine` run. Refine is deleted, so the same rule -- a failed
+    // run決定 the stage even when the status points elsewhere -- is pinned on a
+    // phase that still exists.
+    const failedIntake = selected(change({
+      status: "INTAKE_PENDING",
+      latestRun: { id: "run-0", phase: "intake", status: "failed" },
     }));
-    assert.equal(failedRefine.id, "refine");
-    assert.equal(failedRefine.state, "failed");
+    assert.equal(failedIntake.state, "failed");
 
     assert.equal(
       selected(change({
@@ -464,7 +455,6 @@ describe("pipeline UI model", () => {
 
   it("maps BLOCKED.blockedPhase to the corresponding UI stage when possible", () => {
     const cases: Array<[string, UiStageId]> = [
-      ["refine", "refine"],
       ["intake", "prd"],
       ["prd", "prd"],
       ["prd_briefing_questions", "prd"],
@@ -508,13 +498,11 @@ describe("getReviewPhaseForRunPhase", () => {
    * it; it is not a second source of truth but the agreement being asserted.
    *
    * `refine` and `delivery` are here because both used to be absent from the
-   * client half while the server mapped them to "Refine" and "Done" -- a failed
    * run of either phase opened the wrong stage tab (getDefaultReviewPhaseForChange
    * falls back on the status when this returns null, which for a failed refine
    * run means landing on Intake).
    */
   const SERVER_AUTHORITY: Record<RunPhase, ReviewPhase> = {
-    refine: "Refine",
     intake: "Intake",
     spec: "Spec",
     tech_spec: "TechSpec",

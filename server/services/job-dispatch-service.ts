@@ -9,6 +9,7 @@ import type {
   PipelineJobPayload,
 } from "./pipeline-job-types";
 import { parsePipelineJobPayload } from "./pipeline-job-types";
+import { parsePipelineJobEffect } from "../types/models";
 import { evaluateProviderActionAuthority } from "./provider-action-authority-service";
 import {
   assertProviderApplicable,
@@ -218,6 +219,43 @@ export function findPipelineJobByIdempotency(
   return findExistingJob({ changeId, idempotencyKey });
 }
 
+/**
+ * Production dispatch discriminator. Stage jobs retain their existing action
+ * contract; effect jobs must carry a matching versioned payload before the
+ * normal lease/runner path may receive them.
+ */
+export function readDispatchablePipelineJob(jobId: string):
+  typeof pipelineJobs.$inferSelect | null {
+  const job = getJobDispatchDb().select().from(pipelineJobs)
+    .where(eq(pipelineJobs.id, jobId)).get() ?? null;
+  if (!job) return null;
+  if (job.jobKind === "stage") {
+    parsePipelineJobPayload(job);
+    return job;
+  }
+  parsePipelineJobEffect(job);
+  return job;
+}
+
+/**
+ * Outbox effects are allowed to hand an already durable job to a worker
+ * notifier, but are never allowed to create work.
+ */
+export async function dispatchExistingPipelineJob(
+  jobId: string,
+  notify: (
+    job: typeof pipelineJobs.$inferSelect,
+  ) => Promise<void> | void = () => {},
+): Promise<typeof pipelineJobs.$inferSelect> {
+  const job = readDispatchablePipelineJob(jobId);
+  if (!job) throw new Error("pipeline_job_not_found");
+  if (!["queued", "leased", "running"].includes(job.status)) {
+    throw new Error("pipeline_job_not_dispatchable");
+  }
+  await notify(job);
+  return job;
+}
+
 function findActivePhaseJobInTransaction(
   tx: Pick<typeof db, "select">,
   input: Pick<EnqueuePipelineJobInput, "changeId" | "phase">,
@@ -272,7 +310,7 @@ function changeDefaultProvider(
   const change = tx.select({ provider: changes.provider }).from(changes)
     .where(eq(changes.id, changeId)).get();
   if (!change) throw new Error(`Change not found: ${changeId}`);
-  return resolveProviderSelection(undefined, change.provider === "claude" ? "claude" : "codex");
+  return resolveProviderSelection(undefined, "codex");
 }
 
 function resolveAndValidateProvider(

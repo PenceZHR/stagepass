@@ -11,12 +11,6 @@ import {
   ShieldAlert,
   Swords,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import {
-  findPipelineAction,
-  pipelineActionDisabledReason,
-  type PipelineActionContract,
-} from "./pipeline-action-contract";
 import type { PlanRisk, PlanSandboxState } from "./plan-sandbox-types";
 import { ProducedFile } from "./produced-file";
 
@@ -24,10 +18,7 @@ interface PlanSandboxProps {
   projectId: string;
   changeId: string;
   state: PlanSandboxState | null;
-  actions?: PipelineActionContract[];
-  busy: boolean;
   loading: boolean;
-  onWaiveRisk: (riskId: string) => void;
 }
 
 const MISSING_FIELD_LABELS: Record<string, string> = {
@@ -64,10 +55,6 @@ function activeRisk(risk: PlanRisk): boolean {
   return risk.status === "open";
 }
 
-function canWaiveRisk(risk: PlanRisk): boolean {
-  return risk.severity === "P1" && risk.status === "open";
-}
-
 function taskStatusCopy(status: "pending" | "blocked" | "done" | undefined) {
   if (status === "blocked") {
     return {
@@ -91,12 +78,7 @@ export function PlanSandbox({
   projectId,
   changeId,
   state,
-  actions,
-  busy,
-  loading,
-  onWaiveRisk,
 }: PlanSandboxProps) {
-  const disabled = busy || loading;
   const plan = state?.plan ?? null;
   const planName = plan?.planName?.trim() || "未命名计划";
   const steps = plan?.implementationSteps ?? [];
@@ -108,9 +90,6 @@ export function PlanSandbox({
   const modelRisks = plan?.risks ?? [];
   const risks = state?.risks ?? [];
   const openRisks = risks.filter(activeRisk);
-  const waivePlanP1Action = findPipelineAction(actions, "waive_plan_p1");
-  const waiveDisabledReason = pipelineActionDisabledReason(waivePlanP1Action);
-  const waiveDisabled = disabled || waivePlanP1Action?.enabled !== true;
 
   return (
     <div className="space-y-4" data-plan-workspace>
@@ -199,19 +178,6 @@ export function PlanSandbox({
                           {risk.status === "waived" ? "已接受" : risk.status === "resolved" ? "已解决" : "阻断中"}
                         </span>
                       </div>
-                      {canWaiveRisk(risk) && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2 text-xs"
-                          disabled={waiveDisabled}
-                          onClick={() => onWaiveRisk(risk.id)}
-                          title={waiveDisabledReason ?? undefined}
-                        >
-                          接受 P1
-                        </Button>
-                      )}
                     </div>
                     <p className="mt-2 text-sm font-semibold">{risk.title}</p>
                     {risk.evidence && <p className="mt-1 text-xs leading-5 opacity-80">{risk.evidence}</p>}

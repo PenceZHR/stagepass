@@ -167,7 +167,7 @@ export async function GET(
     );
   }
 
-  const phase = normalizeReviewPhase(parsed.data.phase ?? "Refine");
+  const phase = normalizeReviewPhase(parsed.data.phase ?? "Intake");
   if (!phase) {
     return NextResponse.json(
       { error: `Unsupported phase. Use ${CONTENT_PHASES.join(", ")}.` },

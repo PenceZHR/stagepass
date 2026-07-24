@@ -222,30 +222,6 @@ describe("provider worker protocol", { concurrency: false }, () => {
     assert.ok(readProviderEvent("provider_process_failed"));
   });
 
-  it("rejects a lifecycle event whose provider differs from the immutable run provider", async () => {
-    seedChange("SPECCING");
-    seedRunningJob();
-    bindRunToRunningJob();
-    const sink = createProviderLifecycleSink({
-      ...executionContext(),
-      changeId: CHANGE_ID,
-      runId: RUN_ID,
-      phase: "spec",
-      provider: "codex",
-    });
-
-    assert.throws(
-      () => sink.onProcessStarted({
-        provider: "claude",
-        pid: null,
-        ppid: process.pid,
-        startedAt: "2026-07-10T10:01:00.000Z",
-      }),
-      /provider_lifecycle_mismatch/,
-    );
-    assert.equal(db.select().from(providerRunProcesses).where(eq(providerRunProcesses.runId, RUN_ID)).get(), undefined);
-  });
-
   it("rejects partial job execution identity instead of silently disabling lease semantics", () => {
     assert.throws(
       () => createProviderLifecycleSink({

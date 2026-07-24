@@ -1,20 +1,21 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Change, ChangeStatus, RunPhase } from "../types/index";
 import { withSqliteWriteRetry } from "../db/write-boundary";
 import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions";
+import { nextSequencedId } from "./record-identity";
+import { RUN_DELETE_PLAN, RUN_POINTER_CLEARS } from "./run-delete-plan";
 
 type DbLike = typeof import("../db").db;
 type SchemaTables = typeof import("../db/schema");
 
 let schemaPromise: Promise<SchemaTables> | null = null;
 
-export type ReworkReviewPhase = "Refine" | "Plan" | "TestPlan" | "Build" | "Implement" | "Check" | "Fix";
+export type ReworkReviewPhase = "Plan" | "TestPlan" | "Build" | "Implement" | "Check" | "Fix";
 
 const PHASE_TO_RUN_PHASE: Record<ReworkReviewPhase, RunPhase> = {
-  Refine: "refine",
   Plan: "generate_plan",
   TestPlan: "test_plan",
   Build: "implement",
@@ -24,8 +25,7 @@ const PHASE_TO_RUN_PHASE: Record<ReworkReviewPhase, RunPhase> = {
 };
 
 const PHASE_TO_READY_STATUS: Record<ReworkReviewPhase, ChangeStatus> = {
-  Refine: "REFINING",
-  Plan: "DRAFT",
+  Plan: "PLAN_READY",
   TestPlan: "PLAN_APPROVED",
   Build: "PLAN_APPROVED",
   Implement: "PLAN_APPROVED",
@@ -34,7 +34,6 @@ const PHASE_TO_READY_STATUS: Record<ReworkReviewPhase, ChangeStatus> = {
 };
 
 const PHASE_ORDER: RunPhase[] = [
-  "refine",
   "intake",
   "spec",
   "tech_spec",
@@ -50,7 +49,6 @@ const PHASE_ORDER: RunPhase[] = [
 ];
 
 const ROOT_FILES_BY_PHASE: Record<RunPhase, string[]> = {
-  refine: ["spec.md"],
   intake: ["change-request.md"],
   spec: ["prd-delta.md"],
   tech_spec: ["tech-spec-delta.md", "api-spec-delta.md"],
@@ -102,13 +100,15 @@ function nextEventId(
   activeDb: DbLike,
   eventsTable: SchemaTables["events"]
 ): string {
+  // Was a local max+1 over `/\d+$/`, which reads the trailing digits of *any*
+  // id -- including the UUID tail of a provider-minted event. The events ledger
+  // already holds one such row, so this function would have minted
+  // EVT-25758540649 on the next rework and pushed the sequence permanently into
+  // the tens of billions, where the ten-odd anchored `^EVT-(\d+)$` readers would
+  // have accepted it. record-identity owns the question now, and it parses only
+  // a full `PREFIX-<digits>` id.
   const rows = activeDb.select({ id: eventsTable.id }).from(eventsTable).all();
-  let maxNum = 0;
-  for (const row of rows) {
-    const match = (row.id as string).match(/\d+$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[0], 10));
-  }
-  return `EVT-${String(maxNum + 1).padStart(3, "0")}`;
+  return nextSequencedId(rows.map((row) => row.id as string), "EVT");
 }
 
 function phaseIndex(phase: RunPhase): number {
@@ -279,13 +279,34 @@ export async function reworkChangeWithDb(
     withSqliteWriteRetry("change-rework.apply", () => activeDb.transaction((transaction) => {
       const tx = transaction as unknown as DbLike;
       if (laterRunIds.length > 0) {
-        tx.delete(findings).where(and(eq(findings.changeId, changeId), inArray(findings.runId, laterRunIds))).run();
-        tx.delete(artifacts).where(and(eq(artifacts.changeId, changeId), inArray(artifacts.runId, laterRunIds))).run();
-        tx.delete(events).where(and(eq(events.changeId, changeId), inArray(events.runId, laterRunIds))).run();
-        tx.delete(runs).where(and(eq(runs.changeId, changeId), inArray(runs.id, laterRunIds))).run();
+        // Was four hand-written deletes -- findings, artifacts, events, runs --
+        // against the sixteen tables that actually reference a run, so every
+        // rework died on SQLITE_CONSTRAINT_FOREIGNKEY and rolled back: all 21
+        // phase/change combinations returned 400. The closure is derived from
+        // schema.ts now (run-delete-plan.test.ts), and the pointers that belong
+        // to rows outliving the run are released rather than deleted.
+        //
+        // The DELETE/UPDATE stay tagged templates at the call site: as in
+        // change-service.deleteChangeRecordsWithDb, db-write-inventory only
+        // recognises db.run(sql`...`) as a write point.
+        for (const clear of RUN_POINTER_CLEARS) {
+          tx.run(sql`UPDATE ${sql.identifier(clear.table)} SET ${sql.identifier(clear.column)} = NULL WHERE ${clear.where(laterRunIds)}`);
+        }
+        for (const step of RUN_DELETE_PLAN) {
+          tx.run(sql`DELETE FROM ${sql.identifier(step.table)} WHERE ${step.where(laterRunIds)}`);
+        }
       }
       if (fromIdx <= phaseIndex("local_check")) {
-        tx.delete(findings).where(eq(findings.changeId, changeId)).run();
+        // Review findings are exempt for the same reason pipeline-qa-stage-service
+        // exempts them when it clears a change's findings: they are Review
+        // lineage, not local-check output. Deleting them here discarded that
+        // lineage, and -- because review_prior_finding_reviews.prior_finding_id
+        // is NOT NULL -- also raised SQLITE_CONSTRAINT_FOREIGNKEY whenever a
+        // surviving review attempt had already re-reviewed one of them, which is
+        // what made /rework Check and /rework Fix fail even though neither
+        // deletes a review run. Findings belonging to a run that *is* being
+        // deleted are removed above, review-sourced or not.
+        tx.delete(findings).where(and(eq(findings.changeId, changeId), ne(findings.source, "review"))).run();
       }
       tx.update(changes).set(patch).where(eq(changes.id, changeId)).run();
       tx.insert(events).values({

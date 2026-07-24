@@ -11,6 +11,8 @@ import type { PrdBriefingState } from "./prd-briefing-types";
 import type { ReviewCenterResponse } from "./review-report-center";
 import type { SpecBattleState } from "./spec-battle-types";
 import type { TestPlanSandboxState } from "./testplan-sandbox-types";
+import type { CodexHealthProjection } from "./codex-task-control";
+import type { EmergencyInteraction } from "./emergency-interaction-panel";
 
 export function useChangeDetailData(projectId: string, changeId: string) {
   const [change, setChange] = useState<ChangeDetail | null>(null);
@@ -24,6 +26,9 @@ export function useChangeDetailData(projectId: string, changeId: string) {
   const [gateLoading, setGateLoading] = useState(false);
   const [gateError, setGateError] = useState("");
   const [changeError, setChangeError] = useState("");
+  const [codexHealth, setCodexHealth] = useState<CodexHealthProjection | null>(null);
+  const [currentInteraction, setCurrentInteraction] =
+    useState<EmergencyInteraction | null>(null);
 
   const load = useCallback(() => {
     return fetch(`/api/projects/${projectId}/changes/${changeId}`)
@@ -144,6 +149,35 @@ export function useChangeDetailData(projectId: string, changeId: string) {
     void refresh();
   }, [refreshChangeDetailPage]);
 
+  useEffect(() => {
+    changeApi(projectId, changeId).getCodexHealth()
+      .then(setCodexHealth)
+      .catch(() => setCodexHealth({ status: "unavailable" }));
+  }, [projectId, changeId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const interactionId = change?.codexControl?.currentInteractionId;
+    if (!interactionId) {
+      void Promise.resolve().then(() => {
+        if (!cancelled) setCurrentInteraction(null);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    changeApi(projectId, changeId).getInteraction(interactionId)
+      .then((interaction) => {
+        if (!cancelled) setCurrentInteraction(interaction);
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentInteraction(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, changeId, change?.codexControl?.currentInteractionId]);
+
   // The server announces every state write on the event stream, so re-read on
   // it. Without this the page only refreshes while `shouldPollChangeDetailParent`
   // sees work already in flight, which misses both the dispatch window and the
@@ -175,6 +209,8 @@ export function useChangeDetailData(projectId: string, changeId: string) {
     gateError,
     setGateError,
     changeError,
+    codexHealth,
+    currentInteraction,
     load,
     loadGateStatus,
     loadSpecBattleState,

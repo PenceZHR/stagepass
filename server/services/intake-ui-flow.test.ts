@@ -51,15 +51,6 @@ const PIPELINE_ACTION_COMMANDS = path.join(
   "[changeId]",
   "pipeline-action-commands.ts"
 );
-const REFINE_CHAT_PANEL = path.join(
-  process.cwd(),
-  "app",
-  "projects",
-  "[id]",
-  "changes",
-  "[changeId]",
-  "refine-chat-panel.tsx"
-);
 const PROJECT_PAGE = path.join(process.cwd(), "app", "projects", "[id]", "page.tsx");
 
 describe("intake-first change flow", () => {
@@ -67,7 +58,6 @@ describe("intake-first change flow", () => {
     const content = fs.readFileSync(CHANGE_SERVICE, "utf-8");
 
     assert.match(content, /const initialStatus = "INTAKE_PENDING"/);
-    assert.doesNotMatch(content, /const initialStatus = hasSpec \? "DRAFT" : "REFINING"/);
   });
 
   it("uses action contracts without treating INTAKE_PENDING as already running", () => {
@@ -104,7 +94,7 @@ describe("intake-first change flow", () => {
     const reviewPhasesBlock = content.slice(reviewPhasesStart, reviewPhasesEnd);
     assert.match(
       reviewPhasesBlock,
-      /"Refine"[\s\S]*"Intake"[\s\S]*"Spec"[\s\S]*"TechSpec"[\s\S]*"Plan"[\s\S]*"TestPlan"[\s\S]*"Build"[\s\S]*"Implement"[\s\S]*"Review"[\s\S]*"Check"[\s\S]*"Fix"[\s\S]*"Merge"[\s\S]*"Retro"/
+      /"Intake"[\s\S]*"Spec"[\s\S]*"TechSpec"[\s\S]*"Plan"[\s\S]*"TestPlan"[\s\S]*"Build"[\s\S]*"Implement"[\s\S]*"Review"[\s\S]*"Check"[\s\S]*"Fix"[\s\S]*"Merge"[\s\S]*"Retro"/
     );
 
     assert.match(content, /TESTPLAN_DONE: \{ phase: "TestPlan", state: "done" \}/);
@@ -158,12 +148,10 @@ describe("intake-first change flow", () => {
     assert.match(dialogPage, /onCreated\(\{ id: change\.id \}\)/);
   });
 
-  it("labels requirement confirmation as entering Spec", () => {
-    const content = fs.readFileSync(REFINE_CHAT_PANEL, "utf-8");
-
-    assert.match(content, /"确认需求，进入 Spec"/);
-    assert.doesNotMatch(content, /"确认需求，进入 Plan"/);
-  });
+  // Dropped: "labels requirement confirmation as entering Spec". It read
+  // refine-chat-panel.tsx and pinned that its confirm button said 进入 Spec
+  // rather than 进入 Plan. The Refine stage and its chat panel are deleted, so
+  // the file and the button no longer exist.
 
   it("keeps a New Change entry visible while PRD status is still loading", () => {
     const content = fs.readFileSync(PROJECT_PAGE, "utf-8");

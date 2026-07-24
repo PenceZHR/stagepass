@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { rubricVerdictEffect } from "@/server/services/rubric-assessment";
 import {
   RUBRIC_ROLES,
   RUBRIC_ROLE_HINTS,
@@ -30,15 +31,22 @@ import {
  * nobody can find is a rubric nobody edits — which turns a user-owned checklist
  * back into a constant in the code. §7.3 makes that a requirement, not taste.
  *
- * ## Why `not_assessed` looks exactly as alarming as `no`
+ * ## Why `not_assessed` is treated exactly like `no`
  *
- * Both resolve to the same `block` tone, deliberately sharing one class string
- * rather than two that happen to match today. `not_assessed` means the model
- * was asked and did not answer; §4.3 blocks on it regardless of the criterion's
- * `blocking` flag, because silence is how a model would otherwise skip the
- * questions it expects to fail. Rendering it as a quiet grey dash would show a
- * blocking state as an absence — the single most dangerous thing this panel
- * could do, and precisely the failure the whole mechanism exists to prevent.
+ * Both run through the same `rubricVerdictEffect`, so neither can drift from
+ * the other or from the gate. `not_assessed` means the model was asked and did
+ * not answer, and rendering that as a quiet grey dash would show a blocking
+ * state as an absence — the single most dangerous thing this panel could do.
+ *
+ * What this section used to say — that §4.3 blocks on `not_assessed`
+ * "regardless of the criterion's `blocking` flag" — was stale. `rubricOutcome`
+ * deliberately scoped that rule to blocking criteria, for two measured reasons
+ * recorded on that function: applied unscoped it contradicted the gate, and it
+ * let a rubric EDIT open a blocker from a stale verdict. This panel kept
+ * asserting the old rule while the server had moved, which is how it ended up
+ * painting all 25 recorded `no` verdicts in the shipped database bright red
+ * when every one of them sat on a non-blocking criterion and stopped nothing.
+ * The tone now comes from the server's own function, so there is one rule.
  */
 
 interface DraftCriterion {
@@ -56,29 +64,40 @@ interface DraftCriterion {
   tier: RubricTier;
 }
 
-type VerdictTone = "pass" | "block";
+type VerdictTone = "pass" | "block" | "recorded";
 
-const VERDICT_PRESENTATION: Record<
-  RubricVerdict,
-  { glyph: string; label: string; tone: VerdictTone }
-> = {
-  yes: { glyph: "✓", label: "是", tone: "pass" },
-  no: { glyph: "✗", label: "否", tone: "block" },
-  // Same tone as `no`, from the same table, so the two cannot drift apart.
-  not_assessed: { glyph: "—", label: "未评估", tone: "block" },
+const VERDICT_GLYPH: Record<RubricVerdict, { glyph: string; label: string }> = {
+  yes: { glyph: "✓", label: "是" },
+  no: { glyph: "✗", label: "否" },
+  not_assessed: { glyph: "—", label: "未评估" },
 };
 
 const VERDICT_TONE_CLASS: Record<VerdictTone, string> = {
   pass: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
   block: "border-destructive/50 bg-destructive/10 text-destructive",
+  // Neither green nor red: this criterion was answered `no` (or not answered),
+  // which is worth reading, but the user did not mark it blocking so it stops
+  // nothing. Rendering it green would hide a real finding; rendering it red is
+  // what this panel used to do, and it was wrong on every one of the 25 such
+  // verdicts in the shipped database.
+  recorded: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-500",
 };
 
-export function verdictTone(verdict: RubricVerdict): VerdictTone {
-  return VERDICT_PRESENTATION[verdict].tone;
+/**
+ * The tone for one row, derived from the single shared rule in
+ * `rubricVerdictEffect` -- the same function `rubricOutcome` uses to decide
+ * what actually blocks the gate. It takes the criterion's `blocking` flag
+ * because the verdict alone does not determine the answer, which is precisely
+ * the bug this replaced: a `no` on a non-blocking criterion was drawn in the
+ * same alarming red as a `no` that stops the pipeline.
+ */
+export function verdictTone(verdict: RubricVerdict, criterionBlocking: boolean): VerdictTone {
+  const effect = rubricVerdictEffect(verdict, criterionBlocking);
+  return effect === "pass" ? "pass" : effect === "blocks" ? "block" : "recorded";
 }
 
-export function verdictToneClass(verdict: RubricVerdict): string {
-  return VERDICT_TONE_CLASS[verdictTone(verdict)];
+export function verdictToneClass(verdict: RubricVerdict, criterionBlocking: boolean): string {
+  return VERDICT_TONE_CLASS[verdictTone(verdict, criterionBlocking)];
 }
 
 export function rubricScopeLabel(source: "change" | "project" | null): string {
@@ -444,13 +463,14 @@ function RubricVerdictList({
       </div>
       <ul className="space-y-1.5">
         {panel.verdicts.map((verdict) => {
-          const presentation = VERDICT_PRESENTATION[verdict.verdict];
+          const presentation = VERDICT_GLYPH[verdict.verdict];
+          const tone = verdictTone(verdict.verdict, verdict.blocking);
           return (
             <li
               key={verdict.criterionKey}
-              className={`rounded-md border px-2 py-1.5 text-xs ${VERDICT_TONE_CLASS[presentation.tone]}`}
+              className={`rounded-md border px-2 py-1.5 text-xs ${VERDICT_TONE_CLASS[tone]}`}
               data-rubric-verdict={verdict.verdict}
-              data-rubric-tone={presentation.tone}
+              data-rubric-tone={tone}
               data-rubric-criterion-key={verdict.criterionKey}
             >
               <div className="flex flex-wrap items-baseline gap-2">
@@ -458,15 +478,29 @@ function RubricVerdictList({
                   {presentation.glyph} {presentation.label}
                 </span>
                 <span className="min-w-0 flex-1 text-foreground">{verdict.text}</span>
-                {presentation.tone === "block" ? (
+                {/*
+                  Exactly one of these three renders. They used to be two
+                  independent conditions -- "阻断" keyed off the verdict and
+                  "非阻断" off the flag -- so a `no` on a non-blocking criterion
+                  drew BOTH badges on the same row, each contradicting the other.
+                */}
+                {tone === "block" ? (
                   <span
                     className="rounded border border-current px-1 text-[10px] font-semibold"
                     data-rubric-blocks-gate
                   >
                     阻断
                   </span>
-                ) : null}
-                {verdict.blocking ? null : (
+                ) : tone === "recorded" ? (
+                  <span
+                    className="rounded border border-current px-1 text-[10px] font-semibold"
+                    data-rubric-recorded-only
+                  >
+                    仅记录 · 非阻断
+                  </span>
+                ) : verdict.blocking ? null : (
+                  // A satisfied criterion that would not have blocked anyway:
+                  // still worth saying so, as it was before.
                   <span className="text-[10px] text-muted-foreground">非阻断</span>
                 )}
                 {verdict.stillCurrent ? null : (

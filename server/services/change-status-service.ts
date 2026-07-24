@@ -4,6 +4,7 @@ import type { db } from "../db";
 import { changes, events } from "../db/schema";
 import type { Change, ChangeStatus } from "../types";
 import { withCurrentExecutionFenceWrite } from "./execution-fence-service";
+import { nextSequencedId } from "./record-identity";
 import {
   RUNNING_CHANGE_STATUSES,
   assertLegalTransition,
@@ -18,21 +19,7 @@ type StatusDb = typeof db;
 
 function nextEventId(statusDb: Pick<StatusDb, "select">): string {
   const rows = statusDb.select({ id: events.id }).from(events).all();
-  const used = new Set<string>();
-  let maxNum = 0;
-  for (const row of rows) {
-    const id = row.id as string;
-    used.add(id);
-    const match = id.match(/^EVT-(\d+)$/);
-    if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
-  }
-  let nextNum = maxNum + 1;
-  let candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `EVT-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
+  return nextSequencedId(rows.map((row) => row.id as string), "EVT");
 }
 
 export interface ChangeStatusTransitionInput {

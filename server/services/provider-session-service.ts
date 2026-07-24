@@ -1,7 +1,12 @@
 import { and, eq } from "drizzle-orm";
 
 import { db } from "../db";
-import { changeProviderSessions, changes, providerRunProcesses } from "../db/schema";
+import {
+  changeProviderSessions,
+  changes,
+  codexThreadBindings,
+  providerRunProcesses,
+} from "../db/schema";
 import type { Provider } from "./provider-selection-service";
 
 export type ProviderSessionKind = "general" | "spec_writer" | "spec_critic" | string;
@@ -32,8 +37,8 @@ function findSession(input: ProviderSessionKey): typeof changeProviderSessions.$
 /**
  * Resolve a provider-scoped external session. A legacy thread is imported
  * into the Codex/general slot only when a completed Codex lifecycle row proves
- * its provider provenance. Historically the field also held Claude sessions,
- * so its name alone is not sufficient evidence.
+ * its provider provenance. Migration 0027 clears legacy non-Codex rows, but the
+ * field name alone is still not sufficient provenance evidence.
  */
 export function resolveProviderSession(input: ProviderSessionKey): string | null {
   const existing = findSession(input);
@@ -100,4 +105,81 @@ export function recordProviderSession(input: RecordProviderSessionInput): void {
       updatedAt: timestamp,
     },
   }).run();
+}
+
+/**
+ * The Codex-native binding is authoritative. The legacy general provider row
+ * remains a compatibility mirror and is repaired from the binding, never the
+ * other way around.
+ */
+export function resolveCanonicalChangeThread(changeId: string): string | null {
+  const binding = db.select().from(codexThreadBindings).where(and(
+    eq(codexThreadBindings.scopeKind, "change"),
+    eq(codexThreadBindings.scopeId, changeId),
+  )).get();
+  if (!binding?.threadId || binding.status === "provisioning" || binding.status === "detached") {
+    return null;
+  }
+  const timestamp = nowISO();
+  db.transaction((tx) => {
+    tx.update(changes).set({
+      codexThreadId: binding.threadId,
+      updatedAt: timestamp,
+    }).where(eq(changes.id, changeId)).run();
+    tx.insert(changeProviderSessions).values({
+      changeId,
+      provider: "codex",
+      sessionKind: "general",
+      externalSessionId: binding.threadId!,
+      lastRunId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }).onConflictDoUpdate({
+      target: [
+        changeProviderSessions.changeId,
+        changeProviderSessions.provider,
+        changeProviderSessions.sessionKind,
+      ],
+      set: {
+        externalSessionId: binding.threadId!,
+        updatedAt: timestamp,
+      },
+    }).run();
+  });
+  return binding.threadId;
+}
+
+export function requireCanonicalChangeThreadForDispatch(input: {
+  desktopBridgeEnabled: boolean;
+  canonicalThreadId: string | null;
+}): string | null {
+  if (input.desktopBridgeEnabled && !input.canonicalThreadId) {
+    const error = new Error("codex_binding_not_ready");
+    Object.assign(error, { code: "codex_binding_not_ready" });
+    throw error;
+  }
+  return input.canonicalThreadId;
+}
+
+export function resolveCodexStageThreadRoute(input: {
+  desktopBridgeEnabled: boolean;
+  resolveCanonicalThread: () => string | null;
+  resolveLegacyGeneralThread: () => string | null;
+}): {
+  canonicalThreadId: string | null;
+  executableThreadId: string | undefined;
+} {
+  if (!input.desktopBridgeEnabled) {
+    return {
+      canonicalThreadId: null,
+      executableThreadId: input.resolveLegacyGeneralThread() ?? undefined,
+    };
+  }
+  return {
+    canonicalThreadId: requireCanonicalChangeThreadForDispatch({
+      desktopBridgeEnabled: true,
+      canonicalThreadId: input.resolveCanonicalThread(),
+    }),
+    executableThreadId: undefined,
+  };
 }

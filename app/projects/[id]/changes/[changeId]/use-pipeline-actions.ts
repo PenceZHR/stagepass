@@ -1,10 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  type AiProvider,
-  type PipelineActionContract,
-} from "./pipeline-action-contract";
+import type { PipelineActionContract } from "./pipeline-action-contract";
 import {
   pipelineActionResultEffect,
   runPipelineAction,
@@ -18,10 +15,9 @@ export function usePipelineActions(input: {
   projectId: string;
   changeId: string;
   actions?: PipelineActionContract[];
-  selectedProvider?: AiProvider;
   refresh: () => void | Promise<void>;
 }) {
-  const { projectId, changeId, actions, selectedProvider, refresh } = input;
+  const { projectId, changeId, actions, refresh } = input;
   const [running, setRunning] = useState(false);
   const [actionError, setActionError] = useState("");
   const watchIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -55,16 +51,12 @@ export function usePipelineActions(input: {
   useEffect(() => clearPostStartWatch, [clearPostStartWatch]);
 
   const handleAction = useCallback(
-    async (actionId: string, providerOrRetry?: AiProvider | boolean) => {
-      const providerOverride = typeof providerOrRetry === "string" ? providerOrRetry : undefined;
-      const retryAfterDrift = providerOrRetry !== false;
-
+    async (actionId: string, retryAfterDrift = true) => {
       let result: PipelineActionRunResult;
       try {
         result = await runPipelineAction({
           actionId,
           actions,
-          provider: providerOverride ?? selectedProvider,
           retryAfterDrift,
           // Marking the stage busy here rather than before the call keeps the
           // old semantics: an action rejected by its own contract never reached
@@ -93,7 +85,7 @@ export function usePipelineActions(input: {
       if (effect.startWatch) startPostStartWatch();
       if (effect.refresh) void refresh();
     },
-    [projectId, changeId, actions, selectedProvider, refresh, startPostStartWatch],
+    [projectId, changeId, actions, refresh, startPostStartWatch],
   );
 
   return { running, actionError, handleAction };

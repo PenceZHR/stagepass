@@ -336,14 +336,29 @@ function formatNewGap(gap: {
   return `- [${gap.severity}] ${gap.canonicalGapId}: ${gap.title} - ${gap.evidence}`;
 }
 
-function isPreviousBlockingGapForRound(
+/**
+ * Gaps carried in from an earlier round that still owe a recheck.
+ *
+ * This decides what the written spec-report.md lists as outstanding, and
+ * spec-critic.md tells blue to read that report -- so a gap missing here is a
+ * gap blue is never shown. Severity used to filter this population down to
+ * P0/P1, which is the rule for what BLOCKS the gate (computeGapCounts), not for
+ * what is owed an answer. The result: a P2 was raised, never appeared as
+ * outstanding, was never rechecked, and stayed `open` forever. Measured on the
+ * shipped database -- both P2s ever raised have zero blue_gap_reviews and zero
+ * red_fix_claims, while all six P1s are resolved.
+ *
+ * The gate is unaffected: it reads computeGapCounts, where only P0/P1 count as
+ * blocking and both P2s carry spec_blocking = 0.
+ *
+ * spec-battle-service.ts's `previousUnanswered` is the same predicate over the
+ * service's gap shape -- keep the two in step.
+ */
+function isPreviousUnansweredGapForRound(
   gap: typeof requirementGaps.$inferSelect,
   roundId: string
 ): boolean {
-  const ledgerGap = toLedgerGap(gap);
-  const severity = effectiveLedgerSeverity(ledgerGap);
   if (gap.firstSeenRoundId === roundId) return false;
-  if (severity !== "P0" && severity !== "P1") return false;
   if (gap.status === "waived" || gap.status === "overridden") return false;
   if (gap.status === "resolved" && gap.resolvedByRoundId !== roundId) return false;
   return true;
@@ -417,8 +432,8 @@ export async function generateSpecReport(changeId: string): Promise<SpecReportRe
   const filePath = path.join(dir, "spec-report.md");
   const latestRoundClaims = round ? claims.filter((claim) => claim.roundId === round.id) : [];
   const latestRoundReviews = round ? reviews.filter((review) => review.roundId === round.id) : [];
-  const previousBlockingGaps = round
-    ? gaps.filter((gap) => isPreviousBlockingGapForRound(gap, round.id)).map(toLedgerGap)
+  const previousUnansweredGaps = round
+    ? gaps.filter((gap) => isPreviousUnansweredGapForRound(gap, round.id)).map(toLedgerGap)
     : [];
   const latestNewGaps = round
     ? gaps
@@ -438,7 +453,7 @@ export async function generateSpecReport(changeId: string): Promise<SpecReportRe
   const roundDelta = round
     ? computeRoundDelta({
         roundId: round.id,
-        previousBlockingGaps,
+        previousUnansweredGaps,
         fixClaims: latestRoundClaims.map((claim) => ({
           canonicalGapId: claim.canonicalGapId,
           claimStatus: claim.claimStatus as "fixed" | "partially_fixed" | "not_fixed" | "needs_human_decision",

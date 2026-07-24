@@ -34,6 +34,8 @@ function setupTestDb() {
       prd_markdown TEXT,
       git_enabled INTEGER NOT NULL DEFAULT 0,
       git_default_branch TEXT,
+      default_codex_model TEXT,
+      default_reasoning_effort TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -44,6 +46,8 @@ function setupTestDb() {
       status TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'codex',
       codex_thread_id TEXT,
+      codex_model TEXT,
+      reasoning_effort TEXT,
       fix_iterations INTEGER DEFAULT 0,
       blocked_phase TEXT,
       rework_from_phase TEXT,
@@ -483,7 +487,7 @@ describe("Change suspend/restore on PRD revision", () => {
   it("suspends active changes through the production state transition service", () => {
     seedRealProject(projectId, tmpDir, "ready");
     seedRealChange(projectId, `${projectId}-RUNNING`, "IMPLEMENTING");
-    seedRealChange(projectId, `${projectId}-DRAFT`, "DRAFT");
+    seedRealChange(projectId, `${projectId}-PLANREADY`, "PLAN_READY");
     seedRealChange(projectId, `${projectId}-LOCAL`, "LOCAL_READY");
 
     startPrdRevision(projectId);
@@ -493,7 +497,7 @@ describe("Change suspend/restore on PRD revision", () => {
     assert.equal(suspended.length, 2);
     assert.deepEqual(
       suspended.map((change) => change.preSuspendStatus).sort(),
-      ["DRAFT", "IMPLEMENTING"],
+      ["IMPLEMENTING", "PLAN_READY"],
     );
     assert.deepEqual(suspended.map((change) => change.status), ["BLOCKED", "BLOCKED"]);
 
@@ -507,7 +511,6 @@ describe("Change suspend/restore on PRD revision", () => {
     fs.writeFileSync(path.join(tmpDir, ".ship", "prd.md"), prdLikeMarkdown("Ready PRD"));
 
     const restoredStatuses: ChangeStatus[] = [
-      "DRAFT",
       "SPEC_READY",
       "TECHSPEC_READY",
       "PLAN_READY",
@@ -1040,14 +1043,14 @@ describe("PRD turn artifact extraction and failed state", () => {
         changeId: null,
         runId: null,
         type: "prd_assistant",
-        message: "older Claude timeout",
+        message: "older Codex timeout",
         rawJson: JSON.stringify({
           projectId,
           phase: "prd",
-          provider: "claude",
+          provider: "codex",
           status: "failed",
           reason: "provider_timeout",
-          engineThreadId: "older-claude-session",
+          engineThreadId: "older-codex-session",
           failedFrom: "revising",
         }),
         createdAt,
@@ -1202,43 +1205,6 @@ describe("PRD turn artifact extraction and failed state", () => {
     });
 
     await prdTurn(projectId, "retry legacy timeout without a real session");
-
-    assert.equal(observedThreadId, undefined);
-  });
-
-  it("does not resume a timeout session from a different provider", async () => {
-    seedRealProject(projectId, tmpDir, "failed");
-    await appDb.insert(events).values({
-      id: `${projectId}-EVT-CLAUDE-TIMEOUT`,
-      changeId: null,
-      runId: null,
-      type: "prd_assistant",
-      message: "Claude PRD generation timed out",
-      rawJson: JSON.stringify({
-        projectId,
-        phase: "prd",
-        provider: "claude",
-        status: "failed",
-        reason: "provider_timeout",
-        engineThreadId: "claude-timeout-session",
-        failedFrom: "drafting",
-      }),
-      createdAt: new Date().toISOString(),
-    }).run();
-    let observedThreadId: string | undefined;
-    restoreEngine = mockPrdEngine(async (input) => {
-      observedThreadId = input.threadId;
-      return {
-        threadId: "codex-fresh-session",
-        runId: "run-codex-provider-switch",
-        summary: prdLineProtocolText(validStructuredPrd("Codex Provider Switch PRD")),
-        success: true,
-        changedFiles: [],
-        items: [],
-      };
-    });
-
-    await prdTurn(projectId, "retry with Codex", "codex");
 
     assert.equal(observedThreadId, undefined);
   });

@@ -11,12 +11,11 @@ const phaseRailSource = readFileSync(resolve(__dirname, "phase-rail.tsx"), "utf-
 describe("phase rail", () => {
   it("renders the canonical user-facing stage labels without exposing Check as a primary label", () => {
     const stages = buildPhaseRailStages({
-      status: "DRAFT",
+      status: "INTAKE_PENDING",
       selectedPhase: "Plan",
     });
 
     assert.deepEqual(stages.map((stage) => stage.label), [
-      "Refine",
       "PRD",
       "Spec",
       "Tech Spec",
@@ -35,8 +34,6 @@ describe("phase rail", () => {
 
   it("maps important statuses to the expected user-facing rail stage", () => {
     const cases: Array<[string, string, string]> = [
-      ["REFINING", "Refine", "running"],
-      ["DRAFT", "Plan", "waiting"],
       ["INTAKE_PENDING", "PRD", "waiting"],
       ["TESTPLAN_DONE", "Test Plan", "needs_review"],
       ["CHECK_FAILED", "QA", "failed"],

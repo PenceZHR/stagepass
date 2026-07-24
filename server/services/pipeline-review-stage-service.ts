@@ -23,6 +23,11 @@ import {
   withExecutionFence,
 } from "./execution-fence-service";
 import { assemblePrompt } from "./prompt-service";
+import { stageRawOutputPath } from "./stage-raw-output-path";
+import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
+} from "./build-record-identity";
 import { syncRubricFindings } from "./rubric-gate-adapters";
 import { stripRubricLines } from "./rubric-line-protocol";
 import {
@@ -54,7 +59,6 @@ import {
 import {
   beginStageRun,
   recordPostCommitSideEffectFailure,
-  runArtifactDir,
   setStatus,
   writeRunArtifact,
 } from "./pipeline-run-ledger-service";
@@ -95,8 +99,12 @@ import type { Change, ChangeStatus } from "../types";
 import type { Provider } from "./provider-selection-service";
 import {
   recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
 
 const log = createChildLogger("pipeline-review-stage-service");
 
@@ -128,23 +136,9 @@ function normalizedProviderThreadId(value: unknown): string | undefined {
 // --- Review build-source resolution ---
 
 function latestApprovedBuildRecord(changeId: string): BuildRunRecord | null {
-  const records = db
-    .select()
-    .from(buildRunRecords)
-    .where(eq(buildRunRecords.changeId, changeId))
-    .all()
-    .filter((record) => record.status === "approved_for_absorb" || record.status === "adopted")
-    .sort((left, right) => {
-      const byTime = (right.adoptedAt ?? right.updatedAt ?? "").localeCompare(left.adoptedAt ?? left.updatedAt ?? "");
-      if (byTime !== 0) return byTime;
-      return right.id.localeCompare(left.id);
-    });
-  return records[0] ?? null;
-}
-
-function buildRecordSourceHead(record: BuildRunRecord): string | null {
-  if (record.status === "approved_for_absorb") return record.baseCommit ?? record.baseHeadSha ?? null;
-  return record.adoptedHeadSha ?? record.headSha ?? record.baseCommit ?? null;
+  return selectLatestApprovedBuildRecord(
+    db.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, changeId)).all(),
+  );
 }
 
 function resolveReviewBuildSource(repoPath: string, changeId: string): {
@@ -557,7 +551,10 @@ function reviewRejectedCandidateAudit(
 }
 
 function reviewRawArtifactPath(repoPath: string, changeId: string, runId: string): string {
-  return path.join(runArtifactDir(repoPath, changeId, runId), "raw-ai-output.json");
+  // Was a second, independent spelling of the capture path. It agreed with the
+  // writer only by coincidence; deriving it means the Review stage cannot start
+  // reading a file the writer no longer writes.
+  return stageRawOutputPath({ repoPath, changeId, runId, phase: "review" });
 }
 
 function reviewIngestionErrorCode(input: {
@@ -667,7 +664,7 @@ export function preflightReviewRun(changeId: string, provider?: Provider): Revie
   return {
     project,
     reviewRepoPath: buildSource.repoPath,
-    reviewProvider: provider ?? (change.provider === "claude" ? "claude" : "codex") as EngineProvider,
+    reviewProvider: provider ?? "codex",
     sourceBuildRunId: buildSource.record.buildRunId ?? buildSource.record.id,
     sourceHeadSha: buildSource.sourceHeadSha,
     designInputs: reviewDesign.designInputs,
@@ -781,16 +778,35 @@ export async function runReview(
 
       const engine = await getPipelineEngine(reviewProvider);
       const reviewCandidateBeforeRun = readReviewCandidateFileState(project.repoPath, changeId);
+      const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+      const { executableThreadId } = resolveCodexStageThreadRoute({
+        desktopBridgeEnabled,
+        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+        resolveLegacyGeneralThread: () => resolveProviderSession({
+          changeId,
+          provider: "codex",
+          sessionKind: "general",
+        }),
+      });
+      const logicalTurnId = desktopBridgeEnabled
+        ? (await resolveLogicalTurn({
+            owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
+            phase: "Review",
+            role: "stage",
+            round: 0,
+            ordinal: 0,
+            request: { prompt: reviewPrompt, sandboxMode: "read-only" },
+          })).logicalTurnId
+        : undefined;
 
-      let result = await engine.run({
+      let result = await engine.run(desktopBridgeEnabled ? {
+        logicalTurnId: logicalTurnId!,
+      } as never : {
         changeId,
         repoPath: reviewRepoPath,
         phase: "review",
-        threadId: resolveProviderSession({
-          changeId,
-          provider: reviewProvider,
-          sessionKind: "general",
-        }) ?? undefined,
+        logicalTurnId,
+        threadId: executableThreadId,
         prompt: reviewPrompt,
         sandboxMode: "read-only",
         // Line-protocol stage: the model writes FINDING/PRIOR/APPROVED/SUMMARY
@@ -833,7 +849,7 @@ export async function runReview(
         assertCurrentExecutionFence(context, runId);
       }
       const reviewThreadId = normalizedProviderThreadId(result.threadId);
-      if (reviewThreadId) {
+      if (!logicalTurnId && reviewThreadId) {
         recordProviderSession({
           changeId,
           provider: reviewProvider,

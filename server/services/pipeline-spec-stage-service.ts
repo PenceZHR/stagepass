@@ -74,9 +74,12 @@ import { syncSpecRubricGaps } from "./rubric-gate-adapters";
 import type { Change, RunPhase } from "../types";
 import type { Provider } from "./provider-selection-service";
 import {
-  recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { resolveLogicalTurn } from "./codex-logical-turn-service";
 
 const log = createChildLogger("pipeline-spec-stage-service");
 
@@ -333,7 +336,8 @@ export async function runSpec(
           { projectId: redChange.projectId, changeId, phase: "Spec", role: "producer" },
           { runId: round.runId, roundId: round.roundId },
         );
-        const redRetryThreadId = latestSpecRetryThread({
+        // Historical stage session is audit-only; it never selects execution.
+        void latestSpecRetryThread({
           role: "writer",
           changeId,
           roundId: round.roundId,
@@ -351,11 +355,10 @@ export async function runSpec(
           artifactFileName: "prd-delta.md",
           successSummary: "Spec red draft completed",
           provider,
-          sessionKind: "spec_writer",
+          logicalRole: "spec_writer",
+          logicalRound: round.roundNo,
           runId: round.runId ?? undefined,
           deferRunCompletion: true,
-          resumeThread: false,
-          threadId: redRetryThreadId,
           // Line-protocol stage: the model writes a PRD_DELTA block plus
           // FIXCLAIM/SPEC_DONE lines, never JSON. The schema must be supplied
           // even though the model never sees it -- the runner gates the whole
@@ -566,10 +569,37 @@ async function runSpecVerdictRubric(input: {
       stageRubric,
     );
     const engine = await getPipelineEngine(input.provider as EngineProvider);
-    const result = await withDocumentStageWatchdog(engine.run({
+    const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+    const { executableThreadId } = resolveCodexStageThreadRoute({
+      desktopBridgeEnabled,
+      resolveCanonicalThread: () => resolveCanonicalChangeThread(input.changeId),
+      resolveLegacyGeneralThread: () => resolveProviderSession({
+        changeId: input.changeId,
+        provider: "codex",
+        sessionKind: "general",
+      }),
+    });
+    const logicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: {
+            kind: "pipeline_job",
+            pipelineJobId: input.context.jobId,
+          },
+          phase: "Spec",
+          role: "spec_verdict",
+          round: round.roundNo,
+          ordinal: 0,
+          request: { prompt, sandboxMode: "read-only" },
+        })).logicalTurnId
+      : undefined;
+    const result = await withDocumentStageWatchdog(engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: logicalTurnId!,
+    } as never : {
       changeId: input.changeId,
       repoPath: project.repoPath,
       phase: "spec_verdict",
+      logicalTurnId,
+      threadId: executableThreadId,
       prompt,
       // No outputSchema: the model writes RUBRIC lines, never JSON.
       sandboxMode: "read-only",
@@ -640,22 +670,42 @@ async function runSpecCritic(
 
   const engine = await getPipelineEngine(provider as EngineProvider);
   const stageTimeoutMs = documentStageTimeoutMs();
-  const retryThreadId = latestSpecRetryThread({
+  // Historical stage session is audit-only; it never selects execution.
+  void latestSpecRetryThread({
     role: "critic",
     changeId,
     roundId,
     provider: provider as EngineProvider,
     currentRunId: dbRunId,
   });
-  const result = await withDocumentStageWatchdog(engine.run({
+  const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+  const { executableThreadId } = resolveCodexStageThreadRoute({
+    desktopBridgeEnabled,
+    resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+    resolveLegacyGeneralThread: () => resolveProviderSession({
+      changeId,
+      provider: "codex",
+      sessionKind: "general",
+    }),
+  });
+  const logicalTurnId = desktopBridgeEnabled
+    ? (await resolveLogicalTurn({
+        owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
+        phase: "Spec",
+        role: "spec_critic",
+        round: round.roundNo,
+        ordinal: 0,
+        request: { prompt, sandboxMode: "read-only" },
+      })).logicalTurnId
+    : undefined;
+  const result = await withDocumentStageWatchdog(engine.run(desktopBridgeEnabled ? {
+    logicalTurnId: logicalTurnId!,
+  } as never : {
     changeId,
     repoPath: project.repoPath,
     phase: "spec_critic",
-    threadId: retryThreadId ?? resolveProviderSession({
-      changeId,
-      provider,
-      sessionKind: "spec_critic",
-    }) ?? undefined,
+    logicalTurnId,
+    threadId: executableThreadId,
     prompt,
     // Line-protocol stage: the model writes REVIEW/GAP/ARTIFACT/CRITIQUE_DONE
     // lines, never JSON. BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA stays server-side as
@@ -769,16 +819,7 @@ async function runSpecCritic(
     throw new Error(`invalid_stage_output: ${validatedOutput.error.message}`);
   }
   assertCurrentExecutionFence(context, dbRunId);
-  const threadId = normalizedProviderThreadId(result.threadId);
-  if (threadId) {
-    recordProviderSession({
-      changeId,
-      provider,
-      sessionKind: "spec_critic",
-      externalSessionId: threadId,
-      lastRunId: dbRunId,
-    });
-  }
+  // result.threadId is historical provider metadata only; binding stays authoritative.
   assertChangeNotBlocked(changeId, "spec");
   await completeBlueCritique({
     changeId,

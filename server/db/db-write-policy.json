@@ -34,6 +34,118 @@
       "reason": "native SQLite schema migration write"
     },
     {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "phase0_pipeline_jobs",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "disposable isolated verification journal schema"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.exec",
+      "nodeKind": "CallExpression",
+      "table": "OF",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "candidate immutability and ready identity triggers"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "__native_sql__",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "fenced disposable verification journal transition"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_interactions",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable verification interaction decision"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_logical_turns",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable verification logical turn identity"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_restart_checkpoints",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable restart checkpoint and consumed tombstone CAS"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_start_attempts",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "fenced verification dispatch attempt"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_thread_bindings",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "canonical verification thread binding"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_turn_executions",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "exactly-once verification execution"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_verification_wakeups",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "run-scoped persistent MCP verification authority"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_effects",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "exactly-once Host wakeup effect"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_jobs",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host wakeup job"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_outbox",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host marker outbox"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.ts",
+      "symbol": "sqlite.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "phase0_wakeup_receipts",
+      "owner": "Codex Phase 0 verification fixture",
+      "reason": "durable Host marker acknowledgement"
+    },
+    {
       "file": "server/repositories/action-contract-repository.ts",
       "symbol": "connection.insert",
       "nodeKind": "CallExpression",
@@ -226,6 +338,22 @@
       "reason": "owned by Task 14"
     },
     {
+      "file": "server/services/briefing-question-store.ts",
+      "symbol": "connection.insert",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "prd-briefing",
+      "reason": "PRD Briefing 与 Spec Battle 生成的追问卡都在此批量落库，两阶段共用这张表的唯一写入口"
+    },
+    {
+      "file": "server/services/briefing-question-store.ts",
+      "symbol": "db.update",
+      "nodeKind": "CallExpression",
+      "table": "briefingQuestions",
+      "owner": "prd-briefing",
+      "reason": "人类对疑点卡的作答/接受默认/推迟在此落库，是访问器里唯一的更新入口"
+    },
+    {
       "file": "server/services/build-run-record-service.ts",
       "symbol": "db.insert",
       "nodeKind": "CallExpression",
@@ -256,6 +384,14 @@
       "table": null,
       "owner": "Task 14",
       "reason": "owned by Task 14"
+    },
+    {
+      "file": "server/services/change-rework-service.ts",
+      "symbol": "tx.run",
+      "nodeKind": "CallExpression",
+      "table": "__raw_sql__",
+      "owner": "run-delete-plan",
+      "reason": "run-scoped delete closure: table and column come from RUN_DELETE_PLAN / RUN_POINTER_CLEARS, which run-delete-plan.test.ts derives from schema.ts, so the write targets are contract-checked rather than free-form SQL"
     },
     {
       "file": "server/services/change-rework-service.ts",
@@ -358,6 +494,14 @@
       "symbol": "db.exec",
       "nodeKind": "CallExpression",
       "table": "provider_run_processes",
+      "owner": "Task 11 acceptance owner",
+      "reason": "isolated crash-resilience fixture setup write"
+    },
+    {
+      "file": "server/services/crash-resilience-harness.ts",
+      "symbol": "db.prepare.run",
+      "nodeKind": "CallExpression",
+      "table": "artifacts",
       "owner": "Task 11 acceptance owner",
       "reason": "isolated crash-resilience fixture setup write"
     },
@@ -693,23 +837,7 @@
       "file": "server/services/prd-briefing-service.ts",
       "symbol": "db.update",
       "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "db.update",
-      "nodeKind": "CallExpression",
       "table": "prdBriefings",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/prd-briefing-service.ts",
-      "symbol": "tx.insert",
-      "nodeKind": "CallExpression",
-      "table": "briefingQuestions",
       "owner": "Task 14",
       "reason": "owned by Task 14"
     },
@@ -1048,54 +1176,6 @@
       "table": "stageRuns",
       "owner": "Task 11",
       "reason": "owned by Task 11"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "events",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.insert",
-      "nodeKind": "CallExpression",
-      "table": "findings",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.transaction",
-      "nodeKind": "CallExpression",
-      "table": null,
-      "owner": "Task 14",
-      "reason": "atomically replaces the refine spec artifact row with its staged file"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "db.update",
-      "nodeKind": "CallExpression",
-      "table": "changes",
-      "owner": "Task 14",
-      "reason": "owned by Task 14"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "tx.delete",
-      "nodeKind": "CallExpression",
-      "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "clears the previous refine spec artifact row inside the replacement transaction"
-    },
-    {
-      "file": "server/services/refine-service.ts",
-      "symbol": "tx.insert",
-      "nodeKind": "CallExpression",
-      "table": "artifacts",
-      "owner": "Task 14",
-      "reason": "records the staged refine spec artifact row inside the replacement transaction"
     },
     {
       "file": "server/services/review-artifact-mirror-service.ts",
@@ -1649,7 +1729,17 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
+      "file": "app/api/projects/[id]/changes/[changeId]/phases/route-row-degradation.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "app/api/projects/[id]/changes/[changeId]/rubrics/route.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "app/api/projects/[id]/changes/[changeId]/terminal-change-route-guard.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
@@ -1684,6 +1774,21 @@
       "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
+      "file": "server/services/action-contract-job-phase-coverage.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/action-contract-merge-policy.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/action-contract-qa-retry-status.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/action-contract-self-heal-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
@@ -1700,6 +1805,21 @@
     },
     {
       "file": "server/services/artifact-mirror-service.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
+    },
+    {
+      "file": "server/services/briefing-question-store.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/codex-phase0-sqlite-journal.test.ts",
+      "mode": "local-temp",
+      "reason": "test owns isolated temporary-file SQLite journals, including an incompatible legacy-schema fixture"
+    },
+    {
+      "file": "server/services/build-record-identity.test.ts",
       "mode": "local-memory",
       "reason": "test owns an isolated in-memory SQLite fixture"
     },
@@ -1819,6 +1939,11 @@
       "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
+      "file": "server/services/prd-structured-confirm-gate.test.ts",
+      "mode": "suite-env",
+      "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
       "file": "server/services/preflight-service.test.ts",
       "mode": "local-memory",
       "reason": "test owns an isolated in-memory SQLite fixture"
@@ -1859,7 +1984,7 @@
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
     {
-      "file": "server/services/refine-service.test.ts",
+      "file": "server/services/recovery-executors.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
     },
@@ -1872,6 +1997,11 @@
       "file": "server/services/review-center-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/review-center-state-divergence.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
       "file": "server/services/review-center-state-service.test.ts",
@@ -1947,6 +2077,11 @@
       "file": "server/services/scope-check-service.test.ts",
       "mode": "suite-env",
       "reason": "project DB import is isolated by the pre-import STAGEPASS_DB_PATH test runner"
+    },
+    {
+      "file": "server/services/sequenced-id-poisoning.test.ts",
+      "mode": "local-memory",
+      "reason": "test owns an isolated in-memory SQLite fixture"
     },
     {
       "file": "server/services/spec-battle-repair-service.test.ts",

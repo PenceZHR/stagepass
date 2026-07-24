@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { AiProvider } from "@/server/types/enums";
 import {
   createChange,
   listChangesByProject,
@@ -9,7 +8,6 @@ import {
 const CreateChangeBody = z.object({
   title: z.string().min(1),
   specMarkdown: z.string().optional(),
-  provider: AiProvider.default("codex"),
 });
 
 export async function GET(
@@ -41,7 +39,6 @@ export async function POST(
       projectId: id,
       title: parsed.data.title,
       specMarkdown: parsed.data.specMarkdown,
-      provider: parsed.data.provider,
     });
     return NextResponse.json(change, { status: 201 });
   } catch (err: unknown) {

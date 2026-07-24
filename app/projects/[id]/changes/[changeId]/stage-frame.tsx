@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import type { UiStage, UiStageState } from "./pipeline-ui-model";
 import { StageActionBar, type StageActionView } from "./stage-action-bar";
 import { StageStatusBadge } from "./stage-status-badge";
-import type { AiProvider } from "./pipeline-action-contract";
 
 export interface StageMetaItem {
   id: string;
@@ -31,10 +30,6 @@ export interface StageFrameProps {
   meta?: StageMetaItem[];
   actions?: StageActionView[];
   actionError?: ReactNode;
-  provider?: AiProvider;
-  onProviderChange?: (provider: AiProvider) => void;
-  providerDisabled?: boolean;
-  providerSelectable?: boolean;
   error?: ReactNode;
   blockers?: StageBlockerView[];
   /**
@@ -58,10 +53,6 @@ export function StageFrame({
   meta = [],
   actions = [],
   actionError = null,
-  provider,
-  onProviderChange,
-  providerDisabled = false,
-  providerSelectable = false,
   error = null,
   blockers = [],
   rubric = null,
@@ -108,10 +99,6 @@ export function StageFrame({
               actions={actions}
               actionError={actionError}
               ariaLabel={`${stageLabel} actions`}
-              provider={provider}
-              onProviderChange={onProviderChange}
-              providerDisabled={providerDisabled}
-              providerSelectable={providerSelectable}
             />
           </div>
         </div>

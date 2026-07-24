@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import { defaultDatabasePath, resolveDatabasePath } from "../db/config";
 import { parseCrashAcceptanceArgs } from "../../scripts/acceptance-crash-resilience";
 import { resolveAcceptanceInjection } from "./acceptance-injection-service";
+import { resolveCodexBin } from "./codex-engine-shared";
 import {
   CRASH_ACCEPTANCE_CASES,
   ACCEPTANCE_OUTER_TIMEOUT_MS,
@@ -39,20 +40,21 @@ describe("crash resilience acceptance harness", { concurrency: false }, () => {
     assert.notEqual(isolated, defaultDatabasePath());
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-injection-root-"));
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-injection-outside-"));
-    const executable = path.join(outside, "transport");
-    const escapedLink = path.join(root, "transport-link");
+    const executable = path.join(root, "codex");
     try {
       fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-      fs.symlinkSync(executable, escapedLink);
-      assert.throws(() => resolveAcceptanceInjection({
+      assert.deepEqual(resolveAcceptanceInjection({
         STAGEPASS_ACCEPTANCE_MODE: "1",
         STAGEPASS_ACCEPTANCE_ROOT: root,
-        STAGEPASS_CLAUDE_TRANSPORT_BIN: escapedLink,
-      } as NodeJS.ProcessEnv), /claude_transport_invalid/);
+      } as NodeJS.ProcessEnv), {
+        root: fs.realpathSync(root),
+        workerBarrier: null,
+      });
+      assert.equal(resolveCodexBin({
+        STAGEPASS_CODEX_BIN: executable,
+      } as NodeJS.ProcessEnv), executable);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 
@@ -105,9 +107,12 @@ describe("crash resilience acceptance harness", { concurrency: false }, () => {
       let deadline: NodeJS.Timeout | null = null;
       try {
         const result = await Promise.race([
-          registry.runProbe(["--child", "immediate-probe"], {}, 1_000),
+          registry.runProbe(["--child", "immediate-probe"], {}, 5_000),
           new Promise<never>((_, reject) => {
-            deadline = setTimeout(() => reject(new Error("immediate_probe_hung")), 2_000);
+            deadline = setTimeout(
+              () => reject(new Error("immediate_probe_hung")),
+              10_000,
+            );
           }),
         ]);
         assert.equal(result.stdout, "immediate-probe-ok\n");

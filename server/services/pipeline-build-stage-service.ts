@@ -66,13 +66,22 @@ import {
   type WorkspaceMutation,
 } from "./stage-guard-service";
 import type { Provider } from "./provider-selection-service";
-import { checkoutBranch, commitAll } from "./git-service";
+import {
+  checkoutInternalBranch,
+  commitPipelineChanges,
+} from "./workspace-versioning-service";
 import { resolveAdoptionCommitBranch } from "./change-service";
 import { runCheck } from "./pipeline-qa-stage-service";
 import {
-  recordProviderSession,
+  resolveCanonicalChangeThread,
+  resolveCodexStageThreadRoute,
   resolveProviderSession,
 } from "./provider-session-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
+import {
+  resolveBuildTurn,
+  resolveFixTurn,
+} from "./codex-logical-turn-service";
 import {
   MAX_FIX_ITERATIONS,
   maxFixIterationsErrorMessage,
@@ -415,14 +424,36 @@ async function runImplementStreamedInExecutionScope(
           throw new Error(`Build stream start timed out after ${startupTimeoutMs}ms`);
         }
 
-        const engine = await getPipelineEngine(provider as "codex" | "claude");
-        const stream = engine.runStreamed({
+        const engine = await getPipelineEngine(provider);
+        const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+        const { executableThreadId } = resolveCodexStageThreadRoute({
+          desktopBridgeEnabled,
+          resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+          resolveLegacyGeneralThread: () => resolveProviderSession({
+            changeId,
+            provider: "codex",
+            sessionKind: "general",
+          }),
+        });
+        const logicalTurnId = desktopBridgeEnabled
+          ? (await resolveBuildTurn({
+              pipelineJobId: context.jobId,
+              round: 0,
+              request: {
+                prompt,
+                sandboxMode: "workspace-write",
+                cwd: buildRun.workspacePath,
+              },
+            })).logicalTurnId
+          : undefined;
+        const stream = engine.runStreamed(desktopBridgeEnabled ? {
+          logicalTurnId: logicalTurnId!,
+        } as never : {
           changeId,
           repoPath: buildRun.workspacePath,
           phase: "implement",
-          threadId: resolveProviderSession({ changeId, provider, sessionKind: "build" })
-            ?? resolveProviderSession({ changeId, provider, sessionKind: "general" })
-            ?? undefined,
+          logicalTurnId,
+          threadId: executableThreadId,
           prompt,
           sandboxMode: "workspace-write",
           timeoutMs: documentStageTimeoutMs("implement"),
@@ -436,15 +467,7 @@ async function runImplementStreamedInExecutionScope(
           }),
         });
 
-        let threadId = change.codexThreadId ?? "unknown";
-
         await consumeBuildStreamWithStartupTimeout(stream, async (event) => {
-          const e = event as { type: string; item?: AiRunItem; threadId?: string };
-
-          if (e.type === "thread.started" && e.threadId) {
-            threadId = e.threadId;
-          }
-
           rubric.observe(event);
           const formatted = formatThreadEvent(event);
           if (formatted) {
@@ -465,22 +488,7 @@ async function runImplementStreamedInExecutionScope(
         rubric.settle();
         assertCurrentExecutionFence(context, runId);
 
-        // Save the write-phase thread under its own session kind: recording it
-        // as "general" would poison later read-only stages with a session whose
-        // sandbox/cwd belong to a per-run build worktree (codex resume inherits
-        // both, and the worktree is deleted after absorb).
-        if (threadId && threadId.toLowerCase() !== "unknown") {
-          recordProviderSession({
-            changeId,
-            provider,
-            sessionKind: "build",
-            externalSessionId: threadId,
-            lastRunId: runId,
-          });
-          if (provider === "codex") {
-            runLedgerRepository.patchChange(changeId, { codexThreadId: threadId }, { runId });
-          }
-        }
+        // The canonical binding owns thread identity; stream ids are audit-only.
 
         assertCurrentExecutionFence(context, runId);
         const collected = collectBuildResult({
@@ -826,7 +834,7 @@ async function runFixStreamedInExecutionScope(
       });
 
       // Event 5: AI engine starting
-      const engine = await getPipelineEngine(provider as "codex" | "claude");
+      const engine = await getPipelineEngine(provider);
       await emitEvent({
         changeId,
         runId,
@@ -840,13 +848,35 @@ async function runFixStreamedInExecutionScope(
       // last thing the prompt says.
       if (rubric.promptSection) prompt += `\n\n${rubric.promptSection}`;
 
-      const stream = engine.runStreamed({
+      const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+      const { executableThreadId } = resolveCodexStageThreadRoute({
+        desktopBridgeEnabled,
+        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+        resolveLegacyGeneralThread: () => resolveProviderSession({
+          changeId,
+          provider: "codex",
+          sessionKind: "general",
+        }),
+      });
+      const logicalTurnId = desktopBridgeEnabled
+        ? (await resolveFixTurn({
+            pipelineJobId: context.jobId,
+            round: change.fixIterations ?? 0,
+            request: {
+              prompt,
+              sandboxMode: "workspace-write",
+              cwd: buildRun.workspacePath,
+            },
+          })).logicalTurnId
+        : undefined;
+      const stream = engine.runStreamed(desktopBridgeEnabled ? {
+        logicalTurnId: logicalTurnId!,
+      } as never : {
         changeId,
         repoPath: buildRun.workspacePath,
         phase: "fix",
-        threadId: resolveProviderSession({ changeId, provider, sessionKind: "fix" })
-          ?? resolveProviderSession({ changeId, provider, sessionKind: "general" })
-          ?? undefined,
+        logicalTurnId,
+        threadId: executableThreadId,
         prompt,
         sandboxMode: "workspace-write",
         timeoutMs: documentStageTimeoutMs("fix_findings"),
@@ -910,21 +940,7 @@ async function runFixStreamedInExecutionScope(
       });
       // A failed/no-op workspace is not a completed fix iteration.
       assertCurrentExecutionFence(context, runId);
-      if (threadId && threadId.toLowerCase() !== "unknown") {
-        // Write-phase session kind: keep worktree-scoped sessions out of the
-        // shared "general" slot (codex resume inherits sandbox/cwd).
-        recordProviderSession({
-          changeId,
-          provider,
-          sessionKind: "fix",
-          externalSessionId: threadId,
-          lastRunId: runId,
-        });
-      }
       const fixPatch = { fixIterations: (change.fixIterations ?? 0) + 1 };
-      if (provider === "codex" && threadId && threadId.toLowerCase() !== "unknown") {
-        Object.assign(fixPatch, { codexThreadId: threadId });
-      }
       runLedgerRepository.patchChange(changeId, fixPatch, { runId });
       assertCurrentExecutionFence(context, runId);
       const summary = collected.status === "gate_blocked"
@@ -1009,12 +1025,6 @@ function changedFilesFromMutations(mutations: WorkspaceMutation[]): string[] {
   return Array.from(new Set(mutations.map((mutation) => mutation.path))).sort();
 }
 
-function normalizedProviderThreadId(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed && trimmed.toLowerCase() !== "unknown" ? trimmed : undefined;
-}
-
 export async function runImplement(
   changeId: string,
   context: JobExecutionContext,
@@ -1087,7 +1097,7 @@ export async function runFix(
       // Switch to change branch before fix
       assertCurrentExecutionFence(context, runId);
       if (project.gitEnabled && change.gitBranch) {
-        checkoutBranch(project.repoPath, change.gitBranch);
+        checkoutInternalBranch(project.repoPath, change.gitBranch);
       }
 
       // Assemble fix prompt with findings appended
@@ -1117,14 +1127,36 @@ export async function runFix(
 
       assertCurrentExecutionFence(context, runId);
       const beforeAi = captureWorkspaceSnapshot(project.repoPath);
-      const engine = await getPipelineEngine(selected as "codex" | "claude");
-      const result = await engine.run({
+      const engine = await getPipelineEngine(selected);
+      const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+      const { executableThreadId } = resolveCodexStageThreadRoute({
+        desktopBridgeEnabled,
+        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+        resolveLegacyGeneralThread: () => resolveProviderSession({
+          changeId,
+          provider: "codex",
+          sessionKind: "general",
+        }),
+      });
+      const logicalTurnId = desktopBridgeEnabled
+        ? (await resolveFixTurn({
+            pipelineJobId: context.jobId,
+            round: change.fixIterations ?? 0,
+            request: {
+              prompt,
+              sandboxMode: "workspace-write",
+              cwd: project.repoPath,
+            },
+          })).logicalTurnId
+        : undefined;
+      const result = await engine.run(desktopBridgeEnabled ? {
+        logicalTurnId: logicalTurnId!,
+      } as never : {
         changeId,
         repoPath: project.repoPath,
         phase: "fix",
-        threadId: resolveProviderSession({ changeId, provider: selected, sessionKind: "fix" })
-          ?? resolveProviderSession({ changeId, provider: selected, sessionKind: "general" })
-          ?? undefined,
+        logicalTurnId,
+        threadId: executableThreadId,
         prompt,
         sandboxMode: "workspace-write",
         lifecycle: createProviderLifecycleSink({
@@ -1151,22 +1183,7 @@ export async function runFix(
 
       // Update thread + fixIterations
       assertCurrentExecutionFence(context, runId);
-      const threadId = normalizedProviderThreadId(result.threadId);
-      if (threadId) {
-        // Write-phase session kind (see the build path): keep workspace-write
-        // sessions out of the shared read-only "general" slot.
-        recordProviderSession({
-          changeId,
-          provider: selected,
-          sessionKind: "fix",
-          externalSessionId: threadId,
-          lastRunId: runId,
-        });
-      }
       const changePatch = { fixIterations: (change.fixIterations ?? 0) + 1 };
-      if (selected === "codex" && threadId) {
-        Object.assign(changePatch, { codexThreadId: threadId });
-      }
       runLedgerRepository.patchChange(changeId, changePatch, { runId });
 
       assertCurrentExecutionFence(context, runId);
@@ -1189,7 +1206,7 @@ export async function runFix(
       // Auto-commit if git is enabled
       assertCurrentExecutionFence(context, runId);
       if (project.gitEnabled && change.gitBranch) {
-        commitAll(project.repoPath, `fix(${changeId}): iteration ${(change.fixIterations ?? 0) + 1}`);
+        commitPipelineChanges(project.repoPath, `fix(${changeId}): iteration ${(change.fixIterations ?? 0) + 1}`);
       }
 
       log.info({ changeId, iteration: (change.fixIterations ?? 0) + 1 }, "Fix done, auto-running checks");

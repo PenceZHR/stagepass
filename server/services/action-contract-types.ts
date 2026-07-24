@@ -1,6 +1,17 @@
+import type { AiProvider } from "../types/enums";
+
 export interface PipelineActionContract {
   actionId: string;
-  phase: "PRD" | "Spec" | "Plan" | "TestPlan" | "Build" | "Review" | "QA" | "Merge";
+  phase:
+    | "PRD"
+    | "Spec"
+    | "TechSpec"
+    | "Plan"
+    | "TestPlan"
+    | "Build"
+    | "Review"
+    | "QA"
+    | "Merge";
   label: string;
   enabled: boolean;
   reasonCode: string | null;
@@ -12,10 +23,15 @@ export interface PipelineActionContract {
   requiresIdempotencyKey: boolean;
   requiresProvider: boolean;
   providerSelectable: boolean;
-  defaultProvider: "codex" | "claude";
+  defaultProvider: AiProvider;
 }
 
 export type ContractPhase = PipelineActionContract["phase"];
+export type PrdInteractionActionId =
+  | "answer_prd_question"
+  | "accept_prd_assumption"
+  | "defer_prd_question"
+  | "lock_prd_briefing";
 export type Blocker = PipelineActionContract["blockers"][number];
 export type ActionContractWarning = {
   id: string;

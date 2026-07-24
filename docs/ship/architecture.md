@@ -53,10 +53,9 @@
 ┌─────────────────────────────────────────────────────────┐
 │               AI 引擎抽象层 (AI Engine)                   │
 │  AiEngineAdapter 接口 (ai-engine-types.ts)               │
-│  ┌─────────────────────┬────────────────────────────┐   │
-│  │ Codex Engine         │ Claude Engine               │   │
-│  │ (codex CLI, spawn)   │ (@anthropic-ai/claude-code) │   │
-│  └─────────────────────┴────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ Codex Engine (codex CLI, per-run spawn)          │   │
+│  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
                        │ Git CLI
 ┌─────────────────────────────────────────────────────────┐
@@ -191,11 +190,13 @@ DB Authority Rows → Deterministic Gate Service
 
 **决定**：Review 拥有独立产品状态：`not_started/running/passed/blocked_p0/blocked_p1/stale/failed/invalid_output/data_inconsistent`。即使底层兼容旧状态，UI 必须展示 Review 战报阻断语义。
 
-### 决策 6：双 AI 引擎抽象
+### 决策 6：Codex 单 Provider 引擎抽象
 
-**背景**：需要支持 codex 和 claude 两种 AI provider。
+**背景**：产品执行链路收敛为 Codex 单 Provider，同时继续保留阶段编排与传输实现之间的稳定接口。
 
-**决定**：`AiEngineAdapter` 接口抽象 `run()` 和 `runStreamed()`。`getAiEngine(provider)` 工厂函数按 provider 加载对应引擎。支持测试时注入 mock 引擎。
+**决定**：`AiEngineAdapter` 接口抽象 `run()` 和 `runStreamed()`，`getAiEngine()` 只加载 Codex 引擎，并支持测试时注入 mock 引擎。Agent 执行链路维持每个 run 独立 spawn 的进程模型，以保留 pid、租约、围栏与崩溃恢复语义。
+
+**例外**：`commit-message-service` 使用一次性 `codex exec` 生成提交信息。它是无状态、非 Agent 执行链路的短调用，不参与会话续接与流式事件，因此不复用 Agent 传输层。
 
 ### 决策 7：Stage Authority 通用层
 

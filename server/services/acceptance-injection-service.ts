@@ -4,7 +4,6 @@ import path from "node:path";
 export interface AcceptanceInjection {
   root: string;
   workerBarrier: string | null;
-  claudeTransportBin: string | null;
 }
 
 function contained(root: string, candidate: string): boolean {
@@ -47,6 +46,5 @@ export function resolveAcceptanceInjection(env: NodeJS.ProcessEnv = process.env)
   return {
     root,
     workerBarrier: resolveOptional(env.STAGEPASS_WORKER_BARRIER, "worker_barrier_invalid"),
-    claudeTransportBin: resolveOptional(env.STAGEPASS_CLAUDE_TRANSPORT_BIN, "claude_transport_invalid", true),
   };
 }

@@ -12,6 +12,8 @@ import {
   toPhaseArtifactMirrorDisplayMetadata,
 } from "./phase-artifact-service.ts";
 import { markdownArtifactContentFromResult } from "./markdown-artifact-content-service.ts";
+import { RUNNING_CHANGE_STATUSES } from "../state-machine/transitions.ts";
+import { ChangeStatus } from "../types/enums.ts";
 
 describe("phase-artifact-service", () => {
   function assertBareMarkdown(content: string): void {
@@ -211,25 +213,50 @@ describe("phase-artifact-service", () => {
 
   it("blocks editing while the change or latest run is active", () => {
     assert.equal(canEditPhaseArtifacts({ status: "SPEC_READY", latestRunStatus: "completed" }), true);
-    const runningStatuses = [
-      "REFINING",
-      "INTAKE_PENDING",
-      "PLANNING",
-      "IMPLEMENTING",
-      "REVIEWING",
-      "CHECKING",
-      "FIXING",
-      "SPECCING",
-      "TECHSPECCING",
-      "TESTPLANNING",
-      "MERGING",
-      "RETRO_PENDING",
-    ];
 
-    for (const status of runningStatuses) {
+    // Driven from the shared set rather than a copy of its members: a second
+    // hardcoded list here is what let the service's private copy drift unnoticed.
+    for (const status of RUNNING_CHANGE_STATUSES) {
       assert.equal(canEditPhaseArtifacts({ status, latestRunStatus: "completed" }), false, status);
     }
     assert.equal(canEditPhaseArtifacts({ status: "SPEC_READY", latestRunStatus: "running" }), false);
+  });
+
+  it("treats exactly the shared running statuses as uneditable", () => {
+    for (const status of ChangeStatus.options) {
+      assert.equal(
+        canEditPhaseArtifacts({ status, latestRunStatus: "completed" }),
+        !RUNNING_CHANGE_STATUSES.has(status),
+        status,
+      );
+    }
+  });
+
+  it("never calls a change too busy to edit while it is idle enough to delete", () => {
+    // The real symptom of the drifted copy, stated the way a user hits it:
+    // deleteChange (change-service) and rework (change-rework-service) both gate
+    // on RUNNING_CHANGE_STATUSES, so any status they treat as idle must not be
+    // reported as running by the artifact editor. REFINING and INTAKE_PENDING
+    // used to land in that contradiction -- deletable outright, yet too "busy"
+    // to hand-edit a single file.
+    const deletableButUneditable = ChangeStatus.options.filter(
+      (status) =>
+        !RUNNING_CHANGE_STATUSES.has(status) &&
+        !canEditPhaseArtifacts({ status, latestRunStatus: "completed" }),
+    );
+    assert.deepEqual(deletableButUneditable, []);
+  });
+
+  it("guards a live intake run through the run ledger, not through INTAKE_PENDING", () => {
+    // INTAKE_PENDING is a stage `runningStatus` but, like DELIVERY_PENDING, it
+    // also means "parked waiting for a human". REFINING creates no run row at
+    // all. Both must stay editable when nothing is in flight; the executing
+    // half is caught by latestRunStatus.
+    for (const status of ["REFINING", "INTAKE_PENDING"] as const) {
+      assert.equal(canEditPhaseArtifacts({ status, latestRunStatus: "completed" }), true, status);
+      assert.equal(canEditPhaseArtifacts({ status, latestRunStatus: null }), true, status);
+      assert.equal(canEditPhaseArtifacts({ status, latestRunStatus: "running" }), false, status);
+    }
   });
 
   it("saves markdown artifacts and validates json artifacts before writing", () => {

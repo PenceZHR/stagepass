@@ -67,6 +67,7 @@ const REAL_DB_FILES = [REAL_DB_PATH, `${REAL_DB_PATH}-wal`, `${REAL_DB_PATH}-shm
 const requireRuntime = createRequire(import.meta.url);
 export const ACCEPTANCE_OUTER_TIMEOUT_MS = 120_000;
 export const ACCEPTANCE_PROVIDER_TIMEOUT_MS = 60_000;
+const ACCEPTANCE_HTTP_TIMEOUT_MS = 10_000;
 
 function acceptanceProviderTimeoutMs(): number {
   const requested = Number(process.env.STAGEPASS_ACCEPTANCE_PROVIDER_TIMEOUT_MS);
@@ -194,15 +195,26 @@ async function waitForProcessClose(record: RegisteredProcess, timeoutMs: number)
 
 export async function terminateValidatedProcess(record: RegisteredProcess, timeoutMs = 1_000): Promise<void> {
   if (!alive(record.identity.pid)) return;
-  const send = async (signal: NodeJS.Signals) => {
+  const send = async (signal: NodeJS.Signals): Promise<boolean> => {
     const validation = await processIdentityProbe.validate(record.identity);
-    if (!validation.ok) throw new Error(`cleanup_identity_rejected:${validation.reason}`);
+    if (!validation.ok) {
+      if (validation.reason === "pid_missing" && !alive(record.identity.pid)) {
+        return false;
+      }
+      throw new Error(`cleanup_identity_rejected:${validation.reason}`);
+    }
     assert.equal(record.identity.pgid, record.identity.pid);
-    process.kill(-record.identity.pgid, signal);
+    try {
+      process.kill(-record.identity.pgid, signal);
+      return true;
+    } catch (error) {
+      if (!alive(record.identity.pid)) return false;
+      throw error;
+    }
   };
-  await send("SIGTERM");
+  if (!await send("SIGTERM")) return;
   if (await waitForProcessClose(record, timeoutMs)) return;
-  await send("SIGKILL");
+  if (!await send("SIGKILL")) return;
   if (!await waitForProcessClose(record, timeoutMs)) {
     throw new Error(`cleanup_process_still_alive:${record.identity.pid}`);
   }
@@ -398,6 +410,19 @@ export class ResourceRegistry {
   }
 }
 
+function seedSpecRetryAuthority(db: Database.Database, changeId: string, now: string): void {
+  const sourceDbHash = `acceptance-spec:${changeId}`;
+  db.prepare(`INSERT INTO stage_runs
+    (id,change_id,phase,attempt_no,status,output_db_hash,provider,started_at,completed_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(`STG-SPEC-${changeId}`, changeId, "Spec", 1, "passed", sourceDbHash, "codex", now, now);
+  db.prepare(`INSERT INTO stage_gates
+    (id,change_id,phase,status,blockers_json,freshness_json,required_actions_json,source_db_hash,gate_version,computed_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(`GATE-SPEC-${changeId}`, changeId, "Spec", "passed", "[]", JSON.stringify({ fresh: true }),
+      "[]", sourceDbHash, 1, now);
+}
+
 function seedFixture(dbPath: string, changeId: string, runId: string): void {
   const repoPath = path.join(path.dirname(dbPath), "repo");
   fs.mkdirSync(repoPath, { recursive: true });
@@ -408,9 +433,10 @@ function seedFixture(dbPath: string, changeId: string, runId: string): void {
     runMigrations(db);
     const now = new Date(Date.now() - 60_000).toISOString();
     db.prepare("INSERT INTO projects (id,name,repo_path,context_status,context_provider,prd_status,prd_provider,git_enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-      .run("PRJ-ACCEPTANCE", "Crash acceptance", repoPath, "ready", "claude", "ready", "claude", 1, now, now);
+      .run("PRJ-ACCEPTANCE", "Crash acceptance", repoPath, "ready", "codex", "ready", "codex", 1, now, now);
     db.prepare("INSERT INTO changes (id,project_id,title,status,provider,fix_iterations,suspended_by_prd,docs_complete,retro_done,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-      .run(changeId, "PRJ-ACCEPTANCE", "Crash fixture", "SPECCING", "claude", 0, 0, 0, 0, now, now);
+      .run(changeId, "PRJ-ACCEPTANCE", "Crash fixture", "SPECCING", "codex", 0, 0, 0, 0, now, now);
+    seedSpecRetryAuthority(db, changeId, now);
     db.prepare("INSERT INTO runs (id,change_id,phase,status,started_at) VALUES (?,?,?,?,?)")
       .run(runId, changeId, "spec", "running", now);
     db.prepare("INSERT INTO events (id,change_id,run_id,type,message,created_at) VALUES (?,?,?,?,?,?)")
@@ -420,7 +446,12 @@ function seedFixture(dbPath: string, changeId: string, runId: string): void {
   }
 }
 
-async function queryActions(registry: ResourceRegistry, dbPath: string, changeId: string, output: string): Promise<Array<{ actionId?: string; enabled?: boolean }>> {
+async function queryActions(registry: ResourceRegistry, dbPath: string, changeId: string, output: string): Promise<Array<{
+  actionId?: string;
+  enabled?: boolean;
+  reasonCode?: string | null;
+  reason?: string | null;
+}>> {
   await registry.runProbe(["--child", "action-probe"], {
     STAGEPASS_DB_PATH: dbPath, STAGEPASS_ACTION_CHANGE: changeId, STAGEPASS_ACTION_OUTPUT: output,
   });
@@ -430,7 +461,7 @@ async function queryActions(registry: ResourceRegistry, dbPath: string, changeId
 async function assertHttp(registry: ResourceRegistry, dbPath: string, port: number, assertions: string[], changeId = "CHG-delete-logs", evidence?: AcceptanceEvidence[]): Promise<void> {
   const base = `/api/projects/PRJ-ACCEPTANCE/changes/${encodeURIComponent(changeId)}`;
   const fetchBounded = (pathname: string) => fetch(`http://127.0.0.1:${port}${base}${pathname}`, {
-    signal: AbortSignal.timeout(3_000),
+    signal: AbortSignal.timeout(ACCEPTANCE_HTTP_TIMEOUT_MS),
   });
   const detail = await fetchBounded("");
   assert.equal(detail.status, 200);
@@ -451,7 +482,10 @@ async function assertHttp(registry: ResourceRegistry, dbPath: string, port: numb
   const first = await Promise.race([
     reader.read(),
     new Promise<never>((_, reject) => {
-      sseTimer = setTimeout(() => reject(new Error("sse_read_timeout")), 3_000);
+      sseTimer = setTimeout(
+        () => reject(new Error("sse_read_timeout")),
+        ACCEPTANCE_HTTP_TIMEOUT_MS,
+      );
     }),
   ]).finally(() => {
     if (sseTimer) clearTimeout(sseTimer);
@@ -522,7 +556,7 @@ function seedRecoveryMatrix(dbPath: string, identities: ProcessIdentity[]): Matr
       const jobId = `JOB-MATRIX-${index + 1}`;
       const terminalJob = row.provider === "lease";
       db.prepare("INSERT INTO changes (id,project_id,title,status,provider,fix_iterations,suspended_by_prd,docs_complete,retro_done,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-        .run(changeId, "PRJ-ACCEPTANCE", row.key, row.phase === "implement" ? "IMPLEMENTING" : "TECHSPECCING", "claude", 0, 0, 0, 0, old, old);
+        .run(changeId, "PRJ-ACCEPTANCE", row.key, row.phase === "implement" ? "IMPLEMENTING" : "TECHSPECCING", "codex", 0, 0, 0, 0, old, old);
       db.prepare("INSERT INTO pipeline_jobs (id,change_id,phase,action_id,status,leased_by,lease_expires_at,heartbeat_at,attempt_no,created_at,started_at,ended_at,lease_token,worker_nonce) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(jobId, changeId, row.phase, row.phase === "implement" ? "run_build" : "run_tech_spec",
           terminalJob ? "failed" : "running", "worker-matrix", terminalJob ? null : future, old, 1, old, old,
@@ -531,9 +565,25 @@ function seedRecoveryMatrix(dbPath: string, identities: ProcessIdentity[]): Matr
         .run(runId, changeId, row.phase, "running", old, jobId, "worker-matrix", `lease-${index}`, 1);
       db.prepare("INSERT INTO stage_runs (id,change_id,phase,attempt_no,status,started_at) VALUES (?,?,?,?,?,?)")
         .run(`STG-MATRIX-${index + 1}`, changeId, row.phase === "implement" ? "Build" : "TechSpec", 1, "running", old);
+      if (row.phase === "tech_spec") {
+        seedSpecRetryAuthority(db, changeId, old);
+      }
       if (row.phase === "implement") {
+        const testPlanSourceDbHash = `acceptance-testplan:${changeId}`;
+        const testPlanRunId = `RUN-TP-MATRIX-${index + 1}`;
+        db.prepare(`INSERT INTO stage_runs
+          (id,change_id,phase,attempt_no,status,output_db_hash,provider,started_at,completed_at)
+          VALUES (?,?,?,?,?,?,?,?,?)`)
+          .run(`STG-TP-MATRIX-${index + 1}`, changeId, "TestPlan", 1, "passed",
+            testPlanSourceDbHash, "codex", old, old);
+        db.prepare("INSERT INTO runs (id,change_id,phase,status,started_at,ended_at,attempt_no) VALUES (?,?,?,?,?,?,?)")
+          .run(testPlanRunId, changeId, "test_plan", "completed", old, old, 1);
+        db.prepare("INSERT INTO artifacts (id,change_id,run_id,type,path,created_at) VALUES (?,?,?,?,?,?)")
+          .run(`ART-TP-MATRIX-${index + 1}`, changeId, testPlanRunId, "test_plan",
+            `docs/testplan-${changeId}.md`, old);
         db.prepare("INSERT INTO stage_gates (id,change_id,phase,status,blockers_json,freshness_json,required_actions_json,source_db_hash,gate_version,computed_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
-          .run(`GATE-MATRIX-${index + 1}`, changeId, "TestPlan", "passed", "[]", JSON.stringify({ fresh: true }), "[]", "testplan-source-hash", 1, old);
+          .run(`GATE-MATRIX-${index + 1}`, changeId, "TestPlan", "passed", "[]",
+            JSON.stringify({ fresh: true }), "[]", testPlanSourceDbHash, 1, old);
       }
       if (row.provider !== "missing") {
         const identity = identities[Math.max(0, index - 4)] ?? identities[0];
@@ -543,7 +593,7 @@ function seedRecoveryMatrix(dbPath: string, identities: ProcessIdentity[]): Matr
         db.prepare(`INSERT INTO provider_run_processes
           (id,change_id,run_id,phase,provider,pid,ppid,status,started_at,last_heartbeat_at,job_id,worker_id,lease_token,attempt_no,process_nonce,process_start_time,process_ppid,process_pgid,process_cwd,process_command_json)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .run(`PRP-MATRIX-${index + 1}`, changeId, runId, row.phase, "claude", pid, identity.ppid ?? process.pid,
+          .run(`PRP-MATRIX-${index + 1}`, changeId, runId, row.phase, "codex", pid, identity.ppid ?? process.pid,
             row.provider === "completed" ? "completed" : "running", old, row.provider === "heartbeat" ? old : future,
             jobId, "worker-matrix", `lease-${index}`, 1, identity.nonce, identity.processStartTime, ppid,
             identity.pgid, identity.cwd, JSON.stringify(command));
@@ -569,10 +619,13 @@ async function assertRecoveryMatrix(registry: ResourceRegistry, dbPath: string, 
       const provider = db.prepare("SELECT status FROM provider_run_processes WHERE run_id=?").get(row.runId) as { status: string } | undefined;
       const job = db.prepare("SELECT status FROM pipeline_jobs WHERE change_id=?").get(row.changeId) as { status: string };
       const run = db.prepare("SELECT status FROM runs WHERE id=?").get(row.runId) as { status: string };
-      const stage = db.prepare("SELECT status FROM stage_runs WHERE change_id=?").get(row.changeId) as { status: string };
+      const stagePhase = row.expected.retryAction === "retry_build" ? "Build" : "TechSpec";
+      const stage = db.prepare("SELECT status FROM stage_runs WHERE change_id=? AND phase=?")
+        .get(row.changeId, stagePhase) as { status: string };
       const change = db.prepare("SELECT status FROM changes WHERE id=?").get(row.changeId) as { status: string };
       const eventCount = (db.prepare("SELECT count(*) count FROM events WHERE change_id=? AND type=?").get(row.changeId, row.eventType) as { count: number }).count;
       const actions = await queryActions(registry, dbPath, row.changeId, path.join(path.dirname(dbPath), `matrix-actions-${row.changeId}.json`));
+      const retryAction = actions.find((action) => action.actionId === row.expected.retryAction);
       const snapshot = {
         provider: provider?.status,
         job: job.status,
@@ -582,9 +635,13 @@ async function assertRecoveryMatrix(registry: ResourceRegistry, dbPath: string, 
         eventType: row.eventType,
         eventCount,
         retryAction: row.expected.retryAction,
-        retryEnabled: actions.find((action) => action.actionId === row.expected.retryAction)?.enabled ?? false,
+        retryEnabled: retryAction?.enabled ?? false,
       };
-      assert.deepEqual(snapshot, { ...row.expected, eventType: row.eventType, eventCount: 1, retryEnabled: true });
+      assert.deepEqual(
+        snapshot,
+        { ...row.expected, eventType: row.eventType, eventCount: 1, retryEnabled: true },
+        JSON.stringify(retryAction),
+      );
       evidence.push({ kind: "recovery-row", changeId: row.changeId, runId: row.runId,
         provider: provider?.status ?? "synthetic_missing", job: job.status, run: run.status,
         stage: stage.status, change: change.status, eventType: row.eventType, eventCount });
@@ -644,20 +701,34 @@ async function startFixtureProcesses(
   caseName: CrashAcceptanceCase,
 ): Promise<{ app: RegisteredProcess; worker: RegisteredProcess; supervisor: HarnessSupervisor }> {
   const tsconfigPath = path.join(PROJECT_ROOT, "tsconfig.json");
+  const nextDistDir =
+    `tmp-acceptance-next-${path.basename(registry.root)}`;
+  const nextDistRoot = path.join(PROJECT_ROOT, nextDistDir);
   registry.addFinalizer(() => {
     const parsed = JSON.parse(fs.readFileSync(tsconfigPath, "utf8")) as { include?: string[] };
-    const filtered = parsed.include?.filter((entry) => !path.resolve(entry).startsWith(path.resolve(registry.root))) ?? [];
+    const generatedRoots = [registry.root, nextDistRoot].map((entry) =>
+      path.resolve(entry)
+    );
+    const filtered = parsed.include?.filter((entry) => {
+      const absolute = path.resolve(entry);
+      return !generatedRoots.some((root) => {
+        const relative = path.relative(root, absolute);
+        return absolute === root
+          || (!relative.startsWith("..") && !path.isAbsolute(relative));
+      });
+    }) ?? [];
     if (filtered.length !== (parsed.include?.length ?? 0)) {
       parsed.include = filtered;
       fs.writeFileSync(tsconfigPath, `${JSON.stringify(parsed, null, 2)}\n`);
     }
+    fs.rmSync(nextDistRoot, { recursive: true, force: true });
   });
   const common = {
     STAGEPASS_DB_PATH: dbPath,
     STAGEPASS_LOG_DIR: logDir,
     STAGEPASS_FIXTURE_CHANGE: changeId,
     STAGEPASS_FIXTURE_RUN: runId,
-    STAGEPASS_NEXT_DIST_DIR: path.join(registry.root, ".next"),
+    STAGEPASS_NEXT_DIST_DIR: nextDistDir,
   };
   let appChild: ChildProcess | null = null;
   let workerChild: ChildProcess | null = null;
@@ -719,7 +790,10 @@ async function startFixtureProcesses(
     healthPollIntervalMs: 50,
     healthTimeoutMs: 10_000,
     workerMonitorIntervalMs: 100,
-    workerStaleAfterMs: 2_000,
+    // Next's first route compilation can starve the fixture worker for several
+    // seconds on a loaded development machine. Keep this above that compile
+    // window so the harness only observes the failures it injects explicitly.
+    workerStaleAfterMs: 10_000,
     terminationGraceMs: 5_000,
   }));
   await supervisor.start();
@@ -760,7 +834,7 @@ function seedProviderExecution(dbPath: string, input: {
   try {
     if (input.changeId !== (db.prepare("SELECT id FROM changes LIMIT 1").get() as { id: string }).id) {
       db.prepare("INSERT INTO changes (id,project_id,title,status,provider,fix_iterations,suspended_by_prd,docs_complete,retro_done,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-        .run(input.changeId, "PRJ-ACCEPTANCE", input.changeId, "TECHSPECCING", "claude", 0, 0, 0, 0, now, now);
+        .run(input.changeId, "PRJ-ACCEPTANCE", input.changeId, "TECHSPECCING", "codex", 0, 0, 0, 0, now, now);
     } else {
       db.prepare("UPDATE changes SET status='TECHSPECCING' WHERE id=?").run(input.changeId);
     }
@@ -804,7 +878,7 @@ export async function runHungProviderTimeoutProbe(timeoutMs = 200): Promise<{
   };
   seedFixture(dbPath, execution.changeId, execution.runId);
   seedProviderExecution(dbPath, execution);
-  const transportBin = path.join(root, "hung-claude-transport");
+  const transportBin = path.join(root, "hung-codex-transport");
   fs.writeFileSync(transportBin, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", { mode: 0o700 });
   const registry = new ResourceRegistry(root, 2_000);
   let processExited = false;
@@ -816,7 +890,7 @@ export async function runHungProviderTimeoutProbe(timeoutMs = 200): Promise<{
       STAGEPASS_LOG_DIR: logDir,
       STAGEPASS_ACCEPTANCE_MODE: "1",
       STAGEPASS_ACCEPTANCE_ROOT: root,
-      STAGEPASS_CLAUDE_TRANSPORT_BIN: transportBin,
+      STAGEPASS_CODEX_BIN: transportBin,
       STAGEPASS_ACCEPTANCE_PROVIDER_TIMEOUT_MS: String(timeoutMs),
       STAGEPASS_PROVIDER_EXECUTION: JSON.stringify(execution),
     });
@@ -882,8 +956,8 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
 
     if (options.caseName === "delete-logs") {
       fs.rmSync(logDir, { recursive: true, force: true });
-      await signalValidated(app.identity, "SIGKILL");
       await signalValidated(worker.identity, "SIGKILL");
+      await signalValidated(app.identity, "SIGKILL");
       await waitFor(() => ["dev-server.log", "pipeline-worker.log", "dev-supervisor.log"]
         .every((name) => fs.existsSync(path.join(logDir, name))));
       await waitFor(() => {
@@ -927,7 +1001,7 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
       const longLocker = await registry.spawn("locker", {
         STAGEPASS_DB_PATH: dbPath,
         STAGEPASS_LOCK_READY: longReady,
-        STAGEPASS_LOCK_HOLD_MS: "3000",
+        STAGEPASS_LOCK_HOLD_MS: "10000",
       });
       await waitFor(() => fs.existsSync(longReady));
       const beforeLong = businessSnapshot(dbPath, changeId);
@@ -948,7 +1022,7 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
         elapsedPositive: true,
       });
       assert.deepEqual(businessSnapshot(dbPath, changeId), beforeLong);
-      await waitFor(() => !alive(longLocker.identity.pid));
+      await waitFor(() => !alive(longLocker.identity.pid), 15_000);
       assertions.push("short lock wrote business terminal exactly once; long lock typed metadata and zero drift");
       await assertHttp(registry, dbPath, port, assertions, changeId, evidence);
     } else if (options.caseName === "kill-worker") {
@@ -1028,7 +1102,7 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
       assertions.push("app identity replaced while worker stayed alive");
     } else if (options.caseName === "kill-provider") {
       if (!options.changeId || !options.runId) throw new Error("kill-provider requires explicit changeId and runId");
-      const transportBin = path.join(root, "offline-claude-transport");
+      const transportBin = path.join(root, "offline-codex-transport");
       fs.writeFileSync(transportBin, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", { mode: 0o700 });
       const targetExecution = { changeId, runId, jobId: "JOB-PROVIDER-TARGET", workerId: "provider-runner-target", leaseToken: "lease-provider-target" };
       const nonTargetExecution = { changeId: "CHG-PROVIDER-NON-TARGET", runId: "RUN-PROVIDER-NON-TARGET", jobId: "JOB-PROVIDER-NON-TARGET", workerId: "provider-runner-non-target", leaseToken: "lease-provider-non-target" };
@@ -1039,7 +1113,7 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
         STAGEPASS_LOG_DIR: logDir,
         STAGEPASS_ACCEPTANCE_MODE: "1",
         STAGEPASS_ACCEPTANCE_ROOT: root,
-        STAGEPASS_CLAUDE_TRANSPORT_BIN: transportBin,
+        STAGEPASS_CODEX_BIN: transportBin,
       };
       await registry.spawn("provider-runner", { ...providerRunnerEnv, STAGEPASS_PROVIDER_EXECUTION: JSON.stringify(targetExecution) });
       await registry.spawn("provider-runner", { ...providerRunnerEnv, STAGEPASS_PROVIDER_EXECUTION: JSON.stringify(nonTargetExecution) });
@@ -1092,7 +1166,8 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
         const providerState = recoveredDb.prepare("SELECT status,summary FROM provider_run_processes WHERE id=?").get(selected.processId) as { status: string; summary: string | null };
         const runStatus = (recoveredDb.prepare("SELECT status FROM runs WHERE id=?").get(runId) as { status: string }).status;
         const jobStatus = (recoveredDb.prepare("SELECT status FROM pipeline_jobs WHERE id=?").get(targetExecution.jobId) as { status: string }).status;
-        const stageStatus = (recoveredDb.prepare("SELECT status FROM stage_runs WHERE change_id=?").get(changeId) as { status: string }).status;
+        const stageStatus = (recoveredDb.prepare("SELECT status FROM stage_runs WHERE change_id=? AND phase='TechSpec'")
+          .get(changeId) as { status: string }).status;
         const changeStatus = (recoveredDb.prepare("SELECT status FROM changes WHERE id=?").get(changeId) as { status: string }).status;
         const reconciliationEvents = (recoveredDb.prepare("SELECT count(*) count FROM events WHERE change_id=? AND type='business_run_reconciled'").get(changeId) as { count: number }).count;
         recoveredDb.close();
@@ -1106,7 +1181,11 @@ export async function runCrashAcceptance(options: CrashAcceptanceOptions): Promi
           event: { type: "business_run_reconciled", count: reconciliationEvents },
           retryTechSpec: providerActions.find((action) => action.actionId === "retry_tech_spec")?.enabled ?? false,
         }, {
-          provider: { status: "failed", summary: "Claude SDK exited with code null: " },
+          provider: {
+            status: "failed",
+            summary:
+              "Codex run failed: codex app-server exited code null, signal SIGKILL",
+          },
           job: "failed",
           run: "failed",
           stage: "failed",
@@ -1183,7 +1262,7 @@ async function childMain(role: string): Promise<void> {
     try {
       if (input.action === "start") {
         startProviderRun({
-          changeId: input.changeId, runId: input.runId, phase: "tech_spec", provider: "claude",
+          changeId: input.changeId, runId: input.runId, phase: "tech_spec", provider: "codex",
           pid: null, ppid: process.ppid, executionContext: context,
         });
       } else {
@@ -1215,13 +1294,36 @@ async function childMain(role: string): Promise<void> {
     const input = JSON.parse(process.env.STAGEPASS_PROVIDER_EXECUTION!) as {
       changeId: string; runId: string; jobId: string; workerId: string; leaseToken: string;
     };
-    const [{ getPipelineEngine, createProviderLifecycleSink }, { failPipelineJob }] = await Promise.all([
+    const [
+      { getPipelineEngine, createProviderLifecycleSink },
+      { failPipelineJob },
+      { readCodexNativeFlags },
+      { resolveLogicalTurn },
+    ] = await Promise.all([
       import("./pipeline-engine-service"),
       import("./pipeline-job-lease-service"),
+      import("../config/codex-native-flags"),
+      import("./codex-logical-turn-service"),
     ]);
     const context = { jobId: input.jobId, workerId: input.workerId, leaseToken: input.leaseToken, attemptNo: 1 };
-    const engine = await getPipelineEngine("claude");
-    const result = await engine.run({
+    const engine = await getPipelineEngine("codex");
+    const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+    const logicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "pipeline_job", pipelineJobId: input.jobId },
+          phase: "TechSpec",
+          role: "stage",
+          round: 0,
+          ordinal: 0,
+          request: {
+            prompt: "acceptance transport barrier",
+            sandboxMode: "read-only",
+          },
+        })).logicalTurnId
+      : null;
+    const result = await engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: logicalTurnId!,
+    } as never : {
       changeId: input.changeId,
       prompt: "acceptance transport barrier",
       repoPath: PROJECT_ROOT,
@@ -1233,7 +1335,7 @@ async function childMain(role: string): Promise<void> {
         changeId: input.changeId,
         runId: input.runId,
         phase: "tech_spec",
-        provider: "claude",
+        provider: "codex",
         closeBusinessRunOnProviderFailure: false,
       }),
     });

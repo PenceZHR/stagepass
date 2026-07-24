@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
+import { getSpecActionAvailabilityForChange } from "./spec-battle-service";
 
 import { requirementGaps } from "../db/schema";
+import { isRunningBattleRoundStatus } from "../types/enums";
 import type {
   ActionContractDb,
   ActionDecision,
@@ -110,7 +112,7 @@ export function specRunDecision(
   const latestRound = getSpecBattleState(changeId).latestRound;
   const latestStatus = latestRound?.status ?? null;
 
-  if (latestStatus === "red_running" || latestStatus === "blue_running") {
+  if (isRunningBattleRoundStatus(latestStatus)) {
     return disabled("spec_round_running");
   }
   if (latestStatus === "failed") {
@@ -185,4 +187,35 @@ export function prdRunDecision(snapshot: StageAuthoritySnapshot): ActionDecision
     };
   }
   return gateDecision("PRD", snapshot);
+}
+
+/**
+ * `waive_spec_p1`, derived from the Spec battle's own availability rule.
+ *
+ * Without a policy here this action fell through to `gateDecision("Spec", ...)`,
+ * which disables anything whose stage gate is blocked. A P1 waiver exists
+ * precisely to get past a blocked gate, so the generic rule made it permanently
+ * unavailable -- the same shape as retry_review being refused at blocked_p0.
+ * `waive_plan_p1` still has no policy and still has this hole; it is not wired
+ * to a contract-checked route yet, so it is latent rather than broken today.
+ */
+export function waiveSpecP1Decision(changeId: string): ActionDecision | null {
+  const availability = getSpecActionAvailabilityForChange(changeId);
+  if (!availability) {
+    return {
+      enabled: false,
+      reasonCode: "spec_battle_not_started",
+      reason: "No Spec battle round exists to waive a P1 on",
+      blockers: [],
+    };
+  }
+  if (availability.waiveP1.available) {
+    return { enabled: true, reasonCode: null, reason: null, blockers: [] };
+  }
+  return {
+    enabled: false,
+    reasonCode: availability.waiveP1.reason ?? "p1_waiver_unavailable",
+    reason: `Spec P1 waiver is not available: ${availability.waiveP1.reason ?? "unknown"}`,
+    blockers: [],
+  };
 }

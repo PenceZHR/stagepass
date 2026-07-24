@@ -2,13 +2,17 @@ import path from "node:path";
 
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 
+import {
+  buildRecordSourceHead,
+  latestApprovedBuildRecord as selectLatestApprovedBuildRecord,
+} from "./build-record-identity";
+
 import type { db } from "../db";
 import {
   apiSnapshots,
   artifacts,
   artifactMirrors,
   battleRounds,
-  briefingQuestions,
   buildRunRecords,
   changes,
   findings,
@@ -29,6 +33,7 @@ import {
   techspecSnapshots,
   warReports,
 } from "../db/schema";
+import { listBriefingQuestionsWithDb } from "./briefing-question-store";
 import type { ProviderRunProcess } from "./provider-run-lifecycle-service";
 import type {
   BusinessEvidenceObservation,
@@ -522,16 +527,21 @@ export function businessEvidenceForCompletedProvider(
       || report.findingsDbHash !== findingsDbHash || report.reportDbHash !== reportDbHash) {
       missingEvidence.push("review_report_commit");
     }
-    const latestBuild = evidenceDb.select().from(buildRunRecords).where(and(
-      eq(buildRunRecords.changeId, run.changeId),
-      inArray(buildRunRecords.status, ["approved_for_absorb", "adopted"]),
-    )).orderBy(
-      desc(buildRunRecords.adoptedAt), desc(buildRunRecords.updatedAt), desc(buildRunRecords.id),
-    ).limit(1).get() ?? null;
+    // Ordered in JavaScript rather than SQL, and by the same function the other
+    // readers use. adopted_at is NULL on every approved_for_absorb row by
+    // construction, and SQLite sorts NULL *last* under DESC, so the previous
+    // `ORDER BY adopted_at DESC, updated_at DESC, id DESC` put every
+    // approved-but-not-yet-absorbed build behind every adopted one no matter how
+    // much newer it was. The JavaScript readers coalesce adopted_at to
+    // updated_at, so with one build absorbed and the next awaiting absorb -- an
+    // ordinary Fix state, not an edge case -- SQL and JS selected different rows
+    // and this snapshot reported a healthy Review as missing its
+    // review_gate_commit evidence.
+    const latestBuild = selectLatestApprovedBuildRecord(
+      evidenceDb.select().from(buildRunRecords).where(eq(buildRunRecords.changeId, run.changeId)).all(),
+    );
     const latestBuildId = latestBuild?.buildRunId ?? latestBuild?.id ?? null;
-    const latestBuildHead = latestBuild?.status === "approved_for_absorb"
-      ? latestBuild.baseCommit ?? latestBuild.baseHeadSha
-      : latestBuild?.headSha ?? latestBuild?.adoptedHeadSha ?? latestBuild?.baseCommit ?? null;
+    const latestBuildHead = latestBuild ? buildRecordSourceHead(latestBuild) : null;
     if (!state || state.latestAttemptId !== attempt?.id || state.latestValidReviewReportId !== report?.id
       || state.reportDbHash !== report?.reportDbHash || state.gateStatus !== report?.gateStatus
       || report?.sourceBuildRunId !== attempt?.sourceBuildRunId || report?.sourceBuildRunId !== latestBuildId
@@ -631,8 +641,7 @@ export function businessEvidenceForCompletedProvider(
       )).get() ?? null;
       if (!artifact || !nonEmpty(artifact.path)) missingEvidence.push("intake_artifact_missing");
     } else if (actionId === "run_prd_briefing_questions") {
-      const questions = evidenceDb.select().from(briefingQuestions)
-        .where(eq(briefingQuestions.changeId, run.changeId)).all();
+      const questions = listBriefingQuestionsWithDb(evidenceDb, run.changeId, "PRD");
       if (questions.length === 0
         || questions.some((question) => !nonEmpty(question.question) || !nonEmpty(question.whyItMatters))) {
         missingEvidence.push("intake_questions_missing");
@@ -932,12 +941,11 @@ export function captureEvidenceDbSnapshot(
         )).orderBy(desc(artifacts.createdAt), desc(artifacts.id)).limit(1).get() ?? null)
         : null,
       questions: actionId === "run_prd_briefing_questions"
-        ? query(() => evidenceDb.select({
-          id: briefingQuestions.id, question: briefingQuestions.question,
-          whyItMatters: briefingQuestions.whyItMatters, status: briefingQuestions.status,
-          answer: briefingQuestions.answer, updatedAt: briefingQuestions.updatedAt,
-        }).from(briefingQuestions).where(eq(briefingQuestions.changeId, run.changeId))
-          .orderBy(asc(briefingQuestions.id)).all())
+        ? query(() => listBriefingQuestionsWithDb(evidenceDb, run.changeId, "PRD").map((row) => ({
+          id: row.id, question: row.question,
+          whyItMatters: row.whyItMatters, status: row.status,
+          answer: row.answer, updatedAt: row.updatedAt,
+        })))
         : null,
       draft: actionId === "run_prd_briefing_draft"
         ? query(() => evidenceDb.select({

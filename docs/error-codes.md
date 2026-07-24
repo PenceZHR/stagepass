@@ -51,8 +51,7 @@
 
 | 场景 | 错误信息样例 | 处理 |
 |---|---|---|
-| Claude CLI prompt 传递 | `Input must be provided through stdin...` | 已修（stdin 传 prompt），见 memory |
-| Codex 用量超限 | `You've hit your usage limit... try again at HH:MM` | 等额度恢复 / 切 provider |
+| Codex 用量超限 | `You've hit your usage limit... try again at HH:MM` | 等额度恢复后重试 |
 | AI 输出非法 JSON | `Failed to parse structured output` | 重跑该阶段 |
 | 产物为空 | `Stage produced empty delta` | 阶段 failed，可重跑 |
 

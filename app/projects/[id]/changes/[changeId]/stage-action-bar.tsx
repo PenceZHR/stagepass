@@ -2,8 +2,6 @@
 
 import { useId, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
-import { ProviderPicker } from "./provider-picker";
-import type { AiProvider } from "./pipeline-action-contract";
 
 export interface StageActionView {
   id: string;
@@ -49,18 +47,10 @@ export function StageActionBar({
   actions = [],
   actionError = null,
   ariaLabel = "Stage actions",
-  provider,
-  onProviderChange,
-  providerDisabled = false,
-  providerSelectable = true,
 }: {
   actions?: StageActionView[];
   actionError?: ReactNode;
   ariaLabel?: string;
-  provider?: AiProvider;
-  onProviderChange?: (provider: AiProvider) => void;
-  providerDisabled?: boolean;
-  providerSelectable?: boolean;
 }) {
   const helpId = useId();
   const errorId = useId();
@@ -76,22 +66,10 @@ export function StageActionBar({
     }));
   const disabledReasonIds = new Map(disabledReasons.map((item) => [item.id, item.elementId]));
   const hasDisabledReasons = disabledReasons.length > 0;
-  const actionBusy = actions.some((action) => action.busy === true || action.providerBusy === true);
-
-  const showProviderPicker = providerSelectable && Boolean(onProviderChange);
-
-  if (orderedActions.length === 0 && !actionError && !showProviderPicker) return null;
+  if (orderedActions.length === 0 && !actionError) return null;
 
   return (
     <div className="space-y-2" role="group" aria-label={ariaLabel}>
-      {showProviderPicker ? (
-        <ProviderPicker
-          value={provider ?? "codex"}
-          onChange={onProviderChange!}
-          disabled={providerDisabled || actionBusy}
-          id={`${helpId}-provider`}
-        />
-      ) : null}
       {orderedActions.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2">
           {orderedActions.map((item, index) => {

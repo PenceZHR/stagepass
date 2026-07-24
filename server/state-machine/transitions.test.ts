@@ -53,8 +53,6 @@ describe("change status transitions", () => {
 
   it("allows BLOCKED to restore every status that PRD revision can suspend", () => {
     const prdSuspendableStatuses = [
-      "REFINING",
-      "DRAFT",
       "INTAKE_PENDING",
       "INTAKE_READY",
       "SPECCING",

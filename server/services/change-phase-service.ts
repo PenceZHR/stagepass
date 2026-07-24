@@ -1,4 +1,5 @@
 import fs from "fs";
+import { isStageRawOutputFileName } from "./stage-raw-output-path";
 import path from "path";
 import {
   changeArtifactDir,
@@ -7,10 +8,10 @@ import {
   getDefinitionsForPhase,
   isEditablePhaseArtifactFileName,
 } from "./phase-artifact-service";
+import { mapRowsDegrading } from "./per-row-degradation";
 import type { PipelinePhase } from "./stage-authority-service";
 
 export const CONTENT_PHASES = [
-  "Refine",
   "Intake",
   "Spec",
   "TechSpec",
@@ -160,7 +161,6 @@ export interface PhaseStageAuthority {
 }
 
 const RUN_PHASE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
-  refine: "Refine",
   intake: "Intake",
   spec: "Spec",
   tech_spec: "TechSpec",
@@ -176,7 +176,7 @@ const RUN_PHASE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
 };
 
 const ARTIFACT_TYPE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
-  spec: "Refine",
+  spec: "Intake",
   change_request: "Intake",
   prd_intent: "Intake",
   briefing_questions: "Intake",
@@ -204,8 +204,6 @@ const ARTIFACT_TYPE_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
 };
 
 const STATUS_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
-  REFINING: "Refine",
-  DRAFT: "Refine",
   PLANNING: "Plan",
   PLAN_READY: "Plan",
   PLAN_APPROVED: "Plan",
@@ -234,7 +232,6 @@ const STATUS_TO_REVIEW_PHASE: Record<string, ReviewPhase> = {
 };
 
 const VIRTUAL_ARTIFACTS: Record<ReviewPhase, Array<{ type: string; fileName: string }>> = {
-  Refine: [{ type: "spec", fileName: "spec.md" }],
   Intake: [
     { type: "change_request", fileName: "change-request.md" },
     { type: "prd_intent", fileName: "prd-intent.md" },
@@ -325,9 +322,6 @@ function eventPhaseFromStatus(rawJson: string | null): ReviewPhase | null {
 function eventPhase(event: EventRow, runPhaseById: Map<string, ReviewPhase>): ReviewPhase | null {
   if (event.runId && runPhaseById.has(event.runId)) {
     return runPhaseById.get(event.runId) ?? null;
-  }
-  if (event.type === "chat_user" || event.type === "chat_assistant") {
-    return "Refine";
   }
   if (event.type === "change_status_changed") {
     return eventPhaseFromStatus(event.rawJson);
@@ -684,13 +678,29 @@ function readKnownFiles(
   }
 
   const result: Record<string, string | undefined> = {};
-  for (const filePath of paths) {
-    if (!isPathSafe(filePath, repoPath) || !fs.existsSync(filePath)) continue;
-    if (isReviewMetadataOnlyPath(filePath)) {
-      result[filePath] = undefined;
-      continue;
-    }
-    result[filePath] = fs.readFileSync(filePath, "utf-8");
+  // existsSync answers true for a directory, so readFileSync below can throw
+  // EISDIR; an unreadable file throws EACCES. Either used to escape this loop
+  // into getChangePhaseReview and out to GET /phases, whose single try/catch
+  // answers 500 PHASE_REVIEW_UNAVAILABLE -- one unreadable file deleted all
+  // fifteen phases from the page.
+  //
+  // A file we cannot read degrades to the same shape as a file that is not
+  // there: its key is left out of the map. That is the pre-existing, already
+  // plumbed meaning of "no content to show" -- toArtifactReview turns an absent
+  // key into `missing: true`, so the row stays visible and flagged rather than
+  // masquerading as healthy -- and the read error itself is logged.
+  const entries = mapRowsDegrading(paths, {
+    operation: "readKnownFiles",
+    identify: (filePath) => filePath,
+    perRow: (filePath): { path: string; content: string | undefined } | null => {
+      if (!isPathSafe(filePath, repoPath) || !fs.existsSync(filePath)) return null;
+      if (isReviewMetadataOnlyPath(filePath)) return { path: filePath, content: undefined };
+      return { path: filePath, content: fs.readFileSync(filePath, "utf-8") };
+    },
+    degrade: () => null,
+  });
+  for (const entry of entries) {
+    if (entry) result[entry.path] = entry.content;
   }
   return result;
 }
@@ -701,7 +711,12 @@ function isReviewMetadataOnlyPath(filePath: string): boolean {
   return (
     fileName.includes("raw-review-output") ||
     fileName.includes("raw_review_output") ||
-    fileName === "raw-ai-output.json"
+    // Was `=== "raw-ai-output.json"`, a third spelling of the capture name.
+    // Captures are per-phase now, so an equality check would have stopped
+    // classifying every new one as review metadata and started surfacing raw
+    // provider dumps as produced artifacts. The predicate still accepts the
+    // legacy name, since runs recorded under it are on disk.
+    isStageRawOutputFileName(fileName)
   );
 }
 

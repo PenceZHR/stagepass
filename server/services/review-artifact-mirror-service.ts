@@ -15,6 +15,7 @@ import {
   reviewReports,
 } from "../db/schema";
 import { settlementFindingsForReviewAttempt } from "./review-report-service";
+import { nextSequencedId as nextPrefixedId } from "./record-identity";
 
 type ReviewArtifactMirrorDb = typeof import("../db/index").db;
 type ReviewReport = typeof reviewReports.$inferSelect;
@@ -121,23 +122,6 @@ function sortForStableJson(value: unknown): unknown {
     sorted[key] = sortForStableJson((value as Record<string, unknown>)[key]);
   }
   return sorted;
-}
-
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
 }
 
 function nextArtifactId(db: ReviewArtifactMirrorDb): string {

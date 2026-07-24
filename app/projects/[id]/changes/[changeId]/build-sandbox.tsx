@@ -22,7 +22,6 @@ import {
   shouldShowBuildStartAction,
 } from "./build-action-policy";
 import { ProducedFile } from "./produced-file";
-import type { AiProvider } from "./pipeline-action-contract";
 import type { StageActionView } from "./stage-action-bar";
 
 type BaseCampStatus = "ready" | "blocked" | "dirty";
@@ -74,11 +73,16 @@ interface BuildWorkspaceState {
   buildRun: BuildRunView | null;
 }
 
+interface CodexDecisionRolloutView {
+  masterEnabled: boolean;
+  phases: string[];
+  errorCode: string | null;
+}
+
 interface BuildSandboxProps {
   projectId: string;
   changeId: string;
   actions?: PipelineActionContract[];
-  selectedProvider?: AiProvider;
   refreshToken?: string | number | null;
   onStageActionsChange?: (actions: StageActionView[]) => void;
   onStageActionError?: (error: string | null) => void;
@@ -138,30 +142,10 @@ function selectBuildStartAction(actions: PipelineActionContract[] | undefined): 
   return runBuild ?? retryBuild ?? null;
 }
 
-/**
- * Only a base camp blocker stops an absorb. A merely `dirty` tree used to stop
- * it too, and that turned the stage into a trap: the untracked files are the
- * Build's own output, the one remedy the UI offers is a commit, and adopting a
- * fix requires HEAD to still equal the run's base commit -- so obeying the
- * "clean the repo" advice moved HEAD and refused the absorb for good
- * (git_head_drift). checkGitBaseCamp already sorts this out, reporting the
- * fix's own artifacts as warnings and real problems as blockers, and adoptFix
- * has its own dirty-workspace tolerance that fails with a precise conflict when
- * the patch genuinely cannot apply. Deferring to that keeps one authority on
- * whether an absorb is safe instead of two disagreeing ones.
- */
-function buildAbsorbBaseCampReason(baseCamp: GitBaseCampView | null): string | null {
-  if (!baseCamp) return null;
-  if (!baseCamp.headSha) return "Git HEAD could not be verified before absorbing Build output.";
-  if (baseCamp.blockers.length > 0) return baseCamp.blockers.join("; ");
-  return null;
-}
-
 export function BuildSandbox({
   projectId,
   changeId,
   actions,
-  selectedProvider,
   refreshToken,
   onStageActionsChange,
   onStageActionError,
@@ -171,6 +155,7 @@ export function BuildSandbox({
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [codexRollout, setCodexRollout] = useState<CodexDecisionRolloutView | null>(null);
 
   const load = useCallback(async (options?: { preserveError?: boolean }) => {
     const preserveError = options?.preserveError ?? false;
@@ -203,45 +188,22 @@ export function BuildSandbox({
     };
   }, [load, refreshToken]);
 
-  const runBuildAction = useCallback(
-    async (action: "approve_absorb" | "reject_build") => {
-      const contractAction =
-        action === "approve_absorb"
-          ? findPipelineAction(actions, state?.buildRun?.purpose === "fix" ? "adopt_fix" : "adopt_build")
-          : findPipelineAction(actions, "reject_build");
-      const disabledReason = pipelineActionDisabledReason(contractAction);
-      if (disabledReason) {
-        setError(disabledReason);
-        return;
-      }
-      setBusyAction(action);
-      setError(null);
-      let actionSucceeded = false;
-      try {
-        const res = await fetch(`/api/projects/${projectId}/changes/${changeId}/build-workspace`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(createPipelinePreflightPayload(contractAction, {
-            provider: selectedProvider,
-            action,
-            expectedHeadSha: state?.baseCamp.headSha ?? undefined,
-          })),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(typeof data.error === "string" ? data.error : "Build action failed");
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/codex/health")
+      .then((response) => response.ok ? response.json() : null)
+      .then((health) => {
+        if (!cancelled) {
+          setCodexRollout((health?.decisionRollout as CodexDecisionRolloutView) ?? null);
         }
-        actionSucceeded = true;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        await load({ preserveError: !actionSucceeded });
-        await Promise.resolve(onChanged());
-        setBusyAction(null);
-      }
-    },
-    [projectId, changeId, actions, selectedProvider, state?.baseCamp.headSha, state?.buildRun?.purpose, load, onChanged]
-  );
+      })
+      .catch(() => {
+        if (!cancelled) setCodexRollout(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const runBuildStart = useCallback(async () => {
     const contractAction = selectBuildStartAction(actions);
@@ -258,7 +220,6 @@ export function BuildSandbox({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(createPipelinePreflightPayload(contractAction, {
-          provider: selectedProvider,
           expectedHeadSha: state?.baseCamp.headSha ?? undefined,
         })),
       });
@@ -274,20 +235,43 @@ export function BuildSandbox({
       await Promise.resolve(onChanged());
       setBusyAction(null);
     }
-  }, [projectId, changeId, actions, selectedProvider, state?.baseCamp.headSha, load, onChanged]);
+  }, [projectId, changeId, actions, state?.baseCamp.headSha, load, onChanged]);
+
+  const openInCodex = useCallback(async () => {
+    setBusyAction("open_codex");
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/changes/${changeId}/codex/open`,
+        { method: "POST" },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "Unable to open the bound Codex task",
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  }, [projectId, changeId]);
 
   const buildRun = state?.buildRun ?? null;
   const baseCamp = state?.baseCamp ?? null;
+  const codexDecisionPhase = buildRun?.purpose === "fix" ? "Fix" : "Build";
+  const codexDecisionEnabled =
+    codexRollout?.masterEnabled === true
+    && codexRollout.errorCode === null
+    && codexRollout.phases.includes(codexDecisionPhase);
   const startBuildAction = selectBuildStartAction(actions);
   const approveAbsorbAction = findPipelineAction(actions, buildRun?.purpose === "fix" ? "adopt_fix" : "adopt_build");
   const rejectBuildAction = findPipelineAction(actions, "reject_build");
   const startBuildReason = pipelineActionDisabledReason(startBuildAction);
-  const absorbBaseCampReason = buildAbsorbBaseCampReason(baseCamp);
-  const approveAbsorbReason = absorbBaseCampReason ?? pipelineActionDisabledReason(approveAbsorbAction);
-  const rejectBuildReason = pipelineActionDisabledReason(rejectBuildAction);
   const canStartBuild = startBuildAction?.enabled === true;
-  const canApproveAbsorb = approveAbsorbAction?.enabled === true && absorbBaseCampReason === null;
-  const canRejectBuild = rejectBuildAction?.enabled === true;
   const buildRetryRunningBlocked =
     startBuildAction?.actionId === "retry_build" &&
     startBuildAction.reasonCode === "build_run_running";
@@ -311,29 +295,16 @@ export function BuildSandbox({
       });
     }
 
-    if (showApproveAbsorbAction) {
+    if (codexDecisionEnabled && (showApproveAbsorbAction || showRejectBuildAction)) {
       nextActions.push({
-        id: "build-adopt",
-        label: approveAbsorbAction?.label ?? "批准收编",
+        id: "build-open-codex",
+        label: "Open in Codex",
         role: "primary",
-        enabled: !isBuildActionBusy && canApproveAbsorb,
-        busy: busyAction === "approve_absorb",
-        disabledReason: approveAbsorbReason,
-        sourceActionId: approveAbsorbAction?.actionId,
-        onAction: () => runBuildAction("approve_absorb"),
-      });
-    }
-
-    if (showRejectBuildAction) {
-      nextActions.push({
-        id: "build-reject",
-        label: rejectBuildAction?.label ?? "请求修改 / 拒绝本轮 Build",
-        role: "destructive",
-        enabled: !isBuildActionBusy && canRejectBuild,
-        busy: busyAction === "reject_build",
-        disabledReason: rejectBuildReason,
-        sourceActionId: rejectBuildAction?.actionId,
-        onAction: () => runBuildAction("reject_build"),
+        enabled: !isBuildActionBusy,
+        busy: busyAction === "open_codex",
+        disabledReason: null,
+        sourceActionId: "open_codex",
+        onAction: openInCodex,
       });
     }
 
@@ -342,6 +313,7 @@ export function BuildSandbox({
     showStartBuildAction,
     showApproveAbsorbAction,
     showRejectBuildAction,
+    codexDecisionEnabled,
     startBuildAction?.label,
     startBuildAction?.actionId,
     isBuildActionBusy,
@@ -349,15 +321,7 @@ export function BuildSandbox({
     busyAction,
     startBuildReason,
     runBuildStart,
-    approveAbsorbAction?.label,
-    approveAbsorbAction?.actionId,
-    canApproveAbsorb,
-    approveAbsorbReason,
-    runBuildAction,
-    rejectBuildAction?.label,
-    rejectBuildAction?.actionId,
-    canRejectBuild,
-    rejectBuildReason,
+    openInCodex,
   ]);
   const stageActionSignature = useMemo(
     () => buildActionErrorSignature({ buildRun, slots: stageActions }),
@@ -399,6 +363,14 @@ export function BuildSandbox({
 
   return (
     <div className="grid min-h-[32rem] gap-0 lg:grid-cols-[0.9fr_1.15fr_1fr]">
+      {codexDecisionEnabled && (
+        <div className="flex items-center justify-between gap-3 border-b bg-muted/20 px-4 py-2 text-xs lg:col-span-3">
+          <span>等待 Codex 中的 Build/Fix 收编操作</span>
+          <button type="button" className="font-medium underline" onClick={openInCodex}>
+            Open in Codex
+          </button>
+        </div>
+      )}
       <section className="border-b p-4 lg:border-r lg:border-b-0">
         <PanelHeader
           eyebrow="BASE"

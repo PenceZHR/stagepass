@@ -12,6 +12,7 @@ import {
   rubricAssessments,
   rubricCriteria,
   rubrics,
+  stageGates,
 } from "../db/schema.ts";
 import { deleteChangeRecords } from "./change-service.ts";
 import {
@@ -31,6 +32,7 @@ import {
   syncRubricFindings,
   syncRubricStageGateBlockers,
   syncSpecRubricGaps,
+  UNREADABLE_GATE_BLOCKERS_ID,
 } from "./rubric-gate-adapters.ts";
 import {
   recordRubricAssessments,
@@ -826,8 +828,119 @@ describe("document phase channel: stage gate blockers", () => {
     );
   });
 
+  /**
+   * The repro this pins: a Plan gate carrying `risk-1`, its `blockers_json`
+   * truncated so `JSON.parse` throws, then one blocking rubric verdict. The old
+   * reader answered `[]`, so the gate row this appended said the Plan phase had
+   * no blockers of its own -- and since `peekStageAuthority` reads the NEWEST
+   * row, that erasure is what every later reader sees. Nothing warned.
+   *
+   * `risk-1` itself is unrecoverable here; the point of the marker is that the
+   * new row stops CLAIMING the phase had nothing, and says loudly enough for a
+   * human to go read the superseded row that still holds the bytes.
+   */
+  function seedCorruptPlanGate(payload: string): string {
+    recomputeStageGate({
+      changeId: CHANGE_ID,
+      phase: "Plan",
+      status: "blocked",
+      blockers: [{ id: "risk-1", severity: "P1", title: "计划风险" }],
+      freshness: { fresh: true },
+      requiredActions: ["regenerate_plan_report"],
+      sourceDbHash: "PLAN-SOURCE-HASH",
+    });
+    const seeded = getStageAuthority(CHANGE_ID, "Plan").latestGate!;
+    db.update(stageGates).set({ blockersJson: payload }).where(eq(stageGates.id, seeded.id)).run();
+    return seeded.id;
+  }
+
+  function blockOnceWithRubric(runId: string): void {
+    const rubric = saveRubricVersion({
+      ...SPEC_CRITIC,
+      phase: "Plan",
+      role: "producer",
+      criteria: [{ text: "步骤可执行", blocking: true }],
+    });
+    judge(rubric, ["no"], { runId, roundId: null });
+    syncRubricStageGateBlockers(CHANGE_ID, "Plan");
+  }
+
+  it("never republishes an unreadable blocker list as an empty one", () => {
+    // Truncated: still plainly carries `risk-1` to any human reading the column.
+    const corrupt = '[{"id":"risk-1","severity":"P1","title":"计划风险"}';
+    const seededId = seedCorruptPlanGate(corrupt);
+    blockOnceWithRubric("RUN-PLAN-CORRUPT");
+
+    const after = getStageAuthority(CHANGE_ID, "Plan").latestGate!;
+    assert.notEqual(after.id, seededId, "a new gate row was appended");
+    const ids = (JSON.parse(after.blockersJson ?? "[]") as Array<{ id: string }>).map((b) => b.id);
+    assert.equal(
+      ids.includes(UNREADABLE_GATE_BLOCKERS_ID),
+      true,
+      "the unreadable payload must survive as a marker, not vanish into []",
+    );
+    assert.equal(after.status, "blocked");
+  });
+
+  it("keeps the unreadable marker through rubric retirement, so it cannot be walked off", () => {
+    // The dangerous half: retirement restores baseStatus and republishes only
+    // the non-rubric blockers. If the marker were a rubric id -- or had never
+    // been created -- the gate would land back on its own status carrying an
+    // empty list, i.e. the corruption would have been laundered clean.
+    seedCorruptPlanGate('{"blockers":[{"id":"risk-1"}]}');
+    const rubric = saveRubricVersion({
+      ...SPEC_CRITIC,
+      phase: "Plan",
+      role: "producer",
+      criteria: [{ text: "步骤可执行", blocking: true }],
+    });
+    judge(rubric, ["no"], { runId: "RUN-PLAN-OBJ", roundId: null });
+    syncRubricStageGateBlockers(CHANGE_ID, "Plan");
+
+    saveRubricVersion({
+      ...SPEC_CRITIC,
+      phase: "Plan",
+      role: "producer",
+      criteria: [{ text: "步骤可执行", blocking: false, criterionKey: rubric.criteria[0]!.criterionKey }],
+    });
+    syncRubricStageGateBlockers(CHANGE_ID, "Plan");
+
+    const after = getStageAuthority(CHANGE_ID, "Plan").latestGate!;
+    assert.deepEqual(
+      (JSON.parse(after.blockersJson ?? "[]") as Array<{ id: string }>).map((b) => b.id),
+      [UNREADABLE_GATE_BLOCKERS_ID],
+    );
+  });
+
+  it("marks a single unreadable entry without discarding its readable siblings", () => {
+    // Valid JSON, valid array, one entry with no string `id`. The reader on the
+    // other side (`normalizeBlockers`) invents an id for exactly this shape, so
+    // it is a payload the system already accepts -- but this writer used to drop
+    // it on the floor while keeping the rest, which is the same erasure in
+    // miniature and even harder to notice.
+    seedCorruptPlanGate('[{"id":"risk-1","severity":"P1","title":"计划风险"},{"severity":"P1","title":"无 id"}]');
+    blockOnceWithRubric("RUN-PLAN-PARTIAL");
+
+    const ids = (JSON.parse(getStageAuthority(CHANGE_ID, "Plan").latestGate!.blockersJson ?? "[]") as Array<{
+      id: string;
+    }>).map((b) => b.id);
+    assert.equal(ids.includes("risk-1"), true, "the readable sibling is still carried forward");
+    assert.equal(ids.includes(UNREADABLE_GATE_BLOCKERS_ID), true, "the dropped entry is accounted for");
+  });
+
+  it("leaves a well-formed empty list empty, so the marker cannot appear from nothing", () => {
+    seedCorruptPlanGate("[]");
+    blockOnceWithRubric("RUN-PLAN-EMPTY");
+
+    const ids = (JSON.parse(getStageAuthority(CHANGE_ID, "Plan").latestGate!.blockersJson ?? "[]") as Array<{
+      id: string;
+    }>).map((b) => b.id);
+    assert.equal(ids.includes(UNREADABLE_GATE_BLOCKERS_ID), false);
+  });
+
   it("refuses phases that own no stage gate rather than guessing a neighbour", () => {
-    assert.deepEqual(syncRubricStageGateBlockers(CHANGE_ID, "Refine"), {
+    // Was Refine (deleted); Retro is the remaining phase that owns no stage gate.
+    assert.deepEqual(syncRubricStageGateBlockers(CHANGE_ID, "Retro"), {
       applied: false,
       reason: "unsupported_phase",
     });

@@ -6,14 +6,8 @@ import type { UiStageState } from "./pipeline-ui-model";
 import { RubricPanel } from "./rubric-panel";
 import { StageFrame, type StageBlockerView } from "./stage-frame";
 import type { StageActionView } from "./stage-action-bar";
-import type { AiProvider } from "./pipeline-action-contract";
 
 const PHASE_STAGE_COPY: Record<ReviewPhase, { label: string; title: string; description: string }> = {
-  Refine: {
-    label: "Refine",
-    title: "需求澄清",
-    description: "把原始想法整理成可以进入 PRD 的输入。",
-  },
   Intake: {
     label: "PRD",
     title: "PRD Briefing",
@@ -113,10 +107,6 @@ export function PhaseStageShell({
   state = "waiting",
   actions,
   actionError,
-  provider,
-  onProviderChange,
-  providerDisabled,
-  providerSelectable,
   error,
   blockers,
 }: {
@@ -131,10 +121,6 @@ export function PhaseStageShell({
   state?: UiStageState;
   actions?: StageActionView[];
   actionError?: ReactNode;
-  provider?: AiProvider;
-  onProviderChange?: (provider: AiProvider) => void;
-  providerDisabled?: boolean;
-  providerSelectable?: boolean;
   error?: ReactNode;
   blockers?: StageBlockerView[];
 }) {
@@ -168,10 +154,6 @@ export function PhaseStageShell({
         ]}
         actions={actions}
         actionError={actionError}
-        provider={provider}
-        onProviderChange={onProviderChange}
-        providerDisabled={providerDisabled}
-        providerSelectable={providerSelectable}
         error={error}
         blockers={blockers}
         rubric={

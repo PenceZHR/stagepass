@@ -18,6 +18,7 @@ import {
   prdRunDecision,
   specRunDecision,
   techSpecRunDecision,
+  waiveSpecP1Decision,
 } from "./action-contract-design-policy";
 import {
   adoptBuildRunDecision,
@@ -26,7 +27,6 @@ import {
   retryBuildDecision,
   reviewBuildAdoptionDecision,
 } from "./action-contract-build-policy";
-import { commitChangesDecision, initGitRepoDecision } from "./action-contract-git-policy";
 import { reviewControlDecision } from "./action-contract-review-policy";
 import { enterQaDecision, retryQaDecision } from "./action-contract-qa-policy";
 import {
@@ -178,10 +178,57 @@ const briefingRun: ActionPolicy = ({ db, changeId, definition }) => {
   };
 };
 
+const rejectIntake: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
+// PRD question cards and the lock command are producers of the Intake gate.
+// They carry the current PRD authority identity but never consume a blocked
+// downstream stage gate as their own precondition.
+const prdInteraction: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
+// Design-stage correction, rejection, and P1-waiver commands are exits from a
+// blocked gate, not consumers of the passing verdict. Their transaction
+// handlers revalidate the concrete target (gap/risk/snapshot) before writing.
+const designGateExit: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
+const releaseDecisionExit: ActionPolicy = ({ snapshot }) =>
+  withSnapshotGateFields(
+    { enabled: true, reasonCode: null, reason: null, blockers: [] },
+    snapshot,
+  );
+
 const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, ActionPolicy>([
   ["run_prd", ({ snapshot }) => prdRunDecision(snapshot)],
   ["retry_prd", ({ changeStatus, snapshot }) =>
     ["INTAKE_PENDING", "BLOCKED"].includes(changeStatus) ? prdRunDecision(snapshot) : notAtGate()],
+
+  // Rejecting Intake is an exit from the PRD gate, not a consumer of its
+  // verdict. The requiredStatus filter above has already proved the change is
+  // at INTAKE_READY; carrying the snapshot here keeps preflight freshness
+  // checks without letting a blocked rubric verdict disable its own escape.
+  ["reject_intake", rejectIntake],
+  ["answer_prd_question", prdInteraction],
+  ["accept_prd_assumption", prdInteraction],
+  ["defer_prd_question", prdInteraction],
+  ["lock_prd_briefing", prdInteraction],
+  ["request_spec_changes", designGateExit],
+  ["return_to_spec", designGateExit],
+  ["reject_spec", designGateExit],
+  ["reject_tech_spec", designGateExit],
+  ["waive_plan_p1", designGateExit],
+  ["reject_plan", designGateExit],
+  ["reject_test_plan", designGateExit],
 
   ["run_prd_briefing_questions", briefingRun],
   ["run_prd_briefing_draft", briefingRun],
@@ -205,6 +252,11 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
 
   // fix_blockers is decided in PRE_STATUS_GATE_POLICIES instead, ahead of the
   // requiredStatus filter.
+  // waive_spec_p1 needs its own policy: without one it falls through to
+  // gateDecision("Spec"), which disables anything whose gate is blocked -- and a
+  // P1 waiver is only ever used WHILE the gate is blocked.
+  ["waive_spec_p1", ({ changeId }) => waiveSpecP1Decision(changeId)],
+
   ["waive_review_p1", reviewControl],
   ["recompute_report", reviewControl],
   ["rebuild_mirror", reviewControl],
@@ -226,11 +278,14 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
     }],
   ["retry_qa", ({ db, changeId, changeStatus, snapshot, readStageAuthority }) =>
     retryQaDecision(db, changeId, changeStatus, snapshot, readStageAuthority(changeId, "TestPlan"))],
+  ["record_qa_manual_check", releaseDecisionExit],
 
   ["approve_merge", ({ db, changeId, options }) =>
     options.recomputeMergeReadiness
       ? approveMergeDecision(db, changeId)
       : approveMergeDecisionFromPersistedReadiness(db, changeId)],
+  ["override_merge", releaseDecisionExit],
+  ["request_rework", releaseDecisionExit],
   ["merge", ({ db, changeId, options }) =>
     options.recomputeMergeReadiness
       ? mergeDecision(changeId, true)
@@ -272,13 +327,61 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
   ["adopt_fix", buildAdopt],
   ["reject_build", ({ db, changeId }) => rejectBuildRunDecision(db, changeId)],
 
-  // Decided purely from the working tree; they never consult base(), because the
-  // Build stage gate has no bearing on whether a path is a repository or whether
-  // there is anything to commit. See action-contract-git-policy for why they
-  // also carry their own (gateVersion, sourceDbHash) instead of the gate's.
-  ["init_git_repo", ({ changeId, repoPath }) => initGitRepoDecision(repoPath, changeId)],
-  ["commit_changes", ({ changeId, repoPath }) => commitChangesDecision(repoPath, changeId)],
 ]);
+
+/**
+ * A change that has been delivered is finished. Nothing below may restart it.
+ *
+ * Measured on a copy of the shipped database: a change parked at DONE still
+ * offered seven actions with `enabled: true, reasonCode: null`, and `enter_qa`
+ * was not merely offered -- POSTing it answered **202** and queued a
+ * local_check job against the delivered change. The action contract is the only
+ * thing standing between the UI and that, because each policy answers about its
+ * own stage and none of them asks whether the change is still open at all.
+ *
+ * Deliberately not every action. Regenerating a report or rebuilding a mirror on
+ * a finished change is a legitimate read-back, and blanket-disabling would take
+ * away the only way to get those artifacts re-rendered. What is refused is
+ * anything that would move the change or start new work.
+ */
+const TERMINAL_CHANGE_STATUSES: ReadonlySet<string> = new Set(["DONE"]);
+
+const ACTIONS_REFUSED_ON_TERMINAL_CHANGE: ReadonlySet<string> = new Set([
+  "enter_qa",
+  "stop_change",
+  "waive_spec_p1",
+  "waive_plan_p1",
+  // The two operations below have no ACTION_DEFINITIONS entry, so they never
+  // pass through decideAction at all -- their routes call the service directly.
+  // They are listed here anyway so this set stays the one statement of "what a
+  // finished change refuses", and `changeTerminalRefusal` lets those routes read
+  // it. Measured against a copy of the shipped database: POSTing /rework to a
+  // DONE change reached reworkChange and died on "FOREIGN KEY constraint
+  // failed", while /block -- same change, same instant -- correctly answered 409
+  // change_terminal. The only thing standing between a terminal change and an
+  // unauthorized rework was an unrelated FK bug.
+  "rework",
+  "spec_battle_decision",
+]);
+
+/**
+ * Why a finished change refuses an operation, or null if it does not.
+ *
+ * Exported so the routes that bypass the action contract entirely can still
+ * honour the same rule from the same set, rather than growing a second copy of
+ * it. `decideAction` below is the other caller.
+ */
+export function changeTerminalRefusal(
+  changeStatus: string,
+  actionId: string,
+): { reasonCode: string; reason: string } | null {
+  if (!TERMINAL_CHANGE_STATUSES.has(changeStatus)) return null;
+  if (!ACTIONS_REFUSED_ON_TERMINAL_CHANGE.has(actionId)) return null;
+  return {
+    reasonCode: "change_terminal",
+    reason: `Change is ${changeStatus} and cannot be advanced further`,
+  };
+}
 
 export function decideAction(
   db: ActionContractDb,
@@ -290,6 +393,13 @@ export function decideAction(
   snapshot: StageAuthoritySnapshot,
   options: DecisionRouterOptions,
 ): ActionDecision {
+  // Ahead of every policy: this is a fact about the change, not about any one
+  // stage, and no per-stage policy is positioned to notice it.
+  const terminalRefusal = changeTerminalRefusal(changeStatus, definition.actionId);
+  if (terminalRefusal) {
+    return { enabled: false, ...terminalRefusal, blockers: [] };
+  }
+
   const legacyOnly = legacyOnlyDecision(db, changeId, snapshot);
   if (legacyOnly) return legacyOnly;
 

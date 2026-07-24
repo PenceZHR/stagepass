@@ -1350,7 +1350,18 @@ describe("action-contract-service", () => {
     assert.equal(actions.find((action) => action.actionId === "waive_review_p1")?.reasonCode, "no_waivable_review_p1");
     assert.equal(actions.find((action) => action.actionId === "recompute_report")?.enabled, true);
     assert.equal(actions.find((action) => action.actionId === "rebuild_mirror")?.enabled, true);
-    assert.equal(actions.find((action) => action.actionId === "stop_change")?.enabled, true);
+    // Was `enabled: true`. That assertion pinned the defect rather than a
+    // behaviour: this fixture's runs are all `completed` (seedReviewWithOpenP0
+    // inserts nothing running), and stop_change's handler is stopActiveRuns,
+    // which only touches rows with status = 'running' and throws when it
+    // matches none. So "enabled" here meant "offer a button whose only possible
+    // outcome is RunLedgerMutationTargetMissingError surfacing as a 400 with the
+    // raw internal string" -- reproduced in the browser before this change. The
+    // action's presence in the contract is still asserted, by the
+    // review_gate_missing loop below; what changed is that it now carries the
+    // reason it is unavailable instead of pretending it can run.
+    assert.equal(actions.find((action) => action.actionId === "stop_change")?.enabled, false);
+    assert.equal(actions.find((action) => action.actionId === "stop_change")?.reasonCode, "no_active_run");
     assert.equal(actions.find((action) => action.actionId === "recompute_report")?.requiresIdempotencyKey, true);
     assert.equal(actions.find((action) => action.actionId === "rebuild_mirror")?.requiresIdempotencyKey, true);
     for (const actionId of [
@@ -1661,6 +1672,50 @@ describe("action-contract-service", () => {
     assert.equal(runPlan?.enabled, true);
     assert.equal(runPlan?.sourceDbHash, "techspec-source-hash");
     assert.equal(runPlan?.gateVersion, "7");
+  });
+
+  /**
+   * Rejecting Intake is the escape from a PRD gate the human does not accept;
+   * it cannot consume that same gate's verdict as a prerequisite. Rubric
+   * projection made the inversion reproducible by changing a previously
+   * passing PRD gate to blocked: the write path still accepted rejectGate at
+   * INTAKE_READY, while the contract disabled reject_intake as gate_blocked and
+   * the route's preflight returned 409 before the write path could run.
+   */
+  it("keeps reject_intake available on a blocked PRD gate, but only at Intake", () => {
+    db.update(changes)
+      .set({ status: "INTAKE_READY", gateState: null })
+      .where(eq(changes.id, CHANGE_ID))
+      .run();
+    seedStageGate("PRD", "blocked", "prd-rubric-blocked-hash", [
+      { id: "rubric:prd:scope", severity: "P0", title: "PRD rubric scope is not satisfied" },
+    ]);
+
+    const reject = getActions(CHANGE_ID).find((action) => action.actionId === "reject_intake");
+    assert.ok(reject);
+    assert.equal(reject.enabled, true, "reject is the exit from a blocked Intake gate");
+    assert.equal(reject.reasonCode, null);
+    assert.equal(reject.gateVersion, "7");
+    assert.equal(reject.sourceDbHash, "prd-rubric-blocked-hash");
+    assert.doesNotThrow(() =>
+      assertActionAllowed({
+        changeId: CHANGE_ID,
+        actionId: "reject_intake",
+        expectedGateVersion: reject.gateVersion ?? "",
+        expectedSourceDbHash: reject.sourceDbHash ?? "",
+        idempotencyKey: "reject-blocked-intake",
+      }),
+    );
+
+    db.update(changes)
+      .set({ status: "INTAKE_PENDING" })
+      .where(eq(changes.id, CHANGE_ID))
+      .run();
+
+    const offGate = getActions(CHANGE_ID).find((action) => action.actionId === "reject_intake");
+    assert.ok(offGate);
+    assert.equal(offGate.enabled, false, "the escape must not become a global rollback");
+    assert.equal(offGate.reasonCode, "not_at_gate");
   });
 
   it("derives Spec run actions from the approved PRD gate while Intake is ready", () => {
@@ -2529,179 +2584,171 @@ describe("action-contract-service", () => {
     const retryBuild = actions.find((action) => action.actionId === "retry_build");
 
     assert.equal(runBuild?.enabled, false);
-    assert.equal(runBuild?.reasonCode, "build_base_camp_blocked");
-    assert.equal(runBuild?.reason, "Build workspace base camp blocked: Path is not a git repository.");
+    assert.equal(runBuild?.reasonCode, "repository_required_for_protected_build");
+    assert.equal(runBuild?.reason, "Initialize Git in Codex, then run repository recovery in StagePass.");
     assert.deepEqual(runBuild?.blockers, [
-      { id: "build_base_camp_1", severity: "P1", title: "Path is not a git repository." },
+      {
+        id: "repository_required_for_protected_build",
+        severity: "P1",
+        title: "Protected Build requires a Git repository.",
+      },
     ]);
     assert.equal(retryBuild?.enabled, false);
-    assert.equal(retryBuild?.reasonCode, "build_base_camp_blocked");
+    assert.equal(retryBuild?.reasonCode, "repository_required_for_protected_build");
   });
 
   /**
-   * The git actions. Before they existed the contract held zero of them, so the
-   * two facts below were invisible to the pipeline: "this path is not a git
-   * repository" was something only run_build consulted, and only to refuse
-   * itself, and "there is uncommitted work" was not represented at all -- the Git
-   * tool panel beside the pipeline could see it, the gate could not.
+   * A delivered change is finished, and the contract is the only thing standing
+   * between the UI and restarting it. Measured on a copy of the shipped
+   * database: DONE offered seven actions with `enabled: true, reasonCode: null`,
+   * and POSTing enter_qa answered 202 -- queueing a local_check job against the
+   * delivered change rather than refusing it.
    */
-  it("offers init_git_repo as the escape from the same stall that blocks Build on a non-repository", () => {
-    db.update(changes).set({ status: "PLAN_APPROVED" }).where(eq(changes.id, CHANGE_ID)).run();
-    seedStageGate("TestPlan", "passed", "testplan-source-hash");
+  it("refuses the actions that would restart a delivered change, and only those", () => {
+    db.update(changes).set({ status: "DONE" }).where(eq(changes.id, CHANGE_ID)).run();
 
     const actions = getActions(CHANGE_ID);
-    const runBuild = actions.find((action) => action.actionId === "run_build");
-    const initGitRepo = actions.find((action) => action.actionId === "init_git_repo");
-    const commitChanges = actions.find((action) => action.actionId === "commit_changes");
+    const byId = (id: string) => actions.find((action) => action.actionId === id);
 
-    // The stall and its exit are served by the same contract, in the same read.
-    assert.equal(runBuild?.enabled, false);
-    assert.equal(runBuild?.reasonCode, "build_base_camp_blocked");
+    for (const actionId of ["enter_qa", "stop_change", "waive_spec_p1", "waive_plan_p1"]) {
+      assert.equal(byId(actionId)?.enabled, false, `${actionId} must be refused on DONE`);
+      assert.equal(byId(actionId)?.reasonCode, "change_terminal", `${actionId} reason`);
+    }
 
-    assert.equal(initGitRepo?.enabled, true);
-    assert.equal(initGitRepo?.reasonCode, null);
-    assert.deepEqual(initGitRepo?.blockers, []);
-
-    assert.equal(commitChanges?.enabled, false);
-    assert.equal(commitChanges?.reasonCode, "git_repo_missing");
-    assert.equal(commitChanges?.reason, "Cannot commit: Path is not a git repository.");
-    // Same wording run_build's base camp blocker uses -- one fault, one name.
-    assert.deepEqual(commitChanges?.blockers, [
-      { id: "git_repo_missing", severity: "P1", title: "Path is not a git repository." },
-    ]);
-  });
-
-  it("closes init_git_repo and opens commit_changes once the tree carries uncommitted work", () => {
-    initCleanGitRepo(repoPath);
-    seedStageGate("Build", "passed", "build-source-hash");
-
-    const cleanActions = getActions(CHANGE_ID);
-    const cleanInit = cleanActions.find((action) => action.actionId === "init_git_repo");
-    const cleanCommit = cleanActions.find((action) => action.actionId === "commit_changes");
-
-    assert.equal(cleanInit?.enabled, false);
-    assert.equal(cleanInit?.reasonCode, "git_repo_already_initialized");
-    assert.deepEqual(cleanInit?.blockers, []);
-    assert.equal(cleanCommit?.enabled, false);
-    assert.equal(cleanCommit?.reasonCode, "git_worktree_clean");
-    // A clean tree is not a fault, so it must not manufacture a blocker: this is
-    // the steady state of every healthy change.
-    assert.deepEqual(cleanCommit?.blockers, []);
-
-    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
-
-    const dirtyCommit = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-    assert.equal(dirtyCommit?.enabled, true);
-    assert.equal(dirtyCommit?.reasonCode, null);
-    assert.deepEqual(dirtyCommit?.blockers, []);
-  });
-
-  it("does not report the change's own pipeline artifact churn as uncommitted work", () => {
-    initCleanGitRepo(repoPath);
-    const changeArtifactDir = path.join(repoPath, ".ship", "changes", CHANGE_ID);
-    fs.mkdirSync(changeArtifactDir, { recursive: true });
-    fs.writeFileSync(path.join(changeArtifactDir, "plan.json"), "{}\n");
-    fs.mkdirSync(path.join(repoPath, ".ship", "prompts"), { recursive: true });
-    fs.writeFileSync(path.join(repoPath, ".ship", "prompts", "build.md"), "# prompt\n");
-    seedStageGate("Build", "passed", "build-source-hash");
-
-    const artifactOnly = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-
-    // Every stage writes into .ship on every run. Counting those as "work to
-    // commit" would leave the action permanently enabled and permanently
-    // meaningless, so it reads the same exclusion list the Build base camp does.
-    assert.equal(artifactOnly?.enabled, false);
-    assert.equal(artifactOnly?.reasonCode, "git_worktree_clean");
-
-    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
-    const withRealWork = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-    assert.equal(withRealWork?.enabled, true);
-  });
-
-  it("enables the initial commit on a repository that has no commits yet", () => {
-    // Exactly the state init_git_repo leaves behind, so the two actions have to
-    // hand off cleanly: HEAD does not resolve, and every file is committable.
-    fs.mkdirSync(repoPath, { recursive: true });
-    execSync("git init -b main", { cwd: repoPath, stdio: "ignore" });
-    fs.writeFileSync(path.join(repoPath, "README.md"), "# unborn\n");
-    seedStageGate("Build", "passed", "build-source-hash");
-
-    const commitChanges = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-
-    assert.equal(commitChanges?.enabled, true);
-    assert.equal(commitChanges?.sourceDbHash, "git_head:unborn");
+    // Not a blanket terminal lock: re-rendering a report or a mirror on a
+    // finished change is a legitimate read-back, and disabling it would leave no
+    // way to regenerate those artifacts at all.
+    for (const actionId of ["recompute_report", "rebuild_mirror", "regenerate_plan_report"]) {
+      assert.notEqual(
+        byId(actionId)?.reasonCode,
+        "change_terminal",
+        `${actionId} must stay reachable on DONE`,
+      );
+    }
   });
 
   /**
-   * The git actions are stamped with their own identity instead of the Build
-   * gate's, and this is why.
-   *
-   * GET /gate serves computeActions (no self-heal, no persist) while preflight
-   * runs getActions (self-heals, persists, and bumps stage gate versions), so an
-   * action that borrows the stage gate's version can be handed out by a render
-   * and then refused by the very next POST with gate_version_drift. Pinning
-   * gateVersion to a constant and sourceDbHash to HEAD takes these two out of
-   * that race: the value the page renders is the value preflight compares
-   * against, whichever entry point produced it.
+   * stop_change fell through to reviewControlDecision's unconditional
+   * `enabled: true`, so it was offered with nothing to stop. Its handler is
+   * stopActiveRuns, which updates rows with status = 'running' and asserts the
+   * mutation affected something; zero matches throws, and block/route.ts's bare
+   * catch turns that into a 400 carrying the raw internal text. Verified by
+   * clicking the button on a change whose runs were all completed: the page
+   * showed "Run ledger mutation target was not found: stopActiveRuns CHG-...".
    */
-  it("issues git actions with a gate-independent identity that preflight accepts", () => {
-    initCleanGitRepo(repoPath);
-    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
-    seedStageGate("Build", "passed", "build-source-hash");
-    const headSha = execSync("git rev-parse HEAD", { cwd: repoPath, encoding: "utf-8" }).trim();
+  it("offers stop_change only while a run is actually running", () => {
+    db.update(changes).set({ status: "REVIEWING" }).where(eq(changes.id, CHANGE_ID)).run();
+    db.update(runs).set({ status: "completed" }).where(eq(runs.changeId, CHANGE_ID)).run();
 
-    const rendered = computeActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-    assert.equal(rendered?.enabled, true);
-    assert.equal(rendered?.gateVersion, "0");
-    assert.equal(rendered?.sourceDbHash, `git_head:${headSha}`);
-    // NOT the Build gate's 7/build-source-hash, which self-heal is free to move.
-    assert.notEqual(rendered?.gateVersion, "7");
-    assert.notEqual(rendered?.sourceDbHash, "build-source-hash");
+    const idle = getActions(CHANGE_ID).find((action) => action.actionId === "stop_change");
+    assert.equal(idle?.enabled, false);
+    assert.equal(idle?.reasonCode, "no_active_run");
 
-    const refreshed = getActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-    assert.equal(refreshed?.gateVersion, rendered?.gateVersion);
-    assert.equal(refreshed?.sourceDbHash, rendered?.sourceDbHash);
-
-    // The contract the page rendered survives the self-healing preflight path.
-    const allowed = assertActionAllowed({
+    // The other direction matters just as much: a guard that also refused a
+    // change with a live run would take away the only way to stop one.
+    db.insert(runs).values({
+      id: "RUN-STOP-ACTIVE",
       changeId: CHANGE_ID,
-      actionId: "commit_changes",
-      expectedGateVersion: rendered!.gateVersion,
-      expectedSourceDbHash: rendered!.sourceDbHash,
-    });
-    assert.equal(allowed.actionId, "commit_changes");
+      phase: "review",
+      status: "running",
+      startedAt: "2026-06-29T00:00:00.000Z",
+      provider: "codex",
+    }).run();
+
+    const active = getActions(CHANGE_ID).find((action) => action.actionId === "stop_change");
+    assert.equal(active?.enabled, true);
+    assert.equal(active?.reasonCode, null);
   });
 
-  it("refuses a commit whose contract was issued against a HEAD that has since moved", () => {
+  /**
+   * The base camp probe shells out, so it reports nothing when it cannot run at
+   * all -- it throws. A repoPath that was deleted, renamed, or lives on an
+   * unmounted volume makes the spawn itself fail, and a timeout or an output
+   * overflow does the same. Unguarded, that exception escaped getActions and
+   * reached GET /gate, which answers 500: the client then held no contract for
+   * ANY of the 45 actions, over a probe that only speaks for the build ones.
+   * Reproduced against a copy of the shipped database before the fix -- the
+   * gate returned `500 GATE_STATUS_UNAVAILABLE` and the stage action bar
+   * vanished from the page.
+   */
+  it("degrades only the build actions when the base camp probe cannot run at all", () => {
     initCleanGitRepo(repoPath);
-    fs.writeFileSync(path.join(repoPath, "src.ts"), "export const x = 1;\n");
-    seedStageGate("Build", "passed", "build-source-hash");
-    const stale = computeActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-    assert.equal(stale?.enabled, true);
+    db.update(changes).set({ status: "PLAN_APPROVED" }).where(eq(changes.id, CHANGE_ID)).run();
+    seedStageGate("TestPlan", "passed", "testplan-source-hash");
+    // Build run/retry trace the TestPlan gate; back it via the legacy pairing path.
+    seedAuthorityBackedStageSource("TestPlan", "test_plan", "testplan-source-hash");
 
-    // Something else lands a commit -- in the double-submit case, this action's
-    // own first POST. HEAD is what makes the second one refusable even though
-    // the tree is dirty again.
-    execSync("git add -A", { cwd: repoPath, stdio: "ignore" });
-    execSync("git commit -m other", { cwd: repoPath, stdio: "ignore" });
-    fs.writeFileSync(path.join(repoPath, "other.ts"), "export const y = 2;\n");
+    const healthy = getActions(CHANGE_ID);
+    // The probe has to be reachable for the guard to mean anything:
+    // buildBaseCampDecision returns early on an already-disabled action.
+    assert.equal(healthy.find((action) => action.actionId === "run_build")?.enabled, true);
 
-    const current = computeActions(CHANGE_ID).find((action) => action.actionId === "commit_changes");
-    assert.equal(current?.enabled, true);
-    assert.notEqual(current?.sourceDbHash, stale?.sourceDbHash);
+    // Not "an empty directory" and not "a directory that is not a repo" -- both
+    // of those the probe answers cleanly. The path has to be gone, so the spawn
+    // itself fails and the probe throws.
+    fs.rmSync(repoPath, { recursive: true, force: true });
 
-    assert.throws(
-      () =>
-        assertActionAllowed({
-          changeId: CHANGE_ID,
-          actionId: "commit_changes",
-          expectedGateVersion: stale!.gateVersion,
-          expectedSourceDbHash: stale!.sourceDbHash,
-        }),
-      (error: unknown) =>
-        error instanceof PreflightBlockedError &&
-        error.envelope.reasonCode === "source_db_hash_drift",
-    );
+    const actions = getActions(CHANGE_ID);
+
+    // The whole contract survives; this is the property the 500 destroyed.
+    assert.equal(actions.length, healthy.length);
+
+    const runBuild = actions.find((action) => action.actionId === "run_build");
+    assert.equal(runBuild?.enabled, false);
+    assert.equal(runBuild?.reasonCode, "build_base_camp_probe_failed");
+    // Fail closed with the cause named, not a bare "unavailable": a build must
+    // not start on a workspace nobody can read, and the operator needs to know
+    // it was the probe rather than the gate that refused.
+    assert.match(String(runBuild?.reason), /probe failed/i);
+    assert.equal(runBuild?.blockers.length, 1);
+
+    // An action that never consults git is untouched -- the blast radius stays
+    // at the probe's own actions.
+    const waiveSpec = actions.find((action) => action.actionId === "waive_spec_p1");
+    assert.notEqual(waiveSpec?.reasonCode, "build_base_camp_probe_failed");
+    assert.notEqual(waiveSpec?.reasonCode, "action_policy_failed");
+  });
+
+  /**
+   * Second layer, independent of the first: any policy may start shelling out or
+   * reading the filesystem later, so the map itself has to hold the line rather
+   * than relying on every policy remembering to. Injecting the fault through the
+   * QA head probe proves the isolation without depending on the base camp path.
+   */
+  it("keeps the rest of the contract when one action's policy throws", () => {
+    // enter_qa has to be genuinely enabled first, or its policy short-circuits
+    // on an earlier reason and never reaches the probe being made to explode.
+    seedReviewWithOpenP0();
+    db.delete(findings).where(eq(findings.id, "FND-ACTION-CONTRACT-P0")).run();
+    seedApprovedTestPlanForQa();
+    settleTrustedReviewAuthority();
+    const healthy = computeActions(CHANGE_ID);
+    assert.equal(healthy.find((action) => action.actionId === "enter_qa")?.enabled, true);
+
+    const restore = setReviewQaGateHeadProbeForTest(() => {
+      throw new Error("injected probe explosion");
+    });
+    let actions: ReturnType<typeof computeActions>;
+    try {
+      actions = computeActions(CHANGE_ID);
+    } finally {
+      restore();
+    }
+
+    assert.equal(actions.length, healthy.length);
+    const enterQa = actions.find((action) => action.actionId === "enter_qa");
+    assert.equal(enterQa?.enabled, false);
+    assert.equal(enterQa?.reasonCode, "action_policy_failed");
+    assert.match(String(enterQa?.reason), /injected probe explosion/);
+
+    // ...and nothing else moved. Same assertion the prior-blocking-findings
+    // regression above makes, for the same reason: "the contract survived" is
+    // worth little if the surviving contract quietly disabled everything.
+    const movedActionIds = actions
+      .filter((action) =>
+        healthy.find((before) => before.actionId === action.actionId)?.enabled !== action.enabled)
+      .map((action) => action.actionId);
+    assert.deepEqual(movedActionIds, ["enter_qa"]);
   });
 
   it("allows Build actions when base camp is dirty with warnings but no blockers", () => {
@@ -2906,7 +2953,7 @@ describe("action-contract-service", () => {
     const retryBuild = getActions(CHANGE_ID).find((action) => action.actionId === "retry_build");
 
     assert.equal(retryBuild?.enabled, false);
-    assert.equal(retryBuild?.reasonCode, "build_base_camp_blocked");
+    assert.equal(retryBuild?.reasonCode, "repository_required_for_protected_build");
   });
 
   it("uses approve_plan to confirm TestPlan after TestPlan is done", () => {

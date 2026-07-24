@@ -58,7 +58,7 @@
 链接: server/services/ai-engine-types.ts
 
 **采纳：**
-- AiProvider（codex/claude）
+- AiProvider（仅 codex）
 - AiRunInput/AiRunResult
 - AiEngineAdapter 契约
 

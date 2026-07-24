@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { projects } from "../db/schema";
 import type { Project } from "../types";
-import { getDefaultBranch, hasCommits, isGitRepo } from "./git-service";
+import { getDefaultBranch, hasCommits, isGitRepo } from "./repository-evidence-service";
 
 function nowISO(): string {
   return new Date().toISOString();

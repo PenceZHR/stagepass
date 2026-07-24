@@ -9,11 +9,13 @@ import type {
 } from "node:child_process";
 
 import {
-  commitWithMessage,
   getCommitSubject,
-  gitApplyExcludeArgs,
   type GitNameStatusEntry,
-} from "./git-service";
+} from "./repository-evidence-service";
+import {
+  commitAdoptedPatch,
+  gitApplyExcludeArgs,
+} from "./workspace-versioning-service";
 import {
   loadDbPlanScope,
   loadPolicy,
@@ -357,6 +359,7 @@ export interface AbsorbBuildPatchInput {
   repoPath: string;
   changeId: string;
   commit?: AdoptionCommitOptions;
+  adoptionDecisionId?: string;
 }
 
 export interface RejectLatestBuildRunInput {
@@ -368,6 +371,23 @@ export interface AdoptFixPatchInput {
   repoPath: string;
   changeId: string;
   commit?: AdoptionCommitOptions;
+  adoptionDecisionId?: string;
+}
+
+export interface ExpectedBuildAdoptionIdentity {
+  buildRunId: string;
+  patchHash: string;
+  changedFilesHash: string;
+  expectedHeadSha: string | null;
+}
+
+export interface CurrentBuildAdoptionIdentity {
+  buildRunId: string;
+  purpose: "build" | "fix";
+  baseCommit: string;
+  sourceHeadSha: string;
+  patchHash: string;
+  changedFilesHash: string;
 }
 
 export interface AssertAdoptedBuildRunMatchesWorkspaceInput {
@@ -522,6 +542,82 @@ function assertFixRunDbFreshForAdoption(changeId: string, run: BuildRunFile): vo
     }
     throw error;
   }
+}
+
+/**
+ * Re-reads all Build identity authorities immediately before a human command
+ * mutates adoption state: Git Base Camp, the workspace patch, and the DB record.
+ */
+export function readBuildAdoptionIdentity(
+  repoPath: string,
+  changeId: string,
+): CurrentBuildAdoptionIdentity {
+  const run = readLatestBuildRun(repoPath, changeId);
+  if (!run) {
+    throw buildWorkspaceConflict("build_identity_drift: latest Build run is missing");
+  }
+  if (!run.baseCommit) {
+    throw buildWorkspaceConflict("build_identity_drift: Build base commit is missing");
+  }
+  readVerifiedBuildPatch(repoPath, changeId, run);
+  const current = recomputeWorkspaceBuildHashes(run);
+  const id = buildRunId(run);
+  const record = getBuildRunRecord(changeId, id);
+  if (
+    !record
+    || record.patchHash !== current.patchHash
+    || record.changedFilesHash !== current.changedFilesHash
+    || record.baseCommit !== run.baseCommit
+  ) {
+    throw buildWorkspaceConflict(
+      "build_identity_drift: Build DB and workspace patch identity differ",
+    );
+  }
+  const baseCamp = checkGitBaseCamp(repoPath, {
+    ignoredPrefixes:
+      run.purpose === "fix"
+        ? changeAndSiblingArtifactIgnoredPrefixes(repoPath, changeId)
+        : [
+            ...pipelineSystemMetadataIgnoredPrefixes(),
+            ...allChangeArtifactIgnoredPrefixes(repoPath, changeId),
+          ],
+  });
+  if (!baseCamp.headSha) {
+    throw buildWorkspaceConflict(
+      "build_identity_drift: Git Base Camp HEAD is unavailable",
+    );
+  }
+  return {
+    buildRunId: id,
+    purpose: run.purpose ?? "build",
+    baseCommit: run.baseCommit,
+    sourceHeadSha: baseCamp.headSha,
+    patchHash: current.patchHash,
+    changedFilesHash: current.changedFilesHash,
+  };
+}
+
+export function assertBuildAdoptionIdentity(
+  repoPath: string,
+  changeId: string,
+  expected: ExpectedBuildAdoptionIdentity,
+): CurrentBuildAdoptionIdentity {
+  const current = readBuildAdoptionIdentity(repoPath, changeId);
+  if (
+    current.buildRunId !== expected.buildRunId
+    || current.patchHash !== expected.patchHash
+    || current.changedFilesHash !== expected.changedFilesHash
+    || (
+      expected.expectedHeadSha !== null
+      && current.sourceHeadSha !== expected.expectedHeadSha
+    )
+    || current.sourceHeadSha !== current.baseCommit
+  ) {
+    throw buildWorkspaceConflict(
+      "build_identity_drift: the current Build no longer matches the presented card",
+    );
+  }
+  return current;
 }
 
 function writeBuildPatchApproval(
@@ -1011,7 +1107,8 @@ export function absorbBuildPatch(input: AbsorbBuildPatchInput): BuildRunFile {
   const approval = readBuildPatchApproval(input.repoPath, input.changeId, run);
   assertApprovalMatchesRun(approval, run, patch);
   assertBuildRunDbFreshForAdoption(input.changeId, run);
-  const adoptionDecisionId = `build-${run.runNumber}-adoption`;
+  const adoptionDecisionId =
+    input.adoptionDecisionId ?? `build-${run.runNumber}-adoption`;
   const commitMessage = `build(${input.changeId}): adopt ${adoptionDecisionId}`;
   const removedMirrorArtifacts = captureAndRemoveBuildAdoptionMirrorArtifacts(input.repoPath, run);
   try {
@@ -1030,7 +1127,7 @@ export function absorbBuildPatch(input: AbsorbBuildPatchInput): BuildRunFile {
     if (baseCamp.headSha === run.baseCommit && baseCamp.status === "ready") {
       applyPatch(input.repoPath, patch, { excludedPrefixes: patchAdoptionIgnoredPrefixes() });
       if (input.commit?.enabled) {
-        commitWithMessage(input.repoPath, commitMessage, adoptionCommitPaths(run.changedFiles));
+        commitAdoptedPatch(input.repoPath, commitMessage, adoptionCommitPaths(run.changedFiles));
       }
     } else if (baseCamp.headSha === run.baseCommit) {
       const alreadyApplied = adoptedPatchMatchesWorkspace(
@@ -1096,7 +1193,8 @@ export function adoptFixPatch(input: AdoptFixPatchInput): BuildRunFile {
   const approval = readBuildPatchApproval(input.repoPath, input.changeId, run);
   assertApprovalMatchesRun(approval, run, patch);
   assertFixRunDbFreshForAdoption(input.changeId, run);
-  const adoptionDecisionId = `fix-${run.runNumber}-adoption`;
+  const adoptionDecisionId =
+    input.adoptionDecisionId ?? `fix-${run.runNumber}-adoption`;
   const commitMessage = `fix(${input.changeId}): adopt ${adoptionDecisionId}`;
 
   const removedMirrorArtifacts = captureAndRemoveBuildAdoptionMirrorArtifacts(input.repoPath, run);
@@ -1132,7 +1230,7 @@ export function adoptFixPatch(input: AdoptFixPatchInput): BuildRunFile {
       }
       applyPatch(input.repoPath, patch, { excludedPrefixes: patchAdoptionIgnoredPrefixes() });
       if (input.commit?.enabled) {
-        commitWithMessage(input.repoPath, commitMessage, adoptionCommitPaths(run.changedFiles));
+        commitAdoptedPatch(input.repoPath, commitMessage, adoptionCommitPaths(run.changedFiles));
       }
     } else if (
       input.commit?.enabled

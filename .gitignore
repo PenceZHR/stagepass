@@ -19,6 +19,7 @@
 
 # production
 /build
+/mcp/dist/
 
 # misc
 .DS_Store
@@ -51,6 +52,8 @@ server/db/ship.db-journal
 
 # local pipeline/runtime artifacts
 /.codex/
+/.agents/
+/plugins/
 /.ship/changes/
 /.tmp/
 /.tmp-tsx-test/
@@ -60,6 +63,9 @@ server/db/ship.db-journal
 /tmp-*.mjs
 /tmp-*.json
 /ship.db
+/.stagepass/verification/*
+!/.stagepass/verification/.gitkeep
+/.stagepass/phase0-mcp/
 
 # local package store
 /.pnpm-store/
@@ -67,3 +73,4 @@ server/db/ship.db-journal
 # local runtime logs and scratch dirs
 /logs/
 /var/
+.claude/worktrees/

@@ -520,6 +520,75 @@ function toStoredBlocker(value: unknown): StoredBlocker | null {
   };
 }
 
+/**
+ * Stands in for blockers that were on the gate row but could not be read back.
+ *
+ * Deliberately NOT a rubric id: the retirement path below keeps every non-rubric
+ * blocker and clears every rubric one, so a marker carrying this id survives
+ * until the underlying row is repaired, which is the only thing that can make it
+ * go away.
+ */
+export const UNREADABLE_GATE_BLOCKERS_ID = "gate_blockers_unreadable";
+
+function unreadableBlockerMarker(): StoredBlocker {
+  return {
+    id: UNREADABLE_GATE_BLOCKERS_ID,
+    severity: "P0",
+    title: "Stage gate blockers could not be read and were preserved as unreadable",
+  };
+}
+
+/**
+ * The stored blocker list, with anything unreadable replaced by a loud marker
+ * rather than dropped.
+ *
+ * This is the third place in the repo that parses a stored blocker column, and
+ * the reaction to a bad payload has to differ from the other two -- see the
+ * comment on `readMergeReadinessBlockers` for the same argument from the other
+ * side. In `gateDecision` the list only explains a verdict `gate.status` already
+ * decided, so degrading to `[]` loses detail and nothing else. In
+ * `mergeDecisionFromPersistedReadiness` the list IS the enable predicate, so it
+ * fails closed.
+ *
+ * Here the list is neither. It is prior state being read in order to be written
+ * back out: `syncRubricStageGateBlockers` republishes it onto a NEW append-only
+ * gate row, and `peekStageAuthority` reads that new row from then on. So an
+ * unreadable payload degrading to `[]` does not lose detail and does not widen a
+ * predicate -- it publishes a gate that positively asserts the phase's own
+ * blockers never existed. A truncated payload that still plainly contains
+ * `risk-1` went in; a row saying the Plan phase has no blockers of its own came
+ * out, and the only copy the gate reader can still see is the new one.
+ *
+ * Hence: never silently shrink. `null` is a real "no blockers" and stays empty,
+ * but a payload that is present and unreadable -- unparseable, not an array, or
+ * an entry that is not a blocker -- yields a P0 marker saying a human has to
+ * look at the row. Same stance as `unreadableMergeBlockersDecision`, same
+ * reason: unreadable evidence must never read as "nothing was there".
+ */
+function readStoredGateBlockers(value: string | null): StoredBlocker[] {
+  if (!value) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [unreadableBlockerMarker()];
+  }
+  if (!Array.isArray(parsed)) return [unreadableBlockerMarker()];
+
+  const blockers: StoredBlocker[] = [];
+  let unreadableEntries = 0;
+  for (const entry of parsed) {
+    const stored = toStoredBlocker(entry);
+    if (stored) blockers.push(stored);
+    else unreadableEntries += 1;
+  }
+  if (unreadableEntries > 0 && !blockers.some((entry) => entry.id === UNREADABLE_GATE_BLOCKERS_ID)) {
+    blockers.push(unreadableBlockerMarker());
+  }
+  return blockers;
+}
+
 export type RubricStageGateSyncResult =
   | { applied: false; reason: "unsupported_phase" | "no_gate" | "unchanged" }
   /**
@@ -566,9 +635,7 @@ export function syncRubricStageGateBlockers(
   // never looked at.
   if (!gate) return { applied: false, reason: "no_gate" };
 
-  const storedBlockers = readJsonArray(gate.blockersJson)
-    .map(toStoredBlocker)
-    .filter((entry): entry is StoredBlocker => entry !== null);
+  const storedBlockers = readStoredGateBlockers(gate.blockersJson);
   const baseBlockers = storedBlockers.filter((entry) => !isRubricBlockerId(entry.id));
   const previousRubricIds = storedBlockers
     .filter((entry) => isRubricBlockerId(entry.id))

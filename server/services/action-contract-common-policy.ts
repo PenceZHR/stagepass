@@ -49,6 +49,7 @@ export function phaseReasonPrefix(phase: ContractPhase): string {
   const prefixes: Record<ContractPhase, string> = {
     PRD: "prd",
     Spec: "spec",
+    TechSpec: "tech_spec",
     Plan: "plan",
     TestPlan: "test_plan",
     Build: "build",

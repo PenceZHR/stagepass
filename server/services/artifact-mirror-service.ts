@@ -6,7 +6,9 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 
 import { artifactMirrors, changes, projects } from "../db/schema";
+import { mapRowsDegrading } from "./per-row-degradation";
 import type { PipelinePhase } from "./stage-authority-service";
+import { nextSequencedId as nextPrefixedId } from "./record-identity";
 
 type ArtifactMirrorDb = typeof import("../db/index").db;
 type ArtifactMirrorRow = typeof artifactMirrors.$inferSelect;
@@ -121,23 +123,6 @@ function sortForStableJson(value: unknown): unknown {
     sorted[key] = sortForStableJson((value as Record<string, unknown>)[key]);
   }
   return sorted;
-}
-
-function nextPrefixedId(ids: string[], prefix: string): string {
-  const used = new Set(ids);
-  let maxNum = 0;
-  for (const id of ids) {
-    const match = id.match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (match) maxNum = Math.max(maxNum, Number.parseInt(match[1], 10));
-  }
-
-  let nextNum = maxNum + 1;
-  let candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  while (used.has(candidate)) {
-    nextNum += 1;
-    candidate = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-  }
-  return candidate;
 }
 
 function nextMirrorId(db: ArtifactMirrorDb): string {
@@ -564,13 +549,29 @@ export function inspectArtifactMirrors(
       },
     ];
   }
-  return rows.flatMap((row) => inspectMirrorRow(
-    db,
-    repoPath,
-    changeId,
-    row,
-    options.persistStatus ?? true,
-  ));
+  // inspectMirrorRow reaches the filesystem through tryLstat/tryRealPath, which
+  // only swallow ENOENT -- a row whose path has a non-directory component
+  // (ENOTDIR), an unreadable parent directory (EACCES) or a symlink cycle
+  // (ELOOP) throws instead. That exception used to escape this flatMap into
+  // GET /phases, whose single try/catch answers 500 PHASE_REVIEW_UNAVAILABLE:
+  // one stale mirror row deleted all fifteen phases, every gate and every
+  // action from the page. Containment stays at the row that actually failed.
+  //
+  // The degraded row is reported, not persisted: inspection never got far
+  // enough to establish a status, so writing "corrupt" back would assert
+  // something this code did not verify.
+  return mapRowsDegrading(rows, {
+    operation: "inspectArtifactMirrors",
+    identify: (row) => row.id,
+    perRow: (row) => inspectMirrorRow(
+      db,
+      repoPath,
+      changeId,
+      row,
+      options.persistStatus ?? true,
+    ),
+    degrade: (row) => [warningFromRow(row, "corrupt", "inspect_failed")],
+  }).flat();
 }
 
 export function rebuildArtifactMirror(input: RebuildArtifactMirrorInput): ArtifactMirrorResult {

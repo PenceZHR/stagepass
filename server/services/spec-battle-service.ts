@@ -7,7 +7,6 @@ import { withSqliteWriteRetry } from "../db/write-boundary";
 import {
   battleRounds,
   blueGapReviews,
-  briefingQuestions,
   changes,
   events,
   humanDecisions,
@@ -19,7 +18,9 @@ import {
   runs,
   warReports,
 } from "../db/schema";
+import { listBriefingQuestions } from "./briefing-question-store";
 import type { ChangeStatus } from "../types";
+import { isOccupiedBattleRoundStatus, isRunningBattleRoundStatus } from "../types/enums";
 import {
   computeGapCounts,
   effectiveSeverity,
@@ -75,6 +76,141 @@ export interface SpecBattleDecisionInput {
   targetType: "gate" | "requirement_gap" | "finding" | null;
   targetId: string | null;
   reason: string | null;
+}
+
+type SpecBattleDecisionDb = Pick<typeof db, "select" | "update" | "insert">;
+
+export function applySpecBattleDecisionWithDb(
+  battleDb: SpecBattleDecisionDb,
+  input: {
+    changeId: string;
+    action: "approve" | "request_changes" | "return_to_spec" | "waive_p1";
+    decisionId: string;
+    targetId?: string | null;
+    reason?: string | null;
+    expectedReportHash?: string | null;
+  },
+): void {
+  const change = battleDb
+    .select()
+    .from(changes)
+    .where(eq(changes.id, input.changeId))
+    .get();
+  if (!change) throw new SpecBattleError("change_not_found");
+  if (change.status !== "SPEC_READY") {
+    throw new SpecBattleError("round_not_ready");
+  }
+  const round = battleDb
+    .select()
+    .from(battleRounds)
+    .where(eq(battleRounds.changeId, input.changeId))
+    .all()
+    .sort(
+      (left, right) =>
+        right.roundNo - left.roundNo ||
+        right.createdAt.localeCompare(left.createdAt),
+    )[0];
+  if (!round || round.status !== "report_ready") {
+    throw new SpecBattleError("round_not_ready");
+  }
+  const report = battleDb
+    .select()
+    .from(warReports)
+    .where(eq(warReports.roundId, round.id))
+    .all()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  if (
+    input.expectedReportHash
+    && report?.reportHash !== input.expectedReportHash
+  ) {
+    throw new SpecBattleError("design_report_hash_drift");
+  }
+  const gaps = battleDb
+    .select()
+    .from(requirementGaps)
+    .where(eq(requirementGaps.changeId, input.changeId))
+    .all();
+  const counts = computeGapCounts(gaps.map(toRuleGap));
+  if (input.action === "waive_p1") {
+    if (!input.reason?.trim() || !input.targetId) {
+      throw new SpecBattleError("decision_reason_required");
+    }
+    const gap = gaps.find(
+      (row) =>
+        row.id === input.targetId
+        || row.canonicalGapId === input.targetId,
+    );
+    if (
+      !gap
+      || effectiveSeverity(toRuleGap(gap)) === "P0"
+    ) {
+      throw new SpecBattleError("p0_cannot_be_waived");
+    }
+    if (
+      effectiveSeverity(toRuleGap(gap)) !== "P1"
+      || !["open", "downgraded"].includes(gap.status)
+    ) {
+      throw new SpecBattleError("waive_not_allowed");
+    }
+    const now = nowISO();
+    battleDb.update(requirementGaps).set({
+      status: "waived",
+      waiverReason: input.reason,
+      specBlocking: 0,
+      mergeBlocking: 0,
+      updatedAt: now,
+      closedAt: now,
+    }).where(eq(requirementGaps.id, gap.id)).run();
+    battleDb.update(warReports).set({
+      status: "stale",
+      updatedAt: now,
+    }).where(eq(warReports.id, report?.id ?? "")).run();
+    return;
+  }
+  if (
+    input.action === "request_changes"
+    || input.action === "return_to_spec"
+  ) {
+    if (!input.reason?.trim()) {
+      throw new SpecBattleError("decision_reason_required");
+    }
+    const now = nowISO();
+    battleDb.update(battleRounds).set({
+      status: "superseded",
+      updatedAt: now,
+    }).where(eq(battleRounds.id, round.id)).run();
+    transitionChangeStatusWithDb(
+      battleDb as Parameters<typeof transitionChangeStatusWithDb>[0],
+      {
+        changeId: input.changeId,
+        to: "INTAKE_READY",
+        gateState: null,
+        message: "Spec changes requested",
+        rawJson: {
+          source: "pipeline_command",
+          action: input.action,
+          decisionId: input.decisionId,
+          targetId: input.targetId ?? null,
+          reason: input.reason,
+        },
+      },
+    );
+    return;
+  }
+  if (counts.blockingP0 > 0 || counts.blockingP1 > 0) {
+    throw new SpecBattleError("gate_blocked");
+  }
+  const now = nowISO();
+  battleDb
+    .update(battleRounds)
+    .set({ status: "closed", endedAt: now, updatedAt: now })
+    .where(eq(battleRounds.id, round.id))
+    .run();
+  battleDb
+    .update(changes)
+    .set({ gateState: "spec", updatedAt: now })
+    .where(eq(changes.id, input.changeId))
+    .run();
 }
 
 export interface StartSpecBattleRoundResult {
@@ -256,15 +392,7 @@ function prdAuthorityRows(changeId: string) {
   // stage hash no longer depends on this (prdStageHashQuestionRows normalizes
   // its own order), but `deferredQuestions` below is handed to Spec Battle as a
   // list, and it should reach it in the order the briefing room shows it.
-  const questions = db
-    .select()
-    .from(briefingQuestions)
-    .where(eq(briefingQuestions.changeId, changeId))
-    .all()
-    .sort((a, b) =>
-      a.roundNo - b.roundNo
-      || a.createdAt.localeCompare(b.createdAt)
-      || a.id.localeCompare(b.id));
+  const questions = listBriefingQuestions(changeId, "PRD");
   return {
     briefing,
     questions,
@@ -431,10 +559,22 @@ function computeStateRoundDelta(
   const reviewsByCanonicalGapId = new Map(
     latestReviews.map((review) => [review.canonicalGapId, review])
   );
-  const previousBlocking = gaps.filter((gap) => {
-    const severity = effectiveSeverity(toRuleGap(gap));
+  // Gaps carried in from an earlier round that still owe a recheck. Severity
+  // decides whether a gap BLOCKS (computeGapCounts, and only P0/P1 do); it does
+  // not decide whether the gap is owed an answer. Filtering P2 out here meant a
+  // P2 fell out of both stillOpen and notRechecked, so a gap nobody ever
+  // rechecked read as zero outstanding work. Measured on the shipped database:
+  // both P2s ever raised (gap-persistence-failure-feedback,
+  // gap-random-spawn-acceptance-flaky) sit at status=open with zero rows in
+  // blue_gap_reviews and zero in red_fix_claims, while all six P1s are resolved.
+  //
+  // The gate is untouched: it reads computeGapCounts, which counts only P0/P1 as
+  // blocking, and both P2s carry spec_blocking = 0.
+  //
+  // spec-battle-report-service.ts's isPreviousBlockingGapForRound is the same
+  // predicate over the report's gap shape -- keep the two in step.
+  const previousUnanswered = gaps.filter((gap) => {
     return gap.firstSeenRoundId !== round.id &&
-      (severity === "P0" || severity === "P1") &&
       gap.status !== "waived" &&
       gap.status !== "overridden" &&
       !(gap.status === "resolved" && gap.resolvedByRoundId !== round.id);
@@ -443,12 +583,12 @@ function computeStateRoundDelta(
 
   return {
     resolvedThisRound: latestReviews.filter((review) => review.verdict === "resolved").length,
-    stillOpen: previousBlocking.filter((gap) => {
+    stillOpen: previousUnanswered.filter((gap) => {
       const review = reviewsByCanonicalGapId.get(gap.canonicalGapId);
       return !review || unresolvedReviewVerdicts.has(review.verdict);
     }).length,
     newlyFound: gaps.filter((gap) => gap.firstSeenRoundId === round.id).length,
-    notRechecked: previousBlocking.filter((gap) => !reviewsByCanonicalGapId.has(gap.canonicalGapId)).length,
+    notRechecked: previousUnanswered.filter((gap) => !reviewsByCanonicalGapId.has(gap.canonicalGapId)).length,
   };
 }
 
@@ -680,7 +820,7 @@ export async function startSpecBattleRound(
   }
 
   const current = rounds.at(-1);
-  if (current && ["not_started", "red_running", "blue_running"].includes(current.status)) {
+  if (current && isOccupiedBattleRoundStatus(current.status)) {
     throw new SpecBattleError("round_running");
   }
 
@@ -783,7 +923,7 @@ export function claimSpecBattleRedRun(input: {
       };
     }
 
-    if (round.status === "red_running" || round.status === "blue_running") {
+    if (isRunningBattleRoundStatus(round.status)) {
       const activeSpecRun = tx
         .select()
         .from(runs)
@@ -1281,6 +1421,42 @@ export function failSpecBattleRound(input: {
     .where(eq(battleRounds.id, input.roundId))
     .run();
   syncSpecStageAuthority(input.changeId);
+}
+
+/**
+ * What the Spec battle currently allows, for a change, or null when no round
+ * exists yet.
+ *
+ * Exported so the action contract can DERIVE `waive_spec_p1` from the same rule
+ * the write path enforces, instead of restating it. Before this, the contract
+ * had no policy for that action at all, so it fell through to the generic
+ * "stage gate is blocked -> disable" base decision -- and a P1 waiver is only
+ * ever meaningful WHILE the gate is blocked. Net effect: the contract could
+ * never authorize a Spec P1 waiver. It stayed invisible only because the
+ * spec-battle route did not consult the contract; the moment it did, 接受风险并
+ * 通过 answered 409 spec_blocked on every click.
+ */
+export function getSpecActionAvailabilityForChange(
+  changeId: string,
+): ReturnType<typeof getSpecActionAvailability> | null {
+  const round = latestRound(changeId);
+  if (!round) return null;
+  let params: BattleParams = DEFAULT_BATTLE_PARAMS;
+  try {
+    params = { ...DEFAULT_BATTLE_PARAMS, ...JSON.parse(round.paramsJson) } as BattleParams;
+  } catch {
+    // A malformed params blob must not decide the gate by accident; the
+    // defaults are the documented battle parameters.
+  }
+  const state = getSpecBattleState(changeId);
+  const report = getLatestSpecReportForDecision(changeId);
+  return getSpecActionAvailability({
+    gaps: state.gaps.map(toRuleGap),
+    reportFresh: report.reportFresh,
+    currentRoundNo: round.roundNo,
+    maxSpecRounds: params.maxSpecRounds,
+    allowP1Waiver: params.allowP1Waiver,
+  });
 }
 
 export async function applySpecBattleDecision(input: SpecBattleDecisionInput): Promise<void> {

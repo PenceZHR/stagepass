@@ -13,6 +13,8 @@ export const projects = sqliteTable("projects", {
   prdMarkdown: text("prd_markdown"),
   gitEnabled: integer("git_enabled").notNull().default(0),
   gitDefaultBranch: text("git_default_branch"),
+  defaultCodexModel: text("default_codex_model"),
+  defaultReasoningEffort: text("default_reasoning_effort"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -26,6 +28,8 @@ export const changes = sqliteTable("changes", {
   status: text("status").notNull(),
   provider: text("provider").notNull().default("codex"),
   codexThreadId: text("codex_thread_id"),
+  codexModel: text("codex_model"),
+  reasoningEffort: text("reasoning_effort"),
   fixIterations: integer("fix_iterations").default(0),
   blockedPhase: text("blocked_phase"),
   reworkFromPhase: text("rework_from_phase"),
@@ -38,6 +42,151 @@ export const changes = sqliteTable("changes", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const codexThreadBindings = sqliteTable(
+  "codex_thread_bindings",
+  {
+    bindingId: text("binding_id").primaryKey(),
+    scopeKind: text("scope_kind", {
+      enum: ["change", "project_prd", "project_context"],
+    }).notNull(),
+    scopeId: text("scope_id").notNull(),
+    projectId: text("project_id").notNull().references(() => projects.id),
+    changeId: text("change_id").references(() => changes.id),
+    codexProjectId: text("codex_project_id"),
+    threadId: text("thread_id"),
+    title: text("title").notNull(),
+    status: text("status", {
+      enum: ["provisioning", "ready", "running", "waiting_human", "failed", "detached"],
+    }).notNull(),
+    bridgeProtocolVersion: text("bridge_protocol_version").notNull(),
+    provisionClaimToken: text("provision_claim_token"),
+    provisionLeaseOwner: text("provision_lease_owner"),
+    provisionLeaseExpiresAt: text("provision_lease_expires_at"),
+    followerStartProvedAt: text("follower_start_proved_at"),
+    lastTurnId: text("last_turn_id"),
+    lastObservationCursor: integer("last_observation_cursor").notNull().default(0),
+    lastSemanticSnapshotHash: text("last_semantic_snapshot_hash"),
+    lastSeenAt: text("last_seen_at").notNull(),
+    lastErrorCode: text("last_error_code"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_codex_thread_bindings_scope").on(table.scopeKind, table.scopeId),
+    uniqueIndex("uq_codex_thread_bindings_thread")
+      .on(table.threadId)
+      .where(sql`${table.threadId} IS NOT NULL`),
+    check(
+      "ck_codex_thread_bindings_scope",
+      sql`(${table.scopeKind} = 'change' AND ${table.changeId} IS NOT NULL AND ${table.scopeId} = ${table.changeId})
+        OR (${table.scopeKind} IN ('project_prd','project_context') AND ${table.changeId} IS NULL AND ${table.scopeId} = ${table.projectId})`,
+    ),
+    check(
+      "ck_codex_thread_bindings_thread_ready",
+      sql`${table.threadId} IS NOT NULL OR ${table.status} = 'provisioning'`,
+    ),
+  ],
+);
+
+export const projectAiRuns = sqliteTable(
+  "project_ai_runs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull().references(() => projects.id),
+    kind: text("kind", { enum: ["prd_turn", "context_init"] }).notNull(),
+    requestKey: text("request_key").notNull(),
+    sequence: integer("sequence").notNull(),
+    status: text("status", {
+      enum: ["pending", "leased", "running", "succeeded", "failed", "cancelled", "quarantined"],
+    }).notNull(),
+    workerId: text("worker_id"),
+    leaseToken: text("lease_token"),
+    ownerAttempt: integer("owner_attempt").notNull().default(0),
+    ownerEpoch: integer("owner_epoch").notNull().default(0),
+    leaseExpiresAt: text("lease_expires_at"),
+    deadlineAt: text("deadline_at").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    uniqueIndex("uq_project_ai_runs_request").on(table.projectId, table.kind, table.requestKey),
+  ],
+);
+
+export const codexInteractions = sqliteTable(
+  "codex_interactions",
+  {
+    id: text("id").primaryKey(),
+    changeId: text("change_id").notNull().references(() => changes.id),
+    bindingId: text("binding_id").notNull().references(() => codexThreadBindings.bindingId),
+    codexThreadId: text("codex_thread_id").notNull(),
+    phase: text("phase").notNull(),
+    kind: text("kind").notNull(),
+    gateVersion: integer("gate_version").notNull(),
+    sourceDbHash: text("source_db_hash").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    formJson: text("form_json"),
+    status: text("status", {
+      enum: ["pending", "presented", "submitting", "completed", "expired", "superseded", "cancelled", "failed"],
+    }).notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    invocationNonceHash: text("invocation_nonce_hash"),
+    sourceThreadId: text("source_thread_id"),
+    nonceExpiresAt: text("nonce_expires_at"),
+    nonceConsumedAt: text("nonce_consumed_at"),
+    expectedHeadSha: text("expected_head_sha"),
+    requestHash: text("request_hash").notNull().default(""),
+    supersededById: text("superseded_by_id"),
+    presentedAt: text("presented_at"),
+    completedAt: text("completed_at"),
+    expiresAt: text("expires_at").notNull(),
+    supersededAt: text("superseded_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_codex_interactions_active_identity")
+      .on(table.changeId, table.kind, table.gateVersion, table.sourceDbHash)
+      .where(sql`${table.status} IN ('pending','presented','submitting')`),
+    uniqueIndex("uq_codex_interactions_idempotency").on(table.changeId, table.idempotencyKey),
+    index("idx_codex_interactions_change_status_created").on(
+      table.changeId,
+      table.status,
+      table.createdAt,
+    ),
+    index("idx_codex_interactions_thread_status").on(table.codexThreadId, table.status),
+  ],
+);
+
+export const pipelineCommandReceipts = sqliteTable(
+  "pipeline_command_receipts",
+  {
+    commandId: text("command_id").primaryKey(),
+    changeId: text("change_id").notNull().references(() => changes.id),
+    interactionId: text("interaction_id"),
+    codexThreadId: text("codex_thread_id"),
+    action: text("action").notNull(),
+    actorKind: text("actor_kind").notNull(),
+    actorSurface: text("actor_surface", {
+      enum: ["codex_mcp_app", "stagepass_web_emergency", "stagepass_web_ops", "legacy_web_migration", "recovery"],
+    }).notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    status: text("status", { enum: ["accepted", "completed", "rejected", "failed"] }).notNull(),
+    resultJson: text("result_json"),
+    errorCode: text("error_code"),
+    createdAt: text("created_at").notNull(),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    uniqueIndex("uq_pipeline_command_receipts_change_idempotency").on(
+      table.changeId,
+      table.idempotencyKey,
+    ),
+  ],
+);
 
 export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
@@ -135,6 +284,16 @@ export const pipelineJobs = sqliteTable(
     leaseToken: text("lease_token"),
     workerNonce: text("worker_nonce"),
     provider: text("provider").notNull().default("codex"),
+    jobKind: text("job_kind", {
+      enum: ["stage", "interaction_present", "interaction_wakeup"],
+    }).notNull().default("stage"),
+    effectType: text("effect_type"),
+    interactionId: text("interaction_id").references(() => codexInteractions.id),
+    commandId: text("command_id").references(() => pipelineCommandReceipts.commandId),
+    effectSchemaVersion: text("effect_schema_version"),
+    effectPayloadJson: text("effect_payload_json"),
+    nextTurnOrdinal: integer("next_turn_ordinal").notNull().default(0),
+    effectDeadlineAt: text("effect_deadline_at"),
   },
   (table) => [
     uniqueIndex("uq_pipeline_jobs_change_action_idempotency")
@@ -142,7 +301,13 @@ export const pipelineJobs = sqliteTable(
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
     uniqueIndex("uq_pipeline_jobs_one_active_change_phase")
       .on(table.changeId, table.phase)
-      .where(sql`${table.status} IN ('queued', 'leased', 'running')`),
+      .where(sql`${table.jobKind} = 'stage' AND ${table.status} IN ('queued', 'leased', 'running')`),
+    uniqueIndex("uq_pipeline_jobs_interaction_present_effect")
+      .on(table.interactionId, table.effectType)
+      .where(sql`${table.jobKind} = 'interaction_present'`),
+    uniqueIndex("uq_pipeline_jobs_interaction_wakeup_effect")
+      .on(table.commandId, table.effectType)
+      .where(sql`${table.jobKind} = 'interaction_wakeup'`),
     index("idx_pipeline_jobs_status_lease").on(
       table.status,
       table.leaseExpiresAt,
@@ -154,6 +319,171 @@ export const pipelineJobs = sqliteTable(
       table.leaseToken,
       table.attemptNo,
     ),
+  ],
+);
+
+export const codexLogicalTurns = sqliteTable(
+  "codex_logical_turns",
+  {
+    logicalTurnId: text("logical_turn_id").primaryKey(),
+    pipelineJobId: text("pipeline_job_id").references(() => pipelineJobs.id),
+    projectAiRunId: text("project_ai_run_id").references(() => projectAiRuns.id),
+    bindingId: text("binding_id").notNull().references(() => codexThreadBindings.bindingId),
+    interactionId: text("interaction_id").references(() => codexInteractions.id),
+    commandId: text("command_id").references(() => pipelineCommandReceipts.commandId),
+    phase: text("phase").notNull(),
+    role: text("role", {
+      enum: ["stage", "spec_writer", "spec_critic", "spec_verdict", "build", "fix", "prd_turn", "context_select", "context_generate", "interaction_present", "interaction_wakeup"],
+    }).notNull(),
+    round: integer("round").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    turnSlot: text("turn_slot").notNull(),
+    runCorrelationId: text("run_correlation_id").notNull(),
+    canonicalRequestJson: text("canonical_request_json").notNull(),
+    canonicalRequestHash: text("canonical_request_hash").notNull(),
+    dispatchSurface: text("dispatch_surface", {
+      enum: ["follower_ipc", "host_ui_message"],
+    }).notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    check(
+      "ck_codex_logical_turns_owner_xor",
+      sql`(${table.pipelineJobId} IS NOT NULL) <> (${table.projectAiRunId} IS NOT NULL)`,
+    ),
+    uniqueIndex("uq_codex_logical_turns_pipeline_slot")
+      .on(table.pipelineJobId, table.phase, table.role, table.round, table.ordinal)
+      .where(sql`${table.pipelineJobId} IS NOT NULL`),
+    uniqueIndex("uq_codex_logical_turns_project_slot")
+      .on(table.projectAiRunId, table.phase, table.role, table.round, table.ordinal)
+      .where(sql`${table.projectAiRunId} IS NOT NULL`),
+    uniqueIndex("uq_codex_logical_turns_turn_slot").on(table.turnSlot),
+    uniqueIndex("uq_codex_logical_turns_correlation").on(table.runCorrelationId),
+  ],
+);
+
+export const codexFollowerStartAttempts = sqliteTable(
+  "codex_follower_start_attempts",
+  {
+    attemptId: text("attempt_id").primaryKey(),
+    logicalTurnId: text("logical_turn_id").notNull().references(() => codexLogicalTurns.logicalTurnId),
+    runCorrelationId: text("run_correlation_id").notNull(),
+    pipelineJobId: text("pipeline_job_id").references(() => pipelineJobs.id),
+    projectAiRunId: text("project_ai_run_id").references(() => projectAiRuns.id),
+    workerId: text("worker_id").notNull(),
+    leaseToken: text("lease_token").notNull(),
+    ownerAttempt: integer("owner_attempt").notNull(),
+    ownerEpoch: integer("owner_epoch").notNull(),
+    threadId: text("thread_id").notNull(),
+    purpose: text("purpose").notNull(),
+    dispatchSurface: text("dispatch_surface", {
+      enum: ["follower_ipc", "host_ui_message"],
+    }).notNull(),
+    normalizedPromptHash: text("normalized_prompt_hash").notNull(),
+    correlationMarker: text("correlation_marker").notNull(),
+    cwd: text("cwd").notNull(),
+    model: text("model"),
+    reasoningEffort: text("reasoning_effort"),
+    sandboxMode: text("sandbox_mode").notNull(),
+    approvalPolicy: text("approval_policy").notNull(),
+    preStartTurnIdsJson: text("pre_start_turn_ids_json").notNull(),
+    preStartSemanticHash: text("pre_start_semantic_hash").notNull(),
+    state: text("state", {
+      enum: ["prepared", "dispatching", "no_client_found", "ambiguous", "succeeded", "quarantined"],
+    }).notNull(),
+    dispatchOrdinal: integer("dispatch_ordinal").notNull().default(0),
+    dispatchCount: integer("dispatch_count").notNull().default(0),
+    budgetDeadline: text("budget_deadline").notNull(),
+    followerTurnId: text("follower_turn_id"),
+    recoveryOwnerId: text("recovery_owner_id"),
+    recoveryLeaseToken: text("recovery_lease_token"),
+    recoveryEpoch: integer("recovery_epoch").notNull().default(0),
+    lastResult: text("last_result"),
+    lastErrorCode: text("last_error_code"),
+    preparedAt: text("prepared_at").notNull(),
+    dispatchedAt: text("dispatched_at"),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    check(
+      "ck_codex_follower_start_attempts_owner_xor",
+      sql`(${table.pipelineJobId} IS NOT NULL) <> (${table.projectAiRunId} IS NOT NULL)`,
+    ),
+    uniqueIndex("uq_codex_follower_start_attempts_logical_turn").on(table.logicalTurnId),
+    uniqueIndex("uq_codex_follower_start_attempts_follower_turn")
+      .on(table.followerTurnId)
+      .where(sql`${table.followerTurnId} IS NOT NULL`),
+  ],
+);
+
+export const codexBindingRunLeases = sqliteTable("codex_binding_run_leases", {
+  bindingId: text("binding_id").primaryKey().references(() => codexThreadBindings.bindingId),
+  logicalTurnId: text("logical_turn_id").notNull(),
+  attemptId: text("attempt_id"),
+  workerId: text("worker_id").notNull(),
+  leaseToken: text("lease_token").notNull(),
+  ownerEpoch: integer("owner_epoch").notNull(),
+  leaseExpiresAt: text("lease_expires_at").notNull(),
+  deadlineAt: text("deadline_at").notNull(),
+});
+
+export const codexTurnExecutions = sqliteTable(
+  "codex_turn_executions",
+  {
+    id: text("id").primaryKey(),
+    startAttemptId: text("start_attempt_id").notNull().references(() => codexFollowerStartAttempts.attemptId),
+    logicalTurnId: text("logical_turn_id").notNull().references(() => codexLogicalTurns.logicalTurnId),
+    pipelineJobId: text("pipeline_job_id").references(() => pipelineJobs.id),
+    projectAiRunId: text("project_ai_run_id").references(() => projectAiRuns.id),
+    threadId: text("thread_id").notNull(),
+    turnId: text("turn_id").notNull(),
+    dispatchSurface: text("dispatch_surface", {
+      enum: ["follower_ipc", "host_ui_message"],
+    }).notNull(),
+    leaseToken: text("lease_token").notNull(),
+    ownerAttempt: integer("owner_attempt").notNull(),
+    ownerEpoch: integer("owner_epoch").notNull(),
+    lastObservationCursor: integer("last_observation_cursor").notNull().default(0),
+    normalizedItemsJson: text("normalized_items_json").notNull(),
+    lastSemanticSnapshotHash: text("last_semantic_snapshot_hash"),
+    status: text("status").notNull(),
+    lastObservedAt: text("last_observed_at"),
+    terminalSemanticHash: text("terminal_semantic_hash"),
+    reconnectCount: integer("reconnect_count").notNull().default(0),
+    notYetVisibleCount: integer("not_yet_visible_count").notNull().default(0),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    check(
+      "ck_codex_turn_executions_owner_xor",
+      sql`(${table.pipelineJobId} IS NOT NULL) <> (${table.projectAiRunId} IS NOT NULL)`,
+    ),
+    uniqueIndex("uq_codex_turn_executions_start_attempt").on(table.startAttemptId),
+    uniqueIndex("uq_codex_turn_executions_logical_turn").on(table.logicalTurnId),
+    uniqueIndex("uq_codex_turn_executions_thread_turn").on(table.threadId, table.turnId),
+  ],
+);
+
+export const pipelineCommandOutbox = sqliteTable(
+  "pipeline_command_outbox",
+  {
+    id: text("id").primaryKey(),
+    commandId: text("command_id").notNull().references(() => pipelineCommandReceipts.commandId),
+    interactionId: text("interaction_id").references(() => codexInteractions.id),
+    effectType: text("effect_type").notNull(),
+    effectPayloadJson: text("effect_payload_json").notNull(),
+    status: text("status").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastErrorCode: text("last_error_code"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    dispatchedAt: text("dispatched_at"),
+  },
+  (table) => [
+    uniqueIndex("uq_pipeline_command_outbox_command_effect").on(table.commandId, table.effectType),
   ],
 );
 
@@ -176,15 +506,25 @@ export const changeProviderSessions = sqliteTable(
   ],
 );
 
-export const events = sqliteTable("events", {
-  id: text("id").primaryKey(),
-  changeId: text("change_id").references(() => changes.id),
-  runId: text("run_id").references(() => runs.id),
-  type: text("type").notNull(),
-  message: text("message"),
-  rawJson: text("raw_json"),
-  createdAt: text("created_at").notNull(),
-});
+export const events = sqliteTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    changeId: text("change_id").references(() => changes.id),
+    runId: text("run_id").references(() => runs.id),
+    type: text("type").notNull(),
+    message: text("message"),
+    rawJson: text("raw_json"),
+    createdAt: text("created_at").notNull(),
+  },
+  // Every SSE connection re-reads its change's events every 2 seconds. Without
+  // this the only index is the TEXT primary key, so that poll is a full table
+  // scan whose cost tracks the whole table rather than the one change being
+  // watched. Column order matches the stream's query: equality on change_id,
+  // then the (created_at, id) ordering, which lets the poll's id-only read stay
+  // inside the index.
+  (table) => [index("idx_events_change_created_id").on(table.changeId, table.createdAt, table.id)],
+);
 
 export const artifacts = sqliteTable("artifacts", {
   id: text("id").primaryKey(),
@@ -505,6 +845,15 @@ export const requirementGaps = sqliteTable("requirement_gaps", {
   waiverReason: text("waiver_reason"),
   downgradeReason: text("downgrade_reason"),
   overrideReason: text("override_reason"),
+  /**
+   * The second of two keys for an overridden P0. `override_reason` clears the
+   * Spec gate; this one clears the Merge gate, and is turned separately at the
+   * Merge stage. isMergeBlockingGap() reads it -- see spec-battle-rules.ts.
+   * Without it an overridden P0 blocks merge forever: merge-readiness only
+   * releases on status 'resolved', which only blue can grant, and blue stops
+   * rechecking overridden gaps.
+   */
+  mergeOverrideReason: text("merge_override_reason"),
   specBlocking: integer("spec_blocking").notNull().default(0),
   mergeBlocking: integer("merge_blocking").notNull().default(0),
   sourceHashesJson: text("source_hashes_json").notNull(),
@@ -565,6 +914,12 @@ export const humanDecisions = sqliteTable("human_decisions", {
   reason: text("reason"),
   reportHash: text("report_hash"),
   createdBy: text("created_by").notNull(),
+  interactionId: text("interaction_id").references(() => codexInteractions.id),
+  actorSurface: text("actor_surface", {
+    enum: ["codex_mcp_app", "stagepass_web_emergency", "stagepass_web_ops", "legacy_web_migration", "recovery"],
+  }),
+  codexThreadId: text("codex_thread_id"),
+  commandId: text("command_id").references(() => pipelineCommandReceipts.commandId),
   createdAt: text("created_at").notNull(),
 });
 
@@ -1143,6 +1498,17 @@ export const briefingQuestions = sqliteTable("briefing_questions", {
    * rows (and fixtures that predate the column) read as the first round.
    */
   roundNo: integer("round_no").notNull().default(1),
+  /**
+   * Which pipeline phase's interrogation produced this card. PRD Briefing and
+   * Spec Battle both ask the human questions in the same shape, so they share
+   * this table -- but nothing may read it without saying which phase it wants:
+   * a Spec card reaching computePrdGate reads as an unhandled critical question
+   * and welds the PRD draft gate shut. briefing-question-store.ts is the only
+   * module allowed to touch this table, and every one of its readers takes a
+   * phase argument. Defaults to 'PRD' so every pre-existing row keeps its
+   * meaning.
+   */
+  phase: text("phase").notNull().default("PRD"),
   category: text("category").notNull(),
   severity: text("severity").notNull(),
   question: text("question").notNull(),

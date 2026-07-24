@@ -42,7 +42,7 @@ describe("stage AI output ingestion service foundations", () => {
       legacyRunId: "RUN-1",
       stageRunId: "STAGE-1",
       attemptNo: 1,
-      provider: "claude",
+      provider: "codex",
       aiOutputMode: "json_schema",
       schemaDelivery: "schema_prompt",
       structuredOutputSource: "text_extracted",
@@ -110,7 +110,11 @@ describe("stage AI output ingestion service foundations", () => {
       "CH",
       "runs",
       "RUN-1",
-      "raw-ai-output.json",
+      // Was "raw-ai-output.json", a constant. Captures are keyed on the
+      // envelope's phase now (this one is "plan") because a single run can
+      // capture more than once -- the Spec battle's author and critic passes
+      // share a runs row, and the constant made the second overwrite the first.
+      "raw-ai-output-plan.json",
     );
     assert.equal(result.artifactId, "ART-001");
     assert.equal(result.eventId, "EVT-001");
@@ -159,6 +163,52 @@ describe("stage AI output ingestion service foundations", () => {
     assert.ok(raw.stageRawOutput.normalizedPayloadHash);
     assert.equal("rawText" in raw.stageRawOutput, false);
     assert.equal("normalizedPayload" in raw.stageRawOutput, false);
+  });
+
+
+  it("keeps both provider captures when one run calls the provider twice", async () => {
+    // The measured defect: a Spec battle run calls the provider for the red
+    // author and again for the blue critic under ONE runs row. Both captures
+    // resolved to runs/<runId>/raw-ai-output.json, so the artifacts table held
+    // two rows pointing at one file and only `spec_critic` survived on disk --
+    // the red author's line protocol, stderr and exit code were unrecoverable.
+    // Reproduced on RUN-mrw8zgd3-0356b933 / CHG-003.
+    const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "stage-raw-capture-two-"));
+    const artifacts: { path: string }[] = [];
+    let seq = 0;
+    const capture = (phase: string, rawText: string) =>
+      persistStageRawCapture({
+        repoPath,
+        changeId: "CH",
+        runId: "RUN-1",
+        envelope: {
+          schemaVersion: STAGE_AI_RAW_CAPTURE_SCHEMA_VERSION,
+          phase,
+          provider: "codex",
+          schemaDelivery: "schema_prompt",
+          structuredOutputSource: "none",
+          rawText,
+          rawTextHash: hashString(rawText),
+          rawTextPreview: rawText,
+        },
+        ledger: {
+          nextId: (prefix) => `${prefix}-${(seq += 1).toString().padStart(3, "0")}`,
+          insertArtifact: (row) => { artifacts.push(row as { path: string }); },
+          insertEvent: () => {},
+          nowISO: () => "2026-07-07T00:00:00.000Z",
+        },
+      });
+
+    const red = await capture("spec", "RED AUTHOR RAW OUTPUT");
+    const critic = await capture("spec_critic", "BLUE CRITIC RAW OUTPUT");
+
+    assert.notEqual(red.artifactPath, critic.artifactPath, "two roles must not share one capture file");
+    assert.equal(new Set(artifacts.map((row) => row.path)).size, 2, "the ledger must not record two rows for one file");
+    // Both must still be readable: this is the whole point of raw capture.
+    assert.match(fs.readFileSync(red.artifactPath, "utf-8"), /RED AUTHOR RAW OUTPUT/);
+    assert.match(fs.readFileSync(critic.artifactPath, "utf-8"), /BLUE CRITIC RAW OUTPUT/);
+
+    fs.rmSync(repoPath, { recursive: true, force: true });
   });
 
   it("persists concurrent raw captures with unique ledger ids", async () => {
@@ -854,7 +904,7 @@ describe("failure attribution: delivery before format", () => {
 
   /**
    * The belt to the engine's brace. Any engine that reports success while
-   * delivering nothing (claude's exit-0-with-no-result path, and anything added
+   * delivering nothing (a provider's exit-0-with-no-result path, and anything added
    * later) is caught here rather than falling through to a format verdict.
    */
   it("reports an empty reply as an empty response even when the engine claimed success", async () => {

@@ -2,16 +2,30 @@ import crypto from "node:crypto";
 
 import { z } from "zod";
 
-export const BriefingQuestionCategorySchema = z.enum([
+/**
+ * The single source of truth for question categories.
+ *
+ * This list previously existed as six independent literals (zod enum, parser
+ * Set, parser error message, stage JSON schema, prompt template, prompt test).
+ * Two of them — the parser's Set and its own error message — could drift apart
+ * silently, naming a category the parser does not actually accept. Everything
+ * that can import derives from here; the prompt template is markdown and
+ * cannot, so prd-briefing-prompt.test.ts asserts against this constant instead
+ * of a copied literal.
+ *
+ * All four are decision-level: they are what a human must rule on before a PRD
+ * has a direction. Implementation-level categories (negative_case, constraint,
+ * spec_blocker, risk) were removed deliberately — they are Spec Battle's job,
+ * and leaving them here is what let detail questions in through the front door.
+ */
+export const BRIEFING_QUESTION_CATEGORIES = [
   "goal",
   "user",
   "scope",
   "success",
-  "negative_case",
-  "risk",
-  "constraint",
-  "spec_blocker",
-]);
+] as const;
+
+export const BriefingQuestionCategorySchema = z.enum(BRIEFING_QUESTION_CATEGORIES);
 
 export const BriefingQuestionSeveritySchema = z.enum(["critical", "important", "optional"]);
 export const BriefingQuestionStatusSchema = z.enum([
@@ -37,6 +51,9 @@ export const BriefingQuestionsOutputSchema = z
     changeId: z.string().optional(),
     phase: z.string().optional(),
     questions: z.array(BriefingQuestionInputSchema),
+    // Set only when the model explicitly declared it has nothing left to ask.
+    // Absent on a normal round. The service layer refuses this on round 1.
+    noNewQuestions: z.boolean().optional(),
   })
   .strict();
 
@@ -63,6 +80,7 @@ export type FinalReviewOutput = z.infer<typeof FinalReviewOutputSchema>;
 
 export interface ParsedBriefingQuestionsOutput {
   questions: BriefingQuestionInput[];
+  noNewQuestions?: boolean;
 }
 
 export interface GateQuestion {
@@ -253,7 +271,7 @@ export function readPrdBriefingSourceHashes(raw: string | null | undefined): Prd
 
 export function parseBriefingQuestionsOutput(raw: string): ParsedBriefingQuestionsOutput {
   const parsed = BriefingQuestionsOutputSchema.parse(JSON.parse(raw));
-  return { questions: parsed.questions };
+  return { questions: parsed.questions, noNewQuestions: parsed.noNewQuestions };
 }
 
 export function parseFinalReviewOutput(raw: string): FinalReviewOutput {

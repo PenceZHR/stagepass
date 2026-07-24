@@ -200,9 +200,9 @@ export function createProviderLifecycleSink(
   const started = createLifecyclePersistenceState();
   const terminal = createLifecyclePersistenceState();
   const assertLifecycleProvider = (eventProvider: AiProvider): void => {
-    if (eventProvider !== input.provider) {
+    if (eventProvider !== "codex") {
       throw new Error(
-        `provider_lifecycle_mismatch: expected ${input.provider}, received ${eventProvider}`,
+        `provider_lifecycle_mismatch: expected codex, received ${eventProvider}`,
       );
     }
   };
@@ -284,7 +284,7 @@ export async function getPipelineEngine(provider: EngineProvider): Promise<AiEng
     return pipelineEngineFactory(provider);
   }
 
-  return getAiEngine(provider);
+  return getAiEngine();
 }
 
 export function buildStreamStartTimeoutMs(): number {

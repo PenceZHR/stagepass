@@ -204,7 +204,6 @@ describe("sqlite write boundary", { concurrency: false }, () => {
   });
 
   it("logs only sanitized retry metadata", () => {
-    const require = createRequire(import.meta.url);
     const moduleUrl = pathToFileURL(
       path.join(process.cwd(), "server", "db", "write-boundary.ts"),
     ).href;
@@ -235,7 +234,7 @@ describe("sqlite write boundary", { concurrency: false }, () => {
         }));
       }
     `;
-    const output = execFileSync(process.execPath, [require.resolve("tsx/cli"), "--eval", script], {
+    const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
       cwd: process.cwd(),
       encoding: "utf8",
       env: { ...process.env, NODE_ENV: "production", LOG_LEVEL: "warn" },

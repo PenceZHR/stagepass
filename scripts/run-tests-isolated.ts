@@ -38,6 +38,7 @@ export function listTests(
     files.push(entryPath);
   };
   visit(path.join(root, "app"));
+  visit(path.join(root, "mcp"));
   visit(path.join(root, "server"));
   return files;
 }
@@ -67,6 +68,7 @@ function stamp(filePath: string): FileStamp {
 }
 
 export function runIsolatedTests(root = process.cwd(), requestedTests = process.argv.slice(2)): number {
+  if (requestedTests[0] === "--") requestedTests = requestedTests.slice(1);
   const suite: "unit" | "acceptance" | "all" = requestedTests[0] === "--acceptance"
     ? "acceptance"
     : requestedTests[0] === "--all"
