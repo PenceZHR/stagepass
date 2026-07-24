@@ -12,6 +12,8 @@ import { visibleChangeStatus } from "./change-phase-map";
 import type { ReviewCenterResponse } from "./review-report-center";
 import { StageOrbit } from "./stage-orbit";
 import { UI_STAGE_ORDER, type UiStage, type UiStageId } from "./pipeline-ui-model";
+import { useWorkspaceNavigation } from "./use-workspace-navigation";
+import { WorkspaceNavigationColumns } from "./workspace-navigation-columns";
 
 type PipelineView = "orbit" | "detail";
 
@@ -47,6 +49,7 @@ export function PipelinePageShell({
   const [view, setView] = useState<PipelineView>("orbit");
   const [transitionTargetId, setTransitionTargetId] = useState<UiStageId | null>(null);
   const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceNavigation = useWorkspaceNavigation(projectId, change.id);
 
   useEffect(() => {
     return () => {
@@ -83,63 +86,84 @@ export function PipelinePageShell({
         isRunning={isRunning}
       />
 
-      {view === "orbit" ? (
-        <StageOrbit
-          stages={stages}
-          activeStage={activeStage}
-          selectedStage={selectedStage}
-          changeTitle={change.title}
-          changeStatus={visibleChangeStatus(change)}
-          riskCount={riskCount}
-          transitioning={transitionTargetId !== null}
-          transitionTargetId={transitionTargetId}
-          onSelectStage={enterStage}
+      <div
+        data-stagepass-workspace
+        className="grid min-h-[calc(100vh-4rem)] grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,6fr)]"
+      >
+        <WorkspaceNavigationColumns
+          projects={workspaceNavigation.projects}
+          changes={workspaceNavigation.changes}
+          selectedProjectId={workspaceNavigation.selectedProjectId}
+          selectedChangeId={workspaceNavigation.selectedChangeId}
+          loadingProjects={workspaceNavigation.loadingProjects}
+          loadingChanges={workspaceNavigation.loadingChanges}
+          error={workspaceNavigation.error}
+          onSelectProject={(nextProjectId) => {
+            void workspaceNavigation.selectProject(nextProjectId);
+          }}
+          onSelectChange={workspaceNavigation.selectChange}
         />
-      ) : (
-        <main className="stagepass-detail-enter mx-auto w-full max-w-7xl px-4 py-6 sm:px-8 sm:py-10">
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={returnToOrbit}
-              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-white/12 bg-black/10 px-4 text-sm text-foreground transition hover:bg-white/8"
-              data-return-to-stage-orbit
-            >
-              <ChevronLeft className="size-4" aria-hidden="true" />
-              返回阶段环
-            </button>
-            <p className="text-xs text-muted-foreground">
-              <span className="text-foreground">{selectedStage.label}</span>
-              {" · "}
-              {selectedIsFuture ? "未来阶段只读预览" : "可查看当前证据"}
-            </p>
-          </div>
 
-          <section className="stagepass-surface overflow-hidden rounded-2xl">
-            <PipelinePageHeader
-              change={change}
-              selectedStage={selectedStage}
+        <section data-workspace-orbit className="min-w-0 overflow-hidden">
+          {view === "orbit" ? (
+            <StageOrbit
+              stages={stages}
               activeStage={activeStage}
-              isRunning={isRunning}
-              deleteBusy={deleteBusy}
-              deleteError={deleteError}
-              onDeleteChange={onDeleteChange}
+              selectedStage={selectedStage}
+              changeTitle={change.title}
+              changeStatus={visibleChangeStatus(change)}
+              riskCount={riskCount}
+              transitioning={transitionTargetId !== null}
+              transitionTargetId={transitionTargetId}
+              onSelectStage={enterStage}
             />
-            <div className="p-4 sm:p-6 lg:p-8">
-              {selectedIsFuture ? (
-                <div className="mb-6 border-l-2 border-primary/60 bg-primary/[0.045] px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">未来阶段 · 只读预览</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    此页面只展示预期门禁与交付要求；所有决定动作均已锁定。
-                  </p>
-                </div>
-              ) : null}
-              <div data-future-preview={selectedIsFuture ? "true" : "false"}>
-                {children}
+          ) : (
+            <main className="stagepass-detail-enter min-w-0 px-4 py-6 sm:px-6 sm:py-8">
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={returnToOrbit}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-full border border-white/12 bg-black/10 px-4 text-sm text-foreground transition hover:bg-white/8"
+                  data-return-to-stage-orbit
+                >
+                  <ChevronLeft className="size-4" aria-hidden="true" />
+                  返回阶段环
+                </button>
+                <p className="text-xs text-muted-foreground">
+                  <span className="text-foreground">{selectedStage.label}</span>
+                  {" · "}
+                  {selectedIsFuture ? "未来阶段只读预览" : "可查看当前证据"}
+                </p>
               </div>
-            </div>
-          </section>
-        </main>
-      )}
+
+              <section className="stagepass-surface overflow-hidden rounded-2xl">
+                <PipelinePageHeader
+                  change={change}
+                  selectedStage={selectedStage}
+                  activeStage={activeStage}
+                  isRunning={isRunning}
+                  deleteBusy={deleteBusy}
+                  deleteError={deleteError}
+                  onDeleteChange={onDeleteChange}
+                />
+                <div className="p-4 sm:p-6">
+                  {selectedIsFuture ? (
+                    <div className="mb-6 border-l-2 border-primary/60 bg-primary/[0.045] px-4 py-3 text-sm">
+                      <p className="font-medium text-foreground">未来阶段 · 只读预览</p>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        此页面只展示预期门禁与交付要求；所有决定动作均已锁定。
+                      </p>
+                    </div>
+                  ) : null}
+                  <div data-future-preview={selectedIsFuture ? "true" : "false"}>
+                    {children}
+                  </div>
+                </div>
+              </section>
+            </main>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
 const ORBIT_STAGE_IDS = UI_STAGE_ORDER.filter(
   (stageId): stageId is Exclude<UiStageId, "done"> => stageId !== "done",
 );
+const ORBIT_RADIUS_PERCENT = 42.5;
 
 type StagePosition = "complete" | "active" | "future";
 
@@ -46,19 +47,20 @@ export function StageOrbit({
 
   return (
     <section
-      className="flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center gap-6 overflow-hidden px-3 py-8 sm:px-8"
+      className="stagepass-orbit-change-enter flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center gap-4 overflow-hidden px-3 py-5 sm:px-6"
       aria-labelledby="stage-orbit-title"
       data-stage-orbit-home
     >
-      <div className="max-w-2xl text-center">
+      <div className="max-w-[min(90%,52rem)] text-center">
         <p className="stagepass-kicker">Change gate orbit</p>
         <h1
           id="stage-orbit-title"
-          className="stagepass-serif mt-3 text-balance text-2xl leading-tight text-foreground sm:text-4xl"
+          className="stagepass-serif mt-2 line-clamp-2 text-balance text-xl leading-tight text-foreground sm:text-2xl"
+          title={changeTitle}
         >
           {changeTitle}
         </h1>
-        <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
+        <p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-muted-foreground sm:text-sm">
           选择任一阶段查看门禁摘要。未来阶段始终为只读预览，点击不会改变流程状态。
         </p>
       </div>
@@ -68,14 +70,19 @@ export function StageOrbit({
         data-transitioning={transitioning ? "true" : "false"}
         aria-label="Stagepass 圆形阶段轨道"
       >
+        <span className="stage-orbit-aurora" aria-hidden="true" />
+        <span className="stage-orbit-inner-track" aria-hidden="true" />
         {orbitStages.map((stage, index) => {
-          const angle = (360 / orbitStages.length) * index;
+          const radians = ((index * 360) / orbitStages.length - 90) * (Math.PI / 180);
+          const x = 50 + Math.cos(radians) * ORBIT_RADIUS_PERCENT;
+          const y = 50 + Math.sin(radians) * ORBIT_RADIUS_PERCENT;
           const position = stagePosition(index, activeIndex);
           const selected = stage.id === selectedStage.id
             || stage.id === transitionTargetId;
           const style = {
-            "--stage-angle": `${angle}deg`,
-            "--stage-angle-inverse": `${angle * -1}deg`,
+            left: `${x}%`,
+            top: `${y}%`,
+            "--stage-delay": `${index * 0.72}s`,
           } as CSSProperties;
 
           return (
@@ -115,10 +122,13 @@ export function StageOrbit({
             {activeStage.id === "done" ? "Delivered" : activeStage.label}
           </h2>
           <StageStatusBadge state={activeStage.state} className="mt-3" />
-          <p className="mt-4 max-w-56 text-xs leading-5 text-muted-foreground sm:text-sm">
+          <p className="stage-orbit-conclusion mt-4 max-w-56 text-xs leading-5 text-muted-foreground sm:text-sm">
             {gateConclusion(activeStage)}
           </p>
-          <div className="mt-4 flex items-end gap-2" aria-label={`${riskCount} 个关键风险`}>
+          <div
+            className="stage-orbit-risks mt-4 flex items-end gap-2"
+            aria-label={`${riskCount} 个关键风险`}
+          >
             <strong className="stagepass-serif text-3xl font-normal text-primary">
               {riskCount}
             </strong>
@@ -126,7 +136,7 @@ export function StageOrbit({
               blocking risks
             </span>
           </div>
-          <p className="mt-2 max-w-48 truncate font-mono text-[0.62rem] text-muted-foreground/70">
+          <p className="stage-orbit-status mt-2 max-w-48 truncate font-mono text-[0.62rem] text-muted-foreground/70">
             {changeStatus}
           </p>
         </div>

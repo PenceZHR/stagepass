@@ -206,13 +206,44 @@
     @apply border-white/10;
   }
 
+  .stagepass-workspace-column {
+    min-height: 0;
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
+    background: oklch(0.17 0.038 295 / 68%);
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.79 0.085 73 / 28%) transparent;
+  }
+
+  .stagepass-workspace-column:nth-child(2) {
+    background: oklch(0.195 0.04 295 / 58%);
+  }
+
+  .stagepass-workspace-list {
+    @apply space-y-1;
+  }
+
+  .stagepass-workspace-row {
+    @apply block min-h-14 w-full rounded-lg border border-transparent px-3 py-3 text-left text-muted-foreground transition duration-200;
+  }
+
+  .stagepass-workspace-row:hover,
+  .stagepass-workspace-row:focus-visible {
+    @apply border-white/12 bg-white/[0.045] text-foreground;
+  }
+
+  .stagepass-workspace-row[data-active="true"] {
+    @apply border-primary/35 bg-primary/[0.09] text-foreground shadow-[inset_2px_0_oklch(0.79_0.085_73/85%)];
+  }
+
   .stage-orbit {
-    --orbit-size: min(66vw, 58vh, 38rem);
-    --orbit-radius: calc(var(--orbit-size) * 0.43);
+    --orbit-size: min(92%, 68vh, 42rem);
     position: relative;
     width: var(--orbit-size);
-    height: var(--orbit-size);
+    aspect-ratio: 1 / 1;
+    height: auto;
     flex: 0 0 auto;
+    isolation: isolate;
   }
 
   .stage-orbit::before,
@@ -233,25 +264,61 @@
 
   .stage-orbit::after {
     inset: 7.5%;
-    border: 1px solid transparent;
-    border-top-color: oklch(0.85 0.075 73 / 72%);
-    border-right-color: oklch(0.67 0.05 248 / 25%);
-    animation: stagepass-orbit-sweep 18s linear infinite;
+    border: 2px solid transparent;
+    border-top-color: oklch(0.86 0.09 73 / 88%);
+    border-right-color: oklch(0.69 0.075 25 / 42%);
+    border-bottom-color: oklch(0.63 0.06 248 / 28%);
+    filter: drop-shadow(0 0 12px oklch(0.79 0.085 73 / 24%));
+    animation: stagepass-orbit-sweep 16s linear infinite;
+  }
+
+  .stage-orbit-aurora,
+  .stage-orbit-inner-track {
+    position: absolute;
+    pointer-events: none;
+    border-radius: 9999px;
+  }
+
+  .stage-orbit-aurora {
+    inset: 18%;
+    z-index: -1;
+    background:
+      radial-gradient(circle at 35% 30%, oklch(0.78 0.09 72 / 18%), transparent 34%),
+      radial-gradient(circle at 68% 38%, oklch(0.61 0.075 320 / 20%), transparent 38%),
+      radial-gradient(circle at 50% 72%, oklch(0.57 0.07 245 / 17%), transparent 42%);
+    filter: blur(20px);
+    animation: stagepass-orbit-aurora 6.5s ease-in-out infinite;
+  }
+
+  .stage-orbit-inner-track {
+    inset: 12.5%;
+    border: 1px dashed oklch(0.72 0.055 316 / 24%);
+    box-shadow: inset 0 0 38px oklch(0.55 0.065 247 / 7%);
+    animation: stagepass-orbit-counter-sweep 21s linear infinite;
   }
 
   .stage-orbit-node {
     position: absolute;
-    left: 50%;
-    top: 50%;
     width: 0;
     height: 0;
-    transform: rotate(var(--stage-angle)) translateY(calc(var(--orbit-radius) * -1)) rotate(var(--stage-angle-inverse));
-    z-index: 2;
+    z-index: 3;
   }
 
   .stage-orbit-node > button {
-    @apply relative grid min-h-11 min-w-11 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border text-center transition duration-300;
+    @apply relative grid min-h-11 min-w-11 place-items-center rounded-full border text-center transition duration-300;
+    transform: translate(-50%, -50%);
     transform-origin: center;
+  }
+
+  .stage-orbit-node > button::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    pointer-events: none;
+    border: 1px solid oklch(0.82 0.075 73 / 0%);
+    border-radius: 9999px;
+    animation: stagepass-node-relay 9.5s ease-in-out infinite;
+    animation-delay: var(--stage-delay);
   }
 
   .stage-orbit-node > button:hover,
@@ -288,7 +355,7 @@
   }
 
   .stage-orbit-center {
-    @apply absolute left-1/2 top-1/2 z-[1] flex size-[51%] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-white/10 bg-[oklch(0.18_0.035_295/48%)] p-8 text-center backdrop-blur-md;
+    @apply absolute left-1/2 top-1/2 z-[2] flex size-[49%] -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-white/10 bg-[oklch(0.18_0.035_295/58%)] p-6 text-center shadow-[0_0_70px_oklch(0.62_0.07_310/12%)] backdrop-blur-md;
   }
 
   .stage-orbit[data-transitioning="true"] {
@@ -298,6 +365,10 @@
 
   .stagepass-detail-enter {
     animation: stagepass-detail-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .stagepass-orbit-change-enter {
+    animation: stagepass-orbit-change-enter 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
   [data-future-preview="true"] [data-stage-decision-area] {
@@ -312,6 +383,28 @@
 
 @keyframes stagepass-orbit-sweep {
   to { transform: rotate(360deg); }
+}
+
+@keyframes stagepass-orbit-counter-sweep {
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes stagepass-orbit-aurora {
+  0%, 100% { opacity: 0.58; transform: scale(0.94) rotate(-4deg); }
+  50% { opacity: 1; transform: scale(1.08) rotate(4deg); }
+}
+
+@keyframes stagepass-node-relay {
+  0%, 76%, 100% {
+    border-color: oklch(0.82 0.075 73 / 0%);
+    box-shadow: 0 0 0 oklch(0.82 0.075 73 / 0%);
+    transform: scale(0.86);
+  }
+  84% {
+    border-color: oklch(0.84 0.085 73 / 62%);
+    box-shadow: 0 0 18px oklch(0.76 0.075 73 / 28%);
+    transform: scale(1.16);
+  }
 }
 
 @keyframes stagepass-current-stage {
@@ -330,18 +423,63 @@
   to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
+@keyframes stagepass-orbit-change-enter {
+  from { opacity: 0; transform: scale(0.88); filter: blur(8px); }
+  to { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+
 @media (max-width: 767px) {
   .stage-orbit {
-    --orbit-size: min(94vw, 30rem);
-    --orbit-radius: calc(var(--orbit-size) * 0.42);
+    --orbit-size: min(92%, 56vh, 28rem);
   }
 
   .stage-orbit-center {
-    @apply size-[48%] p-4;
+    @apply size-[46%] p-2;
+  }
+
+  .stage-orbit-center h2 {
+    @apply mt-0.5 text-lg;
+  }
+
+  .stage-orbit-center [class*="stage-status"],
+  .stage-orbit-center > span {
+    @apply mt-1;
+  }
+
+  .stage-orbit-conclusion,
+  .stage-orbit-risks,
+  .stage-orbit-status {
+    display: none;
   }
 
   .stage-orbit-label {
-    @apply w-16 text-[0.58rem];
+    @apply w-12 text-[0.5rem];
+  }
+
+  .stagepass-workspace-column > div:first-child {
+    @apply px-2 py-3;
+  }
+
+  .stagepass-workspace-column .stagepass-kicker,
+  .stagepass-workspace-row svg,
+  .stagepass-workspace-row small {
+    display: none;
+  }
+
+  .stagepass-workspace-column h2 {
+    @apply text-xs;
+  }
+
+  .stagepass-workspace-list {
+    @apply p-1;
+  }
+
+  .stagepass-workspace-row {
+    @apply min-h-11 px-2 py-2;
+  }
+
+  .stagepass-workspace-row strong {
+    @apply text-[0.64rem] leading-tight;
   }
 }
 
@@ -353,5 +491,12 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .stage-orbit-aurora,
+  .stage-orbit-inner-track,
+  .stage-orbit-node > button::after,
+  .stagepass-orbit-change-enter {
+    animation: none !important;
   }
 }
