@@ -30,6 +30,7 @@ import {
 import { withTimeout } from "./ai-timeout-policy";
 import {
   blockStageViolation,
+  stopRun,
   writeRunArtifactBestEffort,
 } from "./pipeline-run-ledger-service";
 import { markdownArtifactContentFromResult } from "./markdown-artifact-content-service";
@@ -519,7 +520,12 @@ export async function runDocumentStage(
   if (!project) throw new Error(`Project not found: ${change.projectId}`);
 
   const provider = config.provider ?? executionContext.provider ?? (change.provider as Provider);
-  return runStageWithLedger({
+  // Captured for the awaiting-clarification path below, which settles a run the
+  // ledger deliberately leaves alone. The ledger only hands `runId` to
+  // `execute`, and a caller that did not reserve one has no other way back to it.
+  let startedRunId: string | undefined = config.runId;
+  try {
+    return await runStageWithLedger({
     changeId,
     phase: config.phase,
     runningStatus: config.runningStatus,
@@ -529,6 +535,7 @@ export async function runDocumentStage(
     provider,
     deferRunCompletion: config.deferRunCompletion,
     execute: async ({ runId }) => {
+      startedRunId = runId;
       const scope = defaultScopeForPhase(config.phase);
       const basePrompt = appendAdditionalPrompt(assemblePrompt(config.promptPhase, {
         changeId,
@@ -742,5 +749,32 @@ export async function runDocumentStage(
       );
       return ingest(produced);
     },
-  });
+    });
+  } catch (err) {
+    // The stage handed the human another batch of questions. Nothing failed:
+    // the run settles as stopped, the change keeps its status, and the job
+    // reports success so the worker does not retry a turn whose answer is
+    // sitting on the user's screen in Codex. The clarification loop finishes
+    // this stage later through adoption -- what the Spec round already does,
+    // and what every other document stage was missing: the error escaped to
+    // the failure ledger, so a stage that had correctly parked on a card
+    // reported itself broken and the UI said 失败.
+    if (err instanceof StageAwaitingClarificationError && startedRunId) {
+      stopRun(startedRunId, err.message);
+      log.info(
+        { changeId, phase: config.phase, runId: startedRunId },
+        "document stage paused awaiting human clarification",
+      );
+      return {
+        threadId: `${changeId}-${config.phase}-awaiting-clarification`,
+        runId: startedRunId,
+        summary: "stage_awaiting_clarification",
+        success: true,
+        changedFiles: [],
+        structuredOutput: undefined,
+        items: [],
+      };
+    }
+    throw err;
+  }
 }

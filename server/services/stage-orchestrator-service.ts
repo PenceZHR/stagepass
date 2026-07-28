@@ -44,6 +44,13 @@ function shouldBypassFailureLedger(err: unknown): boolean {
   return (
     err instanceof StageBoundaryViolationError ||
     (err instanceof Error && err.name === "PipelineRunStoppedError")
+    // Handing questions to the human is not a failure. Letting it reach the
+    // failure ledger ends the run as failed and applies `failureStatus`, so a
+    // stage that had correctly parked on a card reported itself broken -- the
+    // UI said 失败 while the answer it was waiting for sat on screen in Codex.
+    // The caller settles the run as stopped and returns instead.
+    || (err instanceof Error
+      && err.name === "StageAwaitingClarificationError")
   );
 }
 
