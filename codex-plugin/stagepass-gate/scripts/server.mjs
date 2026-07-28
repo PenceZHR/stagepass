@@ -216,13 +216,21 @@ server.registerTool(
       + `/changes/${encodeURIComponent(interaction.changeId)}/commands`,
       {
         method: "POST",
+        // Exactly the public command schema, which is strict: an extra key is
+        // rejected as `invalid_pipeline_command` with no indication of which
+        // one. `reason` and `interactionId` were top-level and are not in it,
+        // and `expectedHeadSha` is required even when null -- so every decision
+        // this plugin submitted was refused 422 before reaching the gate.
         body: JSON.stringify({
           actionId,
-          reason: reason ?? null,
-          interactionId,
           expectedGateVersion: live.gateVersion,
           expectedSourceDbHash: live.sourceDbHash,
+          expectedHeadSha: null,
           idempotencyKey: `gate-decision:${interactionId}:${actionId}`,
+          payload: {
+            interactionId,
+            ...(reason ? { reason } : {}),
+          },
         }),
       },
     );
