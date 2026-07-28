@@ -132,4 +132,51 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS ix_jobs_claimable ON jobs (status, created_at);
+
+-- ---------------------------------------------------------------------------
+-- L2
+-- ---------------------------------------------------------------------------
+
+-- One Change, one persistent Codex thread.
+--
+-- The uniqueness is the point: a second thread for the same Change means two
+-- conversations that each know half the story, which is what the old tree's
+-- "do not create a second user-visible task" rule was fighting.
+CREATE TABLE IF NOT EXISTS change_bindings (
+  change_id   TEXT PRIMARY KEY REFERENCES changes(id),
+  thread_id   TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
+  bound_at    TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_thread
+  ON change_bindings (thread_id) WHERE status = 'bound';
+
+-- Every turn StagePass asks for, written down BEFORE it is dispatched.
+--
+-- Recording it first is what makes a lost response survivable: on restart the
+-- turn is there, in the dispatched state, and can be reconciled. A turn written
+-- dispatch is a turn that, if the process dies in between, never existed --
+-- and the work silently happened twice.
+CREATE TABLE IF NOT EXISTS turns (
+  id            TEXT PRIMARY KEY,
+  change_id     TEXT NOT NULL REFERENCES changes(id),
+  job_id        TEXT NOT NULL REFERENCES jobs(id),
+  phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  request_hash  TEXT NOT NULL,
+  prompt        TEXT NOT NULL CHECK (length(trim(prompt)) > 0),
+  status        TEXT NOT NULL CHECK (status IN ('pending','dispatched','completed','failed')),
+  thread_id     TEXT NULL,
+  response      TEXT NULL,
+  error         TEXT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  -- A completed turn has what came back; a failed one says why. Neither may be
+  -- silent about its own outcome.
+  CHECK (status <> 'completed' OR response IS NOT NULL),
+  CHECK (status <> 'failed' OR error IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS ix_turns_job ON turns (job_id, created_at);
 `;

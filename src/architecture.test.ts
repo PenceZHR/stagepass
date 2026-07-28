@@ -38,7 +38,7 @@ const FILES = sourceFiles().map((path) => ({
  * when it was allowed to exist. Both are useful and they are not the same
  * question.
  */
-const LAYER: Readonly<Record<string, 0 | 1>> = {
+const LAYER: Readonly<Record<string, 0 | 1 | 2>> = {
   "domain/phase.ts": 0,
   "domain/change-state.ts": 0,
   "db/schema.ts": 0,
@@ -50,6 +50,12 @@ const LAYER: Readonly<Record<string, 0 | 1>> = {
   "store/command-store.ts": 1,
   "work/job-store.ts": 1,
   "work/turn-loop.ts": 1,
+
+  "domain/turn.ts": 2,
+  "store/binding-store.ts": 2,
+  "store/turn-store.ts": 2,
+  "codex/transport.ts": 2,
+  "codex/turn-runner.ts": 2,
 };
 
 const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));

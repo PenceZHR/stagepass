@@ -36,7 +36,12 @@ import {
  * against the old one can be refused instead of silently applied to the new.
  */
 
-const BLOCKER_SEVERITIES = ["P0", "P1", "P2"] as const;
+/**
+ * Exported because L2 validates a model's answer against it. It was demoted to
+ * internal when nothing else used it -- the standing orphan guard said so -- and
+ * is public again now that something does.
+ */
+export const BLOCKER_SEVERITIES = ["P0", "P1", "P2"] as const;
 export type BlockerSeverity = (typeof BLOCKER_SEVERITIES)[number];
 
 export interface Blocker {
