@@ -11,6 +11,17 @@ const HISTORICAL_AUDIT_FILES = new Set([
   "server/types/enums.ts",
   "server/services/codex-phase0-verifier-contract.ts",
 ]);
+/**
+ * The one module allowed to start turns over app-server.
+ *
+ * The rule this list narrows is not "turns are dangerous to start" but "there
+ * must be exactly one place that starts them", so recovery has a single thing
+ * to reason about. Adding a second entry here is an architecture change, not a
+ * convenience -- prefer routing through the gateway.
+ */
+const TURN_STARTING_FILES = new Set([
+  "server/services/codex-session-gateway.ts",
+]);
 
 function productionSources(): Array<{ file: string; source: string }> {
   const files: string[] = [];
@@ -44,7 +55,10 @@ describe("Codex standalone production boundary", () => {
         /(?:from\s+|require\()["'].*codex-app-server-engine/,
         fixture.file,
       );
-      if (!HISTORICAL_AUDIT_FILES.has(fixture.file)) {
+      if (
+        !HISTORICAL_AUDIT_FILES.has(fixture.file)
+        && !TURN_STARTING_FILES.has(fixture.file)
+      ) {
         assert.doesNotMatch(fixture.source, /["']turn\/start["']/, fixture.file);
       }
     }
