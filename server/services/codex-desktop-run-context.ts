@@ -1,4 +1,5 @@
 import { resolveStageClarificationPolicy } from "@/lib/stage-clarification-policy";
+import { STAGE_APPROVAL_QUESTION_ID } from "./stage-convergence-service";
 import type { CodexLogicalTurnRole } from "./codex-desktop-bridge-types";
 import { outputContractForRole } from "./stage-output-contract";
 
@@ -91,18 +92,21 @@ function choiceCardInstruction(input: CodexDesktopRunContextInput): string {
     `questionnaire: ${examples}`,
     "When no blocking questions remain, stop asking and continue the requested stage.",
     "Emit the formal stage result only when no execution blocker remains.",
-    // The approval card is NOT asked for here.
+    // The approval card is asked for here, on the same plugin as the question
+    // batches.
     //
-    // This used to tell the model to present it itself, and a card the server
-    // never opened has no interaction to authenticate against: the command
-    // gateway refused every approval it collected as `submit_auth_required`.
-    // StagePass opens the decision card once the stage settles and the gate is
-    // recomputed, which is also the only way the card can carry a contract the
-    // human is actually ruling against. Asking the model to open a second,
-    // unauthenticated one alongside it would put two cards on screen where only
-    // one can take effect.
-    "Do not present an approval or 批准/打回 card yourself: StagePass opens that",
-    "decision once this stage settles.",
+    // It was briefly moved to a server-opened card on the theory that only a
+    // card StagePass itself opened could be authenticated. That theory was
+    // wrong: what refused these approvals was the command claiming to come from
+    // an external MCP app, and fixing that claim made this card work. The
+    // server-opened one submits through a route that forbids business decisions
+    // from the web, so replacing a working card with it left the human clicking
+    // something that could never take effect.
+    "In that same reply, after the formal result, call present_stagepass_choices one",
+    "final time with exactly one question whose questionId is",
+    `${STAGE_APPROVAL_QUESTION_ID}, asking the user to approve this stage before the`,
+    "next one starts, with two options: A 批准 and B 打回. Ask nothing else in that",
+    "call -- it is an approval, not another question batch.",
     "Never claim the click took effect before that confirmation message appears.",
   ].join(" ");
 }
