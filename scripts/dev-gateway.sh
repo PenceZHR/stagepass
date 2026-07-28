@@ -11,7 +11,15 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
+# Codex builds its user-agent from the terminal identity and prefers
+# TERM_PROGRAM over TERM, so exporting TERM=dumb is not enough when this is
+# launched from Terminal.app: the runtime string becomes
+# "... Apple_Terminal/470.2 ..." and misses the shell-control allowlist, which
+# expects the "... dumb ..." form produced when no terminal program is
+# advertised. That is why the same launch config behaves differently from an
+# IDE and from a terminal.
 export TERM=dumb
+unset TERM_PROGRAM TERM_PROGRAM_VERSION TERM_SESSION_ID
 export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="Codex Desktop"
 export STAGEPASS_CODEX_TURN_TRANSPORT=gateway
 export STAGEPASS_DB_PATH="${STAGEPASS_DB_PATH:-/private/tmp/stagepass-gateway-e2e/ship.db}"
@@ -24,6 +32,10 @@ mkdir -p "$(dirname "$STAGEPASS_DB_PATH")"
 
 echo "turn transport : $STAGEPASS_CODEX_TURN_TRANSPORT"
 echo "originator     : $CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+echo "terminal       : ${TERM} (TERM_PROGRAM cleared)"
 echo "database       : $STAGEPASS_DB_PATH"
 
-exec pnpm dev
+# npx rather than pnpm: pnpm resolves its own cwd during bootstrap and dies
+# with EPERM when it is spawned from a directory it cannot stat, which is how
+# some tool harnesses launch it. tsx has no such step.
+exec npx tsx scripts/dev-supervisor.ts
