@@ -17,6 +17,7 @@
     "test:src": "node --import tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "typecheck:src": "tsc --noEmit -p tsconfig.src.json",
     "check:src": "pnpm typecheck:src && pnpm test:src",
+    "verify:rebuild": "tsx scripts/verify-rebuild.ts",
     "test:acceptance": "tsx scripts/run-tests-isolated.ts --acceptance",
     "test:all": "tsx scripts/run-tests-isolated.ts --all",
     "test:phase0-verifier": "tsx --test --test-concurrency=1 server/services/codex-phase0-verifier-contract.test.ts server/services/codex-phase0-restart-resume.test.ts",
