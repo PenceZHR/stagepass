@@ -126,6 +126,58 @@ describe("stage approval card", () => {
     assert.deepEqual(classified, { kind: "converged", text: "正式 PRD" });
   });
 
+  // The shape above is what a COMPLETED card reports. Presenting one returns
+  // the batch it rendered, under `questions` keyed by `id` -- and that is the
+  // only shape a stage turn ever produces, because the turn ends while the card
+  // is still awaiting selection. Reading only `answers` meant this returned
+  // false for every real card, so an approving stage was classified as having
+  // asked another batch and could never converge: no gate opened, and the
+  // approval click failed with nothing to fence.
+  it("does not treat a presented approval card as another batch", () => {
+    const classified = classifyStageConvergence({
+      threadId: "T", runId: "R", summary: "正式 PRD", success: true,
+      changedFiles: [],
+      items: [{
+        type: "mcp_tool_call",
+        name: "stagepass-card/present_stagepass_choices",
+        status: "completed",
+        result: JSON.stringify({
+          structuredContent: {
+            schemaVersion: "stagepass.requirement-choice/v2",
+            status: "awaiting_selection",
+            questions: [{ id: STAGE_APPROVAL_QUESTION_ID, question: "批准本阶段？" }],
+          },
+        }),
+        id: "ITEM-1",
+      }],
+    } as never);
+
+    assert.deepEqual(classified, { kind: "converged", text: "正式 PRD" });
+  });
+
+  it("treats a presented batch that hides approval among questions as unconverged", () => {
+    const classified = classifyStageConvergence({
+      threadId: "T", runId: "R", summary: "…", success: true, changedFiles: [],
+      items: [{
+        type: "mcp_tool_call",
+        name: "stagepass-card/present_stagepass_choices",
+        status: "completed",
+        result: JSON.stringify({
+          structuredContent: {
+            status: "awaiting_selection",
+            questions: [
+              { id: STAGE_APPROVAL_QUESTION_ID, question: "批准本阶段？" },
+              { id: "session_duration", question: "会话多久过期？" },
+            ],
+          },
+        }),
+        id: "ITEM-1",
+      }],
+    } as never);
+
+    assert.deepEqual(classified, { kind: "asked_again" });
+  });
+
   it("still treats a mixed batch as unconverged", () => {
     const classified = classifyStageConvergence({
       threadId: "T", runId: "R", summary: "…", success: true, changedFiles: [],

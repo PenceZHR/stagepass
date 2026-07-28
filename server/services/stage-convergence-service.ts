@@ -43,8 +43,28 @@ function isApprovalOnlyCard(item: AiRunItem): boolean {
   }
   try {
     const parsed = JSON.parse(result) as {
-      structuredContent?: { answers?: Array<{ questionId?: unknown }> };
+      structuredContent?: {
+        questions?: Array<{ id?: unknown }>;
+        answers?: Array<{ questionId?: unknown }>;
+      };
     };
+    // Presenting a card returns the batch it rendered under `questions`, with
+    // each entry keyed by `id`. This used to read `answers[].questionId`, which
+    // a present result never carries -- so it returned false for every card
+    // including a pure approval one, every stage that asked for approval was
+    // classified as having asked another question batch, and the stage could
+    // never converge. No gate opened, so the approval the card was asking for
+    // had nothing to fence and the click failed with 「提交失败」.
+    //
+    // `answers` stays as a second shape rather than a replacement: a completed
+    // card reports what was chosen, and the rule is the same either way -- every
+    // entry in the batch must be the approval question, so a batch that slips a
+    // real question in alongside it is still a clarification.
+    const questions = parsed.structuredContent?.questions;
+    if (Array.isArray(questions) && questions.length > 0) {
+      return questions.every((question) =>
+        question?.id === STAGE_APPROVAL_QUESTION_ID);
+    }
     const answers = parsed.structuredContent?.answers;
     if (!Array.isArray(answers) || answers.length === 0) return false;
     return answers.every((answer) => answer?.questionId === STAGE_APPROVAL_QUESTION_ID);

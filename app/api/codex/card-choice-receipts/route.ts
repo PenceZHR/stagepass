@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { createChildLogger } from "@/server/logger";
 import {
   recordStagePassChoiceReceipt,
   StagePassChoiceReceiptError,
   type StagePassChoiceReceiptInput,
   type StagePassChoiceReceiptResult,
 } from "@/server/services/stagepass-choice-receipt-service";
+
+const log = createChildLogger("card-choice-receipts");
 
 const MAX_OPTIONS = 8;
 const MAX_QUESTIONS = 10;
@@ -142,8 +145,19 @@ export async function handleStagePassChoiceReceipt(
         { status: 422 },
       );
     }
+    // Name the underlying failure. The plugin turns any non-2xx into 「提交失败，
+    // 请重试」, so an unclassified 500 left both the user and whoever debugs it
+    // with a card that fails for no stated reason -- and the reason is usually
+    // a gate refusing the command, which retrying cannot change.
+    log.error(
+      { err: error },
+      "StagePass choice receipt failed outside the classified errors",
+    );
     return NextResponse.json(
-      { error: "choice_receipt_record_failed" },
+      {
+        error: "choice_receipt_record_failed",
+        detail: error instanceof Error ? error.message : String(error),
+      },
       { status: 500 },
     );
   }
