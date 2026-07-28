@@ -73,12 +73,12 @@ test("action-contract-service remains the action id registry facade", () => {
   assert.match(source, /export function persistActionContract\(/);
 });
 
-test("change detail page still consumes PipelineActionContract through helper seam", () => {
+test("change detail page still consumes PipelineActionContract through the shared hook seam", () => {
   const source = read("app/projects/[id]/changes/[changeId]/page.tsx");
 
-  assert.match(source, /createPipelinePreflightPayload/);
-  assert.match(source, /findPipelineAction/);
-  assert.match(source, /pipelineActionDisabledReason/);
+  assert.match(source, /usePipelineActions\(\{/);
+  assert.match(source, /actions: gateStatus\?\.actions/);
+  assert.match(source, /handleAction\(startControlAction\.actionId\)/);
 });
 
 test("check route still depends on preflight and pipeline facades during phase one", () => {

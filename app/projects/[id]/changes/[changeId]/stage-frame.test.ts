@@ -89,14 +89,15 @@ describe("shared stage frame primitives", () => {
     assert.match(actionBarSource, /data-render-role=\{item\.renderRole\}/);
   });
 
-  it("uses the shared status badge and action bar from StageFrame", () => {
-    assert.match(stageFrameSource, /import \{ StageActionBar/);
+  it("keeps StageFrame read-only and leaves execution to Codex", () => {
+    assert.doesNotMatch(stageFrameSource, /import \{ StageActionBar/);
     assert.match(stageFrameSource, /import \{ StageStatusBadge \}/);
     assert.match(stageFrameSource, /<StageStatusBadge/);
-    assert.match(stageFrameSource, /<StageActionBar/);
+    assert.doesNotMatch(stageFrameSource, /<StageActionBar/);
     assert.match(stageFrameSource, /children/);
     assert.match(stageFrameSource, /evidence/);
     assert.match(stageFrameSource, /aria-label=\{evidenceLabel/);
+    assert.doesNotMatch(phaseStageShellSource, /<RubricPanel|actions=\{actions\}/);
   });
 
   it("renders accessible frame structure without a nested main landmark", () => {
@@ -116,10 +117,6 @@ describe("shared stage frame primitives", () => {
               severity: "error",
             },
           ],
-          actions: [
-            action("run", "primary"),
-            action("locked", "secondary", false, "等待 Plan 门禁通过"),
-          ],
         },
         createElement("div", null, "Workspace content"),
       ),
@@ -129,9 +126,30 @@ describe("shared stage frame primitives", () => {
     assert.match(html, /role="region"/);
     assert.match(html, /aria-label="Plan workspace"/);
     assert.match(html, /data-stage-state="blocked"/);
-    assert.match(html, /role="group"/);
-    assert.match(html, /等待 Plan 门禁通过/);
+    assert.doesNotMatch(html, /role="group"/);
     assert.match(html, /data-blocker-severity="error"/);
+  });
+
+  it("keeps the stage workspace primary and folds read-only evidence", () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        StageFrame,
+        {
+          title: "实施计划",
+          label: "Plan",
+          state: "waiting",
+          evidence: createElement("div", { id: "evidence-content" }, "Evidence content"),
+        },
+        createElement("div", { id: "workspace-content" }, "Workspace content"),
+      ),
+    );
+
+    const workspaceIndex = html.indexOf("data-stage-workspace");
+    assert.ok(workspaceIndex >= 0, "workspace should be rendered");
+    assert.doesNotMatch(html, /data-stage-next-action/);
+    assert.match(html, /<details[^>]*data-stage-more/);
+    assert.match(html, /更多阶段信息/);
+    assert.match(html, /evidence-content/);
   });
 
   it("keeps PhaseStageShell compatible while delegating to StageFrame", () => {
@@ -140,9 +158,9 @@ describe("shared stage frame primitives", () => {
     assert.match(phaseStageShellSource, /export function phaseRecordsLabel/);
     assert.match(phaseStageShellSource, /export function PhaseStageShell/);
     assert.match(phaseStageShellSource, /<StageFrame/);
-    assert.match(phaseStageShellSource, /Pipeline Stage/);
+    assert.match(phaseStageShellSource, /当前阶段/);
     assert.match(phaseStageShellSource, /data-phase-stage=\{phase\}/);
-    assert.match(phaseStageShellSource, /Latest Run:/);
+    assert.match(phaseStageShellSource, /最近运行/);
     assert.match(phaseStageShellSource, /phaseRecordsLabel\(phase\)/);
     assert.match(phaseStageShellSource, /Intake: \{[\s\S]*label: "PRD"/);
     assert.match(phaseStageShellSource, /Check: \{[\s\S]*label: "QA"/);
@@ -167,13 +185,11 @@ describe("shared stage frame primitives", () => {
     assert.match(html, /data-phase-stage="Intake"/);
     assert.match(html, /data-stage-frame="true"/);
     assert.match(html, /aria-label="PRD 阶段概览"/);
-    assert.match(html, />PRD<\/span>/);
     assert.match(html, />PRD Briefing<\/h2>/);
     assert.match(html, /data-stage-state="needs_review"/);
     assert.match(html, /PRD workspace/);
     assert.match(html, /PRD 原始记录/);
     assert.match(html, /PRD phase records/);
-    assert.doesNotMatch(html, />Intake<\/span>/);
     assert.doesNotMatch(html, /aria-label="Intake 阶段概览"/);
   });
 });

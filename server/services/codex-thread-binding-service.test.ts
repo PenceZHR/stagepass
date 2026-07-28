@@ -15,6 +15,7 @@ import type { CodexPersistentShell } from "./codex-desktop-bridge-types";
 import {
   ensureCodexThreadBinding,
   repairCodexThreadBinding,
+  rotateCodexThreadBinding,
 } from "./codex-thread-binding-service";
 import { resolveCanonicalChangeThread } from "./provider-session-service";
 
@@ -187,6 +188,41 @@ describe("codex thread binding service", { concurrency: false }, () => {
     ]);
     assert.equal(first.threadId, second.threadId);
     assert.equal(fake.provisionCount(), 1);
+  });
+
+  it("rotates a stale task to a newly visible shell and repairs every compatibility mirror", async () => {
+    const fake = fakeBridge();
+    const scope = {
+      kind: "change" as const,
+      scopeId: CHANGE_ID,
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+    };
+    const original = await ensureCodexThreadBinding({
+      scope,
+      bridge: fake.bridge,
+    });
+
+    const rotated = await rotateCodexThreadBinding({
+      scope,
+      bridge: fake.bridge,
+    });
+
+    assert.equal(original.threadId, "task3-shell-1");
+    assert.equal(rotated.bindingId, original.bindingId);
+    assert.equal(rotated.threadId, "task3-shell-2");
+    assert.equal(rotated.status, "ready");
+    assert.equal(rotated.followerStartProvedAt, null);
+    assert.equal(rotated.lastTurnId, null);
+    assert.equal(rotated.lastObservationCursor, 0);
+    assert.equal(rotated.lastSemanticSnapshotHash, null);
+    assert.equal(
+      db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get()?.codexThreadId,
+      "task3-shell-2",
+    );
+    assert.equal(resolveCanonicalChangeThread(CHANGE_ID), "task3-shell-2");
+    assert.equal(fake.provisionCount(), 2);
+    assert.equal(fake.turnCalls(), 0);
   });
 
   it("adopts an identity-proved legacy shell without probing or starting", async () => {

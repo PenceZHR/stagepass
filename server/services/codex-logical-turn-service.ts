@@ -17,6 +17,8 @@ import {
   type CodexLogicalTurnRole,
   type CodexManagedOwner,
 } from "./codex-desktop-bridge-types";
+import { pipelineJobOwnerDeadlineAt } from "./pipeline-owner-deadline";
+import { resolveStageBinding } from "./codex-stage-binding-resolver";
 import { isLiveProjectAiRunLease } from "./project-ai-run-service";
 
 export type CodexLogicalTurn = typeof codexLogicalTurns.$inferSelect;
@@ -31,6 +33,21 @@ const INPUT_KEYS = new Set([
   "interactionId",
   "commandId",
 ]);
+
+/**
+ * Both a change-wide task and a per-stage task belong to the same change; the
+ * stage key carries a ":<stageId>" suffix, so ownership is proved by
+ * `change_id` rather than by the scope key matching the change id.
+ */
+function isChangeScopedBinding(
+  binding: { scopeKind: string; scopeId: string; changeId: string | null },
+  changeId: string,
+): boolean {
+  if (binding.changeId !== changeId) return false;
+  if (binding.scopeKind === "change") return binding.scopeId === changeId;
+  return binding.scopeKind === "change_stage"
+    && binding.scopeId.startsWith(`${changeId}:`);
+}
 
 export class CodexLogicalTurnError extends Error {
   constructor(readonly code: string, message: string) {
@@ -170,10 +187,7 @@ function resolveOwner(
     const change = tx.select().from(changes)
       .where(eq(changes.id, job.changeId)).get();
     if (!change) throw new CodexLogicalTurnError("owner_not_found", "Pipeline change missing");
-    const binding = tx.select().from(codexThreadBindings).where(and(
-      eq(codexThreadBindings.scopeKind, "change"),
-      eq(codexThreadBindings.scopeId, change.id),
-    )).get();
+    const binding = resolveStageBinding(change.id, job.phase, tx);
     if (!binding?.threadId || binding.status === "provisioning" || binding.status === "detached") {
       throw new CodexLogicalTurnError("binding_not_ready", "Change binding is not ready");
     }
@@ -487,9 +501,7 @@ export async function readLogicalTurnForStart(
         );
       }
       if (
-        binding.scopeKind !== "change"
-        || binding.scopeId !== change.id
-        || binding.changeId !== change.id
+        !isChangeScopedBinding(binding, change.id)
         || binding.projectId !== change.projectId
       ) {
         throw new CodexLogicalTurnError(
@@ -504,7 +516,7 @@ export async function readLogicalTurnForStart(
       ownerAttempt = job.attemptNo;
       ownerEpoch = job.attemptNo;
       leaseExpiresAt = job.leaseExpiresAt;
-      deadlineAt = job.effectDeadlineAt ?? job.leaseExpiresAt;
+      deadlineAt = pipelineJobOwnerDeadlineAt(job);
     } else {
       const run = tx.select().from(projectAiRuns)
         .where(eq(projectAiRuns.id, logical.projectAiRunId!)).get();

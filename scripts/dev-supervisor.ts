@@ -6,6 +6,7 @@ import path from "node:path";
 import { PassThrough, type Readable, type Writable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { loadEnvConfig } from "@next/env";
 import { migrateDatabase } from "../server/db/index.ts";
 
 import {
@@ -146,6 +147,10 @@ class SupervisorLogFlushError extends Error {
 
 export function ensureLogDir(logDir: string): void {
   fs.mkdirSync(logDir, { recursive: true });
+}
+
+export function loadStagepassDevEnvironment(cwd: string): void {
+  loadEnvConfig(cwd, true, console, true);
 }
 
 export function appendSupervisorEvent(
@@ -1573,6 +1578,7 @@ export function createSupervisor(options: DevSupervisorOptions = {}): DevSupervi
 }
 
 async function main(): Promise<void> {
+  loadStagepassDevEnvironment(process.cwd());
   migrateDatabase();
   process.env.STAGEPASS_DB_BOOTSTRAPPED = "1";
   const supervisor = createSupervisor({ superviseWorker: true });

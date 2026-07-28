@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, ChevronLeft, Trash2 } from "lucide-react";
+import { ChevronLeft, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -222,27 +222,22 @@ function PipelinePageHeader({
   onDeleteChange: () => void;
 }) {
   return (
-    <header className="border-b border-white/10 px-4 py-5 sm:px-6 lg:px-8">
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+    <header
+      className="border-b border-white/10 px-4 py-3 sm:px-6"
+      data-stage-detail-header
+    >
+      <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <p className="stagepass-kicker">
-            {selectedStage.id === activeStage.id ? "Current gate" : "Stage preview"}
+            {selectedStage.id === activeStage.id ? "当前 Change" : "阶段预览"}
           </p>
-          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="font-mono text-xs text-primary/80">{change.id}</span>
-            <h1 className="stagepass-serif text-balance text-2xl leading-tight sm:text-3xl">
-              {change.title}
-            </h1>
-          </div>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-            {selectedStage.description}
+          <p className="mt-1 truncate text-sm text-foreground" title={change.title}>
+            <span className="mr-2 font-mono text-xs text-primary/80">{change.id}</span>
+            {change.title}
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs">
-            {selectedStage.label}
-          </span>
+        <div className="flex shrink-0 items-center gap-2">
           <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-muted-foreground">
             {visibleChangeStatus(change)}
           </span>
@@ -264,18 +259,10 @@ function PipelinePageHeader({
       </div>
 
       {!readOnly && deleteError ? (
-        <p className="mt-4 text-sm text-destructive" role="alert">
+        <p className="mt-2 text-sm text-destructive" role="alert">
           {deleteError}
         </p>
       ) : null}
-
-      <Link
-        href={`/projects/${change.projectId}`}
-        className="mt-4 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="size-3.5" aria-hidden="true" />
-        Change Board
-      </Link>
     </header>
   );
 }

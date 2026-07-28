@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { projectCodexStageControl } from "@/server/services/codex-stage-control-projection";
 import { and, eq, desc, inArray } from "drizzle-orm";
 import {
   getChangeForProject,
@@ -44,10 +45,14 @@ function rolloutTargetForStatus(status: string): {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string; changeId: string }> }
 ) {
   const { id: projectId, changeId } = await params;
+  // Each stage owns its own Codex task, so the page asks for the stage it is
+  // showing. Without one, fall back to the change-wide reading a client that
+  // predates per-stage tasks expects.
+  const requestedStage = new URL(request.url).searchParams.get("stage");
   const change = await getChangeForProject(projectId, changeId);
 
   if (!change) {
@@ -85,6 +90,9 @@ export async function GET(
     .where(eq(artifacts.changeId, changeId))
     .all();
 
+  const stageControl = requestedStage
+    ? projectCodexStageControl({ changeId, projectId, stageId: requestedStage })
+    : null;
   const binding = db.select().from(codexThreadBindings).where(and(
     eq(codexThreadBindings.scopeKind, "change"),
     eq(codexThreadBindings.scopeId, changeId),
@@ -143,13 +151,15 @@ export async function GET(
     changedFiles,
     artifactCount: allArtifacts.length,
     codexControl: {
-      bindingTitle: binding?.title ?? null,
-      bindingStatus: binding?.status ?? "detached",
-      threadId: binding?.threadId ?? null,
-      lastTurnId: binding?.lastTurnId ?? null,
-      lastObservationCursor: binding?.lastObservationCursor ?? null,
-      lastSeenAt: binding?.lastSeenAt ?? null,
-      lastErrorCode: binding?.lastErrorCode ?? null,
+      bindingTitle: stageControl?.bindingTitle ?? binding?.title ?? null,
+      bindingStatus: stageControl?.bindingStatus ?? binding?.status ?? "detached",
+      threadId: stageControl ? stageControl.threadId : binding?.threadId ?? null,
+      lastTurnId: stageControl ? stageControl.lastTurnId : binding?.lastTurnId ?? null,
+      lastObservationCursor: stageControl
+        ? stageControl.lastObservationCursor
+        : binding?.lastObservationCursor ?? null,
+      lastSeenAt: stageControl ? stageControl.lastSeenAt : binding?.lastSeenAt ?? null,
+      lastErrorCode: stageControl ? stageControl.lastErrorCode : binding?.lastErrorCode ?? null,
       currentInteractionId: interaction?.id ?? null,
       codexDecisionEnabled,
       decisionPhase: rolloutTarget?.phase ?? null,

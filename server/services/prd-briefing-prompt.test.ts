@@ -12,8 +12,15 @@ const TEMPLATES_DIR = path.join(process.cwd(), "server", "templates", "prompts")
 describe("PRD briefing prompt templates", () => {
   it("question prompt teaches the QUESTION line protocol and never JSON output", () => {
     const content = fs.readFileSync(path.join(TEMPLATES_DIR, "prd-briefing-questions.md"), "utf-8");
-    assert.match(content, /反方需求质询 Agent/);
-    assert.match(content, /红方是人类用户本人/);
+    assert.match(content, /蓝方需求质询 Agent/);
+    // Red and blue are agent roles: red produces, blue supervises. Neither is
+    // the human. This template used to declare "红方是人类用户本人", which put
+    // the same word on two different things across phases -- in the Spec battle
+    // `battle_rounds.red_unit` is SPEC_WRITER, an agent. PRD briefing simply
+    // has no red: blue questions the human's intent directly.
+    assert.match(content, /本阶段没有红方生产者/);
+    assert.doesNotMatch(content, /红方是人类用户本人/);
+    assert.doesNotMatch(content, /我方|反方|正方/);
     assert.match(content, /PRD_BLUE_INTERROGATOR/);
     assert.match(content, /QUESTION: category \| severity \| question \| whyItMatters \| suggestedDefault/);
     assert.match(content, /不要输出任何 JSON、代码块或花括号结构/);

@@ -363,8 +363,8 @@ describe("rubric drawer: the editor is reachable (§7.2, §7.3)", () => {
   });
 });
 
-describe("the drawer is on every phase panel (§7.1)", () => {
-  it("renders inside the stage frame, above the workspace and the collapsed records", () => {
+describe("rubric ownership after the Codex-native Web boundary", () => {
+  it("does not mount the rubric editor in the shared Web stage shell", () => {
     const markup = renderToStaticMarkup(
       createElement(
         PhaseStageShell,
@@ -380,22 +380,13 @@ describe("the drawer is on every phase panel (§7.1)", () => {
       ),
     );
 
-    const rubricAt = markup.indexOf('aria-label="Spec 评判标准"');
     const workspaceAt = markup.indexOf('aria-label="Spec workspace"');
     const detailsAt = markup.indexOf("<details");
-    assert.notEqual(rubricAt, -1, "every phase panel gets the rubric section");
     assert.notEqual(workspaceAt, -1, "this fixture does render the workspace");
     assert.notEqual(detailsAt, -1, "this fixture does render the collapsed records");
-    assert.ok(
-      rubricAt < detailsAt,
-      "the rubric section must sit before the collapsed 原始记录 disclosure, not inside it",
-    );
-    assert.ok(
-      rubricAt < workspaceAt,
-      "the rubric section must sit ABOVE the workspace: measured in a browser, the Plan "
-      + "stage's task map pushes anything after it ~3900px down, which is the same "
-      + "below-the-fold burial §7.3 forbids",
-    );
+    assert.ok(workspaceAt < detailsAt, "the stage workspace must remain the primary content");
+    assert.doesNotMatch(markup, /aria-label="Spec 评判标准"|data-rubric-panel/);
+    assert.match(markup, /更多阶段信息/);
   });
 
   it("maps every pipeline phase in the UI to a rubric phase", () => {

@@ -149,8 +149,17 @@ export async function runPipelineAction(input: {
     endpoint: string,
     payload: Record<string, unknown>,
   ) => Promise<PipelineActionPostResult>;
+  /**
+   * Extra body an action needs beyond its preflight payload.
+   *
+   * Only `request_spec_changes` uses it today, for the reason the battle
+   * service demands before superseding a round. Merged UNDER the preflight
+   * fields so it can never overwrite the gate version or source hash the
+   * contract check reads.
+   */
+  extraPayload?: Record<string, unknown>;
 }): Promise<PipelineActionRunResult> {
-  const { actionId, actions, retryAfterDrift, postAction } = input;
+  const { actionId, actions, retryAfterDrift, postAction, extraPayload } = input;
 
   const command = resolvePipelineActionCommand(actionId);
   if (!command) {
@@ -169,7 +178,7 @@ export async function runPipelineAction(input: {
   const send = (contractAction: PipelineActionContract) =>
     postAction(
       command.endpoint,
-      createPipelinePreflightPayload(contractAction),
+      { ...extraPayload, ...createPipelinePreflightPayload(contractAction) },
     );
 
   const first = await send(initialAction);

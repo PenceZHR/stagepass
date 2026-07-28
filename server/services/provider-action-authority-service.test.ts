@@ -832,3 +832,75 @@ describe("retry_build enqueue authority status bound", () => {
     });
   }
 });
+
+/**
+ * PRD enqueue authority demanded a locked prd_briefing and a prd_draft --
+ * artifacts of the web questionnaire the clarification loop replaces. A change
+ * whose PRD converged through Codex cards produced its document and its gate,
+ * but never those rows, so every downstream action stayed denied with no way
+ * to satisfy the check.
+ */
+describe("PRD enqueue authority from a clarified stage", () => {
+  const PROJECT_ID = "PRJ-CLARIFIED-AUTH";
+  const CHANGE_ID = "CHG-CLARIFIED-AUTH";
+  const NOW = "2026-07-27T00:00:00.000Z";
+
+  function cleanup(): void {
+    db.delete(stageGates).where(eq(stageGates.changeId, CHANGE_ID)).run();
+    db.delete(changes).where(eq(changes.id, CHANGE_ID)).run();
+    db.delete(projects).where(eq(projects.id, PROJECT_ID)).run();
+  }
+
+  function seedGate(freshness: unknown): void {
+    db.insert(stageGates).values({
+      id: `STG-${CHANGE_ID}`,
+      changeId: CHANGE_ID,
+      phase: "PRD",
+      status: "pass",
+      gateVersion: 1,
+      sourceDbHash: "clarified-source-hash",
+      freshnessJson: JSON.stringify(freshness),
+      computedAt: NOW,
+    }).run();
+  }
+
+  beforeEach(() => {
+    cleanup();
+    db.insert(projects).values({
+      id: PROJECT_ID, name: "P", repoPath: process.cwd(),
+      createdAt: NOW, updatedAt: NOW,
+    }).run();
+    db.insert(changes).values({
+      id: CHANGE_ID, projectId: PROJECT_ID, title: "C",
+      status: "INTAKE_READY", gateState: "intake",
+      createdAt: NOW, updatedAt: NOW,
+    }).run();
+  });
+
+  afterEach(cleanup);
+
+  it("authorizes run_spec when the PRD gate came from the clarification loop", () => {
+    seedGate({ source: "clarification_loop" });
+
+    const authority = evaluateProviderActionAuthority(db, {
+      changeId: CHANGE_ID,
+      actionId: "run_spec",
+    });
+
+    assert.equal(authority.enabled, true, authority.reasonCode ?? "");
+  });
+
+  // A briefing-derived gate keeps its own evidence requirement: nothing about
+  // this change says the questionnaire was completed.
+  it("still demands a locked briefing when the gate came from the briefing", () => {
+    seedGate({ source: "db", draftFresh: true });
+
+    const authority = evaluateProviderActionAuthority(db, {
+      changeId: CHANGE_ID,
+      actionId: "run_spec",
+    });
+
+    assert.equal(authority.enabled, false);
+    assert.equal(authority.reasonCode, "prd_authority_incomplete");
+  });
+});

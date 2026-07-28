@@ -111,6 +111,11 @@ const shellControl: CodexAppServerShellControl = {
   async listPersistentShells() {
     return [];
   },
+  // This fixture never delegates, so no sub-agent thread can exist for it to
+  // find. Empty is the truth here rather than a stub.
+  async listSubAgentThreads() {
+    return [];
+  },
   async readPersistentShell() {
     return null;
   },

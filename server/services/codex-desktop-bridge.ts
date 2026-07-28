@@ -8,6 +8,7 @@ import {
   CodexDesktopFollowerRoutingError,
   type CodexDesktopFollowerTransport,
 } from "./codex-desktop-ipc-transport";
+import { sanitizeCodexErrorMessage } from "./codex-engine-shared";
 import {
   dispatchSurfaceForRole,
   REQUIRED_APP_SERVER_SHELL_CAPABILITIES,
@@ -55,8 +56,8 @@ export class CodexDesktopBridgeError extends Error {
 export interface CodexDesktopBridge {
   probe(): Promise<CodexDesktopProbe>;
   /**
-   * Task-binding control plane adapter. These methods use app-server shell
-   * control only; they never deep-link or start a managed turn.
+   * Task-binding adapter. Provisioning activates the new persistent task in
+   * Codex App before proving its name; it never starts a managed stage turn.
    */
   provisionPersistentShell?(input: {
     projectPath: string;
@@ -596,6 +597,17 @@ function phase0InjectedCrash(error: unknown): boolean {
     && "phase0CrashCheckpoint" in error;
 }
 
+function isExistingFollowerStartAttempt(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = "code" in error
+    ? String((error as Error & { code?: unknown }).code ?? "")
+    : "";
+  return code === "logical_turn_attempt_exists"
+    || /(?:already owns|already has|already exists).*start attempt/i.test(
+      error.message,
+    );
+}
+
 function tripFollowerStartFailpoint(
   options: BridgeOptions,
   checkpoint:
@@ -709,6 +721,7 @@ function snapshotItemIds(snapshot: CodexTurnSnapshot): string[] {
     "command_execution",
     "tool_call",
     "file_change",
+    "sub_agent_activity",
     "error",
   ]);
   const ids = snapshot.items.map((item) => {
@@ -770,6 +783,14 @@ function changedSemanticItem(
         semantic: {
           ...item.semantic,
           path: `${item.semantic.path}.semantic-update`,
+        },
+      };
+    case "sub_agent_activity":
+      return {
+        ...item,
+        semantic: {
+          ...item.semantic,
+          agentPath: `${item.semantic.agentPath}.semantic-update`,
         },
       };
     case "error":
@@ -956,6 +977,17 @@ function validateTurnRequestShape(request: CodexDesktopTurnRequest): void {
         || request.model === undefined
       )
     )
+    // A schema is only a constraint if it is a schema. An array or a string here
+    // would travel to the app-server as `outputSchema` and constrain nothing,
+    // and the caller would go on believing the reply was enforced.
+    || (
+      request.outputSchema !== undefined
+      && (
+        typeof request.outputSchema !== "object"
+        || request.outputSchema === null
+        || Array.isArray(request.outputSchema)
+      )
+    )
   ) {
     throw new CodexDesktopBridgeError(
       "desktop_protocol_invalid",
@@ -984,8 +1016,10 @@ export function createCodexDesktopBridge(
     1,
     Math.floor(options.readOutageBudgetMs ?? 15_000),
   );
+  let cachedProbe: CodexDesktopProbe | null = null;
+  let probeInFlight: Promise<CodexDesktopProbe> | null = null;
 
-  async function probe(): Promise<CodexDesktopProbe> {
+  async function probeOnce(): Promise<CodexDesktopProbe> {
     let shell;
     let desktop;
     try {
@@ -1041,6 +1075,30 @@ export function createCodexDesktopBridge(
     };
   }
 
+  async function probe(): Promise<CodexDesktopProbe> {
+    if (cachedProbe) return cachedProbe;
+    if (probeInFlight) return probeInFlight;
+    const current = (async () => {
+      let delayMs = 250;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await probeOnce();
+        } catch (error) {
+          if (attempt >= 3) throw error;
+          await sleep(delayMs);
+          delayMs = Math.min(delayMs * 2, 2_000);
+        }
+      }
+    })();
+    probeInFlight = current;
+    try {
+      cachedProbe = await current;
+      return cachedProbe;
+    } finally {
+      if (probeInFlight === current) probeInFlight = null;
+    }
+  }
+
   async function ensurePersistentShell(input: {
     projectPath: string;
     scope: import("./codex-desktop-bridge-types").CodexManagedScope;
@@ -1059,7 +1117,18 @@ export function createCodexDesktopBridge(
         )
       )
       || (
+        // A stage scope is keyed "<changeId>:<stageId>", so it matches neither
+        // the change key nor the project key.
+        input.scope.kind === "change_stage"
+        && (
+          input.scope.changeId.length === 0
+          || input.scope.stageId.length === 0
+          || input.scope.scopeId !== `${input.scope.changeId}:${input.scope.stageId}`
+        )
+      )
+      || (
         input.scope.kind !== "change"
+        && input.scope.kind !== "change_stage"
         && input.scope.scopeId !== input.scope.projectId
       )
     ) {
@@ -1239,16 +1308,20 @@ export function createCodexDesktopBridge(
     projectPath: string;
     title: string;
   }): Promise<CodexPersistentShell> {
+    await probe();
     const cwd = path.resolve(input.projectPath);
-    const started = await options.shellControl.startPersistentThread({
+    const shell = await options.shellControl.startPersistentThreadAndName({
       cwd,
       ephemeral: false,
-    });
-    await options.shellControl.setThreadName({
-      threadId: started.threadId,
       name: input.title,
+      deadlineAt: new Date(now() + readinessDeadlineMs).toISOString(),
+      async onStarted() {},
+      async activate(threadId) {
+        await options.follower.openThreadDeepLink({
+          url: `codex://threads/${threadId}`,
+        });
+      },
     });
-    const shell = await options.shellControl.readPersistentShell(started.threadId);
     if (
       !shell
       || shell.ephemeral !== false
@@ -1260,6 +1333,9 @@ export function createCodexDesktopBridge(
         "persistent shell identity could not be proved after creation",
       );
     }
+    await options.follower.openThreadDeepLink({
+      url: `codex://threads/${shell.threadId}`,
+    });
     return shell;
   }
 
@@ -1817,6 +1893,12 @@ export function createCodexDesktopBridge(
         outageStartedAt = undefined;
         outageDelayMs = 250;
       } catch (error) {
+        if (
+          error instanceof CodexDesktopBridgeError
+          && error.code === "turn_snapshot_invalid"
+        ) {
+          throw error;
+        }
         outageStartedAt ??= now();
         if (now() - outageStartedAt >= readOutageBudgetMs) {
           throw new CodexDesktopBridgeError(
@@ -2013,9 +2095,13 @@ export function createCodexDesktopBridge(
           logicalTurnId: logical.logicalTurnId,
         });
       } catch (error) {
+        if (phase0InjectedCrash(error)) throw error;
         throw new CodexDesktopBridgeError(
           "desktop_follower_start_ambiguous",
-          "logical turn already has an active follower-start attempt",
+          isExistingFollowerStartAttempt(error)
+            ? "logical turn already has an active follower-start attempt"
+            : "Codex follower-start baseline could not be prepared: "
+              + sanitizeCodexErrorMessage(error),
           { cause: error },
         );
       }

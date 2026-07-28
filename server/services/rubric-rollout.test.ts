@@ -283,6 +283,20 @@ describe("factory rubrics", () => {
     "RBK-factory-TechSpec-producer-06",
     "RBK-factory-TechSpec-producer-07",
     "RBK-factory-TechSpec-producer-08",
+    "RBK-factory-TechSpec-critic-01",
+    "RBK-factory-TechSpec-critic-02",
+    "RBK-factory-TechSpec-critic-03",
+    "RBK-factory-TechSpec-critic-04",
+    "RBK-factory-TechSpec-critic-05",
+    "RBK-factory-TechSpec-critic-06",
+    "RBK-factory-TechSpec-critic-07",
+    "RBK-factory-TechSpec-critic-08",
+    "RBK-factory-TechSpec-verdict-01",
+    "RBK-factory-TechSpec-verdict-02",
+    "RBK-factory-TechSpec-verdict-03",
+    "RBK-factory-TechSpec-verdict-04",
+    "RBK-factory-TechSpec-verdict-05",
+    "RBK-factory-TechSpec-verdict-06",
     // Plan producer
     "RBK-factory-Plan-producer-01",
     "RBK-factory-Plan-producer-02",
@@ -292,6 +306,20 @@ describe("factory rubrics", () => {
     "RBK-factory-Plan-producer-06",
     "RBK-factory-Plan-producer-07",
     "RBK-factory-Plan-producer-08",
+    "RBK-factory-Plan-critic-01",
+    "RBK-factory-Plan-critic-02",
+    "RBK-factory-Plan-critic-03",
+    "RBK-factory-Plan-critic-04",
+    "RBK-factory-Plan-critic-05",
+    "RBK-factory-Plan-critic-06",
+    "RBK-factory-Plan-critic-07",
+    "RBK-factory-Plan-critic-08",
+    "RBK-factory-Plan-verdict-01",
+    "RBK-factory-Plan-verdict-02",
+    "RBK-factory-Plan-verdict-03",
+    "RBK-factory-Plan-verdict-04",
+    "RBK-factory-Plan-verdict-05",
+    "RBK-factory-Plan-verdict-06",
     // TestPlan producer
     "RBK-factory-TestPlan-producer-01",
     "RBK-factory-TestPlan-producer-02",
@@ -300,6 +328,20 @@ describe("factory rubrics", () => {
     "RBK-factory-TestPlan-producer-05",
     "RBK-factory-TestPlan-producer-06",
     "RBK-factory-TestPlan-producer-07",
+    "RBK-factory-TestPlan-critic-01",
+    "RBK-factory-TestPlan-critic-02",
+    "RBK-factory-TestPlan-critic-03",
+    "RBK-factory-TestPlan-critic-04",
+    "RBK-factory-TestPlan-critic-05",
+    "RBK-factory-TestPlan-critic-06",
+    "RBK-factory-TestPlan-critic-07",
+    "RBK-factory-TestPlan-critic-08",
+    "RBK-factory-TestPlan-verdict-01",
+    "RBK-factory-TestPlan-verdict-02",
+    "RBK-factory-TestPlan-verdict-03",
+    "RBK-factory-TestPlan-verdict-04",
+    "RBK-factory-TestPlan-verdict-05",
+    "RBK-factory-TestPlan-verdict-06",
     // Build producer
     "RBK-factory-Build-producer-01",
     "RBK-factory-Build-producer-02",
@@ -357,13 +399,36 @@ describe("factory rubrics", () => {
     );
   });
 
+  /**
+   * A criterion rides inside a stage's prompt, so every role word it uses has
+   * to be a role that prompt actually introduced -- otherwise the model is
+   * asked about a party it was never told exists.
+   *
+   * This now DERIVES the vocabulary from the templates instead of hardcoding
+   * one forbidden word. The hardcoded version said "蓝方" was undefined, which
+   * was true when the templates cast red as the human and called the critic
+   * 反方; the moment they were corrected to 红方=生产者 / 蓝方=监督者, the guard
+   * was asserting the opposite of the truth and failing correct criteria. A
+   * guard whose message claims "no prompt template defines it" should read the
+   * templates.
+   */
   it("uses only the role words the prompt templates define", () => {
-    const undefinedRoleWords = ["蓝方"];
+    const templatesDir = path.join(process.cwd(), "server", "templates", "prompts");
+    const templateText = fs.readdirSync(templatesDir)
+      .filter((file) => file.endsWith(".md"))
+      .map((file) => fs.readFileSync(path.join(templatesDir, file), "utf-8"))
+      .join("\n");
+    // Every party word the codebase has ever used for a battle side. A
+    // criterion may use one only if some template introduces it.
+    const roleWords = ["红方", "蓝方", "反方", "正方", "我方", "裁决者", "裁决方"];
+    const defined = new Set(roleWords.filter((word) => templateText.includes(word)));
+    assert.ok(defined.has("红方") && defined.has("蓝方"), "templates must define both sides");
+
     for (const scope of factoryRubricScopes()) {
       for (const criterion of factoryCriteria(scope.phase, scope.role)) {
-        for (const word of undefinedRoleWords) {
-          assert.ok(
-            !criterion.text.includes(word),
+        for (const word of roleWords) {
+          if (!criterion.text.includes(word) || defined.has(word)) continue;
+          assert.fail(
             `${scope.phase} ${scope.role} criterion "${criterion.text}" uses "${word}", which no `
             + "prompt template defines -- the model is being asked about a role it was never given",
           );

@@ -1890,7 +1890,7 @@ describe("pipeline-service v2 stages", () => {
     repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-t27-"));
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
@@ -2258,7 +2258,7 @@ describe("pipeline-service v2 stages", () => {
     seedChange(repoPath, "INTAKE_READY");
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
@@ -2556,7 +2556,7 @@ describe("pipeline-service v2 stages", () => {
     seedClosedSpecBattle();
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${CHANGE_ID}-thread`,
             runId: "ENGINE-RUN",
@@ -2626,7 +2626,7 @@ describe("pipeline-service v2 stages", () => {
     seedClosedSpecBattle();
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${CHANGE_ID}-thread`,
             runId: "ENGINE-RUN",
@@ -8714,7 +8714,7 @@ describe("pipeline-service v2 stages", () => {
 
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
@@ -9255,7 +9255,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC")
+          summary: input.phase === "spec_critic"
             ? blueCritiqueLineProtocolText()
             : redSpecLineProtocolText(),
           success: true,
@@ -9343,7 +9343,7 @@ describe("pipeline-service v2 stages", () => {
     let blueOutputSchema: unknown = "unset";
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           blueOutputSchema = input.outputSchema;
           return {
             threadId: `${input.changeId}-thread`,
@@ -9388,7 +9388,7 @@ describe("pipeline-service v2 stages", () => {
     seedChange(repoPath, "INTAKE_READY");
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-BLUE-NATIVE",
@@ -9427,7 +9427,7 @@ describe("pipeline-service v2 stages", () => {
     let blueRunStatusBeforeStart: string | null = null;
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        const isBlue = input.prompt.includes("REQUIREMENT_CRITIC");
+        const isBlue = input.phase === "spec_critic";
         if (isBlue) {
           blueRunStatusBeforeStart = db.select({ status: runs.status })
             .from(runs)
@@ -9776,7 +9776,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC") ? "not json" : redSpecLineProtocolText(),
+          summary: input.phase === "spec_critic" ? "not json" : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9818,7 +9818,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC") ? "not json" : redSpecLineProtocolText(),
+          summary: input.phase === "spec_critic" ? "not json" : redSpecLineProtocolText(),
           success: true,
           changedFiles: [],
           structuredOutput: undefined,
@@ -9843,7 +9843,7 @@ describe("pipeline-service v2 stages", () => {
     seedChange(repoPath, "INTAKE_READY");
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
@@ -9890,7 +9890,7 @@ describe("pipeline-service v2 stages", () => {
     ].join("\n");
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",
@@ -10102,11 +10102,22 @@ describe("pipeline-service v2 stages", () => {
     const redResolvers: Array<() => void> = [];
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        // Only RED is held open, and the phase is matched positively.
+        //
+        // This used to hold open every phase that was not `spec_critic`, which
+        // silently included `spec_verdict`: the verdict call pushed a resolver
+        // AFTER the test had already fired the ones it collected, so nothing
+        // ever released it and `Promise.allSettled` never settled. Whether that
+        // deadlocked came down to a 25ms race between the verdict call and the
+        // resolver loop -- it survived on timing, and any change to module load
+        // cost anywhere upstream could tip it over.
+        if (input.phase !== "spec") {
           return {
-            threadId: `${input.changeId}-blue-thread`,
-            runId: "ENGINE-BLUE",
-            summary: blueCritiqueLineProtocolText(),
+            threadId: `${input.changeId}-${input.phase}-thread`,
+            runId: `ENGINE-${input.phase}`,
+            summary: input.phase === "spec_critic"
+              ? blueCritiqueLineProtocolText()
+              : "",
             success: true,
             changedFiles: [],
             structuredOutput: undefined,
@@ -10812,7 +10823,7 @@ describe("pipeline-service v2 stages", () => {
     let observedSpecRunCountDuringProvider = 0;
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (!input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec") {
           const round = db.select().from(battleRounds).where(eq(battleRounds.id, started.roundId)).get();
           observedStatusDuringProvider = round?.status ?? "";
           observedSpecRunCountDuringProvider = db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all()
@@ -10821,7 +10832,7 @@ describe("pipeline-service v2 stages", () => {
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC")
+          summary: input.phase === "spec_critic"
             ? blueCritiqueLineProtocolText()
             : redSpecLineProtocolText(),
           success: true,
@@ -10936,13 +10947,13 @@ describe("pipeline-service v2 stages", () => {
     const observedFreshnessDuringRetry: ReturnType<typeof getSpecReportFreshness>[] = [];
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
-        if (!input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec") {
           observedFreshnessDuringRetry.push(getSpecReportFreshness(CHANGE_ID));
         }
         return {
           threadId: `${input.changeId}-thread`,
           runId: "ENGINE-RUN",
-          summary: input.prompt.includes("REQUIREMENT_CRITIC")
+          summary: input.phase === "spec_critic"
             ? blueCritiqueLineProtocolText()
             : redSpecLineProtocolText(),
           success: true,
@@ -11391,7 +11402,7 @@ describe("pipeline-service v2 stages", () => {
     setPipelineEngineFactoryForTest(() => ({
       async run(input) {
         const isReview = input.prompt.includes("independent code reviewer");
-        if (input.prompt.includes("REQUIREMENT_CRITIC")) {
+        if (input.phase === "spec_critic") {
           return {
             threadId: `${input.changeId}-thread`,
             runId: "ENGINE-RUN",

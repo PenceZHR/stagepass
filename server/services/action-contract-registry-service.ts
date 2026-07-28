@@ -15,7 +15,12 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
   { actionId: "run_prd_briefing_final_review", phase: "PRD", label: "执行 PRD 终审", requiredStatus: ["INTAKE_PENDING", "INTAKE_READY", "BLOCKED"] },
   { actionId: "approve_spec", phase: "Spec", label: "批准 Spec", requiredStatus: "SPEC_READY" },
   { actionId: "reject_spec", phase: "Spec", label: "打回 Spec", requiredStatus: "SPEC_READY" },
-  { actionId: "request_spec_changes", phase: "Spec", label: "补充 Spec 事实", requiredStatus: "SPEC_READY" },
+  // Label says what it DOES, not what a human might be doing with it. This
+  // action supersedes the settled round and opens another red/blue/judge cycle;
+  // 「补充 Spec 事实」 described the human's intent and left the cost invisible,
+  // which is the same failure the button-naming test warns about one layer up.
+  // Matches the wording the other three delegated phases use.
+  { actionId: "request_spec_changes", phase: "Spec", label: "继续对抗（另开一轮）", requiredStatus: "SPEC_READY" },
   { actionId: "return_to_spec", phase: "Spec", label: "返回 Spec", requiredStatus: "SPEC_READY" },
   { actionId: "run_spec", phase: "Spec", label: "开始 Spec 对抗", snapshotPhase: "PRD", requiredStatus: ["INTAKE_READY", "SPECCING"] },
   { actionId: "retry_spec", phase: "Spec", label: "重新 Spec 对抗", snapshotPhase: "PRD", requiredStatus: ["INTAKE_READY", "SPECCING", "BLOCKED"] },
@@ -92,6 +97,16 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
     requiredStatus: ["PLAN_APPROVED", "TESTPLANNING"],
   },
   { actionId: "reject_test_plan", phase: "TestPlan", label: "打回测试计划", requiredStatus: "TESTPLAN_DONE" },
+  // "Another adversarial round", one per delegated phase -- the same entry
+  // `request_spec_changes` is for Spec. The LABEL matters as much as the id:
+  // the stage renders one start button and names it from the contract, and the
+  // button that supersedes a settled round has to say so. It once said
+  // "重新运行本阶段" while bound to this action, which is worse than a missing
+  // button -- it burns a full red/blue/judge cycle under a name that promises
+  // the opposite.
+  { actionId: "request_tech_spec_changes", phase: "TechSpec", label: "继续对抗（另开一轮）" },
+  { actionId: "request_plan_changes", phase: "Plan", label: "继续对抗（另开一轮）" },
+  { actionId: "request_test_plan_changes", phase: "TestPlan", label: "继续对抗（另开一轮）" },
   { actionId: "run_build", phase: "Build", label: "开始 Build", snapshotPhase: "TestPlan", requiredStatus: "PLAN_APPROVED" },
   // The two statuses retryBuildStreamed can reach a run from: PLAN_APPROVED
   // straight through, and IMPLEMENTING once recoverStaleBuildRun has taken over

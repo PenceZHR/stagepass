@@ -9,7 +9,7 @@ function nowISO(): string {
 }
 
 export interface EmitEventInput {
-  changeId: string;
+  changeId: string | null;
   runId?: string | null;
   type: string;
   message: string;
@@ -27,8 +27,8 @@ function nextEventId(): string {
  * For continuity markers that may be re-recorded on retries: the first write
  * wins and replays are silent no-ops.
  */
-export function emitIdempotentEvent(input: EmitEventInput & { id: string }): void {
-  db.insert(events)
+export function emitIdempotentEvent(input: EmitEventInput & { id: string }): boolean {
+  const inserted = db.insert(events)
     .values({
       id: input.id,
       changeId: input.changeId,
@@ -40,6 +40,7 @@ export function emitIdempotentEvent(input: EmitEventInput & { id: string }): voi
     })
     .onConflictDoNothing()
     .run();
+  return inserted.changes === 1;
 }
 
 export async function emitEvent(input: EmitEventInput): Promise<string> {

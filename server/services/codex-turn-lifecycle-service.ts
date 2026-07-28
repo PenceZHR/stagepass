@@ -100,7 +100,27 @@ export function startCodexTurnExecution(input: {
     });
     const existing = tx.select().from(codexTurnExecutions)
       .where(eq(codexTurnExecutions.logicalTurnId, logical.logicalTurnId)).get();
-    if (existing) return existing;
+    if (existing) {
+      // This row copied its owner stamp from the attempt when it was created.
+      // A re-leased owner has just proved the attempt is theirs, so the
+      // execution follows; leaving the old stamp makes every later snapshot
+      // write on this turn read as a stale fence.
+      if (
+        existing.leaseToken !== attempt.leaseToken
+        || existing.ownerAttempt !== attempt.ownerAttempt
+        || existing.ownerEpoch !== attempt.ownerEpoch
+      ) {
+        tx.update(codexTurnExecutions).set({
+          leaseToken: attempt.leaseToken,
+          ownerAttempt: attempt.ownerAttempt,
+          ownerEpoch: attempt.ownerEpoch,
+          updatedAt: new Date().toISOString(),
+        }).where(eq(codexTurnExecutions.id, existing.id)).run();
+        return tx.select().from(codexTurnExecutions)
+          .where(eq(codexTurnExecutions.id, existing.id)).get()!;
+      }
+      return existing;
+    }
     const timestamp = new Date().toISOString();
     const id = randomUUID();
     tx.insert(codexTurnExecutions).values({

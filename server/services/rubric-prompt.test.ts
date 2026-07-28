@@ -77,7 +77,7 @@ describe("rubric prompt section", () => {
 
     assert.match(producer, /自证/);
     assert.match(critic, /不要采信作者的自证结论/);
-    assert.match(verdict, /正方与反方各自的产出/);
+    assert.match(verdict, /红方（生产者）与蓝方（监督者）各自的产出/);
     assert.notEqual(producer, critic);
     assert.notEqual(critic, verdict);
   });

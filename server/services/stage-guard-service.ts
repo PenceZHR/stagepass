@@ -131,8 +131,20 @@ export const DEFAULT_STAGE_SCOPES: Record<RunPhase, Omit<StageScope, "phase">> =
       ".ship/changes/**/blue-gap-reviews.json",
       ".ship/changes/**/reports/spec-report.md",
       ".ship/baseline/prd.md",
+      // The delegated round's role briefs and each side's output file. Blue
+      // reads red's output from here, and every side reads its own brief.
+      ".ship/changes/**/rounds/**",
     ],
-    writableFiles: [".ship/changes/**/prd-delta.md", ".ship/changes/**/*-scope.json"],
+    writableFiles: [
+      ".ship/changes/**/prd-delta.md",
+      ".ship/changes/**/*-scope.json",
+      // The delegated round's output files, and ONLY those. These stages ran
+      // read-only until the round started writing, so this glob -- not the
+      // sandbox -- is what keeps a design stage away from the rest of the
+      // change. The `roles/` briefs are deliberately outside it: a round that
+      // could rewrite its own brief could rewrite its own schema.
+      ".ship/changes/**/rounds/**/round-*/*.json",
+    ],
   },
   tech_spec: {
     readableFiles: [
@@ -142,11 +154,20 @@ export const DEFAULT_STAGE_SCOPES: Record<RunPhase, Omit<StageScope, "phase">> =
       ".ship/baseline/api-spec.md",
       ".ship/baseline/data-model.md",
       ".ship/baseline/state-machine.md",
+      // The delegated round's role briefs and each side's output file. Blue
+      // reads red's output from here, and every side reads its own brief.
+      ".ship/changes/**/rounds/**",
     ],
     writableFiles: [
       ".ship/changes/**/tech-spec-delta.md",
       ".ship/changes/**/api-spec-delta.md",
       ".ship/changes/**/*-scope.json",
+      // The delegated round's output files, and ONLY those. These stages ran
+      // read-only until the round started writing, so this glob -- not the
+      // sandbox -- is what keeps a design stage away from the rest of the
+      // change. The `roles/` briefs are deliberately outside it: a round that
+      // could rewrite its own brief could rewrite its own schema.
+      ".ship/changes/**/rounds/**/round-*/*.json",
     ],
   },
   test_plan: {
@@ -154,8 +175,20 @@ export const DEFAULT_STAGE_SCOPES: Record<RunPhase, Omit<StageScope, "phase">> =
       ".ship/changes/**/prd-delta.md",
       ".ship/changes/**/tech-spec-delta.md",
       ".ship/baseline/test-plan.md",
+      // The delegated round's role briefs and each side's output file. Blue
+      // reads red's output from here, and every side reads its own brief.
+      ".ship/changes/**/rounds/**",
     ],
-    writableFiles: [".ship/changes/**/test-plan-delta.md", ".ship/changes/**/*-scope.json"],
+    writableFiles: [
+      ".ship/changes/**/test-plan-delta.md",
+      ".ship/changes/**/*-scope.json",
+      // The delegated round's output files, and ONLY those. These stages ran
+      // read-only until the round started writing, so this glob -- not the
+      // sandbox -- is what keeps a design stage away from the rest of the
+      // change. The `roles/` briefs are deliberately outside it: a round that
+      // could rewrite its own brief could rewrite its own schema.
+      ".ship/changes/**/rounds/**/round-*/*.json",
+    ],
   },
   release: {
     readableFiles: [".ship/changes/**", ".ship/baseline/**"],

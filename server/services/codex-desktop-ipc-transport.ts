@@ -34,8 +34,8 @@ const FOLLOWER_PROTOCOL_CAPABILITIES = [
 const CURRENT_DESKTOP_FOLLOWER_PROTOCOL_FINGERPRINT = [
   "initialize-v0+le32-json+desktop-follower-v1",
   "bundleIdentifier=com.openai.codex",
-  "bundleShortVersion=26.721.30844",
-  "bundleVersion=5813",
+  "bundleShortVersion=26.721.41059",
+  "bundleVersion=5848",
   "chromiumBaseVersion=150.0.7871.128",
 ].join(";");
 const KNOWN_DESKTOP_FOLLOWER_PROTOCOL_FINGERPRINTS = new Set([
@@ -438,6 +438,14 @@ export function createObservedCodexDesktopFollowerTransport(
             ...(request.model ? { model: request.model } : {}),
             ...(request.reasoningEffort
               ? { effort: request.reasoningEffort }
+              : {}),
+            // Passed straight through to the app-server's TurnStartParams,
+            // where it is enforced on the final assistant message. Whether the
+            // Desktop follower wrapper forwards it is NOT provable from here --
+            // it may whitelist fields and drop this one silently. Any caller
+            // relying on it must still validate the reply server-side.
+            ...(request.outputSchema
+              ? { outputSchema: request.outputSchema }
               : {}),
           },
         };

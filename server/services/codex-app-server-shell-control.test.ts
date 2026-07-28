@@ -11,7 +11,7 @@ import {
 
 const TEST_APP_SERVER_BINARY = {
   path: "/Applications/ChatGPT.app/Contents/Resources/codex",
-  version: "codex-cli 0.146.0-alpha.3",
+  version: "codex-cli 0.146.0-alpha.3.1",
   file: {
     isSocket: false,
     isDirectory: false,
@@ -120,7 +120,9 @@ class FakeShellClient implements AppServerShellClient {
   async close(): Promise<void> {}
 }
 
-function sessionScopedClientFixture() {
+function sessionScopedClientFixture(
+  transientNameError = "thread not loaded",
+) {
   const durable = new Map<string, {
     id: string;
     name: string | null;
@@ -177,7 +179,7 @@ function sessionScopedClientFixture() {
             if (!activated.has(threadId)) throw new Error("thread not loaded");
             if (transientNameFailures > 0) {
               transientNameFailures -= 1;
-              throw new Error("thread not loaded");
+              throw new Error(transientNameError);
             }
             const named = { ...thread, name: String(params.name) };
             local.set(threadId, named);
@@ -237,20 +239,49 @@ function fixture(behaviorEvidence?: {
 }
 
 // Strict fixtures below were regenerated/confirmed on 2026-07-23 with the
-// ChatGPT-bundled codex-cli 0.146.0-alpha.3 into a disposable directory.
+// ChatGPT-bundled codex-cli 0.146.0-alpha.3.1 into a disposable directory.
 // Sorted relative paths without a leading "./", then per-file SHA-256:
 // fd6f8bb9872165ce1e991c7ec175aa370bf1b4bbf797b5574b53eafd194711a1.
 // Turn fields: id/items/itemsView/status/error/startedAt/completedAt/durationMs;
 // itemsView is notLoaded|summary|full.
+/**
+ * A settled round must not be lost to the deadline on its own bookkeeping.
+ *
+ * `listSubAgentThreads` enumerates every sub-agent thread the app-server knows,
+ * 100 per page, filtering by parent client-side because `thread/list` has no
+ * parent filter -- so its cost grows with every round ever run. On the default
+ * 15s control-plane budget that killed a Spec round which had already spent
+ * 4m44s: judge, red and blue had all finished and their files were on disk.
+ */
+describe("sub-agent enumeration budget", () => {
+  it("gives thread/list a budget sized for enumeration, not for a health check", () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "server", "services", "codex-app-server-shell-control.ts"),
+      "utf-8",
+    );
+    const declared = /const SUB_AGENT_LIST_TIMEOUT_MS = ([0-9_]+);/.exec(source);
+    assert.ok(declared, "the sub-agent listing timeout must be named, not inlined");
+    assert.ok(
+      Number(declared[1]!.replace(/_/g, "")) >= 60_000,
+      "a paged enumeration that grows with history cannot share the 15s control-plane default",
+    );
+    // And it must actually be passed to the call, not merely declared.
+    assert.match(
+      source,
+      /sourceKinds: \["subAgentThreadSpawn"\],\s*\}, SUB_AGENT_LIST_TIMEOUT_MS\)/,
+    );
+  });
+});
+
 describe("Codex app-server shell control", () => {
-  it("accepts the exact 0.146 generated-schema runtime fingerprint", async () => {
+  it("accepts the exact 0.146.0-alpha.3.1 generated-schema runtime fingerprint", async () => {
     const client = new FakeShellClient();
     client.userAgent =
-      "Codex Desktop/0.146.0-alpha.3 (Mac OS 26.5.1; arm64) dumb (stagepass; 0.1.0)";
+      "Codex Desktop/0.146.0-alpha.3.1 (Mac OS 26.5.1; arm64) dumb (stagepass; 0.1.0)";
     const shellControl = createCodexAppServerShellControl({
       appServerBinary: {
         ...TEST_APP_SERVER_BINARY,
-        version: "codex-cli 0.146.0-alpha.3",
+        version: "codex-cli 0.146.0-alpha.3.1",
       },
       clientFactory: () => client,
       verifyAppServerBinary: async () => {},
@@ -259,7 +290,7 @@ describe("Codex app-server shell control", () => {
     const probe = await shellControl.probe();
     assert.equal(
       probe.protocolFingerprint,
-      "codex-cli-0.146.0-alpha.3-generate-ts:"
+      "codex-cli-0.146.0-alpha.3.1-generate-ts:"
       + "fd6f8bb9872165ce1e991c7ec175aa370bf1b4bbf797b5574b53eafd194711a1"
       + `;runtime=${client.userAgent}`,
     );
@@ -322,6 +353,25 @@ describe("Codex app-server shell control", () => {
       "before_spawn",
       "after_spawn",
     ]);
+  });
+
+  it("does not repeat deep bundle verification after discovery attestation", () => {
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "server",
+        "services",
+        "codex-app-server-shell-control.ts",
+      ),
+      "utf8",
+    );
+    const verifier = source.slice(
+      source.indexOf("export async function verifyAttestedAppServerBinary"),
+      source.indexOf("\nfunction asRecord"),
+    );
+
+    assert.doesNotMatch(verifier, /\["--verify",\s*"--deep",\s*"--strict"/);
+    assert.match(verifier, /\["-dv",\s*"--verbose=4"/);
   });
 
   it("provisions and proves a persistent shell within its creator client", async () => {
@@ -400,6 +450,39 @@ describe("Codex app-server shell control", () => {
         .filter((method) => method === "turn/start").length,
       0,
     );
+  });
+
+  it("retries the Codex App rollout registration lag after activation", async () => {
+    const fixture = sessionScopedClientFixture(
+      "no rollout found for thread id THREAD-1",
+    );
+    let currentNow = 0;
+    const shellControl = createCodexAppServerShellControl({
+      appServerBinary: TEST_APP_SERVER_BINARY,
+      clientFactory: () => fixture.clientFactory(),
+      verifyAppServerBinary: async () => {},
+      now: () => currentNow,
+      sleep: async (ms) => {
+        currentNow += ms;
+      },
+    });
+
+    const shell = await shellControl.startPersistentThreadAndName({
+      cwd: "/repo",
+      ephemeral: false,
+      name: "[CHG-1] First",
+      deadlineAt: new Date(1_000).toISOString(),
+      async onStarted() {},
+      activate: (threadId) => fixture.activate(threadId),
+    });
+
+    assert.equal(shell.threadId, "THREAD-1");
+    assert.deepEqual(fixture.clients[0]?.calls, [
+      "thread/start",
+      "thread/name/set",
+      "thread/name/set",
+      "thread/read",
+    ]);
   });
 
   it("closes the creator session at every provisioning crash checkpoint", async () => {
@@ -498,11 +581,11 @@ describe("Codex app-server shell control", () => {
   it("accepts only the exact generated-schema runtime fingerprint", async () => {
     const exact = fixture();
     exact.client.userAgent =
-      "Codex Desktop/0.146.0-alpha.3 (Mac OS 26.5.1; arm64) dumb (stagepass; 0.1.0)";
+      "Codex Desktop/0.146.0-alpha.3.1 (Mac OS 26.5.1; arm64) dumb (stagepass; 0.1.0)";
     const exactProbe = await exact.shellControl.probe();
     assert.equal(
       exactProbe.protocolFingerprint,
-      "codex-cli-0.146.0-alpha.3-generate-ts:"
+      "codex-cli-0.146.0-alpha.3.1-generate-ts:"
       + "fd6f8bb9872165ce1e991c7ec175aa370bf1b4bbf797b5574b53eafd194711a1"
       + `;runtime=${exact.client.userAgent}`,
     );
@@ -677,11 +760,172 @@ describe("Codex app-server shell control", () => {
     });
   });
 
-  it("fails closed on unknown item kinds and duplicate item ids", async () => {
+  it("treats Codex's premature completed flag without terminal metadata as still in progress", async () => {
+    const { client, shellControl } = fixture();
+    client.threadReadOverride = {
+      thread: {
+        id: "THREAD-1",
+        name: "[CHG-1] First",
+        cwd: "/repo",
+        ephemeral: false,
+        turns: [{
+          id: "TURN-1",
+          itemsView: "full",
+          status: "completed",
+          startedAt: 100,
+          completedAt: null,
+          durationMs: null,
+          error: null,
+          items: [{
+            type: "userMessage",
+            id: "ITEM-1",
+            clientId: null,
+            content: [],
+          }],
+        }],
+      },
+    };
+
+    const result = await shellControl.readThreadWithTurns({
+      threadId: "THREAD-1",
+      includeTurns: true,
+    });
+
+    assert.equal(result.turns[0]?.status, "inProgress");
+    assert.equal(result.turns[0]?.terminal, undefined);
+  });
+
+  it("treats Codex's premature interrupted flag without terminal metadata as still in progress", async () => {
+    // Observed live on Codex Desktop/0.146.0-alpha.3.1: for roughly the first
+    // minute after thread/turn start, thread/read reports the new turn as
+    // status "interrupted" with completedAt/durationMs null, then flips it to
+    // completed with full terminal metadata. Rejecting that transient read
+    // poisoned the whole thread snapshot and killed every stage job that
+    // polled during turn startup.
+    const { client, shellControl } = fixture();
+    client.threadReadOverride = {
+      thread: {
+        id: "THREAD-1",
+        name: "[CHG-1] First",
+        cwd: "/repo",
+        ephemeral: false,
+        turns: [{
+          id: "TURN-1",
+          itemsView: "full",
+          status: "interrupted",
+          startedAt: 100,
+          completedAt: null,
+          durationMs: null,
+          error: null,
+          items: [{
+            type: "userMessage",
+            id: "ITEM-1",
+            clientId: null,
+            content: [],
+          }],
+        }],
+      },
+    };
+
+    const result = await shellControl.readThreadWithTurns({
+      threadId: "THREAD-1",
+      includeTurns: true,
+    });
+
+    assert.equal(result.turns[0]?.status, "inProgress");
+    assert.equal(result.turns[0]?.terminal, undefined);
+  });
+
+  it("retries transient rollout registration lag when reading a visible task", async () => {
+    const client = new FakeShellClient();
+    const request = client.request.bind(client);
+    let readAttempts = 0;
+    let currentNow = 0;
+    client.request = async (method, params) => {
+      if (method === "thread/read") {
+        readAttempts += 1;
+        if (readAttempts < 3) {
+          throw new Error("no rollout found for thread id THREAD-1");
+        }
+      }
+      return request(method, params);
+    };
+    const shellControl = createCodexAppServerShellControl({
+      appServerBinary: TEST_APP_SERVER_BINARY,
+      clientFactory: () => client,
+      verifyAppServerBinary: async () => {},
+      now: () => currentNow,
+      sleep: async (ms) => {
+        currentNow += ms;
+      },
+    });
+
+    const result = await shellControl.readThreadWithTurns({
+      threadId: "THREAD-1",
+      includeTurns: true,
+      deadlineAt: new Date(1_000).toISOString(),
+    });
+
+    assert.equal(readAttempts, 3);
+    assert.equal(result.shell.threadId, "THREAD-1");
+    assert.equal(result.turns.length, 1);
+  });
+
+  it("ignores the known transient reasoning item while preserving lifecycle semantics", async () => {
+    const { client, shellControl } = fixture();
+    client.threadReadOverride = {
+      thread: {
+        id: "THREAD-1",
+        name: "[CHG-1] First",
+        cwd: "/repo",
+        ephemeral: false,
+        turns: [{
+          id: "TURN-1",
+          itemsView: "full",
+          status: "inProgress",
+          startedAt: 100,
+          completedAt: null,
+          durationMs: null,
+          error: null,
+          items: [
+            { id: "ITEM-1", type: "userMessage", clientId: null, content: [] },
+            {
+              id: "ITEM-REASONING",
+              type: "reasoning",
+              summary: ["private transient summary"],
+              content: ["private transient content"],
+            },
+            { id: "ITEM-2", type: "agentMessage", text: "" },
+          ],
+        }],
+      },
+    };
+
+    const result = await shellControl.readThreadWithTurns({
+      threadId: "THREAD-1",
+      includeTurns: true,
+    });
+
+    assert.deepEqual(result.turns[0]?.items, [
+      {
+        id: "ITEM-1",
+        kind: "user_message",
+        semantic: { text: "" },
+      },
+      {
+        id: "ITEM-2",
+        kind: "agent_message",
+        semantic: { text: "" },
+      },
+    ]);
+    assert.equal(JSON.stringify(result).includes("private transient"), false);
+  });
+
+  it("fails closed on unknown item kinds and duplicate raw item ids", async () => {
     for (const items of [
-      [{ id: "ITEM-1", type: "reasoning", summary: [], content: [] }],
+      [{ id: "ITEM-1", type: "unknownFutureItem", payload: [] }],
       [
-        { id: "ITEM-1", type: "userMessage", clientId: null, content: [] },
+        { id: "ITEM-1", type: "reasoning", summary: [], content: [] },
         { id: "ITEM-1", type: "userMessage", clientId: null, content: [] },
       ],
     ]) {
@@ -760,6 +1004,137 @@ describe("Codex app-server shell control", () => {
         && "code" in error
         && error.code === "turn_snapshot_invalid",
     );
+  });
+
+  /**
+   * A turn that delegates carries two item types nothing here had ever seen,
+   * and the normalizer fails CLOSED on unknown kinds -- so before this, the
+   * first Spec turn that spawned a sub-agent would have been thrown out whole
+   * as `turn_snapshot_invalid`, with the delegation blamed on a malformed
+   * snapshot.
+   *
+   * The `subAgentActivity` fields are the load-bearing part: `agentThreadId` is
+   * how the server later reads a delegated side's output off a thread the main
+   * agent cannot forge. Dropping it reads downstream as "no sub-agent ran",
+   * which is exactly what a silent spawn failure also looks like.
+   */
+  it("keeps a delegating turn readable and preserves each sub-agent's thread", async () => {
+    const { client, shellControl } = fixture();
+    client.threadReadOverride = {
+      thread: {
+        id: "THREAD-1",
+        name: "[CHG-1] First",
+        cwd: "/repo",
+        ephemeral: false,
+        turns: [{
+          id: "TURN-1",
+          itemsView: "full",
+          status: "inProgress",
+          startedAt: 100,
+          completedAt: null,
+          durationMs: null,
+          error: null,
+          // Shapes captured verbatim from a real delegating turn; see
+          // docs/CODEX-SUBAGENT-RUNTIME-EVIDENCE-2026-07-27.md.
+          items: [
+            {
+              type: "subAgentActivity",
+              id: "ITEM-SUB-RED",
+              kind: "started",
+              agentThreadId: "THREAD-RED",
+              agentPath: "/root/red",
+            },
+            {
+              type: "subAgentActivity",
+              id: "ITEM-SUB-BLUE",
+              kind: "started",
+              agentThreadId: "THREAD-BLUE",
+              agentPath: "/root/blue",
+            },
+            {
+              type: "collabAgentToolCall",
+              id: "ITEM-COLLAB",
+              tool: "wait",
+              status: "completed",
+              senderThreadId: "THREAD-1",
+              receiverThreadIds: [],
+              prompt: null,
+              model: null,
+              reasoningEffort: null,
+              agentsStates: {},
+            },
+          ],
+        }],
+      },
+    };
+
+    const result = await shellControl.readThreadWithTurns({
+      threadId: "THREAD-1",
+      includeTurns: true,
+    });
+
+    assert.deepEqual(
+      result.turns[0]?.items.map((item) => item.kind),
+      ["sub_agent_activity", "sub_agent_activity", "tool_call"],
+    );
+    assert.deepEqual(
+      result.turns[0]?.items
+        .filter((item) => item.kind === "sub_agent_activity")
+        .map((item) => item.semantic),
+      [
+        { activity: "started", agentThreadId: "THREAD-RED", agentPath: "/root/red" },
+        { activity: "started", agentThreadId: "THREAD-BLUE", agentPath: "/root/blue" },
+      ],
+    );
+  });
+
+  /**
+   * `receiverThreadIds` and `agentsStates` came back EMPTY in the run where two
+   * sub-agents demonstrably spawned and both replied. Projecting them would put
+   * a field that reads like attribution next to one that actually is, and the
+   * empty one would quietly win.
+   */
+  it("keeps the collab tool call's unreliable fields out of semantics", async () => {
+    const { client, shellControl } = fixture();
+    client.threadReadOverride = {
+      thread: {
+        id: "THREAD-1",
+        name: "[CHG-1] First",
+        cwd: "/repo",
+        ephemeral: false,
+        turns: [{
+          id: "TURN-1",
+          itemsView: "full",
+          status: "inProgress",
+          startedAt: 100,
+          completedAt: null,
+          durationMs: null,
+          error: null,
+          items: [{
+            type: "collabAgentToolCall",
+            id: "ITEM-COLLAB",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "THREAD-1",
+            receiverThreadIds: ["THREAD-RED"],
+            prompt: "spawn red",
+            model: "gpt-5.6-sol",
+            reasoningEffort: "low",
+            agentsStates: { "THREAD-RED": { status: "running", message: null } },
+          }],
+        }],
+      },
+    };
+
+    const semantic = JSON.stringify(
+      (await shellControl.readThreadWithTurns({ threadId: "THREAD-1", includeTurns: true }))
+        .turns[0]?.items[0]?.semantic,
+    );
+
+    assert.equal(semantic.includes("THREAD-RED"), false, "receiverThreadIds is not attribution");
+    assert.equal(semantic.includes("spawn red"), false);
+    assert.equal(semantic.includes("running"), false, "agentsStates is not attribution");
+    assert.match(semantic, /collab\/spawnAgent/);
   });
 
   it("never projects MCP App-private result metadata into semantics", async () => {

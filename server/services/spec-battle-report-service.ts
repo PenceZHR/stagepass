@@ -16,6 +16,7 @@ import {
   warReports,
 } from "../db/schema";
 import { inspectArtifactMirrors, renderMirrorsFromDb } from "./artifact-mirror-service";
+import { battleRoundScope, requirementGapScope } from "./battle-round-phase-scope";
 import { computeRoundDelta, type LedgerGap } from "./spec-battle-ledger";
 import { computeGapCounts, isMergeBlockingGap, isSpecBlockingGap, type RuleGap } from "./spec-battle-rules";
 import {
@@ -107,7 +108,7 @@ function latestRound(changeId: string) {
   return db
     .select()
     .from(battleRounds)
-    .where(eq(battleRounds.changeId, changeId))
+    .where(battleRoundScope(changeId, "Spec"))
     .all()
     .sort((a, b) => b.roundNo - a.roundNo)[0] ?? null;
 }
@@ -116,13 +117,13 @@ function rowsForReport(changeId: string) {
   const rounds = db
     .select()
     .from(battleRounds)
-    .where(eq(battleRounds.changeId, changeId))
+    .where(battleRoundScope(changeId, "Spec"))
     .all()
     .sort((a, b) => a.roundNo - b.roundNo);
   const gaps = db
     .select()
     .from(requirementGaps)
-    .where(eq(requirementGaps.changeId, changeId))
+    .where(requirementGapScope(changeId, "Spec"))
     .all()
     .sort((a, b) => compareText(a.canonicalGapId, b.canonicalGapId) || compareText(a.id, b.id));
   const decisions = db
@@ -211,7 +212,7 @@ function syncSpecReportStageAuthority(input: {
   const blockers = db
     .select()
     .from(requirementGaps)
-    .where(eq(requirementGaps.changeId, input.changeId))
+    .where(requirementGapScope(input.changeId, "Spec"))
     .all()
     .filter((gap) => isSpecBlockingGap(toRuleGap(gap)))
     .map((gap) => ({
@@ -513,10 +514,10 @@ export async function generateSpecReport(changeId: string): Promise<SpecReportRe
       ? roundDelta.notRechecked.map((gap) => formatLedgerGap(gap, gapsByCanonicalGapId))
       : ["- None"]),
     "",
-    "## 我方修复声明",
+    "## 红方修复声明",
     ...(latestRoundClaims.length ? latestRoundClaims.map(formatClaim) : ["- None"]),
     "",
-    "## 反方复核",
+    "## 蓝方复核",
     ...(latestRoundReviews.length ? latestRoundReviews.map(formatReview) : ["- None"]),
     "",
     "## Gap Ledger",

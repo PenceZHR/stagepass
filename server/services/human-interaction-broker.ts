@@ -12,6 +12,7 @@ import {
   type CodexNativeFlags,
 } from "../config/codex-native-flags";
 import { db } from "../db";
+import { resolveStageBinding } from "./codex-stage-binding-resolver";
 import {
   changes,
   codexInteractions,
@@ -491,10 +492,7 @@ export class HumanInteractionBroker {
       const change = tx.select().from(changes)
         .where(eq(changes.id, input.changeId)).get();
       if (!change) throw new Error("interaction_change_missing");
-      const binding = tx.select().from(codexThreadBindings).where(and(
-        eq(codexThreadBindings.scopeKind, "change"),
-        eq(codexThreadBindings.scopeId, input.changeId),
-      )).get();
+      const binding = resolveStageBinding(input.changeId, input.phase, tx);
       if (
         !binding?.threadId
         || !["ready", "running", "waiting_human"].includes(binding.status)

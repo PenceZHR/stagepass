@@ -6,32 +6,29 @@ import { changeApi } from "./change-api-client";
 import { useChangeEventRefresh } from "./use-change-event-refresh";
 import type { ChangeDetail, PhaseOverview } from "./change-detail-types";
 import type { GateStatus } from "./gate-types";
-import type { PlanSandboxState } from "./plan-sandbox-types";
-import type { PrdBriefingState } from "./prd-briefing-types";
 import type { ReviewCenterResponse } from "./review-report-center";
 import type { SpecBattleState } from "./spec-battle-types";
-import type { TestPlanSandboxState } from "./testplan-sandbox-types";
 import type { CodexHealthProjection } from "./codex-task-control";
-import type { EmergencyInteraction } from "./emergency-interaction-panel";
 
-export function useChangeDetailData(projectId: string, changeId: string) {
+export function useChangeDetailData(
+  projectId: string,
+  changeId: string,
+  /** The stage whose Codex task state the page is showing. */
+  stageId?: string,
+) {
   const [change, setChange] = useState<ChangeDetail | null>(null);
   const [phaseOverviews, setPhaseOverviews] = useState<PhaseOverview[] | undefined>();
   const [gateStatus, setGateStatus] = useState<GateStatus | null>(null);
   const [specBattleState, setSpecBattleState] = useState<SpecBattleState | null>(null);
-  const [planSandboxState, setPlanSandboxState] = useState<PlanSandboxState | null>(null);
-  const [testPlanSandboxState, setTestPlanSandboxState] = useState<TestPlanSandboxState | null>(null);
-  const [prdBriefingState, setPrdBriefingState] = useState<PrdBriefingState | null>(null);
   const [reviewCenterState, setReviewCenterState] = useState<ReviewCenterResponse | null>(null);
   const [gateLoading, setGateLoading] = useState(false);
   const [gateError, setGateError] = useState("");
   const [changeError, setChangeError] = useState("");
   const [codexHealth, setCodexHealth] = useState<CodexHealthProjection | null>(null);
-  const [currentInteraction, setCurrentInteraction] =
-    useState<EmergencyInteraction | null>(null);
 
   const load = useCallback(() => {
-    return fetch(`/api/projects/${projectId}/changes/${changeId}`)
+    const query = stageId ? `?stage=${encodeURIComponent(stageId)}` : "";
+    return fetch(`/api/projects/${projectId}/changes/${changeId}${query}`)
       .then(async (res) => {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -48,7 +45,7 @@ export function useChangeDetailData(projectId: string, changeId: string) {
         setChangeError(String(err));
         return false;
       });
-  }, [projectId, changeId]);
+  }, [projectId, changeId, stageId]);
 
   const loadGateStatus = useCallback(() => {
     setGateLoading(true);
@@ -69,45 +66,6 @@ export function useChangeDetailData(projectId: string, changeId: string) {
       .catch(() => setSpecBattleState(null));
   }, [projectId, changeId]);
 
-  const loadPlanSandboxState = useCallback(() => {
-    return changeApi(projectId, changeId)
-      .getPlanSandbox()
-      .then((data) => {
-        setPlanSandboxState(data);
-        return data;
-      })
-      .catch(() => {
-        setPlanSandboxState(null);
-        return null;
-      });
-  }, [projectId, changeId]);
-
-  const loadTestPlanSandboxState = useCallback(() => {
-    return changeApi(projectId, changeId)
-      .getTestPlanSandbox()
-      .then((data) => {
-        setTestPlanSandboxState(data);
-        return data;
-      })
-      .catch(() => {
-        setTestPlanSandboxState(null);
-        return null;
-      });
-  }, [projectId, changeId]);
-
-  const loadPrdBriefingState = useCallback(() => {
-    return changeApi(projectId, changeId)
-      .getPrdBriefing()
-      .then((data) => {
-        setPrdBriefingState(data);
-        return data;
-      })
-      .catch(() => {
-        setPrdBriefingState(null);
-        return null;
-      });
-  }, [projectId, changeId]);
-
   const loadReviewCenterState = useCallback(() => {
     return changeApi(projectId, changeId)
       .getReviewCenter()
@@ -126,21 +84,16 @@ export function useChangeDetailData(projectId: string, changeId: string) {
     if (loaded) {
       loadGateStatus();
       loadSpecBattleState();
-      loadPlanSandboxState();
-      loadTestPlanSandboxState();
-      loadPrdBriefingState();
       loadReviewCenterState();
     }
-  }, [load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, loadPrdBriefingState, loadReviewCenterState]);
+  }, [load, loadGateStatus, loadSpecBattleState, loadReviewCenterState]);
 
   const refreshAfterAction = useCallback(() => {
     load();
     loadGateStatus();
     loadSpecBattleState();
-    loadPlanSandboxState();
-    loadTestPlanSandboxState();
     loadReviewCenterState();
-  }, [load, loadGateStatus, loadSpecBattleState, loadPlanSandboxState, loadTestPlanSandboxState, loadReviewCenterState]);
+  }, [load, loadGateStatus, loadSpecBattleState, loadReviewCenterState]);
 
   useEffect(() => {
     const refresh = async () => {
@@ -150,33 +103,29 @@ export function useChangeDetailData(projectId: string, changeId: string) {
   }, [refreshChangeDetailPage]);
 
   useEffect(() => {
-    changeApi(projectId, changeId).getCodexHealth()
-      .then(setCodexHealth)
-      .catch(() => setCodexHealth({ status: "unavailable" }));
-  }, [projectId, changeId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const interactionId = change?.codexControl?.currentInteractionId;
-    if (!interactionId) {
-      void Promise.resolve().then(() => {
-        if (!cancelled) setCurrentInteraction(null);
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-    changeApi(projectId, changeId).getInteraction(interactionId)
-      .then((interaction) => {
-        if (!cancelled) setCurrentInteraction(interaction);
-      })
-      .catch(() => {
-        if (!cancelled) setCurrentInteraction(null);
-      });
-    return () => {
-      cancelled = true;
+    let active = true;
+    let inFlight = false;
+    const refreshHealth = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const health = await changeApi(projectId, changeId).getCodexHealth();
+        if (active) setCodexHealth(health);
+      } catch {
+        if (active) setCodexHealth({ status: "unavailable" });
+      } finally {
+        inFlight = false;
+      }
     };
-  }, [projectId, changeId, change?.codexControl?.currentInteractionId]);
+    void refreshHealth();
+    const interval = window.setInterval(() => {
+      void refreshHealth();
+    }, 5_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [projectId, changeId]);
 
   // The server announces every state write on the event stream, so re-read on
   // it. Without this the page only refreshes while `shouldPollChangeDetailParent`
@@ -197,12 +146,6 @@ export function useChangeDetailData(projectId: string, changeId: string) {
     setGateStatus,
     specBattleState,
     setSpecBattleState,
-    planSandboxState,
-    setPlanSandboxState,
-    testPlanSandboxState,
-    setTestPlanSandboxState,
-    prdBriefingState,
-    setPrdBriefingState,
     reviewCenterState,
     setReviewCenterState,
     gateLoading,
@@ -210,13 +153,9 @@ export function useChangeDetailData(projectId: string, changeId: string) {
     setGateError,
     changeError,
     codexHealth,
-    currentInteraction,
     load,
     loadGateStatus,
     loadSpecBattleState,
-    loadPlanSandboxState,
-    loadTestPlanSandboxState,
-    loadPrdBriefingState,
     loadReviewCenterState,
     refreshChangeDetailPage,
     refreshAfterAction,

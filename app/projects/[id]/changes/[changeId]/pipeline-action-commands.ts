@@ -15,14 +15,38 @@ export const ACTION_ENDPOINTS = {
   retry_prd: "intake",
   run_spec: "spec",
   retry_spec: "spec",
+  // Without this entry the action had a contract, an availability rule and no
+  // way to be clicked: selectRoutableStageRunActions hides anything unroutable,
+  // so the next round was unreachable from the web.
+  request_spec_changes: "spec-battle/next-round",
   run_tech_spec: "tech-spec",
   retry_tech_spec: "tech-spec",
+  // Same shape as `request_spec_changes` above, one phase each. Missing entries
+  // are why an action can exist, be enabled, and still never render.
+  request_tech_spec_changes: "tech-spec-round/next",
+  request_plan_changes: "plan-round/next",
+  request_test_plan_changes: "test-plan-round/next",
 } as const;
 
 /**
  * Decision action ids intentionally do not resolve in Web. They are submitted
  * through the Codex MCP interaction gateway (or its disclosed emergency path).
  */
+/**
+ * Actions that supersede a settled round and therefore need a human's reason.
+ *
+ * A set rather than four `===` comparisons at the call site: the check lives in
+ * the page component, and a phase added without its entry here would silently
+ * post no reason at all -- which the routes reject with a 422 the user would
+ * read as the button being broken.
+ */
+export const NEXT_ROUND_ACTION_IDS: ReadonlySet<string> = new Set([
+  "request_spec_changes",
+  "request_tech_spec_changes",
+  "request_plan_changes",
+  "request_test_plan_changes",
+]);
+
 export const NON_POST_ROUTED_ACTION_IDS: ReadonlySet<string> = new Set([
   "approve_intake",
   "approve_spec",

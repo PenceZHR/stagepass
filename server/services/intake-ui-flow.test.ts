@@ -63,13 +63,18 @@ describe("intake-first change flow", () => {
   it("uses action contracts without treating INTAKE_PENDING as already running", () => {
     const content = fs.readFileSync(CHANGE_PAGE, "utf-8");
 
-    assert.match(content, /visibleContractActions/);
-    assert.match(content, /approve_intake/);
+    assert.match(content, /const pipelineActions = gateStatus\?\.actions \?\? \[\]/);
+    // The start action comes from the action contract, and each stage declares
+    // which of its actions starts it. Matching a `run_`/`retry_` prefix left
+    // Fix and Merge with no start action at all.
+    assert.match(content, /enabledActionIds = new Set\(/);
+    assert.match(content, /selectedStage\.startActionIds\.find/);
+    assert.match(content, /startControlAction = startActionId/);
     assert.match(content, /const hasActiveRun = change\.latestRun\?\.status === "running"/);
 
-    const runningBlockStart = content.indexOf("const isRunning = hasActiveRun || [");
+    const runningBlockStart = content.indexOf("const isRunning =");
     assert.notEqual(runningBlockStart, -1);
-    const runningBlockEnd = content.indexOf("].includes(change.status)", runningBlockStart);
+    const runningBlockEnd = content.indexOf("const stageError =", runningBlockStart);
     assert.notEqual(runningBlockEnd, -1);
     const runningBlock = content.slice(runningBlockStart, runningBlockEnd);
     assert.doesNotMatch(runningBlock, /"INTAKE_PENDING"/);
@@ -103,9 +108,11 @@ describe("intake-first change flow", () => {
     assert.match(actionHook, /runPipelineAction\(\{/);
     assert.match(actionCommands, /run_test_plan: "test-plan"/);
     assert.match(actionCommands, /run_build: "implement"/);
-    assert.match(actionCommands, /approve_plan: "approve-plan"/);
+    assert.match(actionCommands, /retry_plan: "plan"/);
     assert.match(content, /LOCAL_READY: \{ phase: "Check", state: "done" \}/);
-    assert.match(actionCommands, /enter_qa: "check"/);
+    assert.match(actionCommands, /run_qa: "check"/);
+    assert.match(actionCommands, /"approve_plan"/);
+    assert.match(actionCommands, /"enter_qa"/);
   });
 
   it("keeps intake statuses styled on the project change board", () => {

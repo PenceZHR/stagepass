@@ -4,7 +4,7 @@
 
 stagepass 是一个本地优先（local-first）的 AI 研发流水线控制台，采用 **Stage-Gate** 方法论（分阶段推进、每个阶段之间设一道人工决策 gate），用于在单一界面中管理本地项目、PRD、change、AI 辅助研发流水线阶段、人工 gate，以及 Build / Review / QA / Merge 流程。
 
-产品主张是**不替用户写代码，而是替用户把流程走对**：一句需求被押着走完 12 个阶段，每道 gate 由人拍板放行；用户不追日志，而是在一个控制台里处理战报、风险、gate 和人工裁决。AI 不只是单路生成，而是通过 PRD Briefing、Spec Battle、Review 等对抗机制**主动把风险暴露给使用者**——这是让经验不足的人也能做出老手级裁决的关键。语义上**红方只指人类用户本人**（需求源头与最终裁决者），SPEC_WRITER 是服务红方的我方执行代理，REQUIREMENT_CRITIC 是负责质询挑刺的反方；批准权只在人类手里。
+产品主张是**不替用户写代码，而是替用户把流程走对**：一句需求被押着走完 12 个阶段，每道 gate 由人拍板放行；用户不追日志，而是在一个控制台里处理战报、风险、gate 和人工裁决。AI 不只是单路生成，而是通过 PRD Briefing、Spec Battle、Review 等对抗机制**主动把风险暴露给使用者**——这是让经验不足的人也能做出老手级裁决的关键。语义上**红方是生产者**（SPEC_WRITER，产出规格），**蓝方是监督者**（REQUIREMENT_CRITIC，质询、挑刺、复核），**裁决者**（BATTLE_REPORTER）依据双方产出做判定；**红蓝双方都是 Agent，与人类无关**。人类在门禁那一层，不是红方也不是蓝方，批准权只在人类手里。
 
 系统正在从“文件产物驱动”迁移到“DB-first pipeline”：DB 是裁判，Git 当前事实是现场，`.ship` / JSON / Markdown 只作为 AI 上下文、人工阅读和审计的镜像。核心流水线为 Project → PRD ready → Change → PRD Briefing Room → Spec Battle → TechSpec/API snapshot → Plan Sandbox → TestPlan snapshot → Build Sandbox → Review Center → QA → Merge → Retro。本 PRD 描述 stagepass 项目自身作为一款产品的需求，事实取自仓库当前状态（DB migration 已到 0013_db_first_pipeline，约 48 张表，85 个后端 service 文件，64 个测试文件）。
 

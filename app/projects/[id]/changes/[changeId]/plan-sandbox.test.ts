@@ -19,12 +19,11 @@ describe("Plan evidence surface", () => {
     assert.doesNotMatch(component, /fetch\(|approve_plan|waive_plan_p1/);
   });
 
-  it("keeps operational Plan and TestPlan controls in the shared stage shell", () => {
-    assert.match(page, /showingPlanSandbox/);
-    assert.match(page, /showingTestPlanSandbox/);
-    assert.match(page, /retry_plan/);
-    assert.match(page, /retry_test_plan/);
-    assert.match(page, /<PhaseStageShell[\s\S]*?<PlanSandbox/);
-    assert.match(page, /<PhaseStageShell[\s\S]*?<TestPlanSandbox/);
+  it("keeps Plan and TestPlan generation in Codex instead of mounting Web sandboxes", () => {
+    assert.match(page, /<StageCodexWorkspace/);
+    assert.match(page, /stageId=\{selectedStage\.id\}/);
+    assert.doesNotMatch(page, /showingPlanSandbox|showingTestPlanSandbox/);
+    assert.doesNotMatch(page, /retry_plan|retry_test_plan/);
+    assert.doesNotMatch(page, /<PlanSandbox|<TestPlanSandbox/);
   });
 });

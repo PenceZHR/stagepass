@@ -277,7 +277,8 @@ const BLUE_LINES = [
 ].join("\n");
 
 interface StubReplies {
-  spec?: string | (() => string);
+  /** `{ card: … }` ends the turn with a clarification card instead of a result. */
+  spec?: string | (() => string) | { card: string };
   spec_critic?: string;
   spec_verdict?: string | { fail: true };
 }
@@ -298,6 +299,23 @@ function installEngine(replies: StubReplies): { prompts: Map<string, string> } {
           changedFiles: [],
           structuredOutput: undefined,
           items: [],
+        };
+      }
+      // A turn that ended by opening a question card: the reply is an
+      // acknowledgement, and the card call is the only thing that says so.
+      if (configured && typeof configured === "object" && "card" in configured) {
+        return {
+          threadId: `${input.changeId}-thread`,
+          runId: `ENGINE-${input.phase}`,
+          summary: configured.card,
+          success: true,
+          changedFiles: [],
+          structuredOutput: undefined,
+          items: [{
+            type: "mcp_tool_call",
+            name: "stagepass/present_stagepass_choices",
+            result: JSON.stringify({ structuredContent: { answers: [] } }),
+          }],
         };
       }
       const summary = typeof configured === "function" ? configured() : configured ?? "";
@@ -385,6 +403,116 @@ describe("Spec battle rubric wiring", () => {
     const redPrompt = prompts.get("spec") ?? "";
     for (const criterion of producer.criteria) assert.match(redPrompt, new RegExp(criterion.id));
     assert.match(redPrompt, /RUBRIC: criterionId \| yes 或 no \| evidence/);
+  });
+
+  /**
+   * The blocker this whole clarification path exists for. A red turn that ends
+   * by opening a question card produced an acknowledgement, not a PRD delta --
+   * so the runner refuses to ingest it. That refusal used to arrive as a thrown
+   * error, which failed the run, failed the round and closed `run_spec`, so
+   * every batch of questions destroyed the round the answers were meant to
+   * finish. Observed on CHG-006: one battle round, status `failed`, reason
+   * "spec stage is waiting for the human to answer its questions in Codex",
+   * with zero gaps, zero claims and zero rubric verdicts behind it.
+   */
+  it("parks the round instead of failing it when red ends by asking the human", async () => {
+    saveSpecRubric("producer", [{ text: "Acceptance criteria are testable" }]);
+    installEngine({ spec: { card: "我已经把 10 个问题发给你了，请在卡片里确认。" } });
+
+    // Resolving at all is half the assertion: this used to reject.
+    await runSpec(CHANGE_ID, makeJobContext("spec-awaiting"));
+
+    const round = currentRound();
+    assert.equal(round?.status, "awaiting_clarification");
+    assert.equal(round?.endedAt, null, "a round waiting on a human has not ended");
+
+    const change = db.select().from(changes).where(eq(changes.id, CHANGE_ID)).get();
+    assert.equal(change?.status, "SPECCING", "waiting on a human must not block the change");
+    assert.notEqual(change?.status, "BLOCKED");
+
+    const run = db.select().from(runs).where(eq(runs.changeId, CHANGE_ID)).all()
+      .find((candidate) => candidate.phase === "spec");
+    assert.equal(run?.status, "stopped", "the run produced nothing, but nothing failed");
+
+    // Nothing may be written from an acknowledgement -- that is the other half
+    // of what the refusal is for.
+    assert.equal(
+      db.select().from(requirementGaps).where(eq(requirementGaps.changeId, CHANGE_ID)).all().length,
+      0,
+    );
+    assert.equal(
+      db.select().from(redFixClaims).where(eq(redFixClaims.changeId, CHANGE_ID)).all().length,
+      0,
+    );
+    assert.ok(
+      !fs.existsSync(path.join(repoPath, ".ship", "changes", CHANGE_ID, "prd-delta.md")),
+      "an acknowledgement must not become the PRD delta",
+    );
+  });
+
+  /**
+   * The other half of parking: a paused round must be COMPLETABLE, not merely
+   * abandonable. The converged reply arrives on a turn the wakeup orchestrator
+   * dispatched, so it reaches the round through adoption, and adoption has to
+   * run the same ledger a directly produced reply runs.
+   */
+  it("completes the parked round from the converged reply, through the ordinary ledger", async () => {
+    const producer = saveSpecRubric("producer", [{ text: "Acceptance criteria are testable" }]);
+    installEngine({ spec: { card: "先回答这 10 个问题。" } });
+    await runSpec(CHANGE_ID, makeJobContext("spec-park"));
+    assert.equal(currentRound()?.status, "awaiting_clarification", "fixture precondition");
+
+    // The blue leg still runs for real; only red's reply was adopted.
+    installEngine({ spec_critic: BLUE_LINES });
+    await runSpec(CHANGE_ID, makeJobContext("spec-adopt"), {
+      adoptedResult: {
+        threadId: `${CHANGE_ID}-thread`,
+        runId: "ENGINE-adopted",
+        summary: [RED_LINES, ...rubricLines(producer, ["yes", "yes"])].join("\n"),
+        success: true,
+        changedFiles: [],
+        structuredOutput: undefined,
+        items: [],
+      },
+    });
+
+    const round = currentRound();
+    assert.equal(round?.status, "report_ready", "the adopted reply settles the round it parked");
+    assert.notEqual(round?.status, "failed");
+
+    // Everything the round is supposed to carry, carried. An adoption that
+    // skipped the ledger would leave these empty and still look "done".
+    assert.equal(
+      db.select().from(redFixClaims).where(eq(redFixClaims.changeId, CHANGE_ID)).all().length,
+      1,
+      "red's fix claim survives adoption",
+    );
+    assert.ok(
+      db.select().from(requirementGaps).where(eq(requirementGaps.changeId, CHANGE_ID)).all().length > 0,
+      "blue's gap survives adoption",
+    );
+    // Deliberately not assessmentsFor(): that resolves the FIRST spec run, and
+    // a parked round has two -- the stopped one it parked on and the resumed
+    // one that ingested the reply. The verdicts belong to the run that did the
+    // ingest, so the round is what identifies them.
+    assert.equal(
+      db.select().from(rubricAssessments)
+        .where(and(
+          eq(rubricAssessments.rubricId, producer.id),
+          eq(rubricAssessments.roundId, round!.id),
+        )).all().length,
+      producer.criteria.length,
+      "the producer rubric is judged on the adopted reply, not skipped",
+    );
+
+    // The PRD delta comes from the adopted reply's own PRD_DELTA block -- not
+    // from the acknowledgement the round parked on.
+    const prdDelta = fs.readFileSync(
+      path.join(repoPath, ".ship", "changes", CHANGE_ID, "prd-delta.md"),
+      "utf-8",
+    );
+    assert.doesNotMatch(prdDelta, /先回答这 10 个问题/);
+    assert.doesNotMatch(prdDelta, /^RUBRIC:/m);
   });
 
   it("keeps red's RUBRIC lines out of the PRD delta and out of the round artifact", async () => {

@@ -33,6 +33,7 @@ import {
   writeRunArtifactBestEffort,
 } from "./pipeline-run-ledger-service";
 import { markdownArtifactContentFromResult } from "./markdown-artifact-content-service";
+import { classifyStageConvergence } from "./stage-convergence-service";
 import { validateOutputSchema } from "./output-schema-validator";
 import { assemblePrompt, type PromptPhase } from "./prompt-service";
 import type { RubricPhase } from "./rubric-assessment";
@@ -161,6 +162,35 @@ export interface DocumentStageConfig {
     runId: string;
     result: AiRunResult;
   }) => Promise<{ skipDefaultArtifactWrite?: boolean } | void>;
+  /**
+   * A reply this stage's Codex task already produced, to be ingested instead of
+   * starting a turn.
+   *
+   * The clarification loop keeps one Codex task open across many question
+   * batches, so the stage's answer arrives on a turn the wakeup orchestrator
+   * dispatched, not on one this call could start. Adoption runs the identical
+   * ingest path -- rubric, schema, artifact, gate -- so an adopted stage result
+   * is held to the same contract as a directly produced one.
+   *
+   * The workspace mutation guard is the one thing it cannot reproduce: the
+   * snapshot pair straddles this call, and the adopted turn ran before it. The
+   * clarification turns run read-only, so there is nothing for it to catch.
+   */
+  adoptedResult?: AiRunResult;
+}
+
+/**
+ * The stage handed its decisions to the human and is waiting for them. Not a
+ * result, so nothing may be written and no gate may move.
+ */
+export class StageAwaitingClarificationError extends Error {
+  readonly code = "stage_awaiting_clarification";
+  constructor(phase: string) {
+    super(
+      `${phase} stage is waiting for the human to answer its questions in Codex`,
+    );
+    this.name = "StageAwaitingClarificationError";
+  }
 }
 
 class PipelineRunStoppedError extends Error {
@@ -502,6 +532,7 @@ export async function runDocumentStage(
       const scope = defaultScopeForPhase(config.phase);
       const basePrompt = appendAdditionalPrompt(assemblePrompt(config.promptPhase, {
         changeId,
+        changeTitle: change.title,
         repoPath: project.repoPath,
       }, scope), config, { changeId, repoPath: project.repoPath });
       const rubric = config.rubric ?? resolveConfiguredRubric({
@@ -516,18 +547,160 @@ export async function runDocumentStage(
         : basePrompt;
 
       const beforeAi = captureWorkspaceSnapshot(project.repoPath);
+      // Declared here because the ingest step below reads it and adoption
+      // never reaches the block that assigns it.
+      let logicalTurnId: string | undefined;
+      const ingest = async (
+        initial: AiRunResult,
+      ): Promise<{ result: AiRunResult; successSummary: string }> => {
+        let result = initial;
+        // A turn that ended by asking the human another batch produced an
+        // acknowledgement, not a stage result. Ingesting it writes "I have
+        // shown you ten questions" as the stage artifact and clears the gate
+        // on it. The clarification loop finishes this stage later, through
+        // adoption, once the task stops asking.
+        if (classifyStageConvergence(result).kind === "asked_again") {
+          throw new StageAwaitingClarificationError(config.phase);
+        }
+        assertCurrentExecutionFence(executionContext, runId);
+        assertRunStillRunning(runId);
+        assertChangeNotBlocked(changeId, config.phase);
+        await config.afterAiResult?.({ runId, result });
+        // Rubric first: its lines are not part of this stage's contract, so the
+        // stage's own parser, schema and artifact must all see the reply without
+        // them. Skipped for a failed or empty reply -- there is nothing to judge,
+        // and attributing silence to the model when the provider never spoke is
+        // the same false provenance applyLineProtocol() guards against.
+        if (rubric && result.success && (result.summary ?? "").trim().length > 0) {
+          const harvested = rubric.harvest({ runId, rawText: result.summary ?? "" });
+          assertCurrentExecutionFence(executionContext, runId);
+          result = { ...result, summary: harvested.cleanedText };
+        }
+        if (config.outputSchema) {
+          let lineProtocol: LineProtocolState | undefined;
+          if (config.lineProtocol) {
+            const applied = applyLineProtocol(result, config.lineProtocol.parse, {
+              changeId,
+              repoPath: project.repoPath,
+            });
+            result = applied.result;
+            lineProtocol = applied.state;
+          }
+          result = await validateStructuredDocumentOutput({
+            changeId,
+            project,
+            runId,
+            executionContext,
+            provider,
+            phase: config.phase,
+            outputSchema: config.outputSchema,
+            result,
+            lineProtocol,
+          });
+        }
+        // No document stage may finish on silence. A provider killed mid-flight
+        // returns success:true with an empty summary (macOS sleep -> supervisor
+        // SIGTERM -> codex emits reasoning items but no agent_message), and
+        // applyLineProtocol turns that into an EMPTY state on the stated grounds
+        // that "callers already handle it".
+        //
+        // Only callers with an outputSchema actually do: the schema rejects the
+        // empty payload above. Nothing pairs the two fields, so a stage configured
+        // without a schema -- Retro is the one today -- skips the whole
+        // ingest/validate block, skips the rubric harvest (which is correct on its
+        // own terms: blaming a model that never spoke is false provenance), and
+        // writes an empty artifact on its way to successStatus. Retro reached DONE
+        // carrying an empty retro.md with zero of its criteria judged.
+        //
+        // Refusing here rather than at each caller makes the contract true for
+        // every stage, including ones not written yet.
+        // Failure first: a run that failed AND came back empty must report the
+        // failure, not the emptiness. The empty guard is for the reply that claims
+        // to have succeeded.
+        if (!result.success) {
+          throw new Error(result.summary || `${config.phase} stage failed`);
+        }
+        if ((result.summary ?? "").trim().length === 0) {
+          throw new Error(
+            `${config.phase} stage returned an empty reply (provider produced no output)`,
+          );
+        }
+        const afterAi = captureWorkspaceSnapshot(project.repoPath);
+        const mutations = diffWorkspaceSnapshots(beforeAi, afterAi);
+        const violation = validatePlannedChanges(mutations, scope);
+        if (violation.blocked) {
+          await blockStageViolation(changeId, runId, violation);
+        }
+
+        assertCurrentExecutionFence(executionContext, runId);
+        const threadId = result.threadId?.trim();
+        // An adopted reply came from the canonical bridge thread, which the
+        // binding already owns; recording it as the legacy general session
+        // would hand a second owner the same thread.
+        const managedByBinding = logicalTurnId !== undefined
+          || config.adoptedResult !== undefined;
+        if (!managedByBinding && threadId && threadId.toLowerCase() !== "unknown") {
+          recordProviderSession({
+            changeId,
+            provider,
+            sessionKind: "general",
+            externalSessionId: threadId,
+            lastRunId: runId,
+          });
+          if (provider === "codex") {
+            runLedgerRepository.patchChange(changeId, { codexThreadId: threadId }, { runId });
+          }
+        }
+
+        assertCurrentExecutionFence(executionContext, runId);
+        const hookResult = await config.afterSuccessfulResult?.({ changeId, project, runId, result });
+        const skipDefaultArtifactWrite =
+          typeof hookResult === "object"
+          && hookResult !== null
+          && hookResult.skipDefaultArtifactWrite === true;
+        if (!skipDefaultArtifactWrite) {
+          assertCurrentExecutionFence(executionContext, runId);
+          const artifactContent = path.extname(config.artifactFileName) === ".md"
+            ? markdownArtifactContentFromResult(result)
+            : result.summary;
+          await writeRunArtifactBestEffort(
+            project.repoPath,
+            changeId,
+            runId,
+            config.phase,
+            config.artifactType,
+            config.artifactFileName,
+            artifactContent
+          );
+        }
+
+        assertRunStillRunning(runId);
+        assertChangeNotBlocked(changeId, config.phase);
+
+        log.info({ changeId, phase: config.phase }, `${config.phase} completed`);
+        return { result, successSummary: config.successSummary };
+      };
+      if (config.adoptedResult) {
+        // The stage's own turn already ran, elsewhere: the clarification loop
+        // owns the Codex task until the questions converge, and hands back the
+        // reply it converged on. Everything after this point -- rubric harvest,
+        // schema and line-protocol validation, artifact write, gate transition
+        // -- is the stage's contract and must apply to an adopted reply exactly
+        // as it applies to one this call produced.
+        return ingest(config.adoptedResult);
+      }
       const engine = await getPipelineEngine(provider as EngineProvider);
       const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
       const { executableThreadId } = resolveCodexStageThreadRoute({
         desktopBridgeEnabled,
-        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+        resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId, config.phase),
         resolveLegacyGeneralThread: () => resolveProviderSession({
           changeId,
           provider: "codex",
           sessionKind: "general",
         }),
       });
-      const logicalTurnId = desktopBridgeEnabled
+      logicalTurnId = desktopBridgeEnabled
         ? (await resolveLogicalTurn({
             owner: {
               kind: "pipeline_job",
@@ -541,7 +714,7 @@ export async function runDocumentStage(
           })).logicalTurnId
         : undefined;
       const stageTimeoutMs = documentStageTimeoutMs(config.phase);
-      let result = await withDocumentStageWatchdog(
+      const produced = await withDocumentStageWatchdog(
         engine.run(desktopBridgeEnabled ? {
           logicalTurnId: logicalTurnId!,
         } as never : {
@@ -567,118 +740,7 @@ export async function runDocumentStage(
         }),
         config.phase,
       );
-      assertCurrentExecutionFence(executionContext, runId);
-      assertRunStillRunning(runId);
-      assertChangeNotBlocked(changeId, config.phase);
-      await config.afterAiResult?.({ runId, result });
-      // Rubric first: its lines are not part of this stage's contract, so the
-      // stage's own parser, schema and artifact must all see the reply without
-      // them. Skipped for a failed or empty reply -- there is nothing to judge,
-      // and attributing silence to the model when the provider never spoke is
-      // the same false provenance applyLineProtocol() guards against.
-      if (rubric && result.success && (result.summary ?? "").trim().length > 0) {
-        const harvested = rubric.harvest({ runId, rawText: result.summary ?? "" });
-        assertCurrentExecutionFence(executionContext, runId);
-        result = { ...result, summary: harvested.cleanedText };
-      }
-      if (config.outputSchema) {
-        let lineProtocol: LineProtocolState | undefined;
-        if (config.lineProtocol) {
-          const applied = applyLineProtocol(result, config.lineProtocol.parse, {
-            changeId,
-            repoPath: project.repoPath,
-          });
-          result = applied.result;
-          lineProtocol = applied.state;
-        }
-        result = await validateStructuredDocumentOutput({
-          changeId,
-          project,
-          runId,
-          executionContext,
-          provider,
-          phase: config.phase,
-          outputSchema: config.outputSchema,
-          result,
-          lineProtocol,
-        });
-      }
-      // No document stage may finish on silence. A provider killed mid-flight
-      // returns success:true with an empty summary (macOS sleep -> supervisor
-      // SIGTERM -> codex emits reasoning items but no agent_message), and
-      // applyLineProtocol turns that into an EMPTY state on the stated grounds
-      // that "callers already handle it".
-      //
-      // Only callers with an outputSchema actually do: the schema rejects the
-      // empty payload above. Nothing pairs the two fields, so a stage configured
-      // without a schema -- Retro is the one today -- skips the whole
-      // ingest/validate block, skips the rubric harvest (which is correct on its
-      // own terms: blaming a model that never spoke is false provenance), and
-      // writes an empty artifact on its way to successStatus. Retro reached DONE
-      // carrying an empty retro.md with zero of its criteria judged.
-      //
-      // Refusing here rather than at each caller makes the contract true for
-      // every stage, including ones not written yet.
-      // Failure first: a run that failed AND came back empty must report the
-      // failure, not the emptiness. The empty guard is for the reply that claims
-      // to have succeeded.
-      if (!result.success) {
-        throw new Error(result.summary || `${config.phase} stage failed`);
-      }
-      if ((result.summary ?? "").trim().length === 0) {
-        throw new Error(
-          `${config.phase} stage returned an empty reply (provider produced no output)`,
-        );
-      }
-      const afterAi = captureWorkspaceSnapshot(project.repoPath);
-      const mutations = diffWorkspaceSnapshots(beforeAi, afterAi);
-      const violation = validatePlannedChanges(mutations, scope);
-      if (violation.blocked) {
-        await blockStageViolation(changeId, runId, violation);
-      }
-
-      assertCurrentExecutionFence(executionContext, runId);
-      const threadId = result.threadId?.trim();
-      if (!logicalTurnId && threadId && threadId.toLowerCase() !== "unknown") {
-        recordProviderSession({
-          changeId,
-          provider,
-          sessionKind: "general",
-          externalSessionId: threadId,
-          lastRunId: runId,
-        });
-        if (provider === "codex") {
-          runLedgerRepository.patchChange(changeId, { codexThreadId: threadId }, { runId });
-        }
-      }
-
-      assertCurrentExecutionFence(executionContext, runId);
-      const hookResult = await config.afterSuccessfulResult?.({ changeId, project, runId, result });
-      const skipDefaultArtifactWrite =
-        typeof hookResult === "object"
-        && hookResult !== null
-        && hookResult.skipDefaultArtifactWrite === true;
-      if (!skipDefaultArtifactWrite) {
-        assertCurrentExecutionFence(executionContext, runId);
-        const artifactContent = path.extname(config.artifactFileName) === ".md"
-          ? markdownArtifactContentFromResult(result)
-          : result.summary;
-        await writeRunArtifactBestEffort(
-          project.repoPath,
-          changeId,
-          runId,
-          config.phase,
-          config.artifactType,
-          config.artifactFileName,
-          artifactContent
-        );
-      }
-
-      assertRunStillRunning(runId);
-      assertChangeNotBlocked(changeId, config.phase);
-
-      log.info({ changeId, phase: config.phase }, `${config.phase} completed`);
-      return { result, successSummary: config.successSummary };
+      return ingest(produced);
     },
   });
 }

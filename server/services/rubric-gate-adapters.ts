@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 
 import { db } from "../db";
 import { changes, findings, requirementGaps } from "../db/schema";
+import { requirementGapScope } from "./battle-round-phase-scope";
 import type { RubricPhase } from "./rubric-assessment";
 import {
   activeRubricBlockers,
@@ -169,7 +170,7 @@ export function syncSpecRubricGaps(changeId: string): RubricGateSyncResult {
   const stored = db
     .select()
     .from(requirementGaps)
-    .where(eq(requirementGaps.changeId, changeId))
+    .where(requirementGapScope(changeId, "Spec"))
     .all()
     .filter((row) => isRubricBlockerId(row.canonicalGapId));
   const storedByKey = new Map(

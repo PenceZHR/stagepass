@@ -11,6 +11,9 @@ describe("Codex-native flags", () => {
     assert.deepEqual(readCodexNativeFlags({}), {
       desktopBridge: false,
       mcpInteractions: false,
+      // The delegated Spec round (judge + sub-agents) is the newer of two live
+      // forms, so it ships off like every other migration surface here.
+      specJudgeSubAgents: false,
       codexDecisionSurfaceMaster: false,
       codexDecisionPhases: [],
       codexDecisionRolloutError: null,

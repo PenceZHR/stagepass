@@ -36,8 +36,10 @@ describe("Build workspace in the Codex-native control plane", () => {
     assert.doesNotMatch(component, /commit_changes|init_git_repo|pushCurrentBranch/);
   });
 
-  it("mounts Build through the shared stage shell", () => {
-    assert.match(page, /<PhaseStageShell[\s\S]*?<BuildSandbox/);
-    assert.match(page, /onStageActionsChange=\{setBuildStageActions\}/);
+  it("keeps Build implementation out of Web and uses the shared Codex stage boundary", () => {
+    assert.match(page, /<PhaseStageShell[\s\S]*?<StageCodexWorkspace/);
+    assert.match(page, /stageId=\{selectedStage\.id\}/);
+    assert.doesNotMatch(page, /<BuildSandbox/);
+    assert.doesNotMatch(page, /onStageActionsChange=\{setBuildStageActions\}/);
   });
 });

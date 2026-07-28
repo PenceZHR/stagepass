@@ -118,6 +118,93 @@ describe("pipeline-job-runner-service", () => {
     assert.deepEqual(calls, ["CHG-RUNNER:runner-key"]);
   });
 
+  it("provisions the visible Codex task before dispatching a stage", async () => {
+    const calls: Array<string | { freshTask: boolean; stageId: string }> = [];
+
+    await runPipelineJob(
+      payload({ phase: "intake", actionId: "run_prd", provider: "codex" }),
+      context(),
+      {
+        codexBindingPreflight: async (changeId, options) => {
+          calls.push(`binding:${changeId}`);
+          calls.push(options);
+        },
+        runnerMap: {
+          "intake:run_prd": async () => {
+            calls.push("stage");
+          },
+        },
+      },
+    );
+
+    assert.deepEqual(calls, [
+      "binding:CHG-RUNNER",
+      { freshTask: false, stageId: "prd" },
+      "stage",
+    ]);
+  });
+
+  it("rotates to a fresh visible Codex task before dispatching a retry", async () => {
+    const calls: Array<string | { freshTask: boolean; stageId: string }> = [];
+
+    await runPipelineJob(
+      payload({ phase: "intake", actionId: "retry_prd", provider: "codex" }),
+      context(),
+      {
+        codexBindingPreflight: async (changeId, options) => {
+          calls.push(`binding:${changeId}`);
+          calls.push(options);
+        },
+        runnerMap: {
+          "intake:retry_prd": async () => {
+            calls.push("stage");
+          },
+        },
+      },
+    );
+
+    assert.deepEqual(calls, [
+      "binding:CHG-RUNNER",
+      { freshTask: true, stageId: "prd" },
+      "stage",
+    ]);
+  });
+
+  it("probes the shared bridge before preparing the visible task binding", async () => {
+    const runnerModule = await import("./pipeline-job-runner-service");
+    const prepareVisibleCodexChangeTask = (
+      runnerModule as unknown as {
+        prepareVisibleCodexChangeTask?: (input: {
+          changeId: string;
+          projectId: string;
+          bridge: { probe(): Promise<unknown> };
+          ensureBinding(args: unknown): Promise<unknown>;
+          rotateBinding?(args: unknown): Promise<unknown>;
+          freshTask?: boolean;
+        }) => Promise<void>;
+      }
+    ).prepareVisibleCodexChangeTask;
+    assert.equal(typeof prepareVisibleCodexChangeTask, "function");
+    const calls: string[] = [];
+
+    await prepareVisibleCodexChangeTask!({
+      changeId: "CHG-RUNNER",
+      projectId: "PRJ-RUNNER",
+      bridge: {
+        async probe() {
+          calls.push("probe");
+          return {};
+        },
+      },
+      async ensureBinding() {
+        calls.push("binding");
+        return {};
+      },
+    });
+
+    assert.deepEqual(calls, ["probe", "binding"]);
+  });
+
   it("passes the leased immutable provider to provider-backed stage calls", async () => {
     const executionContext = context();
     const calls: unknown[][] = [];

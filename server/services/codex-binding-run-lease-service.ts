@@ -14,6 +14,7 @@ import {
   heartbeatCodexOwnerFence,
   type CodexOwnerFence,
 } from "./codex-durable-execution-fence";
+import { pipelineJobOwnerDeadlineAt } from "./pipeline-owner-deadline";
 
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_QUEUE_POLL_MS = 50;
@@ -108,7 +109,7 @@ export function claimCodexBindingRunLease(input: {
       ? (() => {
           const owner = tx.select().from(pipelineJobs)
             .where(eq(pipelineJobs.id, logical.pipelineJobId!)).get()!;
-          return owner.effectDeadlineAt ?? owner.leaseExpiresAt!;
+          return pipelineJobOwnerDeadlineAt(owner);
         })()
       : tx.select().from(projectAiRuns)
           .where(eq(projectAiRuns.id, logical.projectAiRunId!)).get()!.deadlineAt;

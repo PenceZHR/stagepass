@@ -1,17 +1,13 @@
-import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { db } from "@/server/db";
 import { codexThreadBindings, projects } from "@/server/db/schema";
-import type { CodexPersistentShell } from "@/server/services/codex-desktop-bridge-types";
-import { createCodexAppServerShellControl } from "@/server/services/codex-app-server-shell-control";
-import {
-  defaultCodexDesktopDiscoveryDependencies,
-  discoverCodexDesktopIpcEndpoint,
-} from "@/server/services/codex-desktop-ipc-discovery";
-import { createObservedCodexDesktopFollowerTransport } from "@/server/services/codex-desktop-ipc-transport";
+
+const execFileAsync = promisify(execFile);
 
 export interface OpenCodexDependencies {
   readBinding(projectId: string, changeId: string): {
@@ -20,29 +16,10 @@ export interface OpenCodexDependencies {
     status: string;
     repoPath: string;
   } | null;
-  readShell(threadId: string): Promise<CodexPersistentShell | null>;
   openThread(threadId: string): Promise<void>;
 }
 
 function defaults(): OpenCodexDependencies {
-  let controls: Promise<{
-    shell: ReturnType<typeof createCodexAppServerShellControl>;
-    follower: ReturnType<typeof createObservedCodexDesktopFollowerTransport>;
-  }> | null = null;
-  const getControls = () => {
-    controls ??= (async () => {
-      const endpoint = await discoverCodexDesktopIpcEndpoint(
-        defaultCodexDesktopDiscoveryDependencies(),
-      );
-      return {
-        shell: createCodexAppServerShellControl({
-          appServerBinary: endpoint.appServerBinary,
-        }),
-        follower: createObservedCodexDesktopFollowerTransport(endpoint),
-      };
-    })();
-    return controls;
-  };
   return {
     readBinding(projectId, changeId) {
       const binding = db.select().from(codexThreadBindings).where(and(
@@ -56,12 +33,16 @@ function defaults(): OpenCodexDependencies {
         .where(eq(projects.id, projectId)).get();
       return project ? { ...binding, repoPath: project.repoPath } : null;
     },
-    readShell: async (threadId) =>
-      (await getControls()).shell.readPersistentShell(threadId),
-    openThread: async (threadId) =>
-      (await getControls()).follower.openThreadDeepLink({
-        url: `codex://threads/${threadId}`,
-      }),
+    async openThread(threadId) {
+      if (!/^[A-Za-z0-9-]+$/.test(threadId)) {
+        throw new Error("invalid Codex thread id");
+      }
+      await execFileAsync(
+        "/usr/bin/open",
+        [`codex://threads/${threadId}`],
+        { timeout: 5_000 },
+      );
+    },
   };
 }
 
@@ -76,19 +57,6 @@ export async function handleOpenCodex(
     if (
       !binding?.threadId
       || !["ready", "running", "waiting_human"].includes(binding.status)
-    ) {
-      return NextResponse.json(
-        { error: "desktop_thread_detached" },
-        { status: 409 },
-      );
-    }
-    const shell = await resolved.readShell(binding.threadId);
-    if (
-      !shell
-      || shell.threadId !== binding.threadId
-      || shell.ephemeral !== false
-      || shell.title !== binding.title
-      || path.resolve(shell.cwd) !== path.resolve(binding.repoPath)
     ) {
       return NextResponse.json(
         { error: "desktop_thread_detached" },

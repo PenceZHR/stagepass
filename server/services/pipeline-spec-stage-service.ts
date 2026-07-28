@@ -25,7 +25,18 @@ import {
   failSpecBattleRound,
   getSpecBattleState,
   markSpecBattleReportsStale,
+  pauseSpecBattleRoundForClarification,
+  resumeSpecBattleRoundFromClarification,
 } from "./spec-battle-service";
+import { classifyStageConvergence } from "./stage-convergence-service";
+import { runDelegatedRound } from "./pipeline-delegated-round";
+import { presentDesignGateDecision } from "./design-gate-decision-presenter";
+import { SPEC_DELEGATED_ROUND } from "./delegated-round-phases";
+import {
+  recordDelegatedRoundSideThreads,
+  usedSubAgentThreadIds,
+} from "./delegated-round-side-history";
+import { recordRubricAssessmentsFromVerdicts } from "./rubric-service";
 import { generateSpecReport, generateWarReport } from "./spec-battle-report-service";
 import {
   createProviderLifecycleSink,
@@ -40,12 +51,14 @@ import {
 import {
   defaultScopeForPhase,
   runDocumentStage,
+  StageAwaitingClarificationError,
   withDocumentStageWatchdog,
 } from "./pipeline-document-stage-runner-service";
 import {
   endRun,
   setStatus,
   StageBoundaryViolationError,
+  stopRun,
 } from "./pipeline-run-ledger-service";
 import {
   ingestStageAiOutput,
@@ -120,6 +133,22 @@ function assertChangeNotBlocked(changeId: string, phase: RunPhase): void {
 export interface RunSpecOptions {
   idempotencyKey?: string;
   provider?: Provider;
+  /**
+   * Set by `retry_spec` only. Lets the claim take over a round parked on the
+   * human's unanswered questions; see claimSpecBattleRedRun's parameter of the
+   * same name for why `run_spec` must not.
+   */
+  abandonClarification?: boolean;
+  /**
+   * A reply this round's Codex task already produced, once its questions
+   * converged.
+   *
+   * The round is parked, not claimable, so this path resumes it instead of
+   * claiming it, and hands the reply to whichever leg parked. Everything after
+   * that is the ordinary round: same rubric harvest, same protocol, same
+   * artifacts, same reports, same gate.
+   */
+  adoptedResult?: AiRunResult;
 }
 
 const SPEC_RETRY_SESSION_CONTRACT = {
@@ -277,6 +306,112 @@ function alreadyRunningSpecResult(changeId: string, roundId: string, runId: stri
   };
 }
 
+/**
+ * What the job returns when the round parked on the human.
+ *
+ * `success: true` is about the JOB, not the stage: the turn ran, it asked its
+ * questions, and nothing went wrong. Reporting it as a failure is what used to
+ * mark the round `failed` and close `run_spec` every time the model opened a
+ * question card.
+ */
+function awaitingClarificationSpecResult(changeId: string, roundId: string, runId: string): AiRunResult {
+  return {
+    threadId: `${changeId}-spec-awaiting-clarification`,
+    runId,
+    summary: "spec_round_awaiting_clarification",
+    success: true,
+    changedFiles: [],
+    structuredOutput: undefined,
+    items: [],
+  };
+}
+
+/**
+ * How this call got hold of the round it is about to run.
+ *
+ * Two entry paths converge here. A normal dispatch CLAIMS a round; an adoption
+ * RESUMES one that parked on the human. They differ in nothing else -- same run
+ * ledger, same legs, same reports -- so they are normalised into one shape
+ * rather than duplicating the body.
+ */
+type SpecRoundEntry =
+  | {
+      kind: "running";
+      roundId: string;
+      roundNo: number;
+      runId: string;
+      previousStatus: string;
+      /** The leg to execute. Adoption may resume either; a claim always starts red. */
+      leg: "red_running" | "blue_running";
+    }
+  | {
+      kind: "declined";
+      roundId: string;
+      runId: string | null;
+      reason: "spec_round_running" | "spec_round_awaiting_clarification";
+    };
+
+function claimSpecRound(
+  changeId: string,
+  provider: Provider,
+  options: RunSpecOptions,
+): SpecRoundEntry {
+  const claim = claimSpecBattleRedRun({
+    changeId,
+    idempotencyKey: options.idempotencyKey,
+    provider,
+    abandonClarification: options.abandonClarification,
+  });
+  if (!claim.claimed) {
+    return {
+      kind: "declined",
+      roundId: claim.roundId,
+      runId: claim.runId,
+      reason: claim.reason === "spec_round_awaiting_clarification"
+        ? "spec_round_awaiting_clarification"
+        : "spec_round_running",
+    };
+  }
+  if (!claim.runId) throw new Error("Claimed Spec battle round has no business run");
+  return {
+    kind: "running",
+    roundId: claim.roundId,
+    roundNo: claim.roundNo,
+    runId: claim.runId,
+    previousStatus: claim.previousStatus,
+    leg: "red_running",
+  };
+}
+
+function resumeParkedSpecRound(changeId: string, provider: Provider): SpecRoundEntry {
+  const resumed = resumeSpecBattleRoundFromClarification({ changeId, roundId: currentRoundId(changeId), provider });
+  if (!resumed.resumed || !resumed.runId) {
+    // Not parked any more: the same converged reply already settled this round,
+    // or a retry took it over. Either way re-running the leg would duplicate
+    // work the round already carries.
+    return {
+      kind: "declined",
+      roundId: resumed.roundId,
+      runId: null,
+      reason: "spec_round_awaiting_clarification",
+    };
+  }
+  return {
+    kind: "running",
+    roundId: resumed.roundId,
+    roundNo: resumed.roundNo,
+    runId: resumed.runId,
+    previousStatus: "awaiting_clarification",
+    leg: resumed.leg,
+  };
+}
+
+function currentRoundId(changeId: string): string {
+  const round = getSpecBattleState(changeId).latestRound;
+  if (!round) throw new Error(`No Spec battle round to adopt a reply into: ${changeId}`);
+  return round.id;
+}
+
 export async function runSpec(
   changeId: string,
   context: JobExecutionContext,
@@ -286,28 +421,19 @@ export async function runSpec(
     const initialChange = getChange(changeId);
     if (!initialChange) throw new Error(`Change not found: ${changeId}`);
     const provider = selectedProvider(initialChange, context, options.provider);
-    const claim = claimSpecBattleRedRun({
-      changeId,
-      idempotencyKey: options.idempotencyKey,
-      provider,
-    });
-    if (!claim.claimed) {
+    const entry = options.adoptedResult
+      ? resumeParkedSpecRound(changeId, provider)
+      : claimSpecRound(changeId, provider, options);
+    if (entry.kind === "declined") {
       assertCurrentExecutionFence(context);
-      return alreadyRunningSpecResult(changeId, claim.roundId, claim.runId);
+      return entry.reason === "spec_round_running"
+        ? alreadyRunningSpecResult(changeId, entry.roundId, entry.runId)
+        : awaitingClarificationSpecResult(changeId, entry.roundId, entry.runId ?? entry.roundId);
     }
-    if (!claim.runId) {
-      throw new Error("Claimed Spec battle round has no business run");
-    }
+    const round = entry;
     assertCurrentExecutionFence(context);
-    runLedgerRepository.bindRunToCurrentExecution(claim.runId);
-    assertCurrentExecutionFence(context, claim.runId);
-    const round = {
-      roundId: claim.roundId,
-      roundNo: claim.roundNo,
-      status: "red_running",
-      previousStatus: claim.previousStatus,
-      runId: claim.runId,
-    };
+    runLedgerRepository.bindRunToCurrentExecution(round.runId);
+    assertCurrentExecutionFence(context, round.runId);
 
     try {
       let result: AiRunResult | null = null;
@@ -323,7 +449,21 @@ export async function runSpec(
         throw new Error("Spec battle round is no longer current");
       }
 
-      if (currentRound.status === "red_running") {
+      // The delegated form settles red, blue AND the verdict rubric from one
+      // turn, so it replaces all three legs below rather than sitting beside
+      // them. Everything after -- gap sync, reports, gate -- is shared and runs
+      // exactly as it does for the three-turn form.
+      if (readCodexNativeFlags().specJudgeSubAgents) {
+        result = await runDelegatedSpecRound({
+          changeId,
+          context,
+          provider,
+          roundId: round.roundId,
+          roundNo: round.roundNo,
+          runId: round.runId,
+          adoptedResult: options.adoptedResult,
+        });
+      } else if (currentRound.status === "red_running") {
         const redChange = getChange(changeId);
         if (!redChange) throw new Error(`Change not found: ${changeId}`);
         const redProvider = provider as EngineProvider;
@@ -345,6 +485,11 @@ export async function runSpec(
           currentRunId: round.runId,
         });
         result = await runDocumentStage(changeId, {
+          // Present only on the adoption path, and only when red is the leg
+          // that parked -- the runner then ingests this reply instead of
+          // starting a turn, through the identical rubric/protocol/artifact
+          // path a directly produced one takes.
+          adoptedResult: round.leg === "red_running" ? options.adoptedResult : undefined,
           phase: "spec",
           promptPhase: "spec",
           allowedStatuses: ["INTAKE_READY", "SPECCING"],
@@ -437,6 +582,10 @@ export async function runSpec(
           context,
           round.runId,
           provider,
+          // Blue asks too, and a round parked from its critique resumes here.
+          // Handing red's adopted reply to blue would file an acknowledgement
+          // as a gap list, so the reply only travels to the leg that parked.
+          round.leg === "blue_running" ? options.adoptedResult : undefined,
         );
         assertCurrentExecutionFence(context, round.runId);
         result ??= blueResult;
@@ -446,7 +595,12 @@ export async function runSpec(
       // §2.3: after both sides have produced, a third agent judges the verdict
       // rubric against the two outputs. Deliberately before the reports: it
       // judges what red and blue produced, not stagepass's summary of them.
-      await runSpecVerdictRubric({
+      //
+      // Skipped for the delegated form, where the judge already answered this
+      // rubric inside its own turn. Running it anyway would open a FOURTH turn
+      // to re-ask a question that has been answered, and its verdicts would
+      // overwrite the judge's for the same run and round.
+      if (!readCodexNativeFlags().specJudgeSubAgents) await runSpecVerdictRubric({
         changeId,
         roundId: round.roundId,
         context,
@@ -472,6 +626,17 @@ export async function runSpec(
       assertChangeNotBlocked(changeId, "spec");
       endRun(round.runId, "Spec battle completed", true);
       await setStatus(changeId, "SPEC_READY");
+      // The round produced a result; the human now has a decision to make, and
+      // the web deliberately does not route it (NON_POST_ROUTED_ACTION_IDS). This
+      // is what puts it on the Codex decision surface. Last, and after the status
+      // move, so the card is built from the contract the human will actually act
+      // against. Never throws -- see the presenter.
+      presentDesignGateDecision({
+        changeId,
+        phase: "Spec",
+        roundNo: round.roundNo,
+        reportHash: `${round.roundId}:${round.runId}`,
+      });
       if (!result) {
         throw new Error("Spec battle round had no executable work");
       }
@@ -479,6 +644,21 @@ export async function runSpec(
     } catch (err) {
       if (err instanceof StaleLeaseFenceError) {
         throw err;
+      }
+      // The turn ended by handing its questions to the human. Nothing failed:
+      // the round parks, the run settles as produced-nothing, the change stays
+      // at SPECCING, and the job reports success so the worker does not retry a
+      // turn whose answer is with the user. The converged reply completes this
+      // same round later, through adoption.
+      if (err instanceof StageAwaitingClarificationError) {
+        assertCurrentExecutionFence(context, round.runId);
+        stopRun(round.runId, err.message);
+        pauseSpecBattleRoundForClarification({ changeId, roundId: round.roundId });
+        log.info(
+          { changeId, roundId: round.roundId, runId: round.runId },
+          "Spec round paused awaiting human clarification",
+        );
+        return awaitingClarificationSpecResult(changeId, round.roundId, round.runId);
       }
       if (
         !(err instanceof StageBoundaryViolationError)
@@ -496,6 +676,102 @@ export async function runSpec(
       throw err;
     }
   });
+}
+
+/**
+ * Settles one round from a single delegated turn.
+ *
+ * The judge's turn produces all three parts, but only its own judgment comes
+ * from its text: red's and blue's payloads are read off the sub-agent threads
+ * that produced them, and the order they ran in is checked against those same
+ * threads (readSpecJudgeRound). Nothing is written until all of it validates --
+ * a half-settled round would leave a committed red leg with no critic, which
+ * reads to every later query as a critic that found nothing.
+ */
+async function runDelegatedSpecRound(input: {
+  changeId: string;
+  context: JobExecutionContext;
+  provider: Provider;
+  roundId: string;
+  roundNo: number;
+  runId: string;
+  adoptedResult?: AiRunResult;
+}): Promise<AiRunResult> {
+  const change = getChange(input.changeId);
+  if (!change) throw new Error(`Change not found: ${input.changeId}`);
+  const project = getProject(change.projectId);
+  if (!project) throw new Error(`Project not found: ${change.projectId}`);
+
+  // Resolved BEFORE the round: the judge needs the criterion ids in its brief,
+  // and the ingestion needs them to refuse an invented id before red and blue
+  // are committed.
+  const verdictRubric = resolveStageRubric(
+    { projectId: change.projectId, changeId: input.changeId, phase: "Spec", role: "verdict" },
+    { runId: input.runId, roundId: input.roundId },
+  );
+  const { round, result } = await runDelegatedRound({
+    descriptor: SPEC_DELEGATED_ROUND,
+    verdictCriteria: verdictRubric?.rubric.criteria.map((criterion) => ({
+      id: criterion.id,
+      text: criterion.text,
+    })) ?? [],
+    changeId: input.changeId,
+    changeTitle: change.title,
+    repoPath: project.repoPath,
+    roundNo: input.roundNo,
+    runId: input.runId,
+    context: input.context,
+    provider: input.provider,
+    adoptedResult: input.adoptedResult,
+    // Threads earlier rounds already spent. The judge task stays open across
+    // rounds, so without this round 2 could be attributed from round 1's
+    // sub-agents without spawning anything.
+    usedAgentThreadIds: usedSubAgentThreadIds(input.changeId),
+  });
+
+  assertCurrentExecutionFence(input.context, input.runId);
+  assertChangeNotBlocked(input.changeId, "spec");
+  // Recorded before the ledger writes: a round that settles red and then fails
+  // must still have burned its sub-agent threads, or a retry could re-attribute
+  // the very threads whose output it just refused.
+  recordDelegatedRoundSideThreads({
+    changeId: input.changeId,
+    runId: input.runId,
+    phase: SPEC_DELEGATED_ROUND.phase,
+    roundId: input.roundId,
+    roundNo: input.roundNo,
+    sideThreads: round.sideThreads,
+  });
+  await completeRedSpecRound({
+    changeId: input.changeId,
+    roundId: input.roundId,
+    redOutput: round.red as unknown as SpecRedLinePayload,
+    provider: input.provider,
+  });
+
+  assertCurrentExecutionFence(input.context, input.runId);
+  assertChangeNotBlocked(input.changeId, "spec");
+  await completeBlueCritique({
+    changeId: input.changeId,
+    roundId: input.roundId,
+    blueCritique: round.blue,
+    provider: input.provider,
+  });
+
+  assertCurrentExecutionFence(input.context, input.runId);
+  // The judge answers the VERDICT rubric, the same scope the third turn used to
+  // answer. A missing criterion still lands as `not_assessed` and still blocks:
+  // recordRubricAssessmentsFromVerdicts iterates criteria, not the judge's list.
+  if (verdictRubric && verdictRubric.rubric.criteria.length > 0) {
+    recordRubricAssessmentsFromVerdicts({
+      changeId: input.changeId,
+      runId: input.runId,
+      roundId: input.roundId,
+      rubric: verdictRubric.rubric,
+      verdicts: round.judge.rubric,
+    });
+  }
+  return result;
 }
 
 /**
@@ -647,6 +923,13 @@ async function runSpecCritic(
   context: JobExecutionContext,
   dbRunId: string,
   provider: Provider,
+  /**
+   * A critique this round's Codex task already produced, once its questions
+   * converged. Ingested in place of starting a turn; everything downstream --
+   * rubric harvest, critique protocol, schema, gap ledger -- is unchanged, so
+   * an adopted critique is held to exactly the contract a produced one is.
+   */
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
   const change = getChange(changeId);
   if (!change) throw new Error(`Change not found: ${changeId}`);
@@ -663,65 +946,80 @@ async function runSpecCritic(
     { projectId: change.projectId, changeId, phase: "Spec", role: "critic" },
     { runId: dbRunId, roundId },
   );
-  const prompt = appendRubricPromptSection(assemblePrompt("spec_critic", {
-    changeId,
-    repoPath: project.repoPath,
-  }, defaultScopeForPhase("spec")), blueRubric);
+  const produceCritique = async (): Promise<AiRunResult> => {
+    const prompt = appendRubricPromptSection(assemblePrompt("spec_critic", {
+      changeId,
+      repoPath: project.repoPath,
+    }, defaultScopeForPhase("spec")), blueRubric);
 
-  const engine = await getPipelineEngine(provider as EngineProvider);
-  const stageTimeoutMs = documentStageTimeoutMs();
-  // Historical stage session is audit-only; it never selects execution.
-  void latestSpecRetryThread({
-    role: "critic",
-    changeId,
-    roundId,
-    provider: provider as EngineProvider,
-    currentRunId: dbRunId,
-  });
-  const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
-  const { executableThreadId } = resolveCodexStageThreadRoute({
-    desktopBridgeEnabled,
-    resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
-    resolveLegacyGeneralThread: () => resolveProviderSession({
+    const engine = await getPipelineEngine(provider as EngineProvider);
+    const stageTimeoutMs = documentStageTimeoutMs();
+    // Historical stage session is audit-only; it never selects execution.
+    void latestSpecRetryThread({
+      role: "critic",
       changeId,
-      provider: "codex",
-      sessionKind: "general",
-    }),
-  });
-  const logicalTurnId = desktopBridgeEnabled
-    ? (await resolveLogicalTurn({
-        owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
-        phase: "Spec",
-        role: "spec_critic",
-        round: round.roundNo,
-        ordinal: 0,
-        request: { prompt, sandboxMode: "read-only" },
-      })).logicalTurnId
-    : undefined;
-  const result = await withDocumentStageWatchdog(engine.run(desktopBridgeEnabled ? {
-    logicalTurnId: logicalTurnId!,
-  } as never : {
-    changeId,
-    repoPath: project.repoPath,
-    phase: "spec_critic",
-    logicalTurnId,
-    threadId: executableThreadId,
-    prompt,
-    // Line-protocol stage: the model writes REVIEW/GAP/ARTIFACT/CRITIQUE_DONE
-    // lines, never JSON. BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA stays server-side as
-    // the second gate over the deterministically assembled payload.
-    sandboxMode: "read-only",
-    timeoutMs: stageTimeoutMs,
-    lifecycle: createProviderLifecycleSink({
-      ...context,
-      changeId,
-      runId: dbRunId,
-      phase: "spec_critic",
-      provider: provider as EngineProvider,
       roundId,
-      closeBusinessRunOnProviderFailure: false,
-    }),
-  }), "spec", "spec_critic");
+      provider: provider as EngineProvider,
+      currentRunId: dbRunId,
+    });
+    const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+    const { executableThreadId } = resolveCodexStageThreadRoute({
+      desktopBridgeEnabled,
+      resolveCanonicalThread: () => resolveCanonicalChangeThread(changeId),
+      resolveLegacyGeneralThread: () => resolveProviderSession({
+        changeId,
+        provider: "codex",
+        sessionKind: "general",
+      }),
+    });
+    const logicalTurnId = desktopBridgeEnabled
+      ? (await resolveLogicalTurn({
+          owner: { kind: "pipeline_job", pipelineJobId: context.jobId },
+          phase: "Spec",
+          role: "spec_critic",
+          round: round.roundNo,
+          ordinal: 0,
+          request: { prompt, sandboxMode: "read-only" },
+        })).logicalTurnId
+      : undefined;
+    return withDocumentStageWatchdog(engine.run(desktopBridgeEnabled ? {
+      logicalTurnId: logicalTurnId!,
+    } as never : {
+      changeId,
+      repoPath: project.repoPath,
+      phase: "spec_critic",
+      logicalTurnId,
+      threadId: executableThreadId,
+      prompt,
+      // Line-protocol stage: the model writes REVIEW/GAP/ARTIFACT/CRITIQUE_DONE
+      // lines, never JSON. BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA stays server-side as
+      // the second gate over the deterministically assembled payload.
+      sandboxMode: "read-only",
+      timeoutMs: stageTimeoutMs,
+      lifecycle: createProviderLifecycleSink({
+        ...context,
+        changeId,
+        runId: dbRunId,
+        phase: "spec_critic",
+        provider: provider as EngineProvider,
+        roundId,
+        closeBusinessRunOnProviderFailure: false,
+      }),
+    }), "spec", "spec_critic");
+  };
+  // The whole engine block is skipped on adoption, not merely ignored: it
+  // resolves a logical turn and a thread route as side effects, and creating a
+  // second turn for a reply that already exists would hand this round a turn
+  // nobody will ever run.
+  const result = adoptedResult ?? await produceCritique();
+  // Blue can hand its questions to the human too, and a turn that did produced
+  // an acknowledgement, not a critique. Ingesting it would file "I have shown
+  // you ten questions" as this round's gap list and settle the round on it --
+  // the same false provenance runDocumentStage refuses for red. runSpec's catch
+  // parks the round from blue_running and adoption resumes it here.
+  if (classifyStageConvergence(result).kind === "asked_again") {
+    throw new StageAwaitingClarificationError("spec_critic");
+  }
   assertCurrentExecutionFence(context, dbRunId);
   const runScopedArtifactId = dbRunId;
   const providerFailed = !result.success;

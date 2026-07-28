@@ -54,8 +54,8 @@ function fixture() {
   }).run();
   database.insert(codexThreadBindings).values({
     bindingId: "BIND-1",
-    scopeKind: "change",
-    scopeId: "CHG-1",
+    scopeKind: "change_stage",
+    scopeId: "CHG-1:prd",
     projectId: "PRJ-1",
     changeId: "CHG-1",
     threadId: "THREAD-1",

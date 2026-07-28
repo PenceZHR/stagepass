@@ -54,6 +54,25 @@ export interface CodexPersistentShell {
   ephemeral: false;
 }
 
+/**
+ * A thread another thread spawned as a sub-agent.
+ *
+ * The app-server writes `parentThreadId`, so this is the one record of a spawn
+ * that the spawning agent cannot fabricate.
+ *
+ * `agentPath` and `agentRole` are both routinely NULL here even when the spawn
+ * named a task -- observed on a real round whose two sides carried only
+ * auto-generated nicknames ("Linnaeus", "Raman"). So a side's ROLE cannot be
+ * read off this record, and the round works out which child is which from
+ * evidence instead: whose turn window contains which output file's write time.
+ */
+export interface CodexSubAgentThread {
+  threadId: string;
+  parentThreadId: string;
+  agentNickname: string | null;
+  agentRole: string | null;
+}
+
 export interface CodexShellProvisionFence {
   ownerId: string;
   leaseToken: string;
@@ -145,6 +164,18 @@ export interface CodexDesktopTurnRequest {
   reasoningEffort?: string;
   approvalPolicy: "never";
   sandboxMode: "read-only" | "workspace-write";
+  /**
+   * A JSON Schema the runtime enforces on this turn's final assistant message.
+   *
+   * The server owns the schema; the model only fills it in. Verified against a
+   * real app-server: a turn asked for free prose came back as a document
+   * matching the schema exactly, so this is enforcement and not a hint.
+   *
+   * Only the ROOT turn can carry one -- `spawn_agent` has no equivalent
+   * parameter, so a sub-agent's schema must travel in its prompt and be
+   * validated server-side instead (server-owned-json-output.ts).
+   */
+  outputSchema?: Record<string, unknown>;
 }
 
 export type CodexManagedOwner =
@@ -158,8 +189,39 @@ export type CodexManagedScope =
       projectId: string;
       changeId: string;
     }
+  | {
+      /**
+       * One Codex task per stage. A change-wide task made every stage share
+       * one conversation, so a stage could not tell whether it had started
+       * yet and each one inherited the previous stage's context.
+       */
+      kind: "change_stage";
+      scopeId: string;
+      projectId: string;
+      changeId: string;
+      stageId: string;
+    }
   | { kind: "project_prd"; scopeId: string; projectId: string }
   | { kind: "project_context"; scopeId: string; projectId: string };
+
+/** The scope id a stage-scoped binding is keyed by. */
+export function changeStageScopeId(changeId: string, stageId: string): string {
+  return `${changeId}:${stageId}`;
+}
+
+export function changeStageScope(input: {
+  changeId: string;
+  projectId: string;
+  stageId: string;
+}): CodexManagedScope {
+  return {
+    kind: "change_stage",
+    scopeId: changeStageScopeId(input.changeId, input.stageId),
+    projectId: input.projectId,
+    changeId: input.changeId,
+    stageId: input.stageId,
+  };
+}
 
 export interface CodexFollowerStartFence {
   logicalTurnId: string;
@@ -187,6 +249,16 @@ export type CodexLogicalTurnRole =
   | "spec_writer"
   | "spec_critic"
   | "spec_verdict"
+  /**
+   * The delegated Spec round: one turn whose agent judges, and whose red and
+   * blue are sub-agents it spawns rather than turns the server dispatches.
+   */
+  | "spec_judge"
+  /**
+   * The delegated round's judge, for every phase that runs one. `spec_judge`
+   * stays valid because rows already carry it; new rounds use this.
+   */
+  | "delegated_round_judge"
   | "build"
   | "fix"
   | "prd_turn"
@@ -211,6 +283,8 @@ export function dispatchSurfaceForRole(
     case "spec_writer":
     case "spec_critic":
     case "spec_verdict":
+    case "spec_judge":
+    case "delegated_round_judge":
     case "build":
     case "fix":
     case "prd_turn":
@@ -302,6 +376,25 @@ export type NormalizedCodexTurnItem =
     semantic: {
       path: string;
       change: "added" | "modified" | "deleted";
+    };
+    metadata?: CodexItemMetadata;
+  }
+  | {
+    id: string;
+    /**
+     * A sub-agent this turn really started, as reported by the app-server.
+     *
+     * The only trustworthy record that a delegated side exists. A failed spawn
+     * is silent and the main agent answers in the sub-agent's place, so "红方跑
+     * 过了" may never be taken from the main agent's own text -- it is taken
+     * from here, and the side's output is then read off `agentThreadId`, a
+     * thread the main agent cannot forge.
+     */
+    kind: "sub_agent_activity";
+    semantic: {
+      activity: "started" | "interacted" | "interrupted";
+      agentThreadId: string;
+      agentPath: string;
     };
     metadata?: CodexItemMetadata;
   }

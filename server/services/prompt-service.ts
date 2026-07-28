@@ -19,6 +19,15 @@ export type PromptPhase =
   | "spec"
   | "spec_critic"
   | "spec_verdict"
+  | "delegated_round_judge"
+  | "spec_red_subagent"
+  | "spec_blue_subagent"
+  | "tech_spec_red_subagent"
+  | "tech_spec_blue_subagent"
+  | "plan_red_subagent"
+  | "plan_blue_subagent"
+  | "test_plan_red_subagent"
+  | "test_plan_blue_subagent"
   | "tech_spec"
   | "test_plan"
   | "release"
@@ -30,6 +39,7 @@ export type PromptPhase =
 
 interface PromptVariables {
   changeId: string;
+  changeTitle?: string;
   repoPath: string;
 }
 
@@ -39,6 +49,7 @@ function buildVariables(vars: PromptVariables): Record<string, string> {
 
   return {
     changeId: vars.changeId,
+    changeTitle: vars.changeTitle?.trim() || "（未提供）",
     repoPath: vars.repoPath,
     specPath: path.join(changeDir, "spec.md"),
     changeRequestPath: path.join(changeDir, "change-request.md"),
@@ -79,6 +90,15 @@ const PROMPT_TEMPLATE_FILES: Record<PromptPhase, string> = {
   fix: "fix.md",
   refine: "refine.md",
   prd: "prd.md",
+  delegated_round_judge: "delegated-round-judge.md",
+  spec_red_subagent: "spec-red-subagent.md",
+  spec_blue_subagent: "spec-blue-subagent.md",
+  tech_spec_red_subagent: "tech-spec-red-subagent.md",
+  tech_spec_blue_subagent: "tech-spec-blue-subagent.md",
+  plan_red_subagent: "plan-red-subagent.md",
+  plan_blue_subagent: "plan-blue-subagent.md",
+  test_plan_red_subagent: "test-plan-red-subagent.md",
+  test_plan_blue_subagent: "test-plan-blue-subagent.md",
   prd_briefing_questions: "prd-briefing-questions.md",
   prd_briefing_draft: "prd-briefing-draft.md",
   prd_briefing_final_review: "prd-briefing-final-review.md",
@@ -184,15 +204,46 @@ function resolvePromptPath(phase: PromptPhase, repoPath: string): string {
   throw new Error(`Prompt template not found: ${projectPromptPath}`);
 }
 
+/**
+ * Renders a template with the standard variables and NOTHING else -- no stage
+ * context prefix.
+ *
+ * Exists for the sub-agent briefs the Spec judge hands to red and blue. Those
+ * are quoted verbatim inside the judge's own prompt, which already carries the
+ * stage context, so rendering them through assemblePrompt would paste the whole
+ * context block in three times.
+ */
+export function renderPromptTemplate(
+  phase: PromptPhase,
+  vars: PromptVariables,
+): string {
+  return substitute(
+    fs.readFileSync(resolvePromptPath(phase, vars.repoPath), "utf-8"),
+    buildVariables(vars),
+  );
+}
+
 export function assemblePrompt(
   phase: PromptPhase,
   vars: PromptVariables,
-  scope?: StageScope
+  scope?: StageScope,
+  /**
+   * Server-authored values the template may reference beyond the standard set.
+   *
+   * The Spec judge uses this to inline the exact briefs it must hand to its
+   * sub-agents. They travel as data the server wrote, not as something the
+   * judge composes -- a judge free to paraphrase its sub-agents' instructions
+   * is a judge free to change their schema.
+   */
+  extraVariables?: Record<string, string>,
 ): string {
   const promptPath = resolvePromptPath(phase, vars.repoPath);
 
   const template = fs.readFileSync(promptPath, "utf-8");
-  const resolved = substitute(template, buildVariables(vars));
+  const resolved = substitute(template, {
+    ...buildVariables(vars),
+    ...extraVariables,
+  });
 
   const contextPrefix = scope
     ? readScopedContext(vars.repoPath, scope, vars.changeId)

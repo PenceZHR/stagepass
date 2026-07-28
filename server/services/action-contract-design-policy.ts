@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getSpecActionAvailabilityForChange } from "./spec-battle-service";
 
 import { requirementGaps } from "../db/schema";
+import { requirementGapScope } from "./battle-round-phase-scope";
 import { isRunningBattleRoundStatus } from "../types/enums";
 import type {
   ActionContractDb,
@@ -39,7 +40,7 @@ function specBattleBlockers(db: ActionContractDb, changeId: string): Blocker[] {
   return db
     .select()
     .from(requirementGaps)
-    .where(eq(requirementGaps.changeId, changeId))
+    .where(requirementGapScope(changeId, "Spec"))
     .all()
     .filter((gap) => {
       const severity = effectiveSpecGapSeverity(gap);
@@ -114,6 +115,18 @@ export function specRunDecision(
 
   if (isRunningBattleRoundStatus(latestStatus)) {
     return disabled("spec_round_running");
+  }
+  // Paused on the human. `run_spec` must stay shut -- the Codex task is open
+  // holding unanswered questions and a second red run would race the answers --
+  // but `retry_spec` stays open as the way out: it rotates the task, which is
+  // the only thing a human who wants to abandon a question loop can do. Without
+  // this branch the status falls through to `spec_round_not_actionable` and
+  // disables BOTH, which is the dead end the old failed-round behaviour at
+  // least avoided by accident.
+  if (latestStatus === "awaiting_clarification") {
+    return actionId === "retry_spec"
+      ? prdGate
+      : disabled("spec_round_awaiting_clarification");
   }
   if (latestStatus === "failed") {
     // For retry_spec, always allow retrying failed rounds

@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 
 import { db } from "../db";
 import { battleRounds, changes, events, projects, runs, stageRuns } from "../db/schema";
+import { battleRoundScope } from "./battle-round-phase-scope";
 
 export interface RepairStuckSpecRoundsOptions {
   changeId?: string;
@@ -44,7 +45,7 @@ function latestRoundForChange(changeId: string): typeof battleRounds.$inferSelec
   return db
     .select()
     .from(battleRounds)
-    .where(eq(battleRounds.changeId, changeId))
+    .where(battleRoundScope(changeId, "Spec"))
     .all()
     .sort((a, b) => b.roundNo - a.roundNo || b.createdAt.localeCompare(a.createdAt))[0] ?? null;
 }
@@ -130,7 +131,7 @@ export function repairStuckSpecRounds(
     const rounds = db
       .select()
       .from(battleRounds)
-      .where(eq(battleRounds.changeId, change.id))
+      .where(battleRoundScope(change.id, "Spec"))
       .all()
       .filter((round) => round.status === "red_running");
     for (const round of rounds) {

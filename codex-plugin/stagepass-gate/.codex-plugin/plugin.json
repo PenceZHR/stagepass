@@ -1,0 +1,26 @@
+{
+  "name": "stagepass-gate",
+  "version": "0.1.0",
+  "description": "Show StagePass gate decisions in Codex and record the human's verdict against the change's action contract.",
+  "author": {
+    "name": "StagePass"
+  },
+  "interface": {
+    "displayName": "StagePass Gate Decisions",
+    "shortDescription": "Approve, reject or waive a StagePass stage gate from Codex.",
+    "longDescription": "A settled design round leaves a decision only a human can make. The web deliberately does not route approvals or P1 waivers, so this plugin is the surface that shows the pending decision and records the answer through StagePass's own action contract.",
+    "developerName": "StagePass",
+    "category": "Productivity",
+    "capabilities": [
+      "Pending gate decisions",
+      "Contract-checked verdicts",
+      "Same-task continuation"
+    ],
+    "defaultPrompt": [
+      "Show the pending StagePass gate decision for this change.",
+      "Do not decide on my behalf -- present the options and wait."
+    ]
+  },
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/"
+}

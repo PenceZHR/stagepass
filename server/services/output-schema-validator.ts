@@ -9,11 +9,19 @@
  * the document runner has always applied.
  *
  * Deliberately a subset of JSON Schema: `type`, `enum`, `properties`,
- * `required`, `items`, `additionalProperties`. Stage schemas are hand-written
- * and reviewed, so an unsupported keyword is a review problem, not a runtime
- * one -- but note the consequence, that an unrecognised keyword is IGNORED
- * rather than rejected. Do not reach for a keyword this file does not
+ * `required`, `items`, `additionalProperties`, `minLength`. Stage schemas are
+ * hand-written and reviewed, so an unsupported keyword is a review problem, not
+ * a runtime one -- but note the consequence, that an unrecognised keyword is
+ * IGNORED rather than rejected. Do not reach for a keyword this file does not
  * implement and assume it constrains anything.
+ *
+ * `minLength` was added because that warning had already been ignored four
+ * times over: `spec-battle-ledger`'s red `markdown`, both prd-briefing schemas
+ * and every string in the delivery schema were written as
+ * `{ type: "string", minLength: 1 }` by authors who meant "not empty" and got
+ * nothing. Those stages were accepting empty documents through a constraint
+ * that read as if it forbade them. Implementing the keyword makes four existing
+ * intentions true rather than adding a new rule.
  */
 
 export type SchemaValidationResult = true | { ok: false; message: string };
@@ -35,6 +43,7 @@ function validateSchemaNode(schema: unknown, value: unknown, location: string): 
     required?: unknown;
     items?: unknown;
     additionalProperties?: unknown;
+    minLength?: unknown;
   };
 
   if (record.enum && !record.enum.some((item) => JSON.stringify(item) === JSON.stringify(value))) {
@@ -43,6 +52,15 @@ function validateSchemaNode(schema: unknown, value: unknown, location: string): 
 
   if (record.type !== undefined && !schemaTypeMatches(record.type, value)) {
     return `${location} must be ${Array.isArray(record.type) ? record.type.join(" or ") : record.type}`;
+  }
+
+  // Only for strings, matching JSON Schema: `minLength` says nothing about a
+  // value of another type, and a nullable field declared `["string", "null"]`
+  // must keep accepting null.
+  if (typeof record.minLength === "number" && typeof value === "string") {
+    if (value.length < record.minLength) {
+      return `${location} must be at least ${record.minLength} character${record.minLength === 1 ? "" : "s"}`;
+    }
   }
 
   if (isPlainObject(value)) {

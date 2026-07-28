@@ -17,6 +17,7 @@ readonly ManagedAiCallerManifestEntry[] = [
   { file: "server/services/pipeline-engine-service.ts", mode: "logical_resolver", resolverSymbol: "getAiEngine" },
   { file: "server/services/pipeline-prd-briefing-stage-service.ts", mode: "logical_resolver", resolverSymbol: "resolveLogicalTurn" },
   { file: "server/services/pipeline-spec-stage-service.ts", mode: "logical_resolver", resolverSymbol: "resolveLogicalTurn" },
+  { file: "server/services/pipeline-delegated-round.ts", mode: "logical_resolver", resolverSymbol: "resolveLogicalTurn" },
   { file: "server/services/pipeline-document-stage-runner-service.ts", mode: "logical_resolver", resolverSymbol: "resolveLogicalTurn" },
   { file: "server/services/pipeline-plan-stage-service.ts", mode: "logical_resolver", resolverSymbol: "resolveLogicalTurn" },
   { file: "server/services/pipeline-build-stage-service.ts", mode: "logical_resolver", resolverSymbol: "resolveBuildTurn" },

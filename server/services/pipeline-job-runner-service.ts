@@ -7,11 +7,17 @@ import type { JobExecutionContext } from "./job-execution-context";
 import type { Provider } from "./provider-selection-service";
 import { readCodexNativeFlags } from "../config/codex-native-flags";
 import { db } from "../db";
-import { codexLogicalTurns, codexTurnExecutions } from "../db/schema";
+import { stageJobNeedsFreshTask } from "./delegated-round-task-rotation";
+import { usedSubAgentThreadIds } from "./delegated-round-side-history";
+import { resolveStageClarificationPolicy } from "../../lib/stage-clarification-policy";
+import { changeStageScope } from "./codex-desktop-bridge-types";
+import { battleRounds, changes, codexLogicalTurns, codexTurnExecutions } from "../db/schema";
 import { and, eq } from "drizzle-orm";
 import { parsePipelineJobEffect } from "../types/models";
 import type { InteractionPresentationOrchestrator } from "./interaction-presentation-orchestrator";
 import type { InteractionWakeupOrchestrator } from "./interaction-wakeup-orchestrator";
+import type { CodexDesktopBridge } from "./codex-desktop-bridge";
+import type { CodexManagedScope } from "./codex-desktop-bridge-types";
 
 export type PipelineJobRunner = (
   job: PipelineJobRecord,
@@ -52,7 +58,11 @@ export interface PipelineWorkerStageApi {
   runSpec(
     changeId: string,
     context: JobExecutionContext,
-    options?: { idempotencyKey?: string; provider?: Provider },
+    options?: {
+      idempotencyKey?: string;
+      provider?: Provider;
+      abandonClarification?: boolean;
+    },
   ): Promise<unknown>;
   runTechSpec(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
   generatePlan(changeId: string, context: JobExecutionContext, provider?: Provider): Promise<unknown>;
@@ -78,6 +88,10 @@ export interface PipelineWorkerStageApi {
 export interface RunPipelineJobOptions {
   runnerMap?: PipelineJobRunnerMap;
   pipeline?: PipelineWorkerStageApi;
+  codexBindingPreflight?: (
+    changeId: string,
+    options: { freshTask: boolean },
+  ) => Promise<void>;
   interactionPresentationOrchestrator?: Pick<InteractionPresentationOrchestrator, "run">;
   interactionWakeupOrchestrator?: Pick<InteractionWakeupOrchestrator, "run">;
 }
@@ -105,10 +119,15 @@ function runnerMapForPipeline(pipeline: PipelineWorkerStageApi): CompletePipelin
         idempotencyKey: job.idempotencyKey ?? undefined,
         provider: job.provider,
       }),
+    // retry_spec already rotated the Codex task in the binding preflight, so
+    // the questions a paused round was waiting on are gone with it. This flag
+    // is what lets the claim take that round over; without it a round parked on
+    // an unanswered card would have no exit at all.
     "spec:retry_spec": (job, context) =>
       pipeline.runSpec(job.changeId, context, {
         idempotencyKey: job.idempotencyKey ?? undefined,
         provider: job.provider,
+        abandonClarification: true,
       }),
     "tech_spec:run_tech_spec": (job, context) => pipeline.runTechSpec(job.changeId, context, job.provider),
     "tech_spec:retry_tech_spec": (job, context) => pipeline.runTechSpec(job.changeId, context, job.provider),
@@ -149,6 +168,87 @@ async function defaultRunnerMap(
   pipeline?: PipelineWorkerStageApi,
 ): Promise<PipelineJobRunnerMap> {
   return runnerMapForPipeline(pipeline ?? await import("./pipeline-service"));
+}
+
+export async function prepareVisibleCodexChangeTask(input: {
+  changeId: string;
+  projectId: string;
+  /** Which stage's task to prepare; each stage owns its own Codex task. */
+  stageId: string;
+  bridge: CodexDesktopBridge;
+  freshTask?: boolean;
+  ensureBinding(args: {
+    scope: CodexManagedScope;
+    bridge: CodexDesktopBridge;
+  }): Promise<unknown>;
+  rotateBinding?(args: {
+    scope: CodexManagedScope;
+    bridge: CodexDesktopBridge;
+  }): Promise<unknown>;
+}): Promise<void> {
+  await input.bridge.probe();
+  const prepareBinding = input.freshTask
+    ? input.rotateBinding
+    : input.ensureBinding;
+  if (!prepareBinding) {
+    throw new Error("fresh Codex task rotation adapter is unavailable");
+  }
+  await prepareBinding({
+    scope: changeStageScope({
+      changeId: input.changeId,
+      projectId: input.projectId,
+      stageId: input.stageId,
+    }),
+    bridge: input.bridge,
+  });
+}
+
+async function ensureVisibleCodexChangeTask(
+  changeId: string,
+  options: { freshTask: boolean; stageId: string },
+): Promise<void> {
+  const change = db.select({ projectId: changes.projectId })
+    .from(changes)
+    .where(eq(changes.id, changeId))
+    .get();
+  if (!change) throw new Error(`Change not found: ${changeId}`);
+
+  const [
+    { ensureCodexThreadBinding, rotateCodexThreadBinding },
+    { getProductionCodexDesktopBridge },
+  ] = await Promise.all([
+    import("./codex-thread-binding-service"),
+    import("./codex-desktop-engine"),
+  ]);
+  await prepareVisibleCodexChangeTask({
+    changeId,
+    projectId: change.projectId,
+    stageId: options.stageId,
+    bridge: await getProductionCodexDesktopBridge(),
+    freshTask: options.freshTask,
+    ensureBinding: ensureCodexThreadBinding,
+    rotateBinding: rotateCodexThreadBinding,
+  });
+}
+
+/**
+ * Whether the change's CURRENT stage task has already spent sub-agents.
+ *
+ * Spent threads are recorded per change, and the binding's thread is the task
+ * they were spent in -- so a recorded thread that is not a child of the current
+ * task belongs to a task that is already gone. Comparing against the live
+ * binding is what keeps a rotation from being triggered forever by history.
+ */
+function currentTaskSpentSubAgents(changeId: string): boolean {
+  const rounds = db.select({ id: battleRounds.id, status: battleRounds.status })
+    .from(battleRounds)
+    .where(eq(battleRounds.changeId, changeId))
+    .all();
+  // No round has ever run for this change, so nothing can have been spent.
+  if (rounds.length === 0) return false;
+  return usedSubAgentThreadIds(changeId).size > 0
+    && rounds.some((round) => round.status === "report_ready" || round.status === "closed"
+      || round.status === "superseded");
 }
 
 export async function runPipelineJob(
@@ -220,7 +320,28 @@ export async function runPipelineJob(
   if (!runner) {
     throw new Error(`Unsupported pipeline job action: ${key}`);
   }
-  if (readCodexNativeFlags().desktopBridge) {
+  const desktopBridgeEnabled = readCodexNativeFlags().desktopBridge;
+  const bindingPreflight = options.codexBindingPreflight
+    ?? (desktopBridgeEnabled ? ensureVisibleCodexChangeTask : null);
+  if (bindingPreflight) {
+    await bindingPreflight(parsedJob.changeId, {
+      // Keyed off what the work needs, not off what the button was called.
+      // See delegated-round-task-rotation.ts for the failure this replaces.
+      freshTask: stageJobNeedsFreshTask({
+        actionId: parsedJob.actionId,
+        phase: parsedJob.phase,
+        delegatedRoundsEnabled: readCodexNativeFlags().specJudgeSubAgents,
+        // Sub-agents are recorded per change as they are spent, and the current
+        // task is the one that spent them. Empty means this task has never
+        // hosted a round, so it is already the fresh task the round needs --
+        // rotating it would only throw away what the human is watching.
+        taskHasSpentSubAgents:
+          currentTaskSpentSubAgents(parsedJob.changeId),
+      }),
+      stageId: resolveStageClarificationPolicy(parsedJob.phase).id,
+    });
+  }
+  if (desktopBridgeEnabled) {
     const recoverable = db.select({ id: codexLogicalTurns.logicalTurnId })
       .from(codexLogicalTurns)
       .innerJoin(

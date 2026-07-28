@@ -28,9 +28,12 @@ describe("canonical Codex stage caller inventory", () => {
         /resolveCodexStageThreadRoute\(\{/,
         `${source.file} must fail closed when the flag is on without a binding`,
       );
+      // Binding form is not the contract -- the document runner declares it
+      // earlier so its ingest step can read it -- but resolving it from the
+      // flag is.
       assert.match(
         source.text,
-        /const logicalTurnId = desktopBridgeEnabled\s+\?/,
+        /logicalTurnId = desktopBridgeEnabled\s+\?/,
         `${source.file} must resolve a logical id whenever the flag is on`,
       );
       assert.match(

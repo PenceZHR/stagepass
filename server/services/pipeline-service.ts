@@ -104,16 +104,25 @@ export async function runTechSpec(
   changeId: string,
   context: JobExecutionContext,
   provider?: Provider,
+  /** A judge turn this task already produced, once its questions converged. */
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
-  return withDocumentStageExecutionContext(context, () => runTechSpecStage(changeId, context, provider));
+  return withDocumentStageExecutionContext(
+    context,
+    () => runTechSpecStage(changeId, context, provider, adoptedResult),
+  );
 }
 
 export async function runTestPlan(
   changeId: string,
   context: JobExecutionContext,
   provider?: Provider,
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
-  return withDocumentStageExecutionContext(context, () => runTestPlanStage(changeId, context, provider));
+  return withDocumentStageExecutionContext(
+    context,
+    () => runTestPlanStage(changeId, context, provider, adoptedResult),
+  );
 }
 
 export async function runCheck(
@@ -152,8 +161,10 @@ export async function runIntake(
   changeId: string,
   context: JobExecutionContext,
   provider?: Provider,
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
   return runDocumentStage(changeId, {
+    adoptedResult,
     phase: "intake",
     promptPhase: "intake",
     allowedStatuses: ["INTAKE_PENDING", "BLOCKED"],

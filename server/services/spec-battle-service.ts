@@ -39,6 +39,7 @@ import {
   latestRound,
   toRuleGap,
 } from "./spec-battle-row-readers";
+import { battleRoundScope } from "./battle-round-phase-scope";
 import { generateSpecReport, getLatestSpecReportForDecision } from "./spec-battle-report-service";
 import { inspectArtifactMirrors, renderMirrorsFromDb } from "./artifact-mirror-service";
 import {
@@ -103,7 +104,7 @@ export function applySpecBattleDecisionWithDb(
   const round = battleDb
     .select()
     .from(battleRounds)
-    .where(eq(battleRounds.changeId, input.changeId))
+    .where(battleRoundScope(input.changeId, "Spec"))
     .all()
     .sort(
       (left, right) =>
@@ -221,7 +222,7 @@ export interface StartSpecBattleRoundResult {
 
 export interface SpecBattleRedRunClaimResult {
   claimed: boolean;
-  reason: "claimed" | "spec_round_running";
+  reason: "claimed" | "spec_round_running" | "spec_round_awaiting_clarification";
   roundId: string;
   roundNo: number;
   runId: string | null;
@@ -848,6 +849,17 @@ export function claimSpecBattleRedRun(input: {
   changeId: string;
   idempotencyKey?: string;
   provider?: Provider;
+  /**
+   * The caller is `retry_spec`, so a round paused on the human may be taken
+   * over and restarted.
+   *
+   * Off by default because the paused round's Codex task is still open: a
+   * `run_spec` that claimed it would race the answers the human is typing. The
+   * retry action is the deliberate abandon -- it rotates the Codex task before
+   * this call, so the questions it walks away from are gone with it -- and
+   * without this the paused round would have NO exit at all.
+   */
+  abandonClarification?: boolean;
 }): SpecBattleRedRunClaimResult {
   const { change, project } = getProjectForChange(input.changeId);
   const idempotencyKey = input.idempotencyKey?.trim() || nextRandomId("spec-run");
@@ -856,7 +868,7 @@ export function claimSpecBattleRedRun(input: {
     const rounds = tx
       .select()
       .from(battleRounds)
-      .where(eq(battleRounds.changeId, input.changeId))
+      .where(battleRoundScope(input.changeId, "Spec"))
       .all()
       .sort((a, b) => a.roundNo - b.roundNo || a.createdAt.localeCompare(b.createdAt));
     let round = rounds.at(-1);
@@ -923,6 +935,24 @@ export function claimSpecBattleRedRun(input: {
       };
     }
 
+    // A round paused on the human is neither claimable nor failed. Its Codex
+    // task is open holding unanswered questions, and the reply that settles it
+    // arrives through adoption, not through a second red run. Refusing the
+    // claim -- rather than falling through to the not_started/failed branch
+    // below -- is what keeps a second run from racing the human's answers.
+    // `retry_spec` is the one caller allowed past, having rotated the task.
+    if (round.status === "awaiting_clarification" && !input.abandonClarification) {
+      return {
+        claimed: false,
+        reason: "spec_round_awaiting_clarification",
+        roundId: round.id,
+        roundNo: round.roundNo,
+        runId: null,
+        previousStatus: round.status,
+        createdRound,
+      };
+    }
+
     if (isRunningBattleRoundStatus(round.status)) {
       const activeSpecRun = tx
         .select()
@@ -941,10 +971,17 @@ export function claimSpecBattleRedRun(input: {
       };
     }
 
-    if (round.status !== "not_started" && round.status !== "failed") {
+    const abandoningClarification = round.status === "awaiting_clarification";
+    if (
+      round.status !== "not_started"
+      && round.status !== "failed"
+      && !abandoningClarification
+    ) {
       throw new SpecBattleError("round_not_ready");
     }
 
+    // A paused round never got a red artifact -- the turn it paused on ended in
+    // a question card, not a PRD delta -- so there is no blue leg to resume to.
     const resumeBlue = round.status === "failed"
       && hasTrustedRedArtifact({
         repoPath: project.repoPath,
@@ -1067,7 +1104,7 @@ export async function completeRedSpecRound(input: CompleteRedSpecRoundInput): Pr
     const current = tx
       .select()
       .from(battleRounds)
-      .where(eq(battleRounds.changeId, input.changeId))
+      .where(battleRoundScope(input.changeId, "Spec"))
       .all()
       .sort((a, b) => a.roundNo - b.roundNo || a.createdAt.localeCompare(b.createdAt))
       .at(-1);
@@ -1170,7 +1207,7 @@ export async function completeBlueCritique(input: CompleteBlueCritiqueInput): Pr
     const current = tx
       .select()
       .from(battleRounds)
-      .where(eq(battleRounds.changeId, input.changeId))
+      .where(battleRoundScope(input.changeId, "Spec"))
       .all()
       .sort((a, b) => a.roundNo - b.roundNo || a.createdAt.localeCompare(b.createdAt))
       .at(-1);
@@ -1421,6 +1458,183 @@ export function failSpecBattleRound(input: {
     .where(eq(battleRounds.id, input.roundId))
     .run();
   syncSpecStageAuthority(input.changeId);
+}
+
+const CLARIFICATION_PAUSE_EVENT = "spec_round_clarification_paused";
+
+/**
+ * Remembers which leg was in flight when the round parked.
+ *
+ * Resume has to put the round back where it was, and the row itself cannot say:
+ * `awaiting_clarification` overwrote the status that held the answer. Either leg
+ * can ask -- red while drafting the delta, blue while critiquing it -- so
+ * guessing `red_running` would re-run a red leg that already produced, losing
+ * its artifact and its fix claims.
+ */
+function recordClarificationPauseOrigin(roundId: string, resumeStatus: string): void {
+  const now = nowISO();
+  db.insert(events).values({
+    id: `EVT-spec-clarification-pause-${roundId}-${resumeStatus}`,
+    changeId: db.select({ changeId: battleRounds.changeId })
+      .from(battleRounds).where(eq(battleRounds.id, roundId)).get()!.changeId,
+    runId: null,
+    type: CLARIFICATION_PAUSE_EVENT,
+    message: "Spec round parked awaiting human clarification",
+    rawJson: JSON.stringify({
+      specRoundClarificationPause: {
+        schemaVersion: "spec_round_clarification_pause/v1",
+        roundId,
+        resumeStatus,
+      },
+    }),
+    createdAt: now,
+  }).onConflictDoNothing().run();
+}
+
+function clarificationResumeStatus(roundId: string): "red_running" | "blue_running" {
+  const parked = db.select().from(events)
+    .where(eq(events.type, CLARIFICATION_PAUSE_EVENT))
+    .all()
+    .reverse()
+    .map((event) => {
+      try {
+        const payload = JSON.parse(event.rawJson ?? "null") as {
+          specRoundClarificationPause?: { roundId?: unknown; resumeStatus?: unknown };
+        } | null;
+        return payload?.specRoundClarificationPause ?? null;
+      } catch {
+        return null;
+      }
+    })
+    .find((pause) => pause?.roundId === roundId);
+  // Red is the only leg that can be in flight with nothing yet recorded, so it
+  // is also the only safe default when the marker is missing.
+  return parked?.resumeStatus === "blue_running" ? "blue_running" : "red_running";
+}
+
+/**
+ * Parks the round while its Codex task waits for the human to answer.
+ *
+ * Waiting is not failing. Before this existed the only terminal a stage turn
+ * that ended in a question card could reach was `failSpecBattleRound`, so every
+ * batch of questions burned the round: `run_spec` closed, `retry_spec` opened,
+ * and the answers the human was still typing had nothing left to complete.
+ *
+ * `endedAt` stays null on purpose -- the round has not ended, and the war report
+ * reads that field to decide whether a round is settled. What ends here is only
+ * the pipeline job that dispatched the turn; the round is resumed by
+ * `resumeSpecBattleRoundFromClarification` when the reply converges.
+ */
+export function pauseSpecBattleRoundForClarification(input: {
+  changeId: string;
+  roundId: string;
+}): void {
+  const round = db.select().from(battleRounds).where(eq(battleRounds.id, input.roundId)).get();
+  if (!round) throw new SpecBattleError("round_not_found");
+  assertCurrentRound(input.changeId, round);
+  // Only a leg that was actually in flight can be the one that asked. Parking a
+  // round that already reported, closed or failed would strand a settled round
+  // on a question nobody asked -- the same dead end as failing a waiting one,
+  // from the other direction. Either leg may ask, so both running statuses
+  // qualify and the round returns to the one it was parked from.
+  if (!isRunningBattleRoundStatus(round.status)) return;
+
+  // CAS on the status we read, so a round a concurrent writer advances between
+  // the read and the write is left alone rather than pulled back into waiting.
+  const paused = db.update(battleRounds)
+    .set({ status: "awaiting_clarification", endedAt: null, updatedAt: nowISO() })
+    .where(and(eq(battleRounds.id, input.roundId), eq(battleRounds.status, round.status)))
+    .run();
+  if (paused.changes !== 1) return;
+  recordClarificationPauseOrigin(input.roundId, round.status);
+  syncSpecStageAuthority(input.changeId);
+}
+
+export interface SpecClarificationResumeResult {
+  resumed: boolean;
+  roundId: string;
+  roundNo: number;
+  /** The leg that was in flight when the round parked, and is now live again. */
+  leg: "red_running" | "blue_running";
+  /** A fresh business run for the resumed leg; null when nothing was resumed. */
+  runId: string | null;
+}
+
+/**
+ * Hands a paused round back to the leg it parked from, once the questions
+ * converged.
+ *
+ * `resumed: false` when the round is no longer paused, so an adoption that
+ * arrives twice -- the wakeup orchestrator and its recovery sweep carry the same
+ * converged reply -- settles the round once instead of re-running a leg that
+ * already produced.
+ *
+ * A fresh run row is created in the same transaction for the same reason
+ * claimSpecBattleRedRun creates one: the run that dispatched the parked turn was
+ * settled as `stopped` when the round parked, and a terminal run cannot carry
+ * the ledger for the work that finishes the round.
+ */
+export function resumeSpecBattleRoundFromClarification(input: {
+  changeId: string;
+  roundId: string;
+  provider?: Provider;
+}): SpecClarificationResumeResult {
+  const round = db.select().from(battleRounds).where(eq(battleRounds.id, input.roundId)).get();
+  if (!round) throw new SpecBattleError("round_not_found");
+  assertCurrentRound(input.changeId, round);
+  const leg = clarificationResumeStatus(input.roundId);
+  const notResumed: SpecClarificationResumeResult = {
+    resumed: false,
+    roundId: round.id,
+    roundNo: round.roundNo,
+    leg,
+    runId: null,
+  };
+  if (round.status !== "awaiting_clarification") return notResumed;
+
+  const change = db.select().from(changes).where(eq(changes.id, input.changeId)).get();
+  const resumed = db.transaction((tx) => {
+    const now = nowISO();
+    const moved = tx.update(battleRounds)
+      .set({ status: leg, endedAt: null, updatedAt: now })
+      .where(and(
+        eq(battleRounds.id, input.roundId),
+        eq(battleRounds.status, "awaiting_clarification"),
+      ))
+      .run();
+    if (moved.changes !== 1) return null;
+    const runId = nextRandomId("RUN");
+    tx.insert(runs).values({
+      id: runId,
+      changeId: input.changeId,
+      phase: "spec",
+      status: "running",
+      startedAt: now,
+      endedAt: null,
+      summary: null,
+      provider: input.provider ?? (change?.provider as Provider | undefined) ?? null,
+    }).run();
+    tx.insert(events).values({
+      id: nextRandomId("EVT"),
+      changeId: input.changeId,
+      runId,
+      type: "spec_round_clarification_resumed",
+      message: "Spec round resumed from human clarification",
+      rawJson: JSON.stringify({
+        specRoundClarificationResume: {
+          schemaVersion: "spec_round_clarification_resume/v1",
+          roundId: input.roundId,
+          runId,
+          resumedLeg: leg,
+        },
+      }),
+      createdAt: now,
+    }).run();
+    return runId;
+  });
+  if (!resumed) return notResumed;
+  syncSpecStageAuthority(input.changeId, input.provider);
+  return { resumed: true, roundId: round.id, roundNo: round.roundNo, leg, runId: resumed };
 }
 
 /**

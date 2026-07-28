@@ -576,6 +576,46 @@ export function recordUnansweredRubric(input: {
   return assessments;
 }
 
+/**
+ * Records verdicts that arrived as a schema-constrained JSON document rather
+ * than as protocol lines.
+ *
+ * The delegated Spec round's judge answers a JSON Schema the runtime enforces,
+ * so there is no line protocol to parse -- but the fail-closed guarantee must
+ * not weaken. It does not: `buildRubricAssessments` is still what decides the
+ * result, it still iterates CRITERIA rather than the model's list, and it still
+ * writes `not_assessed` for every criterion the judge said nothing about. A
+ * short list from the judge therefore cannot shorten the stored batch.
+ *
+ * What this deliberately does NOT accept is a verdict of `not_assessed`: the
+ * caller's schema admits only `yes`/`no` (spec-judge-output-schema.ts), so
+ * "unanswered" remains something the judge achieves by silence and this
+ * function assigns, never something it can claim.
+ */
+export function recordRubricAssessmentsFromVerdicts(input: {
+  changeId: string;
+  runId: string;
+  roundId?: string | null;
+  rubric: RubricVersionRecord;
+  /** One entry per criterion the model actually judged. Extras are ignored. */
+  verdicts: ReadonlyArray<{
+    criterionId: string;
+    verdict: "yes" | "no";
+    evidence: string;
+  }>;
+}): RubricAssessmentDraft[] {
+  const assessments = buildRubricAssessments(
+    input.rubric.criteria,
+    input.verdicts.map((entry) => ({
+      criterionId: entry.criterionId,
+      verdict: entry.verdict,
+      evidence: entry.evidence,
+    })),
+  );
+  persistRubricAssessments(input, assessments);
+  return assessments;
+}
+
 function persistRubricAssessments(
   input: { changeId: string; runId: string; roundId?: string | null; rubric: RubricVersionRecord },
   assessments: readonly RubricAssessmentDraft[],

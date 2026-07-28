@@ -8,12 +8,15 @@ import {
   codexInteractions,
   codexLogicalTurns,
   codexThreadBindings,
+  events,
   pipelineJobs,
 } from "../db/schema";
+import type { AiRunResult } from "./ai-engine-types";
+import { classifyStageConvergence } from "./stage-convergence-service";
 import {
   attachCodexBindingRunAttempt,
-  claimCodexBindingRunLease,
   releaseCodexBindingRunLease,
+  waitForCodexBindingRunLease,
 } from "./codex-binding-run-lease-service";
 import {
   readLogicalTurnForStart,
@@ -39,6 +42,25 @@ export interface InteractionWakeupDependencies {
   database?: WakeDb;
   hostClient?: HostUiMessageClient;
   now?: () => Date;
+  /** Watches the dispatched continuation turn to a terminal snapshot. */
+  observeTurn?: (logicalTurnId: string) => Promise<AiRunResult>;
+  /** Persists a converged reply as the stage's formal result. */
+  adoptResult?: (input: {
+    changeId: string;
+    phase: string;
+    result: AiRunResult;
+    context: JobExecutionContext;
+  }) => Promise<void>;
+}
+
+export type InteractionWakeupConvergence =
+  | "converged"
+  | "already_adopted"
+  | "asked_again"
+  | "inconclusive";
+
+function adoptionEventId(commandId: string): string {
+  return `EV-STAGE-ADOPT-${commandId}`;
 }
 
 function digest(value: string): string {
@@ -63,6 +85,7 @@ export class InteractionWakeupOrchestrator {
     logicalTurnId: string;
     attemptId: string;
     turnId: string;
+    convergence: InteractionWakeupConvergence;
   }> {
     const identity = this.readIdentity(jobId, context);
     const logical = await resolveLogicalTurn({
@@ -74,16 +97,17 @@ export class InteractionWakeupOrchestrator {
       interactionId: identity.interactionId,
       commandId: identity.commandId,
       request: {
-        prompt:
-          `StagePass decision ${identity.commandId} was saved for interaction `
-          + `${identity.interactionId}. Continue this same task from the `
-          + "authoritative Server state.",
+        prompt: identity.prompt,
         sandboxMode: "read-only",
       },
     });
     this.allocateOrdinal(jobId, context, logical.logicalTurnId);
     const start = await readLogicalTurnForStart(logical.logicalTurnId);
-    const bindingLease = claimCodexBindingRunLease({
+    // Wait rather than fail: the previous batch's wakeup holds this binding
+    // while it watches its own continuation turn, so a human who answers the
+    // next card before that turn settles would otherwise be told their
+    // selection did not take.
+    const bindingLease = await waitForCodexBindingRunLease({
       logicalTurnId: logical.logicalTurnId,
       workerId: context.workerId,
       ownerLeaseToken: context.leaseToken,
@@ -91,11 +115,12 @@ export class InteractionWakeupOrchestrator {
       ownerEpoch: context.attemptNo,
       deadlineAt: start.fence.deadlineAt,
     });
-    try {
+    const dispatched = await (async () => {
+      try {
       const attempt = this.prepareAttempt(logical.logicalTurnId, context);
       if (attempt.state === "succeeded" && attempt.followerTurnId) {
         return {
-          status: "already_dispatched",
+          status: "already_dispatched" as const,
           pipelineJobId: jobId,
           logicalTurnId: logical.logicalTurnId,
           attemptId: attempt.attemptId,
@@ -132,7 +157,7 @@ export class InteractionWakeupOrchestrator {
         turnId: delivered.turnId,
       });
       return {
-        status: "dispatched",
+        status: "dispatched" as const,
         pipelineJobId: jobId,
         logicalTurnId: logical.logicalTurnId,
         attemptId: persisted.attemptId,
@@ -144,6 +169,111 @@ export class InteractionWakeupOrchestrator {
     } finally {
       releaseCodexBindingRunLease(bindingLease);
     }
+    })();
+
+    return {
+      ...dispatched,
+      convergence: await this.settleConvergence({
+        jobId,
+        context,
+        identity,
+        logicalTurnId: dispatched.logicalTurnId,
+      }),
+    };
+  }
+
+  /**
+   * Watch the continuation turn and, if the task stopped asking, persist what
+   * it produced as the stage's formal result.
+   *
+   * The clarification loop owns the Codex task across many batches, so no stage
+   * job is alive to ingest the answer when it finally arrives: this wakeup is
+   * the only owner still holding a lease over the turn that produced it.
+   */
+  private async settleConvergence(input: {
+    jobId: string;
+    context: JobExecutionContext;
+    identity: { phase: string; commandId: string; changeId: string };
+    logicalTurnId: string;
+  }): Promise<InteractionWakeupConvergence> {
+    const observeTurn = this.dependencies.observeTurn ?? (async (id: string) => {
+      const { createProductionCodexDesktopEngine } = await import(
+        "./codex-desktop-engine"
+      );
+      return (await createProductionCodexDesktopEngine())
+        .observeDispatchedTurn(id);
+    });
+    const observed = await observeTurn(input.logicalTurnId);
+    const classified = classifyStageConvergence(observed);
+    // Why a stage did or did not finish is the first question anyone asks when
+    // a card loop stalls, and it is invisible in the job row.
+    this.recordConvergenceObservation(input.identity, classified.kind, observed);
+    if (classified.kind !== "converged") return classified.kind;
+    if (this.alreadyAdopted(input.identity.commandId)) return "already_adopted";
+
+    const adoptResult = this.dependencies.adoptResult ?? (async (adoption) => {
+      const { adoptConvergedStageResult } = await import(
+        "./stage-result-adoption-service"
+      );
+      await adoptConvergedStageResult(adoption);
+    });
+    await adoptResult({
+      changeId: input.identity.changeId,
+      phase: input.identity.phase,
+      result: observed,
+      context: input.context,
+    });
+    this.recordAdoption(input.identity);
+    return "converged";
+  }
+
+  private recordConvergenceObservation(
+    identity: { changeId: string; commandId: string; phase: string },
+    kind: string,
+    observed: AiRunResult,
+  ): void {
+    this.database.insert(events).values({
+      id: `EV-CONV-${randomUUID()}`,
+      changeId: identity.changeId,
+      runId: null,
+      type: "stage_convergence_observed",
+      message: `${identity.phase} continuation turn observed as ${kind}`,
+      rawJson: JSON.stringify({
+        commandId: identity.commandId,
+        kind,
+        success: observed.success,
+        providerErrorCode: observed.providerErrorCode ?? null,
+        summaryChars: (observed.summary ?? "").length,
+        itemTypes: (observed.items ?? []).map((item) => item.type),
+      }),
+      createdAt: this.now().toISOString(),
+    }).run();
+  }
+
+  private alreadyAdopted(commandId: string): boolean {
+    return Boolean(
+      this.database.select().from(events)
+        .where(eq(events.id, adoptionEventId(commandId))).get(),
+    );
+  }
+
+  private recordAdoption(identity: {
+    changeId: string;
+    commandId: string;
+    phase: string;
+  }): void {
+    this.database.insert(events).values({
+      id: adoptionEventId(identity.commandId),
+      changeId: identity.changeId,
+      runId: null,
+      type: "stage_result_adopted",
+      message: `Codex task converged and produced the ${identity.phase} result`,
+      rawJson: JSON.stringify({
+        commandId: identity.commandId,
+        phase: identity.phase,
+      }),
+      createdAt: this.now().toISOString(),
+    }).onConflictDoNothing().run();
   }
 
   private readIdentity(jobId: string, context: JobExecutionContext) {
@@ -172,10 +302,118 @@ export class InteractionWakeupOrchestrator {
       || interaction.status !== "completed"
       || interaction.changeId !== job.changeId
     ) throw new InteractionWakeupError("interaction_wakeup_identity_invalid");
+    let prompt =
+      `StagePass decision ${job.commandId} was saved for interaction `
+      + `${job.interactionId}. Continue this same task from the `
+      + "authoritative Server state.";
+    if (interaction.kind === "requirement_choice") {
+      let payload: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(interaction.payloadJson);
+        payload = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : {};
+      } catch {
+        throw new InteractionWakeupError(
+          "interaction_wakeup_identity_invalid",
+        );
+      }
+      if (
+        payload.schemaVersion === "stagepass.choice-receipt/v2"
+        && Array.isArray(payload.answers)
+      ) {
+        const answers = payload.answers.map((value) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) {
+            throw new InteractionWakeupError(
+              "interaction_wakeup_identity_invalid",
+            );
+          }
+          const answer = value as Record<string, unknown>;
+          const selectedOptionIds = Array.isArray(answer.selectedOptionIds)
+            ? answer.selectedOptionIds.filter(
+                (selected): selected is string => typeof selected === "string",
+              )
+            : [];
+          const selectedLabels = Array.isArray(answer.selectedLabels)
+            ? answer.selectedLabels.filter(
+                (selected): selected is string => typeof selected === "string",
+              )
+            : [];
+          if (
+            typeof answer.questionId !== "string"
+            || !answer.questionId
+            || typeof answer.question !== "string"
+            || !answer.question
+            || selectedOptionIds.length === 0
+            || selectedOptionIds.length !== selectedLabels.length
+          ) {
+            throw new InteractionWakeupError(
+              "interaction_wakeup_identity_invalid",
+            );
+          }
+          return {
+            questionId: answer.questionId,
+            question: answer.question,
+            selectedOptionIds,
+            selectedLabels,
+          };
+        });
+        if (
+          answers.length < 1
+          || answers.length > 10
+          || new Set(answers.map((answer) => answer.questionId)).size
+            !== answers.length
+        ) {
+          throw new InteractionWakeupError(
+            "interaction_wakeup_identity_invalid",
+          );
+        }
+        prompt = [
+          "STAGEPASS_SELECTION_CONFIRMED",
+          `interactionId=${String(payload.cardInteractionId ?? interaction.id)}`,
+          `stage=${interaction.phase}`,
+          `answersJson=${JSON.stringify(answers)}`,
+          "",
+          "用户已经逐题提交本批 StagePass 具体问题。先按问题简短整理本批答案，并把决定纳入当前阶段。",
+          "然后重新检查是否仍有阻塞运行的问题：如果有，立即再次调用 present_stagepass_choices，在同一个 Codex 任务中展示下一批具体问题，每批最多 10 个，不要改成普通文本提问，也不要重复已回答的问题。",
+          "如果没有阻塞项，停止提问并继续完成当前阶段。只有没有阻塞项时才输出该阶段的正式结果。",
+        ].join("\n");
+      } else {
+        const selectedOptionIds = Array.isArray(payload.selectedOptionIds)
+          ? payload.selectedOptionIds.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [];
+        const selectedLabels = Array.isArray(payload.selectedLabels)
+          ? payload.selectedLabels.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [];
+        if (
+          selectedOptionIds.length === 0
+          || selectedOptionIds.length !== selectedLabels.length
+        ) {
+          throw new InteractionWakeupError(
+            "interaction_wakeup_identity_invalid",
+          );
+        }
+        prompt = [
+          "STAGEPASS_SELECTION_CONFIRMED",
+          `interactionId=${String(payload.cardInteractionId ?? interaction.id)}`,
+          `stage=${interaction.phase}`,
+          `selectedOptionIds=${JSON.stringify(selectedOptionIds)}`,
+          `selectedLabels=${JSON.stringify(selectedLabels)}`,
+          "",
+          "用户已经在 StagePass 卡片中明确勾选以上选项。请确认该选择，并在当前同一个 Codex 任务中继续执行；不要重新询问同一问题。",
+        ].join("\n");
+      }
+    }
     return {
       phase: job.phase,
+      changeId: job.changeId,
       interactionId: job.interactionId,
       commandId: job.commandId,
+      prompt,
     };
   }
 
@@ -217,7 +455,32 @@ export class InteractionWakeupOrchestrator {
   ) {
     const existing = this.database.select().from(codexFollowerStartAttempts)
       .where(eq(codexFollowerStartAttempts.logicalTurnId, logicalTurnId)).get();
-    if (existing) return existing;
+    if (existing) {
+      // A re-leased job runs under a new attempt number, and every fence over
+      // this row compares that number against the one it was stamped with. Its
+      // turn is already dispatched and still the one to watch, so this owner
+      // adopts the row rather than being told its own dispatch is stale.
+      if (
+        existing.ownerAttempt !== context.attemptNo
+        || existing.ownerEpoch !== context.attemptNo
+        || existing.workerId !== context.workerId
+        || existing.leaseToken !== context.leaseToken
+      ) {
+        this.database.update(codexFollowerStartAttempts).set({
+          workerId: context.workerId,
+          leaseToken: context.leaseToken,
+          ownerAttempt: context.attemptNo,
+          ownerEpoch: context.attemptNo,
+        }).where(and(
+          eq(codexFollowerStartAttempts.attemptId, existing.attemptId),
+          eq(codexFollowerStartAttempts.state, existing.state),
+        )).run();
+        return this.database.select().from(codexFollowerStartAttempts)
+          .where(eq(codexFollowerStartAttempts.attemptId, existing.attemptId))
+          .get()!;
+      }
+      return existing;
+    }
     const logical = this.database.select().from(codexLogicalTurns)
       .where(eq(codexLogicalTurns.logicalTurnId, logicalTurnId)).get()!;
     const job = this.database.select().from(pipelineJobs)

@@ -48,7 +48,7 @@ export const codexThreadBindings = sqliteTable(
   {
     bindingId: text("binding_id").primaryKey(),
     scopeKind: text("scope_kind", {
-      enum: ["change", "project_prd", "project_context"],
+      enum: ["change", "change_stage", "project_prd", "project_context"],
     }).notNull(),
     scopeId: text("scope_id").notNull(),
     projectId: text("project_id").notNull().references(() => projects.id),
@@ -333,7 +333,7 @@ export const codexLogicalTurns = sqliteTable(
     commandId: text("command_id").references(() => pipelineCommandReceipts.commandId),
     phase: text("phase").notNull(),
     role: text("role", {
-      enum: ["stage", "spec_writer", "spec_critic", "spec_verdict", "build", "fix", "prd_turn", "context_select", "context_generate", "interaction_present", "interaction_wakeup"],
+      enum: ["stage", "spec_writer", "spec_critic", "spec_verdict", "spec_judge", "delegated_round_judge", "build", "fix", "prd_turn", "context_select", "context_generate", "interaction_present", "interaction_wakeup"],
     }).notNull(),
     round: integer("round").notNull(),
     ordinal: integer("ordinal").notNull(),

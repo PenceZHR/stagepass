@@ -16,15 +16,16 @@ import type {
 import {
   type CodexModel,
   type CodexPersistentShell,
+  type CodexSubAgentThread,
   type NormalizedCodexTurnItem,
   type CodexTurnSnapshot,
 } from "./codex-desktop-bridge-types";
 
 /**
- * Installed-schema evidence captured and regenerated on 2026-07-23 with:
+ * Installed-schema evidence captured and regenerated on 2026-07-24 with:
  *   /Applications/ChatGPT.app/Contents/Resources/codex app-server
  *     generate-ts --experimental --out <disposable-directory>
- * Installed CLI: codex-cli 0.146.0-alpha.3.
+ * Installed CLI: codex-cli 0.146.0-alpha.3.1.
  * Sorted relative paths without a leading "./", then per-file SHA-256:
  * fd6f8bb9872165ce1e991c7ec175aa370bf1b4bbf797b5574b53eafd194711a1.
  * v2/Turn.ts SHA-256: 5a0852e46a13446ccb3aa3f493c06a9151a43772d530521789ac741ed115da5f.
@@ -37,11 +38,26 @@ import {
  * Thread adds canAcceptDirectInput, which this read-only shell adapter ignores.
  */
 const APP_SERVER_PROTOCOL_SCHEMA_FINGERPRINT =
-  "codex-cli-0.146.0-alpha.3-generate-ts:fd6f8bb9872165ce1e991c7ec175aa370bf1b4bbf797b5574b53eafd194711a1";
+  "codex-cli-0.146.0-alpha.3.1-generate-ts:fd6f8bb9872165ce1e991c7ec175aa370bf1b4bbf797b5574b53eafd194711a1";
 const PAGE_LIMIT = 100;
+
+/**
+ * Longer than the 15s control-plane default, because this call is not a control
+ * ping -- it enumerates EVERY sub-agent thread the app-server knows about, one
+ * hundred per page, and filters by parent client-side because `thread/list`
+ * offers no parent filter. The work therefore grows with every round anyone has
+ * ever run on this machine, while the deadline did not.
+ *
+ * What that cost: a Spec round that had already spent 4m44s of real model work
+ * -- judge, red and blue all finished -- was thrown away because the read that
+ * attributes it exceeded 15 seconds. Losing a settled round to the timeout on
+ * its own bookkeeping is the worst trade in this pipeline, so the budget is
+ * sized for the enumeration rather than for a health check.
+ */
+const SUB_AGENT_LIST_TIMEOUT_MS = 120_000;
 const SYSTEM_CODESIGN = "/usr/bin/codesign";
 const EXPECTED_APP_SERVER_BINARY_VERSION =
-  "codex-cli 0.146.0-alpha.3";
+  "codex-cli 0.146.0-alpha.3.1";
 const TRUSTED_OPENAI_TEAM_IDENTIFIER = "2DC432GLL2";
 const CANONICAL_DESKTOP_BUNDLES = new Set([
   "/Applications/ChatGPT.app",
@@ -67,7 +83,7 @@ const SHELL_PROTOCOL_CAPABILITIES = [
   "model/list",
 ] as const;
 const KNOWN_APP_SERVER_RUNTIMES = new Set([
-  "Codex Desktop/0.146.0-alpha.3 (Mac OS 26.5.1; arm64) dumb (stagepass; 0.1.0)",
+  "Codex Desktop/0.146.0-alpha.3.1 (Mac OS 26.5.1; arm64) dumb (stagepass; 0.1.0)",
 ]);
 
 export interface CodexProtocolBehaviorEvidence {
@@ -137,6 +153,22 @@ export interface CodexAppServerShellControl {
     cwd: string;
   }): Promise<CodexPersistentShell[]>;
   readPersistentShell(threadId: string): Promise<CodexPersistentShell | null>;
+  /**
+   * Threads a parent thread spawned as sub-agents.
+   *
+   * `thread/list` filters to interactive sources unless `sourceKinds` says
+   * otherwise, which is why sub-agent threads look absent by default -- and why
+   * a delegated round that really delegated can read as one that never did.
+   *
+   * This is the durable record of a spawn. The turn snapshot from
+   * `thread/read` carries NO `subAgentActivity`: those items exist only on the
+   * live notification stream, so nothing that reads a snapshot can attribute a
+   * side from them. `parent_thread_id` here is written by the app-server and is
+   * not something the judge can forge.
+   */
+  listSubAgentThreads(input: {
+    parentThreadId: string;
+  }): Promise<CodexSubAgentThread[]>;
   readThreadWithTurns(input: {
     threadId: string;
     includeTurns: true;
@@ -210,7 +242,9 @@ function exactVersionOutput(output: string): string | null {
 function isProvisionVisibilityLag(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message.trim().toLowerCase();
-  return message === "thread not loaded" || message === "thread not found";
+  return message === "thread not loaded"
+    || message === "thread not found"
+    || /^no rollout found for thread id [a-z0-9-]+$/.test(message);
 }
 
 function hasCanonicalAppServerIdentity(
@@ -266,11 +300,12 @@ export async function verifyAttestedAppServerBinary(
       "attested Codex app-server binary identity changed",
     );
   }
-  await execFileAsync(
-    SYSTEM_CODESIGN,
-    ["--verify", "--deep", "--strict", identity.bundlePath],
-    { encoding: "utf8", timeout: 5_000 },
-  );
+  // Discovery already proves the bundle signature twice around its immutable
+  // path/file snapshot. Repeating a deep bundle verification for every
+  // app-server request is both redundant and unreliable inside the worker's
+  // macOS sandbox (codesign can report a valid installed app as modified).
+  // Keep the TOCTOU identity, signer metadata, and exact binary version checks
+  // here so the attested executable still cannot be silently substituted.
   const codesign = await execFileAsync(
     SYSTEM_CODESIGN,
     ["-dv", "--verbose=4", identity.bundlePath],
@@ -346,6 +381,38 @@ function requiredString(
     throw new Error(`Codex app-server response is missing ${key}`);
   }
   return field;
+}
+
+/**
+ * Reads a spawned sub-agent out of a `thread/list` row.
+ *
+ * `parentThreadId` is taken from the nested `source.subAgent.thread_spawn`
+ * rather than the row's own `parentThreadId` field: on a real round the top
+ * level field was null on every row while the nested one carried the judge's
+ * thread id. Reading the flat field alone finds nothing, which is exactly the
+ * "no sub-agent ever ran" false negative this parser exists to remove.
+ */
+function parseSubAgentThread(value: unknown): CodexSubAgentThread | null {
+  const thread = asRecord(value);
+  const threadId = thread.id;
+  if (typeof threadId !== "string" || threadId.length === 0) return null;
+
+  const spawn = asRecord(asRecord(asRecord(thread.source).subAgent).thread_spawn);
+  const parentThreadId = typeof spawn.parent_thread_id === "string"
+    ? spawn.parent_thread_id
+    : typeof thread.parentThreadId === "string"
+      ? thread.parentThreadId
+      : null;
+  if (!parentThreadId) return null;
+
+  const nickname = typeof spawn.agent_nickname === "string"
+    ? spawn.agent_nickname
+    : typeof thread.agentNickname === "string" ? thread.agentNickname : null;
+  const role = typeof spawn.agent_role === "string"
+    ? spawn.agent_role
+    : typeof thread.agentRole === "string" ? thread.agentRole : null;
+
+  return { threadId, parentThreadId, agentNickname: nickname, agentRole: role };
 }
 
 function parseShell(value: unknown): CodexPersistentShell | null {
@@ -549,10 +616,64 @@ function normalizeItem(value: unknown): NormalizedCodexTurnItem {
         "phase",
         "memoryCitation",
       ]);
+      if (typeof item.text !== "string") {
+        throw snapshotInvalid("Codex agent message has invalid text");
+      }
       return {
         id,
         kind: "agent_message",
-        semantic: { text: itemString(item, "text") },
+        semantic: { text: item.text },
+      };
+    // A sub-agent the turn really started. This is the ONLY trustworthy record
+    // that a delegated side exists: a spawn that fails is silent, and the main
+    // agent will happily answer in the sub-agent's place (see
+    // docs/CODEX-SUBAGENT-RUNTIME-EVIDENCE-2026-07-27.md §4.1). `agentThreadId`
+    // is what lets the server attribute that side's output to a thread the main
+    // agent cannot forge, and `agentPath` carries the role the prompt asked for.
+    case "subAgentActivity":
+      assertOnlyKeys(item, ["type", "id", "kind", "agentThreadId", "agentPath"]);
+      if (
+        item.kind !== "started"
+        && item.kind !== "interacted"
+        && item.kind !== "interrupted"
+      ) {
+        throw snapshotInvalid("Codex sub-agent activity has an unknown kind");
+      }
+      return {
+        id,
+        kind: "sub_agent_activity",
+        semantic: {
+          activity: item.kind,
+          agentThreadId: itemString(item, "agentThreadId"),
+          agentPath: itemString(item, "agentPath"),
+        },
+      };
+    // Deliberately folded into `tool_call` rather than given a kind of its own.
+    // It IS a tool call, and none of its extra fields may be used as evidence:
+    // `receiverThreadIds` and `agentsStates` came back empty even in the run
+    // where two sub-agents demonstrably ran to completion. Keeping it out of the
+    // normalized shape stops a later reader from mistaking it for attribution.
+    case "collabAgentToolCall":
+      assertOnlyKeys(item, [
+        "type",
+        "id",
+        "tool",
+        "status",
+        "senderThreadId",
+        "receiverThreadIds",
+        "prompt",
+        "model",
+        "reasoningEffort",
+        "agentsStates",
+      ]);
+      return {
+        id,
+        kind: "tool_call",
+        semantic: {
+          name: `collab/${itemString(item, "tool")}`,
+          status: normalizeProgressStatus(item.status),
+          result: null,
+        },
       };
     case "commandExecution":
       assertOnlyKeys(item, [
@@ -702,6 +823,17 @@ function normalizeItem(value: unknown): NormalizedCodexTurnItem {
   }
 }
 
+function isTransientReasoningItem(value: unknown): boolean {
+  const item = asRecord(value);
+  if (item.type !== "reasoning") return false;
+  assertOnlyKeys(item, ["type", "id", "summary", "content"]);
+  itemString(item, "id");
+  if (!Array.isArray(item.summary) || !Array.isArray(item.content)) {
+    throw snapshotInvalid("Codex reasoning item is malformed");
+  }
+  return true;
+}
+
 const CODEX_ERROR_CODES = new Set([
   "contextWindowExceeded",
   "sessionBudgetExceeded",
@@ -783,12 +915,22 @@ function parseTurn(
     throw snapshotInvalid("Codex turn items are not a full snapshot");
   }
   const values = turn.items;
-  const items = values.map(normalizeItem);
-  const itemIds = items.map(({ id }) => id);
-  if (new Set(itemIds).size !== itemIds.length) {
+  const rawItemIds = values.map((value) => itemString(asRecord(value), "id"));
+  if (new Set(rawItemIds).size !== rawItemIds.length) {
     throw snapshotInvalid("Codex app-server turn contains duplicate item ids");
   }
-  const status = turn.status;
+  const items = values.flatMap((value) =>
+    isTransientReasoningItem(value) ? [] : [normalizeItem(value)]);
+  // During turn startup this app-server reports the new turn with a terminal
+  // status ("completed", and on 0.146.0-alpha.3.1 also "interrupted") while
+  // completedAt/durationMs are still null, then settles the real terminal
+  // fields. Both shapes are the same in-flight state, not a broken snapshot.
+  const status = (turn.status === "completed" || turn.status === "interrupted")
+    && turn.error === null
+    && turn.completedAt === null
+    && turn.durationMs === null
+    ? "inProgress"
+    : turn.status;
   if (
     status !== "inProgress"
     && status !== "completed"
@@ -1262,35 +1404,88 @@ export function createCodexAppServerShellControl(
         return parseShell(response.thread);
       });
     },
+    listSubAgentThreads(input) {
+      return withClient(undefined, async (client) => {
+        const children: CodexSubAgentThread[] = [];
+        const seen = new Set<string>();
+        let cursor: string | null = null;
+        do {
+          const response = asRecord(await request(client, "thread/list", {
+            cursor,
+            limit: PAGE_LIMIT,
+            searchTerm: "",
+            // Without this the server returns interactive sources only and
+            // every sub-agent thread is invisible -- which reads as "nothing
+            // was ever spawned".
+            sourceKinds: ["subAgentThreadSpawn"],
+          }, SUB_AGENT_LIST_TIMEOUT_MS));
+          if (!Array.isArray(response.data)) {
+            throw new Error("Codex thread/list response is missing data");
+          }
+          for (const value of response.data) {
+            const child = parseSubAgentThread(value);
+            if (child && child.parentThreadId === input.parentThreadId) children.push(child);
+          }
+          const next = typeof response.nextCursor === "string"
+            && response.nextCursor.length > 0
+            ? response.nextCursor
+            : null;
+          if (next && seen.has(next)) {
+            throw new Error("Codex thread/list repeated a cursor");
+          }
+          if (next) seen.add(next);
+          cursor = next;
+        } while (cursor);
+        return children;
+      });
+    },
     readThreadWithTurns(input) {
       if (input.includeTurns !== true) {
         throw new Error("Codex lifecycle reads must include turns");
       }
       return withClient(undefined, async (client) => {
-        const remaining = input.deadlineAt === undefined
-          ? 15_000
-          : Math.max(1, Date.parse(input.deadlineAt) - now());
-        const response = asRecord(await request(client, "thread/read", {
-          threadId: input.threadId,
-          includeTurns: true,
-        }, Math.min(15_000, remaining)));
-        const shell = parseShell(response.thread);
-        if (!shell || shell.threadId !== input.threadId) {
-          throw new Error("Codex thread/read returned another shell");
+        const visibilityDeadline = input.deadlineAt === undefined
+          ? now() + 15_000
+          : Date.parse(input.deadlineAt);
+        let delayMs = 25;
+        while (true) {
+          const remaining = Math.max(1, visibilityDeadline - now());
+          try {
+            const response = asRecord(await request(client, "thread/read", {
+              threadId: input.threadId,
+              includeTurns: true,
+            }, Math.min(15_000, remaining)));
+            const shell = parseShell(response.thread);
+            if (!shell || shell.threadId !== input.threadId) {
+              throw new Error("Codex thread/read returned another shell");
+            }
+            const thread = asRecord(response.thread);
+            const values = Array.isArray(thread.turns) ? thread.turns : [];
+            const turns = values.map((value) =>
+              parseTurn(shell.threadId, value, new Date(now()).toISOString()));
+            if (
+              new Set(turns.map(({ turnId }) => turnId)).size !== turns.length
+            ) {
+              throw snapshotInvalid("Codex thread/read returned duplicate turn ids");
+            }
+            return {
+              shell,
+              turns,
+            };
+          } catch (error) {
+            if (
+              !isProvisionVisibilityLag(error)
+              || now() >= visibilityDeadline
+            ) {
+              throw error;
+            }
+          }
+          await sleep(Math.max(
+            0,
+            Math.min(delayMs, visibilityDeadline - now()),
+          ));
+          delayMs = Math.min(delayMs * 2, 250);
         }
-        const thread = asRecord(response.thread);
-        const values = Array.isArray(thread.turns) ? thread.turns : [];
-        const turns = values.map((value) =>
-          parseTurn(shell.threadId, value, new Date(now()).toISOString()));
-        if (
-          new Set(turns.map(({ turnId }) => turnId)).size !== turns.length
-        ) {
-          throw snapshotInvalid("Codex thread/read returned duplicate turn ids");
-        }
-        return {
-          shell,
-          turns,
-        };
       }, {
         deadlineAt: input.deadlineAt,
         signal: input.signal,

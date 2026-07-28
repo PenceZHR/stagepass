@@ -152,8 +152,25 @@ export const RequirementGapSchema = z.object({
   firstSeenRoundId: z.string(),
   lastEvaluatedRoundId: z.string(),
   resolvedByRoundId: z.string().nullable(),
-  sourcePhase: z.literal("Spec"),
-  sourceUnit: z.enum(["REQUIREMENT_CRITIC", "HUMAN_COMMANDER"]),
+  /**
+   * Which phase's critic raised this gap.
+   *
+   * Was `z.literal("Spec")` while Spec was the only phase with a critic. The
+   * delegated round gives TechSpec, Plan and TestPlan one each, and every reader
+   * that decides something about a SINGLE phase now scopes on this column --
+   * see battle-round-phase-scope.ts. Readers that legitimately span phases
+   * (merge readiness, the delivery note's known limits) still do not.
+   */
+  sourcePhase: z.enum(["Spec", "TechSpec", "Plan", "TestPlan"]),
+  /**
+   * A plain string rather than an enum, because the writers do not share one
+   * closed vocabulary: each phase's critic writes its own codename
+   * (`REQUIREMENT_CRITIC`, `TECH_SPEC_CRITIC`, ...), a human writes
+   * `HUMAN_COMMANDER`, and rubric-gate-adapters writes `RUBRIC_<ROLE>` computed
+   * from the role. The enum here already excluded that last group, so it was
+   * describing rows the database does not actually contain.
+   */
+  sourceUnit: z.string().min(1),
   title: z.string().min(1),
   category: z.string().min(1),
   evidence: z.string().min(1),

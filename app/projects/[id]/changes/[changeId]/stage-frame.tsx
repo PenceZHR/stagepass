@@ -2,7 +2,6 @@
 
 import type { ReactNode } from "react";
 import type { UiStage, UiStageState } from "./pipeline-ui-model";
-import { StageActionBar, type StageActionView } from "./stage-action-bar";
 import { StageStatusBadge } from "./stage-status-badge";
 
 export interface StageMetaItem {
@@ -28,16 +27,8 @@ export interface StageFrameProps {
   description?: ReactNode;
   eyebrow?: string;
   meta?: StageMetaItem[];
-  actions?: StageActionView[];
-  actionError?: ReactNode;
   error?: ReactNode;
   blockers?: StageBlockerView[];
-  /**
-   * The phase's rubric drawer. Rendered in the stage body ABOVE `evidence`,
-   * never inside it: `evidence` is a collapsed `<details>`, and §7.3 requires
-   * the rubric editor to be visible without a click.
-   */
-  rubric?: ReactNode;
   evidence?: ReactNode;
   evidenceLabel?: string;
   children: ReactNode;
@@ -49,13 +40,10 @@ export function StageFrame({
   label,
   title,
   description,
-  eyebrow = "Pipeline Stage",
+  eyebrow = "当前阶段",
   meta = [],
-  actions = [],
-  actionError = null,
   error = null,
   blockers = [],
-  rubric = null,
   evidence = null,
   evidenceLabel = "阶段记录",
   children,
@@ -63,44 +51,27 @@ export function StageFrame({
   const resolvedState = state ?? stage?.state ?? "waiting";
   const stageLabel = label ?? stage?.label ?? title;
   const stageDescription = description ?? stage?.description;
-  const hasActions = actions.length > 0 || actionError;
+  const hasMore = meta.length > 0 || evidence;
 
   return (
-    <section className="space-y-6" data-stage-frame>
-      <header className="border-b border-white/10 pb-5" aria-label={`${stageLabel} 阶段概览`}>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <p className="stagepass-kicker">
-              {eyebrow}
-            </p>
-            <div className="mt-1 flex flex-wrap items-baseline gap-2">
-              <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-semibold text-muted-foreground">
-                {stageLabel}
-              </span>
-              <h2 className="stagepass-serif text-2xl font-normal tracking-normal">{title}</h2>
-              <StageStatusBadge state={resolvedState} />
-            </div>
-            {stageDescription ? (
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{stageDescription}</p>
-            ) : null}
-          </div>
-
-          <div className="grid gap-3 lg:min-w-56 lg:justify-items-end lg:text-right">
-            {meta.length > 0 ? (
-              <dl className="grid gap-1 text-xs text-muted-foreground">
-                {meta.map((item) => (
-                  <div key={item.id}>
-                    <dt className="inline">{item.label} </dt>
-                    <dd className="inline font-semibold text-foreground">{item.value}</dd>
-                  </div>
-                ))}
-              </dl>
-            ) : null}
-          </div>
+    <section className="space-y-5" data-stage-frame>
+      <header aria-label={`${stageLabel} 阶段概览`}>
+        <p className="stagepass-kicker">{eyebrow}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <h2 className="stagepass-serif text-2xl font-normal tracking-normal">{title}</h2>
+          <StageStatusBadge state={resolvedState} />
         </div>
+        {stageDescription ? (
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+            {stageDescription}
+          </p>
+        ) : null}
 
         {error ? (
-          <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">
+          <div
+            className="mt-3 border-l-2 border-destructive bg-destructive/[0.045] px-3 py-2 text-sm text-destructive"
+            role="alert"
+          >
             {error}
           </div>
         ) : null}
@@ -126,49 +97,39 @@ export function StageFrame({
         </section>
       ) : null}
 
-      <div className={evidence || rubric ? "space-y-4" : ""}>
-        {/*
-          Above the workspace, not below it. Measured in a real browser: on the
-          Plan stage the task map is long enough to push anything that follows
-          it ~3900px down — the same "capability exists but sits 4.7 screens
-          below the fold" failure §7.3 was written about. A blocking verdict
-          nobody scrolls to is a blocking verdict nobody acts on.
-        */}
-        {rubric ? (
-          <section className="min-w-0" aria-label={`${stageLabel} 评判标准`}>
-            {rubric}
-          </section>
-        ) : null}
+      <section
+        className="min-w-0"
+        role="region"
+        aria-label={`${stageLabel} workspace`}
+        data-stage-workspace
+      >
+        {children}
+      </section>
 
-        <section className="min-w-0" role="region" aria-label={`${stageLabel} workspace`}>
-          {children}
-        </section>
+      {hasMore ? (
+        <details className="border-t border-white/10 pt-4" data-stage-more>
+          <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground">
+            更多阶段信息
+          </summary>
+          <div className="mt-4 space-y-5">
+            {meta.length > 0 ? (
+              <dl className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                {meta.map((item) => (
+                  <div key={item.id}>
+                    <dt>{item.label}</dt>
+                    <dd className="mt-0.5 font-semibold text-foreground">{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
 
-        {evidence ? (
-          <aside className="min-w-0" aria-label={evidenceLabel}>
-            {evidence}
-          </aside>
-        ) : null}
-      </div>
-
-      {hasActions ? (
-        <footer
-          className="stagepass-surface-subtle rounded-xl p-4 sm:p-5"
-          aria-label={`${stageLabel} decision area`}
-          data-stage-decision-area
-        >
-          <div className="mb-3">
-            <p className="stagepass-kicker">Decision</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              主动作只改变明确标注的当前门禁；风险接受会保留审计记录。
-            </p>
+            {evidence ? (
+              <aside className="min-w-0" aria-label={evidenceLabel}>
+                {evidence}
+              </aside>
+            ) : null}
           </div>
-          <StageActionBar
-            actions={actions}
-            actionError={actionError}
-            ariaLabel={`${stageLabel} actions`}
-          />
-        </footer>
+        </details>
       ) : null}
     </section>
   );

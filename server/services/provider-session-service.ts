@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 
 import { db } from "../db";
+import { resolveStageBinding } from "./codex-stage-binding-resolver";
 import {
   changeProviderSessions,
   changes,
@@ -112,11 +113,16 @@ export function recordProviderSession(input: RecordProviderSessionInput): void {
  * remains a compatibility mirror and is repaired from the binding, never the
  * other way around.
  */
-export function resolveCanonicalChangeThread(changeId: string): string | null {
-  const binding = db.select().from(codexThreadBindings).where(and(
-    eq(codexThreadBindings.scopeKind, "change"),
-    eq(codexThreadBindings.scopeId, changeId),
-  )).get();
+export function resolveCanonicalChangeThread(
+  changeId: string,
+  phase?: string,
+): string | null {
+  const binding = phase
+    ? resolveStageBinding(changeId, phase)
+    : db.select().from(codexThreadBindings).where(and(
+        eq(codexThreadBindings.scopeKind, "change"),
+        eq(codexThreadBindings.scopeId, changeId),
+      )).get();
   if (!binding?.threadId || binding.status === "provisioning" || binding.status === "detached") {
     return null;
   }

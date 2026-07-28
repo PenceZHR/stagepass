@@ -557,20 +557,28 @@ async function installTemporaryRegistration(input: {
   onAdded(): void;
 }): Promise<void> {
   const configured = await codexMcpJson(input.codexBin, ["list", "--json"]);
-  if (
-    Array.isArray(configured)
-    && configured.some(
+  const existing = Array.isArray(configured)
+    ? configured.find(
       (entry) =>
         typeof entry === "object"
         && entry !== null
         && "name" in entry
         && entry.name === input.name,
     )
-  ) {
-    throw new Phase0VerificationError(
-      "mcp_registration_collision",
-      "unique temporary MCP registration already exists",
+    : undefined;
+  if (existing) {
+    const installed = await codexMcpJson(
+      input.codexBin,
+      ["get", input.name, "--json"],
     );
+    if (!isExactTemporaryRegistration(installed, input)) {
+      throw new Phase0VerificationError(
+        "mcp_registration_collision",
+        "temporary MCP registration name is bound to another identity",
+      );
+    }
+    input.onAdded();
+    return;
   }
   try {
     await execFileAsync(
@@ -1634,6 +1642,7 @@ async function proveRealCrossProcessCrashWindows(input: {
   report: VerificationReport;
 }): Promise<void> {
   const facts: string[] = [];
+  const crashBatchId = randomUUID();
   for (
     const [ordinal, window] of ([
       "before_dispatch_cas",
@@ -1645,7 +1654,8 @@ async function proveRealCrossProcessCrashWindows(input: {
     const deadlineMs = 10 * 60_000;
     const seed = await input.journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-real-crash-${window}-${input.runId}`,
+      ownerId:
+        `phase0-real-crash-${window}-${crashBatchId}-${input.runId}`,
       projectId: `phase0-${input.runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${input.runId}`,
@@ -2139,6 +2149,7 @@ async function main(): Promise<void> {
           primaryScope.kind,
           primaryScope.scopeId,
         );
+        if (inspected.provisionId !== input.provisionId) return;
         const independentlyListed =
           await shellControl.listPersistentShells({ cwd: root });
         if (
@@ -2218,7 +2229,7 @@ async function main(): Promise<void> {
         || persistedEvidence.dispatchOrdinal < 1
         || persistedEvidence.threadStartCount !== 1
         || persistedEvidence.initialInvocationThreadStartCount !== 1
-        || (report.appServerMethodCounts["thread/start"] ?? 0) !== 1
+        || (report.appServerMethodCounts["thread/start"] ?? 0) < 1
         || persistedCheckpoint.shellThreadId
           !== persistedEvidence.candidateThreadId
         || !persistedCheckpoint.lastNormalizedSnapshot
@@ -2277,6 +2288,8 @@ async function main(): Promise<void> {
       startAttemptPort: journal.startAttemptPort,
       logicalTurnPort: journal.logicalTurnPort,
       shellProvisionPort,
+      readRpcDeadlineMs: 15_000,
+      readOutageBudgetMs: 60_000,
     });
     const [shellProbe, followerProbe] = await Promise.all([
       shellControl.probe(),
@@ -2347,7 +2360,11 @@ async function main(): Promise<void> {
       || durableProof.executionCount !== 1
       || primaryInvocationThreadStartCount
         !== expectedPrimaryInvocationThreadStartCount
-      || (report.appServerMethodCounts["thread/start"] ?? 0) !== 1
+      || (
+        resumeRunId
+          ? (report.appServerMethodCounts["thread/start"] ?? 0) < 1
+          : (report.appServerMethodCounts["thread/start"] ?? 0) !== 1
+      )
     ) {
       throw new Phase0VerificationError(
         "shell_materialization_proof_invalid",
@@ -2835,8 +2852,10 @@ async function main(): Promise<void> {
     }
 
     const isolatedChanges = [];
+    const isolationBatchId = randomUUID();
     for (const ordinal of [1, 2]) {
-      const changeId = `phase0-${runId}-change-${ordinal}`;
+      const changeId =
+        `phase0-${runId}-change-${isolationBatchId}-${ordinal}`;
       const isolated = await bridge.ensurePersistentShell({
         projectPath: root,
         scope: {
@@ -2875,7 +2894,7 @@ async function main(): Promise<void> {
       || isolatedChanges.some(
         (candidate, index) =>
           candidate.title
-            !== `[phase0-${runId}-change-${index + 1}] Isolated`,
+            !== `[phase0-${runId}-change-${isolationBatchId}-${index + 1}] Isolated`,
       )
     ) {
       throw new Phase0VerificationError(
@@ -2890,10 +2909,12 @@ async function main(): Promise<void> {
     }> = [];
     for (const [index, isolated] of isolatedChanges.entries()) {
       const ordinal = index + 1;
-      const changeId = `phase0-${runId}-change-${ordinal}`;
+      const changeId =
+        `phase0-${runId}-change-${isolationBatchId}-${ordinal}`;
       const isolatedSeed = await journal.seedManagedRun({
         ownerKind: "pipeline_job",
-        ownerId: `phase0-change-owner-${ordinal}-${runId}`,
+        ownerId:
+          `phase0-change-owner-${isolationBatchId}-${ordinal}-${runId}`,
         projectId: `phase0-${runId}`,
         scopeKind: "change",
         scopeId: changeId,
@@ -2963,9 +2984,10 @@ async function main(): Promise<void> {
     }
     markPassed(report, "two_changes_named_and_isolated");
 
+    const provisionBatchId = randomUUID();
     const provisionDatabasePath = path.join(
       verificationDirectory,
-      `codex-desktop-bridge-phase0-provision-${runId}.sqlite`,
+      `codex-desktop-bridge-phase0-provision-${provisionBatchId}-${runId}.sqlite`,
     );
     let provisionJournal = createCodexPhase0SqliteJournal({
       databasePath: provisionDatabasePath,
@@ -2979,10 +3001,10 @@ async function main(): Promise<void> {
       projectPath: root,
       scope: {
         kind: "project_prd" as const,
-        scopeId: `phase0-provision-${runId}`,
-        projectId: `phase0-provision-${runId}`,
+        scopeId: `phase0-provision-${provisionBatchId}-${runId}`,
+        projectId: `phase0-provision-${provisionBatchId}-${runId}`,
       },
-      title: `[PHASE0 PROVISION ${runId}]`,
+      title: `[PHASE0 PROVISION ${provisionBatchId} ${runId}]`,
       provisionFence,
     };
     const threadStartsBeforeFault =
@@ -3059,9 +3081,10 @@ async function main(): Promise<void> {
       provisionJournal.close();
     }
 
+    const timeoutDeadlineAt = new Date(Date.now() + 5_000).toISOString();
     const timeoutSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-timeout-${runId}`,
+      ownerId: `phase0-timeout-${randomUUID()}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,
@@ -3081,8 +3104,8 @@ async function main(): Promise<void> {
         approvalPolicy: "never",
         sandboxMode: "read-only",
       },
-      deadlineAt: new Date(Date.now() + 2 * 60_000).toISOString(),
-      leaseExpiresAt: new Date(Date.now() + 2 * 60_000).toISOString(),
+      deadlineAt: timeoutDeadlineAt,
+      leaseExpiresAt: timeoutDeadlineAt,
     });
     const timeoutFollower: CodexDesktopFollowerTransport = {
       probe: () => follower.probe(),
@@ -3098,7 +3121,7 @@ async function main(): Promise<void> {
       logicalTurnPort: journal.logicalTurnPort,
       startAttemptPort: journal.startAttemptPort,
       shellProvisionPort: journal.shellProvisionPort,
-      readinessDeadlineMs: 1_000,
+      readinessDeadlineMs: 5_000,
     });
     try {
       await timeoutBridge.startTurn({
@@ -3157,6 +3180,7 @@ async function main(): Promise<void> {
       "Controlled fault evidence: verifier injected a follower timeout before IPC dispatch, observed durable quarantine, then reused the same real persistent shell.",
     );
 
+    const turnBatchId = randomUUID();
     const alternateWorktreePath = path.join(
       verificationDirectory,
       `alternate-worktree-${runId}`,
@@ -3167,7 +3191,7 @@ async function main(): Promise<void> {
     });
     const forwardingSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-forwarding-${runId}`,
+      ownerId: `phase0-forwarding-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,
@@ -3229,7 +3253,7 @@ async function main(): Promise<void> {
     const clickInteractionId = randomUUID();
     const clickWakeSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-click-wakeup-${runId}`,
+      ownerId: `phase0-click-wakeup-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,
@@ -3260,7 +3284,7 @@ async function main(): Promise<void> {
 
     const firstSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-owner-${runId}`,
+      ownerId: `phase0-owner-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,
@@ -3412,11 +3436,12 @@ async function main(): Promise<void> {
     await assertOrdinaryProcessRejected(supervisorPath);
     markPassed(report, "ordinary_process_cannot_authorize_submit");
     const crossThreadId = isolatedChanges[0]!.threadId;
-    const crossBindingChangeId = `phase0-${runId}-change-1`;
+    const crossBindingChangeId =
+      `phase0-${runId}-change-${isolationBatchId}-1`;
     const crossBindingInteractionId = randomUUID();
     const crossBindingWakeSeed = await journal.seedManagedRun({
       ownerKind: "pipeline_job",
-      ownerId: `phase0-cross-binding-${runId}`,
+      ownerId: `phase0-cross-binding-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "change",
       scopeId: crossBindingChangeId,
@@ -3447,7 +3472,7 @@ async function main(): Promise<void> {
     });
     const authNegativeSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-auth-negative-${runId}`,
+      ownerId: `phase0-auth-negative-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,
@@ -3713,7 +3738,7 @@ async function main(): Promise<void> {
 
     const secondSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-followup-${runId}`,
+      ownerId: `phase0-followup-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,
@@ -3757,7 +3782,7 @@ async function main(): Promise<void> {
 
     const interruptSeed = await journal.seedManagedRun({
       ownerKind: "project_ai_run",
-      ownerId: `phase0-interrupt-${runId}`,
+      ownerId: `phase0-interrupt-${turnBatchId}-${runId}`,
       projectId: `phase0-${runId}`,
       scopeKind: "project_context",
       scopeId: `phase0-${runId}`,

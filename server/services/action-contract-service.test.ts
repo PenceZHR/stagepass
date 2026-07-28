@@ -1751,6 +1751,12 @@ describe("action-contract-service", () => {
       { status: "red_running", changeStatus: "SPECCING", runEnabled: false, runReason: "spec_round_running", retryEnabled: false, retryReason: "spec_round_running" },
       { status: "blue_running", changeStatus: "SPECCING", runEnabled: false, runReason: "spec_round_running", retryEnabled: false, retryReason: "spec_round_running" },
       { status: "failed", changeStatus: "BLOCKED", runEnabled: false, runReason: "spec_round_failed_retry_required", retryEnabled: true, retryReason: null },
+      // Parked on the human: `run_spec` stays shut because the Codex task is
+      // open holding unanswered questions and a second red run would race the
+      // answers, while `retry_spec` stays open as the only way to abandon the
+      // question loop. Without an explicit branch this status falls through to
+      // `spec_round_not_actionable` and disables both -- a dead end.
+      { status: "awaiting_clarification", changeStatus: "SPECCING", runEnabled: false, runReason: "spec_round_awaiting_clarification", retryEnabled: true, retryReason: null },
       { status: "report_ready", changeStatus: "SPEC_READY", runEnabled: false, runReason: "spec_battle_human_decision_required", retryEnabled: false, retryReason: "spec_round_not_failed" },
       { status: "closed", changeStatus: "SPEC_READY", runEnabled: false, runReason: "spec_battle_closed", retryEnabled: false, retryReason: "spec_round_not_failed" },
       { status: "superseded", changeStatus: "SPECCING", runEnabled: false, runReason: "spec_round_superseded", retryEnabled: false, retryReason: "spec_round_not_failed" },

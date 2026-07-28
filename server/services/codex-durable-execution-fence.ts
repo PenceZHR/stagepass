@@ -9,6 +9,7 @@ import {
   pipelineJobs,
   projectAiRuns,
 } from "../db/schema";
+import { pipelineJobOwnerDeadlineAt } from "./pipeline-owner-deadline";
 import { isLiveProjectAiRunLease } from "./project-ai-run-service";
 
 export type CodexFenceTransaction =
@@ -66,8 +67,12 @@ export function assertCodexOwnerFence(
       || owner.attemptNo !== expected.ownerEpoch
       || !owner.leaseExpiresAt
       || Date.parse(owner.leaseExpiresAt) <= now.getTime()
-      || binding.scopeKind !== "change"
-      || binding.scopeId !== change.id
+      || (
+        binding.scopeKind === "change"
+          ? binding.scopeId !== change.id
+          : binding.scopeKind !== "change_stage"
+            || !binding.scopeId.startsWith(`${change.id}:`)
+      )
       || binding.changeId !== change.id
       || binding.projectId !== change.projectId
     ) {
@@ -119,7 +124,7 @@ export function heartbeatCodexOwnerFence(
   if (logical.pipelineJobId) {
     const owner = tx.select().from(pipelineJobs)
       .where(eq(pipelineJobs.id, logical.pipelineJobId)).get()!;
-    const deadline = owner.effectDeadlineAt ?? owner.leaseExpiresAt!;
+    const deadline = pipelineJobOwnerDeadlineAt(owner);
     const leaseExpiresAt = new Date(Math.min(
       input.now.getTime() + input.leaseMs,
       Date.parse(deadline),

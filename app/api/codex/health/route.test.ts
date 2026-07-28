@@ -42,6 +42,36 @@ describe("Codex health route", () => {
     assert.doesNotMatch(JSON.stringify(json), /\/Users\/|socket|stderr/i);
   });
 
+  it("reports the working Codex App bridge as ready when process-local MCP evidence is missing", async () => {
+    const response = await handleCodexHealth({
+      flags: flags(),
+      probe: async () => ({
+        appServerVersion: "0.146",
+        appServerProtocolFingerprint: "app-fingerprint",
+        desktopClientVersion: "desktop",
+        desktopFollowerProtocolFingerprint: "follower-fingerprint",
+        shellCapabilities: [],
+        followerCapabilities: [],
+        shellProtocolCapabilities: ["thread/list"],
+        followerProtocolCapabilities: ["deep-link:codex-thread"],
+      }),
+      hostEvidence: {
+        status: "missing",
+        verifiedBy: null,
+        hostFingerprint: null,
+        verifiedAt: null,
+      },
+      now: () => Date.parse("2026-07-26T00:00:00.000Z"),
+    });
+    const json = await response.json() as {
+      status: string;
+      mcpHostEvidence: { status: string };
+    };
+
+    assert.equal(json.status, "ready");
+    assert.equal(json.mcpHostEvidence.status, "missing");
+  });
+
   it("reports disabled and invalid rollout without probing", async () => {
     let probes = 0;
     const response = await handleCodexHealth({

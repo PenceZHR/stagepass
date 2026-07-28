@@ -155,48 +155,25 @@ function validatePlanStructuredOutput(value: unknown): true | { ok: false; messa
   }
 }
 
-export const PLAN_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    planName: { type: "string" },
-    expectedFiles: { type: "array", items: { type: "string" } },
-    forbiddenFiles: { type: "array", items: { type: "string" } },
-    implementationSteps: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          step: { type: "number" },
-          description: { type: "string" },
-          file: { type: "string" },
-          status: { type: "string", enum: ["pending", "blocked", "done"] },
-        },
-        required: ["step", "description", "file", "status"],
-        additionalProperties: false,
-      },
-    },
-    testPlan: { type: "array", items: { type: "string" } },
-    validationCommands: { type: "array", items: { type: "string" } },
-    risks: { type: "array", items: { type: "string" } },
-  },
-  required: [
-    "planName",
-    "expectedFiles",
-    "forbiddenFiles",
-    "implementationSteps",
-    "testPlan",
-    "validationCommands",
-    "risks",
-  ],
-  additionalProperties: false,
-};
+// Declared in a leaf module so the delegated-round phase descriptors can name
+// it without importing this stage service; see plan-output-schema.ts.
+export { PLAN_JSON_SCHEMA } from "./plan-output-schema";
+import { PLAN_JSON_SCHEMA } from "./plan-output-schema";
+import { PLAN_DELEGATED_ROUND } from "./delegated-round-phases";
+import {
+  runDelegatedPhaseStage,
+  type DelegatedPhaseDescriptor,
+} from "./pipeline-delegated-phase-stage";
 
 export async function generatePlan(
   changeId: string,
   context: JobExecutionContext,
   requestedProvider?: Provider,
+  /** A judge turn this task already produced, once its questions converged. */
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
-  return withExecutionFence(context, () => generatePlanInExecutionScope(changeId, context, requestedProvider));
+  return withExecutionFence(context, () =>
+    generatePlanInExecutionScope(changeId, context, requestedProvider, adoptedResult));
 }
 
 /**
@@ -214,10 +191,43 @@ async function generatePlanInExecutionScope(
   changeId: string,
   context: JobExecutionContext,
   requestedProvider?: Provider,
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
   const initialChange = getChange(changeId);
   if (!initialChange) throw new Error(`Change not found: ${changeId}`);
   const provider = requestedProvider ?? context.provider ?? (initialChange.provider as Provider);
+  // The delegated form replaces the whole single-turn producer path below: red
+  // writes the plan, blue critiques it, and the judge answers the verdict
+  // rubric, all inside one turn.
+  if (readCodexNativeFlags().specJudgeSubAgents) {
+    return runDelegatedPhaseStage({
+      descriptor: PLAN_DELEGATED_ROUND as DelegatedPhaseDescriptor,
+      changeId,
+      context,
+      provider,
+      runningStatus: "PLANNING",
+      settledStatus: "PLAN_READY",
+      failureStatus: "TECHSPEC_READY",
+      adoptedResult,
+      // Plan already separated its snapshot from its approval -- `approvePlan`
+      // is a distinct human-triggered call -- so unlike TechSpec and TestPlan
+      // there was nothing here to split.
+      persistRed: async (input) => {
+        const plan = requireValidPlanStructuredOutput(input.result.structuredOutput);
+        const snapshotId = persistGeneratedPlanSnapshot({
+          changeId: input.changeId,
+          repoPath: input.project.repoPath,
+          plan,
+        });
+        await writeGeneratedPlanArtifactsFromDbBestEffort({
+          changeId: input.changeId,
+          runId: input.runId,
+          snapshotId,
+        });
+        return { rows: [{ table: "plan_snapshots", id: snapshotId }] };
+      },
+    });
+  }
   // Repair a PLANNING claim no run is backing before the guard reads it,
   // otherwise a retry can never get past assertStatus to create one -- the
   // permanent dead end 8ac5c4ec fixed for TechSpec. Plan is dispatched straight

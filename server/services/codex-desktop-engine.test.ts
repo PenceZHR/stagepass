@@ -110,6 +110,74 @@ describe("codex desktop engine", { concurrency: false }, () => {
   });
   afterEach(cleanup);
 
+  it("retries initialization after a transient failure and caches only success", async () => {
+    const engineModule = await import("./codex-desktop-engine");
+    const RetryablePromiseCache = (
+      engineModule as unknown as {
+        RetryablePromiseCache?: new <T>(
+          factory: () => Promise<T>,
+        ) => { get(): Promise<T> };
+      }
+    ).RetryablePromiseCache;
+    assert.equal(
+      typeof RetryablePromiseCache,
+      "function",
+      "desktop initialization needs a failure-resetting promise cache",
+    );
+
+    let attempts = 0;
+    const cache = new RetryablePromiseCache!(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient desktop discovery failure");
+      return "connected";
+    });
+
+    await assert.rejects(cache.get(), /transient desktop discovery failure/);
+    assert.equal(await cache.get(), "connected");
+    assert.equal(await cache.get(), "connected");
+    assert.equal(attempts, 2);
+  });
+
+  it("retries transient Desktop discovery within the same stage dispatch", async () => {
+    const engineModule = await import("./codex-desktop-engine");
+    const retryDesktopDiscovery = (
+      engineModule as unknown as {
+        retryDesktopDiscovery?: <T>(
+          discover: () => Promise<T>,
+          options: {
+            maxAttempts: number;
+            sleep: (ms: number) => Promise<void>;
+          },
+        ) => Promise<T>;
+      }
+    ).retryDesktopDiscovery;
+    assert.equal(
+      typeof retryDesktopDiscovery,
+      "function",
+      "one stage dispatch must survive transient Desktop discovery failures",
+    );
+
+    let attempts = 0;
+    const delays: number[] = [];
+    const endpoint = await retryDesktopDiscovery!(
+      async () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("transient IPC discovery failure");
+        return "connected";
+      },
+      {
+        maxAttempts: 3,
+        async sleep(ms) {
+          delays.push(ms);
+        },
+      },
+    );
+
+    assert.equal(endpoint, "connected");
+    assert.equal(attempts, 3);
+    assert.deepEqual(delays, [250, 500]);
+  });
+
   it("starts through follower bridge and observes a proved terminal snapshot", async () => {
     let starts = 0;
     let polls = 0;
@@ -151,6 +219,57 @@ describe("codex desktop engine", { concurrency: false }, () => {
     assert.equal(polls, 1);
     assert.equal(db.select().from(codexBindingRunLeases)
       .where(eq(codexBindingRunLeases.bindingId, B)).get(), undefined);
+  });
+
+  // A retry re-observes a turn whose terminal snapshot this owner already
+  // recorded. Treating "nothing changed since last time" as "not terminal yet"
+  // made every retried observation run to its deadline and report the turn as
+  // lost, which threw away a stage result the task had already produced.
+  it("proves terminality on a re-observed turn whose snapshot is unchanged", async () => {
+    insertSucceededAttempt();
+    db.insert(codexBindingRunLeases).values({
+      bindingId: B, logicalTurnId: L, attemptId: A, workerId: "worker",
+      leaseToken: "binding-lease", ownerEpoch: 1,
+      leaseExpiresAt: deadline, deadlineAt: deadline,
+    }).run();
+    startCodexTurnExecution({
+      logicalTurnId: L, attemptId: A, threadId: THREAD, turnId: TURN,
+    });
+    const terminalSnapshot = {
+      threadId: THREAD, turnId: TURN, status: "completed" as const,
+      items: [{ id: "message", kind: "agent_message" as const, semantic: { text: "final" } }],
+      terminal: { output: "final" },
+      metadata: { observedAt: NOW },
+    };
+    const { recordCodexTurnSnapshot } = await import("./codex-turn-lifecycle-service");
+    recordCodexTurnSnapshot({
+      logicalTurnId: L,
+      snapshot: terminalSnapshot,
+      cursor: 1,
+      semanticHash: "settled-hash",
+    });
+
+    const bridge = {
+      probe: async () => { throw new Error("unused"); },
+      ensurePersistentShell: async () => { throw new Error("unused"); },
+      async startTurn() { throw new Error("must not start a second turn"); },
+      async recoverTurn() { throw new Error("must not re-dispatch"); },
+      async interruptTurn() {},
+      async *pollTurn() {
+        yield {
+          kind: "observation",
+          cursor: 1,
+          semanticSnapshotHash: "settled-hash",
+          snapshot: terminalSnapshot,
+        };
+      },
+    } as unknown as CodexDesktopBridge;
+
+    const result = await new CodexDesktopEngine(bridge)
+      .observeDispatchedTurn(L);
+
+    assert.equal(result.success, true);
+    assert.equal(result.summary, "final");
   });
 
   it("rejects caller identity overrides before follower calls", async () => {

@@ -56,7 +56,7 @@ function scopeMetadata(scope: CodexManagedScope): {
     .where(eq(projects.id, scope.projectId)).get();
   if (!project) throw new Error(`Project not found: ${scope.projectId}`);
 
-  if (scope.kind === "change") {
+  if (scope.kind === "change" || scope.kind === "change_stage") {
     const change = db.select().from(changes)
       .where(eq(changes.id, scope.changeId)).get();
     if (!change || change.projectId !== scope.projectId) {
@@ -64,7 +64,11 @@ function scopeMetadata(scope: CodexManagedScope): {
     }
     return {
       projectPath: normalizedRepoPath(project.repoPath),
-      title: `[${change.id}] ${change.title}`,
+      // Each stage gets its own task, so the title has to say which one; the
+      // Codex task list is how the user tells them apart.
+      title: scope.kind === "change_stage"
+        ? `[${change.id}] ${scope.stageId} · ${change.title}`
+        : `[${change.id}] ${change.title}`,
     };
   }
   return {
@@ -158,7 +162,9 @@ export function claimProvisioning(
       scopeKind: scope.kind,
       scopeId: scope.scopeId,
       projectId: scope.projectId,
-      changeId: scope.kind === "change" ? scope.changeId : null,
+      changeId: scope.kind === "change" || scope.kind === "change_stage"
+        ? scope.changeId
+        : null,
       codexProjectId: null,
       threadId: null,
       title,
@@ -244,6 +250,7 @@ function finalizeClaim(
     const before = tx.select().from(codexThreadBindings)
       .where(scopePredicate(scope)).get();
     if (!before) throw new Error("binding provision row disappeared");
+    const sameThread = before.threadId === threadId;
     const updated = tx.update(codexThreadBindings).set({
       threadId,
       status: "ready",
@@ -251,7 +258,11 @@ function finalizeClaim(
       provisionLeaseOwner: null,
       provisionLeaseExpiresAt: null,
       followerStartProvedAt:
-        before.threadId === threadId ? before.followerStartProvedAt : null,
+        sameThread ? before.followerStartProvedAt : null,
+      lastTurnId: sameThread ? before.lastTurnId : null,
+      lastObservationCursor: sameThread ? before.lastObservationCursor : 0,
+      lastSemanticSnapshotHash:
+        sameThread ? before.lastSemanticSnapshotHash : null,
       lastSeenAt: timestamp,
       lastErrorCode: null,
       updatedAt: timestamp,
@@ -267,6 +278,54 @@ function finalizeClaim(
     mirrorChangeBinding(tx, scope, threadId, timestamp);
     return tx.select().from(codexThreadBindings)
       .where(scopePredicate(scope)).get()!;
+  });
+}
+
+function claimRotation(
+  scope: CodexManagedScope,
+  owner: string,
+  now = new Date(),
+): ProvisionClaim {
+  return db.transaction((tx) => {
+    const existing = tx.select().from(codexThreadBindings)
+      .where(scopePredicate(scope)).get();
+    if (!existing) {
+      throw new Error("binding rotation requires an existing task");
+    }
+    if (existing.status === "provisioning") {
+      return {
+        binding: existing,
+        owner: false,
+        reconcileOnly: false,
+        claimToken: null,
+        leaseOwner: null,
+      };
+    }
+
+    const claimToken = randomUUID();
+    const timestamp = nowISO(now);
+    const updated = tx.update(codexThreadBindings).set({
+      status: "provisioning",
+      provisionClaimToken: claimToken,
+      provisionLeaseOwner: owner,
+      provisionLeaseExpiresAt:
+        new Date(now.getTime() + PROVISION_LEASE_MS).toISOString(),
+      lastErrorCode: "task_rotation_in_progress",
+      updatedAt: timestamp,
+    }).where(and(
+      scopePredicate(scope),
+      eq(codexThreadBindings.status, existing.status),
+      eq(codexThreadBindings.updatedAt, existing.updatedAt),
+    )).run();
+    const row = tx.select().from(codexThreadBindings)
+      .where(scopePredicate(scope)).get()!;
+    return {
+      binding: row,
+      owner: updated.changes === 1,
+      reconcileOnly: false,
+      claimToken: updated.changes === 1 ? claimToken : null,
+      leaseOwner: updated.changes === 1 ? owner : null,
+    };
   });
 }
 
@@ -438,6 +497,45 @@ export async function ensureCodexThreadBinding(input: {
       throw new CodexDesktopBridgeError(
         "shell_provision_ambiguous",
         "created shell identity does not match the canonical scope",
+      );
+    }
+    return finalizeClaim(input.scope, claim, shell.threadId);
+  } catch (error) {
+    markAmbiguous(input.scope, claim);
+    throw error;
+  }
+}
+
+/**
+ * A retry must not reuse a Codex task whose MCP host is already disconnected.
+ * Provision a new visible persistent task, then atomically move the canonical
+ * binding and both legacy mirrors to it. Existing task history stays visible in
+ * Codex App, while all later turns and card confirmations target the new task.
+ */
+export async function rotateCodexThreadBinding(input: {
+  scope: CodexManagedScope;
+  bridge: CodexDesktopBridge;
+}): Promise<CodexThreadBinding> {
+  if (!readByScope(input.scope)) {
+    return ensureCodexThreadBinding(input);
+  }
+  const claim = claimRotation(input.scope, randomUUID());
+  if (!claim.owner) {
+    return waitForWinner(input.scope);
+  }
+  const metadata = scopeMetadata(input.scope);
+  try {
+    if (!input.bridge.provisionPersistentShell) {
+      throw new CodexDesktopBridgeError(
+        "codex_hybrid_bridge_unsupported",
+        "shell-only persistent provision adapter is unavailable",
+      );
+    }
+    const shell = await input.bridge.provisionPersistentShell(metadata);
+    if (!shellMatches(shell, metadata)) {
+      throw new CodexDesktopBridgeError(
+        "shell_provision_ambiguous",
+        "rotated shell identity does not match the canonical scope",
       );
     }
     return finalizeClaim(input.scope, claim, shell.threadId);

@@ -77,10 +77,7 @@ export async function handleCodexHealth(
   if (dependencies.flags.desktopBridge) {
     try {
       probe = await dependencies.probe();
-      status = dependencies.flags.mcpInteractions
-        && dependencies.hostEvidence.status !== "passed"
-        ? "unsupported"
-        : "ready";
+      status = "ready";
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error
         ? String(error.code)

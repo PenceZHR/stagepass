@@ -26,7 +26,10 @@ import {
 } from "./codex-logical-turn-service";
 import { createCodexDesktopRunContext } from "./codex-desktop-run-context";
 import { createCodexFollowerStartAttemptPort } from "./codex-follower-start-attempt-service";
-import { createCodexAppServerShellControl } from "./codex-app-server-shell-control";
+import {
+  createCodexAppServerShellControl,
+  type CodexAppServerShellControl,
+} from "./codex-app-server-shell-control";
 import {
   defaultCodexDesktopDiscoveryDependencies,
   discoverCodexDesktopIpcEndpoint,
@@ -100,6 +103,19 @@ function toAiItem(item: NormalizedCodexTurnItem): AiRunItem {
         name: item.semantic.name,
         status: item.semantic.status,
         result: item.semantic.result,
+        id: item.id,
+      };
+    // Carried through to `result.items` verbatim. This is what the Spec round
+    // reads to decide whether a delegated side actually exists, so it must not
+    // be collapsed into a tool_call or dropped as uninteresting -- a dropped
+    // item here reads downstream as "no sub-agent ran", which is precisely the
+    // claim a silent spawn failure would also produce.
+    case "sub_agent_activity":
+      return {
+        type: "sub_agent_activity",
+        activity: item.semantic.activity,
+        agentThreadId: item.semantic.agentThreadId,
+        agentPath: item.semantic.agentPath,
         id: item.id,
       };
     case "error":
@@ -180,6 +196,23 @@ export class CodexDesktopEngine implements AiEngineAdapter {
     if (failure) throw failure;
   }
 
+  /**
+   * Observe a turn this process already dispatched, without starting one.
+   *
+   * The clarification loop dispatches its continuation turns over
+   * `host_ui_message`, which `run` refuses, and it dispatches them itself --
+   * so the only thing left to do is watch that turn to a terminal snapshot and
+   * report what it produced. Everything else (binding lease, heartbeat, cursor
+   * resume, snapshot recording) is the same machinery a stage turn uses, so it
+   * stays in one place rather than being copied into the orchestrator.
+   */
+  async observeDispatchedTurn(
+    logicalTurnId: string,
+    onEvent: (event: AiStreamEvent) => void = () => {},
+  ): Promise<AiRunResult> {
+    return this.observe(logicalTurnId, { allowStart: false }, onEvent);
+  }
+
   private async execute(
     input: AiRunInput,
     onEvent: (event: AiStreamEvent) => void = () => {},
@@ -199,6 +232,15 @@ export class CodexDesktopEngine implements AiEngineAdapter {
         "Logical turn is not assigned to follower IPC",
       );
     }
+    return this.observe(logicalTurnId, { allowStart: true }, onEvent);
+  }
+
+  private async observe(
+    logicalTurnId: string,
+    options: { allowStart: boolean },
+    onEvent: (event: AiStreamEvent) => void = () => {},
+  ): Promise<AiRunResult> {
+    const logical = await readLogicalTurnForStart(logicalTurnId);
     let bindingLease = await waitForCodexBindingRunLease({
       logicalTurnId,
       workerId: logical.fence.workerId || this.workerId,
@@ -223,6 +265,7 @@ export class CodexDesktopEngine implements AiEngineAdapter {
     leaseHeartbeat.unref?.();
     let terminal: CodexTurnSnapshot | null = null;
     let attemptId = "";
+    let observedThreadId = logical.request.threadId;
     try {
       const existing = db.select().from(codexFollowerStartAttempts)
         .where(eq(codexFollowerStartAttempts.logicalTurnId, logicalTurnId)).get();
@@ -237,7 +280,20 @@ export class CodexDesktopEngine implements AiEngineAdapter {
         if (existing.state === "succeeded" && existing.followerTurnId) {
           attemptId = existing.attemptId;
           turnId = existing.followerTurnId;
+          // Observe the turn where it was dispatched. A binding that rotated
+          // to a fresh task since then still owns the scope, but this turn
+          // lives in the old one, and polling the new task for it finds
+          // nothing until the deadline and reports a settled turn as lost.
+          observedThreadId = existing.threadId;
         } else {
+          if (!options.allowStart) {
+            // Follower recovery re-dispatches over IPC. An observer whose turn
+            // was delivered some other way must not resurrect it that way.
+            throw new CodexDesktopEngineError(
+              "desktop_follower_start_missing",
+              "Observation requires a proved dispatched turn",
+            );
+          }
           const recovered = await this.bridge.recoverTurn({ logicalTurnId });
           if (recovered.state !== "succeeded" || !recovered.turnId) {
             throw new CodexDesktopEngineError(
@@ -249,6 +305,12 @@ export class CodexDesktopEngine implements AiEngineAdapter {
           turnId = recovered.turnId;
         }
       } else {
+        if (!options.allowStart) {
+          throw new CodexDesktopEngineError(
+            "desktop_follower_start_missing",
+            "Observation requires a turn this owner already dispatched",
+          );
+        }
         const started = await this.bridge.startTurn({ logicalTurnId });
         attemptId = started.attemptId;
         turnId = started.turnId;
@@ -257,17 +319,26 @@ export class CodexDesktopEngine implements AiEngineAdapter {
       startCodexTurnExecution({
         logicalTurnId,
         attemptId,
-        threadId: logical.request.threadId,
+        threadId: observedThreadId,
         turnId,
       });
-      onEvent({ type: "thread.started", threadId: logical.request.threadId });
+      onEvent({ type: "thread.started", threadId: observedThreadId });
       const execution = readCodexTurnExecution(logicalTurnId)!;
       for await (const result of this.bridge.pollTurn({
-        threadId: logical.request.threadId,
+        threadId: observedThreadId,
         turnId,
-        afterCursor: execution.lastObservationCursor,
-        lastSnapshotHash: execution.lastSemanticSnapshotHash ?? undefined,
-        lastNormalizedSnapshot: execution.normalizedItemsJson === "[]"
+        afterCursor: execution.status === "running"
+          ? execution.lastObservationCursor
+          : 0,
+        // Resume only from an observation still in flight. A recorded terminal
+        // snapshot cannot be replayed as `inProgress` -- that rewrite changes
+        // the hash the bridge checks the resume against, and the whole
+        // observation is refused as an invalid snapshot.
+        lastSnapshotHash: execution.status === "running"
+          ? execution.lastSemanticSnapshotHash ?? undefined
+          : undefined,
+        lastNormalizedSnapshot: execution.status !== "running"
+          || execution.normalizedItemsJson === "[]"
           ? undefined
           : {
               threadId: execution.threadId,
@@ -289,8 +360,13 @@ export class CodexDesktopEngine implements AiEngineAdapter {
           cursor: result.cursor,
           semanticHash: result.semanticSnapshotHash,
         });
-        if (!recorded.changed) continue;
-        for (const event of streamEvents(result)) onEvent(event);
+        // `changed` only decides whether there is anything new to stream. A
+        // retry re-observes a turn this owner already recorded as terminal, so
+        // treating an unchanged snapshot as "keep waiting" would run to the
+        // deadline and report a settled turn as lost.
+        if (recorded.changed) {
+          for (const event of streamEvents(result)) onEvent(event);
+        }
         if (result.snapshot.status !== "inProgress") {
           terminal = result.snapshot;
           break;
@@ -345,18 +421,91 @@ export class CodexDesktopEngine implements AiEngineAdapter {
   }
 }
 
-let productionBridge: Promise<CodexDesktopBridge> | null = null;
+export class RetryablePromiseCache<T> {
+  private current: Promise<T> | null = null;
+
+  constructor(private readonly factory: () => Promise<T>) {}
+
+  get(): Promise<T> {
+    if (this.current) return this.current;
+    const attempt = this.factory();
+    this.current = attempt;
+    void attempt.catch(() => {
+      if (this.current === attempt) this.current = null;
+    });
+    return attempt;
+  }
+}
+
+const productionBridge = new RetryablePromiseCache(
+  createProductionCodexDesktopBridge,
+);
 
 export function getProductionCodexDesktopBridge():
 Promise<CodexDesktopBridge> {
-  productionBridge ??= createProductionCodexDesktopBridge();
-  return productionBridge;
+  return productionBridge.get();
+}
+
+const productionShellControl = new RetryablePromiseCache(
+  async () => {
+    const endpoint = await retryDesktopDiscovery(
+      () => discoverCodexDesktopIpcEndpoint(
+        defaultCodexDesktopDiscoveryDependencies(),
+      ),
+    );
+    return createCodexAppServerShellControl({
+      appServerBinary: endpoint.appServerBinary,
+    });
+  },
+);
+
+/**
+ * The app-server shell control on its own, for readers that need a thread the
+ * bridge does not own.
+ *
+ * The delegated Spec round reads its sub-agents' threads, and those threads
+ * belong to no binding: the judge spawned them, so nothing in the bridge's
+ * scope/binding model refers to them. The bridge keeps its shell control
+ * private as a construction detail, which is right for turn dispatch and wrong
+ * for this -- hence a sibling accessor over the same discovery rather than a
+ * hole punched through the bridge interface.
+ */
+export function getProductionCodexAppServerShellControl():
+Promise<CodexAppServerShellControl> {
+  return productionShellControl.get();
+}
+
+export async function retryDesktopDiscovery<T>(
+  discover: () => Promise<T>,
+  options: {
+    maxAttempts?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<T> {
+  const maxAttempts = Math.max(
+    1,
+    Math.floor(options.maxAttempts ?? 3),
+  );
+  const sleep = options.sleep ?? ((ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let delayMs = 250;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await discover();
+    } catch (error) {
+      if (attempt >= maxAttempts) throw error;
+      await sleep(delayMs);
+      delayMs = Math.min(delayMs * 2, 2_000);
+    }
+  }
 }
 
 async function createProductionCodexDesktopBridge():
 Promise<CodexDesktopBridge> {
-  const endpoint = await discoverCodexDesktopIpcEndpoint(
-    defaultCodexDesktopDiscoveryDependencies(),
+  const endpoint = await retryDesktopDiscovery(
+    () => discoverCodexDesktopIpcEndpoint(
+      defaultCodexDesktopDiscoveryDependencies(),
+    ),
   );
   const shellControl = createCodexAppServerShellControl({
     appServerBinary: endpoint.appServerBinary,
@@ -373,7 +522,12 @@ Promise<CodexDesktopBridge> {
       const runContext = createCodexDesktopRunContext({
         logicalTurnId,
         role: logical.role,
+        phase: logical.phase,
         prompt: logical.request.prompt,
+        projectId: logical.projectId,
+        scopeKind: logical.scopeKind,
+        scopeId: logical.scopeId,
+        threadId: logical.request.threadId,
       });
       return {
         ...logical,
@@ -417,11 +571,12 @@ Promise<CodexDesktopEngine> {
 }
 
 export class LazyCodexDesktopEngine implements AiEngineAdapter {
-  private engine: Promise<CodexDesktopEngine> | null = null;
+  private readonly engine = new RetryablePromiseCache(
+    createProductionCodexDesktopEngine,
+  );
 
   private get(): Promise<CodexDesktopEngine> {
-    this.engine ??= createProductionCodexDesktopEngine();
-    return this.engine;
+    return this.engine.get();
   }
 
   async run(input: AiRunInput): Promise<AiRunResult> {

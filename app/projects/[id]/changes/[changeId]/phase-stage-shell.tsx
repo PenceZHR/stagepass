@@ -1,11 +1,9 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { reviewPhaseToRubricPhase, type ReviewPhase } from "./change-phase-map";
+import type { ReviewPhase } from "./change-phase-map";
 import type { UiStageState } from "./pipeline-ui-model";
-import { RubricPanel } from "./rubric-panel";
 import { StageFrame, type StageBlockerView } from "./stage-frame";
-import type { StageActionView } from "./stage-action-bar";
 
 const PHASE_STAGE_COPY: Record<ReviewPhase, { label: string; title: string; description: string }> = {
   Intake: {
@@ -84,20 +82,10 @@ export function phaseRecordsLabel(phase: ReviewPhase): string {
 }
 
 /**
- * `projectId` and `changeId` are REQUIRED, and only the rubric drawer needs
- * them.
- *
- * That is the point. Every phase panel in this route goes through this shell,
- * so rendering the drawer here rather than at each call site makes "§7.1: every
- * phase panel has an entry point" a property of the shell instead of a promise
- * ten branches have to keep. Making the two ids required turns forgetting one
- * into a compile error rather than a phase that silently has no rubric UI —
- * which is the failure mode this project has already hit twice, where the
- * backend could do something and the interface never offered it.
+ * Every phase uses this same read-only shell. Work and decisions belong to the
+ * bound Codex task; the Web route only projects stage state and evidence.
  */
 export function PhaseStageShell({
-  projectId,
-  changeId,
   phase,
   statusLabel,
   latestRunStatus,
@@ -105,14 +93,11 @@ export function PhaseStageShell({
   records,
   recordsLabel,
   state = "waiting",
-  actions,
-  actionError,
   error,
   blockers,
-  readOnly = false,
 }: {
-  projectId: string;
-  changeId: string;
+  projectId?: string;
+  changeId?: string;
   phase: ReviewPhase;
   statusLabel: string;
   latestRunStatus?: string | null;
@@ -120,11 +105,8 @@ export function PhaseStageShell({
   records?: ReactNode;
   recordsLabel?: string;
   state?: UiStageState;
-  actions?: StageActionView[];
-  actionError?: ReactNode;
   error?: ReactNode;
   blockers?: StageBlockerView[];
-  readOnly?: boolean;
 }) {
   const copy = PHASE_STAGE_COPY[phase] ?? {
     label: phase,
@@ -132,14 +114,11 @@ export function PhaseStageShell({
     description: "查看当前阶段的主要状态、动作和审计记录。",
   };
   const resolvedRecordsLabel = recordsLabel ?? phaseRecordsLabel(phase);
-  // Null only where the UI phase maps to no rubric phase at all (see
-  // reviewPhaseToRubricPhase); every real pipeline stage maps to one.
-  const rubricPhase = reviewPhaseToRubricPhase(phase);
   const evidence = records ? (
-    <details id="stage-evidence" className="stagepass-surface-subtle rounded-xl p-4">
-      <summary className="cursor-pointer text-sm font-medium">{resolvedRecordsLabel}</summary>
-      <div className="mt-4 border-t border-white/10 pt-4">{records}</div>
-    </details>
+    <section id="stage-evidence" aria-label={resolvedRecordsLabel}>
+      <h3 className="stagepass-kicker mb-3">{resolvedRecordsLabel}</h3>
+      {records}
+    </section>
   ) : null;
 
   return (
@@ -149,25 +128,13 @@ export function PhaseStageShell({
         label={copy.label}
         state={state}
         description={copy.description}
-        eyebrow="Pipeline Stage"
+        eyebrow="当前阶段"
         meta={[
-          { id: "status", label: "Status:", value: statusLabel },
-          { id: "latest-run", label: "Latest Run:", value: latestRunStatus ?? "none" },
+          { id: "status", label: "流程状态", value: statusLabel },
+          { id: "latest-run", label: "最近运行", value: latestRunStatus ?? "暂无" },
         ]}
-        actions={actions}
-        actionError={actionError}
         error={error}
         blockers={blockers}
-        rubric={
-          rubricPhase ? (
-            <RubricPanel
-              projectId={projectId}
-              changeId={changeId}
-              phase={rubricPhase}
-              readOnly={readOnly}
-            />
-          ) : null
-        }
         evidence={evidence}
         evidenceLabel={resolvedRecordsLabel}
       >

@@ -118,14 +118,14 @@ const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
   Spec: {
     producer: [
       { key: "RBK-factory-Spec-producer-01", text: "我列出的每一条 PRD delta 都指明了它改的是 PRD 的哪一节。" },
-      { key: "RBK-factory-Spec-producer-02", text: "上一轮反方提出的每一个 gap，我都给出了明确处置（已修，或不修并说明理由）。" },
+      { key: "RBK-factory-Spec-producer-02", text: "上一轮蓝方提出的每一个 gap，我都给出了明确处置（已修，或不修并说明理由）。" },
       { key: "RBK-factory-Spec-producer-03", text: "我没有在 delta 里引入 PRD 从未提过的新需求。" },
       { key: "RBK-factory-Spec-producer-04", text: "我写下的每一条验收条件都能被一次具体的操作验证。" },
       { key: "RBK-factory-Spec-producer-05", text: "我没有在任何一条需求上留下「待定」「后续再议」。" },
       { key: "RBK-factory-Spec-producer-06", text: "我声称已修复的每一个 gap，都能在本次 delta 正文里指出对应的改动位置。" },
     ],
     critic: [
-      { key: "RBK-factory-Spec-critic-01", text: "我方执行代理声称修复的每一个 gap，我都逐条复核过并给出了 verdict。" },
+      { key: "RBK-factory-Spec-critic-01", text: "红方声称修复的每一个 gap，我都逐条复核过并给出了 verdict。" },
       { key: "RBK-factory-Spec-critic-02", text: "我提出的每一个 gap 都指明了它违反了哪一条需求或哪一条验收条件。" },
       { key: "RBK-factory-Spec-critic-03", text: "我没有把「可以做得更好」当成 gap 提出来。" },
       { key: "RBK-factory-Spec-critic-04", text: "规格里的每一条需求，我都检查过它是否有对应的验收条件。" },
@@ -133,8 +133,8 @@ const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
       { key: "RBK-factory-Spec-critic-06", text: "我提出的每一个 P0 gap，都确实会导致产物无法交付，而不只是不够完善。" },
     ],
     verdict: [
-      { key: "RBK-factory-Spec-verdict-01", text: "正反双方对同一条需求的判断，不存在任何未被处理的直接冲突。" },
-      { key: "RBK-factory-Spec-verdict-02", text: "反方提出的每一个 open gap，正方都有过回应（修复或说明）。" },
+      { key: "RBK-factory-Spec-verdict-01", text: "红蓝双方对同一条需求的判断，不存在任何未被处理的直接冲突。" },
+      { key: "RBK-factory-Spec-verdict-02", text: "蓝方提出的每一个 open gap，红方都有过回应（修复或说明）。" },
       { key: "RBK-factory-Spec-verdict-03", text: "现有规格足以让下游 TechSpec 阶段开工，不需要再回头补问 PRD。" },
       { key: "RBK-factory-Spec-verdict-04", text: "本轮不存在「双方都没看过」的需求：每条需求至少被一方检查过。" },
       { key: "RBK-factory-Spec-verdict-05", text: "规格里不存在任何一条无法判定是否满足的需求。" },
@@ -151,6 +151,24 @@ const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
       { key: "RBK-factory-TechSpec-producer-07", text: "我引入的每一个新依赖都写明了引入理由。" },
       { key: "RBK-factory-TechSpec-producer-08", text: "我检查过方案不会破坏任何既有对外契约（API、DB schema、文件格式）。" },
     ],
+    critic: [
+      { key: "RBK-factory-TechSpec-critic-01", text: "红方声称修复的每一个 gap，我都逐条复核过并给出了 verdict。" },
+      { key: "RBK-factory-TechSpec-critic-02", text: "我提出的每一个 gap 都指明了它违反了哪一条需求，或会在施工时造成什么具体后果。" },
+      { key: "RBK-factory-TechSpec-critic-03", text: "我逐条检查过每个状态是否有唯一的事实来源，而不是只看整体方案是否合理。" },
+      { key: "RBK-factory-TechSpec-critic-04", text: "我检查过并发写入、重复提交、乱序到达时的行为是否都有定义。" },
+      { key: "RBK-factory-TechSpec-critic-05", text: "我检查过失败与回滚路径，包括迁移中途失败后半完成状态如何收拾。" },
+      { key: "RBK-factory-TechSpec-critic-06", text: "我确认过接口契约足以让 Build 直接施工，不需要再回头猜。" },
+      { key: "RBK-factory-TechSpec-critic-07", text: "我没有把风格偏好或「可以做得更好」当成 gap 提出来。" },
+      { key: "RBK-factory-TechSpec-critic-08", text: "我提出的每一个 P0，都确实会导致数据损坏、状态无法收敛或接口无法施工。" },
+    ],
+    verdict: [
+      { key: "RBK-factory-TechSpec-verdict-01", text: "蓝方提出的每一个 open gap，红方都有过回应（修复或说明理由）。" },
+      { key: "RBK-factory-TechSpec-verdict-02", text: "红方声称已修、而蓝方复核确认的 gap，双方证据指向同一处改动。" },
+      { key: "RBK-factory-TechSpec-verdict-03", text: "红蓝双方对同一个技术决策的判断，不存在任何未被处理的直接冲突。" },
+      { key: "RBK-factory-TechSpec-verdict-04", text: "现有技术方案足以让下游 Plan 阶段拆出可执行步骤，不需要再回头补问 Spec。" },
+      { key: "RBK-factory-TechSpec-verdict-05", text: "方案里不存在任何一处把「以后再定」当成了已完成的技术决策。" },
+      { key: "RBK-factory-TechSpec-verdict-06", text: "本轮不存在「双方都没看过」的改动点：每个改动点至少被一方检查过。" },
+    ],
   },
   Plan: {
     producer: [
@@ -163,6 +181,24 @@ const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
       { key: "RBK-factory-Plan-producer-07", text: "计划指明了每一步完成后要如何确认它确实完成了。" },
       { key: "RBK-factory-Plan-producer-08", text: "计划没有把测试放在最后当成可选步骤。" },
     ],
+    critic: [
+      { key: "RBK-factory-Plan-critic-01", text: "红方声称修复的每一个 gap，我都逐条复核过并给出了 verdict。" },
+      { key: "RBK-factory-Plan-critic-02", text: "我提出的每一个 gap 都指明了它会在执行到哪一步时出问题。" },
+      { key: "RBK-factory-Plan-critic-03", text: "我按顺序走查过每一步，确认它依赖的东西前面的步骤确实已经产出。" },
+      { key: "RBK-factory-Plan-critic-04", text: "我逐条对照过 TechSpec 的改动点，确认计划没有遗漏其中任何一条。" },
+      { key: "RBK-factory-Plan-critic-05", text: "我检查过每一步的验证方式足以证明这一步做到了，而不是只证明它没报错。" },
+      { key: "RBK-factory-Plan-critic-06", text: "我检查过失败后的恢复路径，而不是只看顺利情况下的步骤序列。" },
+      { key: "RBK-factory-Plan-critic-07", text: "我没有把「换个顺序也行」这类偏好当成 gap 提出来。" },
+      { key: "RBK-factory-Plan-critic-08", text: "我提出的每一个 P0，都确实会导致计划无法执行或执行结果不可验证。" },
+    ],
+    verdict: [
+      { key: "RBK-factory-Plan-verdict-01", text: "蓝方提出的每一个 open gap，红方都有过回应（修复或说明理由）。" },
+      { key: "RBK-factory-Plan-verdict-02", text: "红方声称已修、而蓝方复核确认的 gap，双方证据指向同一个步骤。" },
+      { key: "RBK-factory-Plan-verdict-03", text: "红蓝双方对步骤顺序或拆分粒度的判断，不存在任何未被处理的直接冲突。" },
+      { key: "RBK-factory-Plan-verdict-04", text: "现有计划足以让 Build 阶段照着施工，不需要再回头补问 TechSpec。" },
+      { key: "RBK-factory-Plan-verdict-05", text: "计划里不存在任何一个无法独立验证的步骤。" },
+      { key: "RBK-factory-Plan-verdict-06", text: "本轮不存在「双方都没看过」的步骤：每一步至少被一方检查过。" },
+    ],
   },
   TestPlan: {
     producer: [
@@ -173,6 +209,24 @@ const FACTORY_RUBRIC_TEXT: FactoryRubrics = {
       { key: "RBK-factory-TestPlan-producer-05", text: "测试计划区分了自动化测试与需要人工确认的项。" },
       { key: "RBK-factory-TestPlan-producer-06", text: "没有任何一个测试项的通过与否取决于执行者的主观判断。" },
       { key: "RBK-factory-TestPlan-producer-07", text: "我说明了测试数据从哪里来，或明确写出「不需要额外测试数据」。" },
+    ],
+    critic: [
+      { key: "RBK-factory-TestPlan-critic-01", text: "红方声称修复的每一个 gap，我都逐条复核过并给出了 verdict。" },
+      { key: "RBK-factory-TestPlan-critic-02", text: "我提出的每一个 gap 都指明了它会漏掉哪一条验收标准或哪一类风险。" },
+      { key: "RBK-factory-TestPlan-critic-03", text: "我逐条对照过已批准的验收标准，确认每一条都有测试项覆盖。" },
+      { key: "RBK-factory-TestPlan-critic-04", text: "我检查过每个会阻止交付的关键风险都有一条能真的跑起来的测试。" },
+      { key: "RBK-factory-TestPlan-critic-05", text: "我检查过每个测试项的通过判据是客观可判的，不依赖执行者的主观判断。" },
+      { key: "RBK-factory-TestPlan-critic-06", text: "我确认过必跑命令能在本仓库里直接执行，而不是看起来合理。" },
+      { key: "RBK-factory-TestPlan-critic-07", text: "我没有把「还可以多测一点」当成 gap 提出来。" },
+      { key: "RBK-factory-TestPlan-critic-08", text: "我提出的每一个 P0，都确实会让某条验收标准完全无人验证。" },
+    ],
+    verdict: [
+      { key: "RBK-factory-TestPlan-verdict-01", text: "蓝方提出的每一个 open gap，红方都有过回应（修复或说明理由）。" },
+      { key: "RBK-factory-TestPlan-verdict-02", text: "红方声称已修、而蓝方复核确认的 gap，双方证据指向同一个测试项。" },
+      { key: "RBK-factory-TestPlan-verdict-03", text: "红蓝双方对某条风险是否需要覆盖的判断，不存在任何未被处理的直接冲突。" },
+      { key: "RBK-factory-TestPlan-verdict-04", text: "现有测试计划足以判定本次交付是否达标，不需要再回头补问 Spec。" },
+      { key: "RBK-factory-TestPlan-verdict-05", text: "测试计划里不存在任何一个通过与否取决于主观判断的测试项。" },
+      { key: "RBK-factory-TestPlan-verdict-06", text: "本轮不存在「双方都没看过」的验收标准：每一条至少被一方检查过。" },
     ],
   },
   Build: {
@@ -280,9 +334,27 @@ export const RUBRIC_ROLE_ANSWERED_BY: Record<
   Refine: {},
   PRD: { producer: "prd_briefing_draft", critic: "prd_briefing_final_review" },
   Spec: { producer: "spec", critic: "spec_critic", verdict: "spec_verdict" },
-  TechSpec: { producer: "tech_spec" },
-  Plan: { producer: "generate_plan" },
-  TestPlan: { producer: "test_plan" },
+  // The critic and verdict scopes are answered by the delegated round, not by a
+  // second stage run: blue answers the critic rubric from its own brief and the
+  // judge answers the verdict rubric from its. Both ids name the round's role
+  // rather than a `runs.phase`, because for these three phases there is no
+  // separate critic run to name -- and a checklist whose answerer is a stage
+  // that does not exist is the same blank drawer as no answerer at all.
+  TechSpec: {
+    producer: "tech_spec",
+    critic: "tech_spec_delegated_round_blue",
+    verdict: "tech_spec_delegated_round_judge",
+  },
+  Plan: {
+    producer: "generate_plan",
+    critic: "generate_plan_delegated_round_blue",
+    verdict: "generate_plan_delegated_round_judge",
+  },
+  TestPlan: {
+    producer: "test_plan",
+    critic: "test_plan_delegated_round_blue",
+    verdict: "test_plan_delegated_round_judge",
+  },
   Build: { producer: "implement", critic: "review" },
   Fix: { producer: "fix_findings" },
   QA: {},

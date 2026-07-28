@@ -12,12 +12,6 @@ function dependencies(patch: Partial<OpenCodexDependencies> = {}) {
       status: "ready",
       repoPath: "/tmp/project",
     }),
-    readShell: async () => ({
-      threadId: "THREAD-1",
-      title: "Change",
-      cwd: "/tmp/project",
-      ephemeral: false,
-    }),
     openThread: async (threadId) => {
       opened.push(threadId);
     },
@@ -38,17 +32,34 @@ describe("open in Codex route", () => {
     assert.deepEqual(fixture.opened, ["THREAD-1"]);
   });
 
-  it("returns detached when the shell is missing or does not match", async () => {
-    for (const readShell of [
-      async () => null,
-      async () => ({
-        threadId: "THREAD-OTHER",
+  it("opens from the canonical binding without a bridge shell round-trip", async () => {
+    const fixture = dependencies();
+    const response = await handleOpenCodex(
+      "PRJ-1",
+      "CHG-1",
+      fixture.value,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(fixture.opened, ["THREAD-1"]);
+  });
+
+  it("returns detached when there is no usable canonical binding", async () => {
+    for (const readBinding of [
+      () => null,
+      () => ({
+        threadId: null,
         title: "Change",
-        cwd: "/tmp/project",
-        ephemeral: false as const,
+        status: "ready",
+        repoPath: "/tmp/project",
+      }),
+      () => ({
+        threadId: "THREAD-1",
+        title: "Change",
+        status: "detached",
+        repoPath: "/tmp/project",
       }),
     ]) {
-      const fixture = dependencies({ readShell });
+      const fixture = dependencies({ readBinding });
       const response = await handleOpenCodex(
         "PRJ-1",
         "CHG-1",

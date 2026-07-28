@@ -460,12 +460,12 @@ describe("spec-battle-report-service", { concurrency: false }, () => {
     assert.match(content, /仍在阻断/);
     assert.match(content, /新发现/);
     assert.match(content, /未复核/);
-    assert.match(content, /## 我方修复声明/);
-    assert.match(content, /## 反方复核/);
+    assert.match(content, /## 红方修复声明/);
+    assert.match(content, /## 蓝方复核/);
     assert.match(content, /## Gap Ledger/);
     assert.match(content, new RegExp(`本轮已解决[\\s\\S]*${canonicalGapId}`));
-    assert.match(content, new RegExp(`我方修复声明[\\s\\S]*${canonicalGapId}`));
-    assert.match(content, new RegExp(`反方复核[\\s\\S]*${canonicalGapId}`));
+    assert.match(content, new RegExp(`红方修复声明[\\s\\S]*${canonicalGapId}`));
+    assert.match(content, new RegExp(`蓝方复核[\\s\\S]*${canonicalGapId}`));
   });
 
   it("marks old reports stale after Waive P1 and rejects approving the stale report", async () => {

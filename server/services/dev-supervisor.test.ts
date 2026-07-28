@@ -276,6 +276,34 @@ describe("dev supervisor", () => {
     assert.equal(fs.statSync(logDir).isDirectory(), true);
   });
 
+  it("loads Next environment files before starting the supervised worker", async () => {
+    const key = "STAGEPASS_CODEX_DESKTOP_BRIDGE";
+    const previous = process.env[key];
+    delete process.env[key];
+    fs.writeFileSync(path.join(tempDir, ".env.local"), `${key}=on\n`);
+
+    try {
+      const supervisorModule = await import("../../scripts/dev-supervisor.ts");
+      const loadStagepassDevEnvironment = (
+        supervisorModule as unknown as {
+          loadStagepassDevEnvironment?: (cwd: string) => void;
+        }
+      ).loadStagepassDevEnvironment;
+      assert.equal(
+        typeof loadStagepassDevEnvironment,
+        "function",
+        "the supervisor must load the same .env files as Next.js",
+      );
+
+      loadStagepassDevEnvironment!(tempDir);
+
+      assert.equal(process.env[key], "on");
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
   it("appends supervisor events as JSONL with event fields", () => {
     const logFile = path.join(tempDir, "logs", "dev-supervisor.log");
 

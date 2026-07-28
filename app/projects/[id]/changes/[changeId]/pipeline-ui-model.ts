@@ -42,6 +42,7 @@ export interface UiStage {
   actionPhase: ActionPhase | null;
   actionPhases?: ActionPhase[];
   actionIds?: string[];
+  startActionIds: string[];
   selectable: boolean;
   selected: boolean;
   available: boolean;
@@ -60,6 +61,14 @@ interface StageDefinition {
   actionPhase: ActionPhase | null;
   actionPhases?: ActionPhase[];
   actionIds?: string[];
+  /**
+   * The actions that start this stage, most preferred first.
+   *
+   * Declared rather than found by matching a `run_`/`retry_` prefix: Fix and
+   * Merge start through `fix_blockers` and `merge`, so prefix matching left
+   * both stages with no way to start.
+   */
+  startActionIds: string[];
 }
 
 interface StageResolution {
@@ -82,7 +91,7 @@ export const UI_STAGE_ORDER: UiStageId[] = [
   "done",
 ];
 
-const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
+export const STAGE_DEFINITIONS_BY_ID: Record<UiStageId, StageDefinition> = {
   prd: {
     id: "prd",
     label: "PRD",
@@ -91,6 +100,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     recordPhase: "Intake",
     actionPhase: "PRD",
     actionIds: ["run_prd", "retry_prd", "approve_intake"],
+    startActionIds: ["retry_prd", "run_prd"],
   },
   spec: {
     id: "spec",
@@ -99,7 +109,16 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     reviewPhase: "Spec",
     recordPhase: "Spec",
     actionPhase: "Spec",
-    actionIds: ["run_spec", "retry_spec", "approve_spec", "reject_spec", "waive_spec_p1"],
+    actionIds: [
+      "run_spec", "retry_spec", "approve_spec", "reject_spec", "waive_spec_p1",
+      "request_spec_changes",
+    ],
+    // `request_spec_changes` is LAST on purpose. The stage renders one start
+    // button -- the first action here the contract has enabled -- so ordering is
+    // what decides which one it is. run/retry are the entries while a round is
+    // unstarted or failed; once a round settles they both turn off and this one
+    // takes the slot, which is exactly when "another round" is the real option.
+    startActionIds: ["retry_spec", "run_spec", "request_spec_changes"],
   },
   tech_spec: {
     id: "tech_spec",
@@ -108,7 +127,16 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     reviewPhase: "TechSpec",
     recordPhase: "TechSpec",
     actionPhase: "Plan",
-    actionIds: ["run_tech_spec", "retry_tech_spec", "approve_tech_spec", "reject_tech_spec"],
+    actionIds: [
+      "run_tech_spec", "retry_tech_spec", "approve_tech_spec", "reject_tech_spec",
+      "request_tech_spec_changes",
+    ],
+    // `request_tech_spec_changes` LAST, for the reason spelled out on Spec: the
+    // stage renders one start button -- the first enabled action here -- so
+    // ordering decides which. run/retry are the entries while a round is
+    // unstarted or failed; once a round settles both turn off and this one takes
+    // the slot, which is exactly when "another round" is the real option.
+    startActionIds: ["retry_tech_spec", "run_tech_spec", "request_tech_spec_changes"],
   },
   plan: {
     id: "plan",
@@ -117,7 +145,11 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     reviewPhase: "Plan",
     recordPhase: "Plan",
     actionPhase: "Plan",
-    actionIds: ["run_plan", "retry_plan", "approve_plan", "regenerate_plan_report", "waive_plan_p1"],
+    actionIds: [
+      "run_plan", "retry_plan", "approve_plan", "regenerate_plan_report", "waive_plan_p1",
+      "request_plan_changes",
+    ],
+    startActionIds: ["retry_plan", "run_plan", "request_plan_changes"],
   },
   test_plan: {
     id: "test_plan",
@@ -126,7 +158,8 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     reviewPhase: "TestPlan",
     recordPhase: "TestPlan",
     actionPhase: "TestPlan",
-    actionIds: ["run_test_plan", "retry_test_plan"],
+    actionIds: ["run_test_plan", "retry_test_plan", "request_test_plan_changes"],
+    startActionIds: ["retry_test_plan", "run_test_plan", "request_test_plan_changes"],
   },
   build: {
     id: "build",
@@ -136,6 +169,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     recordPhase: "Build",
     actionPhase: "Build",
     actionIds: ["run_build", "retry_build", "adopt_build", "reject_build"],
+    startActionIds: ["retry_build", "run_build"],
   },
   review: {
     id: "review",
@@ -154,6 +188,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
       "recompute_report",
       "rebuild_mirror",
     ],
+    startActionIds: ["retry_review", "run_review"],
   },
   fix: {
     id: "fix",
@@ -164,6 +199,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     actionPhase: "Build",
     actionPhases: ["Build", "Review"],
     actionIds: ["adopt_fix", "reject_build", "fix_blockers"],
+    startActionIds: ["fix_blockers"],
   },
   qa: {
     id: "qa",
@@ -173,6 +209,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     recordPhase: "Check",
     actionPhase: "QA",
     actionIds: ["enter_qa", "run_qa", "retry_qa"],
+    startActionIds: ["retry_qa", "run_qa"],
   },
   merge: {
     id: "merge",
@@ -182,6 +219,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     recordPhase: "Merge",
     actionPhase: "Merge",
     actionIds: ["approve_merge", "reject_merge", "merge"],
+    startActionIds: ["merge"],
   },
   retro: {
     id: "retro",
@@ -191,6 +229,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     recordPhase: "Retro",
     actionPhase: "Merge",
     actionIds: ["run_retro"],
+    startActionIds: ["run_retro"],
   },
   done: {
     id: "done",
@@ -202,6 +241,7 @@ const STAGE_DEFINITIONS: Record<UiStageId, StageDefinition> = {
     // after the merge and inherit the Merge stage gate as their authority.
     actionPhase: "Merge",
     actionIds: ["run_delivery"],
+    startActionIds: ["run_delivery"],
   },
 };
 
@@ -233,7 +273,7 @@ const STATUS_TO_STAGE: Record<string, StageResolution> = {
   DONE: { id: "done", state: "complete" },
 };
 
-const REVIEW_PHASE_TO_STAGE: Record<ReviewPhase, UiStageId> = {
+export const REVIEW_PHASE_TO_STAGE: Record<ReviewPhase, UiStageId> = {
   Intake: "prd",
   Spec: "spec",
   TechSpec: "tech_spec",
@@ -434,7 +474,7 @@ function createUiStage(input: {
   activeStageId: UiStageId;
   reviewCenterState?: ReviewCenterResponse | null;
 }): UiStage {
-  const definition = STAGE_DEFINITIONS[input.stageId];
+  const definition = STAGE_DEFINITIONS_BY_ID[input.stageId];
   const overview = phaseOverviewForStage(definition, input.phaseOverviews);
   const selected = input.stageId === input.selectedResolution.id;
   const state = selected
@@ -467,7 +507,7 @@ function stageStateForSelectedOverride(stageId: UiStageId, fallbackStageId: UiSt
 }
 
 function isStageSelectable(stageId: UiStageId): boolean {
-  return STAGE_DEFINITIONS[stageId].reviewPhase !== null;
+  return STAGE_DEFINITIONS_BY_ID[stageId].reviewPhase !== null;
 }
 
 function isStageAvailable(
@@ -478,7 +518,7 @@ function isStageAvailable(
 ): boolean {
   if (selected) return true;
 
-  const definition = STAGE_DEFINITIONS[stageId];
+  const definition = STAGE_DEFINITIONS_BY_ID[stageId];
   if (!definition.reviewPhase) return false;
   if (!phaseOverviews) return true;
 

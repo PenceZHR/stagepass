@@ -44,6 +44,8 @@ import {
   stageStates,
   techspecSnapshots,
   warReports,
+  codexThreadBindings,
+  codexLogicalTurns,
 } from "../db/schema";
 import type { ProcessIdentity, ProcessIdentityProbe } from "./process-identity-service";
 import { computeActions, getActions } from "./action-contract-service";
@@ -165,6 +167,40 @@ function createFixtureRepo(): string {
   fixtureRepoPaths.push(repoPath);
   db.update(projects).set({ repoPath }).where(eq(projects.id, PROJECT_ID)).run();
   return repoPath;
+}
+
+function seedStartingLogicalTurn(jobId: string): void {
+  db.insert(codexThreadBindings).values({
+    bindingId: `BIND-${jobId}`,
+    scopeKind: "change_stage",
+    scopeId: `${CHANGE_ID}:spec`,
+    projectId: PROJECT_ID,
+    changeId: CHANGE_ID,
+    threadId: `THREAD-${jobId}`,
+    title: "starting",
+    status: "ready",
+    bridgeProtocolVersion: "v1",
+    lastSeenAt: "2026-07-10T00:00:20.000Z",
+    createdAt: "2026-07-10T00:00:20.000Z",
+    updatedAt: "2026-07-10T00:00:20.000Z",
+  }).onConflictDoNothing().run();
+  db.insert(codexLogicalTurns).values({
+    logicalTurnId: `LT-${jobId}`,
+    pipelineJobId: jobId,
+    bindingId: `BIND-${jobId}`,
+    phase: "spec",
+    role: "spec_writer",
+    round: 0,
+    ordinal: 0,
+    turnSlot: `slot-${jobId}`,
+    runCorrelationId: `sp-${jobId}`,
+    canonicalRequestJson: "{}",
+    canonicalRequestHash: `hash-${jobId}`,
+    dispatchSurface: "follower_ipc",
+    status: "running",
+    createdAt: "2026-07-10T00:00:20.000Z",
+    updatedAt: "2026-07-10T00:00:20.000Z",
+  }).onConflictDoNothing().run();
 }
 
 function seedChange(status = "TECHSPECCING"): void {
@@ -6361,5 +6397,67 @@ describe("stale-provider-run-recovery-service", { concurrency: false, timeout: 1
       assert.equal(raw.businessEvidenceComplete, true);
       assert.deepEqual(raw.missingEvidence, []);
     });
+  });
+});
+
+/**
+ * A Codex desktop stage starts its provider by dispatching a logical turn, and
+ * the provider row only appears once that turn is observed running. Between
+ * those two moments the run looks exactly like one whose provider never
+ * started, so the sweep killed stages that were starting normally -- the Spec
+ * battle died with provider_start_missing while its writer turn was live.
+ */
+describe("stale provider recovery with a live logical turn", () => {
+  it("defers a run whose logical turn is still starting", async () => {
+    seedChange("SPECCING");
+    db.insert(pipelineJobs).values({
+      id: "JOB-TURN-STARTING",
+      changeId: CHANGE_ID,
+      phase: "spec",
+      actionId: "run_spec",
+      idempotencyKey: "turn-starting",
+      status: "running",
+      leasedBy: "worker-1",
+      leaseExpiresAt: "2026-07-10T00:10:00.000Z",
+      heartbeatAt: "2026-07-10T00:00:20.000Z",
+      attemptNo: 1,
+      createdAt: "2026-07-10T00:00:00.000Z",
+      startedAt: "2026-07-10T00:00:20.000Z",
+      leaseToken: "lease-turn-starting",
+      workerNonce: "worker-nonce",
+    }).run();
+    db.insert(runs).values({
+      id: "RUN-TURN-STARTING",
+      changeId: CHANGE_ID,
+      phase: "spec",
+      status: "running",
+      startedAt: "2026-07-10T00:00:20.000Z",
+      endedAt: null,
+      summary: null,
+      jobId: "JOB-TURN-STARTING",
+      workerId: "worker-1",
+      leaseToken: "lease-turn-starting",
+      attemptNo: 1,
+    }).run();
+    seedStartingLogicalTurn("JOB-TURN-STARTING");
+
+    const result = await recoverStaleProviderRuns({
+      changeId: CHANGE_ID,
+      execute: true,
+      observedAt: new Date("2026-07-10T00:00:51.000Z"),
+    });
+
+    assert.equal(
+      result.observed.find((entry) => entry.runId === "RUN-TURN-STARTING")?.reason,
+      "logical_turn_starting",
+    );
+    assert.equal(
+      db.select().from(pipelineJobs).where(eq(pipelineJobs.id, "JOB-TURN-STARTING")).get()?.status,
+      "running",
+    );
+    assert.equal(
+      db.select().from(events).where(eq(events.type, "provider_start_missing")).all().length,
+      0,
+    );
   });
 });

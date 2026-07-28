@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+import { withRedFixClaims } from "./delegated-round-red-schema";
+import {
+  DelegatedRoundRubricAnswerSchema,
+  DELEGATED_ROUND_RUBRIC_JSON_SCHEMA,
+} from "./delegated-round-rubric-answer";
+
 export type Severity = "P0" | "P1" | "P2";
 export type GapStatus = "open" | "resolved" | "waived" | "downgraded" | "overridden";
 export type RedClaimStatus =
@@ -121,49 +127,46 @@ export function validateRedSpecLinePayload(value: unknown) {
   return RedSpecLinePayloadSchema.safeParse(value);
 }
 
-export const RED_SPEC_OUTPUT_JSON_SCHEMA: Record<string, unknown> = {
+/**
+ * Spec's producer half. The round's `fixClaims` are added by `withRedFixClaims`
+ * alongside every other phase's, so the four schemas cannot disagree about what
+ * a fix claim looks like.
+ */
+export const SPEC_PRODUCER_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["markdown", "fixClaims"],
+  required: ["markdown"],
   properties: {
     markdown: { type: "string", minLength: 1 },
-    fixClaims: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          canonicalGapId: { type: "string" },
-          claimStatus: {
-            type: "string",
-            enum: ["fixed", "partially_fixed", "not_fixed", "needs_human_decision"],
-          },
-          claimSummary: { type: "string" },
-          evidence: { type: "string" },
-          artifactPath: { type: ["string", "null"] },
-        },
-        required: [
-          "canonicalGapId",
-          "claimStatus",
-          "claimSummary",
-          "evidence",
-          "artifactPath",
-        ],
-      },
-    },
   },
 };
+
+export const RED_SPEC_OUTPUT_JSON_SCHEMA: Record<string, unknown> =
+  withRedFixClaims(SPEC_PRODUCER_JSON_SCHEMA);
 
 export const BlueCritiqueOutputSchema = z.object({
   gapReviews: z.array(BlueGapReviewSchema),
   requirementGaps: z.array(BlueRequirementGapSchema),
+  /**
+   * Blue's answers to the CRITIC rubric.
+   *
+   * Optional here and required in the JSON schema below, and the asymmetry is
+   * deliberate rather than sloppy. The JSON schema governs the sub-agent, which
+   * is told to fill this field and must therefore be held to it. This zod schema
+   * also governs payloads the SERVER assembles from the legacy line protocol
+   * (spec-critique-line-protocol.ts), which has no rubric lines and predates
+   * this field -- making it required here would refuse every round on the
+   * non-delegated path.
+   */
+  rubric: z.array(DelegatedRoundRubricAnswerSchema).default([]),
 }).strict();
 
 export const BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["gapReviews", "requirementGaps"],
+  required: ["gapReviews", "requirementGaps", "rubric"],
   properties: {
+    rubric: DELEGATED_ROUND_RUBRIC_JSON_SCHEMA,
     gapReviews: {
       type: "array",
       items: {
@@ -259,10 +262,21 @@ export interface ParsedRedSpecOutput {
   fixClaims: RedFixClaimInput[];
 }
 
-export interface ParsedBlueCritiqueOutput {
-  gapReviews: BlueGapReviewInput[];
-  requirementGaps: BlueRequirementGapInput[];
-}
+/**
+ * Derived from the schema rather than restated.
+ *
+ * It used to be a hand-written interface listing the same two fields, and it
+ * drifted the moment `rubric` was added: the schema parsed the field, the type
+ * denied it existed, and a consumer reading `blue.rubric` failed to compile
+ * against data that was demonstrably there. Inferring costs nothing and makes
+ * that particular disagreement unexpressible.
+ *
+ * `z.output` (the default) rather than `z.input`, because every value of this
+ * type has been through the parser -- `rubric` has its default applied and is
+ * always present. Callers ASSEMBLING a payload may still omit it; they are
+ * typed by the schema's input side at the call site.
+ */
+export type ParsedBlueCritiqueOutput = z.infer<typeof BlueCritiqueOutputSchema>;
 
 /**
  * Reviews here are rehydrated from blue_gap_reviews rows, not handed over by a

@@ -277,7 +277,15 @@ describe("spec-battle-ledger", () => {
       items: { required: string[] };
     }>;
 
-    assert.deepEqual(BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA.required, ["gapReviews", "requirementGaps"]);
+    // `rubric` is required of the SUB-AGENT even though the zod schema defaults
+    // it: blue is told to answer the critic rubric, so an omitted array is blue
+    // ignoring its brief rather than a legacy payload. The zod default covers
+    // the assembled line-protocol path, which has no rubric lines.
+    assert.deepEqual(
+      BLUE_CRITIQUE_OUTPUT_JSON_SCHEMA.required,
+      ["gapReviews", "requirementGaps", "rubric"],
+    );
+    assert.deepEqual(properties.rubric.items.required, ["criterionId", "verdict", "evidence"]);
     assert.deepEqual(properties.gapReviews.items.required, [
       "canonicalGapId",
       "verdict",

@@ -204,6 +204,27 @@
       "when": 1784851200000,
       "tag": "0028_codex_native_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784937600000,
+      "tag": "0029_stage_scoped_codex_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785024000000,
+      "tag": "0030_spec_judge_logical_turn_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785110400000,
+      "tag": "0031_delegated_round_judge_role",
+      "breakpoints": true
     }
   ]
 }

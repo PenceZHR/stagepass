@@ -1,12 +1,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  STAGE_DEFINITIONS_BY_ID,
   UI_STAGE_ORDER,
   buildUiPipelineState,
   type UiStageId,
   type UiStageState,
 } from "./pipeline-ui-model";
-import { NON_POST_ROUTED_ACTION_IDS, isPostRoutedAction } from "./pipeline-action-commands";
+import {
+  NEXT_ROUND_ACTION_IDS,
+  NON_POST_ROUTED_ACTION_IDS,
+  isPostRoutedAction,
+  resolvePipelineActionCommand,
+} from "./pipeline-action-commands";
 import type { ChangeDetail, PhaseOverview } from "./change-detail-types";
 import type { ReviewPhase } from "./change-phase-map";
 import { getReviewPhaseForRunPhase } from "./change-phase-map";
@@ -554,5 +560,131 @@ describe("getReviewPhaseForRunPhase", () => {
     for (const phase of ["deliverz", "Done", "", null, undefined]) {
       assert.equal(getReviewPhaseForRunPhase(phase), null, String(phase));
     }
+  });
+});
+
+/**
+ * The page found a stage's start button by matching a `run_`/`retry_` prefix
+ * on its action ids. Fix and Merge start through actions named for what they
+ * do (`fix_blockers`, `merge`), so both stages offered no way to start at all
+ * -- a naming coincidence decided whether a stage was reachable.
+ */
+describe("stage start actions", () => {
+  it("declares a start action for every stage that can be run", () => {
+    for (const stageId of UI_STAGE_ORDER) {
+      const stage = STAGE_DEFINITIONS_BY_ID[stageId];
+      assert.ok(
+        stage.startActionIds.length > 0,
+        `${stageId} has no way to start`,
+      );
+      for (const actionId of stage.startActionIds) {
+        assert.ok(
+          (stage.actionIds ?? []).includes(actionId),
+          `${stageId} start action ${actionId} is not one of its actions`,
+        );
+      }
+    }
+  });
+
+  /**
+   * Order is what picks the single start button: the page takes the first entry
+   * the contract has enabled. retry must precede run so a failed stage re-runs
+   * through the action that rotates the Codex task, and `request_spec_changes`
+   * must come last so it only takes the slot once run and retry are both off --
+   * which is exactly when a round has settled and "another round" is the real
+   * option. It was absent entirely before, which is why the next round could
+   * not be started from the web at all.
+   */
+  it("keeps retry ahead of first run, and another round behind both", () => {
+    assert.deepEqual(STAGE_DEFINITIONS_BY_ID.spec.startActionIds, [
+      "retry_spec",
+      "run_spec",
+      "request_spec_changes",
+    ]);
+  });
+
+  /**
+   * The other three delegated phases now have the same entry, and it has to sit
+   * in the same place for the same reason. A "another round" action ordered
+   * ahead of run/retry would take the start slot on a phase that has never run,
+   * offering to continue a round that does not exist.
+   */
+  it("gives every delegated phase the same next-round ordering", () => {
+    for (const [stageId, actionId] of [
+      ["tech_spec", "request_tech_spec_changes"],
+      ["plan", "request_plan_changes"],
+      ["test_plan", "request_test_plan_changes"],
+    ] as const) {
+      const { startActionIds } = STAGE_DEFINITIONS_BY_ID[stageId];
+      assert.equal(
+        startActionIds.at(-1),
+        actionId,
+        `${stageId} must offer another round only once run and retry are both off`,
+      );
+      assert.ok(
+        (STAGE_DEFINITIONS_BY_ID[stageId].actionIds ?? []).includes(actionId),
+        `${stageId} start action ${actionId} is not one of its actions`,
+      );
+    }
+  });
+
+  /**
+   * Every next-round action must be routable AND must be one the page knows to
+   * ask a reason for. Missing either is a button that fails at the click: an
+   * unrouted one is hidden entirely, and a routed one with no reason posts a
+   * body the route rejects with 422.
+   */
+  it("routes every next-round action and asks a reason for each", () => {
+    for (const actionId of NEXT_ROUND_ACTION_IDS) {
+      assert.ok(
+        resolvePipelineActionCommand(actionId),
+        `${actionId} has no endpoint, so the UI would hide it`,
+      );
+    }
+    for (const stageId of UI_STAGE_ORDER) {
+      for (const actionId of STAGE_DEFINITIONS_BY_ID[stageId].startActionIds) {
+        if (!actionId.startsWith("request_")) continue;
+        assert.ok(
+          NEXT_ROUND_ACTION_IDS.has(actionId),
+          `${actionId} starts a round but the page would post no reason for it`,
+        );
+      }
+    }
+  });
+});
+
+describe("start action preference", () => {
+  // Rotation to a fresh Codex task happens on the retry action only, so a
+  // stage that can retry must never be restarted through its first-run action.
+  it("lists retry before first run for every stage that has both", () => {
+    for (const stageId of UI_STAGE_ORDER) {
+      const { startActionIds } = STAGE_DEFINITIONS_BY_ID[stageId];
+      const retryIndex = startActionIds.findIndex((id) => id.startsWith("retry_"));
+      const runIndex = startActionIds.findIndex((id) => id.startsWith("run_"));
+      if (retryIndex === -1 || runIndex === -1) continue;
+      assert.ok(
+        retryIndex < runIndex,
+        `${stageId} would restart through its first-run action`,
+      );
+    }
+  });
+});
+
+describe("future stage previews", () => {
+  // Future stages stay previews because nothing authorizes starting them, not
+  // because of their position: the position is derived from change.status,
+  // which only moves once a stage has already run.
+  it("marks stages after the active one as read-only previews", () => {
+    const state = buildUiPipelineState({
+      change: {
+        id: "CHG-1",
+        status: "INTAKE_READY",
+        latestRun: null,
+      } as unknown as ChangeDetail,
+    });
+
+    const spec = state.stages.find((stage) => stage.id === "spec")!;
+    assert.equal(spec.selected, false);
+    assert.equal(state.activeStage.id, "prd");
   });
 });

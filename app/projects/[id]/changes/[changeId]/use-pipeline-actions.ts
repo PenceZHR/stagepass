@@ -51,13 +51,18 @@ export function usePipelineActions(input: {
   useEffect(() => clearPostStartWatch, [clearPostStartWatch]);
 
   const handleAction = useCallback(
-    async (actionId: string, retryAfterDrift = true) => {
+    async (
+      actionId: string,
+      retryAfterDrift = true,
+      extraPayload?: Record<string, unknown>,
+    ) => {
       let result: PipelineActionRunResult;
       try {
         result = await runPipelineAction({
           actionId,
           actions,
           retryAfterDrift,
+          extraPayload,
           // Marking the stage busy here rather than before the call keeps the
           // old semantics: an action rejected by its own contract never reached
           // the server, so it must not flash the buttons into a busy state.

@@ -8,6 +8,10 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const orbitSource = readFileSync(resolve(directory, "stage-orbit.tsx"), "utf8");
 const shellSource = readFileSync(resolve(directory, "pipeline-page-shell.tsx"), "utf8");
 const pageSource = readFileSync(resolve(directory, "page.tsx"), "utf8");
+const stageWorkspaceSource = readFileSync(
+  resolve(directory, "stage-codex-workspace.tsx"),
+  "utf8",
+);
 const globalsSource = readFileSync(resolve(directory, "../../../../globals.css"), "utf8");
 const navigationHookPath = resolve(directory, "use-workspace-navigation.ts");
 const navigationColumnsPath = resolve(directory, "workspace-navigation-columns.tsx");
@@ -40,24 +44,26 @@ describe("Abstract Cloud & Sea stage orbit", () => {
     assert.match(shellSource, /data-return-to-stage-orbit/);
     assert.match(shellSource, /data-future-preview=\{selectedIsFuture \? "true" : "false"\}/);
     assert.match(shellSource, /未来阶段只读预览/);
-    assert.match(pageSource, /readOnly=\{selectedIsFuture\}/);
-    assert.match(pageSource, /\{!selectedIsFuture \? \(/);
-    assert.match(globalsSource, /\[data-future-preview="true"\] \[data-stage-decision-area\]/);
+    // Read-only follows authorization, not stage order. Order is derived from
+    // change.status, which only advances once a stage runs, so an ordinal veto
+    // made every later stage permanently unstartable. Running out of turn is
+    // refused by the enqueue authority (not_at_gate), which is the real rule.
+    assert.match(pageSource, /readOnly=\{!startControlAction\}/);
+    assert.match(pageSource, /isFuture=\{selectedIsFuture\}/);
+    assert.doesNotMatch(pageSource, /\{selectedIsFuture \? \(/);
+    assert.doesNotMatch(pageSource, /data-stage-decision-area/);
   });
 
-  it("renders a dedicated future preview instead of the current gate workspace", () => {
+  it("uses the same read-only Codex boundary for current and future stages", () => {
+    assert.equal((pageSource.match(/<PhaseStageShell/g) ?? []).length, 1);
+    assert.equal((pageSource.match(/<StageCodexWorkspace/g) ?? []).length, 1);
+    assert.match(stageWorkspaceSource, /data-stage-codex-workspace/);
     assert.match(
-      pageSource,
-      /\{selectedIsFuture \? \(\s*<PhaseStageShell[\s\S]*?data-future-stage-overview[\s\S]*?\) : showingRetroStage \? \(/,
+      stageWorkspaceSource,
+      /当前尚未进入该阶段，因此这里只显示规则和只读记录/,
     );
-    assert.match(
-      pageSource,
-      /phase=\{activeSelectedPhase\}[\s\S]*?readOnly[\s\S]*?records=\{renderPhaseRecords\([\s\S]*?"future-preview-records",[\s\S]*?true,[\s\S]*?\)\}/,
-    );
-    assert.match(
-      pageSource,
-      /\) : showingSpecOrTechSpecGate \? \([\s\S]*?<GatePanel/,
-    );
+    assert.match(pageSource, /<PhaseReviewPanel[\s\S]*?readOnly/);
+    assert.doesNotMatch(pageSource, /<GatePanel|data-future-stage-overview/);
   });
 
   it("removes the destructive Change action only from future previews", () => {
@@ -93,6 +99,18 @@ describe("Abstract Cloud & Sea stage orbit", () => {
     assert.match(navigationColumnsSource, /data-workspace-changes/);
     assert.match(shellSource, /data-workspace-orbit/);
     assert.match(navigationColumnsSource, /aria-current=\{active \? "page" : undefined\}/);
+  });
+
+  it("keeps every stage detail header compact so the stage action stays near the fold", () => {
+    const detailHeader = shellSource.slice(
+      shellSource.indexOf("function PipelinePageHeader"),
+    );
+
+    assert.match(detailHeader, /data-stage-detail-header/);
+    assert.match(detailHeader, /truncate/);
+    assert.doesNotMatch(detailHeader, /<h1/);
+    assert.doesNotMatch(detailHeader, /selectedStage\.description/);
+    assert.doesNotMatch(detailHeader, />\s*Change Board\s*</);
   });
 
   it("anchors every node to the same trigonometric circle", () => {

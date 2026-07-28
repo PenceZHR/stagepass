@@ -29,7 +29,11 @@ export async function readJson<T>(res: Response, fallback: string): Promise<T> {
 export function changeApi(projectId: string, changeId: string) {
   const base = `/api/projects/${projectId}/changes/${changeId}`;
   return {
-    getChange: async () => readJson<ChangeDetail>(await fetch(base), "Change not found"),
+    // The Codex task state is per stage, so the caller says which one it shows.
+    getChange: async (stageId?: string) => readJson<ChangeDetail>(
+      await fetch(stageId ? `${base}?stage=${encodeURIComponent(stageId)}` : base),
+      "Change not found",
+    ),
     getGate: async () => readJson<GateStatus>(await fetch(`${base}/gate`), "Failed to load gate"),
     getSpecBattle: async () => readJson<SpecBattleState>(await fetch(`${base}/spec-battle`), "Failed to load spec battle"),
     getPlanSandbox: async () => readJson<PlanSandboxState>(await fetch(`${base}/plan-sandbox`), "Failed to load Plan sandbox"),

@@ -28,6 +28,8 @@ import {
   reviewBuildAdoptionDecision,
 } from "./action-contract-build-policy";
 import { reviewControlDecision } from "./action-contract-review-policy";
+import { delegatedRoundRunDecision } from "./action-contract-delegated-round-policy";
+import type { DelegatedLedgerPhase } from "./delegated-round-ledger";
 import { enterQaDecision, retryQaDecision } from "./action-contract-qa-policy";
 import {
   approveMergeDecision,
@@ -109,7 +111,30 @@ const PRE_STATUS_GATE_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<stri
 const reviewControl: ActionPolicy = ({ db, changeId, definition, changeStatus }) =>
   reviewControlDecision(db, changeId, definition.actionId, changeStatus);
 
-const planGate: ActionPolicy = ({ changeGateState }) =>
+/**
+ * A phase's round state, checked BEFORE its ordinary gate.
+ *
+ * Order matters: the gate answers "may this phase run at all", and the round
+ * answers "is one already in flight". Asking the gate first would let a click
+ * open a second round on a phase whose gate is perfectly happy.
+ */
+function withDelegatedRound(
+  phase: DelegatedLedgerPhase,
+  retryActionId: string,
+  gate: ActionPolicy,
+): ActionPolicy {
+  return (input) => {
+    const round = delegatedRoundRunDecision({
+      actionId: input.definition.actionId,
+      changeId: input.changeId,
+      phase,
+      isRetry: input.definition.actionId === retryActionId,
+    });
+    return round ?? gate(input);
+  };
+}
+
+const planGateBase: ActionPolicy = ({ changeGateState }) =>
   changeGateState !== "tech_spec"
     ? {
       enabled: false,
@@ -119,8 +144,14 @@ const planGate: ActionPolicy = ({ changeGateState }) =>
     }
     : null;
 
-const techSpecRun: ActionPolicy = ({ changeId, changeGateState, snapshot }) =>
+const planGate = withDelegatedRound("Plan", "retry_plan", planGateBase);
+
+const techSpecRunBase: ActionPolicy = ({ changeId, changeGateState, snapshot }) =>
   techSpecRunDecision(changeId, changeGateState, snapshot);
+
+const techSpecRun = withDelegatedRound("TechSpec", "retry_tech_spec", techSpecRunBase);
+
+const testPlanRun = withDelegatedRound("TestPlan", "retry_test_plan", () => null);
 
 const reviewRun: ActionPolicy = ({ db, changeId, definition }) =>
   reviewBuildAdoptionDecision(
@@ -239,6 +270,15 @@ const ACTION_POLICIES: ReadonlyMap<string, ActionPolicy> = new Map<string, Actio
 
   ["run_tech_spec", techSpecRun],
   ["retry_tech_spec", techSpecRun],
+
+  // TestPlan had no policy at all and fell straight through to the flat
+  // requiredStatus filter, which knows nothing about rounds. With a delegated
+  // round that is the difference between "the round is mid-flight" and "the
+  // button is live", so it gets the same treatment as the other two. The base
+  // stays null: the requiredStatus filter is still the right answer once the
+  // round has nothing to say.
+  ["run_test_plan", testPlanRun],
+  ["retry_test_plan", testPlanRun],
 
   // Only decided here at the TestPlan gate; otherwise it falls through to base.
   ["approve_plan", ({ changeId, changeStatus, readStageAuthority }) => {

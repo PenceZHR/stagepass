@@ -9,7 +9,16 @@ import type { JobExecutionContext } from "./job-execution-context";
 import type { Provider } from "./provider-selection-service";
 import { getActions } from "./action-contract-service";
 import { renderMirrorsFromDb } from "./artifact-mirror-service";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
 import { runDocumentStage } from "./pipeline-document-stage-runner-service";
+import {
+  runDelegatedPhaseStage,
+  type DelegatedPhaseDescriptor,
+} from "./pipeline-delegated-phase-stage";
+import {
+  TECH_SPEC_DELEGATED_ROUND,
+  TEST_PLAN_DELEGATED_ROUND,
+} from "./delegated-round-phases";
 import { nowISO, writeRunOnlyArtifactBestEffort } from "./pipeline-run-ledger-service";
 import { reapplyRubricStageGateBlockers } from "./rubric-gate-adapters";
 import { getSpecBattleState } from "./spec-battle-service";
@@ -39,122 +48,19 @@ const log = createChildLogger("pipeline-design-stage-service");
  * assembly, never handed to the provider (runDocumentStage suppresses
  * outputSchema whenever lineProtocol is set).
  */
-const DESIGN_SECTIONS_SCHEMA = {
-  type: "object",
-  properties: {
-    interfaces: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          type: { type: "string" },
-          change: { type: "string" },
-        },
-        required: ["name", "type", "change"],
-        additionalProperties: false,
-      },
-    },
-    dataContracts: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          requiredFields: { type: "array", items: { type: "string" } },
-          constraints: { type: "array", items: { type: "string" } },
-        },
-        required: ["name", "requiredFields", "constraints"],
-        additionalProperties: false,
-      },
-    },
-    migrationNotes: { type: "array", items: { type: "string" } },
-    buildInputs: { type: "array", items: { type: "string" } },
-    reviewInputs: { type: "array", items: { type: "string" } },
-  },
-  required: ["interfaces", "dataContracts", "migrationNotes", "buildInputs", "reviewInputs"],
-  additionalProperties: false,
-};
-
-/**
- * `apiContract` is optional on purpose: a reply with no API_* line omits it, and
- * persistTechSpecAndApiSnapshots then derives the API contract from the tech
- * spec exactly as it does today (deriveApiContractFromTechSpec). Making it
- * required would have quietly retired the derive path that every existing
- * change actually used.
- */
-export const TECH_SPEC_OUTPUT_SCHEMA = {
-  type: "object",
-  properties: {
-    techSpec: DESIGN_SECTIONS_SCHEMA,
-    apiContract: DESIGN_SECTIONS_SCHEMA,
-  },
-  required: ["techSpec"],
-  additionalProperties: false,
-};
-
-const TESTPLAN_OUTPUT_SCHEMA = {
-  type: "object",
-  properties: {
-    testIntent: { type: "string" },
-    coverageItems: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          itemKey: { type: "string" },
-          title: { type: "string" },
-          requirementRef: { type: ["string", "null"] },
-          testType: { type: "string" },
-          priority: { type: "string", enum: ["P0", "P1", "P2"] },
-        },
-        required: ["itemKey", "title", "requirementRef", "testType", "priority"],
-        additionalProperties: false,
-      },
-    },
-    riskMappings: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          coverageItemKey: { type: "string" },
-          riskRef: { type: "string" },
-          severity: { type: "string", enum: ["P0", "P1", "P2"] },
-          mitigation: { type: "string" },
-        },
-        required: ["coverageItemKey", "riskRef", "severity", "mitigation"],
-        additionalProperties: false,
-      },
-    },
-    requiredCommands: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          command: { type: "string" },
-          required: { type: "boolean" },
-        },
-        required: ["command", "required"],
-        additionalProperties: false,
-      },
-    },
-    manualChecks: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          description: { type: ["string", "null"] },
-          required: { type: "boolean" },
-        },
-        required: ["title", "description", "required"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["testIntent", "coverageItems", "riskMappings", "requiredCommands", "manualChecks"],
-  additionalProperties: false,
-};
+// Declared in a leaf module so the delegated-round phase descriptors can name
+// these without importing this stage service (that would be a cycle, and a
+// cycle makes these schemas `undefined` at module-init). Re-exported here
+// because callers already import TECH_SPEC_OUTPUT_SCHEMA from this module.
+export {
+  DESIGN_SECTIONS_SCHEMA,
+  TECH_SPEC_OUTPUT_SCHEMA,
+  TESTPLAN_OUTPUT_SCHEMA,
+} from "./design-stage-output-schemas";
+import {
+  TECH_SPEC_OUTPUT_SCHEMA,
+  TESTPLAN_OUTPUT_SCHEMA,
+} from "./design-stage-output-schemas";
 
 function getChange(changeId: string): Change | undefined {
   return db.select().from(changes).where(eq(changes.id, changeId)).get() as Change | undefined;
@@ -281,12 +187,26 @@ function deriveApiContractFromTechSpec(content: NormalizedDesignSections): Norma
   };
 }
 
-async function persistTechSpecAndApiSnapshots(input: {
+/**
+ * Writes the TechSpec and API snapshot rows and their mirrors -- everything
+ * except the gate.
+ *
+ * Split out so the delegated round can reuse it. The round must NOT reuse the
+ * producer path's gate write: that one passes unconditionally, which is right
+ * for a producer nobody critiques and wrong the moment blue can raise a
+ * blocking gap. The round writes its own gate from the round's gaps
+ * (syncDelegatedRoundStageAuthority) and everything up to that point is
+ * identical, so it lives here rather than in two copies.
+ *
+ * Returns the `rows` the gate hashes, so whichever caller writes the gate hashes
+ * exactly the same snapshot identity.
+ */
+export async function writeTechSpecAndApiSnapshots(input: {
   changeId: string;
   project: Project;
   runId: string;
   result: AiRunResult;
-}): Promise<{ skipDefaultArtifactWrite: true }> {
+}): Promise<{ rows: Array<Record<string, unknown>> }> {
   const reviewedAt = nowISO();
   const candidate = requireTechSpecStructuredOutput(input.result.structuredOutput);
   const techSpecCandidate = selectTechSpecCandidate(candidate);
@@ -304,65 +224,21 @@ async function persistTechSpecAndApiSnapshots(input: {
     techSpecContent: normalizedTechSpec,
     apiContract: normalizedApi,
   });
-
-  const sourceDbHash = recomputeStageGate({
-    changeId: input.changeId,
-    phase: "TechSpec",
-    status: "passed",
-    blockers: [],
-    freshness: { fresh: true },
-    requiredActions: [],
-    rows: [
-      { table: "techspec_snapshots", id: techSpec.id, contentDbHash: techSpec.contentDbHash },
-      { table: "api_snapshots", id: api.id, contractDbHash: api.contractDbHash },
-    ],
-  }).sourceDbHash;
-  // Before getActions: the action contract is computed from the gate, so a
-  // rubric blocker appended afterwards would not reach the buttons until
-  // something else happened to recompute it.
-  reapplyRubricStageGateBlockers(input.changeId, "TechSpec");
-  getActions(input.changeId);
+  const rows: Array<Record<string, unknown>> = [
+    { table: "techspec_snapshots", id: techSpec.id, contentDbHash: techSpec.contentDbHash },
+    { table: "api_snapshots", id: api.id, contractDbHash: api.contractDbHash },
+  ];
 
   const techSpecMarkdown = renderDesignSnapshotMarkdown("TechSpec DB Snapshot", techSpec);
   const apiMarkdown = renderDesignSnapshotMarkdown("API DB Snapshot", api);
-  renderMirrorsFromDb({
-    repoPath: input.project.repoPath,
+  renderTechSpecMirrors({
+    project: input.project,
     changeId: input.changeId,
     generatedAt: reviewedAt,
-    mirrors: [
-      {
-        phase: "TechSpec",
-        artifactType: "tech_spec_delta",
-        fileName: "tech-spec-delta.md",
-        schemaVersion: techSpec.schemaVersion,
-        sourceDbHash: techSpec.contentDbHash,
-        content: techSpecMarkdown,
-      },
-      {
-        phase: "TechSpec",
-        artifactType: "tech_spec_delta_json",
-        fileName: "tech-spec-delta.json",
-        schemaVersion: techSpec.schemaVersion,
-        sourceDbHash: techSpec.contentDbHash,
-        payload: techSpec.content,
-      },
-      {
-        phase: "TechSpec",
-        artifactType: "api_spec_delta",
-        fileName: "api-spec-delta.md",
-        schemaVersion: api.schemaVersion,
-        sourceDbHash: api.contractDbHash,
-        content: apiMarkdown,
-      },
-      {
-        phase: "TechSpec",
-        artifactType: "api_spec_delta_json",
-        fileName: "api-spec-delta.json",
-        schemaVersion: api.schemaVersion,
-        sourceDbHash: api.contractDbHash,
-        payload: api.contract,
-      },
-    ],
+    techSpec,
+    api,
+    techSpecMarkdown,
+    apiMarkdown,
   });
 
   await writeRunOnlyArtifactBestEffort(
@@ -383,20 +259,136 @@ async function persistTechSpecAndApiSnapshots(input: {
     "api-spec-delta.md",
     apiMarkdown,
   );
+  return { rows };
+}
+
+async function persistTechSpecAndApiSnapshots(input: {
+  changeId: string;
+  project: Project;
+  runId: string;
+  result: AiRunResult;
+}): Promise<{ skipDefaultArtifactWrite: true }> {
+  const { rows } = await writeTechSpecAndApiSnapshots(input);
+
+  const sourceDbHash = recomputeStageGate({
+    changeId: input.changeId,
+    phase: "TechSpec",
+    status: "passed",
+    blockers: [],
+    freshness: { fresh: true },
+    requiredActions: [],
+    rows,
+  }).sourceDbHash;
+  // Before getActions: the action contract is computed from the gate, so a
+  // rubric blocker appended afterwards would not reach the buttons until
+  // something else happened to recompute it.
+  reapplyRubricStageGateBlockers(input.changeId, "TechSpec");
+  getActions(input.changeId);
+
   log.info({ changeId: input.changeId, sourceDbHash }, "TechSpec/API snapshots persisted");
   return { skipDefaultArtifactWrite: true };
+}
+
+function renderTechSpecMirrors(input: {
+  project: Project;
+  changeId: string;
+  generatedAt: string;
+  techSpec: { schemaVersion: string; contentDbHash: string; content: unknown };
+  api: { schemaVersion: string; contractDbHash: string; contract: unknown };
+  techSpecMarkdown: string;
+  apiMarkdown: string;
+}): void {
+  renderMirrorsFromDb({
+    repoPath: input.project.repoPath,
+    changeId: input.changeId,
+    generatedAt: input.generatedAt,
+    mirrors: [
+      {
+        phase: "TechSpec",
+        artifactType: "tech_spec_delta",
+        fileName: "tech-spec-delta.md",
+        schemaVersion: input.techSpec.schemaVersion,
+        sourceDbHash: input.techSpec.contentDbHash,
+        content: input.techSpecMarkdown,
+      },
+      {
+        phase: "TechSpec",
+        artifactType: "tech_spec_delta_json",
+        fileName: "tech-spec-delta.json",
+        schemaVersion: input.techSpec.schemaVersion,
+        sourceDbHash: input.techSpec.contentDbHash,
+        payload: input.techSpec.content,
+      },
+      {
+        phase: "TechSpec",
+        artifactType: "api_spec_delta",
+        fileName: "api-spec-delta.md",
+        schemaVersion: input.api.schemaVersion,
+        sourceDbHash: input.api.contractDbHash,
+        content: input.apiMarkdown,
+      },
+      {
+        phase: "TechSpec",
+        artifactType: "api_spec_delta_json",
+        fileName: "api-spec-delta.json",
+        schemaVersion: input.api.schemaVersion,
+        sourceDbHash: input.api.contractDbHash,
+        payload: input.api.contract,
+      },
+    ],
+  });
+}
+
+/**
+ * TechSpec as a delegated round.
+ *
+ * `persistRed` hands red's document to the phase's existing snapshot writer, so
+ * the round and the single-turn path produce the same rows from the same
+ * payload. What it deliberately does NOT do is call the producer path's
+ * `recomputeStageGate({ status: "passed" })`: blue can raise a blocking gap, and
+ * the gate is written from the round's gaps afterwards
+ * (syncDelegatedRoundStageAuthority).
+ */
+function runTechSpecDelegatedRound(
+  changeId: string,
+  context: JobExecutionContext,
+  provider?: Provider,
+  adoptedResult?: AiRunResult,
+): Promise<AiRunResult> {
+  return runDelegatedPhaseStage({
+    descriptor: TECH_SPEC_DELEGATED_ROUND as DelegatedPhaseDescriptor,
+    changeId,
+    context,
+    provider: provider ?? context.provider ?? "codex",
+    runningStatus: "TECHSPECCING",
+    // The same status the single-turn path's `successStatus` reaches.
+    settledStatus: "TECHSPEC_READY",
+    failureStatus: "SPEC_READY",
+    adoptedResult,
+    persistRed: writeTechSpecAndApiSnapshots,
+  });
 }
 
 export async function runTechSpec(
   changeId: string,
   _context?: JobExecutionContext,
   provider?: Provider,
+  /** A judge turn this task already produced, once its questions converged. */
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
   const change = getChange(changeId);
   if (!change) throw new Error(`Change not found: ${changeId}`);
   const battle = getSpecBattleState(changeId);
   if (change.gateState !== "spec" || battle.latestRound?.status !== "closed") {
     throw new Error("Spec gate is not approved");
+  }
+  // The delegated form replaces the whole single-turn producer path: red writes
+  // the tech spec, blue critiques it, and the judge answers the verdict rubric,
+  // all inside one turn. The flag is named for Spec because Spec is where it
+  // started; it has controlled the delegated FORM rather than the Spec phase
+  // since the generic layer landed.
+  if (readCodexNativeFlags().specJudgeSubAgents && _context) {
+    return runTechSpecDelegatedRound(changeId, _context, provider, adoptedResult);
   }
   return runDocumentStage(changeId, {
     phase: "tech_spec",
@@ -410,7 +402,10 @@ export async function runTechSpec(
     successSummary: "Tech spec completed",
     provider,
     sessionKind: "general",
-    // §3: tech_spec is TechSpec's producer, and the phase has no critic.
+    // §3: tech_spec is TechSpec's producer. With the delegated round off it is
+    // also the only role, so the critic and verdict rubrics this phase now ships
+    // go unanswered here -- the same shape Spec has on its own non-delegated
+    // path, and the reason the round is what answers them.
     rubricPhase: "TechSpec",
     additionalPromptFileName: "api-spec.md",
     outputSchema: TECH_SPEC_OUTPUT_SCHEMA,
@@ -438,6 +433,45 @@ async function persistTestPlanSnapshot(input: {
   result: AiRunResult;
   provider?: Provider;
 }): Promise<{ skipDefaultArtifactWrite: true }> {
+  const { snapshot } = createTestPlanSnapshotRows(input);
+  // The producer path approves as it writes, because a producer with no critic
+  // has nobody who could object. The delegated round must NOT come through here
+  // -- see writeTestPlanSnapshot.
+  const gate = approveTestPlan({
+    changeId: input.changeId,
+    actor: "system",
+    approvedAt: snapshot.createdAt,
+  });
+  await writeTestPlanRunArtifact({
+    ...input,
+    snapshot,
+    gateStatus: gate.status,
+    gateSourceDbHash: gate.sourceDbHash ?? "",
+  });
+  return { skipDefaultArtifactWrite: true };
+}
+
+/**
+ * The TestPlan snapshot without the approval.
+ *
+ * `approveTestPlan` is the producer path's shortcut: it writes the snapshot AND
+ * passes the gate in one call, which is correct only while nothing can object.
+ * A delegated round's blue can object, so the round writes the snapshot here and
+ * lets `syncDelegatedRoundStageAuthority` decide the gate from its gaps.
+ */
+export function writeTestPlanSnapshot(input: {
+  changeId: string;
+  result: AiRunResult;
+  provider?: Provider;
+}): { snapshot: ReturnType<typeof createTestPlanSnapshot>; rows: Array<Record<string, unknown>> } {
+  return createTestPlanSnapshotRows(input);
+}
+
+function createTestPlanSnapshotRows(input: {
+  changeId: string;
+  result: AiRunResult;
+  provider?: Provider;
+}): { snapshot: ReturnType<typeof createTestPlanSnapshot>; rows: Array<Record<string, unknown>> } {
   const snapshotInput = requireValidTestPlanStructuredOutput(
     input.changeId,
     input.result.structuredOutput,
@@ -447,11 +481,20 @@ async function persistTestPlanSnapshot(input: {
     provider: input.provider,
     createdAt: nowISO(),
   });
-  const gate = approveTestPlan({
-    changeId: input.changeId,
-    actor: "system",
-    approvedAt: snapshot.createdAt,
-  });
+  return {
+    snapshot,
+    rows: [{ table: "testplan_snapshots", id: snapshot.id, snapshotDbHash: snapshot.snapshotDbHash }],
+  };
+}
+
+export async function writeTestPlanRunArtifact(input: {
+  changeId: string;
+  project: Project;
+  runId: string;
+  snapshot: ReturnType<typeof createTestPlanSnapshot>;
+  gateStatus: string;
+  gateSourceDbHash: string;
+}): Promise<void> {
   await writeRunOnlyArtifactBestEffort(
     input.project.repoPath,
     input.changeId,
@@ -462,15 +505,14 @@ async function persistTestPlanSnapshot(input: {
     [
       "# TestPlan DB Snapshot",
       "",
-      `snapshotId: ${snapshot.id}`,
-      `gate: ${gate.status}`,
-      `sourceDbHash: ${gate.sourceDbHash}`,
+      `snapshotId: ${input.snapshot.id}`,
+      `gate: ${input.gateStatus}`,
+      `sourceDbHash: ${input.gateSourceDbHash}`,
       "",
-      snapshot.testIntent,
+      input.snapshot.testIntent,
       "",
     ].join("\n"),
   );
-  return { skipDefaultArtifactWrite: true };
 }
 
 /**
@@ -487,14 +529,45 @@ async function persistTestPlanSnapshot(input: {
  */
 const TEST_PLAN_ALLOWED_STATUSES: ChangeStatus[] = ["PLAN_APPROVED"];
 
+/** TestPlan as a delegated round. Same shape as TechSpec's; see that comment. */
+function runTestPlanDelegatedRound(
+  changeId: string,
+  context: JobExecutionContext,
+  provider: Provider,
+  adoptedResult?: AiRunResult,
+): Promise<AiRunResult> {
+  return runDelegatedPhaseStage({
+    descriptor: TEST_PLAN_DELEGATED_ROUND as DelegatedPhaseDescriptor,
+    changeId,
+    context,
+    provider,
+    runningStatus: "TESTPLANNING",
+    settledStatus: "TESTPLAN_DONE",
+    failureStatus: "PLAN_APPROVED",
+    adoptedResult,
+    // `writeTestPlanSnapshot` rather than `persistTestPlanSnapshot`: the latter
+    // calls `approveTestPlan`, which passes the gate as it writes. A round whose
+    // critic has not been read yet must not approve anything.
+    persistRed: async (input) => writeTestPlanSnapshot({
+      changeId: input.changeId,
+      result: input.result,
+      provider,
+    }),
+  });
+}
+
 export async function runTestPlan(
   changeId: string,
   _context?: JobExecutionContext,
   provider?: Provider,
+  adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
   const change = getChange(changeId);
   if (!change) throw new Error(`Change not found: ${changeId}`);
   const selectedProvider = provider ?? _context?.provider ?? (change.provider as Provider);
+  if (readCodexNativeFlags().specJudgeSubAgents && _context) {
+    return runTestPlanDelegatedRound(changeId, _context, selectedProvider, adoptedResult);
+  }
   return runDocumentStage(changeId, {
     phase: "test_plan",
     promptPhase: "test_plan",

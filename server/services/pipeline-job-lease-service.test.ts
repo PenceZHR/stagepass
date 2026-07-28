@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
 
 import { db } from "../db";
-import { changes, events, pipelineJobs, projects } from "../db/schema";
+import {
+  changes,
+  codexInteractions,
+  codexThreadBindings,
+  events,
+  pipelineCommandReceipts,
+  pipelineJobs,
+  projects,
+} from "../db/schema";
 import {
   enqueuePipelineJob,
   ensurePipelineJobsTable,
@@ -22,6 +30,12 @@ const CHANGE_ID = "CHG-JOB-LEASE";
 function cleanupRows(): void {
   ensurePipelineJobsTable();
   db.delete(pipelineJobs).where(eq(pipelineJobs.changeId, CHANGE_ID)).run();
+  db.delete(pipelineCommandReceipts)
+    .where(eq(pipelineCommandReceipts.changeId, CHANGE_ID)).run();
+  db.delete(codexInteractions)
+    .where(eq(codexInteractions.changeId, CHANGE_ID)).run();
+  db.delete(codexThreadBindings)
+    .where(eq(codexThreadBindings.changeId, CHANGE_ID)).run();
   db.delete(events).where(eq(events.changeId, CHANGE_ID)).run();
   db.delete(changes).where(eq(changes.id, CHANGE_ID)).run();
   db.delete(projects).where(eq(projects.id, PROJECT_ID)).run();
@@ -120,6 +134,95 @@ describe("pipeline-job-lease-service", { concurrency: false }, () => {
     });
     assert.equal(heartbeat?.heartbeatAt, "2026-07-10T00:01:05.000Z");
     assert.equal(heartbeat?.leaseExpiresAt, "2026-07-10T00:01:25.000Z");
+  });
+
+  it("leases a typed interaction wakeup without parsing it as a stage action", () => {
+    const now = "2026-07-10T00:00:00.000Z";
+    const deadline = "2026-07-10T01:00:00.000Z";
+    db.insert(codexThreadBindings).values({
+      bindingId: "BIND-JOB-LEASE-WAKE",
+      scopeKind: "change",
+      scopeId: CHANGE_ID,
+      projectId: PROJECT_ID,
+      changeId: CHANGE_ID,
+      threadId: "THREAD-JOB-LEASE-WAKE",
+      title: "Wake task",
+      status: "waiting_human",
+      bridgeProtocolVersion: "v1",
+      lastSeenAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+    db.insert(codexInteractions).values({
+      id: "INT-JOB-LEASE-WAKE",
+      changeId: CHANGE_ID,
+      bindingId: "BIND-JOB-LEASE-WAKE",
+      codexThreadId: "THREAD-JOB-LEASE-WAKE",
+      phase: "intake",
+      kind: "requirement_choice",
+      gateVersion: 0,
+      sourceDbHash: "wake-source",
+      payloadJson: "{}",
+      status: "completed",
+      idempotencyKey: "wake-interaction",
+      requestHash: "wake-source",
+      completedAt: now,
+      expiresAt: deadline,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+    db.insert(pipelineCommandReceipts).values({
+      commandId: "CMD-JOB-LEASE-WAKE",
+      changeId: CHANGE_ID,
+      interactionId: "INT-JOB-LEASE-WAKE",
+      codexThreadId: "THREAD-JOB-LEASE-WAKE",
+      action: "record_stagepass_choice",
+      actorKind: "human",
+      actorSurface: "codex_mcp_app",
+      idempotencyKey: "wake-command",
+      requestHash: "wake-source",
+      status: "completed",
+      resultJson: "{}",
+      createdAt: now,
+      completedAt: now,
+    }).run();
+    db.insert(pipelineJobs).values({
+      id: "PJOB-WAKE-CMD-JOB-LEASE-WAKE",
+      changeId: CHANGE_ID,
+      phase: "intake",
+      actionId: "continue_stagepass_interaction",
+      idempotencyKey: "interaction-wakeup:CMD-JOB-LEASE-WAKE",
+      status: "queued",
+      attemptNo: 1,
+      provider: "codex",
+      jobKind: "interaction_wakeup",
+      effectType: "interaction_wakeup",
+      interactionId: "INT-JOB-LEASE-WAKE",
+      commandId: "CMD-JOB-LEASE-WAKE",
+      effectSchemaVersion: "stagepass.pipeline-effect/v1",
+      effectPayloadJson: JSON.stringify({
+        schemaVersion: "stagepass.pipeline-effect/v1",
+        kind: "interaction_wakeup",
+        interactionId: "INT-JOB-LEASE-WAKE",
+        commandId: "CMD-JOB-LEASE-WAKE",
+      }),
+      effectDeadlineAt: deadline,
+      createdAt: "1970-01-01T00:00:00.000Z",
+    }).run();
+
+    const leased = leaseNextPipelineJob({
+      workerId: "worker-wake",
+      workerNonce: "worker-wake-nonce",
+      now: new Date("2026-07-10T00:01:00.000Z"),
+    });
+
+    const effectJob = leased?.job as typeof leased.job & {
+      jobKind?: string;
+      interactionId?: string | null;
+    };
+    assert.equal(effectJob.id, "PJOB-WAKE-CMD-JOB-LEASE-WAKE");
+    assert.equal(effectJob.jobKind, "interaction_wakeup");
+    assert.equal(effectJob.interactionId, "INT-JOB-LEASE-WAKE");
   });
 
   it("marks a leased job succeeded", () => {

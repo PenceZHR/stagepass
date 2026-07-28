@@ -17,10 +17,26 @@ function writeFile(root: string, file: string, content: string) {
 describe("spec.md template", () => {
   const content = fs.readFileSync(path.join(TEMPLATES_DIR, "spec.md"), "utf-8");
 
-  it("defines the our-side spec writer role", () => {
-    assert.match(content, /我方执行代理/);
-    assert.match(content, /红方只指人类用户本人/);
-    assert.match(content, /反方负责质询/);
+  /**
+   * Red is the PRODUCER and blue is the SUPERVISOR. Both are agents; neither is
+   * the human.
+   *
+   * This used to pin the opposite: the templates declared "红方只指人类用户本人"
+   * and cast SPEC_WRITER as an agent serving red rather than red itself -- while
+   * `battle_rounds.red_unit` has always been `SPEC_WRITER`. One role, two
+   * contradictory definitions, and the model was told it was NOT the thing the
+   * database was recording it as. The human belongs to the gate, which is a
+   * different layer entirely and has no side in the battle.
+   */
+  it("casts red as the producer and never as the human", () => {
+    assert.match(content, /红方是\*\*生产者\*\*/);
+    assert.match(content, /你就是红方/);
+    assert.match(content, /蓝方是\*\*监督者\*\*/);
+    assert.match(content, /红蓝双方都是 Agent，与人类无关/);
+    assert.doesNotMatch(content, /红方只指人类用户本人/);
+    // The old vocabulary is gone, not merely outnumbered: "我方"/"反方"/"正方"
+    // only make sense under the discarded human-is-red framing.
+    assert.doesNotMatch(content, /我方|反方|正方/);
   });
 
   it("teaches the line protocol and never JSON output", () => {
@@ -84,11 +100,14 @@ describe("spec.md template", () => {
 describe("spec-critic.md template", () => {
   const content = fs.readFileSync(path.join(TEMPLATES_DIR, "spec-critic.md"), "utf-8");
 
-  it("defines the opposition requirement critic role", () => {
-    assert.match(content, /反方需求审查 Agent/);
-    assert.match(content, /SPEC_WRITER 是服务红方的我方执行代理/);
+  it("casts blue as the supervisor of red the producer", () => {
+    assert.match(content, /蓝方需求审查 Agent/);
+    assert.match(content, /你就是蓝方/);
+    assert.match(content, /红方是\*\*生产者\*\*/);
     assert.match(content, /REQUIREMENT_CRITIC/);
     assert.match(content, /Requirement Gap/);
+    assert.match(content, /红蓝双方都是 Agent，与人类无关/);
+    assert.doesNotMatch(content, /我方|反方|正方/);
   });
 
   it("teaches the line protocol and never JSON output", () => {
@@ -122,6 +141,38 @@ describe("spec-critic.md template", () => {
   it("keeps critique read-only", () => {
     assert.match(content, /不要修改文件/);
     assert.match(content, /不要创建文件，不要运行命令/);
+  });
+});
+
+/**
+ * The third template carrying the role semantics, and the only one that had no
+ * guard at all -- so it kept the discarded "红方只指人类用户本人" framing with
+ * nothing to notice.
+ */
+describe("spec-verdict.md template", () => {
+  const content = fs.readFileSync(path.join(TEMPLATES_DIR, "spec-verdict.md"), "utf-8");
+
+  it("casts the judge as neither side, over a producer and a supervisor", () => {
+    assert.match(content, /你是裁决者/);
+    assert.match(content, /红方是\*\*生产者\*\*/);
+    assert.match(content, /蓝方是\*\*监督者\*\*/);
+    assert.match(content, /红蓝双方都是 Agent，与人类无关/);
+    assert.doesNotMatch(content, /我方|反方|正方/);
+  });
+
+  /**
+   * The judge exists because a producer's self-report is not evidence. If it
+   * were allowed to accept `fixed` on red's word alone, the round would have a
+   * critic in name only.
+   */
+  it("refuses to take red's self-report as proof", () => {
+    assert.match(content, /红方的自证不等于事实/);
+    assert.match(content, /blue-gap-reviews\.json/);
+  });
+
+  it("keeps the verdict read-only and off the business result", () => {
+    assert.match(content, /你的判定\*\*不会\*\*改写它们/);
+    assert.match(content, /不要修改文件/);
   });
 });
 

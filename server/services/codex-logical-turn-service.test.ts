@@ -53,19 +53,19 @@ function cleanup(): void {
 
 function seedBinding(input: {
   bindingId: string;
-  scopeKind: "change" | "project_prd" | "project_context";
+  scopeKind: "change_stage" | "project_prd" | "project_context";
   threadId: string;
 }): void {
   db.insert(codexThreadBindings).values({
     bindingId: input.bindingId,
     scopeKind: input.scopeKind,
-    scopeId: input.scopeKind === "change" ? CHANGE_ID : PROJECT_ID,
+    scopeId: input.scopeKind === "change_stage" ? `${CHANGE_ID}:spec` : PROJECT_ID,
     projectId: PROJECT_ID,
-    changeId: input.scopeKind === "change" ? CHANGE_ID : null,
+    changeId: input.scopeKind === "change_stage" ? CHANGE_ID : null,
     codexProjectId: null,
     threadId: input.threadId,
-    title: input.scopeKind === "change"
-      ? `[${CHANGE_ID}] Logical`
+    title: input.scopeKind === "change_stage"
+      ? `[${CHANGE_ID}] spec · Logical`
       : `[${PROJECT_ID}] ${input.scopeKind === "project_prd" ? "Project PRD" : "Project Context"}`,
     status: "ready",
     bridgeProtocolVersion: "test",
@@ -122,7 +122,7 @@ describe("codex logical turn service", { concurrency: false }, () => {
     }).run();
     seedBinding({
       bindingId: "BIND-TASK3-CHANGE",
-      scopeKind: "change",
+      scopeKind: "change_stage",
       threadId: "canonical-change-shell",
     });
     seedBinding({

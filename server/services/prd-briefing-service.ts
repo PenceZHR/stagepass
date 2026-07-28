@@ -119,7 +119,7 @@ function prdAuthorityRows(changeId: string) {
   };
 }
 
-function prdSourceDbHash(changeId: string): string {
+export function prdSourceDbHash(changeId: string): string {
   const rows = prdAuthorityRows(changeId);
   return computeSourceDbHash({
     changeId,
@@ -564,7 +564,15 @@ function prdStageStatus(state: PrdBriefingState): "pass" | "blocked" | "pending"
   return state.briefing ? "pending" : "blocked";
 }
 
-function syncPrdStageAuthority(changeId: string, provider?: Provider): void {
+/**
+ * Recompute the PRD stage gate from the baseline tables.
+ *
+ * Exported so a PRD settled through Codex cards seals its gate the same way
+ * the questionnaire does. Downstream stages compare the gate hash against a
+ * fresh hash of these tables, so a second hashing rule would read as a stale
+ * gate and refuse to start.
+ */
+export function syncPrdStageAuthority(changeId: string, provider?: Provider): void {
   const state = getPrdBriefingState(changeId);
   const sourceDbHash = prdSourceDbHash(changeId);
   const blockers = prdGateBlockers(state);

@@ -34,8 +34,11 @@ describe("battle round running-status authority", () => {
     assert.throws(() => BattleRoundStatus.parse("running"), "bare \"running\" must not be a round status");
   });
 
-  it("treats occupied as running plus the created-but-unclaimed round", () => {
-    assert.deepEqual([...OCCUPIED_BATTLE_ROUND_STATUSES], ["not_started", "red_running", "blue_running"]);
+  it("treats occupied as running plus the rounds that exist without executing", () => {
+    assert.deepEqual(
+      [...OCCUPIED_BATTLE_ROUND_STATUSES],
+      ["not_started", "awaiting_clarification", "red_running", "blue_running"],
+    );
     for (const status of RUNNING_BATTLE_ROUND_STATUSES) {
       assert.ok(isOccupiedBattleRoundStatus(status), `${status} occupies the slot`);
     }
@@ -44,12 +47,29 @@ describe("battle round running-status authority", () => {
     assert.equal(isRunningBattleRoundStatus("not_started"), false);
   });
 
+  /**
+   * The one that matters for `awaiting_clarification`: a paused round occupies
+   * the slot but is NOT running. recoverStrandedBattleRounds sweeps the running
+   * set for rounds with no live run and fails them, so a paused round landing in
+   * that set would be failed by recovery the moment the human took a breath --
+   * restoring "waiting is failure" from the other side.
+   */
+  it("never reports a clarification-paused round as executing", () => {
+    assert.ok(isOccupiedBattleRoundStatus("awaiting_clarification"));
+    assert.equal(isRunningBattleRoundStatus("awaiting_clarification"), false);
+  });
+
   it("answers for every declared round status and for absent input", () => {
     const expectedRunning = new Set<string>(["red_running", "blue_running"]);
-    const expectedOccupied = new Set<string>(["not_started", "red_running", "blue_running"]);
+    const expectedOccupied = new Set<string>([
+      "not_started",
+      "awaiting_clarification",
+      "red_running",
+      "blue_running",
+    ]);
     // Drive off the enum so a newly added status cannot slip past this table.
     const allStatuses = BattleRoundStatus.options;
-    assert.equal(allStatuses.length, 9, "round status count changed -- revisit both predicates");
+    assert.equal(allStatuses.length, 10, "round status count changed -- revisit both predicates");
     for (const status of allStatuses) {
       assert.equal(isRunningBattleRoundStatus(status), expectedRunning.has(status), `running(${status})`);
       assert.equal(isOccupiedBattleRoundStatus(status), expectedOccupied.has(status), `occupied(${status})`);
@@ -69,7 +89,7 @@ describe("battle round running-status authority", () => {
  *
  *   [red_running, blue_running]                        -> "is executing"  (this authority)
  *   [not_started, red_running, blue_running]           -> "spec battle owns the active stage"
- *   [not_started, red_running, blue_running, failed]   -> "round is claimable" (gate-panel/page)
+ *   [not_started, red_running, blue_running, failed]   -> "round is claimable" (gate-panel)
  */
 const RUNNING_SET_LITERAL = /\[[^\]]*"red_running"[^\]]*"blue_running"[^\]]*\]/g;
 
@@ -147,15 +167,12 @@ describe("running-status literal inventory", () => {
     //     fail loudly at. The list shrinks; it does not relax.
     assert.deepEqual(runningPairOwners, ["server/types/battle-round-status.ts"]);
 
-    // The claimable rule (page.tsx / gate-panel.tsx) is deliberately NOT merged
+    // The claimable rule (gate-panel.tsx) is deliberately NOT merged
     // into the authority: it additionally admits "failed".
     const claimable = found.filter((hit) => hit.members.includes("failed") && hit.members.length === 4);
     assert.deepEqual(
       claimable.map((hit) => hit.file).sort(),
-      [
-        "app/projects/[id]/changes/[changeId]/gate-panel.tsx",
-        "app/projects/[id]/changes/[changeId]/page.tsx",
-      ],
+      ["app/projects/[id]/changes/[changeId]/gate-panel.tsx"],
     );
     for (const hit of claimable) {
       assert.deepEqual(hit.members, ["not_started", "red_running", "blue_running", "failed"]);

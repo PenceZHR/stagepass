@@ -703,11 +703,65 @@ async function bindLogicalContext(
 }
 
 describe("Codex hybrid Desktop bridge contract", () => {
-  it("accepts only the exact signed 26.721 follower build", () => {
+  it("activates a compatibility shell in Codex App before proving it", async () => {
+    const shellControl = new FakeShellControl();
+    const follower = new FakeFollower();
+    const bridge = createCodexDesktopBridge({
+      shellControl,
+      follower,
+      ...phase0Ports(),
+    });
+
+    const shell = await bridge.provisionPersistentShell!({
+      projectPath: "/repo",
+      title: "[CHG-1] First",
+    });
+
+    assert.equal(shellControl.atomicProvisionCalls.length, 1);
+    assert.deepEqual(follower.opened, [
+      `codex://threads/${shell.threadId}`,
+      `codex://threads/${shell.threadId}`,
+    ]);
+  });
+
+  it("retries and caches a transient hybrid probe before starting the turn", async () => {
+    const shellControl = new FakeShellControl();
+    const follower = new FakeFollower();
+    const originalProbe = shellControl.probe.bind(shellControl);
+    let transientFailures = 1;
+    shellControl.probe = async () => {
+      if (transientFailures > 0) {
+        transientFailures -= 1;
+        throw new Error("transient app-server probe failure");
+      }
+      return originalProbe();
+    };
+    const delays: number[] = [];
+    const ports = phase0Ports();
+    const bridge = createCodexDesktopBridge({
+      shellControl,
+      follower,
+      ...ports,
+      async sleep(ms) {
+        delays.push(ms);
+      },
+    });
+    const input = await startInput(ports.logicalTurnPort);
+
+    await bridge.startTurn(input);
+    await bridge.probe();
+
+    assert.equal(shellControl.probeCalls, 1);
+    assert.equal(follower.probeCalls, 2);
+    assert.deepEqual(delays, [250]);
+    assert.equal(follower.startCalls.length, 1);
+  });
+
+  it("accepts only the exact signed 26.721.41059 follower build", () => {
     const identity = {
       bundleIdentifier: "com.openai.codex",
-      bundleShortVersion: "26.721.30844",
-      bundleVersion: "5813",
+      bundleShortVersion: "26.721.41059",
+      bundleVersion: "5848",
       chromiumBaseVersion: "150.0.7871.128",
     };
     const fingerprint = desktopFollowerProtocolFingerprint(identity);
@@ -719,7 +773,8 @@ describe("Codex hybrid Desktop bridge contract", () => {
 
     const drifted = {
       ...identity,
-      chromiumBaseVersion: "150.0.7871.129",
+      bundleShortVersion: "26.721.30844",
+      bundleVersion: "5813",
     };
     assert.deepEqual(desktopFollowerProtocolCapabilities({
       clientVersion: "unreported",
@@ -732,15 +787,15 @@ describe("Codex hybrid Desktop bridge contract", () => {
     const required = [...REQUIRED_DESKTOP_FOLLOWER_CAPABILITIES];
     const currentBundleIdentity = {
       bundleIdentifier: "com.openai.codex",
-      bundleShortVersion: "26.721.30844",
-      bundleVersion: "5813",
+      bundleShortVersion: "26.721.41059",
+      bundleVersion: "5848",
       chromiumBaseVersion: "150.0.7871.128",
     };
     const currentFingerprint = [
       "initialize-v0+le32-json+desktop-follower-v1",
       "bundleIdentifier=com.openai.codex",
-      "bundleShortVersion=26.721.30844",
-      "bundleVersion=5813",
+      "bundleShortVersion=26.721.41059",
+      "bundleVersion=5848",
       "chromiumBaseVersion=150.0.7871.128",
     ].join(";");
     assert.deepEqual(desktopFollowerProtocolCapabilities({
@@ -1663,6 +1718,59 @@ describe("Codex hybrid Desktop bridge contract", () => {
     assert.equal(follower.startCalls.length, 1);
   });
 
+  it("preserves a tagged Phase 0 crash raised after prepare", async () => {
+    const ports = phase0Ports();
+    const persistedStartAttemptPort = ports.startAttemptPort;
+    const taggedCrash = Object.assign(
+      new Error("phase0 journal failpoint: after_prepare"),
+      { phase0CrashCheckpoint: "after_prepare" },
+    );
+    const bridge = createCodexDesktopBridge({
+      shellControl: new FakeShellControl(),
+      follower: new FakeFollower(),
+      ...ports,
+      startAttemptPort: {
+        ...persistedStartAttemptPort,
+        async prepare(input) {
+          await persistedStartAttemptPort.prepare(input);
+          throw taggedCrash;
+        },
+      },
+    });
+    const input = await startInput(ports.logicalTurnPort);
+
+    await assert.rejects(
+      () => bridge.startTurn(input),
+      (error: unknown) => error === taggedCrash,
+    );
+  });
+
+  it("does not misreport a baseline read failure as an active attempt conflict", async () => {
+    const ports = phase0Ports();
+    const bridge = createCodexDesktopBridge({
+      shellControl: new FakeShellControl(),
+      follower: new FakeFollower(),
+      ...ports,
+      startAttemptPort: {
+        ...ports.startAttemptPort,
+        async prepare() {
+          throw new Error("no rollout found for thread id THREAD-1");
+        },
+      },
+    });
+    const input = await startInput(ports.logicalTurnPort);
+
+    await assert.rejects(
+      () => bridge.startTurn(input),
+      (error: unknown) =>
+        error instanceof CodexDesktopBridgeError
+        && error.code === "desktop_follower_start_ambiguous"
+        && /baseline could not be prepared/.test(error.message)
+        && /no rollout found for thread id THREAD-1/.test(error.message)
+        && !/active follower-start attempt/.test(error.message),
+    );
+  });
+
   it("keeps a crash-before-dispatch checkpoint prepared and schedulable", async () => {
     const ports = phase0Ports();
     const port = ports.startAttemptPort;
@@ -2268,6 +2376,36 @@ describe("Codex hybrid Desktop bridge contract", () => {
     assert.equal(shellControl.threadReadCalls.length, 5);
   });
 
+  it("surfaces semantic snapshot failures immediately instead of masking them as reconnect outages", async () => {
+    const shellControl = new FakeShellControl();
+    shellControl.readResults = [
+      new CodexDesktopBridgeError(
+        "turn_snapshot_invalid",
+        "Codex turn contains an unknown item kind",
+      ),
+    ];
+    const bridge = createCodexDesktopBridge({
+      shellControl,
+      follower: new FakeFollower(),
+      startAttemptPort: createPhase0InMemoryStartAttemptPort(),
+      logicalTurnPort: createPhase0InMemoryLogicalTurnPort(),
+    });
+
+    await assert.rejects(async () => {
+      for await (const observation of bridge.pollTurn({
+        threadId: "THREAD-1",
+        turnId: "TURN-1",
+        deadlineAt: "2099-01-01T00:00:00.000Z",
+      })) {
+        void observation;
+      }
+    }, (error: unknown) =>
+      error instanceof CodexDesktopBridgeError
+      && error.code === "turn_snapshot_invalid"
+      && /unknown item kind/.test(error.message));
+    assert.equal(shellControl.threadReadCalls.length, 1);
+  });
+
   it("resumes polling from persisted normalized state and rejects regression", async () => {
     const shellControl = new FakeShellControl();
     const persisted = turnSnapshot("inProgress", [
@@ -2625,7 +2763,53 @@ function discoveryFixtures(): {
 }
 
 describe("Codex Desktop IPC discovery", () => {
-  it("accepts the exact signed 26.721 Desktop and bundled 0.146 CLI", async () => {
+  it("accepts the exact signed 26.721.41059 Desktop and bundled 0.146.0-alpha.3.1 CLI", async () => {
+    const fixtures = processDiscoveryFixtures({
+      lsofPids: [9410],
+      commands: {
+        9410: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      },
+      kernelExecutables: {
+        9410: ["/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"],
+      },
+      procPidPathOutputs: {
+        9410: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+      },
+      bundleMetadataSequences: {
+        CFBundleShortVersionString: ["26.721.41059", "26.721.41059"],
+        CFBundleVersion: ["5848", "5848"],
+        ChromiumBaseVersion: ["150.0.7871.128", "150.0.7871.128"],
+      },
+      codexVersionSequence: [
+        "codex-cli 0.146.0-alpha.3.1",
+        "codex-cli 0.146.0-alpha.3.1",
+      ],
+      codesignIdentities: {
+        "/Applications/ChatGPT.app": [
+          "Identifier=com.openai.codex",
+          "TeamIdentifier=2DC432GLL2",
+        ].join("\n"),
+      },
+    });
+
+    const endpoint = await discoverCodexDesktopIpcEndpoint(
+      fixtures.dependencies,
+    );
+
+    assert.equal(endpoint.pid, 9410);
+    assert.deepEqual(endpoint.desktopBundleIdentity, {
+      bundleIdentifier: "com.openai.codex",
+      bundleShortVersion: "26.721.41059",
+      bundleVersion: "5848",
+      chromiumBaseVersion: "150.0.7871.128",
+    });
+    assert.equal(
+      endpoint.appServerBinary.version,
+      "codex-cli 0.146.0-alpha.3.1",
+    );
+  });
+
+  it("rejects the previously pinned 0.146.0-alpha.3 CLI", async () => {
     const fixtures = processDiscoveryFixtures({
       lsofPids: [9409],
       commands: {
@@ -2654,19 +2838,9 @@ describe("Codex Desktop IPC discovery", () => {
       },
     });
 
-    const endpoint = await discoverCodexDesktopIpcEndpoint(
-      fixtures.dependencies,
-    );
-    assert.equal(endpoint.pid, 9409);
-    assert.deepEqual(endpoint.desktopBundleIdentity, {
-      bundleIdentifier: "com.openai.codex",
-      bundleShortVersion: "26.721.30844",
-      bundleVersion: "5813",
-      chromiumBaseVersion: "150.0.7871.128",
-    });
-    assert.equal(
-      endpoint.appServerBinary.version,
-      "codex-cli 0.146.0-alpha.3",
+    await expectBridgeCode(
+      () => discoverCodexDesktopIpcEndpoint(fixtures.dependencies),
+      "desktop_bridge_unavailable",
     );
   });
 
@@ -2769,8 +2943,8 @@ describe("Codex Desktop IPC discovery", () => {
             | "ChromiumBaseVersion";
           const defaults = {
             CFBundleIdentifier: "com.openai.codex",
-            CFBundleShortVersionString: "26.721.30844",
-            CFBundleVersion: "5813",
+            CFBundleShortVersionString: "26.721.41059",
+            CFBundleVersion: "5848",
             ChromiumBaseVersion: "150.0.7871.128",
           };
           const sequence = input.bundleMetadataSequences?.[key]
@@ -2792,7 +2966,7 @@ describe("Codex Desktop IPC discovery", () => {
             (candidate) => candidate === file,
           ).length - 1;
           const sequence = input.codexVersionSequence
-            ?? ["codex-cli 0.146.0-alpha.3"];
+            ?? ["codex-cli 0.146.0-alpha.3.1"];
           const stderrSequence = input.codexVersionStderrSequence ?? [""];
           return {
             stdout: `${sequence[Math.min(calls, sequence.length - 1)]}\n`,
@@ -2911,8 +3085,8 @@ describe("Codex Desktop IPC discovery", () => {
     assert.equal(endpoint.pid, 33399);
     assert.deepEqual(endpoint.desktopBundleIdentity, {
       bundleIdentifier: "com.openai.codex",
-      bundleShortVersion: "26.721.30844",
-      bundleVersion: "5813",
+      bundleShortVersion: "26.721.41059",
+      bundleVersion: "5848",
       chromiumBaseVersion: "150.0.7871.128",
     });
     assert.equal(
@@ -2921,7 +3095,7 @@ describe("Codex Desktop IPC discovery", () => {
     );
     assert.equal(
       endpoint.appServerBinary.version,
-      "codex-cli 0.146.0-alpha.3",
+      "codex-cli 0.146.0-alpha.3.1",
     );
     assert.equal(
       endpoint.appServerBinary.bundlePath,

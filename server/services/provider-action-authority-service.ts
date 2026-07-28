@@ -544,6 +544,17 @@ export function resolveBriefingActionAuthority(
   return { actionId, enabled: true, gateVersion: String(draft?.version ?? 0), sourceDbHash: source, reasonCode: null };
 }
 
+/** True for a gate the clarification loop sealed from a converged Codex task. */
+function isClarifiedGate(gate: { freshnessJson?: string | null } | undefined): boolean {
+  if (!gate?.freshnessJson) return false;
+  try {
+    const freshness = JSON.parse(gate.freshnessJson) as { source?: unknown };
+    return freshness?.source === "clarification_loop";
+  } catch {
+    return false;
+  }
+}
+
 export function evaluateProviderActionAuthority(
   db: AuthorityDb,
   input: EnqueuePipelineJobInput,
@@ -621,12 +632,19 @@ export function evaluateProviderActionAuthority(
   }
   if (gate?.sourceDbHash) {
     if (phase === "PRD") {
-      const briefing = db.select({ id: prdBriefings.id, status: prdBriefings.status })
-        .from(prdBriefings).where(eq(prdBriefings.changeId, input.changeId)).get();
-      const draft = db.select({ id: prdDrafts.id }).from(prdDrafts)
-        .where(eq(prdDrafts.changeId, input.changeId)).orderBy(desc(prdDrafts.version)).get();
-      if (!briefing || !draft || briefing.status !== "locked") {
-        return disabled(input.actionId, "prd_authority_incomplete");
+      // A locked briefing and a draft are the web questionnaire's evidence.
+      // A PRD settled by the clarification loop has neither by design -- its
+      // evidence is the gate that loop sealed after the Codex task converged
+      // and its document landed -- so demanding them denies every downstream
+      // action with nothing left that could ever satisfy the check.
+      if (!isClarifiedGate(gate)) {
+        const briefing = db.select({ id: prdBriefings.id, status: prdBriefings.status })
+          .from(prdBriefings).where(eq(prdBriefings.changeId, input.changeId)).get();
+        const draft = db.select({ id: prdDrafts.id }).from(prdDrafts)
+          .where(eq(prdDrafts.changeId, input.changeId)).orderBy(desc(prdDrafts.version)).get();
+        if (!briefing || !draft || briefing.status !== "locked") {
+          return disabled(input.actionId, "prd_authority_incomplete");
+        }
       }
       return { actionId: input.actionId, enabled: true, gateVersion, sourceDbHash, reasonCode: null };
     }

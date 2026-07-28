@@ -222,6 +222,11 @@ const output = execSync("git diff --name-only", { cwd: repoPath, ... });
 
 ### 4.2 出厂 rubric 用「红方/蓝方」指 AI，而三个 Spec 模板定义「红方 = 人类」
 
+> **已解决（2026-07-27）**：按 rubric 的用法统一——**红方是生产者、蓝方是监督者、裁决者是
+> BATTLE_REPORTER，三者都是 Agent；人类在门禁那一层，不是红蓝任何一方**。五份模板已改，
+> `spec-battle-prompt.test.ts` / `prd-briefing-prompt.test.ts` 钉死了新措辞并禁止「我方/反方/正方」
+> 这套旧词汇复活。下面保留原始发现，因为它解释了为什么要统一。
+
 - `rubric-defaults.ts:104`（Spec critic）：「**红方**声称修复的每一个 gap，我都逐条复核过」
 - `rubric-defaults.ts:113`（Spec verdict）：「**蓝方**提出的每一个 open gap，**红方**都有过回应」
 - `rubric-defaults.ts:97`（Spec producer）：「上一轮**蓝方**提出的每一个 gap…」

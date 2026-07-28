@@ -29,7 +29,7 @@ const ROLE_FRAMING: Record<RubricRole, { title: string; stance: string }> = {
   },
   verdict: {
     title: "裁决清单",
-    stance: "你是裁决方，输入是正方与反方各自的产出。对下面每一条标准给出最终判定。",
+    stance: "你是裁决方，输入是红方（生产者）与蓝方（监督者）各自的产出。对下面每一条标准给出最终判定。",
   },
 };
 

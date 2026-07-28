@@ -26,6 +26,7 @@ import {
 import { recoverStaleProviderRunsBestEffort } from "../server/services/stale-provider-run-recovery-service";
 import { startPipelineWorkerRecoveryScheduler } from "../server/services/pipeline-worker-recovery-service";
 import { recoverStrandedBattleRounds } from "../server/services/recovery-executors";
+import { InteractionWakeupRecoveryService } from "../server/services/interaction-wakeup-recovery-service";
 import { closeDatabaseHandle, migrateDatabase } from "../server/db/index";
 
 const LOG_DIR = path.join(process.cwd(), "logs");
@@ -253,6 +254,14 @@ export async function runPipelineWorker(): Promise<void> {
       // A stranded round has no running run behind it, so it never becomes a
       // candidate for the sweep above and nothing else would ever clear it.
       recoverStrandedBattleRounds();
+      // A wakeup carries a decision the human already made and, since it also
+      // persists the converged stage result, dropping it strands the change
+      // with its answers spent. Nothing else drives this recovery.
+      for (const recovered of await new InteractionWakeupRecoveryService({
+        workerId,
+      }).recoverPending()) {
+        log("interaction_wakeup_recovered", { workerId, ...recovered });
+      }
       return report;
     },
     log,

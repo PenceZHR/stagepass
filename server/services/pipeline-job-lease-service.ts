@@ -16,6 +16,7 @@ import {
   type PipelineJobPayload,
   type PipelineJobRecord,
 } from "./pipeline-job-types";
+import { parsePipelineJobEffect } from "../types/models";
 
 const DEFAULT_LEASE_MS = 30_000;
 
@@ -55,6 +56,16 @@ function leaseExpiry(now: Date, leaseMs: number): string {
 }
 
 function leasedPayload(job: PipelineJob): LeasedPipelineJobPayload {
+  if (job.jobKind !== "stage") {
+    parsePipelineJobEffect(job);
+    return {
+      job: {
+        ...job,
+        provider: "codex",
+      } as unknown as LeasedPipelineJobPayload["job"],
+      created: false,
+    };
+  }
   const payload = parsePipelineJobPayload({ job, created: false });
   return {
     ...payload,

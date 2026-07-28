@@ -368,6 +368,24 @@ export function endRun(runId: string, summary: string, success: boolean): void {
   });
 }
 
+/**
+ * Settles a run that ended without producing and without failing.
+ *
+ * `endRun` only offers completed/failed, and a stage turn that finished by
+ * asking the human a question is neither: calling it a failure burns the round
+ * and opens the retry path, calling it a success lets "I have shown you ten
+ * questions" count as the stage's output. `stopped` is already the ledger's
+ * word for a terminal run that produced nothing, so recovery leaves it alone
+ * and no query mistakes it for a stage that ran.
+ */
+export function stopRun(runId: string, summary: string): void {
+  runLedgerRepository.endRun(runId, {
+    status: "stopped",
+    endedAt: nowISO(),
+    summary,
+  });
+}
+
 export async function blockStageViolation(
   changeId: string,
   runId: string,

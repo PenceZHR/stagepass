@@ -874,6 +874,33 @@ export async function recoverStaleProviderRuns(
           });
           continue;
         }
+        // A Codex desktop stage starts its provider by dispatching a logical
+        // turn; the provider row only appears once that turn is observed
+        // running. While such a turn is live under a valid fence, "no provider
+        // row" means the start is in flight, not that it never happened.
+        const logicalTurnStarting = Boolean(
+          !leaseExpired
+          && !fenceInvalid
+          && job
+          && db.select({ id: codexLogicalTurns.logicalTurnId })
+            .from(codexLogicalTurns)
+            .where(and(
+              eq(codexLogicalTurns.pipelineJobId, job.id),
+              inArray(codexLogicalTurns.status, ["pending", "waiting_binding", "running"]),
+            ))
+            .get(),
+        );
+        if (logicalTurnStarting) {
+          report.observed.push({
+            kind: "active",
+            processId: `missing:${run.id}`,
+            runId: run.id,
+            changeId: run.changeId,
+            phase: run.phase,
+            reason: "logical_turn_starting",
+          });
+          continue;
+        }
         // Same precedence as the provider-present path: a failed fence check
         // outranks a lease that merely ran out.
         const reasonCode = fenceInvalid

@@ -16,6 +16,17 @@ describe("DB-first Codex-native pipeline UI", () => {
     assert.match(runner, /createPipelinePreflightPayload/);
   });
 
+  it("uses the retry action after a failed stage so backend task rotation actually runs", () => {
+    // Each stage lists retry ahead of first run and the page takes the first
+    // enabled one, so a stage whose retry is available never re-runs through
+    // the first-run action -- which would skip backend task rotation.
+    assert.match(page, /selectedStage\.startActionIds\.find/);
+    assert.match(
+      page,
+      /retryControlAction = startControlAction\?\.actionId\.startsWith\("retry_"\)/,
+    );
+  });
+
   it("does not POST business decisions from the default Web surface", () => {
     assert.doesNotMatch(page, /\/gate\/approve|\/gate\/reject/);
     assert.doesNotMatch(page, /\/plan-sandbox\/decision|\/spec-battle\/decision/);

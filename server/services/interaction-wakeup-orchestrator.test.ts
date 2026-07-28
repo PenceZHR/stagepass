@@ -46,8 +46,8 @@ describe("interaction wakeup main path", () => {
       }).run();
       database.insert(codexThreadBindings).values({
         bindingId: "BIND-1",
-        scopeKind: "change",
-        scopeId: "CHG-1",
+        scopeKind: "change_stage",
+        scopeId: "CHG-1:prd",
         projectId: "PRJ-1",
         changeId: "CHG-1",
         threadId: "THREAD-1",
@@ -64,10 +64,28 @@ describe("interaction wakeup main path", () => {
         bindingId: "BIND-1",
         codexThreadId: "THREAD-1",
         phase: "Intake",
-        kind: "gate_decision",
+        kind: "requirement_choice",
         gateVersion: 1,
         sourceDbHash: "db",
-        payloadJson: "{}",
+        payloadJson: JSON.stringify({
+          schemaVersion: "stagepass.choice-receipt/v2",
+          cardInteractionId: "prd-concrete-batch-1",
+          batchTitle: "第 1 批 · 运行前必须确认",
+          answers: [
+            {
+              questionId: "target-player",
+              question: "这个小游戏第一版主要给谁玩？",
+              selectedOptionIds: ["solo"],
+              selectedLabels: ["单人玩家"],
+            },
+            {
+              questionId: "lose-condition",
+              question: "哪些情况应立即判定失败？",
+              selectedOptionIds: ["timeout", "collision"],
+              selectedLabels: ["倒计时结束", "碰到障碍"],
+            },
+          ],
+        }),
         formJson: "{\"fields\":[]}",
         status: "completed",
         idempotencyKey: "interaction",
@@ -145,6 +163,14 @@ describe("interaction wakeup main path", () => {
       ]);
 
       assert.equal(delivered.length, 1);
+      assert.match(delivered[0]!, /^STAGEPASS_SELECTION_CONFIRMED/);
+      assert.match(delivered[0]!, /interactionId=prd-concrete-batch-1/);
+      assert.match(delivered[0]!, /answersJson=\[\{"questionId":"target-player"/);
+      assert.match(delivered[0]!, /"selectedLabels":\["单人玩家"\]/);
+      assert.match(delivered[0]!, /仍有阻塞运行的问题/);
+      assert.match(delivered[0]!, /present_stagepass_choices/);
+      assert.match(delivered[0]!, /每批最多 10 个/);
+      assert.match(delivered[0]!, /没有阻塞项/);
       assert.match(delivered[0]!, /\[stagepass-run:.*:attempt:.*\]/);
       assert.equal(database.select().from(pipelineJobs).all().length, 1);
       assert.equal(database.select().from(codexLogicalTurns).all().length, 1);

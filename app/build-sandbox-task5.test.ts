@@ -34,11 +34,13 @@ function changeWithLatestRun({
   };
 }
 
-describe("Task 5 BuildSandbox routing", () => {
-  it("routes BuildSandbox from the selected Build/Fix pipeline stage", () => {
+describe("Task 5 Build/Fix routing", () => {
+  it("routes Build and Fix through the shared Codex stage workspace", () => {
     assert.match(pageSource, /const selectedStage = uiPipelineState\?\.selectedStage \?\? null;/);
     assert.match(pageSource, /const activeSelectedPhase = selectedStage\?\.reviewPhase \?\? "Retro";/);
-    assert.match(pageSource, /const showingBuildSandbox = activeSelectedPhase === "Build" \|\| activeSelectedPhase === "Fix";/);
+    assert.match(pageSource, /<StageCodexWorkspace/);
+    assert.match(pageSource, /stageId=\{selectedStage\.id\}/);
+    assert.doesNotMatch(pageSource, /<BuildSandbox/);
     assert.doesNotMatch(pageSource, /const buildOrFixAwaitingHuman = isBuildOrFixAwaitingHuman\(change\);/);
   });
 

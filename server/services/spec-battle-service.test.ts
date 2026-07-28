@@ -35,6 +35,8 @@ import {
   completeBlueCritique,
   completeRedSpecRound,
   getSpecBattleState,
+  pauseSpecBattleRoundForClarification,
+  resumeSpecBattleRoundFromClarification,
   SpecBattleError,
   startSpecBattleRound,
 } from "./spec-battle-service.ts";
@@ -579,6 +581,140 @@ describe("spec-battle-service", { concurrency: false }, () => {
     assert.equal(db.select().from(humanDecisions).where(eq(humanDecisions.changeId, CHANGE_ID)).all().length, 0);
     assert.equal(db.select().from(warReports).where(eq(warReports.changeId, CHANGE_ID)).all().length, 0);
     assert.equal(fs.existsSync(path.join(repoPath, ".ship", "changes", CHANGE_ID)), false);
+  });
+
+  /**
+   * Waiting on the human is not failing. Before `awaiting_clarification`
+   * existed, a turn that ended in a question card could only reach
+   * failSpecBattleRound, which burned the round, closed `run_spec` and left the
+   * answers the human was still typing with nothing to complete.
+   */
+  it("parks a round on the human without ending or failing it", async () => {
+    const round = await startSpecBattleRound(CHANGE_ID);
+    claimRoundForTest(round.roundId);
+
+    pauseSpecBattleRoundForClarification({ changeId: CHANGE_ID, roundId: round.roundId });
+
+    const row = db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get();
+    assert.equal(row?.status, "awaiting_clarification");
+    assert.equal(row?.endedAt, null, "a round waiting on a human has not ended");
+  });
+
+  it("refuses a second red run while the round waits on the human", async () => {
+    const round = await startSpecBattleRound(CHANGE_ID);
+    claimRoundForTest(round.roundId);
+    pauseSpecBattleRoundForClarification({ changeId: CHANGE_ID, roundId: round.roundId });
+
+    const claim = claimSpecBattleRedRun({ changeId: CHANGE_ID, idempotencyKey: "second-run" });
+
+    assert.equal(claim.claimed, false);
+    assert.equal(claim.reason, "spec_round_awaiting_clarification");
+    assert.equal(claim.roundId, round.roundId);
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
+      "awaiting_clarification",
+      "a refused claim must not disturb the paused round",
+    );
+  });
+
+  /**
+   * The exit. `retry_spec` rotates the Codex task before it gets here, so the
+   * questions it walks away from are gone; without this the paused round is a
+   * dead end for anyone who no longer wants to answer.
+   */
+  it("lets retry take over a round parked on the human", async () => {
+    const round = await startSpecBattleRound(CHANGE_ID);
+    claimRoundForTest(round.roundId);
+    pauseSpecBattleRoundForClarification({ changeId: CHANGE_ID, roundId: round.roundId });
+
+    const claim = claimSpecBattleRedRun({
+      changeId: CHANGE_ID,
+      idempotencyKey: "retry-run",
+      abandonClarification: true,
+    });
+
+    assert.equal(claim.claimed, true);
+    assert.equal(claim.roundId, round.roundId);
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
+      "red_running",
+    );
+  });
+
+  it("resumes a parked round exactly once, so a repeated adoption cannot restart red", async () => {
+    const round = await startSpecBattleRound(CHANGE_ID);
+    claimRoundForTest(round.roundId);
+    pauseSpecBattleRoundForClarification({ changeId: CHANGE_ID, roundId: round.roundId });
+
+    const first = resumeSpecBattleRoundFromClarification({
+      changeId: CHANGE_ID,
+      roundId: round.roundId,
+    });
+    assert.equal(first.resumed, true);
+    assert.equal(first.leg, "red_running");
+    // The parked run was settled as `stopped`, so the resumed leg needs a live
+    // one to carry its ledger.
+    assert.ok(first.runId, "resuming opens a fresh business run");
+    assert.equal(
+      db.select().from(runs).where(eq(runs.id, first.runId!)).get()?.status,
+      "running",
+    );
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
+      "red_running",
+    );
+
+    const second = resumeSpecBattleRoundFromClarification({
+      changeId: CHANGE_ID,
+      roundId: round.roundId,
+    });
+    assert.equal(second.resumed, false, "a second adoption of the same reply must not re-open the round");
+    assert.equal(second.runId, null, "a refused resume must not open a second run");
+  });
+
+  /**
+   * Either leg can ask. Guessing `red_running` on resume would re-run a red leg
+   * that already produced, throwing away its PRD delta and its fix claims.
+   */
+  it("returns a parked round to the leg it was parked from", async () => {
+    const round = await startSpecBattleRound(CHANGE_ID);
+    claimRoundForTest(round.roundId);
+    await completeRedSpecRound({ changeId: CHANGE_ID, roundId: round.roundId, markdown: "# Spec\n" });
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
+      "blue_running",
+      "fixture precondition: red is done and blue is the leg in flight",
+    );
+
+    pauseSpecBattleRoundForClarification({ changeId: CHANGE_ID, roundId: round.roundId });
+    const resumed = resumeSpecBattleRoundFromClarification({
+      changeId: CHANGE_ID,
+      roundId: round.roundId,
+    });
+
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.leg, "blue_running");
+    assert.equal(
+      db.select().from(battleRounds).where(eq(battleRounds.id, round.roundId)).get()?.status,
+      "blue_running",
+    );
+  });
+
+  /**
+   * A round another writer already settled must not be dragged back into
+   * waiting -- that would strand a finished round on a question nobody asked,
+   * which is the same dead end from the other direction.
+   */
+  it("does not park a round that is no longer in flight", async () => {
+    const roundId = await readyRoundWithGap("P2");
+    const before = db.select().from(battleRounds).where(eq(battleRounds.id, roundId)).get();
+    assert.equal(before?.status, "report_ready", "fixture precondition: the round already settled");
+
+    pauseSpecBattleRoundForClarification({ changeId: CHANGE_ID, roundId });
+
+    const after = db.select().from(battleRounds).where(eq(battleRounds.id, roundId)).get();
+    assert.equal(after?.status, "report_ready");
+    assert.equal(after?.endedAt, before?.endedAt, "a settled round keeps its end time");
   });
 
   it("rejects a new round while the current round is running", async () => {
@@ -1609,5 +1745,149 @@ describe("spec-battle-service", { concurrency: false }, () => {
     } finally {
       cleanupChangeRows(otherChangeId);
     }
+  });
+
+  /**
+   * `battle_rounds.phase` has existed since the table did, but every Spec reader
+   * selected on `changeId` alone -- correct only while Spec was the sole writer.
+   * The delegated round is about to give TechSpec, Plan and TestPlan rounds in
+   * the same table, and a round of a LATER phase always carries the higher
+   * `roundNo`, so `latestRound` would hand every Spec caller someone else's
+   * round: `techSpecRunDecision` reads it to decide whether Spec is closed,
+   * `approveSpecDecision` reads its status, and the round-limit check counts it.
+   *
+   * These pin the scope at the readers rather than at the new writer, because
+   * the writer is not what is wrong -- writing a TechSpec round is the whole
+   * point. Scoping only the writer would leave the same bug for whoever adds
+   * the next phase.
+   */
+  describe("Spec readers ignore other phases' rounds", () => {
+    function insertForeignRound(roundNo: number, status = "red_running"): string {
+      const now = new Date().toISOString();
+      const id = `BRD-TECHSPEC-${roundNo}`;
+      db.insert(battleRounds).values({
+        id,
+        changeId: CHANGE_ID,
+        phase: "TechSpec",
+        template: "DELEGATED_ROUND",
+        roundNo,
+        status,
+        redUnit: "TECH_SPEC_WRITER",
+        blueUnit: "TECH_SPEC_CRITIC",
+        inputSnapshotJson: JSON.stringify({ authority: "db" }),
+        paramsJson: JSON.stringify({ maxSpecRounds: 3, allowP1Waiver: true }),
+        redArtifactPath: null,
+        redArtifactHash: null,
+        blueArtifactPath: null,
+        blueArtifactHash: null,
+        reportPath: null,
+        supersededByRoundId: null,
+        startedAt: now,
+        endedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      }).run();
+      return id;
+    }
+
+    it("keeps latestRound on the newest Spec round, not the newest round", async () => {
+      const spec = await startSpecBattleRound(CHANGE_ID);
+      insertForeignRound(2);
+
+      const state = getSpecBattleState(CHANGE_ID);
+      assert.equal(
+        state.latestRound?.id,
+        spec.roundId,
+        "a TechSpec round outranked the Spec round it knows nothing about",
+      );
+      assert.deepEqual(state.rounds.map((round) => round.phase), ["Spec"]);
+    });
+
+    it("numbers the next Spec round from Spec rounds alone", async () => {
+      const first = await startSpecBattleRound(CHANGE_ID);
+      insertForeignRound(2);
+      db.update(battleRounds).set({ status: "superseded" })
+        .where(eq(battleRounds.id, first.roundId)).run();
+
+      const second = await startSpecBattleRound(CHANGE_ID);
+      assert.equal(second.roundNo, 2, "Spec round 2 was numbered around a TechSpec round");
+    });
+
+    it("does not let another phase's running round block a new Spec round", async () => {
+      const first = await startSpecBattleRound(CHANGE_ID);
+      db.update(battleRounds).set({ status: "closed" })
+        .where(eq(battleRounds.id, first.roundId)).run();
+      insertForeignRound(2, "red_running");
+
+      await assert.doesNotReject(
+        () => startSpecBattleRound(CHANGE_ID),
+        "a running TechSpec round occupied the Spec slot",
+      );
+    });
+  });
+
+  /**
+   * `requirement_gaps` carries `source_phase`, but every reader that decides
+   * something about SPEC selected on `changeId` alone -- again correct only
+   * while Spec was the only writer. A TechSpec critic's gap would otherwise
+   * count toward `blockingP0`, which is what `approveSpecDecision` reads, and
+   * block a Spec gate that has nothing to do with it.
+   *
+   * The phase-blind readers that stay phase-blind are the ones that SHOULD be:
+   * merge readiness filters on `mergeBlocking`, and the delivery note lists
+   * every open gap. An unresolved TechSpec P0 belongs in both.
+   */
+  describe("Spec gate counts only Spec's own gaps", () => {
+    function insertGap(sourcePhase: string, canonicalGapId: string, roundId: string): void {
+      const now = new Date().toISOString();
+      db.insert(requirementGaps).values({
+        id: `GAP-${sourcePhase}-${canonicalGapId}`,
+        changeId: CHANGE_ID,
+        canonicalGapId,
+        firstSeenRoundId: roundId,
+        lastEvaluatedRoundId: roundId,
+        resolvedByRoundId: null,
+        sourcePhase,
+        sourceUnit: "REQUIREMENT_CRITIC",
+        title: `${sourcePhase} gap`,
+        category: "correctness",
+        evidence: "证据",
+        affectedArtifactsJson: "[]",
+        proposedSpecPatch: null,
+        severity: "P0",
+        originalSeverity: "P0",
+        downgradedTo: null,
+        status: "open",
+        resolutionEvidence: null,
+        waiverReason: null,
+        downgradeReason: null,
+        overrideReason: null,
+        specBlocking: 1,
+        mergeBlocking: 1,
+        sourceHashesJson: "{}",
+        createdAt: now,
+        updatedAt: now,
+        closedAt: null,
+      }).run();
+    }
+
+    it("does not count another phase's open P0 as a Spec blocker", async () => {
+      const roundId = await startSpecBattleRound(CHANGE_ID).then((round) => round.roundId);
+      insertGap("TechSpec", "techspec-missing-rollback", roundId);
+
+      assert.equal(
+        getSpecBattleState(CHANGE_ID).counts.blockingP0,
+        0,
+        "a TechSpec gap blocked the Spec gate",
+      );
+      assert.deepEqual(getSpecBattleState(CHANGE_ID).gaps.map((gap) => gap.sourcePhase), []);
+    });
+
+    it("still counts Spec's own open P0", async () => {
+      const roundId = await startSpecBattleRound(CHANGE_ID).then((round) => round.roundId);
+      insertGap("Spec", "spec-missing-state", roundId);
+
+      assert.equal(getSpecBattleState(CHANGE_ID).counts.blockingP0, 1);
+    });
   });
 });

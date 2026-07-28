@@ -14,7 +14,7 @@ const SYSTEM_CODESIGN = "/usr/bin/codesign";
 const PROC_PIDPATH_MAX_OUTPUT = 4096;
 const IDENTITY_PROBE_TIMEOUT_MS = 10_000;
 const EXPECTED_APP_SERVER_BINARY_VERSION =
-  "codex-cli 0.146.0-alpha.3";
+  "codex-cli 0.146.0-alpha.3.1";
 const ALLOWED_CODEX_PATH_ALIAS_WARNING =
   "WARNING: proceeding, even though we could not create PATH aliases: "
   + "Operation not permitted (os error 1)";
