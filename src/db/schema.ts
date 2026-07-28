@@ -73,4 +73,63 @@ WHEN NEW.seq <> OLD.seq + 1
 BEGIN
   SELECT RAISE(ABORT, 'change_seq_must_advance_by_one');
 END;
+
+-- ---------------------------------------------------------------------------
+-- L1
+-- ---------------------------------------------------------------------------
+
+-- What a phase produced, and what is still wrong with it. The gate reads only
+-- this; it never reads a model's opinion of how the phase went.
+CREATE TABLE IF NOT EXISTS change_evidence (
+  change_id     TEXT NOT NULL REFERENCES changes(id),
+  phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  artifact_ids  TEXT NOT NULL,
+  blockers      TEXT NOT NULL,
+  waived_ids    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase)
+);
+
+-- Applied commands, keyed by the caller's idempotency key.
+--
+-- Only COMPLETED commands are stored. A refusal is not a durable outcome: the
+-- gate that refused it may open, and a caller that retries then must not be
+-- handed back the old "no".
+CREATE TABLE IF NOT EXISTS commands (
+  idempotency_key   TEXT PRIMARY KEY,
+  change_id         TEXT NOT NULL REFERENCES changes(id),
+  action            TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)})),
+  request_hash      TEXT NOT NULL,
+  expected_snapshot TEXT NOT NULL,
+  result_seq        INTEGER NOT NULL,
+  result_phase      TEXT NOT NULL CHECK (result_phase IN (${quoted(PHASES)})),
+  result_status     TEXT NOT NULL CHECK (result_status IN (${quoted(PHASE_STATUSES)})),
+  at                TEXT NOT NULL
+);
+
+-- Long-running work and who owns it.
+CREATE TABLE IF NOT EXISTS jobs (
+  id            TEXT PRIMARY KEY,
+  change_id     TEXT NOT NULL REFERENCES changes(id),
+  kind          TEXT NOT NULL,
+  status        TEXT NOT NULL CHECK (status IN ('queued','running','done','failed')),
+  attempt       INTEGER NOT NULL,
+  max_attempts  INTEGER NOT NULL,
+  owner         TEXT NULL,
+  token         TEXT NULL,
+  expires_at    INTEGER NULL,
+  deadline_at   INTEGER NOT NULL,
+  error         TEXT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  -- A running job has an owner; a job that is not running has none. Without
+  -- this, "running with nobody on it" is a representable row -- which is the
+  -- exact state where work looks alive forever and nothing tells anyone.
+  CHECK ((status = 'running') = (owner IS NOT NULL AND token IS NOT NULL AND expires_at IS NOT NULL)),
+  -- A terminal job states why. A failed job with no reason is the shape that
+  -- let the old tree report failures as though they were nothing at all.
+  CHECK (status <> 'failed' OR error IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS ix_jobs_claimable ON jobs (status, created_at);
 `;
