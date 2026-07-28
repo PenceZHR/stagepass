@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -29,6 +30,20 @@ const DATA_DIRECTORY =
   || process.env.STAGEPASS_CARD_DATA_DIR
   || join(homedir(), ".codex", "plugin-data", "stagepass-card");
 const RECEIPT_PATH = join(DATA_DIRECTORY, "stagepass-choice-receipts.jsonl");
+/**
+ * Cards this plugin has shown, so a click can still be recorded after the
+ * process that showed it is gone.
+ *
+ * `presented` was memory only, and recording a choice needs the card it belongs
+ * to -- so a click landed on `interaction_not_presented` whenever the plugin had
+ * cycled in between. Requirement cards mostly survived that, because they are
+ * answered while the turn that asked is still running. The approval card is
+ * shown as the turn ends and clicked afterwards, so it almost never did: every
+ * approval failed, and the plugin reported it as 提交失败，请重试.
+ */
+const PRESENTED_PATH = join(DATA_DIRECTORY, "stagepass-presented-cards.json");
+/** Long enough to outlive a turn and a restart, short enough to stay small. */
+const PRESENTED_TTL_MS = 24 * 60 * 60 * 1000;
 const API_BASE_URL =
   process.env.STAGEPASS_API_BASE_URL || "http://127.0.0.1:3000";
 
@@ -1037,6 +1052,7 @@ function toolFailure(code) {
 function callPresent(argumentsValue) {
   const card = validatePresentArguments(argumentsValue);
   presented.set(card.interactionId, card);
+  persistPresented();
   return {
     content: [{
       type: "text",
@@ -1048,6 +1064,57 @@ function callPresent(argumentsValue) {
       ...card,
     },
   };
+}
+
+/**
+ * Writes the presented cards so the next process can still record a click.
+ *
+ * Best effort on purpose: failing to persist must not fail the card that is
+ * being shown right now, which would trade a click that might still work for
+ * one that certainly cannot.
+ */
+function persistPresented() {
+  try {
+    mkdirSync(DATA_DIRECTORY, { recursive: true });
+    const cutoff = Date.now() - PRESENTED_TTL_MS;
+    const entries = [];
+    for (const [interactionId, card] of presented) {
+      const at = typeof card.__presentedAt === "number"
+        ? card.__presentedAt
+        : Date.now();
+      if (at < cutoff) {
+        presented.delete(interactionId);
+        continue;
+      }
+      entries.push([interactionId, { ...card, __presentedAt: at }]);
+    }
+    writeFileSync(PRESENTED_PATH, JSON.stringify(entries), { mode: 0o600 });
+  } catch {
+    // Nothing to do: the card is still shown, and the click will fail the same
+    // way it did before this existed rather than any worse.
+  }
+}
+
+/** Reloads cards a previous process showed. Missing or corrupt file is empty. */
+function loadPresented() {
+  try {
+    const raw = readFileSync(PRESENTED_PATH, "utf8");
+    const entries = JSON.parse(raw);
+    if (!Array.isArray(entries)) return;
+    const cutoff = Date.now() - PRESENTED_TTL_MS;
+    for (const entry of entries) {
+      if (!Array.isArray(entry) || entry.length !== 2) continue;
+      const [interactionId, card] = entry;
+      if (typeof interactionId !== "string" || !card) continue;
+      if (typeof card.__presentedAt === "number" && card.__presentedAt < cutoff) {
+        continue;
+      }
+      presented.set(interactionId, card);
+    }
+  } catch {
+    // An unreadable file is the same as no file: this process simply cannot
+    // record clicks on cards it did not show, which is where we started.
+  }
 }
 
 function trustedApiBaseUrl() {
@@ -1199,6 +1266,10 @@ async function handleRequest(message) {
       ? requested
       : "2025-06-18";
     initialized = true;
+    // Recover cards a previous process showed. Without this the plugin can only
+    // record clicks on cards it presented itself, which the approval card --
+    // shown as a turn ends, clicked after it -- almost never satisfies.
+    loadPresented();
     sendResult(id, {
       protocolVersion,
       capabilities: {
