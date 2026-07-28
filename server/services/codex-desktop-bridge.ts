@@ -1051,6 +1051,15 @@ export function createCodexDesktopBridge(
       ),
     ];
     if (missingObserved.length > 0 || missingProtocol.length > 0) {
+      // Name what was actually observed, not just what is missing.
+      //
+      // A protocol capability goes missing when the runtime string is not in
+      // the allowlist, and that string carries the originator, TERM and client
+      // name -- so the usual cause is a launch environment that is subtly wrong
+      // (`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex` instead of `Codex Desktop`
+      // is enough) rather than a Codex that genuinely lacks the capability.
+      // Reporting only the missing names sends the reader hunting the runtime
+      // for a feature that is right there.
       throw new CodexDesktopBridgeError(
         "codex_hybrid_bridge_unsupported",
         [
@@ -1060,6 +1069,8 @@ export function createCodexDesktopBridge(
           missingProtocol.length > 0
             ? `unsupported protocol capabilities: ${missingProtocol.join(", ")}`
             : "",
+          `observed app-server runtime: ${JSON.stringify(shell.version)}`,
+          `observed follower fingerprint: ${JSON.stringify(desktop.protocolFingerprint)}`,
         ].filter(Boolean).join("; "),
       );
     }
