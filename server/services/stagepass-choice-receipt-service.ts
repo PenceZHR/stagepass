@@ -14,6 +14,7 @@ import {
   pipelineCommandReceipts,
   pipelineJobs,
 } from "../db/schema";
+import { changeStageScopeId } from "./codex-desktop-bridge-types";
 import { emitIdempotentEvent } from "./event-service";
 import {
   approvalDecisionFromAnswers,
@@ -415,10 +416,24 @@ export async function recordStagePassChoiceReceipt(
     binding.scopeKind === "change" || binding.scopeKind === "change_stage"
       ? binding.changeId
       : null;
+  // The scope id a receipt with these fields must belong to.
+  //
+  // A stage-scoped binding's scopeId is `${changeId}:${stageId}`, so comparing
+  // it against `input.changeId` was unsatisfiable for every change_stage
+  // binding: no card presented by a stage could ever be answered, and the user
+  // saw 「提交失败」 on a card whose run was alive and waiting for it. The
+  // receipt carries the stage it came from, so the compound id is rebuilt from
+  // what the receipt claims and compared -- which still fails a receipt naming
+  // the wrong stage, rather than passing everything.
+  const receiptScopeId = binding.scopeKind === "change_stage"
+    ? (input.changeId && input.stage
+      ? changeStageScopeId(input.changeId, input.stage)
+      : null)
+    : (input.changeId ?? input.projectId);
   if (
     binding.projectId !== input.projectId
     || expectedChangeId !== input.changeId
-    || binding.scopeId !== (input.changeId ?? input.projectId)
+    || binding.scopeId !== receiptScopeId
   ) {
     throw new StagePassChoiceReceiptError(
       "choice_receipt_scope_mismatch",
