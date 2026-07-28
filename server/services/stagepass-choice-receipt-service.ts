@@ -14,7 +14,6 @@ import {
   pipelineCommandReceipts,
   pipelineJobs,
 } from "../db/schema";
-import { changeStageScopeId } from "./codex-desktop-bridge-types";
 import { emitIdempotentEvent } from "./event-service";
 import {
   approvalDecisionFromAnswers,
@@ -416,24 +415,27 @@ export async function recordStagePassChoiceReceipt(
     binding.scopeKind === "change" || binding.scopeKind === "change_stage"
       ? binding.changeId
       : null;
-  // The scope id a receipt with these fields must belong to.
+  // A stage-scoped binding's scope id is not reconstructible from a receipt.
   //
-  // A stage-scoped binding's scopeId is `${changeId}:${stageId}`, so comparing
-  // it against `input.changeId` was unsatisfiable for every change_stage
-  // binding: no card presented by a stage could ever be answered, and the user
-  // saw 「提交失败」 on a card whose run was alive and waiting for it. The
-  // receipt carries the stage it came from, so the compound id is rebuilt from
-  // what the receipt claims and compared -- which still fails a receipt naming
-  // the wrong stage, rather than passing everything.
-  const receiptScopeId = binding.scopeKind === "change_stage"
-    ? (input.changeId && input.stage
-      ? changeStageScopeId(input.changeId, input.stage)
-      : null)
-    : (input.changeId ?? input.projectId);
+  // It is `${changeId}:${stageId}` -- "CHG-002:prd" -- while the receipt's
+  // `stage` carries the PHASE the card came from, "intake". Comparing them
+  // failed every stage card twice over: first against `input.changeId`, which
+  // is never the compound id, and then against a compound id rebuilt from
+  // `input.stage`, which is the wrong half of a stage/phase naming split this
+  // codebase has in several places.
+  //
+  // So this stops guessing. The binding was reached through the receipt's
+  // logical turn, and its project, change and thread are each checked against
+  // the receipt directly -- above and here. The scope id carries nothing those
+  // three do not already establish, and the only thing it added was a
+  // comparison that could not be satisfied.
+  const scopeIdentifiesReceipt = binding.scopeKind === "change_stage"
+    ? true
+    : binding.scopeId === (input.changeId ?? input.projectId);
   if (
     binding.projectId !== input.projectId
     || expectedChangeId !== input.changeId
-    || binding.scopeId !== receiptScopeId
+    || !scopeIdentifiesReceipt
   ) {
     throw new StagePassChoiceReceiptError(
       "choice_receipt_scope_mismatch",
