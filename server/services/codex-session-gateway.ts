@@ -88,6 +88,25 @@ export interface TurnObserver {
   onTurnFailed?: (threadId: string, error: unknown) => void;
 }
 
+export interface TurnStartInput {
+  threadId: string;
+  prompt: string;
+  cwd?: string;
+  model?: string;
+  effort?: string;
+  approvalPolicy?: "never";
+  sandboxMode?: "read-only" | "workspace-write";
+  /**
+   * A JSON Schema the runtime enforces on the final assistant message.
+   *
+   * Sent straight to app-server's TurnStartParams. Going direct settles a doubt
+   * the Desktop follower path never could: that wrapper may whitelist fields
+   * and drop this one silently, so callers there had to re-validate anyway.
+   * Here the field reaches the runtime that enforces it.
+   */
+  outputSchema?: Record<string, unknown>;
+}
+
 export interface CodexSessionGatewayOptions {
   bin: string;
   cwd: string;
@@ -114,6 +133,24 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/**
+ * Mirrors the policy the Desktop follower path builds, so a turn does not
+ * silently gain or lose filesystem reach by changing which door it came in.
+ */
+function sandboxPolicyFor(
+  mode: "read-only" | "workspace-write",
+  cwd: string | undefined,
+): Record<string, unknown> {
+  if (mode === "read-only") return { type: "readOnly", networkAccess: false };
+  return {
+    type: "workspaceWrite",
+    writableRoots: cwd ? [cwd] : [],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
 }
 
 export class CodexSessionGateway {
@@ -380,20 +417,52 @@ export class CodexSessionGateway {
   }
 
   /**
+   * Starts a turn and returns as soon as the runtime accepts it.
+   *
+   * Separate from `runTurn` because the Desktop follower contract this replaces
+   * is start-and-return: the pipeline records the turn id, then learns the
+   * outcome from its own journal rather than from a held-open promise, so a
+   * server restart mid-turn is recoverable.
+   */
+  async startTurn(input: TurnStartInput): Promise<{ turnId?: string }> {
+    await this.connect();
+    const result = asRecord(
+      await this.request("turn/start", {
+        threadId: input.threadId,
+        input: [{ type: "text", text: input.prompt }],
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.approvalPolicy
+          ? { approvalPolicy: input.approvalPolicy }
+          : {}),
+        ...(input.sandboxMode
+          ? { sandboxPolicy: sandboxPolicyFor(input.sandboxMode, input.cwd) }
+          : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
+      }),
+    );
+    const turn = asRecord(result.turn);
+    return { turnId: typeof turn.id === "string" ? turn.id : undefined };
+  }
+
+  /**
    * Starts a turn and resolves when the ROOT thread completes.
    *
    * Sub-agent turns stream over the same connection with their own thread ids,
    * so an unqualified `turn/completed` is usually a sub-agent finishing rather
    * than the root -- resolving on it would cut delegation off mid-round.
    */
-  async runTurn(input: {
-    threadId: string;
-    prompt: string;
-    effort?: "low" | "medium" | "high" | "xhigh";
+  async runTurn(input: TurnStartInput & {
     observer?: TurnObserver;
-  }): Promise<{ status: "completed" | "failed"; turn: Record<string, unknown> }> {
+  }): Promise<{
+    status: "completed" | "failed";
+    turnId?: string;
+    turn: Record<string, unknown>;
+  }> {
     await this.connect();
     const { threadId } = input;
+    let startedTurnId: string | undefined;
 
     return new Promise((resolve, reject) => {
       const detach = this.observe({
@@ -403,24 +472,30 @@ export class CodexSessionGateway {
           input.observer?.onTurnCompleted?.(id, turn);
           if (id !== threadId) return;
           detach();
-          resolve({ status: "completed", turn });
+          resolve({ status: "completed", turnId: startedTurnId, turn });
         },
         onTurnFailed: (id, error) => {
           input.observer?.onTurnFailed?.(id, error);
           if (id !== threadId) return;
           detach();
-          resolve({ status: "failed", turn: asRecord(error) });
+          resolve({
+            status: "failed",
+            turnId: startedTurnId,
+            turn: asRecord(error),
+          });
         },
       });
 
-      this.request("turn/start", {
-        threadId,
-        input: [{ type: "text", text: input.prompt }],
-        ...(input.effort ? { effort: input.effort } : {}),
-      }).catch((error) => {
-        detach();
-        reject(error);
-      });
+      // The observer is attached above, before the request goes out, so a turn
+      // that finishes quickly cannot complete in the gap.
+      this.startTurn(input)
+        .then(({ turnId }) => {
+          startedTurnId = turnId;
+        })
+        .catch((error) => {
+          detach();
+          reject(error);
+        });
     });
   }
 
