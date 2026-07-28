@@ -1,0 +1,22 @@
+{
+  // The new tree's typecheck. Separate from the root config for one reason:
+  // the root excludes `**/*.test.ts`, which makes every `@ts-expect-error` in a
+  // test a blank round and lets a test drift out of sync with the code it
+  // covers without anything saying so. The rebuild does not inherit that.
+  //
+  // Constraints beyond the root config are deliberate. This tree is small and
+  // is meant to stay legible; the time to hold that line is while it is small.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}
