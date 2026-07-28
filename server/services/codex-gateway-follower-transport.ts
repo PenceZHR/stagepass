@@ -6,6 +6,7 @@ import {
   type CodexDesktopTurnRequest,
 } from "./codex-desktop-bridge-types";
 import type { CodexDesktopFollowerTransport } from "./codex-desktop-ipc-transport";
+import type { CodexToolSurface } from "./codex-home-profile";
 import {
   CodexSessionGateway,
   CodexSessionGatewayError,
@@ -44,7 +45,15 @@ const execFileAsync = promisify(execFile);
 const GATEWAY_PROTOCOL_FINGERPRINT = "app-server-gateway-v1";
 
 export interface GatewayFollowerTransportOptions {
-  gateway: CodexSessionGateway;
+  /**
+   * Resolves the gateway for a turn's tool surface.
+   *
+   * A surface is a distinct `CODEX_HOME`, and a `CODEX_HOME` is fixed when the
+   * app-server process starts -- so one surface means one process. The pool is
+   * therefore not an optimisation; it is the only way a line-protocol turn and
+   * a card turn can both run without restarting anything.
+   */
+  gatewayFor: (surface: CodexToolSurface) => CodexSessionGateway;
   /** Injectable so tests never shell out to `open`. */
   openUrl?: (url: string) => Promise<void>;
 }
@@ -52,7 +61,9 @@ export interface GatewayFollowerTransportOptions {
 export function createGatewayFollowerTransport(
   options: GatewayFollowerTransportOptions,
 ): CodexDesktopFollowerTransport {
-  const { gateway } = options;
+  // The probe answers for the transport as a whole, and every surface runs the
+  // same binary and protocol, so it uses the default one.
+  const gateway = options.gatewayFor("full");
   const openUrl = options.openUrl
     ?? (async (url: string) => {
       await execFileAsync("open", [url]);
@@ -77,8 +88,9 @@ export function createGatewayFollowerTransport(
     },
 
     async startFollowerTurn(request: CodexDesktopTurnRequest) {
+      const surfaced = options.gatewayFor(request.toolSurface ?? "full");
       try {
-        const { turnId } = await gateway.startTurn({
+        const { turnId } = await surfaced.startTurn({
           threadId: request.threadId,
           prompt: request.prompt,
           cwd: request.cwd,

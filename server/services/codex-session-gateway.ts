@@ -110,7 +110,8 @@ export interface TurnStartInput {
 export interface CodexSessionGatewayOptions {
   bin: string;
   cwd: string;
-  env?: NodeJS.ProcessEnv;
+  /** Overrides layered onto the parent environment, not a replacement for it. */
+  env?: Record<string, string | undefined>;
   requestTimeoutMs?: number;
   /**
    * Answers server->client requests (approvals and elicitations). Returning a

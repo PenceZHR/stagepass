@@ -1,6 +1,7 @@
 import { resolveStageClarificationPolicy } from "@/lib/stage-clarification-policy";
 import { STAGE_APPROVAL_QUESTION_ID } from "./stage-convergence-service";
 import type { CodexLogicalTurnRole } from "./codex-desktop-bridge-types";
+import { outputContractForRole } from "./stage-output-contract";
 
 export interface CodexDesktopRunContextInput {
   logicalTurnId: string;
@@ -30,17 +31,23 @@ const ROLE_INSTRUCTIONS: Partial<Record<CodexLogicalTurnRole, string>> = {
   spec_verdict: "Decide the specification verdict from the persisted writer and critic artifacts.",
 };
 
-const CHOICE_CARD_ROLES = new Set<CodexLogicalTurnRole>([
-  "stage",
-  "spec_writer",
-  "spec_critic",
-  "spec_verdict",
-  "build",
-  "fix",
-  "prd_turn",
-  "context_select",
-  "context_generate",
-]);
+/**
+ * Whether this role should be told to ask via a choice card.
+ *
+ * Derived from the output contract rather than listed here. It used to be its
+ * own set, which drifted into contradicting the contract: it named `prd_turn`
+ * and `spec_writer` as card roles while their replies were being parsed as a
+ * line protocol, so every such turn was ordered to call a card AND required to
+ * emit protocol lines. The model obeyed the card instruction, the parser
+ * rejected the reply, and the stage failed with a message about missing TITLE
+ * lines that said nothing about the contradiction.
+ *
+ * Two lists of the same fact will disagree eventually; this one is now the
+ * contract table's consequence, so it cannot.
+ */
+function usesChoiceCard(role: CodexLogicalTurnRole): boolean {
+  return outputContractForRole(role) === "interaction_cards";
+}
 
 function choiceCardInstruction(input: CodexDesktopRunContextInput): string {
   const policy = resolveStageClarificationPolicy(input.phase);
@@ -102,7 +109,7 @@ export function createCodexDesktopRunContext(
   input: CodexDesktopRunContextInput,
 ): { prompt: string; cleanup(): void } {
   const instruction = ROLE_INSTRUCTIONS[input.role];
-  const choiceInstruction = CHOICE_CARD_ROLES.has(input.role)
+  const choiceInstruction = usesChoiceCard(input.role)
     ? choiceCardInstruction(input)
     : null;
   if (!instruction && !choiceInstruction) {

@@ -44,7 +44,7 @@ const REQUEST = {
 describe("gateway follower transport", () => {
   it("reports the capabilities the bridge gates on", async () => {
     const { gateway } = fakeGateway();
-    const transport = createGatewayFollowerTransport({ gateway });
+    const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
 
     const probe = await transport.probe();
 
@@ -65,14 +65,14 @@ describe("gateway follower transport", () => {
         throw new CodexSessionGatewayError("APP_SERVER_UNAVAILABLE", "no binary");
       },
     });
-    const transport = createGatewayFollowerTransport({ gateway });
+    const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
 
     await assert.rejects(() => transport.probe(), /no binary/);
   });
 
   it("forwards the schema and sandbox the caller asked for", async () => {
     const { gateway, startCalls } = fakeGateway();
-    const transport = createGatewayFollowerTransport({ gateway });
+    const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
     const outputSchema = { type: "object", required: ["verdict"] };
 
     await transport.startFollowerTurn({
@@ -97,7 +97,7 @@ describe("gateway follower transport", () => {
           throw new CodexSessionGatewayError(code, code);
         },
       });
-      const transport = createGatewayFollowerTransport({ gateway });
+      const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
 
       // The pipeline retries this condition, so it is a value; everything else
       // must stay an exception rather than being flattened into it.
@@ -113,7 +113,7 @@ describe("gateway follower transport", () => {
         throw new CodexSessionGatewayError("REQUEST_TIMEOUT", "took too long");
       },
     });
-    const transport = createGatewayFollowerTransport({ gateway });
+    const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
 
     await assert.rejects(
       () => transport.startFollowerTurn(REQUEST),
@@ -123,7 +123,7 @@ describe("gateway follower transport", () => {
 
   it("treats a missing turn id as a protocol failure", async () => {
     const { gateway } = fakeGateway({ startTurn: async () => ({}) });
-    const transport = createGatewayFollowerTransport({ gateway });
+    const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
 
     // Without an id the caller can neither journal nor interrupt the turn, so
     // inventing one would hide a real break.
@@ -137,7 +137,7 @@ describe("gateway follower transport", () => {
     const { gateway } = fakeGateway();
     const opened: string[] = [];
     const transport = createGatewayFollowerTransport({
-      gateway,
+      gatewayFor: () => gateway,
       openUrl: async (url) => {
         opened.push(url);
       },
@@ -148,9 +148,33 @@ describe("gateway follower transport", () => {
     assert.deepEqual(opened, ["codex://threads/thread-1"]);
   });
 
+  it("routes each turn to the gateway for its declared tool surface", async () => {
+    const full = fakeGateway();
+    const isolated = fakeGateway();
+    const asked: string[] = [];
+    const transport = createGatewayFollowerTransport({
+      gatewayFor: (surface) => {
+        asked.push(surface);
+        return surface === "full" ? full.gateway : isolated.gateway;
+      },
+    });
+
+    await transport.startFollowerTurn({
+      ...REQUEST,
+      toolSurface: "no-stagepass-plugins",
+    });
+    await transport.startFollowerTurn({ ...REQUEST, toolSurface: "full" });
+    // Absent means the surface that existed before contracts did.
+    await transport.startFollowerTurn(REQUEST);
+
+    assert.equal(isolated.startCalls.length, 1);
+    assert.equal(full.startCalls.length, 2);
+    assert.deepEqual(asked.slice(1), ["no-stagepass-plugins", "full", "full"]);
+  });
+
   it("interrupts by thread id", async () => {
     const { gateway, interrupted } = fakeGateway();
-    const transport = createGatewayFollowerTransport({ gateway });
+    const transport = createGatewayFollowerTransport({ gatewayFor: () => gateway });
 
     await transport.interruptTurn({ threadId: "thread-1", turnId: "turn-1" });
 

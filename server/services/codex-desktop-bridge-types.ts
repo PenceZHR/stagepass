@@ -176,6 +176,15 @@ export interface CodexDesktopTurnRequest {
    * validated server-side instead (server-owned-json-output.ts).
    */
   outputSchema?: Record<string, unknown>;
+  /**
+   * Which tools this turn may see, derived from its role's output contract.
+   *
+   * It travels on the request rather than being looked up by the transport
+   * because the role is known only to the logical turn, and the transport must
+   * not have to re-derive a decision the contract table already made. Absent
+   * means the full surface -- the behaviour before contracts existed.
+   */
+  toolSurface?: "full" | "no-stagepass-plugins";
 }
 
 export type CodexManagedOwner =

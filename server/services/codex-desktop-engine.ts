@@ -38,6 +38,11 @@ import { createObservedCodexDesktopFollowerTransport } from "./codex-desktop-ipc
 import { createGatewayFollowerTransport } from "./codex-gateway-follower-transport";
 import { CodexSessionGateway } from "./codex-session-gateway";
 import { readCodexNativeFlags } from "../config/codex-native-flags";
+import { toolSurfaceForRole } from "./stage-output-contract";
+import {
+  ensureCodexHomeProfile,
+  type CodexToolSurface,
+} from "./codex-home-profile";
 import {
   readCodexTurnExecution,
   recordCodexTurnNotYetVisible,
@@ -503,6 +508,33 @@ export async function retryDesktopDiscovery<T>(
   }
 }
 
+/**
+ * One long-lived gateway per tool surface, created on first use.
+ *
+ * CODEX_HOME is read when the app-server process starts, so a surface cannot be
+ * changed on an existing connection -- each one needs its own process. They are
+ * kept rather than spawned per turn because a fresh app-server reloads config,
+ * MCP servers and plugins before the first token.
+ *
+ * `bin` is the attested path discovery resolved, not a bare `codex` off PATH:
+ * that binary's signature and team identifier have been checked, and no surface
+ * should quietly run a different one.
+ */
+function gatewayPoolBySurface(bin: string) {
+  const pool = new Map<CodexToolSurface, CodexSessionGateway>();
+  return (surface: CodexToolSurface): CodexSessionGateway => {
+    const existing = pool.get(surface);
+    if (existing) return existing;
+    const gateway = new CodexSessionGateway({
+      bin,
+      cwd: process.cwd(),
+      env: { CODEX_HOME: ensureCodexHomeProfile({ surface }) },
+    });
+    pool.set(surface, gateway);
+    return gateway;
+  };
+}
+
 async function createProductionCodexDesktopBridge():
 Promise<CodexDesktopBridge> {
   const endpoint = await retryDesktopDiscovery(
@@ -519,13 +551,7 @@ Promise<CodexDesktopBridge> {
   // dependency entirely is a separate step from changing which door turns use.
   const follower = readCodexNativeFlags().turnTransport === "gateway"
     ? createGatewayFollowerTransport({
-      gateway: new CodexSessionGateway({
-        // The attested path, not a bare `codex` off PATH: discovery has already
-        // checked this binary's signature and team identifier, and the gateway
-        // should not quietly run a different one.
-        bin: endpoint.appServerBinary.path,
-        cwd: process.cwd(),
-      }),
+      gatewayFor: gatewayPoolBySurface(endpoint.appServerBinary.path),
     })
     : createObservedCodexDesktopFollowerTransport(endpoint);
   const roleScopedLogicalTurnPort = {
@@ -548,7 +574,13 @@ Promise<CodexDesktopBridge> {
       });
       return {
         ...logical,
-        request: { ...logical.request, prompt: runContext.prompt },
+        request: {
+          ...logical.request,
+          prompt: runContext.prompt,
+          // The one place the role is known and the request is still mutable,
+          // so it is where the contract table gets consulted.
+          toolSurface: toolSurfaceForRole(logical.role),
+        },
       };
     },
   };

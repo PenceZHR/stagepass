@@ -35,10 +35,10 @@ test("stage work tells Codex to use the StagePass checkbox card for requirement 
 
 test("card instruction requires iterative batches until no execution blocker remains", () => {
   const context = createCodexDesktopRunContext({
-    logicalTurnId: "logical-prd-1",
-    role: "prd_turn",
-    phase: "intake",
-    prompt: "Create the PRD.",
+    logicalTurnId: "logical-stage-2",
+    role: "stage",
+    phase: "Spec",
+    prompt: "Run the Spec stage.",
     projectId: "PRJ-004",
     scopeKind: "change",
     scopeId: "CHG-006",
@@ -49,6 +49,26 @@ test("card instruction requires iterative batches until no execution blocker rem
   assert.match(context.prompt, /remaining execution-blocking questions/i);
   assert.match(context.prompt, /another batch/i);
   assert.match(context.prompt, /no blocking questions remain/i);
+});
+
+test("a line-protocol role is never told to ask via a card", () => {
+  const context = createCodexDesktopRunContext({
+    logicalTurnId: "logical-prd-1",
+    role: "prd_turn",
+    phase: "intake",
+    prompt: "Create the PRD.",
+    projectId: "PRJ-004",
+    scopeKind: "change",
+    scopeId: "CHG-006",
+    threadId: "thread-visible-in-codex",
+  });
+
+  // This used to append the card instruction, and the PRD parser then rejected
+  // every reply: told to ask via a card and required to emit TITLE / OVERVIEW /
+  // TARGETUSERS / PRD_DONE, the model obeyed the instruction and wrote no
+  // protocol at all. The prompt has to arrive exactly as the caller wrote it.
+  assert.equal(context.prompt, "Create the PRD.");
+  assert.doesNotMatch(context.prompt, /present_stagepass_choices/);
 });
 
 test("interaction wakeup does not append a second requirement-card instruction", () => {
