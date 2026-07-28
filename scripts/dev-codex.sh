@@ -1,5 +1,10 @@
 #!/bin/sh
-# Dev server with turns routed through the app-server gateway.
+# Dev server for Codex-native stages.
+#
+# Defaults to the desktop transport: turns are started inside Codex Desktop and
+# the user watches them run there. The gateway transport exists as a fallback --
+# it works and is verified, but it executes headlessly, so nothing appears in
+# the app while it runs. Override with STAGEPASS_CODEX_TURN_TRANSPORT=gateway.
 #
 # The variables live in a script rather than on a command line because one of
 # them contains a space: `CODEX_INTERNAL_ORIGINATOR_OVERRIDE="Codex Desktop"`
@@ -21,7 +26,7 @@ cd "$(dirname "$0")/.."
 export TERM=dumb
 unset TERM_PROGRAM TERM_PROGRAM_VERSION TERM_SESSION_ID
 export CODEX_INTERNAL_ORIGINATOR_OVERRIDE="Codex Desktop"
-export STAGEPASS_CODEX_TURN_TRANSPORT=gateway
+export STAGEPASS_CODEX_TURN_TRANSPORT="${STAGEPASS_CODEX_TURN_TRANSPORT:-desktop}"
 export STAGEPASS_DB_PATH="${STAGEPASS_DB_PATH:-/private/tmp/stagepass-gateway-e2e/ship.db}"
 export STAGEPASS_CODEX_DESKTOP_BRIDGE=on
 export STAGEPASS_MCP_INTERACTIONS=on

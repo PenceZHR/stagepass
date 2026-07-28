@@ -4,7 +4,9 @@
     {
       "name": "dev",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
+      "runtimeArgs": [
+        "dev"
+      ],
       "port": 3000
     },
     {
@@ -28,15 +30,6 @@
     {
       "name": "dev-attach",
       "url": "http://localhost:3000",
-      "port": 3000
-    },
-    {
-      "name": "dev-gateway-transport",
-      "runtimeExecutable": "/bin/sh",
-      "runtimeArgs": [
-        "-c",
-        "cd /Users/zhanghr/Desktop/stagepass && exec env TERM=dumb STAGEPASS_DB_PATH=/private/tmp/stagepass-gateway-e2e/ship.db STAGEPASS_CODEX_TURN_TRANSPORT=gateway STAGEPASS_CODEX_DESKTOP_BRIDGE=on STAGEPASS_MCP_INTERACTIONS=on STAGEPASS_CODEX_DECISION_SURFACE=on STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge pnpm dev"
-      ],
       "port": 3000
     },
     {
