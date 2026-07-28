@@ -902,7 +902,22 @@ const widgetHtml = String.raw`<!doctype html>
           idempotencyKey: key,
           answers: answers
         });
-        if (result && result.isError) throw new Error("record_failed");
+        if (result && result.isError) {
+          // Carry the tool's own reason. It is already in the result -- the
+          // record tool fails with a specific code like unknown_option or
+          // selection_count_invalid -- and collapsing all of them into
+          // "record_failed" is why every failure here has looked identical and
+          // unactionable to both the user and anyone debugging it.
+          var content = Array.isArray(result.content) ? result.content : [];
+          var detail = "";
+          for (var index = 0; index < content.length; index += 1) {
+            if (content[index] && typeof content[index].text === "string") {
+              detail = content[index].text;
+              break;
+            }
+          }
+          throw new Error(detail || "record_failed");
+        }
         var recorded = result && result.structuredContent;
         if (
           !recorded
