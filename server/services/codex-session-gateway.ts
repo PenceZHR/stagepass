@@ -135,6 +135,13 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** app-server reports an unloaded thread as a plain JSON-RPC invalid-request. */
+function isThreadNotFound(error: unknown): boolean {
+  return error instanceof CodexSessionGatewayError
+    && error.code === "PROTOCOL_ERROR"
+    && /thread not found/i.test(error.message);
+}
+
 /**
  * Mirrors the policy the Desktop follower path builds, so a turn does not
  * silently gain or lose filesystem reach by changing which door it came in.
@@ -159,6 +166,19 @@ export class CodexSessionGateway {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly observers = new Set<TurnObserver>();
+  /**
+   * Threads this connection has loaded.
+   *
+   * A `codex app-server` process only knows threads it created or resumed:
+   * `turn/start` on any other thread fails with `thread not found`. StagePass
+   * provisions its persistent shells from a DIFFERENT app-server process, so
+   * every thread the gateway is handed is unknown to it until resumed. The
+   * Desktop follower never needed this -- Codex Desktop owns every thread it is
+   * asked about -- which is why the requirement only appears on this path.
+   *
+   * Reset on reconnect: a fresh process has loaded nothing.
+   */
+  private readonly loadedThreads = new Set<string>();
   private stderrTail = "";
   private connecting: Promise<void> | null = null;
 
@@ -218,6 +238,7 @@ export class CodexSessionGateway {
 
   private failAllPending(code: number | null, signal: NodeJS.Signals | null) {
     this.child = null;
+    this.loadedThreads.clear();
     const error = new CodexSessionGatewayError(
       "APP_SERVER_DISCONNECTED",
       `app-server exited (code=${code} signal=${signal}) ${this.stderrTail}`.trim(),
@@ -408,6 +429,7 @@ export class CodexSessionGateway {
         result,
       );
     }
+    this.loadedThreads.add(threadId);
     return threadId;
   }
 
@@ -426,24 +448,43 @@ export class CodexSessionGateway {
    */
   async startTurn(input: TurnStartInput): Promise<{ turnId?: string }> {
     await this.connect();
-    const result = asRecord(
-      await this.request("turn/start", {
-        threadId: input.threadId,
-        input: [{ type: "text", text: input.prompt }],
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        ...(input.approvalPolicy
-          ? { approvalPolicy: input.approvalPolicy }
-          : {}),
-        ...(input.sandboxMode
-          ? { sandboxPolicy: sandboxPolicyFor(input.sandboxMode, input.cwd) }
-          : {}),
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.effort ? { effort: input.effort } : {}),
-        ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
-      }),
-    );
+    await this.ensureThreadLoaded(input.threadId);
+
+    const params = {
+      threadId: input.threadId,
+      input: [{ type: "text", text: input.prompt }],
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.approvalPolicy
+        ? { approvalPolicy: input.approvalPolicy }
+        : {}),
+      ...(input.sandboxMode
+        ? { sandboxPolicy: sandboxPolicyFor(input.sandboxMode, input.cwd) }
+        : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
+    };
+
+    let result: Record<string, unknown>;
+    try {
+      result = asRecord(await this.request("turn/start", params));
+    } catch (error) {
+      // Bookkeeping can be stale -- the process may have been replaced between
+      // the resume and the start -- so a not-found is answered by loading the
+      // thread again and retrying once, rather than by trusting the set.
+      if (!isThreadNotFound(error)) throw error;
+      this.loadedThreads.delete(input.threadId);
+      await this.ensureThreadLoaded(input.threadId);
+      result = asRecord(await this.request("turn/start", params));
+    }
     const turn = asRecord(result.turn);
     return { turnId: typeof turn.id === "string" ? turn.id : undefined };
+  }
+
+  private async ensureThreadLoaded(threadId: string): Promise<void> {
+    if (this.loadedThreads.has(threadId)) return;
+    await this.request("thread/resume", { threadId });
+    this.loadedThreads.add(threadId);
   }
 
   /**
