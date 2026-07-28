@@ -2,12 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import {
-  GATE_DECISION_UI_MIME,
-  GATE_DECISION_UI_URI,
-  gateDecisionWidgetHtml,
-} from "./decision-widget.mjs";
-
 /**
  * The Codex-native surface for StagePass gate decisions.
  *
@@ -92,35 +86,6 @@ async function liveContract(projectId, changeId) {
 
 const server = new McpServer({ name: "stagepass-gate", version: "0.1.0" });
 
-/**
- * The card itself.
- *
- * Without this the present tool returned JSON and told the model to "show these
- * options to the human". The model answered 「决策卡已展示」 and the human saw
- * nothing to click -- the authenticated path had no UI, and the path that had a
- * UI could not authenticate. A decision surface with no surface is not one.
- */
-server.registerResource(
-  "stagepass-gate-decision",
-  GATE_DECISION_UI_URI,
-  {
-    title: "StagePass 决策卡",
-    description: "The human's approve / reject decision for a settled StagePass gate.",
-    mimeType: GATE_DECISION_UI_MIME,
-  },
-  async () => ({
-    contents: [{
-      uri: GATE_DECISION_UI_URI,
-      mimeType: GATE_DECISION_UI_MIME,
-      text: gateDecisionWidgetHtml,
-      _meta: {
-        ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
-        "openai/widgetPrefersBorder": true,
-      },
-    }],
-  }),
-);
-
 server.registerTool(
   "present_stagepass_interaction",
   {
@@ -130,14 +95,6 @@ server.registerTool(
       + "Never chooses; returns the decision and the options that are currently legal.",
     inputSchema: { interactionId: z.string().min(1) },
     annotations: { readOnlyHint: true },
-    _meta: {
-      ui: { resourceUri: GATE_DECISION_UI_URI, visibility: ["model", "app"] },
-      "openai/outputTemplate": GATE_DECISION_UI_URI,
-      "openai/widgetAccessible": true,
-      "openai/visibility": "public",
-      "openai/toolInvocation/invoking": "正在打开决策卡…",
-      "openai/toolInvocation/invoked": "决策卡已打开。",
-    },
   },
   async ({ interactionId }) => {
     const interaction = await resolveChange(interactionId);
