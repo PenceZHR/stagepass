@@ -57,14 +57,25 @@ describe("baseline-service templates", () => {
 });
 
 describe("baseline-service readers", () => {
-  it("lists and reads scaffolded baseline documents", () => {
+  it("reports missing documents instead of creating them", () => {
     const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "baseline-readers-"));
 
     try {
-      const docs = listBaselineDocs(repoPath);
-      assert.equal(docs.length, BASELINE_DOCS.length);
-      assert.equal(docs.every((doc) => doc.status === "present"), true);
+      // Reading used to scaffold, so a GET wrote ten files into the workspace.
+      // A stage's boundary check diffs that workspace around the turn and
+      // cannot tell StagePass's writes from the model's, so merely opening the
+      // project page while a stage ran failed it -- for files the model could
+      // not have written, since PRD runs read-only.
+      const before = listBaselineDocs(repoPath);
+      assert.equal(before.length, BASELINE_DOCS.length);
+      assert.equal(before.every((doc) => doc.status === "missing"), true);
+      assert.equal(fs.existsSync(path.join(repoPath, ".ship", "baseline")), false);
+      assert.equal(readBaselineDoc(repoPath, "tech-spec.md").content, "");
 
+      scaffoldBaseline(repoPath);
+
+      const after = listBaselineDocs(repoPath);
+      assert.equal(after.every((doc) => doc.status === "present"), true);
       const techSpec = readBaselineDoc(repoPath, "tech-spec.md");
       assert.equal(techSpec.name, "tech-spec.md");
       assert.match(techSpec.content, /# Technical Specification Baseline/);

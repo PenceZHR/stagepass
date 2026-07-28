@@ -106,20 +106,32 @@ function summarizeBaselineDoc(repoPath: string, doc: BaselineDocDefinition): Bas
   };
 }
 
+/**
+ * Reading the baseline no longer creates it.
+ *
+ * These two called `scaffoldBaseline`, so a GET wrote ten files into the
+ * workspace. A stage's boundary check diffs that workspace around the turn and
+ * cannot tell StagePass's writes from the model's, so merely opening the
+ * project page while a stage ran failed it: "PRD 阶段越界：只允许修改
+ * .ship/prd.md，但还修改了 .ship/baseline/..." -- about files the model could
+ * not have written, since PRD runs read-only.
+ *
+ * `summarizeBaselineDoc` already reports an absent document as `missing`, which
+ * is the honest answer to a read. Creating the files is a mutation and belongs
+ * to whoever means to make one.
+ */
 export function listBaselineDocs(repoPath: string): BaselineDocSummary[] {
-  scaffoldBaseline(repoPath);
   return BASELINE_DOCS.map((doc) => summarizeBaselineDoc(repoPath, doc));
 }
 
 export function readBaselineDoc(repoPath: string, docName: string): BaselineDocContent {
   const doc = getBaselineDocDefinition(docName);
-  scaffoldBaseline(repoPath);
+  const summary = summarizeBaselineDoc(repoPath, doc);
+  if (summary.status === "missing") {
+    return { ...summary, content: "" };
+  }
   const filePath = path.join(baselineDir(repoPath), doc.name);
-
-  return {
-    ...summarizeBaselineDoc(repoPath, doc),
-    content: fs.readFileSync(filePath, "utf-8"),
-  };
+  return { ...summary, content: fs.readFileSync(filePath, "utf-8") };
 }
 
 export function updateChangelog(repoPath: string, entry: ChangelogEntry): string {
