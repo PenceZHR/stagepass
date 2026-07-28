@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   startPrd,
   prdTurn,
+  confirmPrd,
   getPrdStatus,
   getPrdHistory,
   saveStructuredPrd,
@@ -58,6 +59,14 @@ export async function POST(
         return NextResponse.json({ error: "message is required" }, { status: 400 });
       }
       const result = await prdTurn(id, message, provider);
+      return NextResponse.json(result);
+    }
+
+    if (action === "confirm") {
+      // Returns the validation result rather than throwing on a PRD that is not
+      // ready: "your PRD is missing X" is an answer the caller should render,
+      // not an error, and the gate that blocks Change creation is the same one.
+      const result = await confirmPrd(id);
       return NextResponse.json(result);
     }
 
