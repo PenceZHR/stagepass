@@ -41,7 +41,13 @@ export type CodexDecisionRolloutError =
 export const INTERACTION_KIND_ALLOWED_PHASES = {
   prd_question: ["PRD"],
   prd_lock: ["PRD"],
-  gate_decision: ["Intake", "Spec", "TechSpec", "TestPlan", "QA"],
+  // "PRD" alongside "Intake" because this one stage answers to three names: the
+  // stage runs as `intake`, its gate row is `stage_gates.phase = 'PRD'`, and
+  // STAGE_APPROVAL_ACTIONS routes it by `gatePhase: "PRD"`. The card is opened
+  // against the gate, so it arrives as PRD and was refused by a list that only
+  // knew the stage's name. "Intake" stays: it costs nothing and something may
+  // still send it.
+  gate_decision: ["PRD", "Intake", "Spec", "TechSpec", "TestPlan", "QA"],
   risk_waiver: ["Plan"],
   build_adoption: ["Build", "Fix"],
   review_resolution: ["Review"],
