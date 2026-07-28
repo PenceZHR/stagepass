@@ -152,7 +152,17 @@ export default function ChangeDetailPage() {
   const enabledActionIds = new Set(
     pipelineActions.filter((action) => action.enabled).map((action) => action.actionId),
   );
-  const startActionId = selectedStage.startActionIds.find((actionId) =>
+  // Every stage lists `retry_*` before `run_*`, and both are enabled while a
+  // stage is still waiting -- so the first enabled entry was always the retry,
+  // and a brand new change offered 「重新生成 PRD」 for a PRD that had never been
+  // generated. Ordering alone cannot express this: which verb is true depends
+  // on whether the stage has run, not on a fixed preference. A stage that is
+  // merely waiting has not, so it starts rather than retries.
+  const startCandidates = selectedStage.state === "waiting"
+    ? [...selectedStage.startActionIds].sort((a, b) =>
+      Number(b.startsWith("run_")) - Number(a.startsWith("run_")))
+    : selectedStage.startActionIds;
+  const startActionId = startCandidates.find((actionId) =>
     enabledActionIds.has(actionId),
   );
   const startControlAction = startActionId
