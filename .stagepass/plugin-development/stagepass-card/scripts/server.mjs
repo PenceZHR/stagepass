@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   closeSync,
   constants as fsConstants,
@@ -8,7 +9,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -41,7 +41,7 @@ const RECEIPT_PATH = join(DATA_DIRECTORY, "stagepass-choice-receipts.jsonl");
  * shown as the turn ends and clicked afterwards, so it almost never did: every
  * approval failed, and the plugin reported it as 提交失败，请重试.
  */
-const PRESENTED_PATH = join(DATA_DIRECTORY, "stagepass-presented-cards.json");
+const PRESENTED_PATH = join(DATA_DIRECTORY, "stagepass-presented-cards.jsonl");
 /** Long enough to outlive a turn and a restart, short enough to stay small. */
 const PRESENTED_TTL_MS = 24 * 60 * 60 * 1000;
 const API_BASE_URL =
@@ -1067,7 +1067,7 @@ function toolFailure(code) {
 function callPresent(argumentsValue) {
   const card = validatePresentArguments(argumentsValue);
   presented.set(card.interactionId, card);
-  persistPresented();
+  persistPresented(card);
   return {
     content: [{
       type: "text",
@@ -1088,22 +1088,21 @@ function callPresent(argumentsValue) {
  * being shown right now, which would trade a click that might still work for
  * one that certainly cannot.
  */
-function persistPresented() {
+function persistPresented(card) {
   try {
     mkdirSync(DATA_DIRECTORY, { recursive: true });
-    const cutoff = Date.now() - PRESENTED_TTL_MS;
-    const entries = [];
-    for (const [interactionId, card] of presented) {
-      const at = typeof card.__presentedAt === "number"
-        ? card.__presentedAt
-        : Date.now();
-      if (at < cutoff) {
-        presented.delete(interactionId);
-        continue;
-      }
-      entries.push([interactionId, { ...card, __presentedAt: at }]);
-    }
-    writeFileSync(PRESENTED_PATH, JSON.stringify(entries), { mode: 0o600 });
+    // Append one line per card, never rewrite the file.
+    //
+    // Every Codex conversation runs its own plugin process against this same
+    // directory, so a process that wrote its whole map erased every card the
+    // others had shown -- which is how an approval card vanished between being
+    // presented and being clicked, with an unrelated conversation's cards left
+    // in its place. Appending means a process can only ever add its own.
+    appendFileSync(
+      PRESENTED_PATH,
+      `${JSON.stringify({ ...card, __presentedAt: Date.now() })}\n`,
+      { mode: 0o600 },
+    );
   } catch {
     // Nothing to do: the card is still shown, and the click will fail the same
     // way it did before this existed rather than any worse.
@@ -1114,17 +1113,23 @@ function persistPresented() {
 function loadPresented() {
   try {
     const raw = readFileSync(PRESENTED_PATH, "utf8");
-    const entries = JSON.parse(raw);
-    if (!Array.isArray(entries)) return;
     const cutoff = Date.now() - PRESENTED_TTL_MS;
-    for (const entry of entries) {
-      if (!Array.isArray(entry) || entry.length !== 2) continue;
-      const [interactionId, card] = entry;
-      if (typeof interactionId !== "string" || !card) continue;
+    // Every conversation's cards live here, so this reads all of them. Later
+    // lines win: a card re-presented under the same id is the current one.
+    for (const line of raw.split("\n")) {
+      const text = line.trim();
+      if (!text) continue;
+      let card;
+      try {
+        card = JSON.parse(text);
+      } catch {
+        continue;
+      }
+      if (!card || typeof card.interactionId !== "string") continue;
       if (typeof card.__presentedAt === "number" && card.__presentedAt < cutoff) {
         continue;
       }
-      presented.set(interactionId, card);
+      presented.set(card.interactionId, card);
     }
   } catch {
     // An unreadable file is the same as no file: this process simply cannot
