@@ -51,6 +51,7 @@ const log = createChildLogger("design-gate-decision-presenter");
  */
 
 const DECISION_ACTIONS: Record<DesignInteractionPhase, readonly string[]> = {
+  PRD: ["approve_intake", "reject_intake"],
   Spec: ["approve_spec", "reject_spec", "waive_spec_p1", "request_spec_changes"],
   TechSpec: ["approve_tech_spec", "reject_tech_spec", "request_tech_spec_changes"],
   Plan: ["approve_plan", "waive_plan_p1", "reject_plan", "request_plan_changes"],
@@ -58,6 +59,7 @@ const DECISION_ACTIONS: Record<DesignInteractionPhase, readonly string[]> = {
 };
 
 const TITLES: Record<DesignInteractionPhase, string> = {
+  PRD: "PRD 已出结果，请裁决",
   Spec: "Spec 对抗已出结果，请裁决",
   TechSpec: "TechSpec 对抗已出结果，请裁决",
   Plan: "Plan 对抗已出结果，请裁决",

@@ -163,7 +163,7 @@ export async function runIntake(
   provider?: Provider,
   adoptedResult?: AiRunResult,
 ): Promise<AiRunResult> {
-  return runDocumentStage(changeId, {
+  const result = await runDocumentStage(changeId, {
     adoptedResult,
     phase: "intake",
     promptPhase: "intake",
@@ -176,4 +176,31 @@ export async function runIntake(
     successSummary: "Intake completed",
     provider,
   }, context);
+
+  // Open the human's decision card the same way Spec does -- after the stage
+  // has settled and the status has moved, because `approve_intake` is only
+  // enabled at INTAKE_READY and a card built from a contract with nothing
+  // enabled does not open at all. That is why this is here rather than in
+  // `afterSuccessfulResult`, which still runs inside the ledger's execute.
+  //
+  // Until now the intake prompt asked the MODEL to present the approval card. A
+  // card the server never opened has no interaction to authenticate against, so
+  // the approval it collected was refused by the command gateway as
+  // `submit_auth_required` -- every time, for every change. The mechanism to do
+  // this properly already existed and simply had no caller for PRD.
+  //
+  // A stage that parked on a clarification has not settled anything, so there
+  // is no decision to put in front of anyone yet.
+  if (result.summary !== "stage_awaiting_clarification") {
+    const { presentDesignGateDecision } = await import(
+      "./design-gate-decision-presenter"
+    );
+    presentDesignGateDecision({
+      changeId,
+      phase: "PRD",
+      roundNo: 1,
+      reportHash: `${changeId}:intake`,
+    });
+  }
+  return result;
 }

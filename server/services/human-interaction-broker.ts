@@ -56,6 +56,17 @@ export interface ReconcileInteractionContract {
 }
 
 export type DesignInteractionPhase =
+  /**
+   * PRD's gate decision, which had no server-opened card at all.
+   *
+   * The intake stage told the model in its prompt to present the approval card
+   * itself. A card the server never opened has no interaction to authenticate
+   * against, so the approval it collected was refused by the command gateway as
+   * `submit_auth_required` -- every time, for every change. Putting PRD here
+   * makes its decision arrive the same way Spec's does: opened by the server,
+   * against a contract read from stage authority.
+   */
+  | "PRD"
   | "Spec"
   | "TechSpec"
   | "Plan"
@@ -360,7 +371,11 @@ export function projectBuildInteraction(
 export function projectDesignInteraction(
   input: ProjectDesignInteractionInput,
 ): EnsureInteractionInput {
-  if (input.phase === "Spec") {
+  // PRD is identified the same way Spec is -- by the round that settled -- and
+  // not by an artifact hash. Its stage writes `change-request.md`, but the thing
+  // the human is ruling on is the round, and demanding a content hash here
+  // would make the card impossible to open for the one phase that never had one.
+  if (input.phase === "Spec" || input.phase === "PRD") {
     if (
       !Number.isInteger(input.facts.roundNo)
       || !input.facts.reportHash
