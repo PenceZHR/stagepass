@@ -108,6 +108,23 @@ export function assertCodexOwnerFence(
   return { logical, binding };
 }
 
+/**
+ * Whether a heartbeat would actually move the lease forward.
+ *
+ * The owner state machines accept a heartbeat only when the new expiry is
+ * STRICTLY later than the old one, so this is the guard that decides between
+ * writing and returning -- not a rounding convenience.
+ */
+function extendsLease(current: string | null, next: string): boolean {
+  if (!current) return true;
+  const from = Date.parse(current);
+  const to = Date.parse(next);
+  // An unparseable current expiry is not evidence that the lease is at its
+  // maximum, so let the write happen and the state machine judge it.
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return true;
+  return to > from;
+}
+
 export function heartbeatCodexOwnerFence(
   tx: CodexFenceTransaction,
   logicalTurnId: string,
@@ -129,6 +146,13 @@ export function heartbeatCodexOwnerFence(
       input.now.getTime() + input.leaseMs,
       Date.parse(deadline),
     )).toISOString();
+    // A lease already at its deadline cannot be extended, and the state machine
+    // requires a heartbeat to move the expiry strictly forward. Writing the
+    // unchanged value is therefore an illegal transition, so the heartbeat has
+    // to recognise that there is nothing left to extend and stop -- the owner
+    // still holds the lease, it simply cannot hold it any longer than the
+    // deadline it was given.
+    if (!extendsLease(owner.leaseExpiresAt, leaseExpiresAt)) return;
     const updated = tx.update(pipelineJobs).set({
       leaseExpiresAt,
       heartbeatAt: timestamp,
@@ -147,6 +171,12 @@ export function heartbeatCodexOwnerFence(
     input.now.getTime() + input.leaseMs,
     Date.parse(owner.deadlineAt),
   )).toISOString();
+  // Same reason as the pipeline-job branch above. This one bites sooner:
+  // acquireProjectAiRunLease already clamps the initial expiry to the deadline
+  // when the requested lease is the longer of the two, so the very first
+  // heartbeat computes a value equal to the current one and every heartbeat
+  // after it is an illegal no-op transition.
+  if (!extendsLease(owner.leaseExpiresAt, leaseExpiresAt)) return;
   const updated = tx.update(projectAiRuns).set({
     leaseExpiresAt,
     updatedAt: timestamp,

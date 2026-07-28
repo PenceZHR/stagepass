@@ -1,3 +1,4 @@
+import { spawnSync } from "child_process";
 import crypto from "crypto";
 import { and, desc, eq } from "drizzle-orm";
 import fs from "fs";
@@ -366,7 +367,48 @@ export function captureWorkspaceSnapshot(repoPath: string): WorkspaceSnapshot {
   }
 
   walkFiles(repoPath, repoPath, files);
+  for (const ignored of gitIgnoredPaths(repoPath, Object.keys(files))) {
+    delete files[ignored];
+  }
   return { repoPath, files };
+}
+
+/**
+ * The subset of `candidates` that git ignores.
+ *
+ * Stage boundary checks exist to catch a model editing outside its lane, and
+ * they answer that by diffing the workspace before and after the turn. Anything
+ * else writing to the repo meanwhile is indistinguishable from the model: a
+ * StagePass dev server running in the very repo under test writes
+ * `logs/pipeline-worker.log` mid-turn and the PRD stage reports the model went
+ * out of bounds.
+ *
+ * IGNORED_DIRS used to answer this with a hardcoded list, which is a list that
+ * drifts -- it had `.next` and `coverage` but not `logs`. Asking git costs one
+ * subprocess per snapshot and cannot drift, because it is the same answer the
+ * repo already gives every other tool.
+ *
+ * A workspace that is not a git repo keeps the old behaviour rather than
+ * silently ignoring nothing or everything.
+ */
+function gitIgnoredPaths(repoPath: string, candidates: string[]): string[] {
+  if (candidates.length === 0) return [];
+  const result = spawnSync(
+    "git",
+    ["check-ignore", "--stdin"],
+    {
+      cwd: repoPath,
+      input: `${candidates.join("\n")}\n`,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+  // Exit 0 = some paths ignored, 1 = none ignored, anything else (including no
+  // git, or not a repo) means the question could not be answered -- and a
+  // failed lookup must not be read as "nothing is ignored" any more than as
+  // "everything is".
+  if (result.status !== 0 || typeof result.stdout !== "string") return [];
+  return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
 export function diffWorkspaceSnapshots(
