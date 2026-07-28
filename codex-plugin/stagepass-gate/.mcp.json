@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "stagepass-gate": {
-      "command": "node",
-      "args": ["./codex-plugin/stagepass-gate/scripts/server.mjs"],
-      "cwd": "/Users/zhanghr/Desktop/stagepass"
-    }
-  }
-}

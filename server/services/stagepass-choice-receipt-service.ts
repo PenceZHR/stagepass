@@ -16,6 +16,11 @@ import {
 } from "../db/schema";
 import { emitIdempotentEvent } from "./event-service";
 import {
+  completeGateDecision,
+  GateDecisionCardError,
+  resolveGateDecision,
+} from "./gate-decision-card-service";
+import {
   approvalDecisionFromAnswers,
   executeStageApproval,
 } from "./stage-approval-command-service";
@@ -82,7 +87,11 @@ export class StagePassChoiceReceiptError extends Error {
       | "choice_receipt_selection_invalid"
       | "choice_receipt_idempotency_conflict"
       | "choice_receipt_persistence_failed"
-      | "choice_receipt_continuation_identity_invalid",
+      | "choice_receipt_continuation_identity_invalid"
+      // Raised by `resolveGateDecision` when a receipt names an action the card
+      // it claims to answer never offered. Carried through with its own name so
+      // the plugin can say what was wrong instead of 「提交失败，请重试」.
+      | "gate_decision_action_not_offered",
     readonly status = 409,
   ) {
     super(code);
@@ -505,15 +514,43 @@ export async function recordStagePassChoiceReceipt(
   // An approval card is the human clearing the gate, not another answer for
   // the model to summarize. It has to reach the gate as a real command, or the
   // click records a decision that never takes effect anywhere.
+  //
+  // Two rules can claim these answers and they must not overlap. A card StagePass
+  // opened itself carries `stagepass_gate_decision` and its option ids ARE action
+  // ids, resolved by name against the interaction that offered them. A card the
+  // model opened at the end of its own stage carries `stagepass_stage_approval`
+  // and is resolved by position, A approves and B sends back. Keyed on different
+  // question ids, so the order below decides nothing -- it is fixed only so that
+  // a future third rule has an obvious place to go.
   if (input.schemaVersion === "stagepass.choice-receipt/v2") {
-    const decision = approvalDecisionFromAnswers(phase, input.answers);
+    let gate: ReturnType<typeof resolveGateDecision> = null;
+    try {
+      gate = resolveGateDecision(input.interactionId, input.answers);
+    } catch (error) {
+      if (
+        !(error instanceof GateDecisionCardError)
+        || error.code !== "gate_decision_action_not_offered"
+      ) throw error;
+      // Keep the code the card service chose. Letting this reach the route's
+      // catch-all would report a refused decision as an unclassified 500, which
+      // the plugin shows as 「提交失败，请重试」 -- and retrying cannot add an
+      // option the card never offered.
+      throw new StagePassChoiceReceiptError(error.code, error.status);
+    }
+    const decision = gate ?? approvalDecisionFromAnswers(phase, input.answers);
     if (decision) {
       await executeStageApproval({
-        changeId: input.changeId!,
-        phase,
+        // The interaction is authoritative for a gate decision: it is where the
+        // card's change and phase came from, and the receipt's own `stage` is
+        // the one field in this whole path that a caller supplies freely.
+        changeId: gate?.changeId ?? input.changeId!,
+        phase: gate?.phase ?? phase,
         actionId: decision.actionId,
         idempotencyKey: `stage-approval:${input.logicalTurnId}:${input.idempotencyKey}`,
       });
+      // Only after the command succeeded. A decision closed while its command
+      // failed is a card that says it was answered and a gate that never moved.
+      if (gate) completeGateDecision(input.interactionId);
     }
   }
 

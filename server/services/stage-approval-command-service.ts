@@ -21,15 +21,40 @@ export interface StageApprovalAnswer {
 }
 
 /**
- * The gate action each stage's approval card stands for, and the gate phase
- * whose snapshot fences the command.
+ * The two actions a stage's own A/B approval card stands for.
+ *
+ * This is the card the MODEL opens for itself at the end of a stage: one
+ * question, option A approves, option B sends back. Only PRD has one. It is
+ * deliberately NOT extended to the other stages here -- a server-opened gate
+ * decision card carries its options as action ids and is resolved by name (see
+ * `gate-decision-card-service`), and a stage listed in both tables would have
+ * its answers claimed by whichever rule ran first.
  */
 export const STAGE_APPROVAL_ACTIONS: Partial<Record<StageClarificationId, {
   approve: string;
   reject: string;
-  gatePhase: PipelinePhase;
 }>> = {
-  prd: { approve: "approve_intake", reject: "reject_intake", gatePhase: "PRD" },
+  prd: { approve: "approve_intake", reject: "reject_intake" },
+};
+
+/**
+ * The gate phase whose snapshot fences each stage's decision.
+ *
+ * Separate from the A/B table because it answers a different question. Every
+ * stage that can have a decision recorded needs a fence; only PRD needs an A/B
+ * mapping. Keeping them together is what limited `executeStageApproval` to PRD:
+ * a Spec decision had a perfectly good gate to fence against and was refused as
+ * `stage_approval_unsupported_phase` because the same row had to carry an
+ * approve/reject pair it did not need.
+ */
+export const STAGE_GATE_PHASES: Partial<
+  Record<StageClarificationId, PipelinePhase>
+> = {
+  prd: "PRD",
+  spec: "Spec",
+  tech_spec: "TechSpec",
+  plan: "Plan",
+  test_plan: "TestPlan",
 };
 
 /**
@@ -77,7 +102,7 @@ export class StageApprovalCommandError extends Error {
  * never knew had a shape. Approvals assert an explicit confirmation; rejections
  * carry the reason the next round is owed.
  */
-function decisionPayload(
+export function decisionPayload(
   actionId: string,
   reason: string | undefined,
 ): Record<string, unknown> {
@@ -107,10 +132,10 @@ export async function executeStageApproval(input: {
     throw new StageApprovalCommandError("change_not_found", input.changeId);
   }
   const policy = resolveStageClarificationPolicy(input.phase);
-  const actions = policy.id === "generic"
+  const gatePhase = policy.id === "generic"
     ? undefined
-    : STAGE_APPROVAL_ACTIONS[policy.id];
-  if (!actions) {
+    : STAGE_GATE_PHASES[policy.id];
+  if (!gatePhase) {
     throw new StageApprovalCommandError(
       "stage_approval_unsupported_phase",
       input.phase,
@@ -118,12 +143,12 @@ export async function executeStageApproval(input: {
   }
   const gate = db.select().from(stageGates).where(and(
     eq(stageGates.changeId, input.changeId),
-    eq(stageGates.phase, actions.gatePhase),
+    eq(stageGates.phase, gatePhase),
   )).orderBy(desc(stageGates.computedAt), desc(stageGates.gateVersion)).get();
   if (!gate?.sourceDbHash) {
     throw new StageApprovalCommandError(
       "stage_approval_gate_missing",
-      `${actions.gatePhase} gate has no snapshot to fence the decision`,
+      `${gatePhase} gate has no snapshot to fence the decision`,
     );
   }
 

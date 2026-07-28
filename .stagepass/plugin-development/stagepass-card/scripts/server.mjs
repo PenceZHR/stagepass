@@ -18,6 +18,24 @@ import readline from "node:readline";
 const SERVER_NAME = "StagePass Requirement Choices";
 const SERVER_VERSION = "0.3.0";
 const PRESENT_TOOL_NAME = "present_stagepass_choices";
+/**
+ * Shows a decision StagePass opened by itself, rather than one the model
+ * composed.
+ *
+ * It takes ONE argument, an opaque id, and fetches everything else. That is the
+ * whole point: the question text, the option set, and the four identifiers the
+ * receipt is verified against all come from StagePass, so the model has no way
+ * to reword the decision, drop an option, or aim the receipt somewhere else.
+ * `present_stagepass_choices` is the opposite trade -- the model composes the
+ * card because only the model knows what it needs to ask.
+ *
+ * This replaces `present_stagepass_interaction` from the retired stagepass-gate
+ * plugin, which registered no widget at all: it returned prose, so the human was
+ * shown a decision with no buttons, and its companion record tool posted to the
+ * public `/commands` route, which refuses every business decision as
+ * `actor_surface_forbidden`.
+ */
+const PRESENT_DECISION_TOOL_NAME = "present_stagepass_decision";
 const RECORD_TOOL_NAME = "record_stagepass_choice";
 const UI_URI = "ui://stagepass/requirement-choice-v2";
 const UI_MIME = "text/html;profile=mcp-app";
@@ -1022,6 +1040,21 @@ const widgetHtml = String.raw`<!doctype html>
 </body>
 </html>`;
 
+const presentDecisionInputSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["interactionId"],
+  properties: {
+    interactionId: {
+      type: "string",
+      minLength: 1,
+      maxLength: 256,
+      description:
+        "The StagePass interaction id given to you in this turn's instruction. Pass it exactly; do not invent one.",
+    },
+  },
+};
+
 const tools = [
   {
     name: PRESENT_TOOL_NAME,
@@ -1040,6 +1073,25 @@ const tools = [
       "openai/visibility": "public",
       "openai/toolInvocation/invoking": "正在准备需求选项…",
       "openai/toolInvocation/invoked": "需求选项已准备。",
+    },
+  },
+  {
+    name: PRESENT_DECISION_TOOL_NAME,
+    title: "Show a StagePass gate decision",
+    description:
+      "Show the human a decision StagePass has already opened, given its interactionId. Pass only the id you were given; the question and its options come from StagePass. Never choose an option yourself.",
+    inputSchema: presentDecisionInputSchema,
+    annotations: { readOnlyHint: false },
+    _meta: {
+      ui: {
+        resourceUri: UI_URI,
+        visibility: ["model", "app"],
+      },
+      "openai/outputTemplate": UI_URI,
+      "openai/widgetAccessible": true,
+      "openai/visibility": "public",
+      "openai/toolInvocation/invoking": "正在打开决策卡…",
+      "openai/toolInvocation/invoked": "决策卡已打开，等待你的选择。",
     },
   },
   {
@@ -1072,6 +1124,60 @@ function callPresent(argumentsValue) {
     content: [{
       type: "text",
       text: "StagePass is waiting for the user's answers to the rendered concrete question batch.",
+    }],
+    structuredContent: {
+      schemaVersion: "stagepass.requirement-choice/v2",
+      status: "awaiting_selection",
+      ...card,
+    },
+  };
+}
+
+/**
+ * Fetches a StagePass-authored decision card and shows it.
+ *
+ * The fetched card is run through the SAME validator the model-composed card
+ * goes through. StagePass is trusted to author the decision, not to be exempt
+ * from the shape every card in this plugin has to hold -- and `callRecord`
+ * reads that shape back out of `presented`, so a card that skipped validation
+ * would fail at click time instead of here.
+ */
+async function callPresentDecision(argumentsValue) {
+  const input = asObject(argumentsValue);
+  if (!input) throw new Error("invalid_decision_request");
+  const interactionId = boundedString(input.interactionId, "interaction_id", {
+    max: 256,
+  });
+  const endpoint = new URL(
+    `/api/interactions/${encodeURIComponent(interactionId)}/card`,
+    trustedApiBaseUrl(),
+  );
+  const response = await fetch(endpoint, {
+    // POST because opening the card moves the interaction to `presented`.
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body) {
+    // Surface StagePass's own error code. The codes it returns are specific --
+    // `gate_decision_card_expired`, `gate_decision_card_too_few_options` -- and
+    // replacing them with a generic failure is what made the previous round of
+    // this path take a day to diagnose.
+    throw new Error(
+      body && typeof body.error === "string"
+        ? body.error
+        : `gate_decision_card_unavailable_${response.status}`,
+    );
+  }
+  const card = validatePresentArguments(body);
+  presented.set(card.interactionId, card);
+  persistPresented(card);
+  return {
+    content: [{
+      type: "text",
+      text:
+        "StagePass 已打开决策卡，等待人类选择。Do not pick an option and do not describe "
+        + "the decision as made: only the human's click produces a receipt.",
     }],
     structuredContent: {
       schemaVersion: "stagepass.requirement-choice/v2",
@@ -1354,6 +1460,8 @@ async function handleRequest(message) {
     try {
       if (params.name === PRESENT_TOOL_NAME) {
         sendResult(id, callPresent(params.arguments));
+      } else if (params.name === PRESENT_DECISION_TOOL_NAME) {
+        sendResult(id, await callPresentDecision(params.arguments));
       } else if (params.name === RECORD_TOOL_NAME) {
         sendResult(id, await callRecord(params.arguments));
       } else {

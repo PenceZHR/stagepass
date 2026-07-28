@@ -50,13 +50,49 @@ const log = createChildLogger("design-gate-decision-presenter");
  * cycle.
  */
 
-const DECISION_ACTIONS: Record<DesignInteractionPhase, readonly string[]> = {
+/**
+ * What each phase's card may offer.
+ *
+ * Every id here must be executable by the surface that records the click
+ * (`stagepass_web_emergency`, i.e. `HUMAN_DECISION_ACTIONS`). Three ids that
+ * were listed here are not, and never were: `request_tech_spec_changes`,
+ * `request_plan_changes` and `request_test_plan_changes` have contract entries
+ * and labels but no membership in `HUMAN_DECISION_ACTIONS` and no alias to
+ * anything that has one, so `assertActorAllowed` refuses them. They rendered as
+ * buttons whose click no surface could execute. Removed rather than papered
+ * over: putting them back means giving the state machine an "another round"
+ * transition and adding them to the gateway's set, which is a decision about
+ * the pipeline, not about this card.
+ *
+ * `request_spec_changes` stays because it IS in that set.
+ *
+ * The two waivers are gone for a different reason: their payload schemas are
+ * `waive_spec_p1 {gapId, reason}` and `waive_plan_p1 {riskId, reason}`, and a
+ * single click cannot say WHICH gap or risk it waives. A card that offered
+ * 「接受 P1 风险」 as one button would either fail `invalid_pipeline_command` or
+ * silently waive an arbitrary one of several. Waiving needs its own card that
+ * names each P1 as its own question -- which is the same one-batch-of-questions
+ * model, just a different card.
+ */
+export const DECISION_ACTIONS: Record<DesignInteractionPhase, readonly string[]> = {
   PRD: ["approve_intake", "reject_intake"],
-  Spec: ["approve_spec", "reject_spec", "waive_spec_p1", "request_spec_changes"],
-  TechSpec: ["approve_tech_spec", "reject_tech_spec", "request_tech_spec_changes"],
-  Plan: ["approve_plan", "waive_plan_p1", "reject_plan", "request_plan_changes"],
-  TestPlan: ["reject_test_plan", "request_test_plan_changes"],
+  Spec: ["approve_spec", "reject_spec", "request_spec_changes"],
+  TechSpec: ["approve_tech_spec", "reject_tech_spec"],
+  Plan: ["approve_plan", "reject_plan"],
+  // TestPlan has no approval id of its own: `approve_test_plan` is an alias for
+  // `approve_plan`, which the contract already enables at TESTPLAN_DONE under
+  // the label 「批准作战计划」. Wiring that up means naming the button correctly
+  // for a phase it does not belong to, so TestPlan is left with one option --
+  // below the minimum a card can carry -- and opens no card until that is done.
+  TestPlan: ["reject_test_plan"],
 };
+
+/**
+ * A question with one option is not a decision, and the card plugin refuses it
+ * (`invalid_options`). Checked here so the shortfall is reported against the
+ * phase that caused it instead of failing later with no phase in the message.
+ */
+const MIN_CARD_OPTIONS = 2;
 
 const TITLES: Record<DesignInteractionPhase, string> = {
   PRD: "PRD 已出结果，请裁决",
@@ -142,6 +178,13 @@ export function presentDesignGateDecision(input: {
       return null;
     }
     const { actionIds, gateVersion, sourceDbHash } = contract;
+    if (actionIds.length < MIN_CARD_OPTIONS) {
+      log.info(
+        { changeId: input.changeId, phase: input.phase, actionIds },
+        "Fewer than two decision actions are enabled, so no card is opened",
+      );
+      return null;
+    }
     const gate = peekStageAuthority(input.changeId, input.phase).latestGate;
 
     const gaps = getGaps(input.changeId, input.phase);

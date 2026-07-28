@@ -82,11 +82,19 @@ export class InteractionPresentationOrchestrator {
         // interactionId」. An instruction that names a parameter the model cannot
         // see is an instruction it cannot follow, and it correctly refused rather
         // than inventing an id.
+        // One id and nothing else. `present_stagepass_decision` fetches the
+        // question, the options and the four identifiers its receipt is verified
+        // against; the model supplies none of them and therefore cannot reword
+        // the decision or drop an option. The predecessor tool
+        // (`present_stagepass_interaction`, in the retired stagepass-gate
+        // plugin) rendered no widget at all -- it returned prose, so the human
+        // was never shown anything clickable and its receipt route was refused
+        // as `actor_surface_forbidden` besides.
         prompt:
           `StagePass has a human interaction ready: interactionId = ${allocated.interaction.id}\n`
-          + `Call present_stagepass_interaction with exactly that interactionId.\n`
+          + `Call present_stagepass_decision with exactly that interactionId.\n`
           + "Do not decide, approve, reject, waive, or submit on the user's behalf.\n"
-          + "If the present_stagepass_interaction tool is not available to you, say so "
+          + "If the present_stagepass_decision tool is not available to you, say so "
           + "plainly and do nothing else -- do not describe the decision in chat, because "
           + "a decision shown outside the card is a decision with no receipt.",
         // Presenting a card reads state and shows it; it writes nothing.
