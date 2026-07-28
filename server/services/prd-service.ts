@@ -769,17 +769,34 @@ export async function getPrdStatus(projectId: string): Promise<{
   content: string | null;
   structured: StructuredPrd | null;
   validation: PrdValidationResult | null;
+  /**
+   * The Codex thread this project's PRD conversation lives in, when one has
+   * been provisioned.
+   *
+   * The PRD surface is deliberately read-only -- questions and confirmation
+   * happen in the bound Codex task, not here. That only works if the page can
+   * say WHICH task: without it the UI told the user to continue in Codex and
+   * offered no way to get there, which is a dead end rather than a division of
+   * labour.
+   */
+  codexThreadId: string | null;
 }> {
   const project = getProjectOrThrow(projectId);
   const content = readPrd(project.repoPath);
   const structured = readStructuredPrd(projectId);
   const validation = structured ? validatePrd(structured) : null;
+  const binding = readCodexThreadBinding({
+    kind: "project_prd",
+    scopeId: projectId,
+    projectId,
+  });
   return {
     status: project.prdStatus as PrdStatus,
     prdProvider: resolveProviderSelection(undefined, project.prdProvider as AiProvider | null | undefined),
     content,
     structured,
     validation,
+    codexThreadId: binding?.threadId ?? null,
   };
 }
 

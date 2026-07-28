@@ -102,6 +102,7 @@ export default function ProjectDetailPage() {
   const [prdContent, setPrdContent] = useState<string | null>(null);
   const [prdStructured, setPrdStructured] = useState<Record<string, unknown> | null>(null);
   const [prdValidation, setPrdValidation] = useState<{ valid: boolean; issues: Array<{ field: string; severity: string; message: string }> } | null>(null);
+  const [prdCodexThreadId, setPrdCodexThreadId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<NavSection>("changes");
 
   const loadProject = useCallback(() => {
@@ -131,6 +132,7 @@ export default function ProjectDetailPage() {
       setPrdContent(data.content || null);
       setPrdStructured(data.structured || null);
       setPrdValidation(data.validation || null);
+      setPrdCodexThreadId(data.codexThreadId || null);
     });
   }, [projectId]);
 
@@ -360,6 +362,7 @@ export default function ProjectDetailPage() {
               prdContent={prdContent}
               structured={prdStructured}
               validation={prdValidation}
+              codexThreadId={prdCodexThreadId}
             />
               </div>
             </div>
