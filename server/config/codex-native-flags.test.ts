@@ -14,10 +14,31 @@ describe("Codex-native flags", () => {
       // The delegated Spec round (judge + sub-agents) is the newer of two live
       // forms, so it ships off like every other migration surface here.
       specJudgeSubAgents: false,
+      // Not a migration surface but a choice of door, so its default is the
+      // path with production mileage rather than `false`.
+      turnTransport: "desktop",
       codexDecisionSurfaceMaster: false,
       codexDecisionPhases: [],
       codexDecisionRolloutError: null,
     });
+  });
+
+  it("moves turns to the gateway only on the literal gateway value", () => {
+    assert.equal(
+      readCodexNativeFlags({ STAGEPASS_CODEX_TURN_TRANSPORT: "gateway" })
+        .turnTransport,
+      "gateway",
+    );
+    // Anything else -- including plausible near-misses and the opposite
+    // spelling -- leaves turns on the desktop path rather than guessing.
+    for (const value of ["Gateway", "GATEWAY", " gateway ", "app-server", "on", ""]) {
+      assert.equal(
+        readCodexNativeFlags({ STAGEPASS_CODEX_TURN_TRANSPORT: value })
+          .turnTransport,
+        "desktop",
+        value,
+      );
+    }
   });
 
   it("accepts only the literal on value", () => {

@@ -35,6 +35,9 @@ import {
   discoverCodexDesktopIpcEndpoint,
 } from "./codex-desktop-ipc-discovery";
 import { createObservedCodexDesktopFollowerTransport } from "./codex-desktop-ipc-transport";
+import { createGatewayFollowerTransport } from "./codex-gateway-follower-transport";
+import { CodexSessionGateway } from "./codex-session-gateway";
+import { readCodexNativeFlags } from "../config/codex-native-flags";
 import {
   readCodexTurnExecution,
   recordCodexTurnNotYetVisible,
@@ -510,7 +513,21 @@ Promise<CodexDesktopBridge> {
   const shellControl = createCodexAppServerShellControl({
     appServerBinary: endpoint.appServerBinary,
   });
-  const follower = createObservedCodexDesktopFollowerTransport(endpoint);
+  // Discovery still runs on both paths: the gateway does not need Codex Desktop
+  // to start a turn, but it does need the same `codex` binary discovery already
+  // resolves, and shell control needs it regardless. Dropping the Desktop
+  // dependency entirely is a separate step from changing which door turns use.
+  const follower = readCodexNativeFlags().turnTransport === "gateway"
+    ? createGatewayFollowerTransport({
+      gateway: new CodexSessionGateway({
+        // The attested path, not a bare `codex` off PATH: discovery has already
+        // checked this binary's signature and team identifier, and the gateway
+        // should not quietly run a different one.
+        bin: endpoint.appServerBinary.path,
+        cwd: process.cwd(),
+      }),
+    })
+    : createObservedCodexDesktopFollowerTransport(endpoint);
   const roleScopedLogicalTurnPort = {
     resolve: productionCodexLogicalTurnPort.resolve.bind(
       productionCodexLogicalTurnPort,
