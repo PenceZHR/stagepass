@@ -10,7 +10,9 @@ import {
   type RubricRole,
   type RubricVerdict,
 } from "../domain/rubric";
-import type { Phase } from "../domain/phase";
+import { PHASES, type Phase } from "../domain/phase";
+import { RUBRIC_ROLES } from "../domain/rubric";
+import { defaultCriteria } from "../domain/rubric-defaults";
 
 /**
  * rubric 存在哪里：版本化写入，加上「撤下一条标准要留下理由」。
@@ -125,6 +127,32 @@ export class RubricStore {
   ) {
     this.now = options.now ?? (() => new Date());
     this.mintKey = options.mintKey ?? (() => `RBC-${randomUUID()}`);
+  }
+
+  /**
+   * 给一个项目铺上出厂标准，**只补空缺**。
+   *
+   * 已经有 rubric 的 (阶段, 角色) 一个字都不碰 —— 人改过的东西不会被一次「装默认」
+   * 冲掉。所以这个方法可以反复调，也应该反复调：加了新阶段之后再调一次，只会补上
+   * 新的那些。
+   *
+   * 出厂的每一条都不阻断，理由见 domain/rubric-defaults.ts 开头。
+   *
+   * 返回补了几份。
+   */
+  installDefaults(projectId: string): number {
+    let installed = 0;
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        const scope = { projectId, changeId: null, phase, role };
+        if (this.current(scope) !== null) continue;
+        const drafts = defaultCriteria(phase, role);
+        if (drafts.length === 0) continue;
+        this.save(scope, drafts);
+        installed += 1;
+      }
+    }
+    return installed;
   }
 
   /** 这个 scope 当前生效的版本，没有就 null。 */

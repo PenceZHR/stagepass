@@ -19,6 +19,7 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../src/db/schema";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
+import { RubricStore } from "../src/store/rubric-store";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 
 function argument(name: string): string | undefined {
@@ -42,6 +43,11 @@ const projectId = argument("project") ?? "PRJ-001";
 const project = new ProjectStore(database).ensure(
   projectId, argument("project-name") ?? basename(process.cwd()),
 );
+
+// 出厂标准：只补空缺，人改过的一个字都不碰，所以每次启动都调是安全的。
+// 全部不阻断 —— 它们是给人一个起点去读、去改、去决定哪几条值得挡，
+// 不是替他做那个决定（domain/rubric-defaults.ts）。
+const installed = new RubricStore(database).installDefaults(project.id);
 
 const changes = new ChangeStore(database);
 if (!database.prepare("SELECT 1 FROM changes WHERE id = ?").get(changeId)) {
@@ -93,6 +99,7 @@ process.on("SIGTERM", () => { stop(sessions); });
 server.listen(port, () => {
   console.log(`面板   http://localhost:${port}/?change=${encodeURIComponent(changeId)}`);
   console.log(`数据库 ${dbPath}`);
+  if (installed > 0) console.log(`出厂标准 补了 ${installed} 份（全部不阻断）`);
   console.log("\n每个阶段一个终端。点开一个 tab 就在那个阶段的线程里起一个 Codex。");
   console.log("Ctrl-C 结束。");
 });

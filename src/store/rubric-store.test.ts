@@ -6,6 +6,8 @@ import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "./change-store";
 import { ProjectStore } from "./project-store";
 import { ReasonRequiredError, RubricStore } from "./rubric-store";
+import { PHASES } from "../domain/phase";
+import { RUBRIC_ROLES } from "../domain/rubric";
 
 const PROJECT = "PRJ-1";
 const CHANGE = "CHG-1";
@@ -221,5 +223,70 @@ describe("rubric store · 判定按轮读", () => {
 
     assert.equal(rubrics.assessments(CHANGE, "Spec", "producer", 1).length, 1);
     assert.equal(rubrics.assessments(CHANGE, "Spec", "critic", 1).length, 0);
+  });
+});
+
+describe("rubric store · 出厂标准", () => {
+  it("**一条都不阻断** —— 这条不是保守，是有出口的问题", () => {
+    /*
+     * not_assessed 是阻断的。出厂就勾上阻断，等于任何一次模型漏答都会立刻给每个
+     * 项目挂上一条挡门的东西，而它的出口只有「进设置里把这条标准撤下来」——
+     * 人会在完全不知道 rubric 是什么的情况下先被拦住。
+     */
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+
+    const blocking: string[] = [];
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        const current = rubrics.current({ projectId: PROJECT, changeId: null, phase, role });
+        for (const entry of current?.criteria ?? []) {
+          if (entry.blocking) blocking.push(`${phase}/${role}: ${entry.text}`);
+        }
+      }
+    }
+    assert.deepEqual(blocking, []);
+  });
+
+  it("只补空缺 —— 人改过的一个字都不碰", () => {
+    const { rubrics } = open();
+    const mine = rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      [{ text: "我自己写的一条", blocking: true }]);
+
+    const installed = rubrics.installDefaults(PROJECT);
+    assert.ok(installed > 0);
+    // Spec/producer 是我写的那一版，没被默认冲掉。
+    const spec = rubrics.current({ projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" });
+    assert.equal(spec?.id, mine.id);
+    assert.equal(spec?.criteria[0]?.text, "我自己写的一条");
+  });
+
+  it("反复调是安全的 —— 第二次一份都不补", () => {
+    const { rubrics } = open();
+    assert.ok(rubrics.installDefaults(PROJECT) > 0);
+    assert.equal(rubrics.installDefaults(PROJECT), 0);
+  });
+
+  it("Done 没有出厂标准 —— 没有 turn 在那里跑，没人可以被摆一张清单", () => {
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+    for (const role of RUBRIC_ROLES) {
+      assert.equal(
+        rubrics.current({ projectId: PROJECT, changeId: null, phase: "Done", role }), null);
+    }
+  });
+
+  it("其余每个阶段三个角色都有", () => {
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+    const missing: string[] = [];
+    for (const phase of PHASES.filter((entry) => entry !== "Done")) {
+      for (const role of RUBRIC_ROLES) {
+        const current = rubrics.current({ projectId: PROJECT, changeId: null, phase, role });
+        if ((current?.criteria.length ?? 0) === 0) missing.push(`${phase}/${role}`);
+      }
+    }
+    assert.deepEqual(missing, []);
   });
 });

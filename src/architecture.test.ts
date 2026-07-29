@@ -70,6 +70,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/rubric-protocol.ts": 5,
   "domain/rubric-gaps.ts": 5,
   "domain/rubric-edit.ts": 5,
+  "domain/rubric-defaults.ts": 5,
   "work/rubric-round.ts": 5,
   "store/rubric-store.ts": 5,
 
