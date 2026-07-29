@@ -7,19 +7,18 @@
 <link rel="stylesheet" href="/xterm.css">
 <style>
 /*
- * Abstract Cloud & Sea Motion + Circular Stage Orbit。
+ * Abstract Cloud & Sea Motion + 三列 2:2:6 + Circular Stage Orbit。
+ * 版式照 2026-07-24 的方向与 01-stage-orbit.png，只有第三列里那块终端是新的。
  *
- * 三样东西是"高级感"的来源，都照原型来，不要简化：
- *   1. 老式衬线 + 负字距（Iowan Old Style / Palatino），不是普通 Georgia 正字距；
- *   2. 节点是细描边的圆环卡片，不是实心小圆点；
- *   3. 圆环双层反向慢速扫光，当前节点带呼吸光晕。
+ * 三件不许"简化"的事：
+ *   1. 老式衬线 + 负字距（Iowan Old Style / Palatino）；
+ *   2. 节点是细描边的圆，标签在圆外面；
+ *   3. 圆环双层反向扫光，进程活着的节点呼吸。
  */
 :root {
   color-scheme: dark;
-
   --background: oklch(0.175 0.035 295);
   --foreground: oklch(0.94 0.022 74);
-  --muted-foreground: oklch(0.79 0.025 75 / 72%);
   --border: oklch(0.89 0.025 75 / 17%);
   --success: oklch(0.66 0.065 145);
 
@@ -29,7 +28,6 @@
   --rose: #a97879;
 
   --serif: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, "Songti SC", serif;
-  --radius: 0.75rem;
 }
 
 * { box-sizing: border-box; }
@@ -43,7 +41,6 @@ body {
   overflow: hidden;
 }
 
-/* 云海是一张真实生成的栅格资产，不用 CSS 伪造。 */
 body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; }
 body::before {
   z-index: -2;
@@ -55,191 +52,234 @@ body::before {
 body::after {
   z-index: -1;
   background:
-    linear-gradient(180deg,
-      oklch(0.12 0.035 300 / 72%) 0%, oklch(0.17 0.035 295 / 38%) 34%,
-      oklch(0.18 0.04 292 / 56%) 64%, oklch(0.115 0.035 285 / 80%) 100%),
-    radial-gradient(circle at 50% 43%, oklch(0.83 0.04 70 / 11%), transparent 38%);
+    linear-gradient(180deg, oklch(0.12 0.035 300 / 74%) 0%, oklch(0.17 0.035 295 / 40%) 34%,
+      oklch(0.18 0.04 292 / 58%) 64%, oklch(0.115 0.035 285 / 82%) 100%),
+    radial-gradient(circle at 62% 44%, oklch(0.83 0.04 70 / 10%), transparent 40%);
 }
 @keyframes breathe {
-  from { transform: scale(1.045) translate3d(0, 0, 0); }
-  to   { transform: scale(1.075) translate3d(0, -1.2%, 0); }
+  from { transform: scale(1.045) translate3d(0,0,0); }
+  to   { transform: scale(1.075) translate3d(0,-1.2%,0); }
 }
 
 /* ── 顶栏 ─────────────────────────────────────────────── */
 .topbar {
-  position: sticky; top: 0; z-index: 30;
-  display: grid; grid-template-columns: 220px 1fr 220px; align-items: center;
-  min-height: 64px; padding: 0 26px;
+  display: grid; grid-template-columns: 260px 1fr 260px; align-items: center;
+  min-height: 66px; padding: 0 28px; flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: oklch(0.16 0.035 295 / 72%); backdrop-filter: blur(20px);
 }
 .wordmark {
-  font: 650 21px/1 var(--serif);
-  text-transform: lowercase; letter-spacing: .16em; color: var(--foreground);
+  font: 650 24px/1 var(--serif); text-transform: lowercase; letter-spacing: .17em;
 }
 .crumb {
-  text-align: center; color: rgba(255,255,255,.56);
-  font-size: 9px; letter-spacing: .12em; text-transform: uppercase;
+  text-align: center; color: rgba(255,255,255,.5);
+  font: 500 11px/1 ui-monospace, monospace; letter-spacing: .1em;
 }
-.crumb b { color: rgba(255,255,255,.86); font-weight: 600; }
+.crumb b { color: rgba(255,255,255,.88); font-weight: 700; }
 .live-flag {
   text-align: right; color: rgba(255,255,255,.55);
-  font: 700 9px ui-monospace, monospace; letter-spacing: .08em;
+  font: 600 10px/1 ui-sans-serif, sans-serif; letter-spacing: .1em;
 }
 .live-flag i {
-  display: inline-block; width: 6px; height: 6px; margin-right: 6px;
-  border-radius: 50%; background: var(--sand); animation: pulse 2.6s infinite;
+  display: inline-block; width: 7px; height: 7px; margin-right: 7px;
+  border-radius: 50%; background: var(--success);
+  box-shadow: 0 0 12px oklch(0.66 0.065 145 / 70%); animation: pulse 2.6s infinite;
 }
-@keyframes pulse { 50% { opacity: 1; transform: scale(1.18); } }
+@keyframes pulse { 50% { opacity: 1; transform: scale(1.2); } }
 
-/* ── 舞台 ─────────────────────────────────────────────── */
-main { flex: 1; min-height: 0; position: relative; }
+/* ── 三列 2 : 2 : 6 ───────────────────────────────────── */
+.columns { flex: 1; min-height: 0; display: grid; grid-template-columns: 2fr 2fr 6fr; }
+.col { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.col + .col { border-left: 1px solid oklch(0.89 0.025 75 / 11%); }
+
+/* 只用细分隔线和轻微背景层次，不用互相嵌套的卡片。 */
+.col.workspace { background: oklch(0.17 0.038 295 / 62%); overflow-y: auto; }
+.col.workspace + .col.workspace { background: oklch(0.195 0.04 295 / 52%); }
+
+/* flex-wrap is load-bearing: without it the 100%-wide kicker squeezes the
+   heading to zero width and you get a single clipped letter. */
+.col-head { padding: 22px 22px 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.col-head small {
+  font: 850 9px/1 ui-sans-serif, sans-serif; letter-spacing: .2em;
+  text-transform: uppercase; color: oklch(0.79 0.085 73 / 88%);
+  flex: 0 0 100%; margin-bottom: 8px;
+}
+.col-head h2 { margin: 0; font: 560 22px/1 var(--serif); letter-spacing: -.03em; }
+.col-head .count {
+  margin-left: auto; font: 500 11px/1 ui-monospace, monospace; color: rgba(255,255,255,.42);
+}
+
+.rows { padding: 0 12px 18px; display: flex; flex-direction: column; gap: 3px; }
+.row {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: 13px 14px; border: 1px solid transparent; border-radius: 11px;
+  background: transparent; color: rgba(255,255,255,.72); font: inherit;
+  transition: background .2s, border-color .2s, color .2s;
+}
+.row:hover { background: rgba(255,255,255,.05); color: #fff; }
+.row[aria-selected="true"] {
+  border-color: rgba(225,198,160,.5); background: rgba(169,113,103,.16); color: #fff;
+}
+.row strong { display: block; font: 500 15px/1.35 var(--serif); letter-spacing: -.01em; }
+.row span {
+  display: block; margin-top: 5px;
+  font: 500 10px/1 ui-monospace, monospace; letter-spacing: .07em;
+  color: rgba(255,255,255,.42); text-transform: uppercase;
+}
+.row .muted { color: rgba(255,255,255,.34); font-size: 11px; margin-top: 6px; display: block; }
+
+/* ── 第三列 ───────────────────────────────────────────── */
+.col.stage { position: relative; }
 .view { position: absolute; inset: 0; }
 .view[hidden] { display: none !important; }
 
 #orbit-view {
-  display: grid; place-items: center;
+  display: flex; flex-direction: column; align-items: center;
+  /* 底部 46px 是给节点标签的：它们画在圆外面。 */
+  padding: 24px 30px 46px;
   transition: opacity .35s ease, transform .65s cubic-bezier(.22,.8,.28,1);
 }
 #orbit-view.entering { opacity: 0; transform: scale(1.16); }
 
-.orbit-wrap { position: relative; width: min(74vh, 62vw); aspect-ratio: 1; }
+.gate-head { flex: 0 0 auto; text-align: center; max-width: 760px; }
+.gate-head small {
+  font: 850 10px/1 ui-sans-serif, sans-serif; letter-spacing: .2em;
+  text-transform: uppercase; color: oklch(0.79 0.085 73 / 90%);
+}
+.gate-head h1 {
+  margin: 12px 0 8px; font: 560 clamp(24px, 2.5vw, 34px)/1.18 var(--serif); letter-spacing: -.045em;
+}
+.gate-head p { margin: 0; color: rgba(255,255,255,.56); font-size: 13px; }
 
-/* 双层反向慢速扫光。conic 用 mask 只留在环线上，不糊成一片。 */
+/*
+ * 圆环占第三列可用宽度的 68%–82%（设计稿），同时不许被高度切掉。
+ *
+ * 高度先定、宽度由 aspect-ratio 推出来，再用 max-width 收在比例区间内 ——
+ * 只按宽度定尺寸的话，标题一占位，底下的 Review / Build 就被切在列外。
+ * 底部留白是给标签的：标签在圆外面，不算进圆的直径里。
+ */
+.orbit-wrap {
+  position: relative; flex: 1 1 auto; min-height: 0; align-self: center;
+  height: 100%; width: auto; aspect-ratio: 1; max-width: 78%;
+  margin: 6px auto 0;
+}
+
 .halo, .halo::before, .halo::after { position: absolute; border-radius: 50%; pointer-events: none; }
 .halo {
-  inset: 7%;
-  border: 1px solid rgba(255,255,255,.19);
-  box-shadow: inset 0 0 44px rgba(225,195,166,.07);
+  inset: 7%; border: 1px solid rgba(255,255,255,.19);
+  box-shadow: inset 0 0 54px rgba(225,195,166,.07);
 }
 .halo::before {
-  content: ""; inset: -5px;
-  background: conic-gradient(from 0deg,
-    transparent 0 14%, rgba(226,200,164,.45) 19%, transparent 25% 63%,
-    rgba(143,132,163,.4) 69%, transparent 75%);
+  content: ""; inset: -6px;
+  background: conic-gradient(from 0deg, transparent 0 14%, rgba(226,200,164,.45) 19%,
+    transparent 25% 63%, rgba(143,132,163,.4) 69%, transparent 75%);
   -webkit-mask: radial-gradient(transparent 68%, #000 69% 71%, transparent 72%);
   mask: radial-gradient(transparent 68%, #000 69% 71%, transparent 72%);
   animation: ringSweep 12s linear infinite;
 }
 .halo::after {
-  content: ""; inset: 12%;
-  border: 1px dashed rgba(255,255,255,.12);
+  content: ""; inset: 13%; border: 1px dashed rgba(255,255,255,.12);
   animation: ringSweep 28s linear infinite reverse;
 }
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
-/*
- * 节点是圆的，不是圆角方块。
- *
- * 一个细描边的圆环，标签在圆外面下方 —— 这是实现过的那版（01-stage-orbit.png）
- * 的做法。旋出去再转回来，圆环始终正对。
- */
+/* 节点：圆。旋出去再转回来，圆始终正对。 */
 .stage-node {
   position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 6;
   transform: rotate(var(--a)) translateY(calc(-1 * var(--r))) rotate(calc(-1 * var(--a)));
 }
 .stage-node button {
-  position: absolute; left: -21px; top: -21px;
-  width: 42px; height: 42px; padding: 0;
-  display: grid; place-items: center;
-  border: 1px solid rgba(255,255,255,.26); border-radius: 50%;
-  background: rgba(42,39,50,.34); backdrop-filter: blur(16px);
-  color: rgba(255,255,255,.7); cursor: pointer; font: inherit;
+  position: absolute; left: -28px; top: -28px;
+  width: 56px; height: 56px; padding: 0; display: grid; place-items: center;
+  border: 1px solid rgba(255,255,255,.28); border-radius: 50%;
+  background: rgba(42,39,50,.36); backdrop-filter: blur(16px);
+  cursor: pointer; font: inherit;
   transition: transform .28s cubic-bezier(.2,.8,.2,1),
-              background .28s, border-color .28s, box-shadow .28s, color .28s;
+              background .28s, border-color .28s, box-shadow .28s;
 }
-/* 圆心那一点 */
 .stage-node button i {
-  width: 7px; height: 7px; border-radius: 50%;
-  border: 1px solid rgba(255,255,255,.42); background: #575264;
-  transition: background .28s, border-color .28s, box-shadow .28s, transform .28s;
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.44); background: #575264;
+  transition: background .28s, border-color .28s, box-shadow .28s;
 }
-/* 标签在圆外面，跟着圆一起放大会挤到邻居，所以它不缩放 */
+/* 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。 */
 .stage-node button span {
-  position: absolute; top: 48px; left: 50%; transform: translateX(-50%);
-  font-size: 9px; font-weight: 700; letter-spacing: .03em; white-space: nowrap;
-  color: rgba(255,255,255,.62); transition: color .28s;
+  position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
+  font: 700 12px/1 ui-sans-serif, sans-serif; letter-spacing: .04em; white-space: nowrap;
+  color: rgba(255,255,255,.66); transition: color .28s;
 }
 .stage-node button em {
-  position: absolute; top: 62px; left: 50%; transform: translate(-50%, 3px);
-  font-size: 7px; font-style: normal; white-space: nowrap;
-  color: rgba(255,255,255,.4); opacity: 0; transition: .24s;
+  position: absolute; top: 82px; left: 50%; transform: translate(-50%, 3px);
+  font: 500 10px/1 ui-sans-serif, sans-serif; font-style: normal; white-space: nowrap;
+  color: rgba(255,255,255,.44); opacity: 0; transition: .24s;
 }
 .stage-node button:hover, .stage-node button:focus-visible {
-  transform: scale(1.3); z-index: 12; outline: none;
-  border-color: rgba(255,255,255,.52);
-  background: linear-gradient(145deg, rgba(172,122,112,.55), rgba(81,83,111,.5));
-  box-shadow: 0 14px 40px rgba(35,27,40,.34);
+  transform: scale(1.28); z-index: 12; outline: none;
+  border-color: rgba(255,255,255,.55);
+  background: linear-gradient(145deg, rgba(172,122,112,.58), rgba(81,83,111,.52));
+  box-shadow: 0 16px 44px rgba(35,27,40,.36);
 }
 .stage-node button:hover span, .stage-node button:focus-visible span { color: #fff; }
 .stage-node button:hover em, .stage-node button:focus-visible em {
   opacity: 1; transform: translate(-50%, 0);
 }
 
-/* 有线程：沙金实心点 */
+.stage-node.bound button { border-color: rgba(197,173,135,.46); }
 .stage-node.bound button i { background: #c5ad87; border-color: #c5ad87; }
-.stage-node.bound button { border-color: rgba(197,173,135,.42); }
-
-/* 当前阶段：金环 */
 .stage-node.current button {
-  border-color: rgba(225,198,160,.72);
-  box-shadow: 0 0 0 4px rgba(212,178,139,.08);
+  border-color: rgba(225,198,160,.75); box-shadow: 0 0 0 5px rgba(212,178,139,.08);
 }
-
-/* 进程活着：金环 + 呼吸光晕。这就是那个呼吸灯。 */
 .stage-node.live button {
-  border-color: rgba(225,198,160,.8);
-  background: linear-gradient(145deg, rgba(169,113,103,.42), rgba(84,79,101,.38));
+  border-color: rgba(225,198,160,.85);
+  background: linear-gradient(145deg, rgba(169,113,103,.44), rgba(84,79,101,.4));
   animation: ringBreathe 2.8s ease-in-out infinite;
 }
 .stage-node.live button i {
   background: var(--sand-strong); border-color: var(--sand-strong);
-  box-shadow: 0 0 14px rgba(228,207,173,.7);
+  box-shadow: 0 0 16px rgba(228,207,173,.75);
 }
-.stage-node.live button span { color: rgba(255,255,255,.86); }
+.stage-node.live button span { color: rgba(255,255,255,.9); }
 @keyframes ringBreathe {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(212,178,139,.10), 0 0 18px rgba(228,207,173,.22); }
-  50%      { box-shadow: 0 0 0 9px rgba(212,178,139,.05), 0 0 34px rgba(228,207,173,.45); }
+  0%, 100% { box-shadow: 0 0 0 4px rgba(212,178,139,.10), 0 0 20px rgba(228,207,173,.24); }
+  50%      { box-shadow: 0 0 0 12px rgba(212,178,139,.05), 0 0 40px rgba(228,207,173,.48); }
 }
 
-/* 中心圆盘 */
+/* 中心信息锚点 */
 .center {
-  position: absolute; inset: 29%; z-index: 4;
-  border: 1px solid rgba(255,255,255,.23); border-radius: 50%;
-  background: rgba(39,36,47,.28); backdrop-filter: blur(22px) saturate(115%);
+  position: absolute; inset: 27%; z-index: 4;
+  border: 1px solid rgba(255,255,255,.22); border-radius: 50%;
+  background: rgba(39,36,47,.3); backdrop-filter: blur(22px) saturate(115%);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; padding: 8%;
-  box-shadow: 0 20px 60px rgba(31,24,37,.2);
+  text-align: center; padding: 9%;
+  box-shadow: 0 22px 64px rgba(31,24,37,.22);
   animation: centerFloat 6s ease-in-out infinite;
 }
-@keyframes centerFloat { 50% { transform: translateY(-4px); } }
+@keyframes centerFloat { 50% { transform: translateY(-5px); } }
 .center small {
-  color: var(--sand); font-size: 8px; font-weight: 850;
-  letter-spacing: .14em; text-transform: uppercase;
+  font: 850 9px/1 ui-sans-serif, sans-serif; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--sand); white-space: nowrap;
 }
-.center h3 {
-  margin: 8px 0 5px; font: 560 clamp(20px, 3.2vh, 30px)/1 var(--serif); letter-spacing: -.04em;
+.center h3 { margin: 10px 0 7px; font: 560 clamp(26px, 3.4vh, 40px)/1 var(--serif); letter-spacing: -.04em; }
+.center p { margin: 0; color: rgba(255,255,255,.6); font-size: 12px; line-height: 1.7; }
+.center b { display: block; margin-top: 12px; color: var(--sand-deep); font: 500 38px/1 Georgia, serif; }
+.center b em {
+  display: block; margin-top: 6px; font: 700 9px/1 ui-sans-serif, sans-serif;
+  font-style: normal; letter-spacing: .16em; color: rgba(255,255,255,.44);
 }
-.center p { margin: 0; color: rgba(255,255,255,.58); font-size: 10px; line-height: 1.7; }
-.center b { display: block; margin-top: 10px; color: var(--sand-deep); font: 500 30px/1 Georgia, serif; }
-.center b em { font: 700 8px/1 ui-sans-serif, sans-serif; font-style: normal;
-  letter-spacing: .14em; color: rgba(255,255,255,.42); display: block; margin-top: 5px; }
 
-/* 唯一的主动作。只在 Change 真正所在的那个阶段上出现。 */
 .run {
-  margin-top: 14px; min-height: 32px; padding: 0 16px;
-  border: 0; border-radius: 9px; cursor: pointer;
-  font: 820 9px/1 ui-sans-serif, sans-serif; letter-spacing: .12em; text-transform: uppercase;
-  color: #302d38; background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879);
+  margin-top: 16px; min-height: 36px; padding: 0 20px; border: 0; border-radius: 10px;
+  cursor: pointer; font: 820 10px/1 ui-sans-serif, sans-serif;
+  letter-spacing: .14em; text-transform: uppercase; color: #302d38;
+  background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879);
   transition: filter .2s, opacity .2s;
 }
 .run:hover { filter: brightness(1.08); }
-.run[disabled] { opacity: .45; cursor: default; filter: none; }
+.run[disabled] { opacity: .42; cursor: default; filter: none; }
 .run[hidden] { display: none; }
 
-/* 进入阶段时的镜头推进 */
 .portal {
-  position: absolute; left: 50%; top: 50%; width: 90px; height: 90px; border-radius: 50%;
+  position: absolute; left: 50%; top: 50%; width: 110px; height: 110px; border-radius: 50%;
   transform: translate(-50%,-50%) scale(.1); opacity: 0; z-index: 15; pointer-events: none;
   background: radial-gradient(circle, #e0c5a5 0, var(--rose) 36%, rgba(79,72,94,.72) 65%, transparent 68%);
 }
@@ -250,44 +290,41 @@ main { flex: 1; min-height: 0; position: relative; }
   100% { opacity: 0; transform: translate(-50%,-50%) scale(14); }
 }
 
-/* ── 阶段视图 ─────────────────────────────────────────── */
+/* ── 阶段视图（在第三列里原地替换） ───────────────────── */
 #stage-view {
-  display: flex; flex-direction: column; gap: 12px; padding: 20px 30px 24px;
+  display: flex; flex-direction: column; gap: 12px; padding: 22px 26px 20px;
   opacity: 0; transform: scale(.94);
   transition: opacity .45s ease, transform .55s cubic-bezier(.2,.8,.2,1);
 }
 #stage-view.active { opacity: 1; transform: scale(1); }
-
 .stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .stage-title {
-  display: flex; align-items: baseline; gap: 12px;
-  font: 560 26px/1 var(--serif); letter-spacing: -.04em; color: var(--foreground);
+  display: flex; align-items: baseline; gap: 14px;
+  font: 560 30px/1 var(--serif); letter-spacing: -.04em;
   text-shadow: 0 1px 14px rgba(16,12,24,.85);
 }
-.stage-title .thread { font: 500 9px/1 ui-monospace, Menlo, monospace;
-  letter-spacing: .1em; color: rgba(255,255,255,.42); text-transform: uppercase; }
+.stage-title .thread {
+  font: 500 10px/1 ui-monospace, Menlo, monospace; letter-spacing: .1em;
+  color: rgba(255,255,255,.44); text-transform: uppercase;
+}
 .back {
-  border: 0; background: transparent; color: #e2caa7;
-  font: 800 9px/1 ui-sans-serif, sans-serif; letter-spacing: .14em; text-transform: uppercase;
-  cursor: pointer; padding: 8px 2px;
+  border: 0; background: transparent; color: #e2caa7; cursor: pointer; padding: 8px 2px;
+  font: 800 10px/1 ui-sans-serif, sans-serif; letter-spacing: .14em; text-transform: uppercase;
 }
 .back:hover { color: var(--sand-strong); }
-
 .surface {
   flex: 1; min-height: 0;
   border: 1px solid rgba(255,255,255,.18); border-radius: 18px;
   background: oklch(0.132 0.028 295);
-  box-shadow: 0 22px 80px rgba(31,24,37,.38);
-  padding: 14px 16px;
+  box-shadow: 0 22px 80px rgba(31,24,37,.38); padding: 15px 17px;
 }
 #term { width: 100%; height: 100%; }
 .xterm .xterm-viewport { background: transparent !important; }
-
-.note { font: 400 10px/1.6 var(--serif); color: rgba(255,255,255,.5); letter-spacing: .02em; }
+.note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 
 @media (prefers-reduced-motion: reduce) {
   body::before, .halo::before, .halo::after, .center, .live-flag i,
-  .stage-node.live button::before, .portal { animation: none !important; }
+  .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
 </style>
@@ -295,37 +332,54 @@ main { flex: 1; min-height: 0; position: relative; }
 <body>
 <header class="topbar">
   <span class="wordmark">stagepass</span>
-  <span class="crumb">Change <b id="crumb-change">—</b></span>
-  <span class="live-flag"><i></i>LOCAL</span>
+  <span class="crumb"><b id="crumb-change">—</b></span>
+  <span class="live-flag"><i></i>LOCAL SYNCED</span>
 </header>
 
-<main>
-  <section class="view" id="orbit-view">
-    <div class="orbit-wrap" id="orbit-wrap">
-      <div class="halo"></div>
-      <div class="center">
-        <small id="center-kicker">Stage Orbit</small>
-        <h3 id="center-title">选择一个阶段</h3>
-        <p id="center-line">十一个阶段，每个阶段一个 Codex 线程。</p>
-        <b id="center-count">11<em>Stages</em></b>
-        <button class="run" id="run" hidden>跑这个阶段</button>
-      </div>
-      <div class="portal" id="portal"></div>
-    </div>
+<div class="columns">
+  <section class="col workspace">
+    <div class="col-head"><small>Workspace</small><h2>Projects</h2><span class="count" id="project-count">01</span></div>
+    <div class="rows" id="projects"></div>
   </section>
 
-  <section class="view" id="stage-view" hidden>
-    <div class="stage-head">
-      <div class="stage-title">
-        <span id="stage-name">—</span>
-        <span class="thread" id="stage-thread"></span>
-      </div>
-      <button class="back" id="back">← 返回阶段环</button>
-    </div>
-    <div class="surface"><div id="term"></div></div>
-    <p class="note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
+  <section class="col workspace">
+    <div class="col-head"><small>Workspace</small><h2>Changes</h2><span class="count" id="change-count">00</span></div>
+    <div class="rows" id="changes"></div>
   </section>
-</main>
+
+  <section class="col stage">
+    <section class="view" id="orbit-view">
+      <div class="gate-head">
+        <small>Change Gate Orbit</small>
+        <h1 id="change-title">—</h1>
+        <p>选择任一阶段查看它的终端。未来阶段只是打开看看，不改变流程状态。</p>
+      </div>
+      <div class="orbit-wrap" id="orbit-wrap">
+        <div class="halo"></div>
+        <div class="center">
+          <small id="center-kicker">Stage Orbit</small>
+          <h3 id="center-title">选择一个阶段</h3>
+          <p id="center-line">十一个阶段，每个阶段一个 Codex 线程。</p>
+          <b id="center-count">11<em>Stages</em></b>
+          <button class="run" id="run" hidden>跑这个阶段</button>
+        </div>
+        <div class="portal" id="portal"></div>
+      </div>
+    </section>
+
+    <section class="view" id="stage-view" hidden>
+      <div class="stage-head">
+        <div class="stage-title">
+          <span id="stage-name">—</span>
+          <span class="thread" id="stage-thread"></span>
+        </div>
+        <button class="back" id="back">← 返回阶段环</button>
+      </div>
+      <div class="surface"><div id="term"></div></div>
+      <p class="note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
+    </section>
+  </section>
+</div>
 
 <script src="/xterm.js"></script>
 <script src="/addon-fit.js"></script>

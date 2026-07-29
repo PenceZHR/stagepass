@@ -169,11 +169,55 @@ function drawOrbit() {
   placeNodes();
 }
 
+/**
+ * The two workspace columns.
+ *
+ * There is no `projects` table and `changes` has no title, so these show the id,
+ * phase and status that actually exist. Inventing a title field to make the
+ * layout look fuller would put something on screen that nothing can produce.
+ */
+function drawWorkspace(panel) {
+  const project = document.createElement("button");
+  project.className = "row";
+  project.type = "button";
+  project.setAttribute("aria-selected", "true");
+  const projectName = document.createElement("strong");
+  projectName.textContent = panel.workspace || "workspace";
+  const projectSub = document.createElement("span");
+  projectSub.textContent = `${panel.changes.length} changes`;
+  project.append(projectName, projectSub);
+  document.getElementById("projects").replaceChildren(project);
+  document.getElementById("project-count").textContent = "01";
+
+  const rows = panel.changes.map((change) => {
+    const row = document.createElement("button");
+    row.className = "row";
+    row.type = "button";
+    row.setAttribute("aria-selected", String(change.id === panel.changeId));
+    const name = document.createElement("strong");
+    name.textContent = change.id;
+    const sub = document.createElement("span");
+    sub.textContent = `${change.phase} · ${change.status}`;
+    row.append(name, sub);
+    // Switching Change reloads with a new id; it starts nothing and moves no
+    // gate, which is what the design says selection must never do.
+    row.addEventListener("click", () => {
+      location.search = `?change=${encodeURIComponent(change.id)}`;
+    });
+    return row;
+  });
+  document.getElementById("changes").replaceChildren(...rows);
+  document.getElementById("change-count").textContent =
+    String(panel.changes.length).padStart(2, "0");
+  document.getElementById("change-title").textContent = panel.changeId;
+}
+
 async function load() {
   const panel = await (await fetch(
     `/api/panel?change=${encodeURIComponent(changeId)}`)).json();
   phases = panel.phases;
   panelState = panel;
+  drawWorkspace(panel);
   drawOrbit();
 
   const at = phases.find((entry) => entry.current);
