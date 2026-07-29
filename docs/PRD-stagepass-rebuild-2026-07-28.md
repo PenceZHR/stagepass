@@ -195,6 +195,22 @@ Codex → 插件 ：  { action: "accept" | ..., content: { <字段>: <选中值>
 
 人在 Codex 里做的决定，用一个语义正确的 surface 记录。老树把 16 条插件回执全记成 `codex_mcp_app`（而 MCP App 从未启动），把唯一一次真实批准记成 `stagepass_web_emergency`（而它不是紧急、是唯一能用的路）—— **分类字段撒谎比没有分类更糟。**
 
+### 5.5b L3 验收证据（2026-07-28）
+
+人在 Codex TUI 里选择，StagePass 的闸门前进 —— **这个项目历史上第一次**：
+
+```
+你选了     {"action":"accept","content":{"decision":"approve"}}
+结果       {"kind":"advanced","action":"approve"}
+
+question   { id: 'Q-DECIDE', kind: 'gate_decision', status: 'applied' }
+answer     { question_id: 'Q-DECIDE', action: 'accept', content_json: '{"decision":"approve"}' }
+ledger     0:create 1:start 2:settle 3:approve
+change     { phase: 'PRD → Spec', status: 'pending' }
+```
+
+对照 §2.1 的基线：老树历史上完成过的闸门命令**总共 1 条**，走的是 web 的"紧急"表面；经由 Codex 的**是 0 条**。
+
 ### 5.6 人可以拒绝回答
 
 实测（2026-07-28，用户按 Esc）：
@@ -316,7 +332,7 @@ JOB-2 拿到 381B（第二轮 1 条）                     ← 没有重读第�
 | L0 | 所有合法转移被穷举测试；非法转移被拒；每次转移落账本；全部离线 | ✅ |
 | L1 | 崩溃注入后能恢复；租约过期能被接管；重复命令幂等；fence 冲突被拒；全部离线 | ✅ |
 | L2 | `codex resume` 起一个真 turn，StagePass 按 §6.4 认出它结束、从 rollout 拿到结果，binding 与 turn 落库 | ✅ 2026-07-28 通过 |
-| L3 | 假答案驱动全链路离线通过；**且**你在 TUI 里真选一次，`changes.status` 前进 | ⬜ |
+| L3 | 假答案驱动全链路离线通过；**且**你在 TUI 里真选一次，`changes.status` 前进 | ✅ 2026-07-28 通过 |
 | L4 | 一轮真对抗结算出 gate 能用的结果 | ⬜ |
 | L5 | rubric 出分、gap 落库并阻断；接受风险能指明具体条目 | ⬜ |
 | L6 | 五个阶段的裁决都能问出来、答回来、推进状态 | ⬜ |
