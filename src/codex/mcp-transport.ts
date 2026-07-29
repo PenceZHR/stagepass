@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
+import type { CodexEvent } from "./stream-render";
 import {
   CodexUnavailableError,
   type CodexTransport,
@@ -63,14 +64,16 @@ export interface CodexMcpTransportOptions {
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /**
-   * Told the id of each thread this transport starts, once per thread.
+   * Every `codex/event` this turn produces, in order.
    *
-   * Deliberately NOT paired with anything that opens it. `open "codex://threads/<id>"`
-   * does bring the thread up in Desktop, but it renders EMPTY -- measured
-   * 2026-07-28 with the rollout file holding all 22 records on disk. Desktop does
-   * not display the contents of a thread whose source is `mcp`. A caller may
-   * still want the id for its own records; it must not be told it can show it.
+   * The stream was always arriving; an earlier version of this transport read
+   * it only for thread ids and the final answer and dropped the rest, which is
+   * why a running turn showed nothing on screen. Codex Desktop will not display
+   * a thread it did not create, so if StagePass does not surface this, nobody
+   * can see the work happen.
    */
+  readonly onEvent?: (event: CodexEvent) => void;
+  /** Told the id of each thread this transport starts, once per thread. */
   readonly onThread?: (threadId: string) => void;
 }
 
@@ -173,12 +176,18 @@ export class CodexMcpTransport implements CodexTransport {
         result?: unknown;
         error?: { message?: string };
         method?: string;
-        params?: { _meta?: { threadId?: unknown } };
+        params?: { _meta?: { threadId?: unknown }; msg?: CodexEvent };
       };
       try {
         message = JSON.parse(line);
       } catch {
         continue; // Not framing we own; ignore rather than crash the worker.
+      }
+      // Hand the event out before anything else is done with the message. A
+      // caller that wants to show the work happening needs it as it arrives,
+      // not after the turn it belongs to has ended.
+      if (message.method === "codex/event" && message.params?.msg) {
+        this.options.onEvent?.(message.params.msg);
       }
       // Thread ids arrive on progress notifications while the turn is still
       // running, which is what makes opening the Desktop deep link mid-turn

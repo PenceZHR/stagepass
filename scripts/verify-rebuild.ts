@@ -24,6 +24,9 @@ import { TurnLoop } from "../src/work/turn-loop";
 import { CodexTurnRunner } from "../src/codex/turn-runner";
 import { ScriptedCodexTransport, type CodexTransport } from "../src/codex/transport";
 import { CodexMcpTransport } from "../src/codex/mcp-transport";
+import { StreamPrinter } from "../src/codex/stream-render";
+
+const printer = new StreamPrinter((text) => process.stdout.write(text));
 
 const REAL = process.argv.includes("--real");
 const CHANGE = "CHG-VERIFY";
@@ -52,7 +55,10 @@ function realTransport(): CodexTransport {
     // This script verifies the chain, not the model's thinking. The default is
     // xhigh, which did not finish two design turns inside ten minutes.
     reasoningEffort: "low",
-    onThread: (threadId) => console.log(`   thread ${threadId}`),
+    onThread: (threadId) => console.log(`\n   thread ${threadId}`),
+    // Render the stream ourselves. Desktop will not show a thread it did not
+    // create, so this is the only place the work is visible while it happens.
+    onEvent: (event) => printer.handle(event),
   });
 }
 
