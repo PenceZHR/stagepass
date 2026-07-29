@@ -174,11 +174,17 @@ Codex → 插件 ：  { action: "accept" | ..., content: { <字段>: <选中值>
 
 人在 Codex 里做的决定，用一个语义正确的 surface 记录。老树把 16 条插件回执全记成 `codex_mcp_app`（而 MCP App 从未启动），把唯一一次真实批准记成 `stagepass_web_emergency`（而它不是紧急、是唯一能用的路）—— **分类字段撒谎比没有分类更糟。**
 
-### 5.6 人可以拒绝回答【未验证】
+### 5.6 人可以拒绝回答
 
-`elicitation` 的返回带 `action`，不只有 `accept`。人取消时 StagePass 必须把它当成一个**明确的结果**（阶段停在原地、有记录、可重开），而不是超时、不是失败、更不是默认批准。
+实测（2026-07-28，用户按 Esc）：
 
-**这条还没验。** 2026-07-28 的实测里第三题本该测取消，实际用户选了一个选项，所以 `accept` 以外的 `action` 长什么样仍然未知。在验之前，任何依赖它的代码都不许写 —— 这正是 §3 E4「说不出什么算它成立的东西不进」。
+```
+RAW    {"result":{"action":"cancel"},"error":null}
+```
+
+**拒绝是一个正常的 result，`action:"cancel"`、不带 `content`。** 不是 JSON-RPC error，不是超时，不是空答案 —— 这三种 StagePass 都会误判成别的东西，所以这一条要验而不是猜。
+
+StagePass 必须把它当成一个**明确的结果**：阶段停在原地、落一条记录、可重开。**不是失败，更不是默认批准。** 一个把 `cancel` 当超时处理的实现，会让"我先不决定"变成"这一轮白跑了"。
 
 ---
 
@@ -196,7 +202,33 @@ Codex → 插件 ：  { action: "accept" | ..., content: { <字段>: <选中值>
 | **L5** | rubric、gap 跟踪 | 需真 Codex |
 | **L6** | 铺开到其余阶段 | 需真 Codex |
 
-**L2 已经用 `codex mcp-server` 通过一次**（真 turn、binding 与 turn 落库）。改走 TUI 后**必须重新验收**，因为换的是执行通道本身：mcp-server 是父进程直接拿返回值，TUI 是一个独立的交互式进程，StagePass 得另想办法知道它结束了、结果在哪。**这一条尚未解决，是 L2 重新验收的主要内容。**
+**L2 已经用 `codex mcp-server` 通过一次**（真 turn、binding 与 turn 落库）。改走 TUI 后**必须重新验收**，因为换的是执行通道本身：mcp-server 是父进程直接拿返回值，TUI 是一个独立的交互式进程。
+
+### 6.4 TUI 的 turn 怎么算结束（2026-07-28 实测）
+
+不读 Codex 的私有数据库。**thread id 就在 rollout 的文件名里**：
+
+```
+~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<时间戳>-<threadId>.jsonl
+```
+
+`codex resume` **追加到同一个文件**，turn 边界是显式的 `event_msg`。实测一个文件里三个 turn（前两个来自 mcp-server，第三个来自 TUI resume）：
+
+```
+行2   task_started    行10  user_message    行27  task_complete
+行28  task_started    行31  user_message    行36  task_complete
+行38  task_started    行45  user_message    行57  task_complete
+```
+
+所以 StagePass 的做法是：起 turn → 盯住这个文件 → **等自己那次 `user_message` 之后的第一个 `task_complete`** → 从中间读 `agent_message`。
+
+三个已知的坑，实现时必须处理，不许假设：
+
+1. **不能等进程退出** —— TUI 跑完一个 turn 仍然开着，那是它的正常行为，不是卡住。
+2. **必须认自己那一次** —— 同一个文件里有历史 turn，认错就会拿到上一轮的答案。
+3. **文件可能还不存在** —— 一个全新 Change 的第一个 turn 要先创建它。
+
+依赖的只是「文件名含 thread id」+「rollout 是 jsonl」两个约定，比读 `state_5.sqlite` 弱得多，但**仍然是约定不是公开接口** —— 记在 §10 的已知风险里。
 
 ### 6.1 L0 / L1 是真正的底层
 
@@ -251,7 +283,7 @@ Codex → 插件 ：  { action: "accept" | ..., content: { <字段>: <选中值>
 |---|---|---|
 | L0 | 所有合法转移被穷举测试；非法转移被拒；每次转移落账本；全部离线 | ✅ |
 | L1 | 崩溃注入后能恢复；租约过期能被接管；重复命令幂等；fence 冲突被拒；全部离线 | ✅ |
-| L2 | `codex resume` 起一个真 turn，StagePass 知道它何时结束、从 rollout 拿到结果，binding 与 turn 落库 | ⬜ 换通道后需重验 |
+| L2 | `codex resume` 起一个真 turn，StagePass 按 §6.4 认出它结束、从 rollout 拿到结果，binding 与 turn 落库 | ⬜ 换通道后需重验 |
 | L3 | 假答案驱动全链路离线通过；**且**你在 TUI 里真选一次，`changes.status` 前进 | ⬜ |
 | L4 | 一轮真对抗结算出 gate 能用的结果 | ⬜ |
 | L5 | rubric 出分、gap 落库并阻断；接受风险能指明具体条目 | ⬜ |
@@ -272,5 +304,7 @@ Codex → 插件 ：  { action: "accept" | ..., content: { <字段>: <选中值>
 - **StagePass 自己渲染 Codex 的执行过程或选择界面** —— 渲染是 Codex TUI 的事，这条已从"曾经做过"变成"明确不做"
 - Live QA
 - **老树任何东西的自动继承**
+
+**已知风险（不是不做，是知道它可能咬人）**：turn 结束检测依赖 rollout 的文件名与 jsonl 格式两个约定（§6.4）。Codex 改了它们就会断。比老树押注私有 IPC 协议 + bundleVersion 白名单弱得多，但不是零。断掉时的表现必须是**明确失败**，不能是静默等待——那正是老树 82 个 turn 卡在 `running` 的形状。
 
 > `TUI` 曾经在这一列里（"当前不开发 TUI"，需求文档 §5.5）。那说的是**StagePass 自己的 TUI 客户端**，现在仍然不做。本文说的 TUI 是 **Codex 的** TUI —— 是执行与交互面，不是 StagePass 的第二个前端。两者不要混。
