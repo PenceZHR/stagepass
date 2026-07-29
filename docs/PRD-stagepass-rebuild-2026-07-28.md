@@ -223,7 +223,18 @@ StagePass 必须把它当成一个**明确的结果**：阶段停在原地、落
 | **L5** | rubric、gap 跟踪 | 需真 Codex |
 | **L6** | 铺开到其余阶段 | 需真 Codex |
 
-**L2 已经用 `codex mcp-server` 通过一次**（真 turn、binding 与 turn 落库）。改走 TUI 后**必须重新验收**，因为换的是执行通道本身：mcp-server 是父进程直接拿返回值，TUI 是一个独立的交互式进程。
+**L2 已通过两次**：先用 `codex mcp-server`，再用 TUI。第二次是必须的 —— 换的是执行通道本身，mcp-server 是父进程直接拿返回值，TUI 是一个独立的交互式进程。
+
+TUI 版验收证据（2026-07-28，独立从 session 文件复核而非只看脚本输出）：
+
+```
+threads 表     source=cli, cli_version=0.144.4     ← TUI 建的，不是 mcp
+一个 rollout   行2–35 是第一轮，行37–45 是第二轮   ← resume 追加到同一线程
+JOB-1 拿到 768B（第一轮 3 条 agent_message）
+JOB-2 拿到 381B（第二轮 1 条）                     ← 没有重读第一轮
+```
+
+最后一行是关键：**若「哪一轮是我们的」判断有误，第二轮会再次返回 768B。**
 
 ### 6.4 TUI 的 turn 怎么算结束（2026-07-28 实测）
 
@@ -304,7 +315,7 @@ StagePass 必须把它当成一个**明确的结果**：阶段停在原地、落
 |---|---|---|
 | L0 | 所有合法转移被穷举测试；非法转移被拒；每次转移落账本；全部离线 | ✅ |
 | L1 | 崩溃注入后能恢复；租约过期能被接管；重复命令幂等；fence 冲突被拒；全部离线 | ✅ |
-| L2 | `codex resume` 起一个真 turn，StagePass 按 §6.4 认出它结束、从 rollout 拿到结果，binding 与 turn 落库 | ⬜ 换通道后需重验 |
+| L2 | `codex resume` 起一个真 turn，StagePass 按 §6.4 认出它结束、从 rollout 拿到结果，binding 与 turn 落库 | ✅ 2026-07-28 通过 |
 | L3 | 假答案驱动全链路离线通过；**且**你在 TUI 里真选一次，`changes.status` 前进 | ⬜ |
 | L4 | 一轮真对抗结算出 gate 能用的结果 | ⬜ |
 | L5 | rubric 出分、gap 落库并阻断；接受风险能指明具体条目 | ⬜ |
