@@ -107,6 +107,48 @@ describe("L2 · running a turn in the TUI", () => {
     );
   });
 
+  it("**别的 Codex 同时建了线程时，认的是带着我们提示词的那个**", async () => {
+    /*
+     * 2026-07-29 实测栽过一次。原先的做法是「启动之后第一个没见过的线程 id」，
+     * 而当时有一轮没杀干净的对抗还在派生子 Agent —— 这里抓到了它的线程，于是后面
+     * 去找 /root/red 一无所获，报出来是「裁判没有派生子 Agent」。
+     *
+     * 而裁判其实好好地派生了。**只是不是这个裁判。** 这种错法最难查：报错信息
+     * 指着一个完全无辜的地方。
+     */
+    const store = sessions();
+    const clock = fakeTime();
+
+    const transport = new CodexTuiTransport({
+      cwd: "/tmp", sessionsDir: store.root, ...clock,
+      launch: () => {
+        // 别人的先出现 —— 按到达顺序认就会抓它。
+        store.write(OTHER, turn("另一个 Codex 在干别的", "不是我们的"));
+        store.write(THREAD, turn("这是我们派的活", "我们的答案"));
+      },
+    });
+
+    assert.deepEqual(
+      await transport.runTurn({ threadId: null, prompt: "这是我们派的活" }),
+      { threadId: THREAD, text: "我们的答案" },
+    );
+  });
+
+  it("有新线程但都不是我们的 —— 报错要和「TUI 没起来」分开", async () => {
+    const store = sessions();
+    const clock = fakeTime();
+    const transport = new CodexTuiTransport({
+      cwd: "/tmp", sessionsDir: store.root, timeoutMs: 50, pollMs: 10, ...clock,
+      launch: () => { store.write(OTHER, turn("别人的活", "别人的答案")); },
+    });
+
+    // 两种失败的处理方式完全不同：一种是去看 TUI 为什么没起来，另一种是去看
+    // 谁还在跑 Codex。混成一句话，查的人会往错的方向走。
+    await assert.rejects(
+      transport.runTurn({ threadId: null, prompt: "我们的活" }),
+      /none carried this prompt/);
+  });
+
   it("waits while the turn is still running", async () => {
     const store = sessions();
     const clock = fakeTime();

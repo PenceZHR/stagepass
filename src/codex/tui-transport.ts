@@ -131,7 +131,7 @@ export class CodexTuiTransport implements CodexTransport {
     this.launch(dispatch);
 
     const threadId = dispatch.threadId
-      ?? await this.awaitNewThread(new Set(before.keys()));
+      ?? await this.awaitNewThread(new Set(before.keys()), dispatch.prompt);
     const text = await this.awaitTurn(threadId, priorRecords);
     return { threadId, text };
   }
@@ -185,17 +185,50 @@ export class CodexTuiTransport implements CodexTransport {
   }
 
   /** A brand new Change has no thread until its first turn creates one. */
-  private async awaitNewThread(known: ReadonlySet<string>): Promise<string> {
+  /**
+   * 等我们自己那个线程出现 —— **认提示词，不认「谁先出现」**。
+   *
+   * 原先的做法是「启动之后第一个没见过的线程 id」。那是个竞态：只要在轮询窗口里
+   * 有任何别的 Codex 建了线程，就会抓错。实测栽过一次（2026-07-29）——一轮没杀干净
+   * 的对抗还在派生子 Agent，这里抓到了它的线程，于是后面去找 `/root/red` 一无所获，
+   * 报出来是「裁判没有派生子 Agent」，而裁判其实好好地派生了，只是**不是这个裁判**。
+   *
+   * 提示词是我们自己写的，它会原样进 rollout，所以拿它来认。JSON 转义过，所以比对
+   * 的是转义后的形式。
+   *
+   * 这挡不住「两轮同时跑、提示词一模一样」，但那一格已经由「一个阶段线程同时只许
+   * 有一个进程」挡着了（PRD §6.5 规则 5）。
+   */
+  private async awaitNewThread(
+    known: ReadonlySet<string>,
+    prompt: string,
+  ): Promise<string> {
+    // 转义后的形式：rollout 是 JSON 行，换行和引号都不是原样。
+    const needle = JSON.stringify(prompt).slice(1, -1);
     const deadline = this.now() + this.timeoutMs;
+    let sawNew = false;
+
     while (this.now() < deadline) {
-      for (const threadId of rollouts(this.sessionsDir).keys()) {
-        if (!known.has(threadId)) return threadId;
+      for (const [threadId, path] of rollouts(this.sessionsDir)) {
+        if (known.has(threadId)) continue;
+        sawNew = true;
+        let text: string;
+        try {
+          text = readFileSync(path, "utf-8");
+        } catch {
+          continue; // 正在写，下一轮再看
+        }
+        if (text.includes(needle)) return threadId;
       }
       await this.sleep(this.pollMs);
     }
-    throw new CodexUnavailableError(
-      "no new Codex session appeared; the TUI may not have started",
-    );
+
+    // 两种失败长得完全不一样，必须分开说：一种是 TUI 没起来，另一种是起来了但
+    // 那些线程都不是我们的 —— 后者说明有别的 Codex 在跑，而不是这里坏了。
+    throw new CodexUnavailableError(sawNew
+      ? "new Codex sessions appeared but none carried this prompt;"
+        + " another Codex is probably running"
+      : "no new Codex session appeared; the TUI may not have started");
   }
 
   private async awaitTurn(
