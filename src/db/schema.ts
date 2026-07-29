@@ -145,27 +145,31 @@ CREATE INDEX IF NOT EXISTS ix_jobs_claimable ON jobs (status, created_at);
 -- L2
 -- ---------------------------------------------------------------------------
 
--- Which Codex thread a Change's work happens in. Keyed by Change alone: one
--- Change, one persistent thread.
+-- Which Codex thread a phase's work happens in: one thread per (Change, phase).
 --
--- That granularity was overturned on 2026-07-28. The binding is now one thread
--- per (Change, phase) -- see the rebuild PRD §6.5, and the longer note in
--- store/binding-store.ts. Re-keying this table is scheduled work, not a
--- drive-by, so the old shape is what still runs here.
+-- Keyed by the pair rather than by the Change, because with one thread per
+-- Change part of a phase's decision rests on what the model remembers from
+-- EARLIER phases -- and that memory lives in Codex's conversation history,
+-- inside no StagePass snapshot. The fence cannot reach it. Per-phase threads
+-- force cross-phase information through documents, which can be snapshotted,
+-- hashed and fenced. See the rebuild PRD section 6.5.
 --
--- The uniqueness below guards the old key. Do not read it as an argument that
--- the old key is right. The reason it used to give -- a thread per phase would
--- scatter the human's work across a dozen tasks -- is dead: per-phase threads
--- laid out as tabs in the terminal panel are organised, not scattered. What the
--- old shape could not do is keep the fence whole, because part of a phase's
--- decision then rests on what the model remembers from earlier phases, and that
--- memory lives in Codex's conversation history, inside no StagePass snapshot.
+-- The price, paid deliberately: each phase opens on a conversation that knows
+-- nothing about the earlier ones, so every phase's opening prompt has to carry
+-- its upstream documents itself.
+--
+-- Re-entering a phase reuses its thread rather than starting another. Fix can
+-- be entered many times, so the pair is not unique in TIME; what a third round
+-- of Fix most needs is what the first two changed and why it still failed, and
+-- that is in this same thread.
 CREATE TABLE IF NOT EXISTS change_bindings (
-  change_id   TEXT PRIMARY KEY REFERENCES changes(id),
+  change_id   TEXT NOT NULL REFERENCES changes(id),
+  phase       TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
   thread_id   TEXT NOT NULL,
   status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
   bound_at    TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_thread

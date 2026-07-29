@@ -128,7 +128,12 @@ async function main(): Promise<void> {
   for (const turn of answers) {
     console.log(`turn ${turn.id.padEnd(14)} ${turn.status.padEnd(10)} thread=${turn.thread_id ?? "-"} response=${turn.n ?? 0}B`);
   }
-  console.log("binding      ", bindings.find(CHANGE));
+  // Every phase this Change has a thread for. One row per phase is the point:
+  // the old shape could only ever have had one row per Change.
+  console.log("bindings     ", database.prepare(
+    "SELECT phase, thread_id, status FROM change_bindings WHERE change_id = ?",
+  ).all(CHANGE));
+  console.log("PRD binding  ", bindings.find(CHANGE, "PRD"));
   console.log("turns        ", turns.inFlight().length, "in flight,",
     (database.prepare("SELECT count(*) AS n FROM turns").get() as { n: number }).n, "total");
   console.log("ledger       ", changes.ledger(CHANGE)

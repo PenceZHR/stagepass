@@ -98,7 +98,7 @@ export class CodexTurnRunner implements TurnRunner {
 
     // Null on a Change's first turn: the thread does not exist until the turn
     // that creates it comes back.
-    const existing = this.bindings.find(job.changeId);
+    const existing = this.bindings.find(job.changeId, phase);
     const threadId = existing?.status === "bound" ? existing.threadId : null;
     this.turns.markDispatched(turn.id, threadId);
 
@@ -116,7 +116,7 @@ export class CodexTurnRunner implements TurnRunner {
     // a guess beforehand would leave a Change pointing at a thread that was
     // never created when the turn failed.
     try {
-      this.bindings.bind(job.changeId, delivery.threadId);
+      this.bindings.bind(job.changeId, phase, delivery.threadId);
     } catch {
       // NOT marked failed: the turn completed and its answer is on disk. Only
       // the job fails, which is what L1 records. Calling markFailed here would

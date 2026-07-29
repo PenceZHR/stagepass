@@ -64,7 +64,7 @@ describe("L2 · a turn goes out, an answer comes back, the gate opens", () => {
         kind: "settled", jobId: "JOB-1",
       });
 
-      assert.equal(bindings.require("CHG-1"), "THREAD-1");
+      assert.equal(bindings.require("CHG-1", "PRD"), "THREAD-1");
       const turn = turns.read("TURN-JOB-1-1");
       assert.equal(turn.status, "completed");
       assert.equal(turn.threadId, "THREAD-1");
@@ -276,26 +276,49 @@ describe("L2 · the turn record refuses moves it cannot make", () => {
   });
 });
 
-describe("L2 · one Change, one thread", () => {
-  it("names the failure when a Change has no thread", () => {
+describe("L2 · one (Change, phase), one thread", () => {
+  it("gives each phase of a Change its own thread", () => {
     const { database, bindings } = open([]);
     try {
-      assert.throws(() => bindings.require("CHG-1"), ChangeNotBoundError);
-      bindings.bind("CHG-1", "THREAD-1");
-      bindings.detach("CHG-1");
-      assert.throws(() => bindings.require("CHG-1"), ChangeNotBoundError);
+      bindings.bind("CHG-1", "PRD", "THREAD-PRD");
+      bindings.bind("CHG-1", "Spec", "THREAD-SPEC");
+
+      assert.equal(bindings.require("CHG-1", "PRD"), "THREAD-PRD");
+      assert.equal(bindings.require("CHG-1", "Spec"), "THREAD-SPEC");
+      // The shape this replaced could not represent this at all: its key was
+      // the Change, so the second bind would have overwritten the first.
+      assert.notEqual(
+        bindings.require("CHG-1", "PRD"),
+        bindings.require("CHG-1", "Spec"),
+      );
     } finally {
       database.close();
     }
   });
 
-  it("refuses to move a bound Change onto a different thread", () => {
+  it("names the failure when a phase has no thread", () => {
     const { database, bindings } = open([]);
     try {
-      bindings.bind("CHG-1", "THREAD-1");
-      assert.equal(bindings.bind("CHG-1", "THREAD-1").threadId, "THREAD-1");
+      assert.throws(() => bindings.require("CHG-1", "PRD"), ChangeNotBoundError);
+      bindings.bind("CHG-1", "PRD", "THREAD-1");
+      // A sibling phase being bound is not this phase being bound.
+      assert.throws(() => bindings.require("CHG-1", "Spec"), ChangeNotBoundError);
+      bindings.detach("CHG-1", "PRD");
+      assert.throws(() => bindings.require("CHG-1", "PRD"), ChangeNotBoundError);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("re-entering a phase keeps the same thread", () => {
+    const { database, bindings } = open([]);
+    try {
+      bindings.bind("CHG-1", "Fix", "THREAD-FIX");
+      // Fix can be entered many times. The second and third rounds resume the
+      // thread that holds what the earlier rounds changed and why they failed.
+      assert.equal(bindings.bind("CHG-1", "Fix", "THREAD-FIX").threadId, "THREAD-FIX");
       assert.throws(
-        () => bindings.bind("CHG-1", "THREAD-2"),
+        () => bindings.bind("CHG-1", "Fix", "THREAD-OTHER"),
         ThreadAlreadyBoundError,
       );
     } finally {
@@ -303,13 +326,19 @@ describe("L2 · one Change, one thread", () => {
     }
   });
 
-  it("refuses to hand one thread to two Changes", () => {
+  it("refuses to hand one thread to two phases", () => {
     const { database, changes, bindings } = open([]);
     try {
       changes.create("CHG-2");
-      bindings.bind("CHG-1", "THREAD-1");
+      bindings.bind("CHG-1", "PRD", "THREAD-1");
+      // Two phases appending to one rollout is the interleaving that makes
+      // "which turn was mine" unanswerable.
       assert.throws(
-        () => bindings.bind("CHG-2", "THREAD-1"),
+        () => bindings.bind("CHG-1", "Spec", "THREAD-1"),
+        ThreadAlreadyBoundError,
+      );
+      assert.throws(
+        () => bindings.bind("CHG-2", "PRD", "THREAD-1"),
         ThreadAlreadyBoundError,
       );
     } finally {
@@ -317,12 +346,12 @@ describe("L2 · one Change, one thread", () => {
     }
   });
 
-  it("lets a detached Change bind somewhere new", () => {
+  it("lets a detached phase bind somewhere new", () => {
     const { database, bindings } = open([]);
     try {
-      bindings.bind("CHG-1", "THREAD-1");
-      bindings.detach("CHG-1");
-      assert.equal(bindings.bind("CHG-1", "THREAD-2").threadId, "THREAD-2");
+      bindings.bind("CHG-1", "PRD", "THREAD-1");
+      bindings.detach("CHG-1", "PRD");
+      assert.equal(bindings.bind("CHG-1", "PRD", "THREAD-2").threadId, "THREAD-2");
     } finally {
       database.close();
     }
