@@ -66,10 +66,17 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
 
-  // The panel is not a new layer: it is L2's second launch implementation,
+  // The panel is not a new layer, but its two halves sit at different ones.
+  //
+  // `pty-session` only carries bytes: that is L2's second launch implementation,
   // the first being osascript + Terminal.app (PRD §6, the L2 row).
+  //
+  // `panel-server` also puts gate decisions to a person and applies the answer,
+  // and that IS L3. It was declared 2 while it only hosted terminals; the guard
+  // caught the drift the moment the question path was wired in, which is
+  // exactly what this rule is for.
   "web/pty-session.ts": 2,
-  "web/panel-server.ts": 2,
+  "web/panel-server.ts": 3,
 
   "domain/question.ts": 3,
   "store/question-store.ts": 3,

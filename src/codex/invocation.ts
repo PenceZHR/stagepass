@@ -38,6 +38,15 @@ export interface CodexInvocation {
    * sent, so nothing is dispatched and no model is called.
    */
   readonly prompt?: string | undefined;
+  /**
+   * Extra `-c key=value` overrides, verbatim.
+   *
+   * This is how the StagePass plugin is registered for one invocation instead
+   * of being written into the user's global config -- the same reason §6.6
+   * gives for the permission flags: a global write would leak into every other
+   * project's `codex`, and M5 forbids a read path that writes.
+   */
+  readonly config?: readonly string[] | undefined;
 }
 
 /** The flags, without the subcommand or the prompt. */
@@ -47,6 +56,7 @@ export function codexFlags(input: CodexInvocation): string[] {
     // Always explicit, never left to the client default: what StagePass needs
     // from this flag is that elicitation keeps working.
     "-a", input.approval ?? "on-request",
+    ...(input.config ?? []).flatMap((entry) => ["-c", entry]),
     ...(input.model ? ["-m", input.model] : []),
     ...(input.reasoningEffort
       ? ["-c", `model_reasoning_effort="${input.reasoningEffort}"`]

@@ -297,16 +297,63 @@ body::after {
   font-style: normal; letter-spacing: .16em; color: rgba(255,255,255,.44);
 }
 
-.run {
-  margin-top: 16px; min-height: 36px; padding: 0 20px; border: 0; border-radius: 10px;
-  cursor: pointer; font: 820 10px/1 ui-sans-serif, sans-serif;
-  letter-spacing: .14em; text-transform: uppercase; color: #302d38;
-  background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879);
-  transition: filter .2s, opacity .2s;
+/*
+ * 决策区：固定在主内容的视觉收尾位置，一层半透明深色表面。
+ *
+ * **这里没有 approve / reject 按钮，而且不许有。** 裁决只发生在 Codex 自己的
+ * elicitation 选择器里（PRD §1、§5.2b）。这一条的主动作是"把这个裁决交给
+ * Codex 问我"—— 它组题、把问题送进那个阶段的终端，然后等你在 Codex 里选。
+ * 面板显示闸门说了什么，永远不提供改变它的控件。
+ */
+.decision {
+  /* stretch, not the shrink-to-fit the centred column would otherwise give it */
+  flex: 0 0 auto; align-self: stretch; margin-top: 10px;
+  display: flex; align-items: center; gap: 16px;
+  padding: 11px 16px; border: 1px solid rgba(255,255,255,.16); border-radius: 16px;
+  background: rgba(37,35,45,.4); backdrop-filter: blur(22px);
 }
-.run:hover { filter: brightness(1.08); }
-.run[disabled] { opacity: .42; cursor: default; filter: none; }
-.run[hidden] { display: none; }
+/*
+ * One row, never wrapping. Wrapping chips grow the bar, the orbit above shrinks
+ * to fit, and the node labels -- which sit at a fixed offset outside each
+ * circle -- close in on the centre text. Overflow scrolls instead.
+ */
+.risks {
+  flex: 1; min-width: 0; display: flex; flex-wrap: nowrap; gap: 6px; align-items: center;
+  overflow-x: auto; scrollbar-width: none;
+}
+.risks::-webkit-scrollbar { display: none; }
+.risks .none { font: 400 11px var(--serif); color: rgba(255,255,255,.45); }
+.risk {
+  flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 5px 10px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.055);
+  font: 500 10px/1.3 ui-sans-serif, sans-serif; color: rgba(255,255,255,.8);
+  max-width: 240px; white-space: nowrap;
+}
+.risk b { font: 800 9px/1 ui-monospace, monospace; letter-spacing: .06em; color: var(--sand); }
+.risk.p0 b, .risk.p1 b { color: #e0a08c; }
+.risk span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.verdict {
+  flex: 0 1 auto; min-width: 0; text-align: right;
+  font: 500 10px/1.5 ui-sans-serif, sans-serif; color: rgba(255,255,255,.5);
+}
+.verdict b { display: block; font: 800 9px/1 ui-sans-serif, sans-serif;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--sand); margin-bottom: 4px; }
+
+.actions { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; }
+.run, .ask {
+  min-height: 38px; padding: 0 18px; border-radius: 10px; cursor: pointer;
+  font: 820 10px/1 ui-sans-serif, sans-serif; letter-spacing: .12em; text-transform: uppercase;
+  transition: filter .2s, opacity .2s, background .2s;
+}
+/* 主动作只有一个 */
+.ask { border: 0; color: #302d38; background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879); }
+.ask:hover { filter: brightness(1.08); }
+.run { border: 1px solid rgba(255,255,255,.27); color: #f5eee6; background: rgba(255,255,255,.06); }
+.run:hover { background: rgba(255,255,255,.12); }
+.run[disabled], .ask[disabled] { opacity: .38; cursor: default; filter: none; }
+.run[hidden], .ask[hidden] { display: none; }
 
 .portal {
   position: absolute; left: 50%; top: 50%; width: 110px; height: 110px; border-radius: 50%;
@@ -392,9 +439,17 @@ body::after {
           <h3 id="center-title">选择一个阶段</h3>
           <p id="center-line">十一个阶段，每个阶段一个 Codex 线程。</p>
           <b id="center-count">11<em>Stages</em></b>
-          <button class="run" id="run" hidden>跑这个阶段</button>
         </div>
         <div class="portal" id="portal"></div>
+      </div>
+
+      <div class="decision" id="decision">
+        <div class="risks" id="risks"></div>
+        <div class="verdict" id="verdict"></div>
+        <div class="actions">
+          <button class="run" id="run" hidden>跑这个阶段</button>
+          <button class="ask" id="ask" hidden>请 Codex 问我</button>
+        </div>
       </div>
     </section>
 

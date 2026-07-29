@@ -30,6 +30,7 @@ const centerTitle = document.getElementById("center-title");
 const centerLine = document.getElementById("center-line");
 const centerCount = document.getElementById("center-count");
 const runButton = document.getElementById("run");
+const askButton = document.getElementById("ask");
 const columns = document.getElementById("columns");
 const stageName = document.getElementById("stage-name");
 const stageThread = document.getElementById("stage-thread");
@@ -108,6 +109,37 @@ async function run() {
     }
   } finally {
     runButton.textContent = "跑这个阶段";
+    await load();
+  }
+}
+
+/**
+ * Put the gate decision to the human, in Codex.
+ *
+ * This opens the phase's terminal because that is where the answer happens --
+ * the selector is drawn by Codex there, and the page has no way to answer it.
+ */
+async function ask() {
+  askButton.disabled = true;
+  askButton.textContent = "已送进终端…";
+  const at = phases.find((entry) => entry.current);
+  if (at) void enter(at.phase);
+  try {
+    const result = await (await fetch(
+      `/api/ask?change=${encodeURIComponent(changeId)}`, { method: "POST" },
+    )).json();
+    if (!result.asked) {
+      centerLine.textContent = result.reason === "no_decision_available"
+        ? "这个闸门现在没有可做的裁决。"
+        : `没问成：${result.reason}`;
+    } else if (!result.answered) {
+      centerLine.textContent = "问题已经在终端里了，等你在 Codex 的选择器里选。";
+    } else {
+      centerLine.textContent =
+        `你选了 ${JSON.stringify(result.answer)} → ${JSON.stringify(result.outcome)}`;
+    }
+  } finally {
+    askButton.textContent = "请 Codex 问我";
     await load();
   }
 }
@@ -280,16 +312,80 @@ async function load() {
   drawOrbit();
 
   const at = phases.find((entry) => entry.current);
-  runButton.hidden = !at;
-  runButton.disabled = !at || at.live;
+  drawDecision(panel, at);
   if (at) {
     IDLE.kicker = `Current Gate · ${panel.status ?? ""}`.trim();
     IDLE.title = at.phase;
     IDLE.line = panel.blockers > 0
       ? `${panel.blockers} 项问题挡着闸门。`
-      : "证据未到齐，跑一次这个阶段。";
+      : panel.status === "settled"
+        ? "证据已到齐，等你的明确决定。"
+        : "证据未到齐，跑一次这个阶段。";
   }
   restoreCenter();
+}
+
+/**
+ * The decision area.
+ *
+ * It shows what the gate says and offers exactly one primary action: put the
+ * decision to the human IN CODEX. There is no approve/reject control here and
+ * there must never be -- the web surface carries no decision entrance (PRD §1),
+ * and the only answer path is the elicitation selector (§5.2b).
+ */
+function drawDecision(panel, at) {
+  const risks = panel.gate?.risks ?? [];
+  const risksEl = document.getElementById("risks");
+  if (risks.length === 0) {
+    const none = document.createElement("span");
+    none.className = "none";
+    none.textContent = panel.status === "settled"
+      ? "没有挡住闸门的问题。" : "还没有这个阶段的证据。";
+    risksEl.replaceChildren(none);
+  } else {
+    // Numbers, not titles: §4.4 wants how many risks actually hold the gate,
+    // in severity order. A truncated sentence reads as broken; a count does not.
+    // The ids and titles are on the chip's tooltip, which is where detail
+    // belongs -- the main surface carries no long-form output (§4.4 末句).
+    const bySeverity = ["P0", "P1", "P2"]
+      .map((severity) => ({
+        severity,
+        items: risks.filter((risk) => risk.severity === severity),
+      }))
+      .filter((group) => group.items.length > 0);
+
+    risksEl.replaceChildren(...bySeverity.map((group) => {
+      const chip = document.createElement("span");
+      chip.className = `risk ${group.severity.toLowerCase()}`;
+      chip.title = group.items
+        .map((risk) => `${risk.id} — ${risk.title}`).join("\n");
+      const label = document.createElement("b");
+      label.textContent = group.severity;
+      const count = document.createElement("span");
+      count.textContent = `${group.items.length} 项挡着闸门`;
+      chip.append(label, count);
+      return chip;
+    }));
+  }
+
+  // What the gate permits, stated rather than acted on.
+  const verdictEl = document.getElementById("verdict");
+  const permitted = panel.gate?.permitted ?? [];
+  verdictEl.replaceChildren();
+  const label = document.createElement("b");
+  label.textContent = "Gate";
+  const text = document.createElement("span");
+  text.textContent = permitted.length === 0
+    ? "没有可做的裁决"
+    : `可做：${permitted.join(" / ")}`
+      + (panel.gate?.refusals?.approve ? `　approve 被拒：${panel.gate.refusals.approve}` : "");
+  verdictEl.append(label, text);
+
+  const canAsk = permitted.length > 0 && at && !at.live;
+  runButton.hidden = !at;
+  runButton.disabled = !at || at.live || panel.status === "settled";
+  askButton.hidden = !at;
+  askButton.disabled = !canAsk;
 }
 
 /** The idle centre, i.e. nothing hovered. */
@@ -372,6 +468,7 @@ async function attach(phase) {
 
 document.getElementById("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
+askButton.addEventListener("click", () => { void ask(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 
 // Applied before the first paint, and without a transition -- animating from
