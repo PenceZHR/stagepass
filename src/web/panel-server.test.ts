@@ -159,6 +159,24 @@ describe("panel · bytes go through untouched", () => {
     });
   });
 
+  it("replays what a running session already drew", async () => {
+    await withPanel(async ({ open, pty }) => {
+      // Someone opens the phase, Codex draws its screen, they navigate away.
+      const first = await open(`/pty/${CHANGE}/PRD`);
+      const banner = new Uint8Array([0x4f, 0x4b, 0x21]); // "OK!"
+      pty.emit(banner);
+      await first.body!.cancel();
+
+      // Coming back must not show an empty terminal: the pty forwards what
+      // happens next, and at an idle composer nothing happens next.
+      const second = await open(`/pty/${CHANGE}/PRD`);
+      const { value } = await second.body!.getReader().read();
+
+      assert.deepEqual(Array.from(value!), Array.from(banner));
+      assert.equal(pty.started.length, 1, "replay must not start a second process");
+    });
+  });
+
   it("sends keystrokes to the pty as bytes", async () => {
     await withPanel(async ({ open, pty }) => {
       // Down arrow, then Enter: the two keys a gate decision needs.
