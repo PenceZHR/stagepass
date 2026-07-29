@@ -6,7 +6,9 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { BindingStore } from "../store/binding-store";
+import { GapStore } from "../store/gap-store";
 import { createPanelServer } from "./panel-server";
+import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
 
 /**
@@ -26,6 +28,30 @@ import type { PtySession } from "./pty-session";
  */
 
 const CHANGE = "CHG-PANEL";
+
+interface PhaseEntry {
+  phase: string;
+  threadId: string | null;
+  live: boolean;
+  current: boolean;
+  /** Passed, failed, or neither yet. See the note on `markOf` in the server. */
+  mark: "approved" | "problem" | null;
+  gaps: { id: string; severity: string; title: string; status: string }[];
+}
+
+/**
+ * Carry a Change forward the way a person does: run the phase, let it settle,
+ * approve it. Used to reach a phase deep in the line without hand-writing
+ * fifteen transitions per test.
+ */
+function advanceTo(changes: ChangeStore, target: Phase): void {
+  for (let guard = 0; changes.read(CHANGE).state.phase !== target; guard += 1) {
+    assert.ok(guard < 20, `${target} was not reached; the line does not lead there`);
+    changes.apply(CHANGE, "start");
+    changes.apply(CHANGE, "settle");
+    changes.apply(CHANGE, "approve");
+  }
+}
 
 interface Fake {
   started: { changeId: string; phase: string; argv: string[] }[];
@@ -108,15 +134,18 @@ describe("panel · what it offers", () => {
   it("offers eleven phases, and never Done", async () => {
     await withPanel(async ({ open }) => {
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
-        phases: { phase: string; threadId: string | null; live: boolean; current: boolean }[];
+        phases: PhaseEntry[];
       };
       assert.equal(panel.phases.length, 11);
       assert.ok(!panel.phases.some((entry) => entry.phase === "Done"));
       // A fresh Change sits at PRD, so that is the one node that may be run.
+      // Nothing has passed or failed yet, so no node carries a mark.
       assert.deepEqual(panel.phases[0], {
         phase: "PRD", threadId: null, live: false, current: true,
+        mark: null, gaps: [],
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
+      assert.ok(!panel.phases.some((entry) => entry.mark !== null));
     });
   });
 
@@ -143,6 +172,164 @@ describe("panel · what it offers", () => {
       assert.equal((await open(`/pty/${CHANGE}/Nonsense`)).status, 404);
       // Done is a real phase and still has no terminal: nothing runs there.
       assert.equal((await open(`/pty/${CHANGE}/Done`)).status, 404);
+    });
+  });
+});
+
+/**
+ * What makes a node green and what makes it amber.
+ *
+ * The rule, decided 2026-07-29 and written into the rebuild PRD: a phase is
+ * green because a PERSON approved it, never because a round reported no
+ * problems. That is the same line the whole product is drawn on -- a model
+ * saying "looks fine" is not a pass -- so the colour has to be read from the
+ * ledger, which only records what a human decided.
+ */
+describe("panel · pass and fail per phase", () => {
+  const marksOf = async (
+    open: (path: string) => Promise<Response>,
+  ): Promise<Record<string, PhaseEntry["mark"]>> => {
+    const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+      { phases: PhaseEntry[] };
+    return Object.fromEntries(panel.phases.map((entry) => [entry.phase, entry.mark]));
+  };
+
+  it("marks the phase a human approved, and no other", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");
+
+      const marks = await marksOf(open);
+      assert.equal(marks["PRD"], "approved");
+      // Spec is where the Change now sits. Arriving is not passing.
+      assert.equal(marks["Spec"], null);
+      assert.equal(marks["Build"], null);
+    });
+  });
+
+  it("does not turn a phase green just because a round found nothing", async () => {
+    await withPanel(async ({ open, database }) => {
+      // A round ran and closed out clean -- but nobody approved it.
+      new GapStore(database).settleRound(CHANGE, "PRD", {
+        round: 1, found: [], verdicts: {},
+      });
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      assert.equal((await marksOf(open))["PRD"], null);
+    });
+  });
+
+  it("marks a phase with an open gap as a problem", async () => {
+    await withPanel(async ({ open, database }) => {
+      new GapStore(database).settleRound(CHANGE, "PRD", {
+        round: 1,
+        found: [{ id: "G1", severity: "P1", title: "验收标准不可测" }],
+        verdicts: {},
+      });
+      assert.equal((await marksOf(open))["PRD"], "problem");
+    });
+  });
+
+  it("lets a new problem take the green back off an approved phase", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");
+      assert.equal((await marksOf(open))["PRD"], "approved");
+
+      // A later round reaches back and opens a gap on a phase already passed.
+      // Green would then be claiming something that is no longer true.
+      new GapStore(database).settleRound(CHANGE, "PRD", {
+        round: 2,
+        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突" }],
+        verdicts: {},
+      });
+      assert.equal((await marksOf(open))["PRD"], "problem");
+    });
+  });
+
+  it("marks a phase whose turn failed as a problem", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "fail");
+      assert.equal((await marksOf(open))["PRD"], "problem");
+    });
+  });
+
+  it("marks a rejected Review as a problem while the work sits in Fix", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      advanceTo(changes, "Review");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "reject");
+      assert.equal(changes.read(CHANGE).state.phase, "Fix");
+
+      const marks = await marksOf(open);
+      assert.equal(marks["Review"], "problem");
+      // The phases that got Review this far are still passed.
+      assert.equal(marks["Build"], "approved");
+    });
+  });
+
+  it("takes the green off Fix when the work comes back to it", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      advanceTo(changes, "Review");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "reject");          // -> Fix
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");         // Fix passed, back to Review
+      assert.equal((await marksOf(open))["Fix"], "approved");
+
+      // Review sends it back a second time. Fix is where the work is now, so
+      // the green from the previous visit is stale -- Fix is the one phase the
+      // line can re-enter, which is why the mark cannot be "was ever approved".
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "reject");
+      assert.equal(changes.read(CHANGE).state.phase, "Fix");
+      assert.equal((await marksOf(open))["Fix"], null);
+    });
+  });
+
+  it("gives each phase its own gaps, resolved ones included", async () => {
+    await withPanel(async ({ open, database }) => {
+      const gaps = new GapStore(database);
+      gaps.settleRound(CHANGE, "PRD", {
+        round: 1,
+        found: [
+          { id: "G1", severity: "P0", title: "没有验收标准" },
+          { id: "G2", severity: "P2", title: "术语不一致" },
+        ],
+        verdicts: {},
+      });
+      gaps.settleRound(CHANGE, "PRD", {
+        round: 2, found: [], verdicts: { G2: { kind: "closed", reason: "第二轮统一了叫法" } },
+      });
+      gaps.settleRound(CHANGE, "Spec", {
+        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码" }], verdicts: {},
+      });
+
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { phases: PhaseEntry[] };
+      const forPhase = (phase: string) =>
+        panel.phases.find((entry) => entry.phase === phase)!.gaps;
+
+      // The popup shows history, not just what is blocking: a closed gap with
+      // its reason is how you tell "we fixed it" from "the round forgot".
+      assert.deepEqual(forPhase("PRD").map((gap) => [gap.id, gap.status]),
+        [["G1", "open"], ["G2", "closed"]]);
+      assert.deepEqual(forPhase("Spec").map((gap) => gap.id), ["S1"]);
+      assert.deepEqual(forPhase("TechSpec"), []);
     });
   });
 });
