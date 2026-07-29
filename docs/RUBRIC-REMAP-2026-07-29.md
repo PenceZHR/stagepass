@@ -234,15 +234,36 @@ change 活得更久的对象。（老树原因相同，结论照搬。）
   → closed，resolution 写明是哪一条
 ```
 
-### 5.1 severity 从哪来 —— **这一格还没定**
+### 5.1 severity —— **已定：rubric 没有 severity（2026-07-29 用户拍板）**
 
-`gaps.severity` 是 `P0|P1|P2`，而 rubric 只有 blocking 的真假。两种可能：
+我先前给的两个选项（一律 P1、criterion 上加一列 severity）**都错了** —— 两个都是
+在把一个二元结论硬塞进分级刻度。用户的原话：
 
-- criterion 上加一列 severity（表达力强，但用户要填的东西变多）
-- 一律 P1（可 waive，有出口），blocking=false 的 no 只记录不阻断
+> 因为 rubric 判断的是对或者错，是二元判断，所以不用套 P0 P1 P2。
 
-**动第 3 批之前必须定。** 我倾向后者：`blocking` 已经是那个开关，再加一维等于让
-用户在两个地方表达同一件事。
+落地：`gaps` 加一列 `kind`。
+
+```
+finding    发现的一个问题。模型报的，必带严重度：问的是「这有多糟」
+standard   一条没被满足的标准。rubric 判的，必无严重度：问的是「满足了没有」
+```
+
+schema 用配对 CHECK 把不合法状态做成不可表示：
+`CHECK ((kind = 'finding') = (severity IS NOT NULL))`。
+
+**真正让两者必须分开的不是有没有严重度，是出口不同：**
+
+| | 出口 |
+|---|---|
+| `finding` P1 | waive —— 人接受这个风险 |
+| `standard` | 撤下那条标准 —— 人说这件事本来就不该要求 |
+
+「接受风险」和「撤销要求」是两句不同的话。所以 `waive` 明确拒绝 `standard`
+（`InvalidVerdictError("standard_not_waivable")`），`unresolved` 也不认 waive 名单
+对它的豁免。`kind` 同时进 fence 哈希：同一个 id 换了 kind，出口就变了，那是决策
+依据变了。
+
+这一格已经在 L1 落地并有测试（commit `06ef926`），L5-3 直接用。
 
 ---
 
