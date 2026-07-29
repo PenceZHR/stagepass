@@ -145,11 +145,21 @@ CREATE INDEX IF NOT EXISTS ix_jobs_claimable ON jobs (status, created_at);
 -- L2
 -- ---------------------------------------------------------------------------
 
--- One Change, one persistent Codex thread.
+-- Which Codex thread a Change's work happens in. Keyed by Change alone: one
+-- Change, one persistent thread.
 --
--- The uniqueness is the point: a second thread for the same Change means two
--- conversations that each know half the story, which is what the old tree's
--- "do not create a second user-visible task" rule was fighting.
+-- That granularity was overturned on 2026-07-28. The binding is now one thread
+-- per (Change, phase) -- see the rebuild PRD §6.5, and the longer note in
+-- store/binding-store.ts. Re-keying this table is scheduled work, not a
+-- drive-by, so the old shape is what still runs here.
+--
+-- The uniqueness below guards the old key. Do not read it as an argument that
+-- the old key is right. The reason it used to give -- a thread per phase would
+-- scatter the human's work across a dozen tasks -- is dead: per-phase threads
+-- laid out as tabs in the terminal panel are organised, not scattered. What the
+-- old shape could not do is keep the fence whole, because part of a phase's
+-- decision then rests on what the model remembers from earlier phases, and that
+-- memory lives in Codex's conversation history, inside no StagePass snapshot.
 CREATE TABLE IF NOT EXISTS change_bindings (
   change_id   TEXT PRIMARY KEY REFERENCES changes(id),
   thread_id   TEXT NOT NULL,
