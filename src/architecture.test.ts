@@ -78,7 +78,7 @@ const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
  * for orphans, so a module reachable only from a command still counts as
  * reached, and one reachable from nowhere still does not.
  */
-const ENTRY_POINTS = ["scripts/verify-rebuild.ts"].map((path) => ({
+const ENTRY_POINTS = ["scripts/verify-rebuild.ts", "scripts/verify-decision.ts"].map((path) => ({
   path,
   text: readFileSync(join(process.cwd(), path), "utf-8"),
 }));

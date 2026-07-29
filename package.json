@@ -6,7 +6,8 @@
     "test": "node --import tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.src.json",
     "check": "pnpm typecheck && pnpm test",
-    "verify:rebuild": "tsx scripts/verify-rebuild.ts"
+    "verify:rebuild": "tsx scripts/verify-rebuild.ts",
+    "verify:decision": "tsx scripts/verify-decision.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1"
