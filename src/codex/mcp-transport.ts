@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
+import { openInDesktop, threadUrl } from "./desktop-link";
 import {
   CodexUnavailableError,
   type CodexTransport,
@@ -62,7 +63,16 @@ export interface CodexMcpTransportOptions {
    */
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
-  /** Observed thread ids, for a caller that wants to open a deep link mid-turn. */
+  /**
+   * Show each thread in Codex Desktop as it starts. Default ON.
+   *
+   * Defaulted rather than wired by each caller because "every turn is visible"
+   * is a product requirement, and a requirement that depends on every call site
+   * remembering to opt in is a requirement that will be false somewhere. Set
+   * false only for runs nobody is watching.
+   */
+  readonly showInDesktop?: boolean;
+  /** Also told the id, for a caller that wants to log or link it itself. */
   readonly onThread?: (threadId: string) => void;
 }
 
@@ -182,6 +192,9 @@ export class CodexMcpTransport implements CodexTransport {
       const streamed = message.params?._meta?.threadId;
       if (typeof streamed === "string" && !this.announced.has(streamed)) {
         this.announced.add(streamed);
+        if (this.options.showInDesktop !== false) {
+          openInDesktop(threadUrl(streamed));
+        }
         this.options.onThread?.(streamed);
       }
 

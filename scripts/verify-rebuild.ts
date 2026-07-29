@@ -7,10 +7,9 @@
  *   pnpm verify:rebuild            # scripted transport, no Codex, no network
  *   pnpm verify:rebuild -- --real  # the L2 gate; needs a real transport
  *
- * The second form is the acceptance the PRD asks for at L2 and it does not
- * exist yet -- there is no transport that talks to Codex. It fails with that
- * sentence rather than pretending, because a verification script that passes
- * without verifying is worse than no script.
+ * The second form is the L2 acceptance: a real turn through `codex mcp-server`,
+ * a published subcommand. Every thread it starts is opened in Codex Desktop as
+ * it runs, so the turn is watchable rather than merely reported.
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +25,6 @@ import { TurnLoop } from "../src/work/turn-loop";
 import { CodexTurnRunner } from "../src/codex/turn-runner";
 import { ScriptedCodexTransport, type CodexTransport } from "../src/codex/transport";
 import { CodexMcpTransport } from "../src/codex/mcp-transport";
-import { openInDesktop, threadUrl } from "../src/codex/desktop-link";
 
 const REAL = process.argv.includes("--real");
 const CHANGE = "CHG-VERIFY";
@@ -51,13 +49,8 @@ function realTransport(): CodexTransport {
     // This script verifies the chain, not the model's thinking. The default is
     // xhigh, which did not finish two design turns inside ten minutes.
     reasoningEffort: "low",
-    onThread: (threadId) => {
-      // Actually show it. `codex mcp-server` is headless, so a turn StagePass
-      // started is invisible until something opens it -- printing the URL was
-      // not enough, which is the whole complaint this answers.
-      console.log(`   thread ${threadId} -> opening in Codex`);
-      openInDesktop(threadUrl(threadId));
-    },
+    // Opening is the transport's default now; this only narrates it.
+    onThread: (threadId) => console.log(`   thread ${threadId} -> opened in Codex`),
   });
 }
 
