@@ -15,7 +15,7 @@ import {
 } from "./question-store";
 
 const AT = "2026-07-28T00:00:00.000Z";
-const P0: Blocker = { id: "B-1", severity: "P0", title: "范围冲突" };
+const P0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突" };
 
 function open() {
   const database = new Database(":memory:");

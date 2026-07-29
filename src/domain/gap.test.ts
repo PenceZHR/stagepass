@@ -13,7 +13,7 @@ import {
 function gap(patch: Partial<Gap> = {}): Gap {
   return {
     id: "G-1",
-    severity: "P1",
+    kind: "finding", severity: "P1",
     title: "验收标准不可测",
     status: "open",
     openedRound: 1,
@@ -219,5 +219,32 @@ describe("L4 · a round-by-round walk", () => {
     gaps = waive(gaps, "G-2", "本期接受：验收改由人工检查覆盖");
     assert.deepEqual(blockersFrom(gaps), []);
     assert.equal(waivedFrom(gaps)[0]?.resolution, "本期接受：验收改由人工检查覆盖");
+  });
+});
+
+describe("L1 · standard 的出口不是 waive", () => {
+  const standard: Gap = {
+    id: "RB:producer:RBC-a", kind: "standard", severity: null,
+    title: "每条需求都有可测的验收标准",
+    status: "open", openedRound: 1, resolution: null,
+  };
+
+  it("waive 一条 standard —— 拒绝", () => {
+    // 「接受这个风险」和「撤销这个要求」是两句不同的话。让 waive 能关掉 standard，
+    // 就是让人用前者去说后者。它的出口在 rubric 那边：取消勾选阻断或删掉那条
+    // criterion（PRD §1.1）。
+    assert.throws(
+      () => waive([standard], standard.id, "先这样吧"),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidVerdictError);
+        assert.equal(error.code, "standard_not_waivable");
+        return true;
+      });
+  });
+
+  it("finding 照常可以 waive —— 这条没有被改坏", () => {
+    const finding: Gap = { ...standard, id: "G-1", kind: "finding", severity: "P1" };
+    const [after] = waive([finding], "G-1", "这一版先接受");
+    assert.equal(after?.status, "waived");
   });
 });

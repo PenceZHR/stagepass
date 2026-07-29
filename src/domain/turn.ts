@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { BLOCKER_SEVERITIES, type Blocker } from "./gate";
+import { BLOCKER_SEVERITIES, type BlockerSeverity, type Finding } from "./gate";
 import type { Phase } from "./phase";
 
 /**
@@ -34,7 +34,7 @@ export interface TurnRequest {
 
 export interface TurnResult {
   readonly artifactIds: readonly string[];
-  readonly blockers: readonly Blocker[];
+  readonly blockers: readonly Finding[];
 }
 
 export class InvalidTurnRequestError extends Error {
@@ -139,7 +139,7 @@ export function parseTurnResult(text: string): TurnResult {
       JSON.stringify(blockers),
     );
   }
-  const parsedBlockers: Blocker[] = blockers.map((value) => {
+  const parsedBlockers: Finding[] = blockers.map((value) => {
     const blocker = value as Record<string, unknown>;
     if (
       typeof blocker?.id !== "string" || blocker.id.trim() === ""
@@ -154,7 +154,10 @@ export function parseTurnResult(text: string): TurnResult {
     }
     return {
       id: blocker.id,
-      severity: blocker.severity as Blocker["severity"],
+      // 模型在报「我发现了什么」，所以一律是 finding。standard 是 rubric 判出来的
+      // 二元结论，永远不从模型的自述里来。
+      kind: "finding",
+      severity: blocker.severity as BlockerSeverity,
       title: blocker.title,
     };
   });

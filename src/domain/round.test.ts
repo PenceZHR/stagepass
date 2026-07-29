@@ -9,7 +9,7 @@ const answer = (artifacts: string[], blockers: object[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: artifacts, blockers }) + "\n```";
 
 const gap = (id: string, title: string): Gap => ({
-  id, severity: "P1", title, status: "open", openedRound: 1, resolution: null,
+  id, kind: "finding", severity: "P1", title, status: "open", openedRound: 1, resolution: null,
 });
 
 describe("L4 · what the judge is told", () => {
@@ -134,7 +134,7 @@ describe("L4 · each role is read from its own transcript", () => {
   it("ignores problems red reported about its own work", () => {
     const reading = readRound({
       round: 1,
-      red: answer(["spec.md"], [{ id: "RED-SELF", severity: "P0", title: "我觉得还行" }]),
+      red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行" }]),
       blue: answer([], []),
       judge: "",
     });

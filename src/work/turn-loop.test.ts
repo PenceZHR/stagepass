@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import type { Blocker } from "../domain/gate";
+import type { Finding } from "../domain/gate";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
@@ -17,7 +17,7 @@ const TTL = 30_000;
 const DEADLINE = T0 + 300_000;
 const WORKER = { owner: "w-a", token: "t-1", now: T0, ttlMs: TTL };
 
-const P0: Blocker = { id: "B-1", severity: "P0", title: "范围冲突" };
+const P0: Finding = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突" };
 
 function open(script: (TurnOutcome | Error)[]) {
   const database = new Database(":memory:");

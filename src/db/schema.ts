@@ -2,6 +2,7 @@ import { PHASES } from "../domain/phase";
 import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
 import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
 import { GAP_STATUSES } from "../domain/gap";
+import { BLOCKER_KINDS } from "../domain/gate";
 import { RUBRIC_ROLES, RUBRIC_VERDICTS } from "../domain/rubric";
 
 /**
@@ -234,7 +235,18 @@ CREATE TABLE IF NOT EXISTS gaps (
   id            TEXT NOT NULL,
   change_id     TEXT NOT NULL REFERENCES changes(id),
   phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
-  severity      TEXT NOT NULL CHECK (severity IN ('P0','P1','P2')),
+  -- Two kinds, and they are not the same thing.
+  --
+  --   finding   a problem someone found. Carries a severity: the question was
+  --             "how bad is this".
+  --   standard  a rubric criterion that was not met. Carries NO severity: the
+  --             question was "is it met", which is binary. Inventing a P0/P1/P2
+  --             for it would be inventing a dimension that does not exist.
+  --
+  -- The paired CHECK below makes the mismatched row unstorable rather than
+  -- leaving it to callers -- same shape as the Fix/return_phase invariant above.
+  kind          TEXT NOT NULL CHECK (kind IN (${quoted(BLOCKER_KINDS)})),
+  severity      TEXT     NULL CHECK (severity IS NULL OR severity IN ('P0','P1','P2')),
   title         TEXT NOT NULL CHECK (length(trim(title)) > 0),
   status        TEXT NOT NULL CHECK (status IN (${quoted(GAP_STATUSES)})),
   opened_round  INTEGER NOT NULL,
@@ -243,7 +255,9 @@ CREATE TABLE IF NOT EXISTS gaps (
   PRIMARY KEY (change_id, phase, id),
   -- A gap that has left the open state says why. Without this, "closed" and "forgotten"
   -- are the same row, which is the distinction this table exists to keep.
-  CHECK (status = 'open' OR (resolution IS NOT NULL AND length(trim(resolution)) > 0))
+  CHECK (status = 'open' OR (resolution IS NOT NULL AND length(trim(resolution)) > 0)),
+  -- A finding has a severity; a standard has none. Neither half is optional.
+  CHECK ((kind = 'finding') = (severity IS NOT NULL))
 );
 
 CREATE INDEX IF NOT EXISTS ix_gaps_open

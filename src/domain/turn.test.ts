@@ -40,14 +40,17 @@ describe("L2 · a request the far end can act on", () => {
 });
 
 describe("L2 · reading the model's answer", () => {
-  it("accepts the contract's shape", () => {
+  it("accepts the contract's shape, and stamps every blocker as a finding", () => {
     assert.deepEqual(
       parseTurnResult(
         '```json\n{"artifactIds":["a.md"],"blockers":[{"id":"B","severity":"P1","title":"x"}]}\n```',
       ),
       {
         artifactIds: ["a.md"],
-        blockers: [{ id: "B", severity: "P1", title: "x" }],
+        // `kind` 不在契约里，模型也不写它 —— 是这里盖上去的。模型在报「我发现了
+        // 什么」，那定义上就是 finding；一条 standard 是 rubric 判出来的二元结论，
+        // 永远不从模型的自述里来。
+        blockers: [{ id: "B", kind: "finding", severity: "P1", title: "x" }],
       },
     );
   });

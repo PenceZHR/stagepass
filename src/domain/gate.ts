@@ -44,9 +44,41 @@ import {
 export const BLOCKER_SEVERITIES = ["P0", "P1", "P2"] as const;
 export type BlockerSeverity = (typeof BLOCKER_SEVERITIES)[number];
 
+/**
+ * 两类挡门的东西，它们不是一回事。
+ *
+ * - `finding` —— **发现的一个问题**。模型报的，所以带严重度：问的是"这有多糟"。
+ * - `standard` —— **一条没被满足的标准**。rubric 判的，所以**没有**严重度：问的是
+ *   "满足了没有"，二元。硬给它编一个 P0/P1/P2，等于凭空发明一个不存在的维度。
+ *
+ * 两者的**出口也不同**，这才是它们必须分开的硬理由：
+ *
+ *   finding(P1) 靠 waive 出去 —— 人接受这个风险
+ *   standard    靠撤下那条标准出去 —— 人说这件事本来就不该要求
+ *
+ * 「接受风险」和「撤销要求」是两句不同的话，让 waive 能关掉一条 standard，就是让
+ * 人用前者去说后者。所以 `waive` 明确拒绝 standard（见 domain/gap.ts）。
+ */
+export const BLOCKER_KINDS = ["finding", "standard"] as const;
+export type BlockerKind = (typeof BLOCKER_KINDS)[number];
+
+/**
+ * 一条 finding：必带严重度。
+ *
+ * 单独有个名字，是因为**有些地方只收得下 finding** —— 一轮报出来的问题、模型的
+ * 自述，都属于「我发现了什么，有多糟」。一条 standard 是二元的，没有严重度，塞进
+ * 那些地方会当场没有值可填。用类型挡住，比在注释里嘱咐可靠。
+ */
+export type Finding = Blocker & {
+  readonly kind: "finding";
+  readonly severity: BlockerSeverity;
+};
+
 export interface Blocker {
   readonly id: string;
-  readonly severity: BlockerSeverity;
+  readonly kind: BlockerKind;
+  /** `finding` 必有；`standard` 必无 —— 二元的东西没有严重度。 */
+  readonly severity: BlockerSeverity | null;
   readonly title: string;
 }
 
@@ -101,7 +133,10 @@ export interface Gate {
 export function unresolved(evidence: Evidence): readonly Blocker[] {
   const waived = new Set(evidence.waivedBlockerIds);
   return evidence.blockers.filter((blocker) =>
-    blocker.severity === "P0"
+    // 一条没满足的标准照挡，而且 waive 名单对它无效 —— 它的出口是撤下这条标准
+    // 本身，不是有人接受它（见上面 BLOCKER_KINDS 的注释）。
+    blocker.kind === "standard"
+    || blocker.severity === "P0"
     || (blocker.severity === "P1" && !waived.has(blocker.id)));
 }
 
@@ -113,8 +148,10 @@ function canonical(state: ChangeState, evidence: Evidence): string {
     status: state.status,
     returnPhase: state.returnPhase,
     artifactIds: [...evidence.artifactIds].sort(),
+    // kind 也进哈希：同一个 id 从 finding 变成 standard，出口就从「可以 waive」
+    // 变成了「只能撤标准」—— 那是决策依据变了，不是换个标签。
     blockers: [...evidence.blockers]
-      .map((blocker) => `${blocker.severity}:${blocker.id}`)
+      .map((blocker) => `${blocker.kind}:${blocker.severity ?? "-"}:${blocker.id}`)
       .sort(),
     waived: [...evidence.waivedBlockerIds].sort(),
   });

@@ -18,7 +18,7 @@ const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnPhase: nu
 const CLEAN: Evidence = { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"] };
 const WITH_P0: Evidence = {
   ...CLEAN,
-  blockers: [{ id: "B-1", severity: "P0", title: "范围冲突" }],
+  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突" }],
 };
 
 function ask(state: ChangeState, evidence: Evidence): Question | null {

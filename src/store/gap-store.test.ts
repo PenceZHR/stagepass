@@ -152,9 +152,9 @@ describe("L4 · the row shape cannot lie", () => {
       for (const status of ["closed", "waived"]) {
         assert.throws(
           () => database.prepare(
-            `INSERT INTO gaps (id, change_id, phase, severity, title, status,
+            `INSERT INTO gaps (id, change_id, phase, kind, severity, title, status,
                                opened_round, resolution, updated_at)
-             VALUES ('G-BAD','CHG-1','PRD','P1','t',?,1,NULL,?)`,
+             VALUES ('G-BAD','CHG-1','PRD','finding','P1','t',?,1,NULL,?)`,
           ).run(status, AT),
           /CHECK constraint failed/,
           status,
@@ -179,5 +179,40 @@ describe("L4 · the row shape cannot lie", () => {
     } finally {
       database.close();
     }
+  });
+});
+
+/**
+ * kind 和 severity 是配对的，而且由数据库把关。
+ *
+ * finding 问的是「这有多糟」，所以必有严重度；standard 问的是「满足了没有」，
+ * 二元，所以必无。留给调用方自觉，迟早会出现一条既是标准又是 P0 的行 —— 那时
+ * 「它的出口是什么」就没有答案了。
+ */
+describe("L1 · 不匹配的 kind / severity 存不进去", () => {
+  const insert = (kind: string, severity: string | null) =>
+    `INSERT INTO gaps (id, change_id, phase, kind, severity, title, status,
+                       opened_round, resolution, updated_at)
+     VALUES ('G-X','CHG-1','PRD','${kind}',${severity === null ? "NULL" : `'${severity}'`},
+             't','open',1,NULL,'${AT}')`;
+
+  it("finding 没有严重度 —— 拒绝", () => {
+    const { database } = open();
+    assert.throws(() => database.prepare(insert("finding", null)).run(),
+      /CHECK constraint failed/);
+  });
+
+  it("standard 带着严重度 —— 拒绝", () => {
+    const { database } = open();
+    assert.throws(() => database.prepare(insert("standard", "P0")).run(),
+      /CHECK constraint failed/);
+  });
+
+  it("两种正确的配法都存得进去", () => {
+    const { database } = open();
+    database.prepare(insert("finding", "P1")).run();
+    database.prepare(insert("standard", null).replace("'G-X'", "'G-Y'")).run();
+    assert.equal(
+      (database.prepare("SELECT count(*) AS n FROM gaps").get() as { n: number }).n, 2);
   });
 });

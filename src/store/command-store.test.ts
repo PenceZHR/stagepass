@@ -9,8 +9,8 @@ import { CommandStore, IdempotencyConflictError } from "./command-store";
 import { EvidenceStore } from "./evidence-store";
 
 const AT = "2026-07-28T00:00:00.000Z";
-const P0: Blocker = { id: "B-1", severity: "P0", title: "范围冲突" };
-const P1: Blocker = { id: "B-2", severity: "P1", title: "验收不可测" };
+const P0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突" };
+const P1: Blocker = { id: "B-2", kind: "finding", severity: "P1", title: "验收不可测" };
 
 function open() {
   const database = new Database(":memory:");

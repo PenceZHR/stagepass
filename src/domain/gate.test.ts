@@ -27,9 +27,9 @@ function evidence(patch: Partial<Evidence> = {}): Evidence {
   return { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"], ...patch };
 }
 
-const p0: Blocker = { id: "B-1", severity: "P0", title: "范围与 PRD 冲突" };
-const p1: Blocker = { id: "B-2", severity: "P1", title: "验收标准不可测" };
-const p2: Blocker = { id: "B-3", severity: "P2", title: "措辞含糊" };
+const p0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围与 PRD 冲突" };
+const p1: Blocker = { id: "B-2", kind: "finding", severity: "P1", title: "验收标准不可测" };
+const p2: Blocker = { id: "B-3", kind: "finding", severity: "P2", title: "措辞含糊" };
 
 describe("L1 · the gate decides from facts, never from a summary", () => {
   it("permits approval when something was produced and nothing blocks", () => {
@@ -179,5 +179,45 @@ describe("L1 · the fence catches ground that moved", () => {
         && error.reason === "nothing_was_produced",
     );
     assert.doesNotThrow(() => assertPermitted(gate, "reject"));
+  });
+});
+
+/**
+ * 一条没被满足的标准，和一个发现的问题，不是一回事。
+ *
+ * rubric 判的是「满足了没有」，二元 —— 没有严重度可言。硬给它编一个 P0/P1/P2 是
+ * 凭空发明一个维度；而真正让它必须单独存在的，是**出口不同**：P1 靠 waive 出去
+ * （人接受这个风险），standard 靠撤下那条标准出去（人说这件事本来就不该要求）。
+ */
+describe("L1 · 一条没被满足的标准，waive 不掉", () => {
+  const standard: Blocker = {
+    id: "RB:producer:RBC-a", kind: "standard", severity: null,
+    title: "每条需求都有可测的验收标准",
+  };
+
+  it("照挡 —— 有一条标准没满足，就不能批准", () => {
+    const gate = computeGate(SETTLED, evidence({ blockers: [standard] }));
+    assert.equal(gate.refusals.approve, "blocking_problem_outstanding");
+  });
+
+  it("把它写进 waive 名单也没用 —— 那是在用「我接受风险」说「我撤销要求」", () => {
+    const outstanding = unresolved(evidence({
+      blockers: [standard],
+      waivedBlockerIds: [standard.id],
+    }));
+    assert.deepEqual(outstanding.map((blocker) => blocker.id), [standard.id]);
+  });
+
+  it("同一个 id 换了 kind，fence 就变 —— 出口变了就是决策依据变了", () => {
+    const asFinding = snapshotOf(SETTLED, evidence({
+      blockers: [{ ...standard, kind: "finding", severity: "P1" }],
+    }));
+    const asStandard = snapshotOf(SETTLED, evidence({ blockers: [standard] }));
+    assert.notEqual(asFinding, asStandard);
+  });
+
+  it("P2 仍然不挡，standard 没有「不挡」这一档", () => {
+    assert.deepEqual(unresolved(evidence({ blockers: [p2] })), []);
+    assert.equal(unresolved(evidence({ blockers: [standard] })).length, 1);
   });
 });

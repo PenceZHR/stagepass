@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-import type { Blocker } from "../domain/gate";
+import type { Finding } from "../domain/gate";
 import type { Verdict } from "../domain/gap";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
@@ -29,8 +29,14 @@ import { JobStore, type Job } from "./job-store";
 
 export interface TurnOutcome {
   readonly artifactIds: readonly string[];
-  /** Problems this round found. Re-finding an open one is not re-adding it. */
-  readonly blockers: readonly Blocker[];
+  /**
+   * Problems this round found. Re-finding an open one is not re-adding it.
+   *
+   * `Finding`，不是 `Blocker`：一轮报出来的都是 finding 且必带严重度。
+   * 一条 `standard`（没被满足的标准）是 rubric 判出来的二元结论，走的是另一条路，
+   * 不从这里进 `settleRound`。
+   */
+  readonly blockers: readonly Finding[];
   /**
    * What this round says about problems that were already open.
    *

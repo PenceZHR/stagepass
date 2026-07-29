@@ -1,4 +1,4 @@
-import type { Blocker, BlockerSeverity } from "./gate";
+import type { Blocker, BlockerKind, BlockerSeverity } from "./gate";
 
 /**
  * A problem found in one round that outlives it.
@@ -30,7 +30,14 @@ export type GapStatus = (typeof GAP_STATUSES)[number];
 
 export interface Gap {
   readonly id: string;
-  readonly severity: BlockerSeverity;
+  /**
+   * 发现的一个问题，还是一条没被满足的标准。见 `domain/gate.ts` 的 BLOCKER_KINDS。
+   *
+   * 决定两件事：有没有严重度，以及能不能被 waive。
+   */
+  readonly kind: BlockerKind;
+  /** `finding` 必有；`standard` 必无 —— rubric 是二元判断，没有严重度这一维。 */
+  readonly severity: BlockerSeverity | null;
   readonly title: string;
   readonly status: GapStatus;
   /** The round that found it. */
@@ -46,7 +53,7 @@ export type Verdict =
   | { readonly kind: "still_open"; readonly reason: string };
 
 export class InvalidVerdictError extends Error {
-  constructor(readonly code: "reason_missing" | "unknown_gap") {
+  constructor(readonly code: "reason_missing" | "unknown_gap" | "standard_not_waivable") {
     super(code);
     this.name = "InvalidVerdictError";
   }
@@ -54,7 +61,12 @@ export class InvalidVerdictError extends Error {
 
 export interface RoundOutcome {
   readonly round: number;
-  /** Problems this round found. Ids are stable, so re-finding is not re-adding. */
+  /**
+   * Problems this round found. Ids are stable, so re-finding is not re-adding.
+   *
+   * 一律是 `finding` 且必须带严重度 —— 这是模型在报「它发现了什么」。
+   * `standard` 进不来这条路，理由见 `applyRound` 里那段注释。
+   */
   readonly found: readonly { id: string; severity: BlockerSeverity; title: string }[];
   /** What this round says about gaps that were already open. */
   readonly verdicts: Readonly<Record<string, Verdict>>;
@@ -109,6 +121,9 @@ export function applyRound(
     }
     byId.set(found.id, {
       id: found.id,
+      // 一轮报出来的都是 finding。standard 不从这条路进来 —— 它由 rubric 判定
+      // 派生（L5-3），而一轮"没提到某条标准"绝不等于那条标准满足了。
+      kind: "finding",
       severity: found.severity,
       title: found.title,
       status: "open",
@@ -126,11 +141,20 @@ export function applyRound(
  * Separate from `applyRound` because it is a different kind of act: a round
  * reports what it found, a person decides what to tolerate. The reason is
  * required -- 「用户接受已知风险时，必须能够看到风险并留下理由」.
+ *
+ * ## 一条 standard 不能被 waive
+ *
+ * waive 说的是「这个问题还在，我接受这个风险」。而一条没被满足的标准，人能说的是
+ * 另一句话：「这件事本来就不该要求」—— 那是**撤下这条标准**，不是接受风险。
+ *
+ * 让 waive 能关掉 standard，就是让人用前一句去说后一句。它的出口在 rubric 那边：
+ * 取消勾选阻断或删掉那条 criterion（PRD §1.1、RUBRIC-DESIGN §4.3.1）。
  */
 export function waive(gaps: readonly Gap[], gapId: string, reason: string): Gap[] {
   if (reason.trim() === "") throw new InvalidVerdictError("reason_missing");
   const gap = gaps.find((candidate) => candidate.id === gapId);
   if (!gap || gap.status !== "open") throw new InvalidVerdictError("unknown_gap");
+  if (gap.kind === "standard") throw new InvalidVerdictError("standard_not_waivable");
   return gaps.map((candidate) =>
     candidate.id === gapId
       ? { ...candidate, status: "waived" as const, resolution: reason }
@@ -147,7 +171,9 @@ export function waive(gaps: readonly Gap[], gapId: string, reason: string): Gap[
 export function blockersFrom(gaps: readonly Gap[]): Blocker[] {
   return gaps
     .filter((gap) => gap.status === "open")
-    .map((gap) => ({ id: gap.id, severity: gap.severity, title: gap.title }));
+    .map((gap) => ({
+      id: gap.id, kind: gap.kind, severity: gap.severity, title: gap.title,
+    }));
 }
 
 /** Gaps a human accepted, for the delivery note that has to list them. */
