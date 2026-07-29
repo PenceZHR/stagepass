@@ -2,44 +2,19 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dev",
-      "runtimeExecutable": "pnpm",
+      "name": "panel",
+      "runtimeExecutable": "/usr/bin/env",
       "runtimeArgs": [
-        "dev"
+        "-C",
+        "/Users/zhanghr/Desktop/stagepass",
+        "pnpm",
+        "panel",
+        "--port",
+        "4173",
+        "--change",
+        "CHG-1"
       ],
-      "port": 3000
-    },
-    {
-      "name": "dev-main-codex",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-lc",
-        "cd /Users/zhanghr/Desktop/stagepass && exec env TERM=dumb CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' STAGEPASS_CODEX_DESKTOP_BRIDGE=on STAGEPASS_MCP_INTERACTIONS=on STAGEPASS_CODEX_DECISION_SURFACE=on STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge pnpm dev"
-      ],
-      "port": 3000
-    },
-    {
-      "name": "dev-delegated-rounds",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "cd /Users/zhanghr/Desktop/stagepass && exec env TERM=dumb CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' STAGEPASS_CODEX_DESKTOP_BRIDGE=on STAGEPASS_MCP_INTERACTIONS=on STAGEPASS_CODEX_DECISION_SURFACE=on STAGEPASS_SPEC_JUDGE_SUBAGENTS=on STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge pnpm dev"
-      ],
-      "port": 3000
-    },
-    {
-      "name": "dev-attach",
-      "url": "http://localhost:3000",
-      "port": 3000
-    },
-    {
-      "name": "dev-e2e-codex-card",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-lc",
-        "cd /Users/zhanghr/.codex/worktrees/ebc0/stagepass && exec env TERM=dumb CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop' STAGEPASS_DB_PATH=/private/tmp/stagepass-codex-e2e-r5.0rQ6MC/ship.db STAGEPASS_CODEX_DESKTOP_BRIDGE=on STAGEPASS_MCP_INTERACTIONS=on STAGEPASS_CODEX_DECISION_SURFACE=on STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge pnpm dev"
-      ],
-      "port": 3000
+      "port": 4173
     }
   ]
 }

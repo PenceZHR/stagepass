@@ -64,6 +64,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
 
+  // The panel is not a new layer: it is L2's second launch implementation,
+  // the first being osascript + Terminal.app (PRD §6, the L2 row).
+  "web/pty-session.ts": 2,
+  "web/panel-server.ts": 2,
+
   "domain/question.ts": 3,
   "store/question-store.ts": 3,
   "plugin/protocol.ts": 3,
@@ -84,7 +89,12 @@ const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
  * for orphans, so a module reachable only from a command still counts as
  * reached, and one reachable from nowhere still does not.
  */
-const ENTRY_POINTS = ["scripts/verify-rebuild.ts", "scripts/verify-decision.ts", "scripts/verify-round.ts"].map((path) => ({
+const ENTRY_POINTS = [
+  "scripts/verify-rebuild.ts",
+  "scripts/verify-decision.ts",
+  "scripts/verify-round.ts",
+  "scripts/panel.ts",
+].map((path) => ({
   path,
   text: readFileSync(join(process.cwd(), path), "utf-8"),
 }));
@@ -183,6 +193,59 @@ describe("standing · one name per concept", () => {
       }
     }
     assert.deepEqual(found, []);
+  });
+});
+
+describe("standing · pty output is never interpreted", () => {
+  /**
+   * The fifth guard, and the precondition the terminal panel was accepted on
+   * (PRD §9.3).
+   *
+   * It replaces "there is no rendering code in `src/`", which stopped being
+   * checkable once Codex began drawing inside a browser. The replacement has to
+   * be just as mechanical, because the thing it prevents is a slide, not a
+   * decision: first a highlight when a turn ends, then a hint when the selector
+   * scrolls away, and by then StagePass is parsing Codex's stream and drawing
+   * its own interface -- the approach the user rejected outright (§2.4, third
+   * row). The ONLY difference between the panel and that approach is "does not
+   * interpret", so it cannot be left to judgement.
+   *
+   * Whoever has to relax this: you are reopening a settled decision, not
+   * loosening a style rule.
+   */
+  const ptyModules = production.filter((file) => file.path.startsWith("web/"));
+
+  it("has pty modules at all, so this guard is not vacuously green", () => {
+    assert.ok(
+      ptyModules.length >= 2,
+      "expected the panel's modules under src/web -- a guard with nothing to guard is not a guard",
+    );
+  });
+
+  it("turns bytes into text nowhere on the pty path", () => {
+    // Each of these is a way to get a string out of bytes. None has a use in a
+    // module whose whole job is to forward them.
+    const forbidden = ["TextDecoder", ".toString(", "JSON.parse", "String.fromCharCode"];
+    const found: string[] = [];
+    for (const file of ptyModules) {
+      const code = withoutComments(file.text);
+      for (const token of forbidden) {
+        if (code.includes(token)) found.push(`${file.path}: ${token}`);
+      }
+    }
+    assert.deepEqual(found, []);
+  });
+
+  it("asks node-pty for bytes rather than the string it defaults to", () => {
+    const session = production.find((file) => file.path === "web/pty-session.ts");
+    assert.ok(session, "web/pty-session.ts is missing");
+    const code = withoutComments(session.text);
+    // Without this, onData yields a decoded string -- which both hands callers
+    // the thing this rule withholds and corrupts any multi-byte character that
+    // happens to straddle a chunk boundary.
+    assert.match(code, /encoding:\s*null/);
+    // And the type it hands out is the narrow one.
+    assert.match(code, /onBytes\(listener:\s*\(bytes:\s*Uint8Array\)/);
   });
 });
 
