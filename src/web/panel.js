@@ -16,7 +16,9 @@
  * straight into xterm.js. Nothing here decodes them, because nothing here may
  * understand them (PRD §9.3).
  */
-const changeId = new URLSearchParams(location.search).get("change") || "CHG-1";
+const params = new URLSearchParams(location.search);
+const changeId = params.get("change") || "CHG-1";
+const projectParam = params.get("project");
 
 const orbitView = document.getElementById("orbit-view");
 const stageView = document.getElementById("stage-view");
@@ -27,6 +29,7 @@ const centerTitle = document.getElementById("center-title");
 const centerLine = document.getElementById("center-line");
 const centerCount = document.getElementById("center-count");
 const runButton = document.getElementById("run");
+const columns = document.getElementById("columns");
 const stageName = document.getElementById("stage-name");
 const stageThread = document.getElementById("stage-thread");
 
@@ -172,22 +175,46 @@ function drawOrbit() {
 /**
  * The two workspace columns.
  *
- * There is no `projects` table and `changes` has no title, so these show the id,
- * phase and status that actually exist. Inventing a title field to make the
- * layout look fuller would put something on screen that nothing can produce.
+ * Selecting either one only narrows what is shown. It starts no turn and moves
+ * no gate -- the design is explicit that picking a Project or a Change must
+ * never change flow state.
  */
 function drawWorkspace(panel) {
-  const project = document.createElement("button");
-  project.className = "row";
-  project.type = "button";
-  project.setAttribute("aria-selected", "true");
-  const projectName = document.createElement("strong");
-  projectName.textContent = panel.workspace || "workspace";
-  const projectSub = document.createElement("span");
-  projectSub.textContent = `${panel.changes.length} changes`;
-  project.append(projectName, projectSub);
-  document.getElementById("projects").replaceChildren(project);
-  document.getElementById("project-count").textContent = "01";
+  const selected = panel.selectedProject
+    ?? panel.changes.find((change) => change.id === panel.changeId)?.projectId
+    ?? panel.projects[0]?.id;
+
+  const projectRows = panel.projects.map((project) => {
+    const row = document.createElement("button");
+    row.className = "row";
+    row.type = "button";
+    row.setAttribute("aria-selected", String(project.id === selected));
+
+    const name = document.createElement("strong");
+    name.textContent = project.name;
+    const sub = document.createElement("span");
+    sub.textContent = project.id;
+    const count = document.createElement("span");
+    count.className = "muted";
+    count.textContent = `${project.changes} changes`;
+    row.append(name, sub, count);
+
+    // Clicking a project toggles the workspace open and shut. Picking a
+    // DIFFERENT one selects it and opens; picking the one already selected
+    // collapses down to just this Change's orbit.
+    row.addEventListener("click", () => {
+      if (project.id !== selected) {
+        location.search =
+          `?change=${encodeURIComponent(changeId)}&project=${encodeURIComponent(project.id)}`;
+        return;
+      }
+      setCollapsed(!columns.classList.contains("collapsed"));
+    });
+    return row;
+  });
+  document.getElementById("projects").replaceChildren(...projectRows);
+  document.getElementById("project-count").textContent =
+    String(panel.projects.length).padStart(2, "0");
 
   const rows = panel.changes.map((change) => {
     const row = document.createElement("button");
@@ -195,9 +222,9 @@ function drawWorkspace(panel) {
     row.type = "button";
     row.setAttribute("aria-selected", String(change.id === panel.changeId));
     const name = document.createElement("strong");
-    name.textContent = change.id;
+    name.textContent = change.title ?? change.id;
     const sub = document.createElement("span");
-    sub.textContent = `${change.phase} · ${change.status}`;
+    sub.textContent = `${change.id} · ${change.phase} · ${change.status}`;
     row.append(name, sub);
     // Switching Change reloads with a new id; it starts nothing and moves no
     // gate, which is what the design says selection must never do.
@@ -209,12 +236,33 @@ function drawWorkspace(panel) {
   document.getElementById("changes").replaceChildren(...rows);
   document.getElementById("change-count").textContent =
     String(panel.changes.length).padStart(2, "0");
-  document.getElementById("change-title").textContent = panel.changeId;
+
+  const here = panel.changes.find((change) => change.id === panel.changeId);
+  document.getElementById("change-title").textContent = here?.title ?? panel.changeId;
+}
+
+/**
+ * Open or shut the two workspace columns.
+ *
+ * The orbit is laid out from its container's size, and that size changes over
+ * half a second, so the nodes are re-placed while the transition runs -- once at
+ * the end would show them jump into position after the ring has finished moving.
+ */
+function setCollapsed(collapsed) {
+  columns.classList.toggle("collapsed", collapsed);
+  const until = Date.now() + 620;
+  const settle = () => {
+    placeNodes();
+    if (current) void resize(current);
+    if (Date.now() < until) requestAnimationFrame(settle);
+  };
+  requestAnimationFrame(settle);
 }
 
 async function load() {
   const panel = await (await fetch(
-    `/api/panel?change=${encodeURIComponent(changeId)}`)).json();
+    `/api/panel?change=${encodeURIComponent(changeId)}`
+    + (projectParam ? `&project=${encodeURIComponent(projectParam)}` : ""))).json();
   phases = panel.phases;
   panelState = panel;
   drawWorkspace(panel);
@@ -313,6 +361,7 @@ async function attach(phase) {
 
 document.getElementById("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
+document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 term.onData((data) => { if (current) void send(current, data); });
 addEventListener("resize", () => {
   if (current) void resize(current);

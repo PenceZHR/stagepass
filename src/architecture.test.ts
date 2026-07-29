@@ -42,6 +42,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   "domain/phase.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
+  "store/project-store.ts": 0,
 
   "domain/gate.ts": 1,
   "domain/lease.ts": 1,

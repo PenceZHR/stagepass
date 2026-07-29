@@ -34,6 +34,10 @@ export class ChangeNotFoundError extends Error {
 
 export interface ChangeRecord {
   readonly id: string;
+  /** The project it belongs to, or null. Nothing decidable reads this. */
+  readonly projectId: string | null;
+  /** What a person calls it, or null. Nothing decidable reads this either. */
+  readonly title: string | null;
   readonly state: ChangeState;
   /** How many ledger entries this Change has. Its creation is entry 0. */
   readonly seq: number;
@@ -51,6 +55,8 @@ export interface LedgerEntry {
 
 interface ChangeRow {
   id: string;
+  project_id: string | null;
+  title: string | null;
   phase: string;
   status: string;
   return_phase: string | null;
@@ -102,15 +108,28 @@ export class ChangeStore {
     this.now = options.now ?? (() => new Date());
   }
 
-  create(changeId: string): ChangeRecord {
+  /**
+   * Start a Change.
+   *
+   * `projectId` and `title` are optional because a Change is complete without
+   * them: nothing in the state machine, the gate or the fence reads either.
+   * They carry what a PERSON needs to recognise it, which is why they may be
+   * absent everywhere the machinery is proved.
+   */
+  create(
+    changeId: string,
+    belonging: { projectId?: string; title?: string } = {},
+  ): ChangeRecord {
     const at = this.now().toISOString();
     this.database.transaction(() => {
       this.database.prepare(
         `INSERT INTO changes
-           (id, phase, status, return_phase, seq, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+           (id, project_id, title, phase, status, return_phase, seq, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       ).run(
         changeId,
+        belonging.projectId ?? null,
+        belonging.title ?? null,
         INITIAL_STATE.phase,
         INITIAL_STATE.status,
         INITIAL_STATE.returnPhase,
@@ -135,11 +154,31 @@ export class ChangeStore {
     if (!row) throw new ChangeNotFoundError(changeId);
     return {
       id: row.id,
+      projectId: row.project_id,
+      title: row.title,
       state: toState(row),
       seq: row.seq,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  /** Every Change, or every Change in one project. What a list column shows. */
+  list(projectId?: string): ChangeRecord[] {
+    const rows = (projectId === undefined
+      ? this.database.prepare("SELECT * FROM changes ORDER BY created_at").all()
+      : this.database.prepare(
+          "SELECT * FROM changes WHERE project_id = ? ORDER BY created_at",
+        ).all(projectId)) as ChangeRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      title: row.title,
+      state: toState(row),
+      seq: row.seq,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
   }
 
   /**

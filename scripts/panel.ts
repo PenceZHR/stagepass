@@ -13,11 +13,12 @@
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../src/db/schema";
 import { ChangeStore } from "../src/store/change-store";
+import { ProjectStore } from "../src/store/project-store";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 
 function argument(name: string): string | undefined {
@@ -35,9 +36,19 @@ database.pragma("journal_mode = WAL");
 database.pragma("foreign_keys = ON");
 database.exec(SCHEMA_SQL);
 
+// One project for the workspace Codex runs in, so the first column has
+// something real to show. `ensure` is idempotent, so restarting is safe.
+const projectId = argument("project") ?? "PRJ-001";
+const project = new ProjectStore(database).ensure(
+  projectId, argument("project-name") ?? basename(process.cwd()),
+);
+
 const changes = new ChangeStore(database);
 if (!database.prepare("SELECT 1 FROM changes WHERE id = ?").get(changeId)) {
-  changes.create(changeId);
+  changes.create(changeId, {
+    projectId: project.id,
+    title: argument("title") ?? changeId,
+  });
 }
 
 const { server, sessions } = createPanelServer({

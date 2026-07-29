@@ -87,10 +87,40 @@ body::after {
 }
 @keyframes pulse { 50% { opacity: 1; transform: scale(1.2); } }
 
-/* ── 三列 2 : 2 : 6 ───────────────────────────────────── */
-.columns { flex: 1; min-height: 0; display: grid; grid-template-columns: 2fr 2fr 6fr; }
+/*
+ * ── 三列 2 : 2 : 6，可以整体收起 ──────────────────────
+ *
+ * 点左侧的 Project 展开成完整三列；再点一下收起，只剩这个 Change 的阶段环
+ * 铺满整屏。收起靠把前两列的宽度动画到 0，而不是 display:none —— 后者会瞬间
+ * 消失，环也会跳一下尺寸；宽度过渡则让环平滑地长过去。
+ */
+.columns {
+  position: relative; /* the expand pill is positioned against this */
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: 2fr 2fr 6fr;
+  transition: grid-template-columns .52s cubic-bezier(.22,.8,.28,1);
+}
+.columns.collapsed { grid-template-columns: 0fr 0fr 10fr; }
+.columns.collapsed .col.workspace { border-left-color: transparent; }
 .col { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .col + .col { border-left: 1px solid oklch(0.89 0.025 75 / 11%); }
+
+/* 收起时列内容不许溢出，否则会从环底下透出来 */
+.col.workspace { overflow: hidden; }
+.columns.collapsed .col.workspace > * { opacity: 0; transition: opacity .2s ease; }
+
+/* 收起后回到三列的入口。收起时才出现。 */
+.expand {
+  position: absolute; left: 18px; top: 18px; z-index: 20;
+  display: none; align-items: center; gap: 9px;
+  padding: 9px 15px; border: 1px solid var(--border); border-radius: 999px;
+  background: oklch(0.2 0.038 295 / 72%); backdrop-filter: blur(16px);
+  color: rgba(255,255,255,.72); cursor: pointer;
+  font: 700 10px/1 ui-sans-serif, sans-serif; letter-spacing: .12em; text-transform: uppercase;
+  transition: background .2s, color .2s;
+}
+.expand:hover { background: oklch(0.28 0.045 292 / 82%); color: #fff; }
+.columns.collapsed .expand { display: inline-flex; }
 
 /* 只用细分隔线和轻微背景层次，不用互相嵌套的卡片。 */
 .col.workspace { background: oklch(0.17 0.038 295 / 62%); overflow-y: auto; }
@@ -336,7 +366,8 @@ body::after {
   <span class="live-flag"><i></i>LOCAL SYNCED</span>
 </header>
 
-<div class="columns">
+<div class="columns" id="columns">
+  <button class="expand" id="expand">☰ 展开工作区</button>
   <section class="col workspace">
     <div class="col-head"><small>Workspace</small><h2>Projects</h2><span class="count" id="project-count">01</span></div>
     <div class="rows" id="projects"></div>

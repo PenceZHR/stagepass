@@ -33,8 +33,24 @@ const quoted = (values: readonly string[]) =>
   values.map((value) => `'${value}'`).join(",");
 
 export const SCHEMA_SQL = `
+-- What a Change belongs to. One row per body of work a person thinks of as a
+-- thing: it carries a name, and nothing else. No status, no phase, no gate --
+-- a project cannot be approved or blocked, so it holds none of that.
+CREATE TABLE IF NOT EXISTS projects (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS changes (
   id            TEXT PRIMARY KEY,
+  -- Both nullable, and deliberately so: a Change is complete without either.
+  -- Every gate, every transition and every fence works on a Change that belongs
+  -- to no project and has no title, which is what the whole state machine was
+  -- proved against. These two carry what a PERSON needs to recognise it, and
+  -- nothing reads them to make a decision.
+  project_id    TEXT     NULL REFERENCES projects(id),
+  title         TEXT     NULL,
   phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
   status        TEXT NOT NULL CHECK (status IN (${quoted(PHASE_STATUSES)})),
   return_phase  TEXT     NULL CHECK (return_phase IS NULL OR return_phase IN (${quoted(PHASES)})),
@@ -46,6 +62,8 @@ CREATE TABLE IF NOT EXISTS changes (
   CHECK ((phase = 'Fix') = (return_phase IS NOT NULL)),
   CHECK (status <> 'closed' OR phase = 'Done')
 );
+
+CREATE INDEX IF NOT EXISTS ix_changes_project ON changes (project_id, created_at);
 
 CREATE TABLE IF NOT EXISTS change_events (
   change_id   TEXT NOT NULL REFERENCES changes(id),
