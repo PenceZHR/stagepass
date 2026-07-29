@@ -1,7 +1,9 @@
 import { blockersFrom, type Gap } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
-import { BLUE, judgePrompt, RED, readRound } from "../domain/round";
+import {
+  BLUE, judgePrompt, RED, readRound, type RoundInstructions,
+} from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
 
@@ -39,6 +41,8 @@ export interface RoundRequest {
   readonly task: string;
   /** The judge's thread, or null to start one. */
   readonly judgeThreadId: string | null;
+  /** 原样转给 `judgePrompt`。这一层同样不知道里面是什么。 */
+  readonly addenda?: RoundInstructions["addenda"];
 }
 
 export interface RoundDependencies {
@@ -55,6 +59,18 @@ export interface RoundSettled {
   readonly gaps: readonly Gap[];
   /** What the gate will see. Empty means this phase is not blocked. */
   readonly blockers: readonly Blocker[];
+  /**
+   * 三个角色各自说了什么，原文交出来。
+   *
+   * 这里已经读到了它们（红蓝各自的 rollout、裁判的返回），交出来是为了让上层不必
+   * 再读一次 —— 再读一次不只是浪费，而是**可能读到不同的东西**：rollout 是活的，
+   * 两次读之间它可以长。上层要对同一份文本做判定，就必须是这一份。
+   */
+  readonly transcripts: {
+    readonly red: string;
+    readonly blue: string;
+    readonly judge: string;
+  };
 }
 
 export async function runRound(
@@ -74,6 +90,7 @@ export async function runRound(
       round: request.round,
       task: request.task,
       openGaps,
+      addenda: request.addenda,
     }),
   });
 
@@ -97,5 +114,6 @@ export async function runRound(
     artifactIds: reading.artifactIds,
     gaps,
     blockers: blockersFrom(gaps),
+    transcripts: { red, blue, judge: delivery.text },
   };
 }

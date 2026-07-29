@@ -94,6 +94,28 @@ export class GapStore {
     return next;
   }
 
+  /**
+   * 把上层算好的 gaps 写回去。
+   *
+   * ## 这不是在开后门
+   *
+   * 这个类的职责从一开始就是「读、调用 domain 里的规则、写回」（见文件开头）。
+   * `settleRound` 和 `waive` 各自内联了一条规则，而 rubric 的规则住在 L5 的
+   * `domain/rubric-gaps.ts` —— 这个 store 是 L1，**不能 import 它**（护栏会红，
+   * 而分层纪律说的正是这件事）。所以规则由上层调用，落盘走这里。
+   *
+   * ## 但它确实放宽了一件事，写下来免得被当成默许
+   *
+   * 在这之前，「所有变更都经过 applyRound 或 waive」是可以靠读这个文件确认的；
+   * 现在不能了。**代价的对冲是：允许调用它的规则，本身必须是离线可穷举证明的纯
+   * 函数** —— 目前只有 `domain/gap.ts` 和 `domain/rubric-gaps.ts` 两处。
+   *
+   * 要在这里塞一段现算现写的逻辑之前，先把那段逻辑挪进一个纯模块。
+   */
+  replace(changeId: string, phase: Phase, gaps: readonly Gap[]): void {
+    this.write(changeId, phase, gaps);
+  }
+
   private write(changeId: string, phase: Phase, gaps: readonly Gap[]): void {
     const at = this.now().toISOString();
     const upsert = this.database.prepare(

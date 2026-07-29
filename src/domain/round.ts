@@ -36,7 +36,25 @@ export interface RoundInstructions {
   readonly round: number;
   readonly task: string;
   readonly openGaps: readonly Gap[];
+  /**
+   * 追加给各角色的额外要求，原样插进它们的任务里。
+   *
+   * **纯字符串，这一层不知道里面是什么。** L5 用它塞 rubric 契约；这里若改成
+   * 一个 rubric 类型，L4 就要 import L5 —— 那是向上依赖，常驻护栏会当场红，而且
+   * 分层纪律说的就是这件事。
+   *
+   * 缺席即没有额外要求，行为和加这个字段之前逐字一致。
+   */
+  readonly addenda?: {
+    readonly red?: string | undefined;
+    readonly blue?: string | undefined;
+    readonly judge?: string | undefined;
+  } | undefined;
 }
+
+/** 有内容才占一行，否则连空行都不要 —— 提示词里多一段空白也是噪音。 */
+const extra = (text: string | undefined): string[] =>
+  text === undefined || text.trim() === "" ? [] : ["", text];
 
 /**
  * What the judge is told.
@@ -61,11 +79,13 @@ export function judgePrompt(input: RoundInstructions): string {
     input.task,
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,
+    ...extra(input.addenda?.red),
     "",
     `2. ${BLUE} —— 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。`,
     "   只许基于正方产出提出问题，不要去读仓库、不要自己动手修。",
     "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
     `   要求它按同样的格式作答，把问题放进 blockers。`,
+    ...extra(input.addenda?.blue),
     "",
     "两个都做完之后，轮到你。**只做一件事**：对下面这些**已经存在**的问题逐条表态。",
     "",
@@ -76,6 +96,7 @@ export function judgePrompt(input: RoundInstructions): string {
     "",
     "沉默等于仍然存在 —— 你没提到的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
+    ...extra(input.addenda?.judge),
   ].join("\n");
 }
 
