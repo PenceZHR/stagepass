@@ -26,6 +26,7 @@ const centerKicker = document.getElementById("center-kicker");
 const centerTitle = document.getElementById("center-title");
 const centerLine = document.getElementById("center-line");
 const centerCount = document.getElementById("center-count");
+const runButton = document.getElementById("run");
 const stageName = document.getElementById("stage-name");
 const stageThread = document.getElementById("stage-thread");
 
@@ -54,6 +55,7 @@ const IDLE = {
 };
 
 let phases = [];
+let panelState = null;
 let current = null;
 let stream = null;
 let moving = false;
@@ -75,7 +77,35 @@ function resize(phase) {
 function statusOf(entry) {
   if (entry.live) return { short: "进程活着", long: "线程活着，点开直接接上去。" };
   if (entry.threadId) return { short: "有线程", long: "有线程，点开会恢复它的历史。" };
-  return { short: "未开始", long: "还没有线程。点开会在这个阶段起一个新的。" };
+  if (entry.current) return { short: "待运行", long: "Change 就停在这个阶段。跑它会派发一次真的 turn。" };
+  return { short: "未开始", long: "还没轮到它。点开只是打开一个终端看看。" };
+}
+
+/**
+ * Dispatch the Change's current phase.
+ *
+ * Which phase runs comes from the state machine, not from what is selected --
+ * you cannot run a phase out of order, and the button only appears on the one
+ * the Change is actually at.
+ */
+async function run() {
+  runButton.disabled = true;
+  runButton.textContent = "派发中…";
+  try {
+    const result = await (await fetch(
+      `/api/run?change=${encodeURIComponent(changeId)}`, { method: "POST" },
+    )).json();
+    if (result.ran === false) {
+      centerLine.textContent = result.reason === "phase_already_running"
+        ? `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程。`
+        : `没跑起来：${result.reason}`;
+    } else {
+      centerLine.textContent = `${result.phase} 跑完了：${JSON.stringify(result.outcome)}`;
+    }
+  } finally {
+    runButton.textContent = "跑这个阶段";
+    await load();
+  }
 }
 
 /** One shared centre, one shared radius. The halo is inset 7%, so nodes ride 43%. */
@@ -103,42 +133,33 @@ function drawOrbit() {
       + (entry.live ? " live" : "");
     node.style.setProperty("--a", `${angle}deg`);
 
+    if (entry.current) node.classList.add("current");
+
     const status = statusOf(entry);
     const button = document.createElement("button");
     button.type = "button";
     button.title = entry.threadId ? `线程 ${entry.threadId}` : "还没有线程";
 
+    const pip = document.createElement("i");
     const name = document.createElement("span");
     name.textContent = entry.phase;
     const state = document.createElement("em");
     state.textContent = status.short;
-    button.append(name, state);
+    button.append(pip, name, state);
 
     const describe = () => {
       centerKicker.textContent = status.short;
       centerTitle.textContent = entry.phase;
       centerLine.textContent = status.long;
-      centerCount.innerHTML = "";
-      centerCount.append(entry.threadId ? "1" : "0");
+      centerCount.replaceChildren(document.createTextNode(entry.threadId ? "1" : "0"));
       const unit = document.createElement("em");
       unit.textContent = "Thread";
       centerCount.append(unit);
     };
-    const restore = () => {
-      centerKicker.textContent = IDLE.kicker;
-      centerTitle.textContent = IDLE.title;
-      centerLine.textContent = IDLE.line;
-      centerCount.innerHTML = "";
-      centerCount.append(String(phases.length));
-      const unit = document.createElement("em");
-      unit.textContent = "Stages";
-      centerCount.append(unit);
-    };
-
     button.addEventListener("mouseenter", describe);
     button.addEventListener("focus", describe);
-    button.addEventListener("mouseleave", restore);
-    button.addEventListener("blur", restore);
+    button.addEventListener("mouseleave", restoreCenter);
+    button.addEventListener("blur", restoreCenter);
     button.addEventListener("click", () => { void enter(entry.phase); });
 
     node.append(button);
@@ -149,9 +170,36 @@ function drawOrbit() {
 }
 
 async function load() {
-  const response = await fetch(`/api/panel?change=${encodeURIComponent(changeId)}`);
-  phases = (await response.json()).phases;
+  const panel = await (await fetch(
+    `/api/panel?change=${encodeURIComponent(changeId)}`)).json();
+  phases = panel.phases;
+  panelState = panel;
   drawOrbit();
+
+  const at = phases.find((entry) => entry.current);
+  runButton.hidden = !at;
+  runButton.disabled = !at || at.live;
+  if (at) {
+    IDLE.kicker = `Current Gate · ${panel.status ?? ""}`.trim();
+    IDLE.title = at.phase;
+    IDLE.line = panel.blockers > 0
+      ? `${panel.blockers} 项问题挡着闸门。`
+      : "证据未到齐，跑一次这个阶段。";
+  }
+  restoreCenter();
+}
+
+/** The idle centre, i.e. nothing hovered. */
+function restoreCenter() {
+  centerKicker.textContent = IDLE.kicker;
+  centerTitle.textContent = IDLE.title;
+  centerLine.textContent = IDLE.line;
+  centerCount.replaceChildren(
+    document.createTextNode(String(panelState?.blockers ?? phases.length)),
+  );
+  const unit = document.createElement("em");
+  unit.textContent = panelState?.currentPhase ? "Blocking Risks" : "Stages";
+  centerCount.append(unit);
 }
 
 /** Ring -> stage. Timed and guarded; see the note at the top. */
@@ -220,6 +268,7 @@ async function attach(phase) {
 }
 
 document.getElementById("back").addEventListener("click", () => { void leave(); });
+runButton.addEventListener("click", () => { void run(); });
 term.onData((data) => { if (current) void send(current, data); });
 addEventListener("resize", () => {
   if (current) void resize(current);

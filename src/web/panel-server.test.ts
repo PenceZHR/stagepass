@@ -28,11 +28,15 @@ import type { PtySession } from "./pty-session";
 const CHANGE = "CHG-PANEL";
 
 interface Fake {
-  started: { changeId: string; phase: string; threadId: string | null }[];
+  started: { changeId: string; phase: string; argv: string[] }[];
   written: Uint8Array[];
   resized: { cols: number; rows: number }[];
   emit(bytes: Uint8Array): void;
 }
+
+/** The thread an invocation resumes, or null when it starts a fresh one. */
+const resumedThread = (argv: string[]): string | null =>
+  argv[0] === "resume" ? argv[1]! : null;
 
 async function withPanel(
   body: (context: {
@@ -57,7 +61,7 @@ async function withPanel(
   };
 
   const start = ((input: {
-    changeId: string; phase: string; threadId: string | null;
+    changeId: string; phase: string; argv: string[];
   }): PtySession => {
     started.push({ ...input });
     let alive = true;
@@ -104,11 +108,15 @@ describe("panel · what it offers", () => {
   it("offers eleven phases, and never Done", async () => {
     await withPanel(async ({ open }) => {
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
-        phases: { phase: string; threadId: string | null; live: boolean }[];
+        phases: { phase: string; threadId: string | null; live: boolean; current: boolean }[];
       };
       assert.equal(panel.phases.length, 11);
       assert.ok(!panel.phases.some((entry) => entry.phase === "Done"));
-      assert.deepEqual(panel.phases[0], { phase: "PRD", threadId: null, live: false });
+      // A fresh Change sits at PRD, so that is the one node that may be run.
+      assert.deepEqual(panel.phases[0], {
+        phase: "PRD", threadId: null, live: false, current: true,
+      });
+      assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
     });
   });
 
@@ -207,6 +215,21 @@ describe("panel · one live process per phase thread", () => {
     });
   });
 
+  it("refuses to dispatch into a phase someone already has open", async () => {
+    await withPanel(async ({ open, pty }) => {
+      // A fresh Change is at PRD, and someone opens PRD to look at it.
+      await open(`/pty/${CHANGE}/PRD`);
+
+      const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
+        { ran: boolean; reason?: string; phase: string };
+
+      // Dispatching now would put a second turn into the same rollout, and
+      // then "which turn was mine" has no answer (§6.4 pit 2, §6.5 rule 5).
+      assert.deepEqual(ran, { ran: false, reason: "phase_already_running", phase: "PRD" });
+      assert.equal(pty.started.length, 1);
+    });
+  });
+
   it("gives a different phase its own process", async () => {
     await withPanel(async ({ open, pty }) => {
       await open(`/pty/${CHANGE}/PRD`);
@@ -221,8 +244,20 @@ describe("panel · one live process per phase thread", () => {
       new BindingStore(database).bind(CHANGE, "Spec", "THREAD-SPEC");
       await open(`/pty/${CHANGE}/PRD`);
       await open(`/pty/${CHANGE}/Spec`);
-      assert.equal(pty.started.find((e) => e.phase === "PRD")?.threadId, null);
-      assert.equal(pty.started.find((e) => e.phase === "Spec")?.threadId, "THREAD-SPEC");
+      const argvFor = (phase: string) =>
+        pty.started.find((entry) => entry.phase === phase)!.argv;
+      assert.equal(resumedThread(argvFor("PRD")), null);
+      assert.equal(resumedThread(argvFor("Spec")), "THREAD-SPEC");
+    });
+  });
+
+  it("opens a phase for looking without dispatching a turn", async () => {
+    await withPanel(async ({ open, pty }) => {
+      await open(`/pty/${CHANGE}/PRD`);
+      const argv = pty.started[0]!.argv;
+      // The invocation carries flags and nothing else. A prompt here would send
+      // a turn to the model just because somebody clicked a node to look.
+      assert.deepEqual(argv, ["-s", "read-only", "-a", "on-request"]);
     });
   });
 });

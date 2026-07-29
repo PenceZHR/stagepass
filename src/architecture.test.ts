@@ -56,6 +56,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   "store/binding-store.ts": 2,
   "store/turn-store.ts": 2,
   "codex/transport.ts": 2,
+  "codex/invocation.ts": 2,
   "codex/rollout.ts": 2,
   "codex/tui-transport.ts": 2,
   "codex/turn-runner.ts": 2,

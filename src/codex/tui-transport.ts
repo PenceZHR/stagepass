@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { codexArgv, codexFlags } from "./invocation";
 import {
   findCompletedTurn,
   parseRollout,
@@ -49,20 +50,7 @@ import {
 export interface CodexTuiTransportOptions {
   readonly cwd: string;
   readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  /**
-   * When Codex asks a human before running a command.
-   *
-   * `never` is deliberately NOT offered here, and this is not tidiness.
-   * Measured 2026-07-29 and reproduced (`pnpm probe:elicit`): `-a never` also
-   * makes Codex auto-decline every MCP `elicitation/create` -- the ONLY channel
-   * StagePass has for reaching a person (PRD §5.2b). It fails silently, because
-   * what comes back is a perfectly legal `{"action":"decline"}`, identical to a
-   * human pressing Esc (§5.6). So the gate would stop moving and nothing would
-   * report an error.
-   *
-   * Leaving the value out of the type is what stops that from being reachable
-   * by a future edit. See PRD §6.6.
-   */
+  /** See `CodexInvocation.approval` for why `never` is not offered. */
   readonly approval?: "untrusted" | "on-request";
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -71,8 +59,21 @@ export interface CodexTuiTransportOptions {
   /** How long to wait for the turn to finish. See the note above on why. */
   readonly timeoutMs?: number;
   readonly pollMs?: number;
-  /** Opens the window. Injected so the watching half can be proved offline. */
-  readonly launch?: (input: { command: string; args: string[]; script: string }) => void;
+  /**
+   * Opens the window. Injected so the watching half can be proved offline, and
+   * so the same transport can drive a Terminal.app window or a browser pty.
+   *
+   * `script` is the shell form: the prompt is in a FILE and the script reads it
+   * back, because a prompt that goes through a shell comes out mangled.
+   * `argv` is the shell-free form for launchers that exec the binary directly --
+   * the prompt is one element there, so nothing can reinterpret it.
+   */
+  readonly launch?: (input: {
+    command: string;
+    args: string[];
+    script: string;
+    argv: string[];
+  }) => void;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -147,20 +148,19 @@ export class CodexTuiTransport implements CodexTransport {
     const promptFile = join(directory, "prompt.txt");
     writeFileSync(promptFile, dispatch.prompt, "utf-8");
 
-    const flags = [
-      "-s", this.options.sandbox ?? "read-only",
-      // Always passed, never left to the client default: what StagePass needs
-      // from this flag is that elicitation keeps working. See the note on the
-      // option for why the dangerous value is not even expressible.
-      "-a", this.options.approval ?? "on-request",
-      ...(this.options.model ? ["-m", this.options.model] : []),
-      ...(this.options.reasoningEffort
-        ? ["-c", `model_reasoning_effort="${this.options.reasoningEffort}"`]
-        : []),
-    ];
+    const shape = {
+      threadId: dispatch.threadId,
+      sandbox: this.options.sandbox,
+      approval: this.options.approval,
+      model: this.options.model,
+      reasoningEffort: this.options.reasoningEffort,
+    };
+    const flags = codexFlags(shape);
     const invocation = dispatch.threadId === null
       ? ["codex", ...flags, `"$(cat ${promptFile})"`]
       : ["codex", "resume", dispatch.threadId, ...flags, `"$(cat ${promptFile})"`];
+    // The shell-free form, for launchers that exec the binary themselves.
+    const argv = codexArgv({ ...shape, prompt: dispatch.prompt });
 
     const script = join(directory, "run.sh");
     writeFileSync(script, [
@@ -172,7 +172,7 @@ export class CodexTuiTransport implements CodexTransport {
     ].join("\n"), { mode: 0o755 });
 
     const launcher = this.options.launch ?? defaultLaunch;
-    launcher({ command: "codex", args: invocation.slice(1), script });
+    launcher({ command: "codex", args: invocation.slice(1), script, argv });
   }
 
   private recordCount(path: string | undefined): number {

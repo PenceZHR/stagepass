@@ -128,57 +128,78 @@ main { flex: 1; min-height: 0; position: relative; }
 }
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
-/* 节点：细描边圆环卡片。旋出去再转回来，卡片始终是正的。 */
+/*
+ * 节点是圆的，不是圆角方块。
+ *
+ * 一个细描边的圆环，标签在圆外面下方 —— 这是实现过的那版（01-stage-orbit.png）
+ * 的做法。旋出去再转回来，圆环始终正对。
+ */
 .stage-node {
   position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 6;
   transform: rotate(var(--a)) translateY(calc(-1 * var(--r))) rotate(calc(-1 * var(--a)));
 }
 .stage-node button {
-  position: absolute; left: -42px; top: -27px;
-  width: 84px; min-height: 54px; padding: 8px 6px;
-  border: 1px solid rgba(255,255,255,.18); border-radius: 14px;
-  background: rgba(42,39,50,.28); backdrop-filter: blur(16px);
+  position: absolute; left: -21px; top: -21px;
+  width: 42px; height: 42px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid rgba(255,255,255,.26); border-radius: 50%;
+  background: rgba(42,39,50,.34); backdrop-filter: blur(16px);
   color: rgba(255,255,255,.7); cursor: pointer; font: inherit;
   transition: transform .28s cubic-bezier(.2,.8,.2,1),
               background .28s, border-color .28s, box-shadow .28s, color .28s;
 }
-/* 这就是那个圆环。每个阶段都有。 */
-.stage-node button::before {
-  content: ""; display: block; width: 8px; height: 8px; margin: 0 auto 6px;
-  border-radius: 50%; border: 1px solid rgba(255,255,255,.4); background: #575264;
-  transition: background .28s, border-color .28s, box-shadow .28s;
+/* 圆心那一点 */
+.stage-node button i {
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.42); background: #575264;
+  transition: background .28s, border-color .28s, box-shadow .28s, transform .28s;
 }
+/* 标签在圆外面，跟着圆一起放大会挤到邻居，所以它不缩放 */
 .stage-node button span {
-  display: block; font-size: 9px; font-weight: 760; letter-spacing: .02em; white-space: nowrap;
+  position: absolute; top: 48px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: 700; letter-spacing: .03em; white-space: nowrap;
+  color: rgba(255,255,255,.62); transition: color .28s;
 }
 .stage-node button em {
-  display: block; margin-top: 3px; font-size: 7px; font-style: normal;
-  color: rgba(255,255,255,.38); opacity: 0; transform: translateY(3px); transition: .24s;
+  position: absolute; top: 62px; left: 50%; transform: translate(-50%, 3px);
+  font-size: 7px; font-style: normal; white-space: nowrap;
+  color: rgba(255,255,255,.4); opacity: 0; transition: .24s;
 }
 .stage-node button:hover, .stage-node button:focus-visible {
-  transform: scale(1.36); z-index: 12; color: #fff; outline: none;
-  border-color: rgba(255,255,255,.43);
-  background: linear-gradient(145deg, rgba(172,122,112,.62), rgba(81,83,111,.58));
-  box-shadow: 0 18px 44px rgba(35,27,40,.34);
+  transform: scale(1.3); z-index: 12; outline: none;
+  border-color: rgba(255,255,255,.52);
+  background: linear-gradient(145deg, rgba(172,122,112,.55), rgba(81,83,111,.5));
+  box-shadow: 0 14px 40px rgba(35,27,40,.34);
 }
-.stage-node button:hover em, .stage-node button:focus-visible em { opacity: 1; transform: translateY(0); }
+.stage-node button:hover span, .stage-node button:focus-visible span { color: #fff; }
+.stage-node button:hover em, .stage-node button:focus-visible em {
+  opacity: 1; transform: translate(-50%, 0);
+}
 
-/* 有线程：沙金实心。 */
-.stage-node.bound button::before { background: #c5ad87; border-color: #c5ad87; }
+/* 有线程：沙金实心点 */
+.stage-node.bound button i { background: #c5ad87; border-color: #c5ad87; }
+.stage-node.bound button { border-color: rgba(197,173,135,.42); }
 
-/* 进程活着：金边 + 呼吸光晕。 */
+/* 当前阶段：金环 */
+.stage-node.current button {
+  border-color: rgba(225,198,160,.72);
+  box-shadow: 0 0 0 4px rgba(212,178,139,.08);
+}
+
+/* 进程活着：金环 + 呼吸光晕。这就是那个呼吸灯。 */
 .stage-node.live button {
-  color: #fff; border-color: rgba(225,198,160,.62);
-  background: linear-gradient(145deg, rgba(169,113,103,.46), rgba(84,79,101,.42));
-  box-shadow: 0 0 0 4px rgba(212,178,139,.09), 0 12px 34px rgba(36,28,40,.2);
+  border-color: rgba(225,198,160,.8);
+  background: linear-gradient(145deg, rgba(169,113,103,.42), rgba(84,79,101,.38));
+  animation: ringBreathe 2.8s ease-in-out infinite;
 }
-.stage-node.live button::before {
-  background: var(--sand-strong); border: 3px solid rgba(81,73,87,.8);
-  box-shadow: 0 0 15px rgba(228,207,173,.55);
-  animation: nodeBreathe 2.8s ease-in-out infinite;
+.stage-node.live button i {
+  background: var(--sand-strong); border-color: var(--sand-strong);
+  box-shadow: 0 0 14px rgba(228,207,173,.7);
 }
-@keyframes nodeBreathe {
-  50% { box-shadow: 0 0 26px rgba(228,207,173,.9); transform: scale(1.16); }
+.stage-node.live button span { color: rgba(255,255,255,.86); }
+@keyframes ringBreathe {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(212,178,139,.10), 0 0 18px rgba(228,207,173,.22); }
+  50%      { box-shadow: 0 0 0 9px rgba(212,178,139,.05), 0 0 34px rgba(228,207,173,.45); }
 }
 
 /* 中心圆盘 */
@@ -203,6 +224,18 @@ main { flex: 1; min-height: 0; position: relative; }
 .center b { display: block; margin-top: 10px; color: var(--sand-deep); font: 500 30px/1 Georgia, serif; }
 .center b em { font: 700 8px/1 ui-sans-serif, sans-serif; font-style: normal;
   letter-spacing: .14em; color: rgba(255,255,255,.42); display: block; margin-top: 5px; }
+
+/* 唯一的主动作。只在 Change 真正所在的那个阶段上出现。 */
+.run {
+  margin-top: 14px; min-height: 32px; padding: 0 16px;
+  border: 0; border-radius: 9px; cursor: pointer;
+  font: 820 9px/1 ui-sans-serif, sans-serif; letter-spacing: .12em; text-transform: uppercase;
+  color: #302d38; background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879);
+  transition: filter .2s, opacity .2s;
+}
+.run:hover { filter: brightness(1.08); }
+.run[disabled] { opacity: .45; cursor: default; filter: none; }
+.run[hidden] { display: none; }
 
 /* 进入阶段时的镜头推进 */
 .portal {
@@ -275,6 +308,7 @@ main { flex: 1; min-height: 0; position: relative; }
         <h3 id="center-title">选择一个阶段</h3>
         <p id="center-line">十一个阶段，每个阶段一个 Codex 线程。</p>
         <b id="center-count">11<em>Stages</em></b>
+        <button class="run" id="run" hidden>跑这个阶段</button>
       </div>
       <div class="portal" id="portal"></div>
     </div>

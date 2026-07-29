@@ -42,12 +42,7 @@ import type { Phase } from "../domain/phase";
 export interface PtySessionOptions {
   readonly cwd: string;
   readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  /**
-   * `never` is not offered, deliberately. It makes Codex auto-decline every
-   * MCP `elicitation/create` -- the only channel StagePass has for reaching a
-   * person -- and it fails silently, as a perfectly legal decline. See
-   * `CodexTuiTransportOptions.approval` and PRD §6.6.
-   */
+  /** See `CodexInvocation.approval` for why `never` is not offered. */
   readonly approval?: "untrusted" | "on-request";
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -73,31 +68,20 @@ export interface PtySession {
 /**
  * Start Codex for one (Change, phase).
  *
- * `threadId` resumes that phase's thread; null starts one. The prompt is passed
- * as an argv element, so it never goes through a shell -- the mangling that
- * osascript caused for non-ASCII cannot happen on this path.
+ * `argv` is built by `codex/invocation.ts` -- the one place that knows what
+ * flags an invocation carries -- and passed straight to the binary. No shell,
+ * so the quoting and non-ASCII mangling that the osascript path had to work
+ * around cannot happen here at all.
  */
 export function startPtySession(input: {
   changeId: string;
   phase: Phase;
-  threadId: string | null;
-  prompt?: string;
+  argv: string[];
   options: PtySessionOptions;
 }): PtySession {
   const { options } = input;
-  const args = [
-    ...(input.threadId === null ? [] : ["resume", input.threadId]),
-    "-s", options.sandbox ?? "read-only",
-    "-a", options.approval ?? "on-request",
-    ...(options.model ? ["-m", options.model] : []),
-    ...(options.reasoningEffort
-      ? ["-c", `model_reasoning_effort="${options.reasoningEffort}"`]
-      : []),
-    ...(input.prompt === undefined ? [] : [input.prompt]),
-  ];
-
   const spawn = options.spawn ?? ptySpawn;
-  const terminal: IPty = spawn("codex", args, {
+  const terminal: IPty = spawn("codex", input.argv, {
     name: "xterm-256color",
     cols: options.cols ?? 120,
     rows: options.rows ?? 32,
