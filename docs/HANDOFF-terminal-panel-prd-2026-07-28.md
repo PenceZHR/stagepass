@@ -59,6 +59,27 @@
 
 **这段注释不改掉就是 §2.2 描述的那种毒**——下一个读代码的模型会看到一段理直气壮论证相反决定的文字，且没有任何标记说它已作废。改 PRD 的同时必须改它。
 
+### 2.4 可行性已实测（2026-07-28）
+
+技术可行性不是推断的。以下四条已测，环境是本机 macOS / arm64 / Node **25.9.0** / `codex-cli 0.144.4`：
+
+| 测什么 | 结果 |
+|---|---|
+| node-pty 装得上吗（Node 25 是很新的大版本，原生模块是最可能卡住的地方） | ✅ 8 秒装完，**走预编译包，没有 node-gyp 编译** |
+| pty 能起进程吗 | ✅ `/bin/sh` 拿到 `/dev/ttys008`、`TERM=xterm-256color` |
+| Codex TUI 能渲染进 pty 吗 | ✅ 3.5 秒收到 3803 字节真实画面 |
+| **在浏览器里渲染正常吗** | ✅ **用户目视确认** |
+
+**踩到的坑（必须记，否则下一个人会再踩一次）**：node-pty 1.1.0 的 prebuild 里 `spawn-helper` 装完是 `-rw-r--r--`，**没有执行位**。表现是一句不指明文件的 `posix_spawnp failed`。`chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper` 即可。安装步骤里要固化这一条。
+
+**键盘协议**：Codex 会推 bracketed paste（`\e[?2004h`）与 kitty 键盘协议（`\e[>7u`）。xterm.js 对后者支持有限——但不构成风险：**Terminal.app 完全不支持 kitty 协议，而 Codex 在 Terminal.app 里工作正常，说明它有降级路径。**
+
+**尚未验证，不许当成已验证**：
+
+1. **elicitation 选择器在 pty 里能不能正常出现并接受键盘选择** —— 这是 L3 的命脉。它需要一个声明 `elicitation` 能力的 MCP 服务端参与才会出现，裸跑 `codex` 看不到它
+2. 在 pty 里敲 `/app` 能不能唤起 Codex Desktop
+3. 窗口尺寸变化（SIGWINCH）下全屏 TUI 的表现
+
 ---
 
 ## 三、词汇（先定名，M1 要求一个概念一个名字）
@@ -176,12 +197,31 @@ PRD 目前没有明写 binding 粒度，只在 §6 的 L2 行提到「thread 绑
 
 当前那段只提了一条风险（turn 结束检测依赖 rollout 文件名与 jsonl 两个约定）。补两条：
 
-1. **node-pty 是原生模块**，需要编译，Node 版本变了要重编。新树目前只有 4 个运行时依赖（better-sqlite3 + tsx + typescript + @types），这是第一次引入前端栈，依赖数量会显著上升。
-2. **TUI 在 pty 里的行为尚未实测**，至少这几件事要像 §2.4 那样逐条目视确认后才能写成事实，不许推断：
-   - 全屏 TUI 的 alternate screen 缓冲
-   - 窗口尺寸变化（SIGWINCH）
-   - **elicitation 选择器能不能在 pty 里正常渲染并接受键盘选择** —— 这条最关键，它是 L3 的命脉
-   - 在 pty 里敲 `/app` 能不能唤起 Codex Desktop（§2.4 说 StagePass 不依赖它，但如果断了要知道）
+1. **依赖面变大。** 新树目前只有 4 个运行时依赖（better-sqlite3 + tsx + typescript + @types），这是第一次引入前端栈。
+   - 注意：**「node-pty 要编译、Node 升级要重编」这个担心已被实测排除**（见本文 2.4：预编译包，8 秒装完）。写进 PRD 时不要把已排除的风险当成风险留着——那会让下一个人为一个不存在的问题做设计。
+   - 真正要记的是 `spawn-helper` 执行位那条坑（2.4），它属于安装步骤而不是风险。
+2. **pty 里仍有三件事没验**，要像 §2.4 那样逐条目视确认后才能写成事实，不许推断：**elicitation 选择器能否正常出现并接受键盘选择**（L3 命脉）、`/app` 能否唤起 Desktop、SIGWINCH 下的表现。
+   - 「TUI 在浏览器 pty 里渲染正常」**已经验过了**，不要再列成未知。
+
+### 改动 9 —— §2.4 第 2 点有一个待验的威胁（**先验再动笔**）
+
+PRD §2.4 把 TUI 打败 App 路线的**决定性理由**写成：
+
+> prompt 自动发送，不需要任何按键。这是它和 App 的决定性差别……StagePass 无法自主发起
+
+2026-07-28 实测：裸跑 `codex` 时，它会先显示一个**阻塞式**提示——
+
+```
+Update available! 0.144.4 -> 0.146.0
+1. Update now   2. Skip   3. Skip until next version
+Press enter to continue
+```
+
+**如果 `codex resume <id> "<prompt>"` 也会先弹这个，上面那条决定性理由当场不成立**，而且表现会是 L2 静默卡住直到 30 分钟超时——正是 §10 点名要避免的形状（老树 82 个 turn 卡在 `running`）。
+
+**这条与终端面板无关，它现在就可能影响已经通过的 L2。** 验之前不要往 PRD 里写任何结论；验完按结果决定是补一条风险、还是补一个必须做的规避（例如启动时带 `--skip-update-check` 之类的开关，如果存在）。
+
+顺带：`0.146.0` 已发布。PRD §2.4 / §6.4 的实测值标的是 `0.144.4`，**升级之后那些结论要重新确认一遍**，不能默认继承。
 
 顺带一条**收益**也要写进 PRD，它不是锦上添花：今天 `defaultLaunch`（`tui-transport.ts:217`）是 `detached: true` + `.unref()`，**StagePass 连子进程句柄都扔了**，不知道 TUI 还在不在。所以 §6.4 第一个坑（不能等进程退出）今天只能靠 30 分钟超时兜底，而 §10 明写着「断掉时的表现必须是明确失败，不能是静默等待——那正是老树 82 个 turn 卡在 `running` 的形状」。**pty 握在 StagePass 手里，这个风险从「靠超时猜」变成「进程死了立刻知道」。** 另外顺手去掉 osascript 这个 macOS 绑定。
 
@@ -225,4 +265,6 @@ PRD 目前没有明写 binding 粒度，只在 §6 的 L2 行提到「thread 绑
 - [ ] 「终端面板 / pty / 阶段线程」三个词各自只有一种叫法，没有同义词
 - [ ] §9.2 的 L2 没有被抹成 ⬜，两次已通过的验收还在
 - [ ] 选项甲/乙已经问过用户，且 PRD 里写明选了哪个
+- [ ] 已验证的（pty 渲染、node-pty 可用）没有被写成风险；未验证的（elicitation 选择器、`/app`、SIGWINCH）没有被写成事实
+- [ ] 改动 9 那个更新提示：**先验过 `codex resume` 再动笔**，没验就不要往 PRD 里写结论
 - [ ] `src/store/binding-store.ts` 第 5–13 行那段论证相反决定的注释已改（**这条不在 PRD 里，但属于本次交接，漏了就是 §2.2 那种毒**）
