@@ -77,11 +77,16 @@ pnpm verify:round <judge-thread-id>   # L4：读一次真实红蓝对抗
 
 ### 3.2 路 B：终端面板 + 阶段线程（新方向）
 
-完整交接见 §四.6–4.8（决定与理由）、§五.8–5.9（新坑）、§九（PRD 逐处改动）。施工顺序：
+完整交接见 §四.6–4.8（决定与理由）、§五.8–5.9（新坑）、§九（PRD 逐处改动）。施工顺序与进度（2026-07-29）：
 
 ```
-前置探针（§五.10）→ binding 粒度改造 → web 栈 + pty 面板 → 一次真选择验完 pty 版 L2
+✅ 前置探针（§五.10）        pnpm probe:elicit，绿，两次复现
+✅ binding 粒度改造          (change_id, phase)，测试钉住新粒度本身
+✅ web 栈 + pty 面板         pnpm panel，11 个阶段一个终端，浏览器里目视通过
+⬜ 一次真选择验完 pty 版 L2   ← 只剩这一步，且只有你能做
 ```
+
+**最后一步为什么必须是人**：要验的是「elicitation 选择器在面板里出现、你选了一个、闸门按你选的动」。前三步都能机械证明，这一步不能 —— 它就是 L3 那件事换了个宿主。
 
 ### 3.3 先后：**已定 —— 先路 A 收口 L4，再动路 B**（2026-07-29 用户决定）
 
@@ -349,7 +354,9 @@ help 原文：*EXTREMELY DANGEROUS. Intended solely for running in environments 
 
 这四条今天抓到过：孤儿 export、`db/schema.ts` 向上 import、`domain/gap.ts` 放错层。**它们比任何行为测试都更早发现问题**，因为老树的五处断点没有一处被十万行测试抓到 —— 每层单独看都自洽，缺陷只活在层与层之间。
 
-**路 B 落地时这里要加第五条**：pty 输出不可解释（见 §九 改动 3）。它替换掉「`src/` 里没有渲染代码」那条 grep 式检查，**必须同样是机械可查的**。
+**第五条已加**（2026-07-29）：pty 输出不可解释。`src/web/` 里不许出现 `TextDecoder` / `.toString(` / `JSON.parse` / `String.fromCharCode`，并正面断言 `pty-session` 向 node-pty 要的是 `encoding:null`、`onBytes` 交出 `Uint8Array`。
+
+**它验过会红** —— 往 `pty-session.ts` 注入一次 `new TextDecoder().decode(bytes)` 加 `.includes("approve")`，该条立刻失败，还原就绿。**一条从没红过的护栏等于没有护栏**，所以这一步不是可选的。
 
 ---
 
