@@ -7,6 +7,8 @@ import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { BindingStore } from "../store/binding-store";
 import { GapStore } from "../store/gap-store";
+import { ProjectStore } from "../store/project-store";
+
 import { createPanelServer } from "./panel-server";
 import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
@@ -28,6 +30,7 @@ import type { PtySession } from "./pty-session";
  */
 
 const CHANGE = "CHG-PANEL";
+const PROJECT = "PRJ-PANEL";
 
 interface PhaseEntry {
   phase: string;
@@ -75,7 +78,11 @@ async function withPanel(
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
   database.exec(SCHEMA_SQL);
-  new ChangeStore(database).create(CHANGE);
+  // 带上一个 project：rubric 有项目级默认，所以它要知道自己属于谁。
+  // 不能建完再 UPDATE —— ck_changes_ledger 会拒绝任何没有配套账本行的更新，
+  // 而那条触发器正是这么设计的。
+  new ProjectStore(database).ensure(PROJECT, "p");
+  new ChangeStore(database).create(CHANGE, { projectId: PROJECT });
 
   const started: Fake["started"] = [];
   const written: Uint8Array[] = [];
@@ -445,6 +452,108 @@ describe("panel · one live process per phase thread", () => {
       // The invocation carries flags and nothing else. A prompt here would send
       // a turn to the model just because somebody clicked a node to look.
       assert.deepEqual(argv, ["-s", "read-only", "-a", "on-request"]);
+    });
+  });
+});
+
+/**
+ * rubric 编辑 —— 网页上唯一可以改的东西（PRD §1.1）。
+ *
+ * 边界写成可查的形式：**Web 可以改「标准」，永远不可以对「这一次的产物」下判断。**
+ * 所以这里有编辑 rubric 的端点，而永远不会有 approve / reject / waive 的端点。
+ */
+describe("panel · rubric 是网页上唯一能改的东西", () => {
+  const post = (open: (path: string, init?: RequestInit) => Promise<Response>,
+    role: string, body: unknown) =>
+    open(`/api/rubric?change=${CHANGE}&phase=Spec&role=${role}`,
+      { method: "POST", body: JSON.stringify(body) });
+
+  it("存一份，读回来", async () => {
+    await withPanel(async ({ open, database: _database }) => {
+      const saved = await (await post(open, "producer", {
+        scope: "project",
+        drafts: [{ text: "每条需求都有可测的验收标准", blocking: true }],
+      })).json() as { saved: boolean; version: number };
+      assert.deepEqual(saved, { saved: true, version: 1, retired: [] });
+
+      const read = await (await open(`/api/rubric?change=${CHANGE}&phase=Spec`)).json() as {
+        roles: { role: string; scope: string | null; criteria: { text: string }[] }[];
+      };
+      const producer = read.roles.find((entry) => entry.role === "producer");
+      assert.equal(producer?.scope, "project");
+      assert.equal(producer?.criteria[0]?.text, "每条需求都有可测的验收标准");
+      // 另外两个角色还没有 rubric，而那是合法的。
+      assert.equal(read.roles.find((entry) => entry.role === "critic")?.scope, null);
+    });
+  });
+
+  it("撤下一条阻断标准而不给理由 —— 拒绝，并说清是哪一条", async () => {
+    await withPanel(async ({ open }) => {
+      await post(open, "producer", {
+        scope: "project", drafts: [{ text: "挡着的", blocking: true }],
+      });
+
+      const refused = await (await post(open, "producer",
+        { scope: "project", drafts: [] })).json() as
+        { saved: boolean; reason: string; retired: string[] };
+      assert.equal(refused.saved, false);
+      assert.equal(refused.reason, "reason_required");
+      assert.equal(refused.retired.length, 1);
+    });
+  });
+
+  it("撤下标准时，它派生的阻断项跟着退休，理由落进 resolution", async () => {
+    await withPanel(async ({ open, database }) => {
+      await post(open, "producer", {
+        scope: "project", drafts: [{ text: "挡着的", blocking: true }],
+      });
+      const key = (await (await open(`/api/rubric?change=${CHANGE}&phase=Spec`)).json() as {
+        roles: { role: string; criteria: { key: string }[] }[];
+      }).roles.find((entry) => entry.role === "producer")!.criteria[0]!.key;
+
+      // 手工放一条这条 criterion 派生的 standard，模拟上一轮判了 no。
+      new GapStore(database).replace(CHANGE, "Spec", [{
+        id: `RB:producer:${key}`, kind: "standard", severity: null,
+        title: "挡着的", status: "open", openedRound: 1, resolution: null,
+      }]);
+      assert.equal(new GapStore(database).blockers(CHANGE, "Spec").length, 1);
+
+      await post(open, "producer",
+        { scope: "project", drafts: [], reason: "这条本来就不该要求" });
+
+      const after = new GapStore(database).all(CHANGE, "Spec");
+      assert.equal(after[0]?.status, "closed");
+      assert.match(after[0]?.resolution ?? "", /这条本来就不该要求/);
+    });
+  });
+
+  it("scope 没写明 —— 400，不给默认值", async () => {
+    await withPanel(async ({ open }) => {
+      const refused = await post(open, "producer", { drafts: [] });
+      assert.equal(refused.status, 400);
+      assert.equal(await refused.text(), "bad_scope");
+    });
+  });
+
+  it("回传一个不属于本 scope 的 key —— 拒绝整次编辑", async () => {
+    await withPanel(async ({ open }) => {
+      const refused = await (await post(open, "producer", {
+        scope: "project", drafts: [{ key: "K-伪造", text: "x", blocking: true }],
+      })).json() as { saved: boolean; reason: string };
+      assert.deepEqual(
+        { saved: refused.saved, reason: refused.reason },
+        { saved: false, reason: "untrusted_key" });
+    });
+  });
+
+  it("**网页上没有任何裁决产物的端点**", async () => {
+    await withPanel(async ({ open }) => {
+      // 这条不是形式主义。PRD §1 的整条红线就是它，而 rubric 编辑是唯一的例外 ——
+      // 例外之外再多一个，那条线就什么都拦不住了。
+      for (const path of ["/api/approve", "/api/reject", "/api/waive", "/api/gate"]) {
+        const attempt = await open(path, { method: "POST" });
+        assert.equal(attempt.status, 404, path);
+      }
     });
   });
 });

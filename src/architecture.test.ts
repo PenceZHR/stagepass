@@ -69,6 +69,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/rubric.ts": 5,
   "domain/rubric-protocol.ts": 5,
   "domain/rubric-gaps.ts": 5,
+  "domain/rubric-edit.ts": 5,
   "work/rubric-round.ts": 5,
   "store/rubric-store.ts": 5,
 
@@ -82,7 +83,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // caught the drift the moment the question path was wired in, which is
   // exactly what this rule is for.
   "web/pty-session.ts": 2,
-  "web/panel-server.ts": 3,
+  // 又提了一层，理由和当初 2 -> 3 一样：它开始承载 rubric 编辑（PRD §1.1 那个
+  // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
+  // 在接口写进去的那一刻就会红。
+  "web/panel-server.ts": 5,
 
   "domain/question.ts": 3,
   "store/question-store.ts": 3,
