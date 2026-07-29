@@ -8,6 +8,7 @@ import { ChangeStore } from "../store/change-store";
 import { BindingStore } from "../store/binding-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
+import { RubricStore } from "../store/rubric-store";
 
 import { createPanelServer } from "./panel-server";
 import type { Phase } from "../domain/phase";
@@ -111,7 +112,9 @@ async function withPanel(
   }) as never;
 
   const { server } = createPanelServer({
-    database, session: { cwd: "/tmp" }, start,
+    // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
+    // 测试会陪着默认的 30 分钟一起等。
+    database, session: { cwd: "/tmp" }, start, turnTimeoutMs: 200,
   });
   await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -554,6 +557,47 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
         const attempt = await open(path, { method: "POST" });
         assert.equal(attempt.status, 404, path);
       }
+    });
+  });
+});
+
+/**
+ * 「跑这个阶段」跑的是一轮对抗，不是一次 turn。
+ *
+ * 单次 turn 是让一个模型自己写、自己说没问题，闸门读它的自述 —— 这个产品存在的
+ * 理由就是不许那样。所以面板上那个按钮换掉了 runner，而不是并排多一个按钮：
+ * 两个「跑」、没人说得清哪个是真的，那是老树的病。
+ */
+describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
+  it("派给 Codex 的提示词里有裁判、红方、蓝方", async () => {
+    await withPanel(async ({ open, pty }) => {
+      // 不等它跑完 —— 真跑要 Codex。看的是**派出去的那条命令**长什么样。
+      // 接住它：没有真 Codex，这一轮注定失败。不接就是未处理的 rejection，
+      // 会变成一个和任何测试都对不上号的**文件级**失败。
+      void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 120); });
+
+      const argv = pty.started.find((entry) => entry.phase === "PRD")?.argv ?? [];
+      const prompt = argv.join(" ");
+      assert.match(prompt, /裁判/, "没有裁判");
+      assert.match(prompt, /\/root\/red/, "没有让它派生红方");
+      assert.match(prompt, /\/root\/blue/, "没有让它派生蓝方");
+    });
+  });
+
+  it("rubric 装上了就进提示词 —— 模型答不出它没被问过的题", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      const rubrics = new RubricStore(database);
+      const saved = rubrics.save(
+        { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },
+        [{ text: "每条需求都有可观察的验收标准", blocking: true }]);
+
+      void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 120); });
+
+      const prompt = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
+      assert.match(prompt, new RegExp(saved.criteria[0]!.key), "criterion 的编号没进去");
+      assert.match(prompt, /每条需求都有可观察的验收标准/, "criterion 的正文没进去");
     });
   });
 });
