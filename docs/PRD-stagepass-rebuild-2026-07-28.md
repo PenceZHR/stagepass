@@ -8,15 +8,17 @@
 
 ## 1. 一句话
 
-> StagePass 只做两件事：**管状态、调 Codex**。凡是需要人看一眼再决定的，一律在 Codex App 里弹卡、人在那里点。点完，StagePass 接着往下走。
+> StagePass 只做两件事：**管状态、调 Codex**。凡是需要人看一眼再决定的，一律在 **Codex TUI** 里出现、人在那里选。选完，StagePass 接着往下走。
 
 三个组件，职责不重叠：
 
 | | 职责 | 明确不做 |
 |---|---|---|
-| **StagePass Server** | 状态机、gate、fence、租约、恢复；组卡；验回执；推进状态 | 不渲染卡，不做业务判断以外的事 |
+| **StagePass Server** | 状态机、gate、fence、租约、恢复；组问题；验答案；推进状态 | **不渲染任何东西** |
 | **StagePass Web** | 看和启动：当前状态、证据、风险、start/retry/interrupt/recover | **不承载任何业务决策入口** |
-| **Codex 插件** | 渲染卡、收集点击、把回执发回 StagePass | 不决策、不组卡、不判断合法性 |
+| **Codex 插件** | 通过 MCP `elicitation` 向人提问，把答案发回 StagePass | 不决策、不组题、不判断合法性 |
+
+**渲染由 Codex TUI 原生完成。StagePass 一行都不画** —— 包括执行过程和选择界面。这条是 2026-07-28 定的，取代了原先"在 Codex App 里弹 HTML 卡片"的写法；理由见 §2.5。
 
 ---
 
@@ -56,6 +58,32 @@
 **五处没有一处被 103,241 行测试抓到**，因为每一层单独看都自洽，缺陷只活在层与层之间。这决定了新树必须有一类老树没有的测试（见 §7）。
 
 ---
+
+### 2.4 人机交界走 TUI，不走 App（2026-07-28 实测定案）
+
+四条路各测了一遍，只有一条闭合。**全部由用户目视确认或探针日志记录，没有一条是推断的。**
+
+| 路线 | 结果 |
+|---|---|
+| host-attested MCP App（需求文档 §5.1 指定的主表面） | ❌ 从未运行过，见 §2.1 |
+| `codex mcp-server` + `codex://threads/<id>` 回看 | ❌ **Desktop 打开是空的**。线程 `source=mcp`、rollout 78KB/22 条一条不缺，窗口就是不显示内容。用户两次确认（turn 进行中、turn 结束后各一次） |
+| `codex mcp-server` + StagePass 自己渲染流 | ⚠️ 技术上可行、已实现过，但**用户明确否决**："我不想在我的 StagePass 里渲染，我就要在 Codex 原生客户端里渲染" |
+| **`codex resume <id> "<prompt>"` + MCP elicitation** | ✅ **闭合** |
+
+TUI 那条路今天验到的四件事：
+
+1. **能恢复 `mcp` 建的线程并显示完整历史** —— 用户确认
+2. **prompt 自动发送，不需要任何按键** —— 用户确认。这是它和 App 的决定性差别：`codex://threads/new?prompt=` 只预填不发送，App 那条路必须人先按一次回车，**StagePass 无法自主发起**
+3. **HTML `ui://` widget 在 TUI 不显示** —— 用户确认。终端里没有 HTML 的位置
+4. **Codex 向 MCP 服务端声明 `elicitation` 能力**，选择器原生渲染，答案结构化回到插件：
+
+```
+CLIENT_CAPABILITIES: {"elicitation":{"form":{},"url":{}}}
+CLIENT_INFO:         {"name":"codex-mcp-client","title":"Codex","version":"0.144.4"}
+ELICIT_RESULT:       {"action":"accept","content":{"action":"approve_spec"}}
+```
+
+**为什么这不只是"换个能跑的方案"**：`ui://` widget 押注在某一个客户端的渲染实现上，那正是它今天死掉的原因。`elicitation` 是 **MCP 协议层的客户端能力** —— 谁拥有 turn，选择器就在谁那里渲染。今天是 TUI；哪天 App 变得可驱动，同一个插件不用改一行。这跟"能用公开的就用公开的"是同一条原则。
 
 ## 3. 什么可以进新树（可判定的判据）
 
@@ -108,42 +136,49 @@
 
 StagePass 发起的卡，模型拿不到问题文案、选项集合、以及回执要带的身份标识 —— **它没有机会改写，因为它从来没拿到过。**
 
-### 5.2b 卡片只在「拥有该 turn 的 client」里渲染（实测约束）
+### 5.2b 提问用 MCP elicitation，不用 HTML widget
 
-2026-07-28 真机反复确认，两个替代解释已被实验排除：
-
-- `codex mcp-server` 起的 turn 里，`present_stagepass_choices` **调用成功、返回 `awaiting_selection`，但 Codex Desktop 不弹卡**。
-- 排除 (a) code-mode 包装：`config.features.code_mode_host=false` 强制原生调用后仍不弹。
-- 排除 (b) 必填字段缺失：七个必填 ID 全由客户端注入、调用成功后仍不弹。
-
-**后果，直接决定 L3 的形状**：需要弹卡的 turn 不能由 StagePass headless 发起，必须由 Desktop 拥有。可行派发是
+一次提问就是一次 `elicitation/create`：
 
 ```
-codex://threads/new?cwd=<path>&prompt=<urlencoded>
+插件 → Codex：  { message, requestedSchema }
+Codex        ：  TUI 原生渲染选择器
+Codex → 插件 ：  { action: "accept" | ..., content: { <字段>: <选中值> } }
 ```
 
-Desktop 会开新线程并预填 prompt，**但不自动发送**（二进制里不存在 `autoSend`/`autoSubmit`/`submitOnOpen`）。人按一次回车，Desktop 成为 turn 的 owner，卡片正常渲染。
+**选项集合就是 schema 里的 `enum`。** 这一条不是风格选择，是 §5.4 的实现手段：模型无法渲染一个 enum 之外的选项，因为渲染的不是它。
 
-所以 turn 分两类，且这是**产品事实不是实现细节**：
+三种形状对应到 schema，**前两种 2026-07-28 在 TUI 里实测通过**：
 
-| | 谁拥有 | 人要做什么 |
+| 形状 | requestedSchema | 实测返回 |
 |---|---|---|
-| 阶段执行 turn | StagePass（`codex mcp-server`） | 什么都不用做 |
-| **需要弹卡的 turn** | **Codex Desktop** | **按一次回车** |
+| 阶段裁决 | 一个必填字段，`enum` 是本阶段合法的闸门动作 | ✅ `{"action":"accept","content":{"action":"approve_spec"}}` |
+| 需求澄清 | N 个必填字段，一题一个 | ✅ `{"action":"accept","content":{"q1":"个人开发者","q2":"自动重试","q3":true}}` |
+| 接受 P1 风险 | 一个 P1 一个字段 | 与需求澄清同形状 |
 
-那一下省不掉。
+第二行值得单独说：**三个问题（含一个布尔）在一次 elicitation 里一起问、一起答。** 所以"一批问题"这个形状不需要多轮往返，一个 `requestedSchema` 就够。
 
-### 5.3 一条回执路径
+**不再有 `ui://` 资源、不再有 widget HTML、不再有「卡片」这个词** —— 它属于那条已经死掉的路线。本文其余部分说「问题」和「选择」。
 
-所有点击走同一个入口、同一套校验。**没有第二条能推动闸门的路。**
+### 5.3 一条答案路径
 
-### 5.4 卡上不许出现点不动的按钮
+所有选择走同一个入口、同一套校验。**没有第二条能推动闸门的路。**
 
-一个选项能被渲染，当且仅当：① 记录回执的 surface 接受它；② 它的 payload 能由组卡时已知的信息构造出来。**不满足的选项不许出现。**
+### 5.4 选项里不许出现选不动的东西
+
+一个选项能出现在 `enum` 里，当且仅当：① 记录答案的 surface 接受它；② 它的 payload 能由组题时已知的信息构造出来。**不满足的不许出现。**
+
+老树同时违反了两条：`request_{tech_spec,plan,test_plan}_changes` 有标签有渲染但不在任何 surface 的可执行集合里；`waive_spec_p1` / `waive_plan_p1` 的 schema 要 `gapId`/`riskId`，而一次点击给不出来。
 
 ### 5.5 surface 必须名副其实
 
-人在 Codex 卡片上做的决定，用一个语义正确的 surface 记录。老树把 16 条插件回执全记成 `codex_mcp_app`（而 MCP App 从未启动），把唯一一次真实批准记成 `stagepass_web_emergency`（而它不是紧急、是唯一能用的路）—— **分类字段撒谎比没有分类更糟。**
+人在 Codex 里做的决定，用一个语义正确的 surface 记录。老树把 16 条插件回执全记成 `codex_mcp_app`（而 MCP App 从未启动），把唯一一次真实批准记成 `stagepass_web_emergency`（而它不是紧急、是唯一能用的路）—— **分类字段撒谎比没有分类更糟。**
+
+### 5.6 人可以拒绝回答【未验证】
+
+`elicitation` 的返回带 `action`，不只有 `accept`。人取消时 StagePass 必须把它当成一个**明确的结果**（阶段停在原地、有记录、可重开），而不是超时、不是失败、更不是默认批准。
+
+**这条还没验。** 2026-07-28 的实测里第三题本该测取消，实际用户选了一个选项，所以 `accept` 以外的 `action` 长什么样仍然未知。在验之前，任何依赖它的代码都不许写 —— 这正是 §3 E4「说不出什么算它成立的东西不进」。
 
 ---
 
@@ -155,21 +190,23 @@ Desktop 会开新线程并预填 prompt，**但不自动发送**（二进制里�
 |---|---|---|
 | **L0** | schema、状态机、状态转移、审计账本 | **完全离线** |
 | **L1** | gate 计算、fence、租约、心跳、幂等、崩溃恢复 | **完全离线** |
-| **L2** | 调起 Codex：起 turn、拿回结果、thread 绑定、logical turn | 需真 Codex |
-| **L3** | 人机交界：组卡 → 弹卡 → 人点 → 回执 → 状态前进 | 逻辑离线（假回执）+ 一次真点击 |
+| **L2** | 调起 Codex TUI：`codex resume <threadId> "<prompt>"`、thread 绑定、turn 记录、从 rollout 读结果 | 需真 Codex |
+| **L3** | 人机交界：组题 → TUI 原生选择器 → 人选 → 答案回来 → 状态前进 | 逻辑离线（假答案）+ 一次真选择 |
 | **L4** | 对抗：红/蓝/裁判，结算出可裁决的结果 | 需真 Codex |
 | **L5** | rubric、gap 跟踪 | 需真 Codex |
 | **L6** | 铺开到其余阶段 | 需真 Codex |
+
+**L2 已经用 `codex mcp-server` 通过一次**（真 turn、binding 与 turn 落库）。改走 TUI 后**必须重新验收**，因为换的是执行通道本身：mcp-server 是父进程直接拿返回值，TUI 是一个独立的交互式进程，StagePass 得另想办法知道它结束了、结果在哪。**这一条尚未解决，是 L2 重新验收的主要内容。**
 
 ### 6.1 L0 / L1 是真正的底层
 
 它们必须能在**没有 AI、没有 Codex、没有网络**的情况下被完整证明。这是"底层要好好搭建"的操作定义：**L0/L1 的任何行为，都能用一个离线测试跑出来给人看。**
 
-### 6.2 L1 必须额外交付「假回执」能力
+### 6.2 L1 必须额外交付「假答案」能力
 
-回执路径要能被**伪造的回执**驱动。这样 L3 的全部逻辑（校验链、动作解析、状态推进）可以离线验证，只剩"卡是不是真的弹出来了"这一件事需要人在 Codex 里点。
+答案路径要能被**伪造的 elicitation 返回**驱动。这样 L3 的全部逻辑（校验链、动作解析、状态推进）可以离线验证，只剩"选择器是不是真的出现了"这一件事需要人在 TUI 里选。
 
-**理由是实测的**：这个开发环境里 Bash 发不出任何 HTTP（连没人监听的端口都返回 403），浏览器 POST 又必然带 Origin。**L2 往上的每一次验收都要占用你本人的时间**，这个设计是为了把这个成本压到最低。
+**理由是实测的**：L2 往上的每一次验收都要占用你本人的时间，这个设计是为了把这个成本压到最低。（`ScriptedTurnRunner` 已经是这条原则在 L1 的实现。）
 
 ### 6.3 层间依赖单向
 
@@ -206,23 +243,23 @@ Desktop 会开新线程并预填 prompt，**但不自动发送**（二进制里�
 
 ### 9.1 终局
 
-一个 Change 从 PRD 走到 Done，**人只在 Codex 卡片上做决定**，做完回 StagePass 看见状态已经前进。
+一个 Change 从 PRD 走到 Done，**人只在 Codex TUI 里做决定**，做完回 StagePass 看见状态已经前进。全程 **StagePass 不渲染任何执行过程或选择界面**。
 
 ### 9.2 逐层（每层过了才允许动下一层）
 
-| 层 | 通过条件 |
-|---|---|
-| L0 | 所有合法转移被穷举测试；非法转移被拒；每次转移落账本；全部离线 |
-| L1 | 崩溃注入后能恢复；租约过期能被接管；重复命令幂等；fence 冲突被拒；全部离线 |
-| L2 | 起一个真 turn、拿回结果、binding 与 logical turn 落库 |
-| L3 | 假回执驱动全链路离线通过；**且**你在 Codex 里真点一次，`changes.status` 前进 |
-| L4 | 一轮真对抗结算出 gate 能用的结果 |
-| L5 | rubric 出分、gap 落库并阻断；接受风险能指明具体条目 |
-| L6 | 五个阶段各自的卡都能到 `presented` → `completed` |
+| 层 | 通过条件 | 现状 |
+|---|---|---|
+| L0 | 所有合法转移被穷举测试；非法转移被拒；每次转移落账本；全部离线 | ✅ |
+| L1 | 崩溃注入后能恢复；租约过期能被接管；重复命令幂等；fence 冲突被拒；全部离线 | ✅ |
+| L2 | `codex resume` 起一个真 turn，StagePass 知道它何时结束、从 rollout 拿到结果，binding 与 turn 落库 | ⬜ 换通道后需重验 |
+| L3 | 假答案驱动全链路离线通过；**且**你在 TUI 里真选一次，`changes.status` 前进 | ⬜ |
+| L4 | 一轮真对抗结算出 gate 能用的结果 | ⬜ |
+| L5 | rubric 出分、gap 落库并阻断；接受风险能指明具体条目 | ⬜ |
+| L6 | 五个阶段的裁决都能问出来、答回来、推进状态 | ⬜ |
 
 ### 9.3 常驻（任何时候都不许红）
 
-零调用者计数 = 0；层间依赖单向；卡片选项全部可执行；一个概念一个名字。
+零调用者计数 = 0；层间依赖单向；`enum` 里的选项全部可执行；一个概念一个名字；**`src/` 里没有任何渲染代码**。
 
 ---
 
@@ -230,6 +267,10 @@ Desktop 会开新线程并预填 prompt，**但不自动发送**（二进制里�
 
 - 多 Provider、Claude 兼容、模型路由
 - 网页上的业务决策入口（含"紧急表面"—— 新树不预留）
-- host-attested MCP / private IPC / bundle attestation
-- Live QA、TUI
+- host-attested MCP / private IPC / bundle attestation / app-server 私有协议
+- **`ui://` HTML widget，以及任何形式的「卡片」** —— 实测走不通，见 §2.4
+- **StagePass 自己渲染 Codex 的执行过程或选择界面** —— 渲染是 Codex TUI 的事，这条已从"曾经做过"变成"明确不做"
+- Live QA
 - **老树任何东西的自动继承**
+
+> `TUI` 曾经在这一列里（"当前不开发 TUI"，需求文档 §5.5）。那说的是**StagePass 自己的 TUI 客户端**，现在仍然不做。本文说的 TUI 是 **Codex 的** TUI —— 是执行与交互面，不是 StagePass 的第二个前端。两者不要混。
