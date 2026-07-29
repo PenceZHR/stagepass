@@ -704,6 +704,41 @@ runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 
+/*
+ * 新建 Project / Change。
+ *
+ * 用 prompt 而不是自建一层表单弹窗：这一屏的规矩是「新东西默认不进主屏」，
+ * 为了收一个名字铺一整块常驻 UI 正是它要挡的。**要改成好看的表单之前先读
+ * 交接 §5.0 第 4 条。**
+ */
+document.getElementById("new-project").addEventListener("click", () => {
+  const name = prompt("新 Project 叫什么？");
+  if (name === null || name.trim() === "") return;
+  void fetch(`/api/project?name=${encodeURIComponent(name.trim())}`, { method: "POST" })
+    .then((response) => response.json())
+    .then((created) => {
+      // 建完直接切过去 —— 建了却停在原地，人得再找一次它在哪。
+      location.search = `?change=${encodeURIComponent(changeId)}`
+        + `&project=${encodeURIComponent(created.id)}`;
+    });
+});
+
+document.getElementById("new-change").addEventListener("click", () => {
+  const projectId = panelState?.selectedProject
+    ?? panelState?.changes.find((change) => change.id === changeId)?.projectId
+    ?? panelState?.projects[0]?.id;
+  if (!projectId) return;
+
+  const title = prompt("这次改动要做什么？");
+  if (title === null || title.trim() === "") return;
+  void fetch(
+    `/api/change?project=${encodeURIComponent(projectId)}`
+    + `&title=${encodeURIComponent(title.trim())}`, { method: "POST" },
+  )
+    .then((response) => response.json())
+    .then((created) => { location.search = `?change=${encodeURIComponent(created.id)}`; });
+});
+
 enterButton.addEventListener("click", () => {
   const phase = sheetPhase;
   closeSheet();

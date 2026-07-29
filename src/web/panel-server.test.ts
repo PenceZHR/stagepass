@@ -608,3 +608,72 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
     });
   });
 });
+
+/**
+ * 新建 Project / Change。
+ *
+ * **这不是业务决策入口**：它不推动任何闸门，也不对任何产物下判断 —— 和「选中一个
+ * Change」同类。PRD §1.1 那条线管的是「对这一次的产物下判断」，不是「能不能开新活」。
+ */
+describe("panel · 能从界面上开新活", () => {
+  it("建一个 Project，并且一建出来就带上出厂标准", async () => {
+    await withPanel(async ({ open, database }) => {
+      const created = await (await open(
+        `/api/project?name=${encodeURIComponent("新项目")}`, { method: "POST" },
+      )).json() as { created: boolean; id: string; name: string };
+
+      assert.equal(created.created, true);
+      assert.equal(created.name, "新项目");
+      // 不装出厂标准的话，新项目每个阶段都是空 rubric，人得逐个手写才能开始用。
+      assert.ok(
+        new RubricStore(database).current({
+          projectId: created.id, changeId: null, phase: "PRD", role: "producer",
+        }) !== null,
+        "新项目没有出厂标准");
+    });
+  });
+
+  it("建一个 Change，它停在第一个阶段", async () => {
+    await withPanel(async ({ open }) => {
+      const created = await (await open(
+        `/api/change?project=${PROJECT}&title=${encodeURIComponent("加个按钮")}`,
+        { method: "POST" },
+      )).json() as { created: boolean; id: string; phase: string };
+
+      assert.equal(created.created, true);
+      // 起点是状态机给的，这里不替它走一步。
+      assert.equal(created.phase, "PRD");
+
+      const panel = await (await open(`/api/panel?change=${created.id}`)).json() as
+        { changes: { id: string; title: string }[] };
+      assert.ok(panel.changes.some((change) => change.id === created.id));
+    });
+  });
+
+  it("id 顺号而不是 uuid —— 这两个 id 人要念", async () => {
+    await withPanel(async ({ open }) => {
+      const first = await (await open(
+        `/api/change?project=${PROJECT}&title=a`, { method: "POST" })).json() as { id: string };
+      const second = await (await open(
+        `/api/change?project=${PROJECT}&title=b`, { method: "POST" })).json() as { id: string };
+      assert.match(first.id, /^CHG-\d{3}$/);
+      assert.notEqual(first.id, second.id);
+    });
+  });
+
+  it("名字为空 —— 拒绝，不建一个叫「」的东西", async () => {
+    await withPanel(async ({ open }) => {
+      assert.equal((await open("/api/project?name=", { method: "POST" })).status, 400);
+      assert.equal((await open("/api/project?name=%20%20", { method: "POST" })).status, 400);
+      assert.equal(
+        (await open(`/api/change?project=${PROJECT}&title=`, { method: "POST" })).status, 400);
+    });
+  });
+
+  it("往一个不存在的 Project 里建 Change —— 404", async () => {
+    await withPanel(async ({ open }) => {
+      assert.equal(
+        (await open("/api/change?project=PRJ-不存在&title=x", { method: "POST" })).status, 404);
+    });
+  });
+});

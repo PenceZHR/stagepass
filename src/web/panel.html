@@ -158,6 +158,24 @@ body::after {
   margin-left: auto; font: 500 11px/1 ui-monospace, monospace; color: rgba(255,255,255,.42);
 }
 
+/*
+ * 新建。**这不是业务决策入口** —— 开一个新活不推动任何闸门，也不对任何产物下
+ * 判断（PRD §1.1）。所以它可以在网页上，而 approve / reject 永远不可以。
+ *
+ * 做得很轻：一个 + 号，不是一块常驻的表单。主屏的规矩是「新东西默认不进主屏」，
+ * 这两列也照办。
+ */
+.col-head .new {
+  width: 22px; height: 22px; padding: 0; margin-left: 2px;
+  border: 1px solid rgba(255,255,255,.18); border-radius: 7px;
+  background: transparent; color: rgba(255,255,255,.5); cursor: pointer;
+  font: 500 13px/1 ui-sans-serif, sans-serif;
+  transition: background .2s, color .2s, border-color .2s;
+}
+.col-head .new:hover {
+  background: rgba(255,255,255,.09); color: #fff; border-color: rgba(255,255,255,.34);
+}
+
 .rows { padding: 0 12px 18px; display: flex; flex-direction: column; gap: 3px; }
 .row {
   display: block; width: 100%; text-align: left; cursor: pointer;
@@ -725,12 +743,16 @@ body::after {
 <div class="columns" id="columns">
   <button class="expand" id="expand">☰ 展开工作区</button>
   <section class="col workspace">
-    <div class="col-head"><small>Workspace</small><h2>Projects</h2><span class="count" id="project-count">01</span></div>
+    <div class="col-head"><small>Workspace</small><h2>Projects</h2>
+      <button class="new" id="new-project" type="button" title="新建 Project">+</button>
+      <span class="count" id="project-count">01</span></div>
     <div class="rows" id="projects"></div>
   </section>
 
   <section class="col workspace">
-    <div class="col-head"><small>Workspace</small><h2>Changes</h2><span class="count" id="change-count">00</span></div>
+    <div class="col-head"><small>Workspace</small><h2>Changes</h2>
+      <button class="new" id="new-change" type="button" title="新建 Change">+</button>
+      <span class="count" id="change-count">00</span></div>
     <div class="rows" id="changes"></div>
   </section>
 
