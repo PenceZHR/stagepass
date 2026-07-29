@@ -19,6 +19,7 @@
 const params = new URLSearchParams(location.search);
 const changeId = params.get("change") || "CHG-1";
 const projectParam = params.get("project");
+const startCollapsed = params.get("collapsed") === "1";
 
 const orbitView = document.getElementById("orbit-view");
 const stageView = document.getElementById("stage-view");
@@ -247,9 +248,19 @@ function drawWorkspace(panel) {
  * The orbit is laid out from its container's size, and that size changes over
  * half a second, so the nodes are re-placed while the transition runs -- once at
  * the end would show them jump into position after the ring has finished moving.
+ *
+ * The state goes in the URL so a reload keeps it, and so a collapsed view can be
+ * linked to. `replaceState` rather than a navigation: reloading the page here
+ * would tear down every attached terminal to record a layout preference.
  */
 function setCollapsed(collapsed) {
   columns.classList.toggle("collapsed", collapsed);
+
+  const next = new URLSearchParams(location.search);
+  if (collapsed) next.set("collapsed", "1");
+  else next.delete("collapsed");
+  history.replaceState(null, "", `${location.pathname}?${next.toString()}`);
+
   const until = Date.now() + 620;
   const settle = () => {
     placeNodes();
@@ -362,6 +373,10 @@ async function attach(phase) {
 document.getElementById("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
+
+// Applied before the first paint, and without a transition -- animating from
+// three columns to none on load would look like the page changing its mind.
+if (startCollapsed) columns.classList.add("collapsed");
 term.onData((data) => { if (current) void send(current, data); });
 addEventListener("resize", () => {
   if (current) void resize(current);
