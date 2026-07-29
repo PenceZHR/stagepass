@@ -2,174 +2,145 @@
 
 [English](README.md) · **简体中文**
 
-StagePass 是一套本地运行、深度融合 Codex 的软件交付控制面。它把一个 Change 从需求推进到交付，并用阶段、证据、审查、人工决策和可恢复执行约束全过程。
+> **模型不能自己给自己放行。**
 
-Web 是运营总控；真实工作在 Codex Desktop 的持久 task 中执行；StagePass MCP App 在同一个 task 中呈现人工决策卡；StagePass Server 是流程状态、命令、幂等、审计和恢复的唯一权威。
+StagePass 是一个本地运行的交付控制面：它把一次改动拆成十二个阶段，每个阶段跑一次
+Codex，产出证据、找出问题，然后**停下来等人裁决**。裁决发生在 Codex 自己的选择器
+里，不在网页上。人选完，StagePass 才推进状态。
 
-> 当前状态：开发者预览版。生产构建与 Codex-native 边界测试已经通过，但正式发布前仍需针对目标 Codex Desktop 精确版本完成 Phase 0 真实客户端验证。
+---
 
-## Codex-native 版本的核心变化
+## ⚠️ 状态：建造中，六层里做完四层
 
-- 每个 Change 对应一个持久、可复用的 Codex task。
-- 每个 Project 另有一个 Project PRD task 和一个 Project Context task。
-- Codex app-server 负责创建、命名、列出和读取持久 task shell。
-- 只有 Codex Desktop follower IPC 可以启动或中断受管 turn。
-- 批准、拒绝、接受风险、采纳 Build/Fix 等人工决定在绑定 task 的 StagePass MCP App 中完成。
-- Web 只保留状态、证据、健康度、设置、start/retry、interrupt 和 recover 等运营能力。
-- StagePass 不再提供 Git 初始化、暂存、提交、推送或远端管理 UI；这些操作直接使用 Codex 或你原有的 Git 工具。
-- SQLite 是业务权威，`.ship/` 文件只是可读镜像和审计材料。
+这还不是可以拿来用的软件。**下面这张表是真的**，没做的就是没做：
 
-## 架构
+| 层 | 内容 | 状态 |
+|---|---|---|
+| **L0** | schema、状态机、状态转移、审计账本 | ✅ 完全离线验收 |
+| **L1** | gate 计算、fence、租约、心跳、幂等、崩溃恢复 | ✅ 完全离线验收 |
+| **L2** | 调起 Codex TUI、thread 绑定、turn 记录、从 rollout 读结果 | ✅ 真 turn 验过（osascript 版与 pty 版各一次） |
+| **L3** | 组题 → Codex 原生选择器 → 人选 → 答案回来 → 状态前进 | ✅ 真人真选过 |
+| **L4** | 红方 / 蓝方 / 裁判的对抗轮次，结算成可裁决的结果 | ✅ 真跑过一轮，gap 落库并把闸门关上 |
+| **L5** | rubric 出分、gap 跟踪 | ⬜ 没做 |
+| **L6** | 铺开到其余阶段 | ⬜ 没做 |
 
-```text
-                               ┌────────────────────────────┐
-                               │ 持久 Codex task            │
-                               │ 执行工作 + MCP 决策卡      │
-                               └─────────────┬──────────────┘
-                                             │
-                       follower IPC / Host ui/message / task 读取
-                                             │
-┌──────────────────┐       命令         ┌────▼───────────────────┐
-│ StagePass Web    ├────────────────────► StagePass Server        │
-│ 运营与总控       │◄────────────────────┤ 唯一流程与命令权威     │
-└──────────────────┘     状态与证据      └────┬──────────┬───────┘
-                                              │          │
-                                   app-server │          │ SQLite
-                                   shell/read │          │ 权威数据
-                                              ▼          ▼
-                                         持久 task   状态、审计、
-                                         shell       幂等与恢复
-```
+**下层验收不通过，不许动上层。** 这是这个仓库的建造纪律，不是建议 —— 它也是这份
+README 存在的方式：每一行都对应一件真的跑过的事。
 
-关键边界：
+> 上一版 README 描述的是一套**从未运行过**的架构（MCP App 决策卡、follower IPC、
+> 一个独立的 Web dashboard）。那套东西已经连同旧代码一起删掉了，重建从 2026-07-28
+> 开始。把没跑通的东西写成完成态，正是那份 README 变成废纸的原因。
 
-- app-server 只管理持久 shell、读取 turn、列出模型；
-- app-server 不启动 StagePass managed turn；
-- Desktop follower IPC 只能在 durable fenced attempt 已写入后启动 turn；
-- Web 与 MCP 共用同一个 Server 命令网关；
-- ambiguous attempt 只能只读对账或隔离，不能再次 dispatch。
+---
 
-完整设计见 [Codex-native 架构说明](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md)。
+## 它要解决的问题
 
-## 工作流
+让模型自己判断"这一阶段做完了没有"，等于让它给自己打分。真实的失败长这样：
 
-```text
-PRD → Spec → Tech Spec → Plan → Test Plan
-    → Build → Review → Fix → QA → Merge → Retro → Done
-```
+- 第二轮重新生成了文档，**上一轮的问题没被提起，于是就算解决了**；
+- 模型报告"没有阻塞项"，闸门打开，问题带进下一阶段；
+- 人想介入，但介入的入口是一个网页按钮 —— 而网页上的按钮点下去，只有网页知道。
 
-Codex 负责产出候选结果和执行工作；StagePass 负责记录事实、验证新鲜度、计算 gate，并把只能由人类完成的决定呈现出来。
+StagePass 对这三件事各有一条硬规则：
 
-P0 阻断且不可豁免。P1 阻断，除非人类明确接受风险并填写理由。卡片过期、gate 版本漂移、源数据 hash 变化或 task 绑定不匹配时，系统都会 fail closed。
+1. **沉默不能关闭一个问题。** `gaps` 表里的问题跨轮存活，关掉它必须说明理由 ——
+   "这一轮没提到"和"这一轮说它已经修好了"在库里是两种不同的行。
+2. **闸门读证据，不读模型的自我评价。** 阶段节点变绿只因为**账本里有人批准过它**，
+   不是因为哪一轮报告说没问题。
+3. **裁决只有一条路径。** 人的选择发生在 Codex 自己画的 elicitation 选择器里。
+   网页上没有、也不会有一个能推动闸门的按钮。
 
-## 运行要求
+---
 
-- macOS，已安装、启动并登录 Codex Desktop
-- Node.js 20 或更高版本
-- pnpm
-- 每个 Project 对应一个已经存在的本地 Git 仓库
+## 三个部分，职责不重叠
 
-Hybrid Bridge 使用受能力探测和版本门禁保护的 Codex Desktop 私有接口。当前支持的精确版本指纹记录在[设计文档](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md)中。未验证版本会被拒绝，而不是静默降级。
+| | 干什么 | **明确不干什么** |
+|---|---|---|
+| **状态机与闸门**（`src/domain`、`src/store`） | 状态转移、gate、fence、租约、恢复；组题、验答案、推进状态 | **不渲染任何东西** |
+| **终端面板**（`src/web`） | 看和启动：阶段环、证据、风险；**托管 Codex TUI 真正运行在里面的那块 pty** | **不承载任何业务决策入口** |
+| **Codex 插件**（`src/plugin`） | 通过 MCP `elicitation` 向人提问，把答案发回来 | 不决策、不组题、不判断合法性 |
 
-## 快速开始
+**终端面板是宿主，不是入口。** 你在浏览器里看到的执行过程和选择界面，每一个像素
+都是 `codex` 二进制自己用转义序列画的；StagePass 只把字节从 pty 搬到 xterm.js。
+换掉的是"那块玻璃谁拥有"，不是"谁在画"。
+
+这条不靠自觉。`src/architecture.test.ts` 里有五条常驻护栏，任何时候都不许红：
+
+1. 每个模块声明自己属于哪一层；
+2. 下层不许 import 上层；
+3. 没有零调用者的 export；
+4. 一个概念一个名字（阶段名不许有别名）；
+5. **`src/web/` 里不许出现 `TextDecoder` / `.toString(` / `JSON.parse` /
+   `String.fromCharCode`** —— 把 pty 字节变成字符串的四条路，一条都不留。
+
+第 5 条是终端面板当初被接受的前提：一旦开始解析 Codex 的输出去画自己的界面，就
+退回到了被否掉的那个方案。这不是风格问题，所以不能交给判断力。
+
+---
+
+## 现在能跑什么
 
 ```bash
-git clone https://github.com/PenceZHR/stagepass.git
-cd stagepass
 pnpm install
-cp .env.example .env
+pnpm check            # 246 个测试 + 严格 typecheck，全离线，不需要 Codex
 ```
 
-在 `.env` 中开启 Codex-native 能力：
-
-```dotenv
-STAGEPASS_CODEX_DESKTOP_BRIDGE=on
-STAGEPASS_MCP_INTERACTIONS=on
-STAGEPASS_CODEX_DECISION_SURFACE=on
-STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge
-```
-
-构建 MCP App 并启动 StagePass：
+需要真 Codex 的：
 
 ```bash
-pnpm db:migrate
-pnpm mcp:build
-pnpm dev
+pnpm panel            # 终端面板：三列 2:2:6 + 阶段环 + 每阶段一个终端
+pnpm verify:rebuild   # L0–L2 整条链路（离线）
+pnpm verify:decision  # L3：组题 → 选择器 → 人选 → 闸门前进
+pnpm verify:round     # L4：真跑一轮红蓝对抗；--read <thread> 只读一轮已发生的
 ```
 
-打开 [http://localhost:3000/projects](http://localhost:3000/projects)，创建 Project，并填写一个已经存在的本地 Git 仓库绝对路径。
+`pnpm panel` 不带 `--db` 会建一个临时库，可以随便点，不碰任何真数据。
 
-`mcp:start` 只用于 Codex Host 认证后的启动。任意终端直接运行时，因为拿不到继承的 broker channel 和 Host evidence，会按设计 fail closed。
+### 环境要求
 
-## 配置
+- **macOS。** node-pty 用预编译产物，`verify:decision` 走 `osascript`。其它平台
+  没有验证过，别假设能跑。
+- **Node 20+**（开发用的是 25.9）、**pnpm**。
+- **Codex CLI**（开发用的是 0.146.0）。L2 以上每一条命令都需要它。
 
-| 变量 | 用途 |
-|---|---|
-| `STAGEPASS_CODEX_DESKTOP_BRIDGE` | 值为 `on` 时开启 Desktop bridge 持久 task 执行。 |
-| `STAGEPASS_MCP_INTERACTIONS` | 值为 `on` 时开启 MCP 人工交互卡。 |
-| `STAGEPASS_CODEX_DECISION_SURFACE` | Codex 人工决策面的总开关。 |
-| `STAGEPASS_CODEX_DECISION_PHASES` | 严格的阶段 allowlist；空 token 或未知阶段会 fail closed。 |
-| `STAGEPASS_CODEX_BIN` | 可选，app-server shell/read 使用的 Codex binary 路径。 |
-| `STAGEPASS_DB_PATH` | 可选，SQLite 路径；默认 `server/db/ship.db`。 |
-| `STAGEPASS_LOG_DIR` | 可选，运行日志目录。 |
+### 一个会咬人的坑
 
-所有 Codex-native 开关只有字面量 `on` 才表示开启。
+Codex 的 `-a never` 不只管 shell 审批 —— 它会让 Codex **自动 decline 掉 MCP 的
+`elicitation/create`**，而那是 StagePass 唯一的问人通道。失败是静默的：回来一个
+格式完全合法的 `{"action":"decline"}`，和"人按了 Esc"一模一样。
 
-## 常用命令
+代码里这个值**在类型上已经不可表达**（`CodexInvocation.approval` 只接受
+`"untrusted" | "on-request"`）。写注释叮嘱下一个人，不如让它编译不过。
 
-| 命令 | 说明 |
-|---|---|
-| `pnpm dev` | 启动 Next.js、迁移和 pipeline worker。 |
-| `pnpm build` | 构建生产版本 Web。 |
-| `pnpm start` | 启动生产 Web 服务。 |
-| `pnpm test` | 运行隔离的单元测试。 |
-| `pnpm test:acceptance` | 运行真实进程和恢复类重型验收。 |
-| `pnpm lint` | 对源码运行 ESLint。 |
-| `pnpm exec tsc --noEmit` | TypeScript 类型检查。 |
-| `pnpm mcp:build` | 构建 StagePass MCP Server 与 App UI bundle。 |
-| `pnpm test:phase0-verifier` | 运行 Phase 0 bridge contract 测试。 |
+---
 
-真实客户端发布验证器必须读取明确的证据文件，不会输出伪造 PASS：
+## 仓库长什么样
 
-```bash
-STAGEPASS_REAL_CODEX_NATIVE_E2E_EVIDENCE=/absolute/path/evidence.json \
-  node --import tsx scripts/verify-codex-native-e2e.ts
+```
+src/
+  domain/     纯逻辑：阶段、状态机、gate、gap、租约、轮次、提问   —— 无 IO，可穷举证明
+  store/      SQLite 读写：change、evidence、gap、command、binding、turn、question
+  work/       长任务：job 租约、turn 循环、对抗轮次的接线
+  codex/      调 Codex：invocation、TUI transport、rollout 解析、子 Agent
+  plugin/     MCP 插件：唯一的写入是"记下人说了什么"
+  web/        终端面板：pty 会话、面板服务端、浏览器那半边
+  architecture.test.ts   五条常驻护栏
+docs/         PRD、交接、设计稿。**PRD 是唯一权威。**
+scripts/      verify:* 与 probe:*
 ```
 
-没有真实客户端证据时，它会以 skip/fail-closed 状态退出。
+生产代码 5141 行，测试 4875 行，30 个模块。SQLite 是唯一权威 —— `changes` 表上有
+触发器，任何一次没有配套账本行的状态更新都会被数据库**当场**拒绝，而不是事后才
+发现少了一条审计记录。
 
-## 目录
+主要文档：
 
-| 路径 | 职责 |
-|---|---|
-| `app/` | Next.js 运营总控和 HTTP API。 |
-| `server/` | 流程权威、SQLite/Drizzle、Codex bridge、命令网关、恢复和证据服务。 |
-| `mcp/` | StagePass MCP server、supervisor、签名器和交互 App UI。 |
-| `scripts/` | 开发、构建、迁移、bridge 验证和 E2E 工具。 |
-| `docs/` | 产品需求、架构、迁移计划和后续加固项。 |
-| `spikes/` | 作为兼容性证据保留的自包含 bridge 实验。 |
+- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) —— **唯一权威**，包括为什么重建
+- [`docs/HANDOFF-2026-07-29.md`](docs/HANDOFF-2026-07-29.md) —— 最新进度、验出来的坑、还没做的事
+- [`docs/STAGEPASS-ACTUAL-REQUIREMENTS.md`](docs/STAGEPASS-ACTUAL-REQUIREMENTS.md) —— 产品要解决什么、十二个阶段各自产出什么
 
-## 安全模型
+---
 
-- Server-owned logical turn 防止调用方指定任意 task 或 slot。
-- 每次外部 follower start 前都必须有 durable prepared/dispatching attempt。
-- dispatch、settlement 和 recovery 前都会重新读取 canonical task binding。
-- 已知 turn 暂时不可见时只读等待，不推进 cursor，也不启动第二个 turn。
-- ambiguous dispatch 只能通过 app-server snapshot 对账或隔离。
-- Build 继续在受控 worktree 中隔离；StagePass 只保留仓库证据和内部 adoption versioning，不再提供 Git 操作界面。
-- MCP 决策提交绑定 interaction、command、来源 task、nonce 和 Host 认证传输。
-
-## 文档
-
-- [实际产品需求](docs/STAGEPASS-ACTUAL-REQUIREMENTS.md)
-- [Codex-native 架构](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md)
-- [迁移实施计划](docs/superpowers/plans/2026-07-23-codex-native-control-plane-migration.md)
-- [后续加固清单](docs/superpowers/plans/2026-07-23-codex-native-control-plane-migration-followups.md)
-
-## 本地文件
-
-不要提交本地数据库、`.env`、`.next/`、MCP 构建产物、运行日志或宿主机专用的 plugin/agent bundle。具体见 [`.gitignore`](.gitignore)。
-
-## License
+## 许可
 
 [MIT](LICENSE)

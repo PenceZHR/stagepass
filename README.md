@@ -2,174 +2,167 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-StagePass is a local, Codex-native control plane for moving a software change from intent to delivery through explicit stages, evidence, review, and human decisions.
+> **A model does not get to pass its own work.**
 
-The Web app is the operator dashboard. Codex Desktop is where managed work runs and where the StagePass MCP App presents human decision cards. The StagePass Server remains the only authority for workflow state, commands, idempotency, audit, and recovery.
+StagePass is a local delivery control plane. It splits one change into twelve
+phases, runs Codex once per phase to produce evidence and find problems, and then
+**stops and waits for a person to decide**. The decision happens in Codex's own
+selector, not on a web page. Only once you have chosen does StagePass advance.
 
-> Current status: developer preview. The production build and Codex-native boundary suites pass, but a release still requires Phase 0 verification against the exact supported Codex Desktop build.
+---
 
-## What changed in the Codex-native edition
+## ⚠️ Status: under construction — four of six layers done
 
-- One persistent Codex task per Change.
-- One reusable Project PRD task and one reusable Project Context task per Project.
-- Codex app-server provisions, names, lists, and reads persistent task shells.
-- Codex Desktop follower IPC exclusively starts and interrupts managed turns.
-- The StagePass MCP App presents approvals, rejections, risk acceptance, adoption, and other human decisions inside the bound Codex task.
-- Web retains status, evidence, health, settings, start/retry, interrupt, and recovery controls.
-- StagePass no longer exposes Git setup, stage, commit, push, or remote-management UI. Use Codex or your normal Git tooling.
-- SQLite is the business authority; files under `.ship/` are readable mirrors and audit artifacts.
+This is not usable software yet. **The table below is honest**; what is not done
+is simply not done:
 
-## Architecture
+| Layer | What it is | Status |
+|---|---|---|
+| **L0** | Schema, state machine, transitions, audit ledger | ✅ Proved fully offline |
+| **L1** | Gate computation, fencing, leases, heartbeats, idempotency, crash recovery | ✅ Proved fully offline |
+| **L2** | Launching the Codex TUI, thread binding, turn records, reading results from the rollout | ✅ Real turns, twice (osascript and pty) |
+| **L3** | Compose question → Codex's native selector → a person chooses → answer lands → state advances | ✅ A real person really chose |
+| **L4** | Red / blue / judge adversarial rounds, settled into something decidable | ✅ One real round: gaps stored, gate held shut |
+| **L5** | Rubric scoring, gap tracking | ⬜ Not started |
+| **L6** | Rolled out to the remaining phases | ⬜ Not started |
 
-```text
-                              ┌────────────────────────────┐
-                              │ Persistent Codex task      │
-                              │ work + MCP decision cards  │
-                              └─────────────┬──────────────┘
-                                            │
-                     follower IPC / Host ui/message / task reads
-                                            │
-┌──────────────────┐      commands      ┌───▼────────────────────┐
-│ StagePass Web    ├────────────────────► StagePass Server        │
-│ operator control │◄────────────────────┤ workflow authority     │
-└──────────────────┘   state/evidence    └───┬───────────┬───────┘
-                                             │           │
-                                  app-server │           │ SQLite
-                                  shell/read │           │ authority
-                                             ▼           ▼
-                                      persistent     durable state,
-                                      task shells    audit, recovery
-```
+**A layer that has not passed is a layer you may not build on.** That is this
+repository's construction discipline, not a suggestion — and it is also how this
+README is written: every line corresponds to something that actually ran.
 
-The important boundary is intentional:
+> The previous README described an architecture that **never ran** — MCP App
+> decision cards, follower IPC, a separate web dashboard. All of it was deleted
+> along with the old tree; the rebuild started 2026-07-28. Writing something that
+> never worked as if it were finished is exactly what turned that README into
+> waste paper.
 
-- app-server may manage persistent shells, read turns, and list models;
-- app-server must not start managed turns;
-- Desktop follower IPC starts managed turns only after a durable, fenced attempt exists;
-- Web and MCP submit through the same Server command gateway;
-- recovery never redispatches an ambiguous attempt.
+---
 
-The full rationale is in the [Codex-native design](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md).
+## The problem it exists for
 
-## Workflow
+Asking a model whether it finished a phase is asking it to grade itself. The real
+failures look like this:
 
-```text
-PRD → Spec → Tech Spec → Plan → Test Plan
-    → Build → Review → Fix → QA → Merge → Retro → Done
-```
+- Round two regenerates the document, **fails to mention round one's problem, and
+  the problem is thereby resolved**.
+- The model reports "no blockers", the gate opens, and the problem travels into
+  the next phase.
+- A person wants to intervene, but the way in is a button on a web page — and a
+  button on a web page only tells the web page.
 
-Codex produces artifacts and performs work. StagePass records facts, checks freshness and gates, and presents the decisions that only a human may make.
+StagePass answers each with a hard rule:
 
-P0 findings block and cannot be waived. P1 findings block unless a human explicitly accepts the risk with a reason. A stale card, stale gate version, changed source hash, or mismatched task binding fails closed.
+1. **Silence cannot close a problem.** Rows in `gaps` outlive the round that found
+   them, and closing one requires stating a reason — "this round did not mention
+   it" and "this round says it is fixed" are different rows in the database.
+2. **The gate reads evidence, never the model's opinion of its own work.** A phase
+   node turns green because **the ledger records that a human approved it**, not
+   because some round reported no problems.
+3. **There is exactly one answer path.** A person's choice happens inside the
+   elicitation selector Codex draws. There is no button on the web surface that
+   can move a gate, and there never will be.
 
-## Requirements
+---
 
-- macOS with Codex Desktop installed, running, and signed in
-- Node.js 20 or newer
-- pnpm
-- an existing local Git repository for each managed Project
+## Three parts, no overlapping responsibility
 
-The Hybrid Bridge uses a private, capability-gated Codex Desktop interface. The currently pinned compatibility fingerprint is documented in the [design specification](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md). Unknown builds are rejected until explicitly verified.
+| | Does | **Explicitly does not** |
+|---|---|---|
+| **State machine and gate** (`src/domain`, `src/store`) | Transitions, gate, fence, leases, recovery; composes questions, validates answers, advances state | **Renders nothing** |
+| **Terminal panel** (`src/web`) | Looking and launching: the stage orbit, evidence, risks; **hosts the pty the Codex TUI actually runs inside** | **Carries no decision entrance** |
+| **Codex plugin** (`src/plugin`) | Puts questions to a person over MCP `elicitation` and sends the answer back | Decides nothing, composes nothing, judges no legality |
 
-## Quick start
+**The terminal panel is a host, not an entrance.** Every pixel of the execution
+and of the selector you see in the browser is drawn by the `codex` binary itself,
+in escape sequences; StagePass only moves bytes from the pty into xterm.js. What
+changed is who owns the glass, not who does the drawing.
+
+That is not left to good intentions. `src/architecture.test.ts` holds five
+standing guards that may never go red:
+
+1. Every module declares which layer it belongs to.
+2. A lower layer may not import a higher one.
+3. No export exists without a caller.
+4. One concept, one name (no aliases for a phase).
+5. **`src/web/` may not contain `TextDecoder`, `.toString(`, `JSON.parse`, or
+   `String.fromCharCode`** — the four ways to turn pty bytes into a string, none
+   of them left open.
+
+Guard 5 is the precondition the terminal panel was accepted on: the moment
+StagePass starts parsing Codex's output to draw its own interface, it has slid
+back into the approach that was rejected outright. That is not a style question,
+so it cannot be left to judgement.
+
+---
+
+## What actually runs today
 
 ```bash
-git clone https://github.com/PenceZHR/stagepass.git
-cd stagepass
 pnpm install
-cp .env.example .env
+pnpm check            # 246 tests + strict typecheck, fully offline, no Codex needed
 ```
 
-Enable the Codex-native surfaces in `.env`:
-
-```dotenv
-STAGEPASS_CODEX_DESKTOP_BRIDGE=on
-STAGEPASS_MCP_INTERACTIONS=on
-STAGEPASS_CODEX_DECISION_SURFACE=on
-STAGEPASS_CODEX_DECISION_PHASES=PRD,Intake,Spec,TechSpec,Plan,TestPlan,Build,Fix,Review,QA,Merge
-```
-
-Then build the MCP App and start StagePass:
+These need a real Codex:
 
 ```bash
-pnpm db:migrate
-pnpm mcp:build
-pnpm dev
+pnpm panel            # the terminal panel: 2:2:6 columns, stage orbit, one terminal per phase
+pnpm verify:rebuild   # the whole L0–L2 chain (offline)
+pnpm verify:decision  # L3: compose → selector → a person chooses → the gate advances
+pnpm verify:round     # L4: run one real adversarial round; --read <thread> replays one that happened
 ```
 
-Open [http://localhost:3000/projects](http://localhost:3000/projects), create a Project, and point it at the absolute path of an existing local Git repository.
+Without `--db`, `pnpm panel` creates a throwaway database, so you can click around
+without touching anything real.
 
-`mcp:start` is designed for a Codex Host-attested launch. Starting it as an arbitrary standalone process fails closed because it does not possess the inherited broker channel and Host evidence.
+### Requirements
 
-## Configuration
+- **macOS.** node-pty uses prebuilt binaries and `verify:decision` shells out to
+  `osascript`. No other platform has been verified — do not assume it works.
+- **Node 20+** (developed on 25.9) and **pnpm**.
+- **Codex CLI** (developed against 0.146.0). Every command above L2 needs it.
 
-| Variable | Purpose |
-|---|---|
-| `STAGEPASS_CODEX_DESKTOP_BRIDGE` | Enables persistent Codex task execution through the Desktop bridge when set to `on`. |
-| `STAGEPASS_MCP_INTERACTIONS` | Enables MCP interaction presentation when set to `on`. |
-| `STAGEPASS_CODEX_DECISION_SURFACE` | Global master switch for Codex-hosted human decisions. |
-| `STAGEPASS_CODEX_DECISION_PHASES` | Exact comma-separated decision rollout allowlist. Invalid or unknown values fail closed. |
-| `STAGEPASS_CODEX_BIN` | Optional path to the Codex binary used for app-server shell/read control. |
-| `STAGEPASS_DB_PATH` | Optional SQLite path; defaults to `server/db/ship.db`. |
-| `STAGEPASS_LOG_DIR` | Optional runtime log directory. |
+### One trap worth knowing
 
-All Codex-native flags are disabled unless their value is exactly `on`.
+Codex's `-a never` does not only govern shell approvals — it makes Codex
+**auto-decline MCP `elicitation/create`**, which is StagePass's only channel for
+asking a person anything. The failure is silent: back comes a perfectly
+well-formed `{"action":"decline"}`, indistinguishable from someone pressing Esc.
 
-## Commands
+In this codebase that value is **unrepresentable in the type system**
+(`CodexInvocation.approval` accepts only `"untrusted" | "on-request"`). Better to
+make it fail to compile than to leave a comment warning the next person.
 
-| Command | Description |
-|---|---|
-| `pnpm dev` | Run Next.js, migrations, and the pipeline worker. |
-| `pnpm build` | Create a production Web build. |
-| `pnpm start` | Start the production Web server. |
-| `pnpm test` | Run the isolated unit suite. |
-| `pnpm test:acceptance` | Run heavyweight process/recovery acceptance tests. |
-| `pnpm lint` | Run ESLint on source files. |
-| `pnpm exec tsc --noEmit` | Type-check the project. |
-| `pnpm mcp:build` | Build the StagePass MCP server and App UI bundle. |
-| `pnpm test:phase0-verifier` | Run the Phase 0 bridge contract suites. |
-
-The real-client release verifier consumes explicit evidence and never prints a fake pass:
-
-```bash
-STAGEPASS_REAL_CODEX_NATIVE_E2E_EVIDENCE=/absolute/path/evidence.json \
-  node --import tsx scripts/verify-codex-native-e2e.ts
-```
-
-Without real-client evidence it exits with a skip/fail-closed status.
+---
 
 ## Repository layout
 
-| Path | Responsibility |
-|---|---|
-| `app/` | Next.js operator dashboard and HTTP APIs. |
-| `server/` | Workflow authority, SQLite/Drizzle, Codex bridge, gateway, recovery, and evidence services. |
-| `mcp/` | StagePass MCP server, supervisor, signer, and interaction App UI. |
-| `scripts/` | Development, build, migration, bridge verification, and E2E utilities. |
-| `docs/` | Product requirements, architecture, migration plan, and follow-up hardening work. |
-| `spikes/` | Self-contained bridge experiments retained as compatibility evidence. |
+```
+src/
+  domain/     Pure logic: phases, state machine, gate, gaps, leases, rounds, questions
+              — no IO, so every legal and illegal transition is provable offline
+  store/      SQLite reads and writes: change, evidence, gap, command, binding, turn, question
+  work/       Long-running work: job leases, the turn loop, adversarial round wiring
+  codex/      Talking to Codex: invocation, TUI transport, rollout parsing, subagents
+  plugin/     The MCP plugin. Its only write is recording what a person said.
+  web/        The terminal panel: pty session, panel server, and the browser half
+  architecture.test.ts   the five standing guards
+docs/         PRD, handoffs, visual design. **The PRD is the single authority.**
+scripts/      verify:* and probe:*
+```
 
-## Safety model
+5,141 lines of production code, 4,875 lines of tests, 30 modules. SQLite is the
+authority — a trigger on `changes` makes the database **abort on the spot** any
+state update that does not come with its ledger row, rather than leaving a missing
+audit entry to be discovered later.
 
-- Server-owned logical turn identities prevent callers from choosing arbitrary tasks or slots.
-- Durable prepared/dispatching attempt rows fence every external follower start.
-- Canonical task bindings are re-read before dispatch, settlement, and recovery.
-- Known-turn visibility lag is read-only; it never starts another turn or advances the local cursor.
-- Ambiguous dispatches reconcile from app-server snapshots or quarantine without redispatch.
-- Build work remains isolated in controlled worktrees; repository facts and adoption versioning are retained without a user-facing Git operation surface.
-- MCP decision submission is bound to the interaction, command, source task, nonce, and Host-attested transport.
+Main documents (written in Chinese):
 
-## Documentation
+- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) — **the single authority**, including why the rebuild happened
+- [`docs/HANDOFF-2026-07-29.md`](docs/HANDOFF-2026-07-29.md) — current progress, traps found the hard way, what is still missing
+- [`docs/STAGEPASS-ACTUAL-REQUIREMENTS.md`](docs/STAGEPASS-ACTUAL-REQUIREMENTS.md) — what the product solves and what each of the twelve phases produces
 
-- [Actual product requirements](docs/STAGEPASS-ACTUAL-REQUIREMENTS.md)
-- [Codex-native architecture](docs/superpowers/specs/2026-07-23-codex-native-control-plane-design.md)
-- [Migration implementation plan](docs/superpowers/plans/2026-07-23-codex-native-control-plane-migration.md)
-- [Deferred hardening and follow-ups](docs/superpowers/plans/2026-07-23-codex-native-control-plane-migration-followups.md)
+---
 
-## Local files
-
-Do not commit local databases, `.env` files, `.next/`, MCP build output, runtime logs, or Host-specific plugin/agent bundles. See [`.gitignore`](.gitignore).
-
-## License
+## Licence
 
 [MIT](LICENSE)
