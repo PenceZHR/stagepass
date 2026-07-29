@@ -38,10 +38,9 @@ const FILES = sourceFiles().map((path) => ({
  * when it was allowed to exist. Both are useful and they are not the same
  * question.
  */
-const LAYER: Readonly<Record<string, 0 | 1 | 2>> = {
+const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3>> = {
   "domain/phase.ts": 0,
   "domain/change-state.ts": 0,
-  "db/schema.ts": 0,
   "store/change-store.ts": 0,
 
   "domain/gate.ts": 1,
@@ -58,6 +57,17 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2>> = {
   "codex/rollout.ts": 2,
   "codex/tui-transport.ts": 2,
   "codex/turn-runner.ts": 2,
+
+  "domain/question.ts": 3,
+  "store/question-store.ts": 3,
+  "plugin/protocol.ts": 3,
+  "plugin/server.ts": 3,
+
+  // The schema is the union of every layer's storage, so it imports each
+  // layer's enum constants. Placing it at the top is not an exemption: nothing
+  // in production imports it downward -- only tests and the entry script read
+  // it -- so the downward-only rule still holds everywhere it is checked.
+  "db/schema.ts": 3,
 };
 
 const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));

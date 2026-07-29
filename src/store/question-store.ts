@@ -1,0 +1,230 @@
+import type Database from "better-sqlite3";
+
+import type { ChangeAction } from "../domain/change-state";
+import {
+  decisionFrom,
+  readAnswer,
+  type Answer,
+  type Question,
+  type QuestionKind,
+  type RequestedSchema,
+} from "../domain/question";
+import type { Phase } from "../domain/phase";
+import { CommandStore } from "./command-store";
+
+/**
+ * The questions StagePass has put to a human, and what they said.
+ *
+ * ## Two writers, and only one of them can move anything
+ *
+ * StagePass writes `questions`; the Codex plugin writes `answers`. They share a
+ * SQLite file rather than an HTTP endpoint, which removes the entire surface
+ * the tree this replaces drowned in -- no port, no auth, no actor identity to
+ * forge. The plugin cannot touch `changes`, so the worst a compromised one can
+ * do is answer a question StagePass already chose to ask.
+ *
+ * ## The fence is stored at the moment of asking
+ *
+ * A person takes as long as they take. `expected_snapshot` records the evidence
+ * the question was asked against, and applying the answer re-checks it -- so an
+ * approval given on last week's evidence is refused rather than applied to
+ * evidence nobody has seen.
+ */
+
+export type QuestionStatus = "open" | "answered" | "applied" | "superseded";
+
+export interface QuestionRecord {
+  readonly id: string;
+  readonly changeId: string;
+  readonly phase: Phase;
+  readonly kind: QuestionKind;
+  readonly status: QuestionStatus;
+  readonly question: Question;
+  readonly expectedSnapshot: string;
+}
+
+export class QuestionNotFoundError extends Error {
+  constructor(readonly questionId: string) {
+    super(`No question with id ${questionId}`);
+    this.name = "QuestionNotFoundError";
+  }
+}
+
+export class QuestionNotOpenError extends Error {
+  constructor(readonly questionId: string, readonly status: QuestionStatus) {
+    super(`Question ${questionId} is ${status}, not open`);
+    this.name = "QuestionNotOpenError";
+  }
+}
+
+interface QuestionRow {
+  id: string;
+  change_id: string;
+  phase: Phase;
+  kind: QuestionKind;
+  message: string;
+  schema_json: string;
+  expected_snapshot: string;
+  status: QuestionStatus;
+}
+
+function toRecord(row: QuestionRow): QuestionRecord {
+  return {
+    id: row.id,
+    changeId: row.change_id,
+    phase: row.phase,
+    kind: row.kind,
+    status: row.status,
+    expectedSnapshot: row.expected_snapshot,
+    question: {
+      message: row.message,
+      requestedSchema: JSON.parse(row.schema_json) as RequestedSchema,
+    },
+  };
+}
+
+export type ApplyOutcome =
+  | { readonly kind: "advanced"; readonly action: ChangeAction }
+  /** A human declined. Recorded, not treated as a failure. */
+  | { readonly kind: "declined" }
+  /** Answered, but it carries no gate action -- a clarification batch. */
+  | { readonly kind: "recorded" };
+
+export class QuestionStore {
+  private readonly commands: CommandStore;
+
+  constructor(
+    private readonly database: Database.Database,
+    private readonly now: () => Date = () => new Date(),
+  ) {
+    this.commands = new CommandStore(database, now);
+  }
+
+  /**
+   * Put a question to the human.
+   *
+   * Any question already open for this Change is superseded first: two open
+   * questions would be two decisions racing for the same gate, and whichever
+   * answer landed second would be applied against a snapshot its asker never
+   * saw. The unique index makes the race impossible; this makes it orderly.
+   */
+  ask(input: {
+    id: string;
+    changeId: string;
+    phase: Phase;
+    kind: QuestionKind;
+    question: Question;
+    expectedSnapshot: string;
+  }): QuestionRecord {
+    const at = this.now().toISOString();
+    this.database.transaction(() => {
+      this.database.prepare(
+        "UPDATE questions SET status = 'superseded', updated_at = ? WHERE change_id = ? AND status = 'open'",
+      ).run(at, input.changeId);
+      this.database.prepare(
+        `INSERT INTO questions
+           (id, change_id, phase, kind, message, schema_json,
+            expected_snapshot, status, asked_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+      ).run(
+        input.id, input.changeId, input.phase, input.kind,
+        input.question.message,
+        JSON.stringify(input.question.requestedSchema),
+        input.expectedSnapshot, at, at,
+      );
+    })();
+    return this.read(input.id);
+  }
+
+  read(questionId: string): QuestionRecord {
+    const row = this.database.prepare("SELECT * FROM questions WHERE id = ?")
+      .get(questionId) as QuestionRow | undefined;
+    if (!row) throw new QuestionNotFoundError(questionId);
+    return toRecord(row);
+  }
+
+  /** The one question this Change is waiting on, if any. */
+  open(changeId: string): QuestionRecord | null {
+    const row = this.database.prepare(
+      "SELECT * FROM questions WHERE change_id = ? AND status = 'open'",
+    ).get(changeId) as QuestionRow | undefined;
+    return row ? toRecord(row) : null;
+  }
+
+  /**
+   * Record what the human said. This is the plugin's only write.
+   *
+   * It moves the question to `answered` and nothing else -- deliberately. The
+   * answer becoming a state change is StagePass's job, through the gate, in
+   * `apply` below.
+   */
+  answer(questionId: string, result: unknown): Answer {
+    const record = this.read(questionId);
+    if (record.status !== "open") {
+      throw new QuestionNotOpenError(questionId, record.status);
+    }
+    const answer = readAnswer(result as { action?: unknown; content?: unknown });
+    const at = this.now().toISOString();
+    this.database.transaction(() => {
+      this.database.prepare(
+        `INSERT INTO answers (question_id, action, content_json, answered_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run(questionId, answer.action, JSON.stringify(answer.content), at);
+      this.database.prepare(
+        "UPDATE questions SET status = 'answered', updated_at = ? WHERE id = ?",
+      ).run(at, questionId);
+    })();
+    return answer;
+  }
+
+  readAnswerFor(questionId: string): Answer | null {
+    const row = this.database.prepare(
+      "SELECT action, content_json FROM answers WHERE question_id = ?",
+    ).get(questionId) as { action: string; content_json: string } | undefined;
+    return row
+      ? {
+          action: row.action as Answer["action"],
+          content: JSON.parse(row.content_json) as Answer["content"],
+        }
+      : null;
+  }
+
+  /**
+   * Turn an answer into a state change, through the gate.
+   *
+   * The stored fence is passed to the command, so an answer given against
+   * evidence that has since moved is refused with `GateMovedError` rather than
+   * applied to evidence the human never saw.
+   */
+  apply(questionId: string): ApplyOutcome {
+    const record = this.read(questionId);
+    const answer = this.readAnswerFor(questionId);
+    if (!answer) throw new QuestionNotOpenError(questionId, record.status);
+
+    const finish = (): void => {
+      this.database.prepare(
+        "UPDATE questions SET status = 'applied', updated_at = ? WHERE id = ?",
+      ).run(this.now().toISOString(), questionId);
+    };
+
+    if (answer.action !== "accept") {
+      // A decline leaves the phase where it is, with a record that someone
+      // looked and chose not to decide. Not a failure, not a default approval.
+      finish();
+      return { kind: "declined" };
+    }
+    const action = decisionFrom(record.question, answer);
+    if (!action) {
+      finish();
+      return { kind: "recorded" };
+    }
+    this.commands.apply({
+      changeId: record.changeId,
+      action,
+      idempotencyKey: `question:${questionId}`,
+      expectedSnapshot: record.expectedSnapshot,
+    });
+    finish();
+    return { kind: "advanced", action };
+  }
+}

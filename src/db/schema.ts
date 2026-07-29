@@ -1,5 +1,6 @@
 import { PHASES } from "../domain/phase";
 import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
+import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
 
 /**
  * The L0 schema, with the ledger invariant enforced by the database itself.
@@ -19,6 +20,12 @@ import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
  * that does not have a matching ledger row -- so a bypass is not a missing
  * audit entry discovered later, it is an immediate abort at the moment of the
  * write, with a stack trace pointing at the code that tried.
+ *
+ * ## No backticks inside the SQL
+ *
+ * It is one template literal, so a backtick in a comment ends it and the file
+ * stops parsing several lines later with a message about an unrelated word.
+ * Cost me three round trips; write plain words instead.
  */
 
 const quoted = (values: readonly string[]) =>
@@ -179,4 +186,41 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS ix_turns_job ON turns (job_id, created_at);
+
+-- ---------------------------------------------------------------------------
+-- L3
+-- ---------------------------------------------------------------------------
+
+-- What StagePass is asking a human, and the ground it was asked against.
+--
+-- expected_snapshot is the fence, stored at the moment of asking. A person
+-- takes as long as they take, and applying their answer to evidence they never
+-- saw is exactly what the fence exists to prevent.
+CREATE TABLE IF NOT EXISTS questions (
+  id                TEXT PRIMARY KEY,
+  change_id         TEXT NOT NULL REFERENCES changes(id),
+  phase             TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  kind              TEXT NOT NULL CHECK (kind IN (${quoted(QUESTION_KINDS)})),
+  message           TEXT NOT NULL CHECK (length(trim(message)) > 0),
+  schema_json       TEXT NOT NULL,
+  expected_snapshot TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('open','answered','applied','superseded')),
+  asked_at          TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+-- One Change asks one question at a time. A second open question would mean two
+-- people-facing decisions racing for the same gate, and whichever answer landed
+-- second would be applied to a snapshot the asker never saw.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_questions_one_open
+  ON questions (change_id) WHERE status = 'open';
+
+-- The plugin's only write. It cannot touch the changes table, so it cannot move
+-- -- it can only record what a human said when asked.
+CREATE TABLE IF NOT EXISTS answers (
+  question_id  TEXT PRIMARY KEY REFERENCES questions(id),
+  action       TEXT NOT NULL CHECK (action IN (${quoted(ANSWER_ACTIONS)})),
+  content_json TEXT NOT NULL,
+  answered_at  TEXT NOT NULL
+);
 `;
