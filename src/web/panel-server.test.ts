@@ -41,6 +41,10 @@ interface PhaseEntry {
   /** Passed, failed, or neither yet. See the note on `markOf` in the server. */
   mark: "approved" | "problem" | null;
   gaps: { id: string; severity: string; title: string; status: string }[];
+  assessed: {
+    round: number;
+    byRole: Record<string, { criterionKey: string; verdict: string; criterionText: string }[]>;
+  } | null;
 }
 
 /**
@@ -152,7 +156,10 @@ describe("panel · what it offers", () => {
       // Nothing has passed or failed yet, so no node carries a mark.
       assert.deepEqual(panel.phases[0], {
         phase: "PRD", threadId: null, live: false, current: true,
-        mark: null, gaps: [],
+        // assessed 是 null 而不是空对象：**「没跑过」和「跑了但一条都没答上」
+        // 必须分得开** —— 后者在 gaps 里看不出来，因为 yes 和 not_assessed 都
+        // 不留痕迹。
+        mark: null, gaps: [], assessed: null,
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));

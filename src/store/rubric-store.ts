@@ -293,6 +293,36 @@ export class RubricStore {
     })();
   }
 
+  /**
+   * 这个阶段**最近一轮**的判定，按角色分。没跑过任何一轮返回 null。
+   *
+   * ## null 和空数组是两件事
+   *
+   * `null` = 这个阶段还没跑过 rubric。
+   * 有值但某个角色是空数组 = 那个角色没有 rubric（合法）。
+   * 有值且全是 `not_assessed` = **跑了，但模型没照契约作答** —— 这一条在 gaps 里
+   * 看不出来，因为 `yes` 和 `not_assessed` 都不留痕迹。人最需要看见的正是它。
+   *
+   * 只给最近一轮：人要看的是「现在怎么样」。历史在库里，要翻再翻。
+   */
+  latestRound(changeId: string, phase: Phase): {
+    round: number;
+    byRole: Record<RubricRole, StoredAssessment[]>;
+  } | null {
+    const top = this.database.prepare(
+      `SELECT max(round) AS round FROM rubric_assessments
+        WHERE change_id = ? AND phase = ?`,
+    ).get(changeId, phase) as { round: number | null };
+    if (top.round === null) return null;
+
+    const byRole = { producer: [], critic: [], verdict: [] } as
+      Record<RubricRole, StoredAssessment[]>;
+    for (const role of RUBRIC_ROLES) {
+      byRole[role] = this.assessments(changeId, phase, role, top.round);
+    }
+    return { round: top.round, byRole };
+  }
+
   /** 一轮的判定。**按 round 读，不按 run 读** —— 理由见 schema 里那段注释。 */
   assessments(
     changeId: string, phase: Phase, role: RubricRole, round: number,

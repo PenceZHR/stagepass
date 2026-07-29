@@ -290,3 +290,42 @@ describe("rubric store · 出厂标准", () => {
     assert.deepEqual(missing, []);
   });
 });
+
+describe("rubric store · 最近一轮的判定", () => {
+  it("没跑过是 null —— 不是空对象", () => {
+    /*
+     * 这条区分是给界面用的，而且要紧：
+     *   null          还没跑过
+     *   跑了但全 not_assessed  模型没照契约作答
+     * 后者在 gaps 里**看不出来**，因为 yes 和 not_assessed 都不派生 standard。
+     * 两者都塌成「空」，人就只能靠猜。
+     */
+    const { rubrics } = open();
+    assert.equal(rubrics.latestRound(CHANGE, "Spec"), null);
+  });
+
+  it("只给最近一轮", () => {
+    const { rubrics } = open();
+    const version = rubrics.save(projectScope, [{ text: "一", blocking: true }]);
+    rubrics.record(CHANGE, "Spec", "producer", 1, version,
+      [{ criterionKey: "K1", verdict: "no", evidence: null }]);
+    rubrics.record(CHANGE, "Spec", "producer", 4, version,
+      [{ criterionKey: "K1", verdict: "yes", evidence: "补上了" }]);
+
+    const latest = rubrics.latestRound(CHANGE, "Spec");
+    assert.equal(latest?.round, 4);
+    assert.equal(latest?.byRole.producer[0]?.verdict, "yes");
+  });
+
+  it("没有 rubric 的角色是空数组，不是缺席", () => {
+    const { rubrics } = open();
+    const version = rubrics.save(projectScope, [{ text: "一", blocking: true }]);
+    rubrics.record(CHANGE, "Spec", "producer", 1, version,
+      [{ criterionKey: "K1", verdict: "yes", evidence: null }]);
+
+    const latest = rubrics.latestRound(CHANGE, "Spec");
+    assert.equal(latest?.byRole.producer.length, 1);
+    assert.deepEqual(latest?.byRole.critic, []);
+    assert.deepEqual(latest?.byRole.verdict, []);
+  });
+});

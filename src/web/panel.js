@@ -798,6 +798,8 @@ function drawRubric() {
   }
   parts.push(roles);
 
+  parts.push(drawVerdicts());
+
   const scope = document.createElement("p");
   scope.className = "rubric-scope";
   scope.textContent = editing.scope === "change"
@@ -881,6 +883,83 @@ function drawRubric() {
   }
 
   sheetRubric.replaceChildren(...parts);
+}
+
+const VERDICT_LABEL = {
+  yes: "满足",
+  no: "不满足",
+  not_assessed: "未评估",
+};
+
+/**
+ * 这一轮这个角色判了什么。
+ *
+ * **为什么非显示不可**：`no` 会派生出 standard gap，在「问题」页签看得到；但
+ * `yes` 和 `not_assessed` **不留任何痕迹** —— 于是「都通过了」和「模型压根没照
+ * 契约作答」在 gaps 里长得一模一样（两边都没有 standard）。
+ *
+ * 而这两件事的处理方式完全相反：前者可以放行，后者要去看契约为什么没被遵守。
+ * 不显示出来，人就只能靠猜。
+ */
+function drawVerdicts() {
+  const box = document.createElement("div");
+  const entry = phases.find((item) => item.phase === editing.phase);
+  const round = entry?.assessed;
+
+  const head = document.createElement("p");
+  head.className = "sheet-section";
+
+  if (!round) {
+    head.textContent = "这个阶段还没跑过 rubric 判定";
+    box.append(head);
+    return box;
+  }
+
+  const mine = round.byRole[editing.role] ?? [];
+  head.textContent = `第 ${round.round} 轮判定`;
+  box.append(head);
+
+  if (mine.length === 0) {
+    const none = document.createElement("p");
+    none.className = "sheet-empty";
+    none.textContent = "这个角色当时没有 rubric，所以没有判定。";
+    box.append(none);
+    return box;
+  }
+
+  const unanswered = mine.filter((item) => item.verdict === "not_assessed").length;
+  if (unanswered === mine.length) {
+    // 这一条要显眼：它和「全部通过」在 gaps 里是同一个样子。
+    const warn = document.createElement("p");
+    warn.className = "rubric-note bad";
+    warn.textContent = "这一轮一条都没答上 —— 模型没照契约作答，不是「都通过了」。";
+    box.append(warn);
+  }
+
+  for (const item of mine) {
+    const row = document.createElement("div");
+    row.className = `gap ${item.verdict === "yes" ? "closed" : "open"}`;
+
+    const tag = document.createElement("b");
+    tag.className = "gap-sev";
+    tag.textContent = VERDICT_LABEL[item.verdict] ?? item.verdict;
+
+    const text = document.createElement("div");
+    text.className = "gap-text";
+    const title = document.createElement("strong");
+    // 判定当时的正文，不是当前 rubric 的 —— 快照，永不回溯派生。
+    title.textContent = item.criterionText;
+    text.append(title);
+    if (item.evidence) {
+      const why = document.createElement("em");
+      why.textContent = item.evidence;
+      text.append(why);
+    }
+
+    row.append(tag, text);
+    box.append(row);
+  }
+  return box;
 }
 
 const SAVE_REFUSALS = {
