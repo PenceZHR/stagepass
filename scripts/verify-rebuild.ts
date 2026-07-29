@@ -23,10 +23,7 @@ import { TurnStore } from "../src/store/turn-store";
 import { TurnLoop } from "../src/work/turn-loop";
 import { CodexTurnRunner } from "../src/codex/turn-runner";
 import { ScriptedCodexTransport, type CodexTransport } from "../src/codex/transport";
-import { CodexMcpTransport } from "../src/codex/mcp-transport";
-import { StreamPrinter } from "../src/codex/stream-render";
-
-const printer = new StreamPrinter((text) => process.stdout.write(text));
+import { CodexTuiTransport } from "../src/codex/tui-transport";
 
 const REAL = process.argv.includes("--real");
 const CHANGE = "CHG-VERIFY";
@@ -37,9 +34,8 @@ const NOW = 1_000_000;
  * stdio. Read-only, because verifying the chain must not let a turn write to
  * the repository it is being run from.
  *
- * The thread ids it prints are NOT watchable: opening one in Desktop shows an
- * empty window, measured 2026-07-28. They are here to correlate with the rows
- * below, nothing more.
+ * The real form opens a Codex TUI window per turn. Watch it there -- this
+ * script prints no execution output of its own, by design.
  */
 function realTransport(): CodexTransport {
   // An empty scratch directory, NOT the repository.
@@ -49,16 +45,12 @@ function realTransport(): CodexTransport {
   // job is to prove the chain moves. Real phases will run against the real
   // project; this one only has to make a turn happen.
   const cwd = mkdtempSync(join(tmpdir(), "stagepass-verify-"));
-  return new CodexMcpTransport({
+  return new CodexTuiTransport({
     cwd,
     sandbox: "read-only",
     // This script verifies the chain, not the model's thinking. The default is
     // xhigh, which did not finish two design turns inside ten minutes.
     reasoningEffort: "low",
-    onThread: (threadId) => console.log(`\n   thread ${threadId}`),
-    // Render the stream ourselves. Desktop will not show a thread it did not
-    // create, so this is the only place the work is visible while it happens.
-    onEvent: (event) => printer.handle(event),
   });
 }
 
@@ -144,7 +136,6 @@ async function main(): Promise<void> {
   console.log("change       ", changes.read(CHANGE).state);
 
   database.close();
-  if (transport instanceof CodexMcpTransport) transport.close();
 }
 
 main().catch((error: unknown) => {

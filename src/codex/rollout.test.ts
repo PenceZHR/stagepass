@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import {
+  findCompletedTurn,
+  parseRollout,
+  threadIdFromRolloutName,
+} from "./rollout";
+
+/**
+ * Built from records captured out of a real session file on 0.144.4, so the
+ * shapes are what Codex writes rather than what they were assumed to be.
+ */
+const line = (payload: object) =>
+  JSON.stringify({ timestamp: "2026-07-28T22:07:15.000Z", type: "event_msg", payload });
+
+const started = line({ type: "task_started" });
+const complete = line({ type: "task_complete" });
+const user = (text: string) => line({ type: "user_message", message: text });
+const agent = (text: string) => line({ type: "agent_message", message: text });
+
+describe("L2 · reading a session file", () => {
+  it("skips a half-written last line instead of failing", () => {
+    // Normal, not exceptional: the file is appended to while it is read.
+    const records = parseRollout(`${started}\n${agent("hi")}\n{"type":"event_m`);
+    assert.equal(records.length, 2);
+  });
+
+  it("ignores blank lines", () => {
+    assert.equal(parseRollout(`\n${started}\n\n${complete}\n`).length, 2);
+  });
+
+  it("takes the thread id from the filename", () => {
+    assert.equal(
+      threadIdFromRolloutName(
+        "rollout-2026-07-28T22-07-10-019faba0-33e3-7141-b44d-f8a067e4d8c6.jsonl",
+      ),
+      "019faba0-33e3-7141-b44d-f8a067e4d8c6",
+    );
+    for (const name of ["notes.txt", "rollout-2026-07-28.jsonl", "rollout--.jsonl"]) {
+      assert.equal(threadIdFromRolloutName(name), null, name);
+    }
+  });
+});
+
+describe("L2 · finding the turn StagePass asked for", () => {
+  it("returns what the model said once the turn completes", () => {
+    const records = parseRollout([
+      started, user("do the thing"), agent("done"), complete,
+    ].join("\n"));
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "done" });
+  });
+
+  it("returns nothing while the turn is still running", () => {
+    const records = parseRollout([started, user("go"), agent("working")].join("\n"));
+    assert.equal(findCompletedTurn(records, 0), null);
+  });
+
+  /**
+   * The trap this exists for. A rollout accumulates every turn the thread ever
+   * had, and `codex resume` appends to the same file -- so a scan from zero
+   * returns the answer to the PREVIOUS question, which would look like a
+   * suspiciously fast, suspiciously wrong turn.
+   */
+  it("does not return an earlier turn's answer", () => {
+    const text = [
+      started, user("first question"), agent("first answer"), complete,
+      started, user("second question"), agent("second answer"), complete,
+    ].join("\n");
+    const records = parseRollout(text);
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "first answer" });
+    // Asked after the first turn was already on disk: only the second counts.
+    assert.deepEqual(findCompletedTurn(records, 4), { text: "second answer" });
+  });
+
+  it("waits when the file only holds turns that finished before we asked", () => {
+    const records = parseRollout([
+      started, user("old"), agent("old answer"), complete,
+    ].join("\n"));
+    assert.equal(findCompletedTurn(records, 4), null);
+  });
+
+  it("joins everything the model said in one turn", () => {
+    const records = parseRollout([
+      started, user("go"), agent("part one"), agent("part two"), complete,
+    ].join("\n"));
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "part one\npart two" });
+  });
+
+  /**
+   * An abandoned turn must not leak its text into the next one -- otherwise a
+   * retry after a crash answers with a mixture of both attempts.
+   */
+  it("drops an unfinished turn when a new one starts", () => {
+    const records = parseRollout([
+      started, agent("abandoned"),
+      started, agent("real"), complete,
+    ].join("\n"));
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "real" });
+  });
+
+  it("ignores records that are not turn events", () => {
+    const records = parseRollout([
+      JSON.stringify({ type: "response_item", payload: { type: "message" } }),
+      started,
+      JSON.stringify({ type: "event_msg", payload: { type: "token_count" } }),
+      agent("answer"),
+      complete,
+    ].join("\n"));
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "answer" });
+  });
+
+  it("completes with empty text rather than hanging when nothing was said", () => {
+    const records = parseRollout([started, complete].join("\n"));
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "" });
+  });
+});
