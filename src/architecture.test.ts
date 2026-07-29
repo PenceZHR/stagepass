@@ -38,7 +38,7 @@ const FILES = sourceFiles().map((path) => ({
  * when it was allowed to exist. Both are useful and they are not the same
  * question.
  */
-const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
+const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
@@ -66,6 +66,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
 
+  "domain/rubric.ts": 5,
+  "store/rubric-store.ts": 5,
+
   // The panel is not a new layer, but its two halves sit at different ones.
   //
   // `pty-session` only carries bytes: that is L2's second launch implementation,
@@ -87,7 +90,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   // layer's enum constants. Placing it at the top is not an exemption: nothing
   // in production imports it downward -- only tests and the entry script read
   // it -- so the downward-only rule still holds everywhere it is checked.
-  "db/schema.ts": 4,
+  //
+  // It moves up whenever a new layer adds tables: L5's rubric enums are imported
+  // here, so 4 would now be a downward-import violation. If this line looks
+  // arbitrary, it is not -- it is "the highest layer with storage".
+  "db/schema.ts": 5,
 };
 
 const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));

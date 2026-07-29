@@ -2,6 +2,7 @@ import { PHASES } from "../domain/phase";
 import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
 import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
 import { GAP_STATUSES } from "../domain/gap";
+import { RUBRIC_ROLES, RUBRIC_VERDICTS } from "../domain/rubric";
 
 /**
  * The L0 schema, with the ledger invariant enforced by the database itself.
@@ -283,5 +284,113 @@ CREATE TABLE IF NOT EXISTS answers (
   action       TEXT NOT NULL CHECK (action IN (${quoted(ANSWER_ACTIONS)})),
   content_json TEXT NOT NULL,
   answered_at  TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- L5
+-- ---------------------------------------------------------------------------
+
+-- An editable set of yes/no standards for one (scope, phase, role).
+--
+-- Editing makes a NEW version row; old rows stay. That is what lets a rubric be
+-- editable without invalidating anything already sealed: every assessment
+-- records the version it was made against, and nothing recomputes backwards.
+--
+-- change_id NULL means the project-level default. A Change-level row overrides
+-- it for that Change only.
+--
+-- reason carries why an edit was made, and is REQUIRED when the edit retires a
+-- criterion that was blocking (PRD 1.1). That is not enforceable here -- knowing
+-- whether an edit retires something needs the previous version -- so RubricStore
+-- refuses it instead. The column exists so the answer is on the record.
+CREATE TABLE IF NOT EXISTS rubrics (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  change_id   TEXT     NULL REFERENCES changes(id),
+  phase       TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  role        TEXT NOT NULL CHECK (role IN (${quoted(RUBRIC_ROLES)})),
+  version     INTEGER NOT NULL CHECK (version >= 1),
+  is_current  INTEGER NOT NULL CHECK (is_current IN (0, 1)),
+  reason      TEXT     NULL,
+  created_at  TEXT NOT NULL
+);
+
+-- TWO partial indexes, not one, and the reason is a trap rather than a style.
+--
+-- SQLite treats NULLs as distinct inside a unique index. A single index over
+-- (project_id, change_id, phase, role) therefore constrains nothing at all for
+-- the project-level rows, where change_id IS NULL -- every version of a
+-- project-level rubric would be is_current = 1 simultaneously, and the failure
+-- is SILENT: reads just start returning whichever row came back first.
+--
+-- Splitting on change_id IS NULL is what makes the constraint real on both
+-- sides. Same trap, same fix, for version uniqueness below.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rubrics_current_change
+  ON rubrics (project_id, change_id, phase, role)
+  WHERE is_current = 1 AND change_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rubrics_current_project
+  ON rubrics (project_id, phase, role)
+  WHERE is_current = 1 AND change_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rubrics_version_change
+  ON rubrics (project_id, change_id, phase, role, version)
+  WHERE change_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_rubrics_version_project
+  ON rubrics (project_id, phase, role, version)
+  WHERE change_id IS NULL;
+
+-- One standard. criterion_key is the identity that survives editing.
+--
+-- Keyed by (rubric_id, criterion_key) rather than by a row id, because the key
+-- IS the identity: a rubric-derived gap's id is built from it, and
+-- gate.snapshotOf hashes blocker ids. A key that moved when the wording
+-- changed would move every derived gap id, move the snapshot, and invalidate the
+-- fence on every open question -- refusing an answer a person was in the middle
+-- of giving. See docs/RUBRIC-REMAP-2026-07-29.md section 3.2.
+CREATE TABLE IF NOT EXISTS rubric_criteria (
+  rubric_id      TEXT NOT NULL REFERENCES rubrics(id),
+  criterion_key  TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  text           TEXT NOT NULL CHECK (length(trim(text)) > 0),
+  blocking       INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+  PRIMARY KEY (rubric_id, criterion_key)
+);
+
+-- What one round decided about one criterion.
+--
+-- ## Keyed by round, never by run
+--
+-- A blue-side continuation does not re-run the red side, so under that run there
+-- are no producer rows -- while the old ones are still there under the SAME
+-- round. Reading by run sees "producer has no assessments", reads it as "there
+-- is no rubric", and passes. That is precisely the failure this table exists to
+-- prevent.
+--
+-- ## Why the criterion is snapshotted here
+--
+-- criterion_text and blocking_then are what the criterion SAID when the
+-- judgement was made. Deriving a blocker reads these; retiring one reads the
+-- CURRENT rubric. That asymmetry is what makes editing a rubric able only to
+-- close a blocker, never to open one -- so no edit can put a sealed Change back
+-- behind a gate.
+--
+-- ## change_id is not redundant
+--
+-- An assessment made against a PROJECT-level rubric would otherwise have no link
+-- to the Change it was about: rubric_id points at something that outlives the
+-- Change entirely.
+CREATE TABLE IF NOT EXISTS rubric_assessments (
+  change_id      TEXT NOT NULL REFERENCES changes(id),
+  phase          TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  role           TEXT NOT NULL CHECK (role IN (${quoted(RUBRIC_ROLES)})),
+  round          INTEGER NOT NULL,
+  rubric_id      TEXT NOT NULL REFERENCES rubrics(id),
+  criterion_key  TEXT NOT NULL,
+  verdict        TEXT NOT NULL CHECK (verdict IN (${quoted(RUBRIC_VERDICTS)})),
+  evidence       TEXT     NULL,
+  criterion_text TEXT NOT NULL,
+  blocking_then  INTEGER NOT NULL CHECK (blocking_then IN (0, 1)),
+  created_at     TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase, role, round, criterion_key)
 );
 `;
