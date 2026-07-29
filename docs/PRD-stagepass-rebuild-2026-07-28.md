@@ -120,7 +120,9 @@ CLIENT_INFO:         {"name":"codex-mcp-client","title":"Codex","version":"0.144
 ELICIT_RESULT:       {"action":"accept","content":{"action":"approve_spec"}}
 ```
 
-> **实测值的版本边界**：本节与 §6.4 的全部实测结论都取自 `codex-cli 0.144.4`。`0.146.0` 已发布，**升级之后这些结论要重新确认一遍** —— 它们依赖的是行为和文件约定，不是公开接口（见 §10 已知风险）。以 `codex --help` 与实跑为准，不要以旧记忆为准。
+> **实测值的版本边界**：本节与 §6.4 的原始实测取自 `codex-cli 0.144.4`。**2026-07-29 在 `0.146.0` 上复核过**：`-s` / `-a` 的档位、`never` 的原文、bypass 的原文、以及那两个不存在的旧写法，全部不变；客户端仍然声明 `{"elicitation":{"form":{},"url":{}}}`。**这些结论扛过了这次版本跳变**，但它们依赖行为和文件约定而非公开接口（见 §10 已知风险），下次升级仍要重来一遍。以 `codex --help` 与实跑为准，不要以旧记忆为准。
+>
+> **顺带纠正一个方法**：`/opt/homebrew/bin/codex` 是一个几 KB 的 Node 包装脚本，不是真二进制（真的在 `@openai/codex-darwin-arm64/vendor/.../bin/codex`，259MB）。**对着包装脚本跑 `strings` 会得到一片 0 命中，看起来像"这个键不存在"，其实什么都没搜。** 本文凡是引用 `strings` 结论的地方，都以真二进制为准。
 
 **为什么这不只是"换个能跑的方案"**：`ui://` widget 押注在某一个客户端的渲染实现上，那正是它今天死掉的原因。`elicitation` 是 **MCP 协议层的客户端能力** —— 谁拥有 turn，选择器就在谁那里渲染。今天是 TUI；哪天 App 变得可驱动，同一个插件不用改一行。这跟"能用公开的就用公开的"是同一条原则。
 
@@ -376,6 +378,19 @@ JOB-2 拿到 381B（第二轮 1 条）                     ← 没有重读第�
 
 `never` 的原文是 *Never ask for user approval. Execution failures are immediately returned to the model.* —— 零提示；被沙箱挡住的命令直接把错误回给模型。**已实测 `codex resume` 接受这两个参数。**
 
+> ### ⚠ `-a never` 会掐死 elicitation（2026-07-29 实测，可复现）
+>
+> **`-a never` 不只管 shell 命令的审批，它同时让 Codex 自动拒绝 MCP 的 `elicitation/create`。** 而 elicitation 是 StagePass 唯一的问人通道（§5.2b）—— 用了 `never`，StagePass 就再也问不到人，且失败是静默的：插件收到一个格式完全合法的 `{"action":"decline"}`，看起来和"人按了 Esc"一模一样（§5.6）。
+>
+> 判据是 `pnpm probe:elicit <policy>`，各跑两次，结果稳定：
+>
+> | `-a` | `elicitation/create` | 选择器画出来了吗 | 客户端回什么 |
+> |---|---|---|---|
+> | `never` | 发出 | **没有** | `{"action":"decline"}`，秒回 |
+> | `on-request` | 发出 | **画了** | `{"action":"accept","content":{"decision":"reject"}}` |
+>
+> 所以：**任何可能要问人的 turn，`-a` 不许是 `never`。** 这条比「零提示」优先 —— 零提示是舒适度，问得到人是这个产品本身。
+
 > **版本陷阱**：旧文档和旧记忆里有两个此版本**不存在**的写法 —— 一个"全自动"总开关，以及一个介于 `on-request` 与 `never` 之间的档位。照抄会得到一个启动即失败的命令行。**以 `codex --help` 实读为准**，本文不复述那两个名字，免得被人 grep 走。
 
 #### 决定一：不写进 `~/.codex/config.toml`
@@ -392,9 +407,11 @@ JOB-2 拿到 381B（第二轮 1 条）                     ← 没有重读第�
 
 | 阶段 | 给什么 |
 |---|---|
-| PRD / Spec / TechSpec / Plan / TestPlan | `-s read-only -a never` —— 这些阶段模型只该读和产出文档 |
-| Build / Fix | `-s workspace-write -a never` |
-| Review / QA | 按是否需要跑测试决定 |
+| PRD / Spec / TechSpec / Plan / TestPlan | `-s read-only -a on-request` —— 这些阶段模型只该读和产出文档，**而它们正是要问人的阶段** |
+| Build / Fix | `-s workspace-write -a on-request` |
+| Review / QA | 沙箱按是否需要跑测试决定；`-a` 同上 |
+
+**约束模型能碰什么的是 `-s`，不是 `-a`。** 上表用 `-s` 划边界（read-only 的阶段改不了任何文件，这一条不因 `-a` 而松动），`-a` 一律留在 `on-request` —— 因为 `never` 会顺带掐死 elicitation（见上面那个方框）。
 
 **写进全局 config 反而做不到这个区分。**
 
@@ -402,7 +419,9 @@ JOB-2 拿到 381B（第二轮 1 条）                     ← 没有重读第�
 
 help 原文把它标为 *EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed.* —— 给已经跑在容器里的场景用的，本机不是。
 
-**`-s workspace-write -a never` 已经达成「零提示」**，同时保留边界：模型能改工作区，不能改工作区外面。加上绕过之后收益为零（提示本来就没有了），代价是模型可在整机执行任意命令且无人过问。需要往仓库外写时，用 **`--add-dir <DIR>` 精确开口子**。
+`-s workspace-write` 已经划出边界：模型能改工作区，不能改工作区外面。加上绕过之后，代价是模型可在整机执行任意命令且无人过问 —— 而收益并不存在：**它绕过的是审批，而我们现在需要的恰恰是审批通道开着**（elicitation 走的就是那条路）。需要往仓库外写时，用 **`--add-dir <DIR>` 精确开口子**。
+
+> 这一条的理由 2026-07-29 改过一次。原话是"`-a never` 已经达成零提示，所以 bypass 的收益为零"。那个前提已被实测推翻 —— `never` 不能用。结论不变，但**不要再用「零提示」去论证它**。
 
 ### 6.1 L0 / L1 是真正的底层
 
@@ -507,8 +526,10 @@ help 原文把它标为 *EXTREMELY DANGEROUS. Intended solely for running in env
    - **「node-pty 要编译、Node 升级要重编」这个担心已被实测排除**（预编译包，Node 25.9.0 上 8 秒装完）。**不要把已排除的风险当成风险留着** —— 那会让下一个人为一个不存在的问题做设计。
    - 真正要记的是 `spawn-helper` 装完没有执行位（prebuild 里是 `-rw-r--r--`，表现为一句不指明文件的 `posix_spawnp failed`）。**它属于安装步骤，不属于风险** —— 固化进安装步骤即可。
 
-3. **pty 里仍有三件事没验，要逐条目视确认后才能写成事实**：① **elicitation 选择器在 pty 里能不能用**（它是 L3 的命脉，**也是面板方案的地基 —— 这条不行，面板就白建了**，所以它是路 B 的前置探针，开工前先做）；② 在 pty 里敲 `/app` 能否唤起 Desktop；③ SIGWINCH（改窗口尺寸）下的表现。
-   - 对照：**「TUI 在浏览器 pty 里渲染正常」已经由用户目视确认过了**，不要把它再列成未知。
+3. **pty 里还剩两件事没验，要逐条确认后才能写成事实**：① 在 pty 里敲 `/app` 能否唤起 Desktop；② SIGWINCH（改窗口尺寸）下的表现。
+   - 对照，这两条**已经不是未知，不要再列成风险**：
+     - **「TUI 在浏览器 pty 里渲染正常」** —— 用户目视确认。
+     - **「elicitation 选择器在 pty 里可用」** —— 2026-07-29 机械验过并复现（`pnpm probe:elicit`）：选择器画得出、方向键选得动、回车提交，客户端回 `{"action":"accept","content":{"decision":"reject"}}`。**这是面板方案的地基，现在它是绿的** —— 但只在 `-a on-request` 下成立，见 §6.6 那个方框。
 
 **面板同时带来一个收益，不只是好看**：今天 `defaultLaunch` 是 `detached: true` + `.unref()`，**StagePass 连子进程句柄都扔了**，不知道 TUI 还在不在 —— 所以 §6.4 坑 1（不能等进程退出）只能靠超时兜底。**pty 握在 StagePass 手里之后，这个风险从「靠超时猜」变成「进程死了立刻知道」。** 顺带去掉 osascript 这个 macOS 绑定。
 

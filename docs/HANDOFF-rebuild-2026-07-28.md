@@ -253,9 +253,11 @@ L3 已经在 Terminal.app 版上通过（§二），所以这里要验的是**�
 
 | 阶段 | 给什么 |
 |---|---|
-| PRD / Spec / TechSpec / Plan / TestPlan | `-s read-only -a never` —— 这些阶段模型只该读和产出文档 |
-| Build / Fix | `-s workspace-write -a never` |
-| Review / QA | 按是否需要跑测试决定 |
+| PRD / Spec / TechSpec / Plan / TestPlan | `-s read-only -a on-request` |
+| Build / Fix | `-s workspace-write -a on-request` |
+| Review / QA | 沙箱按是否需要跑测试决定；`-a` 同上 |
+
+> **2026-07-29 修正**：这张表原来三行都写的 `-a never`。**那是错的 —— `-a never` 会让 Codex 自动拒绝 elicitation**（实测两次复现，见 §五.10），而 elicitation 是 StagePass 唯一的问人通道。划边界的是 `-s`，`-a` 一律留 `on-request`。权威版本在 PRD §6.6。
 
 **写进全局 config 反而做不到这个区分。**
 
@@ -263,7 +265,9 @@ L3 已经在 Terminal.app 版上通过（§二），所以这里要验的是**�
 
 help 原文：*EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed.* —— 给已经跑在容器里的场景用的，本机不是。
 
-**`-s workspace-write -a never` 已达成「零提示」**，同时保留边界：模型能改工作区，不能改工作区外面。加 bypass 之后收益为零（提示本来就没有了），代价是模型可在整机执行任意命令且无人过问。
+`-s workspace-write` 已划出边界：模型能改工作区，不能改工作区外面。加 bypass 的代价是模型可在整机执行任意命令且无人过问，而收益并不存在 —— **它绕过的是审批，而 elicitation 走的就是审批那条路，我们需要它开着**（见 §五.10）。
+
+> **2026-07-29**：这条原来的论证是"`-a never` 已达成零提示，所以 bypass 收益为零"。前提已被推翻，结论不变，**别再用「零提示」论证它**。
 
 需要往仓库外写时，用 **`--add-dir <DIR>` 精确开口子**。
 
@@ -299,7 +303,20 @@ help 原文：*EXTREMELY DANGEROUS. Intended solely for running in environments 
 
    用户决定：**人在面板前，按一下 Enter 无所谓。** 这个决定成立是因为面板 —— 在 Terminal.app 那条路上提示藏在可能被最小化的窗口里，StagePass 会静默等满超时；在面板里它就在眼前。**残留风险只剩「StagePass 无人值守跑 turn」一种场景。**
 
-10. **【前置探针，路 B 开工前必须做】elicitation 选择器在 pty 里能不能用，还没验。**
+10. **【前置探针】✅ 2026-07-29 已验，绿。elicitation 选择器在 pty 里可用。**
+
+    `pnpm probe:elicit` —— 机械判据（按一次 Down 再 Enter，落在 enum 第二项才算过），两次复现：选择器画得出、方向键选得动、回车提交，客户端回 `{"action":"accept","content":{"decision":"reject"}}`。**面板的地基是实的，路 B 可以建。**
+
+    **但验出了一件会掐死整个产品的事：`-a never` 会让 Codex 自动 decline 掉 elicitation。** 同一个探针换成 `-a never`，选择器根本不画，秒回 `{"action":"decline"}` —— 而那个回复格式完全合法，和"人按了 Esc"（§4.2 第三种形状）长得一模一样，**失败是静默的**。§4.8 决定二原来那张"每个阶段都 `-a never`"的表因此是错的，已改（PRD §6.6）。
+
+    过程里还踩了三个**探针自己的**坑，都不是 Codex 的问题，记下来免得重犯：
+    - **MCP 子进程的 `cwd` 不是仓库。** 用 `process.cwd()` 解析路径会让插件起不来，症状只有一句 `connection closed: initialize response`。从 `import.meta.url` 解析。
+    - **TUI 的文字不能用普通正则匹配。** 它用光标移动而不是空格排版，`Allow the X MCP server` 在字节流里是 `AllowtheXMCPserver`；而且 CSI 序列有中间字节（`ESC [ 0 SP q`），`[0-9;?]*[a-zA-Z]` 这种模式漏掉它。**先剥转义、再去掉全部空白，然后匹配。**
+    - **别让模型当触发器。** 最早的探针要模型去调工具，六轮里四轮它根本没调，每轮十几分钟什么也没答出来。改成探针自带一个 MCP 服务端、在工具调用里直接发 elicitation，一轮几分钟且结果稳定。
+
+    另：**`-a never` 也不覆盖 Codex 自己的 MCP 工具授权提示**（"Allow the X MCP server to run tool ...?"），那是另一道门，每个新工具第一次都会问。
+
+11. **（历史，已解决）elicitation 选择器在 pty 里能不能用，曾经没验。**
 
     它是 L3 的命脉，**也是面板方案的地基 —— 这条不行，面板就白建了。** 不需要 StagePass、不需要面板：起一个最小的、声明 `elicitation` 能力的 MCP 服务端，在任意 pty 终端（例如 `brew install ttyd && ttyd -W codex`）里跑一次 `elicitation/create`，看选择器出不出来、方向键能不能选、回车能不能确认。与 §4.2 已做过的实测是同一个动作，只是换了终端宿主。**成本以分钟计。**
 

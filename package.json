@@ -10,6 +10,7 @@
     "verify:decision": "tsx scripts/verify-decision.ts",
     "verify:round": "tsx scripts/verify-round.ts",
     "probe:pty": "tsx scripts/probe-pty-elicitation.ts",
+    "probe:elicit": "tsx scripts/probe-elicit-run.ts",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
