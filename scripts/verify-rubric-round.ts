@@ -82,7 +82,17 @@ async function main(): Promise<void> {
   const transport = new CodexTuiTransport({
     // 空目录是故意的：指向一个大仓库，模型头几分钟都在读代码而不是做这一轮。
     cwd: mkdtempSync(join(tmpdir(), "stagepass-rubric-cwd-")),
-    sandbox: "read-only",
+    /*
+     * **workspace-write，别照 verify-round.ts 抄 read-only。**
+     *
+     * 我第一次写这个脚本就是照抄的，结果整轮停在 `Would you like to make the
+     * following edits?` 上等了三十分钟 —— 红方要写一页 Spec，而 read-only 的定义
+     * 就是它不能写，于是必然升级审批。`pnpm probe:sandbox` 两小时前刚测过这件事，
+     * 我照样犯了一遍。
+     *
+     * 工作区是临时空目录，所以放开写没有代价。
+     */
+    sandbox: "workspace-write",
     reasoningEffort: "low",
   });
 
