@@ -5,6 +5,8 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../db/schema";
 import type { Blocker } from "../domain/gate";
 import { ChangeStore } from "../store/change-store";
+import { EvidenceStore } from "../store/evidence-store";
+import { GapStore } from "../store/gap-store";
 import { CommandStore } from "../store/command-store";
 import { JobStore } from "./job-store";
 import { ScriptedTurnRunner, TurnLoop, type TurnOutcome } from "./turn-loop";
@@ -165,8 +167,15 @@ describe("L1 · a failed turn is failed in both places", () => {
   });
 });
 
-describe("L1 · a re-run replaces the round's evidence but keeps waivers", () => {
-  it("supersedes the previous findings", async () => {
+describe("L1 · a re-run replaces artifacts but never resolves a problem", () => {
+  /**
+   * This test used to assert the opposite -- that a second round finding
+   * nothing cleared the first round's P0 -- and that assertion encoded the bug:
+   * 「旧问题必须被明确复核，不能因为重新生成文档而消失」. A round that regenerates
+   * its document and forgets last round's problem must not thereby open the
+   * gate, because forgetting is the likeliest thing a model does.
+   */
+  it("keeps a problem the next round forgot to mention", async () => {
     const { database, commands, loop } = open([
       { artifactIds: ["prd.md"], blockers: [P0] },
       { artifactIds: ["prd.md", "notes.md"], blockers: [] },
@@ -193,8 +202,51 @@ describe("L1 · a re-run replaces the round's evidence but keeps waivers", () =>
       });
       await loop.runOnce(WORKER);
 
-      // The second round found nothing, so the first round's P0 is gone.
+      // The second round said nothing about it, so it stands.
+      assert.equal(
+        commands.gateFor("CHG-1").refusals.approve,
+        "blocking_problem_outstanding",
+      );
+      // The artifacts, which ARE the round's own output, were replaced.
+      assert.deepEqual(
+        new EvidenceStore(database).read("CHG-1", "PRD").artifactIds,
+        ["prd.md", "notes.md"],
+      );
+    } finally {
+      database.close();
+    }
+  });
+
+  it("clears it only when a round says so, with a reason", async () => {
+    const { database, commands, loop } = open([
+      { artifactIds: ["prd.md"], blockers: [P0] },
+      {
+        artifactIds: ["prd.md"],
+        blockers: [],
+        verdicts: { [P0.id]: { kind: "closed", reason: "范围已按 PRD 收窄" } },
+      },
+    ]);
+    try {
+      loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-1",
+        deadlineAt: DEADLINE, maxAttempts: 3,
+      });
+      await loop.runOnce(WORKER);
+      commands.apply({
+        changeId: "CHG-1", action: "reject", idempotencyKey: "cmd-reject",
+        expectedSnapshot: commands.gateFor("CHG-1").snapshot,
+      });
+      loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-2",
+        deadlineAt: DEADLINE, maxAttempts: 3,
+      });
+      await loop.runOnce(WORKER);
+
       assert.ok(commands.gateFor("CHG-1").permitted.includes("approve"));
+      assert.equal(
+        new GapStore(database).all("CHG-1", "PRD")[0]?.resolution,
+        "范围已按 PRD 收窄",
+      );
     } finally {
       database.close();
     }

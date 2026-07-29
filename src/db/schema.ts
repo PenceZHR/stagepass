@@ -1,6 +1,7 @@
 import { PHASES } from "../domain/phase";
 import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
 import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
+import { GAP_STATUSES } from "../domain/gap";
 
 /**
  * The L0 schema, with the ledger invariant enforced by the database itself.
@@ -186,6 +187,34 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS ix_turns_job ON turns (job_id, created_at);
+
+-- ---------------------------------------------------------------------------
+-- L4
+-- ---------------------------------------------------------------------------
+
+-- Problems that outlive the round that found them.
+--
+-- The gate reads open rows here rather than a blockers list on the round, so a
+-- later round cannot resolve a problem by not mentioning it. Closing one
+-- requires saying so; the resolution column is where that is said.
+CREATE TABLE IF NOT EXISTS gaps (
+  id            TEXT NOT NULL,
+  change_id     TEXT NOT NULL REFERENCES changes(id),
+  phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  severity      TEXT NOT NULL CHECK (severity IN ('P0','P1','P2')),
+  title         TEXT NOT NULL CHECK (length(trim(title)) > 0),
+  status        TEXT NOT NULL CHECK (status IN (${quoted(GAP_STATUSES)})),
+  opened_round  INTEGER NOT NULL,
+  resolution    TEXT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase, id),
+  -- A gap that has left the open state says why. Without this, "closed" and "forgotten"
+  -- are the same row, which is the distinction this table exists to keep.
+  CHECK (status = 'open' OR (resolution IS NOT NULL AND length(trim(resolution)) > 0))
+);
+
+CREATE INDEX IF NOT EXISTS ix_gaps_open
+  ON gaps (change_id, phase) WHERE status = 'open';
 
 -- ---------------------------------------------------------------------------
 -- L3

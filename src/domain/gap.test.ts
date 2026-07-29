@@ -1,0 +1,223 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+
+import {
+  applyRound,
+  blockersFrom,
+  InvalidVerdictError,
+  waive,
+  waivedFrom,
+  type Gap,
+} from "./gap";
+
+function gap(patch: Partial<Gap> = {}): Gap {
+  return {
+    id: "G-1",
+    severity: "P1",
+    title: "验收标准不可测",
+    status: "open",
+    openedRound: 1,
+    resolution: null,
+    ...patch,
+  };
+}
+
+describe("L4 · silence keeps a gap open", () => {
+  /**
+   * The rule the whole module exists for. A second round that regenerates its
+   * document and never mentions last round's problem must not thereby resolve
+   * it -- otherwise forgetting opens the gate, and forgetting is the single
+   * most likely thing a model does.
+   */
+  it("carries an unmentioned gap into the next round", () => {
+    const after = applyRound([gap()], { round: 2, found: [], verdicts: {} });
+    assert.deepEqual(after, [gap()]);
+  });
+
+  it("carries it even when the round found other things", () => {
+    const after = applyRound([gap()], {
+      round: 2,
+      found: [{ id: "G-2", severity: "P0", title: "范围冲突" }],
+      verdicts: {},
+    });
+    assert.deepEqual(after.map((each) => [each.id, each.status]), [
+      ["G-1", "open"], ["G-2", "open"],
+    ]);
+  });
+
+  it("closes one only when the round says so, with a reason", () => {
+    const after = applyRound([gap()], {
+      round: 2, found: [],
+      verdicts: { "G-1": { kind: "closed", reason: "第 3 节补了可测的验收标准" } },
+    });
+    assert.deepEqual(after, [gap({
+      status: "closed", resolution: "第 3 节补了可测的验收标准",
+    })]);
+  });
+
+  /**
+   * A close with no reason is indistinguishable from forgetting, and those two
+   * are exactly what must not look the same.
+   */
+  it("refuses a verdict with no reason", () => {
+    for (const reason of ["", "   "]) {
+      assert.throws(
+        () => applyRound([gap()], {
+          round: 2, found: [], verdicts: { "G-1": { kind: "closed", reason } },
+        }),
+        (error: unknown) =>
+          error instanceof InvalidVerdictError && error.code === "reason_missing",
+      );
+    }
+  });
+
+  it("records still_open without changing the gap", () => {
+    const after = applyRound([gap()], {
+      round: 2, found: [],
+      verdicts: { "G-1": { kind: "still_open", reason: "仍然无法测量" } },
+    });
+    assert.deepEqual(after, [gap()]);
+  });
+
+  /**
+   * A round claiming to have closed something that was never open is a round
+   * whose other claims are worth less.
+   */
+  it("refuses a verdict on a gap that is not open", () => {
+    for (const before of [[], [gap({ status: "closed", resolution: "done" })]]) {
+      assert.throws(
+        () => applyRound(before, {
+          round: 2, found: [],
+          verdicts: { "G-1": { kind: "closed", reason: "已修" } },
+        }),
+        (error: unknown) =>
+          error instanceof InvalidVerdictError && error.code === "unknown_gap",
+      );
+    }
+  });
+});
+
+describe("L4 · finding the same problem again", () => {
+  it("does not duplicate a gap that is already open", () => {
+    const after = applyRound([gap()], {
+      round: 2,
+      found: [{ id: "G-1", severity: "P1", title: "验收标准不可测" }],
+      verdicts: {},
+    });
+    assert.equal(after.length, 1);
+    assert.equal(after[0]?.openedRound, 1);
+  });
+
+  /**
+   * A later round looked and it is there. Whatever closed it earlier was wrong,
+   * and the gate has to see it again.
+   */
+  it("reopens one that had been closed", () => {
+    const after = applyRound(
+      [gap({ status: "closed", resolution: "以为修好了" })],
+      {
+        round: 3,
+        found: [{ id: "G-1", severity: "P1", title: "验收标准不可测" }],
+        verdicts: {},
+      },
+    );
+    assert.deepEqual(after, [gap({ openedRound: 3 })]);
+  });
+
+  /**
+   * A waiver is a person's decision, not a round's finding. A later round
+   * re-reporting the problem must not silently revoke it -- only a person can.
+   */
+  it("leaves a waived gap waived", () => {
+    const after = applyRound(
+      [gap({ status: "waived", resolution: "本期接受，下期处理" })],
+      {
+        round: 3,
+        found: [{ id: "G-1", severity: "P1", title: "验收标准不可测" }],
+        verdicts: {},
+      },
+    );
+    assert.equal(after[0]?.status, "waived");
+  });
+});
+
+describe("L4 · accepting a risk is a person's act, with a reason", () => {
+  it("waives an open gap and keeps the reason", () => {
+    const after = waive([gap()], "G-1", "本期接受，下期处理");
+    assert.deepEqual(after, [gap({
+      status: "waived", resolution: "本期接受，下期处理",
+    })]);
+    assert.deepEqual(waivedFrom(after).map((each) => each.id), ["G-1"]);
+  });
+
+  it("refuses a waiver with no reason", () => {
+    assert.throws(
+      () => waive([gap()], "G-1", "  "),
+      (error: unknown) =>
+        error instanceof InvalidVerdictError && error.code === "reason_missing",
+    );
+  });
+
+  it("refuses to waive something that is not open", () => {
+    assert.throws(() => waive([gap()], "G-NOPE", "r"), InvalidVerdictError);
+    assert.throws(
+      () => waive([gap({ status: "closed", resolution: "done" })], "G-1", "r"),
+      InvalidVerdictError,
+    );
+  });
+});
+
+describe("L4 · what the gate is shown", () => {
+  it("shows open gaps and nothing else", () => {
+    const gaps = [
+      gap({ id: "G-open" }),
+      gap({ id: "G-closed", status: "closed", resolution: "修了" }),
+      gap({ id: "G-waived", status: "waived", resolution: "接受" }),
+    ];
+    assert.deepEqual(blockersFrom(gaps).map((each) => each.id), ["G-open"]);
+  });
+
+  /**
+   * Which severities block is the gate's decision, not this module's. Passing
+   * P2 through keeps that judgement in one place.
+   */
+  it("passes every severity through and judges none of them", () => {
+    const gaps = (["P0", "P1", "P2"] as const).map((severity) =>
+      gap({ id: `G-${severity}`, severity }));
+    assert.deepEqual(
+      blockersFrom(gaps).map((each) => each.severity),
+      ["P0", "P1", "P2"],
+    );
+  });
+});
+
+describe("L4 · a round-by-round walk", () => {
+  it("keeps a forgotten problem alive across three rounds", () => {
+    // Round 1 finds two problems.
+    let gaps = applyRound([], {
+      round: 1,
+      found: [
+        { id: "G-1", severity: "P0", title: "范围与 PRD 冲突" },
+        { id: "G-2", severity: "P1", title: "验收标准不可测" },
+      ],
+      verdicts: {},
+    });
+    assert.equal(blockersFrom(gaps).length, 2);
+
+    // Round 2 fixes one and says nothing about the other.
+    gaps = applyRound(gaps, {
+      round: 2, found: [],
+      verdicts: { "G-1": { kind: "closed", reason: "范围已按 PRD 收窄" } },
+    });
+    assert.deepEqual(blockersFrom(gaps).map((each) => each.id), ["G-2"]);
+
+    // Round 3 also says nothing. It is still there.
+    gaps = applyRound(gaps, { round: 3, found: [], verdicts: {} });
+    assert.deepEqual(blockersFrom(gaps).map((each) => each.id), ["G-2"]);
+
+    // Only a person can let it through, and only on the record.
+    gaps = waive(gaps, "G-2", "本期接受：验收改由人工检查覆盖");
+    assert.deepEqual(blockersFrom(gaps), []);
+    assert.equal(waivedFrom(gaps)[0]?.resolution, "本期接受：验收改由人工检查覆盖");
+  });
+});

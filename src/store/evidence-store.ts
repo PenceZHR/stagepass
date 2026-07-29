@@ -2,22 +2,30 @@ import type Database from "better-sqlite3";
 
 import { EMPTY_EVIDENCE, type Blocker, type Evidence } from "../domain/gate";
 import type { Phase } from "../domain/phase";
+import { GapStore } from "./gap-store";
 
 /**
  * What a phase produced, as the gate sees it.
  *
- * Evidence is per (change, phase) and is replaced wholesale when a phase runs
- * again: a second round's findings supersede the first round's, they do not
- * merge with them. What must NOT be lost across a re-run is a blocker that is
- * still true, and that is the round's job to re-report -- 「旧问题必须被明确复核，
- * 不能因为重新生成文档而消失」. Keeping stale blockers alive here instead would
- * make the gate refuse forever on problems nobody can find.
+ * Artifacts are per (change, phase) and are replaced when a phase runs again:
+ * they are the round's own output, and a later round's supersede an earlier
+ * one's.
+ *
+ * Problems are not, and that asymmetry is the point. They live in `gaps`, where
+ * a round that never mentions one leaves it open --「旧问题必须被明确复核，不能
+ * 因为重新生成文档而消失」. This class used to hold them too and replace them
+ * wholesale, which meant a second round could resolve a problem by forgetting
+ * it. Closing one now has to be said out loud, with a reason.
  */
 export class EvidenceStore {
+  private readonly gaps: GapStore;
+
   constructor(
     private readonly database: Database.Database,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.gaps = new GapStore(database, now);
+  }
 
   read(changeId: string, phase: Phase): Evidence {
     const row = this.database.prepare(
@@ -27,10 +35,21 @@ export class EvidenceStore {
       | undefined;
     // A phase that has not run has no evidence, and no evidence is not an
     // error -- it is precisely why the gate refuses to approve it.
-    if (!row) return EMPTY_EVIDENCE;
+    // Blockers come from `gaps`, never from this table. A round's findings are
+    // an event and a gap is a state, and only the second survives a round that
+    // forgets to mention it. `blockers` here is kept for rows written before
+    // gaps existed and is unioned rather than dropped.
+    const fromGaps = this.gaps.blockers(changeId, phase);
+    if (!row) {
+      return fromGaps.length === 0
+        ? EMPTY_EVIDENCE
+        : { ...EMPTY_EVIDENCE, blockers: fromGaps };
+    }
+    const legacy = JSON.parse(row.blockers) as Blocker[];
+    const seen = new Set(fromGaps.map((blocker) => blocker.id));
     return {
       artifactIds: JSON.parse(row.artifact_ids) as string[],
-      blockers: JSON.parse(row.blockers) as Blocker[],
+      blockers: [...fromGaps, ...legacy.filter((each) => !seen.has(each.id))],
       waivedBlockerIds: JSON.parse(row.waived_ids) as string[],
     };
   }

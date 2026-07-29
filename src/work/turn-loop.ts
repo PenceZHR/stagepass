@@ -1,8 +1,10 @@
 import type Database from "better-sqlite3";
 
 import type { Blocker } from "../domain/gate";
+import type { Verdict } from "../domain/gap";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
+import { GapStore } from "../store/gap-store";
 import { JobStore, type Job } from "./job-store";
 
 /**
@@ -27,7 +29,16 @@ import { JobStore, type Job } from "./job-store";
 
 export interface TurnOutcome {
   readonly artifactIds: readonly string[];
+  /** Problems this round found. Re-finding an open one is not re-adding it. */
   readonly blockers: readonly Blocker[];
+  /**
+   * What this round says about problems that were already open.
+   *
+   * Optional, and its absence is meaningful rather than lazy: a round that says
+   * nothing about an open gap leaves it open. Closing one has to be said out
+   * loud, with a reason.
+   */
+  readonly verdicts?: Readonly<Record<string, Verdict>>;
 }
 
 export interface TurnRunner {
@@ -70,12 +81,14 @@ export type RunResult =
 export class TurnLoop {
   private readonly changes: ChangeStore;
   private readonly evidence: EvidenceStore;
+  private readonly gaps: GapStore;
   private readonly jobs: JobStore;
 
   constructor(private readonly dependencies: TurnLoopDependencies) {
     const now = dependencies.now ?? (() => new Date());
     this.changes = new ChangeStore(dependencies.database, { now });
     this.evidence = new EvidenceStore(dependencies.database, now);
+    this.gaps = new GapStore(dependencies.database, now);
     this.jobs = new JobStore(dependencies.database, now);
   }
 
@@ -130,14 +143,25 @@ export class TurnLoop {
       const outcome = await this.dependencies.runner.run(job);
       const phase = this.changes.read(job.changeId).state.phase;
       this.dependencies.database.transaction(() => {
-        // A re-run replaces the phase's evidence rather than adding to it: the
-        // new round's findings supersede the old round's. Blockers that are
-        // still true are the round's job to re-report.
+        // Artifacts belong to the round that made them, so they are replaced.
+        // Problems do not: they go to `gaps`, where a later round that never
+        // mentions one leaves it open. The old shape put blockers here and
+        // replaced them wholesale, which meant a round could resolve a problem
+        // by forgetting it -- and forgetting is the likeliest thing a model
+        // does. Nothing about the gate changed; what changed is where it reads.
         this.evidence.put(job.changeId, phase, {
           artifactIds: outcome.artifactIds,
-          blockers: outcome.blockers,
-          waivedBlockerIds: this.evidence.read(job.changeId, phase)
-            .waivedBlockerIds,
+          blockers: [],
+          waivedBlockerIds: [],
+        });
+        this.gaps.settleRound(job.changeId, phase, {
+          round: job.attempt,
+          found: outcome.blockers.map((blocker) => ({
+            id: blocker.id,
+            severity: blocker.severity,
+            title: blocker.title,
+          })),
+          verdicts: outcome.verdicts ?? {},
         });
         this.changes.apply(job.changeId, "settle");
       })();
