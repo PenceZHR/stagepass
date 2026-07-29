@@ -367,6 +367,27 @@ body::after {
 }
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
+/*
+ * 进度圆弧：绕着轨道的那道沙金弧线，标已经走到哪（设计稿要的东西之一）。
+ *
+ * 从十二点开始顺时针，长度由 `--progress`（0–1）给 —— 和节点的摆法同一个起点、
+ * 同一个方向，所以弧的末端正好停在当前那个阶段上。**换成逆时针或者从三点起，
+ * 弧和节点就会对不上**，那比没有弧更糟：它会指着一个错的阶段。
+ *
+ * 画在 .halo 自己的轨道上（同一个 inset），不是第二个同心圆 —— §5.0.1 那条
+ * 「只留一个大环」仍然管着这里。
+ */
+.progress {
+  position: absolute; inset: 4.5%; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(from 0deg,
+    var(--sand-deep) 0turn, var(--sand-deep) calc(var(--progress, 0) * 1turn),
+    transparent calc(var(--progress, 0) * 1turn));
+  -webkit-mask: radial-gradient(transparent 68.5%, #000 69.5% 70.5%, transparent 71.5%);
+  mask: radial-gradient(transparent 68.5%, #000 69.5% 70.5%, transparent 71.5%);
+  opacity: .85;
+  transition: --progress .6s ease;
+}
+
 /* 节点：圆。旋出去再转回来，圆始终正对。 */
 .stage-node {
   position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 6;
@@ -775,6 +796,7 @@ body::after {
       <div class="orbit-stage">
         <div class="orbit-wrap" id="orbit-wrap">
           <div class="halo"></div>
+          <div class="progress" id="progress"></div>
           <div class="center">
             <small id="center-kicker">Stage Orbit</small>
             <h3 id="center-title">—</h3>
@@ -817,6 +839,7 @@ body::after {
       <div class="sheet-foot">
         <button class="enter" id="enter" type="button">进入终端</button>
         <button class="run" id="run" type="button" hidden>跑这个阶段</button>
+        <button class="run" id="waive" type="button" hidden>接受一条风险</button>
         <button class="ask" id="ask" type="button" hidden>请 Codex 问我</button>
       </div>
     </dialog>

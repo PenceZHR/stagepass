@@ -10,6 +10,8 @@ import {
   readAnswer,
   UnreadableAnswerError,
   type Question,
+  waiveQuestion,
+  waiveFrom,
 } from "./question";
 import type { ChangeState } from "./change-state";
 
@@ -189,5 +191,59 @@ describe("L3 · turning an answer into a decision", () => {
       decisionFrom(batch, { action: "accept", content: { q1: "a" } }),
       null,
     );
+  });
+});
+
+describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
+  const waivable = [
+    { id: "SPEC-1", title: "写入不是原子的" },
+    { id: "SPEC-2", title: "命令行没有定义" },
+  ];
+
+  it("两个字段都必填 —— 一次点击给不出这两样，老树就死在这儿", () => {
+    const question = waiveQuestion({ phase: "Spec", waivable })!;
+    assert.deepEqual([...question.requestedSchema.required].sort(), ["gapId", "reason"]);
+    assert.deepEqual(question.requestedSchema.properties.gapId?.enum, ["SPEC-1", "SPEC-2"]);
+  });
+
+  it("标题列在正文里 —— 只给一串 id 去选，等于让人凭记忆决定", () => {
+    const question = waiveQuestion({ phase: "Spec", waivable })!;
+    assert.match(question.message, /写入不是原子的/);
+    assert.match(question.message, /命令行没有定义/);
+  });
+
+  it("没有可接受的 —— 不问", () => {
+    // 一道没有选项的题比不问更糟：它打断人来展示一个做不了的决定。
+    assert.equal(waiveQuestion({ phase: "Spec", waivable: [] }), null);
+  });
+
+  it("读回来：选了哪一条、写了什么", () => {
+    const question = waiveQuestion({ phase: "Spec", waivable })!;
+    assert.deepEqual(
+      waiveFrom(question, {
+        action: "accept",
+        content: { gapId: "SPEC-2", reason: "这一版先不做命令行" },
+      }),
+      { gapId: "SPEC-2", reason: "这一版先不做命令行" });
+  });
+
+  it("选了一条没被提供过的 —— 拒绝", () => {
+    // 对着问题自己的 enum 校验，不是对着当前还有哪些 gap —— enum 是人当时真正
+    // 看见的东西。名单在他想的时候变了，就该拒绝，而不是把他的选择套到一条他
+    // 没看见的问题上。
+    const question = waiveQuestion({ phase: "Spec", waivable })!;
+    assert.equal(
+      waiveFrom(question, { action: "accept", content: { gapId: "SPEC-9", reason: "x" } }),
+      null);
+  });
+
+  it("没写理由 —— 拒绝", () => {
+    // 一个没有理由的 waive 和「忘了处理」在库里长得一模一样。
+    const question = waiveQuestion({ phase: "Spec", waivable })!;
+    assert.equal(
+      waiveFrom(question, { action: "accept", content: { gapId: "SPEC-1", reason: "  " } }),
+      null);
+    assert.equal(
+      waiveFrom(question, { action: "decline", content: {} }), null);
   });
 });

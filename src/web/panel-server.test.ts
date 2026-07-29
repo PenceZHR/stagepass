@@ -45,6 +45,7 @@ interface PhaseEntry {
     round: number;
     byRole: Record<string, { criterionKey: string; verdict: string; criterionText: string }[]>;
   } | null;
+  produced: string[];
 }
 
 /**
@@ -160,6 +161,9 @@ describe("panel · what it offers", () => {
         // 必须分得开** —— 后者在 gaps 里看不出来，因为 yes 和 not_assessed 都
         // 不留痕迹。
         mark: null, gaps: [], assessed: null,
+        // 空数组 = 还没产出任何东西。闸门不会放行一个什么都没产出的阶段，
+        // 所以这一格是「红方主张」那一侧的原料。
+        produced: [],
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));
@@ -674,6 +678,69 @@ describe("panel · 能从界面上开新活", () => {
     await withPanel(async ({ open }) => {
       assert.equal(
         (await open("/api/change?project=PRJ-不存在&title=x", { method: "POST" })).status, 404);
+    });
+  });
+});
+
+/**
+ * 接受一条已知风险。
+ *
+ * **这仍然不是网页上的裁决入口**：网页组题、把题送进那个阶段的终端，选哪一条、
+ * 写什么理由都发生在 Codex 自己的选择器里 —— 和 approve / reject 同一条路。
+ */
+describe("panel · 接受风险也走选择器", () => {
+  const openGap = (database: Database.Database, patch: Record<string, unknown>) => {
+    new GapStore(database).replace(CHANGE, "PRD", [{
+      id: "G-1", kind: "finding", severity: "P1", title: "接口没有错误码",
+      status: "open", openedRound: 1, resolution: null,
+      ...patch,
+    } as never]);
+  };
+
+  it("没有可接受的就不问 —— 一道没有选项的题比不问更糟", async () => {
+    await withPanel(async ({ open }) => {
+      const refused = await (await open(`/api/waive?change=${CHANGE}`,
+        { method: "POST" })).json() as { asked: boolean; reason: string };
+      assert.deepEqual({ asked: refused.asked, reason: refused.reason },
+        { asked: false, reason: "nothing_waivable" });
+    });
+  });
+
+  it("**P0 不在候选里** —— 严重到不可接受的问题不能靠普通确认绕过", async () => {
+    await withPanel(async ({ open, database }) => {
+      openGap(database, { severity: "P0" });
+      const refused = await (await open(`/api/waive?change=${CHANGE}`,
+        { method: "POST" })).json() as { asked: boolean; reason: string };
+      assert.equal(refused.reason, "nothing_waivable");
+    });
+  });
+
+  it("**standard 也不在候选里** —— 它的出口是撤下那条标准，不是接受风险", async () => {
+    await withPanel(async ({ open, database }) => {
+      openGap(database, { kind: "standard", severity: null });
+      const refused = await (await open(`/api/waive?change=${CHANGE}`,
+        { method: "POST" })).json() as { asked: boolean; reason: string };
+      assert.equal(refused.reason, "nothing_waivable");
+    });
+  });
+
+  it("有 P1 就组题，并把题送进那个阶段的终端", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      openGap(database, {});
+      void open(`/api/waive?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+      // 题真的落库了，而且是 waive 那一种。
+      const asked = database.prepare(
+        "SELECT kind, message FROM questions WHERE change_id = ?").get(CHANGE) as
+        { kind: string; message: string } | undefined;
+      assert.equal(asked?.kind, "waive");
+      // 标题列在正文里 —— 只给一串 id 去选，等于让人凭记忆决定。
+      assert.match(asked?.message ?? "", /接口没有错误码/);
+
+      // 而且是送进终端，不是网页上直接办了。
+      const argv = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
+      assert.match(argv, /stagepass_ask/);
     });
   });
 });

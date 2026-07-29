@@ -64,6 +64,7 @@ const sheetRubric = document.getElementById("sheet-rubric");
 const tabGaps = document.getElementById("tab-gaps");
 const tabRubric = document.getElementById("tab-rubric");
 const enterButton = document.getElementById("enter");
+const waiveButton = document.getElementById("waive");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
 
@@ -492,6 +493,15 @@ function renderStatus(entry) {
  */
 function drawCenter() {
   const at = phases.find((entry) => entry.current);
+
+  /*
+   * 进度圆弧走到当前阶段，不是走到「批准了几个」。
+   *
+   * 问的是「走到哪了」，而那是 Change 的位置 —— 一个阶段可以正在跑、还没批准，
+   * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
+   */
+  const reached = at === undefined ? 0 : phases.indexOf(at) / phases.length;
+  document.getElementById("progress").style.setProperty("--progress", String(reached));
   const approved = phases.filter((entry) => entry.mark === "approved").length;
 
   centerKicker.textContent = panelState?.status
@@ -566,14 +576,60 @@ function drawSheet(phase) {
     ?? (entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry));
 
   drawGaps(entry);
+  sheetGaps.prepend(drawProduced(entry));
 
   // run / ask 只出现在 Change 真正停着的那个阶段上：跑哪个阶段由状态机决定，不由
   // 你点开了谁决定。点开一个未来的阶段只是打开看看。
+  // 只有 open 的 P1 finding 可以被接受。P0 不许豁免；standard 的出口是撤下那条
+  // 标准，不是接受风险 —— 两句话不是一回事。
+  const waivable = entry.gaps.filter((gap) =>
+    gap.status === "open" && gap.kind === "finding" && gap.severity === "P1");
+  waiveButton.hidden = !entry.current || waivable.length === 0;
+  waiveButton.disabled = entry.live;
+
   const decidable = decidableActions();
   runButton.hidden = !entry.current;
   runButton.disabled = entry.live || panelState?.status === "settled";
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
+}
+
+/**
+ * 红方这一阶段产出了什么。
+ *
+ * 「红蓝双方主张摘要」在新树上就是两样：蓝方的主张是下面那些 finding，红方的主张
+ * 是它产出的东西。**只看得见「有人挑了三条毛病」而看不见「他挑的是什么东西」，
+ * 那个列表是悬着的。**
+ */
+function drawProduced(entry) {
+  const box = document.createElement("div");
+  const head = document.createElement("p");
+  head.className = "sheet-section";
+  head.textContent = "这个阶段产出了什么";
+  box.append(head);
+
+  if ((entry.produced ?? []).length === 0) {
+    const none = document.createElement("p");
+    none.className = "sheet-empty";
+    none.textContent = "还没有产出。闸门不会放行一个什么都没产出的阶段。";
+    box.append(none);
+    return box;
+  }
+  for (const artifact of entry.produced) {
+    const row = document.createElement("div");
+    row.className = "gap closed";
+    const tag = document.createElement("b");
+    tag.className = "gap-sev";
+    tag.textContent = "产出";
+    const text = document.createElement("div");
+    text.className = "gap-text";
+    const title = document.createElement("strong");
+    title.textContent = artifact;
+    text.append(title);
+    row.append(tag, text);
+    box.append(row);
+  }
+  return box;
 }
 
 function drawGaps(entry) {
@@ -702,6 +758,7 @@ async function attach(phase) {
 document.getElementById("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
+waiveButton.addEventListener("click", () => { void waive(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 
 /*

@@ -27,7 +27,7 @@ import type { Gate } from "./gate";
  * ## This module is pure
  */
 
-export const QUESTION_KINDS = ["gate_decision", "clarification"] as const;
+export const QUESTION_KINDS = ["gate_decision", "clarification", "waive"] as const;
 export type QuestionKind = (typeof QUESTION_KINDS)[number];
 
 /** The field a gate decision's answer arrives under. */
@@ -78,6 +78,70 @@ export function gateDecisionQuestion(input: {
           type: "string",
           title: "请裁决",
           enum: offered,
+        },
+      },
+    },
+  };
+}
+
+/*
+ * 接受风险这道题的两个字段。**两个都必填**，理由见 `waiveQuestion`。
+ *
+ * 不导出：`waiveQuestion` 和 `waiveFrom` 都在这个文件里，外面拿不到字段名也不需要
+ * 拿到 —— 调用方给的是问题和答案，不是字段。（`DECISION_FIELD` 导出是因为插件那
+ * 边真的要用它。）
+ */
+const WAIVE_GAP_FIELD = "gapId";
+const WAIVE_REASON_FIELD = "reason";
+
+/**
+ * 接受一条已知风险：**哪一条**，以及**为什么可以带着它走**。
+ *
+ * ## 为什么必须是一道题、两个字段
+ *
+ * 老树在这里失败过，而且失败得很典型：`waive_spec_p1` 的 schema 要 `gapId`，
+ * 但它挂在一张**点一下就完事**的卡片上 —— 一次点击给不出「哪一条」，更给不出
+ * 理由。于是那个动作有标签、有 contract 条目、有渲染，**永远执行不了**（§2.3）。
+ *
+ * elicitation 的表单能一次收多个字段（§5.2b 实测：三个字段含一个布尔一次返回），
+ * 所以这道题问得出来。**理由是必填的** —— 「接受风险时必须留下理由」是产品规则，
+ * 而一个没有理由的 waive 和「忘了处理」在库里长得一模一样。
+ *
+ * ## 只有 P1 的 finding 可以被接受
+ *
+ * P0 不许豁免（严重到不可接受的问题不能靠普通确认绕过）。一条 `standard` 也不许
+ * —— 它的出口是撤下那条标准，不是接受风险，两句话不是一回事（见 domain/gap.ts）。
+ * 所以候选名单由调用方筛好传进来，这里不猜。
+ *
+ * 名单为空返回 null：一道没有选项的题比不问更糟，它打断人来展示一个做不了的决定。
+ */
+export function waiveQuestion(input: {
+  phase: string;
+  waivable: readonly { id: string; title: string }[];
+}): Question | null {
+  if (input.waivable.length === 0) return null;
+
+  return {
+    // 选择器里 enum 显示的是值本身，所以把标题列在正文里 —— 只让人看见一串 id
+    // 去选，等于让他凭记忆决定。
+    message: [
+      `${input.phase}：接受哪一条风险？`,
+      ...input.waivable.map((gap) => `- ${gap.id}　${gap.title}`),
+      "",
+      "接受它意味着**问题还在**，你决定带着它往下走。这会留在交付说明里。",
+    ].join("\n"),
+    requestedSchema: {
+      type: "object",
+      required: [WAIVE_GAP_FIELD, WAIVE_REASON_FIELD],
+      properties: {
+        [WAIVE_GAP_FIELD]: {
+          type: "string",
+          title: "哪一条",
+          enum: input.waivable.map((gap) => gap.id),
+        },
+        [WAIVE_REASON_FIELD]: {
+          type: "string",
+          title: "为什么可以带着它走",
         },
       },
     },
@@ -191,4 +255,29 @@ export function decisionFrom(
   const chosen = answer.content[DECISION_FIELD];
   if (typeof chosen !== "string" || !offered.includes(chosen)) return null;
   return chosen as ChangeAction;
+}
+
+/**
+ * 一次接受风险的答案：哪一条 + 为什么。不是一次合法的接受就返回 null。
+ *
+ * 和 `decisionFrom` 一样，**对着问题自己的 enum 校验**，不是对着当前还有哪些 gap
+ * —— enum 是人当时真正看见的东西。名单在他想的时候变了，这里就该拒绝，而不是把
+ * 他的选择套到一条他没看见的问题上。
+ *
+ * 理由要求非空：一个没有理由的 waive 和「忘了处理」在库里长得一模一样。
+ */
+export function waiveFrom(
+  question: Question,
+  answer: Answer,
+): { gapId: string; reason: string } | null {
+  if (answer.action !== "accept") return null;
+  const offered = question.requestedSchema.properties[WAIVE_GAP_FIELD]?.enum;
+  if (!offered) return null;
+
+  const gapId = answer.content[WAIVE_GAP_FIELD];
+  const reason = answer.content[WAIVE_REASON_FIELD];
+  if (typeof gapId !== "string" || !offered.includes(gapId)) return null;
+  if (typeof reason !== "string" || reason.trim() === "") return null;
+
+  return { gapId, reason };
 }
