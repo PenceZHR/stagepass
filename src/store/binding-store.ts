@@ -1,15 +1,39 @@
 import type Database from "better-sqlite3";
 
 /**
- * One Change, one persistent Codex thread.
+ * Which Codex thread a Change's work happens in.
+ *
+ * ## The granularity here is superseded, and deliberately not rebuilt yet
+ *
+ * This store is keyed by Change alone: one Change, one persistent thread. That
+ * decision was overturned on 2026-07-28 -- the binding granularity is now one
+ * thread per (Change, phase), see the rebuild PRD §6.5. Re-keying the table is
+ * scheduled work, not a drive-by, so the old shape is what still runs.
+ *
+ * Read the next paragraph as the record of a decision that was reversed, NOT
+ * as a live argument for the code below.
+ *
+ * The original case for one-thread-per-Change was that a thread per phase would
+ * scatter the human's work across a dozen tasks. That reason is dead: per-phase
+ * threads laid out as tabs in the terminal panel are organised, not scattered.
+ * What replaced it is a hole the old shape could not close -- with one thread
+ * per Change, part of a phase's decision rests on what the model remembers from
+ * earlier phases, and that memory lives in Codex's conversation history, inside
+ * no StagePass snapshot. The fence cannot reach it. One thread per phase forces
+ * cross-phase information through documents, which can be snapshotted, hashed
+ * and fenced.
+ *
+ * The old argument was right about one thing, and it is the price now being
+ * paid: each phase opens on a conversation that knows nothing about the earlier
+ * ones, so every phase's opening prompt has to carry its upstream documents
+ * itself.
  *
  * ## Why binding is StagePass's record rather than a lookup
  *
- * The thread is where the whole Change's context lives. If StagePass could not
- * say which thread belongs to a Change, every phase would start a fresh
- * conversation that knows nothing about the previous ones -- and the human
- * would watch their work scatter across a dozen tasks. So the mapping is
- * durable, unique in both directions while bound, and survives a restart.
+ * Untouched by the above, and the reason this store exists at all: StagePass
+ * has to be able to say which thread its work is in without asking Codex. So
+ * the mapping is durable, unique in both directions while bound, and survives a
+ * restart. When §6.5 is built, the key changes; these properties do not.
  *
  * ## Detaching is explicit
  *
