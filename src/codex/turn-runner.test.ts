@@ -85,11 +85,11 @@ describe("L2 · a turn goes out, an answer comes back, the gate opens", () => {
     try {
       queue(loop);
       await loop.runOnce(WORKER);
-      assert.equal(transport.prompts.length, 1);
-      assert.match(transport.prompts[0]!, /artifactIds/);
-      assert.match(transport.prompts[0]!, /P0\|P1\|P2/);
+      assert.equal(transport.dispatches.length, 1);
+      assert.match(transport.dispatches[0]!.prompt, /artifactIds/);
+      assert.match(transport.dispatches[0]!.prompt, /P0\|P1\|P2/);
       // And the phase's own instruction, not only the contract.
-      assert.match(transport.prompts[0]!, /product requirement/);
+      assert.match(transport.dispatches[0]!.prompt, /product requirement/);
     } finally {
       database.close();
     }
@@ -107,9 +107,9 @@ describe("L2 · a turn goes out, an answer comes back, the gate opens", () => {
       });
       queue(loop, "JOB-2");
       await loop.runOnce(WORKER);
-      assert.equal(transport.prompts.length, 2);
+      assert.equal(transport.dispatches.length, 2);
       // The second turn asked Spec's question, on the same thread.
-      assert.match(transport.prompts[1]!, /product specification/);
+      assert.match(transport.dispatches[1]!.prompt, /product specification/);
     } finally {
       database.close();
     }
@@ -150,7 +150,10 @@ describe("L2 · the record exists before anything is sent", () => {
       const turn = turns.read("TURN-JOB-1-1");
       assert.equal(turn.status, "failed");
       assert.match(turn.error!, /turn_dispatch_failed: codex_unavailable/);
-      assert.equal(turn.threadId, "THREAD-1", "it had been dispatched");
+      // Null, and correctly so: this was the Change's first turn, and a Codex
+      // thread is created by the turn that succeeds. Recording an invented id
+      // here would point the Change at a thread that never existed.
+      assert.equal(turn.threadId, null);
       assert.equal(changes.read("CHG-1").state.status, "blocked");
     } finally {
       database.close();
@@ -168,9 +171,9 @@ describe("L2 · the record exists before anything is sent", () => {
         request: { changeId: "CHG-1", phase: "PRD", prompt: "do the thing" },
       });
       assert.deepEqual(turns.inFlight(), []);
-      turns.markDispatched("TURN-X", "THREAD-1");
+      turns.markDispatched("TURN-X", null);
       assert.deepEqual(turns.inFlight().map((turn) => turn.id), ["TURN-X"]);
-      turns.markCompleted("TURN-X", "done");
+      turns.markCompleted("TURN-X", "done", "THREAD-1");
       assert.deepEqual(turns.inFlight(), []);
     } finally {
       database.close();
@@ -254,15 +257,15 @@ describe("L2 · the turn record refuses moves it cannot make", () => {
         request: { changeId: "CHG-1", phase: "PRD", prompt: "go" },
       });
       assert.throws(
-        () => turns.markCompleted("TURN-X", "early"),
+        () => turns.markCompleted("TURN-X", "early", "THREAD-1"),
         TurnNotInStatusError,
       );
-      turns.markDispatched("TURN-X", "THREAD-1");
+      turns.markDispatched("TURN-X", null);
       assert.throws(
-        () => turns.markDispatched("TURN-X", "THREAD-1"),
+        () => turns.markDispatched("TURN-X", null),
         TurnNotInStatusError,
       );
-      turns.markCompleted("TURN-X", "done");
+      turns.markCompleted("TURN-X", "done", "THREAD-1");
       assert.throws(
         () => turns.markFailed("TURN-X", "too late"),
         TurnNotInStatusError,

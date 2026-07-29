@@ -96,33 +96,36 @@ export class CodexTurnRunner implements TurnRunner {
       request,
     });
 
-    let threadId: string;
-    try {
-      threadId = this.bindings.find(job.changeId)?.status === "bound"
-        ? this.bindings.require(job.changeId)
-        : this.bindings.bind(
-            job.changeId,
-            await this.options.transport.openThread({ changeId: job.changeId }),
-          ).threadId;
-    } catch (error) {
-      throw this.failTurn(turn.id, "thread_unavailable", error);
-    }
-
+    // Null on a Change's first turn: the thread does not exist until the turn
+    // that creates it comes back.
+    const existing = this.bindings.find(job.changeId);
+    const threadId = existing?.status === "bound" ? existing.threadId : null;
     this.turns.markDispatched(turn.id, threadId);
 
-    let response: string;
+    let delivery: { threadId: string; text: string };
     try {
-      response = await this.options.transport.startTurn({
+      delivery = await this.options.transport.runTurn({
         threadId,
         prompt: request.prompt,
       });
     } catch (error) {
       throw this.failTurn(turn.id, "turn_dispatch_failed", error);
     }
-    this.turns.markCompleted(turn.id, response);
+    this.turns.markCompleted(turn.id, delivery.text, delivery.threadId);
+    // Bound after the fact, from the thread the turn actually ran on. Binding
+    // a guess beforehand would leave a Change pointing at a thread that was
+    // never created when the turn failed.
+    try {
+      this.bindings.bind(job.changeId, delivery.threadId);
+    } catch {
+      // NOT marked failed: the turn completed and its answer is on disk. Only
+      // the job fails, which is what L1 records. Calling markFailed here would
+      // throw on its own precondition and bury the real cause.
+      throw new Error("thread_binding_conflict");
+    }
 
     try {
-      const result = parseTurnResult(response);
+      const result = parseTurnResult(delivery.text);
       return {
         artifactIds: result.artifactIds,
         blockers: result.blockers,

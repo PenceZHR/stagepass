@@ -12,6 +12,9 @@
  * sentence rather than pretending, because a verification script that passes
  * without verifying is worse than no script.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../src/db/schema";
@@ -22,18 +25,40 @@ import { TurnStore } from "../src/store/turn-store";
 import { TurnLoop } from "../src/work/turn-loop";
 import { CodexTurnRunner } from "../src/codex/turn-runner";
 import { ScriptedCodexTransport, type CodexTransport } from "../src/codex/transport";
+import { CodexMcpTransport } from "../src/codex/mcp-transport";
+import { openInDesktop, threadUrl } from "../src/codex/desktop-link";
 
 const REAL = process.argv.includes("--real");
 const CHANGE = "CHG-VERIFY";
 const NOW = 1_000_000;
 
+/**
+ * The real thing: `codex mcp-server`, a published subcommand speaking MCP over
+ * stdio. Read-only, because verifying the chain must not let a turn write to
+ * the repository it is being run from.
+ */
 function realTransport(): CodexTransport {
-  throw new Error(
-    "No transport talks to Codex yet. That is exactly the L2 gate:\n"
-    + "  docs/PRD-stagepass-rebuild-2026-07-28.md §9.2 -- "
-    + "\"start a real turn, get a result, binding and logical turn land in the database\".\n"
-    + "Everything around the transport is proved offline; run without --real to see it.",
-  );
+  // An empty scratch directory, NOT the repository.
+  //
+  // Pointed at the repo, the turn spent minutes reading a hundred thousand
+  // lines before answering -- reasonable behaviour, wrong for a script whose
+  // job is to prove the chain moves. Real phases will run against the real
+  // project; this one only has to make a turn happen.
+  const cwd = mkdtempSync(join(tmpdir(), "stagepass-verify-"));
+  return new CodexMcpTransport({
+    cwd,
+    sandbox: "read-only",
+    // This script verifies the chain, not the model's thinking. The default is
+    // xhigh, which did not finish two design turns inside ten minutes.
+    reasoningEffort: "low",
+    onThread: (threadId) => {
+      // Actually show it. `codex mcp-server` is headless, so a turn StagePass
+      // started is invisible until something opens it -- printing the URL was
+      // not enough, which is the whole complaint this answers.
+      console.log(`   thread ${threadId} -> opening in Codex`);
+      openInDesktop(threadUrl(threadId));
+    },
+  });
 }
 
 function answer(artifacts: string[], blockers: unknown[] = []): string {
@@ -89,13 +114,27 @@ async function main(): Promise<void> {
 
   const gate = commands.gateFor(CHANGE);
   console.log("4. gate now permits   ", gate.permitted.join(", "));
-  const approved = commands.apply({
-    changeId: CHANGE, action: "approve", idempotencyKey: "c2",
-    expectedSnapshot: gate.snapshot,
-  });
-  console.log("5. approved ->        ", `${approved.state.phase}/${approved.state.status}`);
+  // Report, do not assert. A real model in a read-only scratch directory
+  // legitimately produces no artifacts, and the gate legitimately refuses to
+  // approve a phase that produced nothing -- that IS the system working. A
+  // script that treated it as a crash would be reporting its own expectation.
+  if (gate.permitted.includes("approve")) {
+    const approved = commands.apply({
+      changeId: CHANGE, action: "approve", idempotencyKey: "c2",
+      expectedSnapshot: gate.snapshot,
+    });
+    console.log("5. approved ->        ", `${approved.state.phase}/${approved.state.status}`);
+  } else {
+    console.log("5. approval refused   ", gate.refusals.approve, "(the gate did its job)");
+  }
 
   console.log("\n--- read back out of the database ---");
+  const answers = (database.prepare(
+    "SELECT id, status, thread_id, length(response) AS n FROM turns ORDER BY created_at",
+  ).all() as { id: string; status: string; thread_id: string | null; n: number | null }[]);
+  for (const turn of answers) {
+    console.log(`turn ${turn.id.padEnd(14)} ${turn.status.padEnd(10)} thread=${turn.thread_id ?? "-"} response=${turn.n ?? 0}B`);
+  }
   console.log("binding      ", bindings.find(CHANGE));
   console.log("turns        ", turns.inFlight().length, "in flight,",
     (database.prepare("SELECT count(*) AS n FROM turns").get() as { n: number }).n, "total");
@@ -104,6 +143,7 @@ async function main(): Promise<void> {
   console.log("change       ", changes.read(CHANGE).state);
 
   database.close();
+  if (transport instanceof CodexMcpTransport) transport.close();
 }
 
 main().catch((error: unknown) => {

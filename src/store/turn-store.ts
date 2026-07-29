@@ -139,8 +139,15 @@ export class TurnStore {
     return record;
   }
 
-  /** It is on its way. From here a crash is recoverable, not invisible. */
-  markDispatched(turnId: string, threadId: string): TurnRecord {
+  /**
+   * It is on its way. From here a crash is recoverable, not invisible.
+   *
+   * `threadId` is null for the first turn of a Change, because a Codex thread
+   * is created BY its first turn -- there is nothing to record until the answer
+   * comes back. Pretending otherwise would mean inventing an id, and an
+   * invented id is worse than an absent one.
+   */
+  markDispatched(turnId: string, threadId: string | null): TurnRecord {
     this.move(turnId, "pending", (id) => {
       this.database.prepare(
         "UPDATE turns SET status = 'dispatched', thread_id = ?, updated_at = ? WHERE id = ?",
@@ -149,11 +156,15 @@ export class TurnStore {
     return this.read(turnId);
   }
 
-  markCompleted(turnId: string, response: string): TurnRecord {
+  markCompleted(
+    turnId: string,
+    response: string,
+    threadId: string,
+  ): TurnRecord {
     this.move(turnId, "dispatched", (id) => {
       this.database.prepare(
-        "UPDATE turns SET status = 'completed', response = ?, updated_at = ? WHERE id = ?",
-      ).run(response, this.now().toISOString(), id);
+        "UPDATE turns SET status = 'completed', response = ?, thread_id = ?, updated_at = ? WHERE id = ?",
+      ).run(response, threadId, this.now().toISOString(), id);
     });
     return this.read(turnId);
   }

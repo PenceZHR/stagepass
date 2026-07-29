@@ -55,10 +55,23 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2>> = {
   "store/binding-store.ts": 2,
   "store/turn-store.ts": 2,
   "codex/transport.ts": 2,
+  "codex/mcp-transport.ts": 2,
+  "codex/desktop-link.ts": 2,
   "codex/turn-runner.ts": 2,
 };
 
 const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
+
+/**
+ * Entry points that live outside `src` but are production callers all the same
+ * -- `pnpm verify:rebuild` is how a person runs this tree. Counted when looking
+ * for orphans, so a module reachable only from a command still counts as
+ * reached, and one reachable from nowhere still does not.
+ */
+const ENTRY_POINTS = ["scripts/verify-rebuild.ts"].map((path) => ({
+  path,
+  text: readFileSync(join(process.cwd(), path), "utf-8"),
+}));
 
 describe("standing · every module declares its layer", () => {
   /**
@@ -121,7 +134,8 @@ describe("standing · nothing exists without a caller", () => {
   it("has no export that nothing else mentions", () => {
     const orphans: string[] = [];
     for (const file of production) {
-      const others = FILES.filter((other) => other.path !== file.path);
+      const others = [...FILES, ...ENTRY_POINTS]
+        .filter((other) => other.path !== file.path);
       for (const name of exportedNames(file.text)) {
         const mentioned = others.some((other) =>
           new RegExp(`\\b${name}\\b`).test(other.text));

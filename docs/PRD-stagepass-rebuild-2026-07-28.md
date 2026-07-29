@@ -108,6 +108,31 @@
 
 StagePass 发起的卡，模型拿不到问题文案、选项集合、以及回执要带的身份标识 —— **它没有机会改写，因为它从来没拿到过。**
 
+### 5.2b 卡片只在「拥有该 turn 的 client」里渲染（实测约束）
+
+2026-07-28 真机反复确认，两个替代解释已被实验排除：
+
+- `codex mcp-server` 起的 turn 里，`present_stagepass_choices` **调用成功、返回 `awaiting_selection`，但 Codex Desktop 不弹卡**。
+- 排除 (a) code-mode 包装：`config.features.code_mode_host=false` 强制原生调用后仍不弹。
+- 排除 (b) 必填字段缺失：七个必填 ID 全由客户端注入、调用成功后仍不弹。
+
+**后果，直接决定 L3 的形状**：需要弹卡的 turn 不能由 StagePass headless 发起，必须由 Desktop 拥有。可行派发是
+
+```
+codex://threads/new?cwd=<path>&prompt=<urlencoded>
+```
+
+Desktop 会开新线程并预填 prompt，**但不自动发送**（二进制里不存在 `autoSend`/`autoSubmit`/`submitOnOpen`）。人按一次回车，Desktop 成为 turn 的 owner，卡片正常渲染。
+
+所以 turn 分两类，且这是**产品事实不是实现细节**：
+
+| | 谁拥有 | 人要做什么 |
+|---|---|---|
+| 阶段执行 turn | StagePass（`codex mcp-server`） | 什么都不用做 |
+| **需要弹卡的 turn** | **Codex Desktop** | **按一次回车** |
+
+那一下省不掉。
+
 ### 5.3 一条回执路径
 
 所有点击走同一个入口、同一套校验。**没有第二条能推动闸门的路。**
