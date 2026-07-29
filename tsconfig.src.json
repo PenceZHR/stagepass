@@ -1,15 +1,24 @@
 {
-  // The new tree's typecheck. Separate from the root config for one reason:
-  // the root excludes `**/*.test.ts`, which makes every `@ts-expect-error` in a
-  // test a blank round and lets a test drift out of sync with the code it
-  // covers without anything saying so. The rebuild does not inherit that.
+  // Standalone. It used to extend the root config, which existed for a Next.js
+  // app that no longer does -- JSX, DOM libs, the `next` plugin, and an exclude
+  // list that quietly kept `.test.ts` out of typechecking.
   //
-  // Constraints beyond the root config are deliberate. This tree is small and
-  // is meant to stay legible; the time to hold that line is while it is small.
-  "extends": "./tsconfig.json",
+  // Nothing here is inherited, which is the same rule the tree itself follows.
   "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
     "noEmit": true,
-    "incremental": false,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+
+    // Beyond `strict`, deliberately. This tree is small and is meant to stay
+    // legible; the time to hold that line is while it is small.
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
@@ -17,6 +26,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": []
+  // Tests are typechecked. The tree this replaces excluded them, which made
+  // every `@ts-expect-error` in a test a blank round and let tests drift out of
+  // sync with the code they covered without anything saying so.
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
 }
