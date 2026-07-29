@@ -35,7 +35,7 @@ function seed(database: Database.Database) {
   changes.apply(CHANGE, "settle");
   new EvidenceStore(database).put(CHANGE, "PRD", {
     artifactIds: ["prd.md"],
-    blockers: [{ id: "B-1", severity: "P1", title: "验收标准还不可测" }],
+    blockers: [{ id: "B-1", kind: "finding", severity: "P1", title: "验收标准还不可测" }],
     waivedBlockerIds: ["B-1"],
   });
 }
