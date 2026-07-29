@@ -369,19 +369,27 @@ function drawDecision(panel, at) {
   }
 
   // What the gate permits, stated rather than acted on.
-  const verdictEl = document.getElementById("verdict");
   const permitted = panel.gate?.permitted ?? [];
+  // Only these three are ever put to a person. `start` / `settle` / `fail` are
+  // the system reporting what happened, so a gate that permits only those has
+  // no decision to ask about -- offering the button there would compose a
+  // question with no options and come back `no_decision_available`.
+  // Same list as `gateDecisionQuestion` in domain/question.ts.
+  const decidable = permitted.filter((action) =>
+    action === "approve" || action === "reject" || action === "retry");
+
+  const verdictEl = document.getElementById("verdict");
   verdictEl.replaceChildren();
   const label = document.createElement("b");
   label.textContent = "Gate";
   const text = document.createElement("span");
-  text.textContent = permitted.length === 0
-    ? "没有可做的裁决"
-    : `可做：${permitted.join(" / ")}`
+  text.textContent = decidable.length === 0
+    ? (permitted.length === 0 ? "闸门没有可做的动作" : "现在没有要人裁决的事")
+    : `可裁决：${decidable.join(" / ")}`
       + (panel.gate?.refusals?.approve ? `　approve 被拒：${panel.gate.refusals.approve}` : "");
   verdictEl.append(label, text);
 
-  const canAsk = permitted.length > 0 && at && !at.live;
+  const canAsk = decidable.length > 0 && at && !at.live;
   runButton.hidden = !at;
   runButton.disabled = !at || at.live || panel.status === "settled";
   askButton.hidden = !at;
