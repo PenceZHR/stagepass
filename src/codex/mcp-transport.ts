@@ -1,6 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
-import { openInDesktop, threadUrl } from "./desktop-link";
 import {
   CodexUnavailableError,
   type CodexTransport,
@@ -64,15 +63,14 @@ export interface CodexMcpTransportOptions {
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /**
-   * Show each thread in Codex Desktop as it starts. Default ON.
+   * Told the id of each thread this transport starts, once per thread.
    *
-   * Defaulted rather than wired by each caller because "every turn is visible"
-   * is a product requirement, and a requirement that depends on every call site
-   * remembering to opt in is a requirement that will be false somewhere. Set
-   * false only for runs nobody is watching.
+   * Deliberately NOT paired with anything that opens it. `open "codex://threads/<id>"`
+   * does bring the thread up in Desktop, but it renders EMPTY -- measured
+   * 2026-07-28 with the rollout file holding all 22 records on disk. Desktop does
+   * not display the contents of a thread whose source is `mcp`. A caller may
+   * still want the id for its own records; it must not be told it can show it.
    */
-  readonly showInDesktop?: boolean;
-  /** Also told the id, for a caller that wants to log or link it itself. */
   readonly onThread?: (threadId: string) => void;
 }
 
@@ -192,9 +190,6 @@ export class CodexMcpTransport implements CodexTransport {
       const streamed = message.params?._meta?.threadId;
       if (typeof streamed === "string" && !this.announced.has(streamed)) {
         this.announced.add(streamed);
-        if (this.options.showInDesktop !== false) {
-          openInDesktop(threadUrl(streamed));
-        }
         this.options.onThread?.(streamed);
       }
 

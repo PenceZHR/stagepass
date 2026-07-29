@@ -8,8 +8,7 @@
  *   pnpm verify:rebuild -- --real  # the L2 gate; needs a real transport
  *
  * The second form is the L2 acceptance: a real turn through `codex mcp-server`,
- * a published subcommand. Every thread it starts is opened in Codex Desktop as
- * it runs, so the turn is watchable rather than merely reported.
+ * a published subcommand.
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +33,10 @@ const NOW = 1_000_000;
  * The real thing: `codex mcp-server`, a published subcommand speaking MCP over
  * stdio. Read-only, because verifying the chain must not let a turn write to
  * the repository it is being run from.
+ *
+ * The thread ids it prints are NOT watchable: opening one in Desktop shows an
+ * empty window, measured 2026-07-28. They are here to correlate with the rows
+ * below, nothing more.
  */
 function realTransport(): CodexTransport {
   // An empty scratch directory, NOT the repository.
@@ -49,8 +52,7 @@ function realTransport(): CodexTransport {
     // This script verifies the chain, not the model's thinking. The default is
     // xhigh, which did not finish two design turns inside ten minutes.
     reasoningEffort: "low",
-    // Opening is the transport's default now; this only narrates it.
-    onThread: (threadId) => console.log(`   thread ${threadId} -> opened in Codex`),
+    onThread: (threadId) => console.log(`   thread ${threadId}`),
   });
 }
 

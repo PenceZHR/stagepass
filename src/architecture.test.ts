@@ -56,7 +56,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2>> = {
   "store/turn-store.ts": 2,
   "codex/transport.ts": 2,
   "codex/mcp-transport.ts": 2,
-  "codex/desktop-link.ts": 2,
   "codex/turn-runner.ts": 2,
 };
 
