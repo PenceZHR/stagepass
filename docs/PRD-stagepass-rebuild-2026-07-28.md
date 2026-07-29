@@ -59,14 +59,35 @@
 
 ---
 
-### 2.4 人机交界走 TUI，不走 App（2026-07-28 实测定案）
+### 2.4 人机交界的入口是 TUI，App 由人自己接力（2026-07-28 实测定案）
 
-四条路各测了一遍，只有一条闭合。**全部由用户目视确认或探针日志记录，没有一条是推断的。**
+**两个表面都保留，它们是接力不是二选一。** 分工由一件事决定：**StagePass 只能驱动 TUI。**
+
+| | StagePass 能发起吗 | 谁决定去那里 |
+|---|---|---|
+| **Codex TUI** | ✅ `codex resume <id> "<prompt>"`，自动发送，零按键 | StagePass |
+| **Codex Desktop** | ❌ 无法自主发起 | **人，在 TUI 里敲 `/app`** |
+
+TUI 的斜杠命令里有（从二进制读出，非推测）：
+
+```
+app       continue this session in Codex Desktop
+          成功时："Opened this session in Codex Desktop."
+rollout   print the rollout file path
+```
+
+**`/app` 是「继续」而不是「只读打开」** —— Desktop 接管之后的 turn 所有权，所以 HTML widget 在那边应该能渲染。这条尚未实测，但它不在关键路径上：**StagePass 不依赖它**。人想要更丰富的界面时自己敲一下，StagePass 既不知道也不需要知道。
+
+这也是为什么提问必须用 `elicitation` 而不是 `ui://`：**选择器要在「此刻拥有 turn 的那个客户端」里渲染**，而那个客户端可能是 TUI，也可能是人刚刚 `/app` 过去的 Desktop。押注单一客户端的渲染实现，就会在人按下 `/app` 的那一刻断掉。
+
+---
+
+下面是四条路各自的实测结果。**全部由用户目视确认或探针日志记录，没有一条是推断的。**
 
 | 路线 | 结果 |
 |---|---|
 | host-attested MCP App（需求文档 §5.1 指定的主表面） | ❌ 从未运行过，见 §2.1 |
-| `codex mcp-server` + `codex://threads/<id>` 回看 | ❌ **Desktop 打开是空的**。线程 `source=mcp`、rollout 78KB/22 条一条不缺，窗口就是不显示内容。用户两次确认（turn 进行中、turn 结束后各一次） |
+| `codex mcp-server` + `codex://threads/<id>` 回看 | ❌ **Desktop 打开是空的**（注意：这是 deep link 直接开一个 mcp 线程；与人在 TUI 里 `/app` 接力是两回事）。线程 `source=mcp`、rollout 78KB/22 条一条不缺，窗口就是不显示内容。用户两次确认（turn 进行中、turn 结束后各一次） |
 | `codex mcp-server` + StagePass 自己渲染流 | ⚠️ 技术上可行、已实现过，但**用户明确否决**："我不想在我的 StagePass 里渲染，我就要在 Codex 原生客户端里渲染" |
 | **`codex resume <id> "<prompt>"` + MCP elicitation** | ✅ **闭合** |
 
@@ -74,7 +95,7 @@ TUI 那条路今天验到的四件事：
 
 1. **能恢复 `mcp` 建的线程并显示完整历史** —— 用户确认
 2. **prompt 自动发送，不需要任何按键** —— 用户确认。这是它和 App 的决定性差别：`codex://threads/new?prompt=` 只预填不发送，App 那条路必须人先按一次回车，**StagePass 无法自主发起**
-3. **HTML `ui://` widget 在 TUI 不显示** —— 用户确认。终端里没有 HTML 的位置
+3. **HTML `ui://` widget 在 TUI 不显示** —— 用户确认。终端里没有 HTML 的位置，所以提问不能依赖它
 4. **Codex 向 MCP 服务端声明 `elicitation` 能力**，选择器原生渲染，答案结构化回到插件：
 
 ```
