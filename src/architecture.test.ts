@@ -62,6 +62,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
 
   "domain/round.ts": 4,
   "codex/subagent.ts": 4,
+  "work/round-runner.ts": 4,
 
   "domain/question.ts": 3,
   "store/question-store.ts": 3,

@@ -49,6 +49,21 @@ import {
 export interface CodexTuiTransportOptions {
   readonly cwd: string;
   readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  /**
+   * When Codex asks a human before running a command.
+   *
+   * `never` is deliberately NOT offered here, and this is not tidiness.
+   * Measured 2026-07-29 and reproduced (`pnpm probe:elicit`): `-a never` also
+   * makes Codex auto-decline every MCP `elicitation/create` -- the ONLY channel
+   * StagePass has for reaching a person (PRD §5.2b). It fails silently, because
+   * what comes back is a perfectly legal `{"action":"decline"}`, identical to a
+   * human pressing Esc (§5.6). So the gate would stop moving and nothing would
+   * report an error.
+   *
+   * Leaving the value out of the type is what stops that from being reachable
+   * by a future edit. See PRD §6.6.
+   */
+  readonly approval?: "untrusted" | "on-request";
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Where Codex keeps session files. */
@@ -134,6 +149,10 @@ export class CodexTuiTransport implements CodexTransport {
 
     const flags = [
       "-s", this.options.sandbox ?? "read-only",
+      // Always passed, never left to the client default: what StagePass needs
+      // from this flag is that elicitation keeps working. See the note on the
+      // option for why the dangerous value is not even expressible.
+      "-a", this.options.approval ?? "on-request",
       ...(this.options.model ? ["-m", this.options.model] : []),
       ...(this.options.reasoningEffort
         ? ["-c", `model_reasoning_effort="${this.options.reasoningEffort}"`]
