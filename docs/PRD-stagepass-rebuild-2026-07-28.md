@@ -479,9 +479,24 @@ help 原文把它标为 *EXTREMELY DANGEROUS. Intended solely for running in env
 | L2 · osascript 版 | `codex resume` 起一个真 turn，StagePass 按 §6.4 认出它结束、从 rollout 拿到结果，binding 与 turn 落库 | ✅ 2026-07-28 通过（两次：先 mcp-server，再 TUI） |
 | L2 · pty 版 | 同上，但执行通道是 StagePass 自持的终端面板 pty；**且** binding 按 `(change_id, phase)` 落库、两个方向的唯一性都重新成立（§6.5）。验收方式：面板建好之后**一次真选择验完**，不为它单独安排一次 L3 演练 | ⬜ |
 | L3 | 假答案驱动全链路离线通过；**且**你在 TUI 里真选一次，`changes.status` 前进 | ✅ 2026-07-28 通过 |
-| L4 | 一轮真对抗结算出 gate 能用的结果 | ⬜ |
+| L4 | 一轮真对抗结算出 gate 能用的结果 | ✅ 2026-07-29 通过 |
 | L5 | rubric 出分、gap 落库并阻断；接受风险能指明具体条目 | ⬜ |
 | L6 | 五个阶段的裁决都能问出来、答回来、推进状态 | ⬜ |
+
+#### L4 验收证据（2026-07-29）
+
+`pnpm verify:round` 真跑一轮，裁判自己派生红蓝，StagePass 从**各自的 rollout** 读结果：
+
+```
+judge      019fac7a-c8c2-7093-b509-3518aa7105ae
+spawned    /root/red, /root/blue          ← 裁判真的按指定路径派生了两个子 Agent
+红方自己的文件  artifactIds:[spec.md]  blockers:[]
+蓝方自己的文件  blockers: 9 条，稳定 id（SPEC-SCHEMA-1 / SPEC-COORD-1 / …）
+gaps 表     9 行，全部 open，opened_round=1
+闸门        关着 —— 6 个 P1 + 3 个 P2 挡住它
+```
+
+关键在**蓝方那 9 条是从蓝方自己的文件读的，没有经过裁判转述**（§5.7 的第二条理由）。用 `pnpm verify:round --read <thread>` 可以对同一个线程独立复核一遍，不碰任何数据库。
 
 ### 9.3 常驻（任何时候都不许红）
 
