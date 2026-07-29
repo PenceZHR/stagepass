@@ -481,7 +481,13 @@ body::after {
  * 问我"—— 它组题、把问题送进那个阶段的终端，然后等你在 Codex 里选。面板显示闸门
  * 说了什么，永远不提供改变它的控件。
  */
+/*
+ * flex 列是**必须的**，不是排版偏好：`.sheet-body` 的 `overflow-y: auto` 只有在
+ * 高度被约束住时才会滚。不给它约束，内容长了就整体撑破 max-height，然后被
+ * `overflow: hidden` 从底下裁掉 —— 先没的正是底部那排动作按钮。
+ */
 .sheet {
+  display: flex; flex-direction: column;
   width: min(560px, calc(100vw - 48px)); max-height: min(78vh, 720px);
   margin: auto; padding: 0; border: 1px solid rgba(255,255,255,.19); border-radius: 20px;
   background: oklch(0.185 0.036 295 / 94%); backdrop-filter: blur(26px) saturate(115%);
@@ -492,6 +498,7 @@ body::after {
 .sheet::backdrop { background: oklch(0.09 0.03 290 / 60%); backdrop-filter: blur(2px); }
 
 .sheet-head {
+  flex: 0 0 auto;
   display: flex; align-items: flex-start; gap: 16px;
   padding: 22px 22px 16px 26px; border-bottom: 1px solid rgba(255,255,255,.1);
 }
@@ -512,7 +519,97 @@ body::after {
 }
 .sheet-close:hover { background: rgba(255,255,255,.1); color: #fff; }
 
-.sheet-body { padding: 6px 26px 18px; overflow-y: auto; }
+.sheet-tabs {
+  flex: 0 0 auto;
+  display: flex; gap: 4px; padding: 0 22px; border-bottom: 1px solid rgba(255,255,255,.1);
+}
+.sheet-tab {
+  padding: 11px 14px 10px; border: 0; border-bottom: 2px solid transparent;
+  background: transparent; color: rgba(255,255,255,.46); cursor: pointer;
+  font: 750 10px/1 ui-sans-serif, sans-serif; letter-spacing: .14em; text-transform: uppercase;
+  transition: color .2s, border-color .2s;
+}
+.sheet-tab:hover { color: rgba(255,255,255,.78); }
+.sheet-tab[aria-selected="true"] { color: var(--sand-strong); border-bottom-color: var(--sand-deep); }
+
+.sheet-body { flex: 1 1 auto; min-height: 0; padding: 6px 26px 18px; overflow-y: auto; }
+
+/*
+ * ── 标准编辑器 ────────────────────────────────────────────
+ *
+ * **网页上唯一可以改的东西**（PRD §1.1）。它改的是「标准」——「这条我们本来就不该
+ * 要求」；而 approve 说的是「这份产物够好了」。前者不需要人说谎就能撤销一个阻断项，
+ * 后者必须在人被正面问到时回答。
+ *
+ * 所以这里可以有输入框和保存按钮，而**永远不许有 approve / reject / 接受风险**。
+ */
+.rubric-roles { display: flex; gap: 6px; margin: 16px 0 4px; }
+.rubric-role {
+  padding: 6px 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px;
+  background: transparent; color: rgba(255,255,255,.55); cursor: pointer;
+  font: 700 10px/1 ui-sans-serif, sans-serif; letter-spacing: .1em;
+  transition: background .2s, color .2s, border-color .2s;
+}
+.rubric-role:hover { color: #fff; }
+.rubric-role[aria-pressed="true"] {
+  border-color: rgba(225,198,160,.5); background: rgba(169,113,103,.18); color: #fff;
+}
+.rubric-scope {
+  margin: 10px 0 0; font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.42);
+}
+.criterion {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 0; border-top: 1px solid rgba(255,255,255,.085);
+}
+.criterion textarea {
+  flex: 1; min-width: 0; min-height: 42px; resize: vertical;
+  padding: 8px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 9px;
+  background: rgba(255,255,255,.04); color: var(--foreground);
+  font: 400 12.5px/1.55 var(--serif);
+}
+.criterion textarea:focus { outline: none; border-color: rgba(225,198,160,.5); }
+/* 「阻不阻断」是这里唯一真正改变闸门的开关，所以它要看得见，不是一个小方块。 */
+.criterion-block {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; margin-top: 9px;
+  font: 600 10px/1 ui-sans-serif, sans-serif; letter-spacing: .08em;
+  color: rgba(255,255,255,.5); cursor: pointer; white-space: nowrap;
+}
+.criterion-block input { accent-color: var(--problem); }
+.criterion-block.on { color: var(--problem); }
+.criterion-drop {
+  flex: 0 0 auto; margin-top: 6px; width: 28px; height: 28px; padding: 0;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 8px;
+  background: transparent; color: rgba(255,255,255,.45); cursor: pointer;
+  font: 500 13px/1 ui-sans-serif, sans-serif;
+}
+.criterion-drop:hover { color: #fff; background: rgba(255,255,255,.08); }
+
+.rubric-add {
+  margin-top: 12px; padding: 8px 14px; border-radius: 9px; cursor: pointer;
+  border: 1px dashed rgba(255,255,255,.24); background: transparent;
+  color: rgba(255,255,255,.6); font: 600 11px/1 ui-sans-serif, sans-serif;
+}
+.rubric-add:hover { color: #fff; border-color: rgba(255,255,255,.4); }
+
+/*
+ * 理由框。**只在这次编辑会退休掉活着的阻断项时才出现。**
+ *
+ * 一直摆着会训练人无视它；只在真的要撤下一条标准时冒出来，它才是一次提问。
+ */
+.rubric-reason { margin-top: 16px; }
+.rubric-reason[hidden] { display: none; }
+.rubric-reason p {
+  margin: 0 0 8px; font: 400 12px/1.6 var(--serif); color: var(--problem);
+}
+.rubric-reason input {
+  width: 100%; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid color-mix(in oklch, var(--problem) 44%, transparent);
+  background: rgba(255,255,255,.04); color: var(--foreground);
+  font: 400 12.5px/1.5 var(--serif);
+}
+.rubric-reason input:focus { outline: none; border-color: var(--problem); }
+.rubric-note { margin-top: 12px; font: 400 11.5px/1.6 var(--serif); color: rgba(255,255,255,.5); }
+.rubric-note.bad { color: var(--problem); }
 .sheet-line { margin: 16px 0 0; color: rgba(255,255,255,.6); font-size: 12.5px; line-height: 1.75; }
 .sheet-empty { margin: 18px 0 4px; font: 400 12px/1.7 var(--serif); color: rgba(255,255,255,.46); }
 
@@ -544,6 +641,7 @@ body::after {
 }
 
 .sheet-foot {
+  flex: 0 0 auto;
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   padding: 15px 22px 18px 26px; border-top: 1px solid rgba(255,255,255,.1);
   background: rgba(255,255,255,.022);
@@ -680,9 +778,19 @@ body::after {
         </div>
         <button class="sheet-close" id="sheet-close" type="button" aria-label="关闭">✕</button>
       </div>
+      <!--
+        两个页签，不是把两块内容摞起来。改标准是一件要专门去做的事（它改变什么
+        能挡闸门），摞在问题下面会让人一边看问题一边顺手改标准 —— 那正是最不该
+        顺手的一件事。
+      -->
+      <div class="sheet-tabs" role="tablist">
+        <button class="sheet-tab" id="tab-gaps" type="button" role="tab" aria-selected="true">问题</button>
+        <button class="sheet-tab" id="tab-rubric" type="button" role="tab" aria-selected="false">标准</button>
+      </div>
       <div class="sheet-body">
         <p class="sheet-line" id="sheet-line"></p>
         <div id="sheet-gaps"></div>
+        <div id="sheet-rubric" hidden></div>
       </div>
       <div class="sheet-foot">
         <button class="enter" id="enter" type="button">进入终端</button>

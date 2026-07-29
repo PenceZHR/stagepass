@@ -60,6 +60,9 @@ const sheetTitle = document.getElementById("sheet-title");
 const sheetMark = document.getElementById("sheet-mark");
 const sheetLine = document.getElementById("sheet-line");
 const sheetGaps = document.getElementById("sheet-gaps");
+const sheetRubric = document.getElementById("sheet-rubric");
+const tabGaps = document.getElementById("tab-gaps");
+const tabRubric = document.getElementById("tab-rubric");
 const enterButton = document.getElementById("enter");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
@@ -105,6 +108,10 @@ let moving = false;
 let sheetPhase = null;
 /** run / ask 留下的一句话，盖过默认说明，直到弹窗重开。 */
 let notice = null;
+/** 弹窗当前在哪个页签。 */
+let sheetTab = "gaps";
+/** 正在编辑的那份 rubric —— 角色、作用域、以及还没保存的 criteria。 */
+let editing = null;
 
 const path = (phase, suffix = "") =>
   `/pty/${encodeURIComponent(changeId)}/${encodeURIComponent(phase)}${suffix}`;
@@ -534,6 +541,9 @@ const GAP_STATUS = { open: "未解决", closed: "已关闭", waived: "已接受�
 
 function openSheet(phase) {
   notice = null;
+  // 每次打开都回到「问题」。改标准是要专门去做的事，不该因为上次停在那儿就
+  // 直接把人放在一个能改闸门的页面上。
+  showTab("gaps");
   drawSheet(phase);
   if (!sheet.open) sheet.showModal();
 }
@@ -597,7 +607,9 @@ function drawGaps(entry) {
 
     const severity = document.createElement("b");
     severity.className = "gap-sev";
-    severity.textContent = gap.severity;
+    // 一条 standard 没有严重度 —— 它答的是「满足了没有」，二元。这里写死一个
+    // P 几，或者让 null 直接渲染成 "null"，都是在假装它有那一维。
+    severity.textContent = gap.kind === "standard" ? "标准" : gap.severity;
 
     const text = document.createElement("div");
     text.className = "gap-text";
@@ -716,3 +728,206 @@ addEventListener("resize", () => {
 });
 
 void load();
+
+/*
+ * ── 标准编辑器 ────────────────────────────────────────────
+ *
+ * **网页上唯一可以改的东西**（PRD §1.1）。边界写成一句话：
+ *
+ *   Web 可以改「标准」。Web 永远不可以对「这一次的产物」下判断。
+ *
+ * 它站得住是因为撤下一条标准**不需要人说谎** —— 它不声称产物满足了标准，它撤销
+ * 标准。approve 是在说「这份 PRD 够好了」，那是对产物的判断，必须在人被正面问到
+ * 时回答。
+ *
+ * 所以这里可以有输入框和保存按钮，而**永远不许有 approve / reject / 接受风险**。
+ * 要在这个文件里加那样一个按钮之前，先回去读 PRD §1.1。
+ */
+const ROLE_LABEL = { producer: "正方", critic: "反方", verdict: "裁判" };
+
+function showTab(name) {
+  sheetTab = name;
+  tabGaps.setAttribute("aria-selected", String(name === "gaps"));
+  tabRubric.setAttribute("aria-selected", String(name === "rubric"));
+  sheetGaps.hidden = name !== "gaps";
+  sheetRubric.hidden = name !== "rubric";
+  if (name === "rubric") void loadRubric(sheetPhase, editing?.role ?? "producer");
+}
+
+async function loadRubric(phase, role) {
+  if (!phase) return;
+  const read = await (await fetch(
+    `/api/rubric?change=${encodeURIComponent(changeId)}&phase=${encodeURIComponent(phase)}`,
+  )).json();
+  const mine = read.roles.find((entry) => entry.role === role);
+  editing = {
+    phase, role,
+    scope: mine?.scope ?? "project",
+    // 存的那一版留一份，用来算「这次编辑会退休掉什么」—— 那决定要不要问理由。
+    saved: mine?.criteria ?? [],
+    drafts: (mine?.criteria ?? []).map((entry) => ({
+      key: entry.key, text: entry.text, blocking: entry.blocking,
+    })),
+    note: null,
+  };
+  drawRubric();
+}
+
+/** 这次编辑会退休掉哪些活着的阻断标准。和服务端 retiredBy 是同一条规则。 */
+function wouldRetire() {
+  if (!editing) return [];
+  const stillBlocking = new Set(
+    editing.drafts.filter((entry) => entry.blocking && entry.key).map((entry) => entry.key));
+  return editing.saved.filter((entry) => entry.blocking && !stillBlocking.has(entry.key));
+}
+
+function drawRubric() {
+  if (!editing) { sheetRubric.replaceChildren(); return; }
+  const parts = [];
+
+  const roles = document.createElement("div");
+  roles.className = "rubric-roles";
+  for (const role of ["producer", "critic", "verdict"]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "rubric-role";
+    button.setAttribute("aria-pressed", String(role === editing.role));
+    button.textContent = ROLE_LABEL[role];
+    button.addEventListener("click", () => { void loadRubric(editing.phase, role); });
+    roles.append(button);
+  }
+  parts.push(roles);
+
+  const scope = document.createElement("p");
+  scope.className = "rubric-scope";
+  scope.textContent = editing.scope === "change"
+    ? "这一份只属于这个 Change，覆盖了项目级默认。"
+    : "这是项目级默认，改它会影响这个项目里之后每一个 Change。";
+  parts.push(scope);
+
+  editing.drafts.forEach((entry, index) => {
+    const row = document.createElement("div");
+    row.className = "criterion";
+
+    const text = document.createElement("textarea");
+    text.value = entry.text;
+    text.rows = 2;
+    text.addEventListener("input", () => { entry.text = text.value; });
+
+    const block = document.createElement("label");
+    block.className = "criterion-block" + (entry.blocking ? " on" : "");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = entry.blocking;
+    box.addEventListener("change", () => {
+      entry.blocking = box.checked;
+      drawRubric(); // 重画：这一下可能让理由框冒出来
+    });
+    block.append(box, document.createTextNode("阻断"));
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "criterion-drop";
+    drop.textContent = "✕";
+    drop.title = "删掉这条标准";
+    drop.addEventListener("click", () => {
+      editing.drafts.splice(index, 1);
+      drawRubric();
+    });
+
+    row.append(text, block, drop);
+    parts.push(row);
+  });
+
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "rubric-add";
+  add.textContent = "+ 加一条标准";
+  add.addEventListener("click", () => {
+    // 没有 key 就是「新写的」。带一个假 key 回去会被服务端整次拒绝。
+    editing.drafts.push({ text: "", blocking: true });
+    drawRubric();
+  });
+  parts.push(add);
+
+  const retiring = wouldRetire();
+  const reason = document.createElement("div");
+  reason.className = "rubric-reason";
+  reason.hidden = retiring.length === 0;
+  if (retiring.length > 0) {
+    const why = document.createElement("p");
+    why.textContent = `这次编辑会撤下 ${retiring.length} 条正挡着闸门的标准。`
+      + "撤下它们等于关掉它们开出的问题 —— 说明理由。";
+    const input = document.createElement("input");
+    input.placeholder = "为什么这条本来就不该要求";
+    input.value = editing.reason ?? "";
+    input.addEventListener("input", () => { editing.reason = input.value; });
+    reason.append(why, input);
+  }
+  parts.push(reason);
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "rubric-add";
+  save.textContent = "保存这一版";
+  save.addEventListener("click", () => { void saveRubric(); });
+  parts.push(save);
+
+  if (editing.note) {
+    const note = document.createElement("p");
+    note.className = "rubric-note" + (editing.note.bad ? " bad" : "");
+    note.textContent = editing.note.text;
+    parts.push(note);
+  }
+
+  sheetRubric.replaceChildren(...parts);
+}
+
+const SAVE_REFUSALS = {
+  reason_required: "撤下正挡着闸门的标准要写明理由。",
+  untrusted_key: "有一条 criterion 的编号不属于这份 rubric，整次编辑被拒绝了。",
+  text_empty: "有一条标准是空的。",
+  key_reused: "同一个编号出现了两次。",
+};
+
+async function saveRubric() {
+  if (!editing) return;
+  const response = await fetch(
+    `/api/rubric?change=${encodeURIComponent(changeId)}`
+    + `&phase=${encodeURIComponent(editing.phase)}&role=${encodeURIComponent(editing.role)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        scope: editing.scope,
+        drafts: editing.drafts,
+        reason: editing.reason,
+      }),
+    });
+
+  if (!response.ok) {
+    editing.note = { text: `没存成：${await response.text()}`, bad: true };
+    drawRubric();
+    return;
+  }
+  const result = await response.json();
+  if (!result.saved) {
+    editing.note = {
+      text: SAVE_REFUSALS[result.reason] ?? `没存成：${result.reason}`, bad: true,
+    };
+    drawRubric();
+    return;
+  }
+
+  // 存成了：重新读一遍，这样 saved 与 drafts 重新对齐，理由框也会收起来。
+  await loadRubric(editing.phase, editing.role);
+  editing.note = {
+    text: `第 ${result.version} 版已保存。`
+      + (result.retired.length > 0 ? `撤下了 ${result.retired.length} 条，它们开出的问题已退休。` : ""),
+    bad: false,
+  };
+  drawRubric();
+  await load(); // 环上的颜色可能变了
+}
+
+tabGaps.addEventListener("click", () => { showTab("gaps"); });
+tabRubric.addEventListener("click", () => { showTab("rubric"); });
