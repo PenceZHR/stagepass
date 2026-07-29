@@ -32,17 +32,20 @@
 ## 二、现在的状态
 
 ```bash
-pnpm check            # 216 个测试 + 严格 typecheck，全离线
+pnpm check            # 238 个测试 + 严格 typecheck，全离线
+pnpm panel            # 终端面板：三列 + 阶段环，点一个阶段就在它的线程里开 Codex
 pnpm verify:rebuild   # L0–L2 整条链路（加 --real 用真 Codex）
-pnpm verify:decision  # L3：开一个 TUI，你选一次，闸门前进
-pnpm verify:round <judge-thread-id>   # L4：读一次真实红蓝对抗
+pnpm verify:decision  # L3：开一个 TUI，你选一次，闸门前进（仍是 osascript 版）
+pnpm verify:round     # L4：真跑一轮红蓝对抗；--read <thread> 只读一轮已发生的
+pnpm probe:elicit [never|on-request]  # §五.10：elicitation 选择器在 pty 里可不可用
 ```
 
 | 层 | 内容 | 状态 |
 |---|---|---|
 | **L0** | 状态机、转移、**不可绕过的审计账本** | ✅ 离线验收 |
 | **L1** | gate、fence、租约、心跳、幂等、恢复、**Gap 跨轮存活** | ✅ 离线验收 |
-| **L2** | Codex TUI 通道、绑定、从 rollout 读结果 | ✅ 真 turn（两次，均为 osascript + Terminal.app 版） |
+| **L2 · osascript 版** | Codex TUI 通道、绑定、从 rollout 读结果 | ✅ 真 turn（两次） |
+| **L2 · pty 版** | 同上，但通道是面板自持的 pty；binding 按 `(Change, 阶段)` | ⚠️ **只差一次真选择**。面板已能派发真 turn 并走完 binding → evidence → gaps → 闸门（2026-07-29 实测），但**没有人在 pty 里真选过一次**，所以不许标绿 |
 | **L3** | 组题 → TUI 原生选择器 → 人选 → 闸门前进 | ✅ **真人真选** |
 | **L4** | 对抗：红/蓝/裁判 | ✅ **2026-07-29 真跑一轮**（裁判自己派生红蓝，9 条 gap 落库，闸门关上） |
 | L5 | rubric | ⬜ |
@@ -87,6 +90,25 @@ pnpm verify:round <judge-thread-id>   # L4：读一次真实红蓝对抗
 ```
 
 **最后一步为什么必须是人**：要验的是「elicitation 选择器在面板里出现、你选了一个、闸门按你选的动」。前三步都能机械证明，这一步不能 —— 它就是 L3 那件事换了个宿主。
+
+#### 面板现在接了什么、没接什么（2026-07-29，逐个 grep 过）
+
+**接了**：`POST /api/run` 派发 Change 当前阶段的真 turn，走的是 L1/L2 已验过的机器
+（`TurnLoop → CodexTurnRunner → CodexTuiTransport(launch=pty)`）。实测走完整条：
+turn 先落库 → 线程按 `(Change, 阶段)` 绑定 → evidence 落库 → 3 条 P1 落 gaps →
+闸门 `approve` 被拒、只剩 `reject`。
+
+**没接**（`panel-server.ts` 里 `QuestionStore` / `gateFor` / `CommandStore` /
+`approve` 全部 0 命中）：
+
+| 缺什么 | 后果 |
+|---|---|
+| **决策区**（设计稿 §4.5） | 闸门算出 `permitted:["reject"]` 了，面板上没有任何地方能点 approve / reject / 接受风险 |
+| **提问通道** | 面板没用到 `plugin/server`，**elicitation 那条问人的路在面板里根本没接** —— 而它正是上面那"最后一步"要验的东西 |
+| **风险明细** | 中心只显示数字，点不开看是哪几条（设计稿 §4.4 要求分级摘要与红蓝双方主张） |
+
+**注意这两件事的关系**：没有「提问通道」，那一步就没法验 —— 所以它不是可选的
+装饰，它是 L2 pty 版验收的前置。
 
 ### 3.3 先后：**已定 —— 先路 A 收口 L4，再动路 B**（2026-07-29 用户决定）
 
@@ -325,7 +347,20 @@ help 原文：*EXTREMELY DANGEROUS. Intended solely for running in environments 
 
     另：**`-a never` 也不覆盖 Codex 自己的 MCP 工具授权提示**（"Allow the X MCP server to run tool ...?"），那是另一道门，每个新工具第一次都会问。
 
-11. **（历史，已解决）elicitation 选择器在 pty 里能不能用，曾经没验。**
+11. **一个"跑着"的 turn，可能只是停在审批提示上等人 —— 而外面看不出区别。**
+
+    2026-07-29 从面板派发一次真 PRD turn（`-s read-only -a on-request`）。模型要写文件，Codex 弹出 *Would you like to make the following edits?*，**整个 turn 就停在那儿**：rollout 二十分钟不长一个字节，进程活着，没有错误、没有任何迹象。在面板里按一下 Enter，**10 秒后 `task_complete` 出现**，随后 binding / evidence / gaps / 闸门一路走完。
+
+    **两档权限各有一种停，没有第三档：**
+
+    | `-a` | 会发生什么 |
+    |---|---|
+    | `never` | 不停，但 elicitation 被自动 decline —— 问不到人（§五.10） |
+    | `on-request` | 问得到人，但没人应答时 turn 停在审批上，直到超时兜底 |
+
+    **所以「无人值守跑 turn」这件事，在当前权限模型下没有解。** 而这也正是面板真正的分量：在 Terminal.app 那条路上，这个提示藏在一个可能被最小化的窗口里，StagePass 只会静默等满 30 分钟报"超时"，**真正的原因根本看不见**。面板不是把 TUI 搬得好看一点，它是这个权限模型唯一可用的前提。
+
+12. **（历史，已解决）elicitation 选择器在 pty 里能不能用，曾经没验。**
 
     它是 L3 的命脉，**也是面板方案的地基 —— 这条不行，面板就白建了。** 不需要 StagePass、不需要面板：起一个最小的、声明 `elicitation` 能力的 MCP 服务端，在任意 pty 终端（例如 `brew install ttyd && ttyd -W codex`）里跑一次 `elicitation/create`，看选择器出不出来、方向键能不能选、回车能不能确认。与 §4.2 已做过的实测是同一个动作，只是换了终端宿主。**成本以分钟计。**
 
