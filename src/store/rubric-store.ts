@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import {
   nextVersion,
   retiredBy,
+  type Assessment,
   type Criterion,
   type CriterionDraft,
   type RubricRole,
@@ -67,13 +68,10 @@ export interface AssessmentInput {
   readonly evidence: string | null;
 }
 
-export interface Assessment extends AssessmentInput {
+/** 存下来的判定：领域里的 `Assessment`，加上它属于哪一轮、哪一版。 */
+export interface StoredAssessment extends Assessment {
   readonly round: number;
   readonly rubricId: string;
-  /** 判定当时那条 criterion 的正文。**永不回溯派生。** */
-  readonly criterionText: string;
-  /** 判定当时它是否标着阻断。开启读它，退休读当前 rubric。 */
-  readonly blockingThen: boolean;
 }
 
 export class ReasonRequiredError extends Error {
@@ -270,7 +268,7 @@ export class RubricStore {
   /** 一轮的判定。**按 round 读，不按 run 读** —— 理由见 schema 里那段注释。 */
   assessments(
     changeId: string, phase: Phase, role: RubricRole, round: number,
-  ): Assessment[] {
+  ): StoredAssessment[] {
     const rows = this.database.prepare(
       `SELECT round, rubric_id, criterion_key, verdict, evidence, criterion_text, blocking_then
          FROM rubric_assessments

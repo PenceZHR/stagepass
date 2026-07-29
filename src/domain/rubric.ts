@@ -56,6 +56,25 @@ export interface CriterionDraft {
   readonly blocking: boolean;
 }
 
+/**
+ * 一轮对一条标准的判定，连同**判定当时**的快照。
+ *
+ * 快照那两个字段是整套不对称的根：**开启一条阻断项读它们，退休才读当前 rubric。**
+ * 所以改一次 rubric 的措辞不会移动任何已经开出去的东西，而撤下一条标准会。
+ *
+ * 定义在 domain 而不是 store，是因为「判定长什么样」是领域概念，store 只是把它
+ * 存下来 —— 两边各定义一份迟早会打架。
+ */
+export interface Assessment {
+  readonly criterionKey: string;
+  readonly verdict: RubricVerdict;
+  readonly evidence: string | null;
+  /** 判定当时那条 criterion 的正文。**永不回溯派生。** */
+  readonly criterionText: string;
+  /** 判定当时它是否标着阻断。 */
+  readonly blockingThen: boolean;
+}
+
 export class UntrustedKeyError extends Error {
   constructor(readonly key: string) {
     super(`criterion key ${key} does not belong to this rubric`);

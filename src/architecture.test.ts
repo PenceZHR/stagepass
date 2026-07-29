@@ -68,6 +68,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
 
   "domain/rubric.ts": 5,
   "domain/rubric-protocol.ts": 5,
+  "domain/rubric-gaps.ts": 5,
   "store/rubric-store.ts": 5,
 
   // The panel is not a new layer, but its two halves sit at different ones.
