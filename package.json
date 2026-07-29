@@ -8,7 +8,9 @@
     "check": "pnpm typecheck && pnpm test",
     "verify:rebuild": "tsx scripts/verify-rebuild.ts",
     "verify:decision": "tsx scripts/verify-decision.ts",
-    "verify:round": "tsx scripts/verify-round.ts"
+    "verify:round": "tsx scripts/verify-round.ts",
+    "probe:pty": "tsx scripts/probe-pty-elicitation.ts",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1"
@@ -16,6 +18,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
+    "node-pty": "^1.1.0",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"
   }
