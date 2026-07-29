@@ -481,17 +481,25 @@ JOB-2 拿到 381B（第二轮 1 条）                     ← 没有重读第�
 
 #### 决定二：一阶段一套权限
 
-`-s` / `-a` 本就是 per-invocation，`CodexTuiTransportOptions.sandbox` 已经是参数 —— **这一层是免费的**：
+`-s` / `-a` 本就是 per-invocation，`CodexTuiTransportOptions.sandbox` 已经是参数 —— **这一层是免费的**。
+
+#### 现行分配（2026-07-29 晚更正）
 
 | 阶段 | 给什么 |
 |---|---|
-| PRD / Spec / TechSpec / Plan / TestPlan | `-s read-only -a on-request` —— 这些阶段模型只该读和产出文档，**而它们正是要问人的阶段** |
-| Build / Fix | `-s workspace-write -a on-request` |
-| Review / QA | 沙箱按是否需要跑测试决定；`-a` 同上 |
+| **全部十一个阶段** | `-s workspace-write -a on-request` |
 
-**约束模型能碰什么的是 `-s`，不是 `-a`。** 上表用 `-s` 划边界（read-only 的阶段改不了任何文件，这一条不因 `-a` 而松动），`-a` 一律留在 `on-request` —— 因为 `never` 会顺带掐死 elicitation（见上面那个方框）。
+**这一版之前写的是「PRD / Spec / TechSpec / Plan / TestPlan 用 `-s read-only`，理由是这些阶段只该读和产出文档」—— 那句话自相矛盾：产出文档就是写文件，而 read-only 恰恰禁止它。** 那次停在审批上二十分钟的，正是一个 PRD turn（见上面的 ⛔ 方框）。用户 2026-07-29 拍板：设计阶段也给 `workspace-write`，模型自己写文档。
 
-**写进全局 config 反而做不到这个区分。**
+**所以现在的分配是齐的 —— 要老实承认这一点。** 留下来的是**机制**而不是差异：`-s` 仍然逐次调用可变、仍然不写进全局 config，所以哪天要把某个阶段收紧，改的是一个参数而不是一套架构。**别把"机制是 per-phase"读成"现在各阶段权限不同"。**
+
+代价也要写明白：**`workspace-write` 意味着任何一个阶段的 Codex 都能改工作区里的任何文件**，包括源码。"设计阶段不碰代码"这条**不再由沙箱保证**了 —— 它现在只是一个约定，靠提示词和人看。这是用户明确接受的交换。
+
+沙箱边界仍在的部分：**工作区外的写、以及网络，照样升级审批。**
+
+**约束模型能碰什么的始终是 `-s`，不是 `-a`。** `-a` 一律留在 `on-request` —— 因为 `never` 会顺带掐死 elicitation（见上面那个方框）。
+
+**写进全局 config 反而做不到 per-invocation 这件事。**
 
 #### 决定三：不用绕过沙箱的那个开关
 

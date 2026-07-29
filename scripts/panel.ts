@@ -57,7 +57,25 @@ const { server, sessions } = createPanelServer({
     // Where Codex runs. The repository itself, because a phase's work is about
     // this tree -- unlike the probes, which use an empty directory on purpose.
     cwd: process.cwd(),
-    sandbox: "read-only",
+    /*
+     * `workspace-write`, not `read-only` (PRD §6.6, 2026-07-29 更正).
+     *
+     * 每个阶段的活儿都要产出文件 —— 设计阶段产文档，Build/Fix 产代码。read-only
+     * 的定义就是模型不能写，于是它想写就**必然**要升级审批，整个 turn 停在那儿
+     * 等人按 Enter：实测二十分钟 rollout 一个字节没长，没有报错、没有任何迹象。
+     *
+     * `pnpm probe:sandbox` 是这条的判据：同一提示词、同一 `-a on-request`，只变
+     * `-s`，turn 跑起来后一个键都不按 —— read-only 等满 150s 没写成，
+     * workspace-write 26.1s 写成了且没弹过任何审批。
+     *
+     * **代价是真的**：这样 Codex 能改工作区里的任何文件，包括源码。"设计阶段不
+     * 碰代码"从此不由沙箱保证，只是个约定。工作区外的写和网络仍然要升级审批。
+     *
+     * 别为了"更安全"把它改回 read-only —— 那不是更安全，那是让每个 turn 都卡住。
+     */
+    sandbox: "workspace-write",
+    // `never` 会让 Codex 自动 decline 掉 elicitation，而那是唯一的问人通道
+    // （PRD §6.6）。类型上已经不可表达，这里写出来是为了让人别去找那个值。
     approval: "on-request",
     reasoningEffort: "low",
   },
