@@ -368,6 +368,20 @@ body::after {
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
 /*
+ * `--progress` 必须注册才过渡得了。
+ *
+ * 自定义属性默认是「无类型的字符串」，浏览器不知道 0.3 到 0.6 中间是什么，于是
+ * `transition: --progress` **一声不响地什么都不做**。声明了 syntax 才有插值。
+ *
+ * 这类失败最难发现：CSS 不报错，代码看着完全正确，只是动画没有。
+ */
+@property --progress {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
+/*
  * 进度圆弧：绕着轨道的那道沙金弧线，标已经走到哪（设计稿要的东西之一）。
  *
  * 从十二点开始顺时针，长度由 `--progress`（0–1）给 —— 和节点的摆法同一个起点、

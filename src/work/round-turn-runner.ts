@@ -57,8 +57,15 @@ export class RoundTurnRunner implements TurnRunner {
       // 所以「第几轮发现的」在两张表里说的是同一件事。
       round: job.attempt,
       task: this.options.taskFor(phase),
-      // 同一个 (Change, 阶段) 复用同一个裁判线程，和别处一样。
-      judgeThreadId: this.options.bindings.find(job.changeId, phase)?.threadId ?? null,
+      // 同一个 (Change, 阶段) 复用同一个裁判线程。
+      //
+      // **必须看 status。** 一条 detached 的绑定仍然留着 threadId —— 直接拿它去
+      // resume，等于把 turn 送进一个已经被明确放开的线程。codex/turn-runner.ts
+      // 一直是这么判的，这里先前漏了。
+      judgeThreadId: (() => {
+        const bound = this.options.bindings.find(job.changeId, phase);
+        return bound?.status === "bound" ? bound.threadId : null;
+      })(),
     }, this.options);
 
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);

@@ -744,3 +744,17 @@ describe("panel · 接受风险也走选择器", () => {
     });
   });
 });
+
+describe("panel · 「没有这个 Change」不许降级成「没有 rubric」", () => {
+  it("读一个不存在的 Change 的 rubric —— 404，不是一份空的", async () => {
+    await withPanel(async ({ open }) => {
+      /*
+       * 空 rubric 是**合法状态**（这个阶段不做判定）；问错了地方不是。
+       * 混在一起，界面会摆出一个空编辑器，人填完按保存才收到 404 —— 白填一遍。
+       */
+      assert.equal((await open("/api/rubric?change=CHG-不存在&phase=Spec")).status, 404);
+      // 真的存在的照常给。
+      assert.equal((await open(`/api/rubric?change=${CHANGE}&phase=Spec`)).status, 200);
+    });
+  });
+});

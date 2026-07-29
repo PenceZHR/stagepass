@@ -10,6 +10,7 @@ import {
   type RequestedSchema,
 } from "../domain/question";
 import type { Phase } from "../domain/phase";
+import { GateMovedError } from "../domain/gate";
 import { CommandStore } from "./command-store";
 
 /**
@@ -187,6 +188,38 @@ export class QuestionStore {
           content: JSON.parse(row.content_json) as Answer["content"],
         }
       : null;
+  }
+
+  /**
+   * fence：这道题问出去时的那份证据，现在还是不是同一份。
+   *
+   * ## 为什么要有一个单独的方法
+   *
+   * `apply` 把 fence 交给 command 层去查（`expectedSnapshot` 传下去，闸门动过就
+   * 抛 `GateMovedError`）。但**不是每个答案都走 command** —— 接受一条风险不推动
+   * 状态机，没有 command 可走。那条路要是不显式查一次，「人对着他没看见过的证据
+   * 做了决定」这条防线就只覆盖了一半的答案。
+   *
+   * 单独摆出来，是为了让「忘了查」这件事在读代码时看得见。
+   */
+  assertFenceHolds(questionId: string): void {
+    const record = this.read(questionId);
+    const now = this.commands.gateFor(record.changeId);
+    if (now.snapshot !== record.expectedSnapshot) {
+      throw new GateMovedError(record.expectedSnapshot, now.snapshot);
+    }
+  }
+
+  /**
+   * 收尾：把题标成 applied。
+   *
+   * 不走 `apply` 的那些答案也必须收尾，否则题会永远停在 `answered` —— 库里就有了
+   * 一批「有人答过、但没人说这答案被怎么处理了」的行，而那正是这张表要避免的状态。
+   */
+  settle(questionId: string): void {
+    this.database.prepare(
+      "UPDATE questions SET status = 'applied', updated_at = ? WHERE id = ?",
+    ).run(this.now().toISOString(), questionId);
   }
 
   /**

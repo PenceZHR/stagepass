@@ -772,12 +772,17 @@ document.getElementById("new-project").addEventListener("click", () => {
   const name = prompt("新 Project 叫什么？");
   if (name === null || name.trim() === "") return;
   void fetch(`/api/project?name=${encodeURIComponent(name.trim())}`, { method: "POST" })
-    .then((response) => response.json())
+    .then(async (response) => {
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    })
     .then((created) => {
       // 建完直接切过去 —— 建了却停在原地，人得再找一次它在哪。
       location.search = `?change=${encodeURIComponent(changeId)}`
         + `&project=${encodeURIComponent(created.id)}`;
-    });
+    })
+    // 不接住就是「按了没反应」，和「建好了但界面没刷」长得一模一样。
+    .catch((error) => { alert(`没建成：${error.message}`); });
 });
 
 document.getElementById("new-change").addEventListener("click", () => {
@@ -792,8 +797,12 @@ document.getElementById("new-change").addEventListener("click", () => {
     `/api/change?project=${encodeURIComponent(projectId)}`
     + `&title=${encodeURIComponent(title.trim())}`, { method: "POST" },
   )
-    .then((response) => response.json())
-    .then((created) => { location.search = `?change=${encodeURIComponent(created.id)}`; });
+    .then(async (response) => {
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    })
+    .then((created) => { location.search = `?change=${encodeURIComponent(created.id)}`; })
+    .catch((error) => { alert(`没建成：${error.message}`); });
 });
 
 enterButton.addEventListener("click", () => {
@@ -843,7 +852,17 @@ function showTab(name) {
   tabRubric.setAttribute("aria-selected", String(name === "rubric"));
   sheetGaps.hidden = name !== "gaps";
   sheetRubric.hidden = name !== "rubric";
-  if (name === "rubric") void loadRubric(sheetPhase, editing?.role ?? "producer");
+  if (name !== "rubric") return;
+  // 先清空再去取：不清的话，切过来的一瞬间显示的是**上一个阶段**那份 rubric，
+  // 等 fetch 回来才换掉。那一下看着像数据串了。
+  sheetRubric.replaceChildren();
+  void loadRubric(sheetPhase, editing?.role ?? "producer")
+    .catch((error) => {
+      const failed = document.createElement("p");
+      failed.className = "rubric-note bad";
+      failed.textContent = `读不到这个阶段的标准：${error.message}`;
+      sheetRubric.replaceChildren(failed);
+    });
 }
 
 async function loadRubric(phase, role) {
@@ -885,7 +904,10 @@ function drawRubric() {
     button.className = "rubric-role";
     button.setAttribute("aria-pressed", String(role === editing.role));
     button.textContent = ROLE_LABEL[role];
-    button.addEventListener("click", () => { void loadRubric(editing.phase, role); });
+    button.addEventListener("click", () => {
+      sheetRubric.replaceChildren();
+      void loadRubric(editing.phase, role).catch(() => { /* 上面那条已经报过 */ });
+    });
     roles.append(button);
   }
   parts.push(roles);
