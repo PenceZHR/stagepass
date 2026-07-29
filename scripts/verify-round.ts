@@ -12,7 +12,7 @@
  * spawns two sub-agents at the paths it was told to use. Everything else is
  * proved offline in `src/work/round-runner.test.ts`.
  */
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -25,6 +25,27 @@ import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
 import { runRound } from "../src/work/round-runner";
+
+/**
+ * 一个**固定**的空工作区，不是每次新建的临时目录。
+ *
+ * Codex 对没见过的目录一律先问一次「要不要信任这个文件夹」，而那是一个**必须有人
+ * 按键**的提示 —— 脚本会一直卡在那儿，表现为「裁判没有派生子 Agent」，因为它压根
+ * 没开始跑。（`-c projects."<dir>".trust_level` 不生效，trust 也不从父目录继承，
+ * 两条都实测过，见 scripts/probe-sandbox.ts。）
+ *
+ * 每次换一个新目录 = 每次都要人按一次。固定一个路径，就只有**第一次**要人按
+ * 「Yes, continue」，之后 Codex 记在 ~/.codex/config.toml 里，再也不问。
+ *
+ * 目录是空的（每次清内容、保留路径）：指向一个大仓库，模型头几分钟都在读代码而
+ * 不是做这一轮；而路径必须稳定，否则信任白给。
+ */
+function stableWorkspace(name: string): string {
+  const dir = join(tmpdir(), name);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  return realpathSync(dir);
+}
 
 const CHANGE = "CHG-ROUND";
 const PHASE = "Spec" as const;
@@ -73,7 +94,7 @@ async function live(): Promise<void> {
   const transport = new CodexTuiTransport({
     // An empty directory on purpose: pointed at a big repository the model
     // spends the first minutes reading code instead of doing the round.
-    cwd: mkdtempSync(join(tmpdir(), "stagepass-round-cwd-")),
+    cwd: stableWorkspace("stagepass-verify-round-cwd"),
     sandbox: "read-only",
     reasoningEffort: "low",
   });

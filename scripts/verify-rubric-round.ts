@@ -22,7 +22,7 @@
  * 不能因为「没报错」就当成通过。fail-closed 的设计会让这种情况闸门关着，脚本要
  * 把这一点也打出来。
  */
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -36,6 +36,27 @@ import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
 import { RubricStore } from "../src/store/rubric-store";
 import { runRubricRound } from "../src/work/rubric-round";
+
+/**
+ * 一个**固定**的空工作区，不是每次新建的临时目录。
+ *
+ * Codex 对没见过的目录一律先问一次「要不要信任这个文件夹」，而那是一个**必须有人
+ * 按键**的提示 —— 脚本会一直卡在那儿，表现为「裁判没有派生子 Agent」，因为它压根
+ * 没开始跑。（`-c projects."<dir>".trust_level` 不生效，trust 也不从父目录继承，
+ * 两条都实测过，见 scripts/probe-sandbox.ts。）
+ *
+ * 每次换一个新目录 = 每次都要人按一次。固定一个路径，就只有**第一次**要人按
+ * 「Yes, continue」，之后 Codex 记在 ~/.codex/config.toml 里，再也不问。
+ *
+ * 目录是空的（每次清内容、保留路径）：指向一个大仓库，模型头几分钟都在读代码而
+ * 不是做这一轮；而路径必须稳定，否则信任白给。
+ */
+function stableWorkspace(name: string): string {
+  const dir = join(tmpdir(), name);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  return realpathSync(dir);
+}
 
 const PROJECT = "PRJ-RUBRIC";
 const CHANGE = "CHG-RUBRIC";
@@ -81,7 +102,7 @@ async function main(): Promise<void> {
   const lookup = createSubAgentLookup();
   const transport = new CodexTuiTransport({
     // 空目录是故意的：指向一个大仓库，模型头几分钟都在读代码而不是做这一轮。
-    cwd: mkdtempSync(join(tmpdir(), "stagepass-rubric-cwd-")),
+    cwd: stableWorkspace("stagepass-verify-rubric-cwd"),
     /*
      * **workspace-write，别照 verify-round.ts 抄 read-only。**
      *
