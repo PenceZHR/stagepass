@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.src.json",
     "check": "pnpm typecheck && pnpm test",
     "verify:rebuild": "tsx scripts/verify-rebuild.ts",
-    "verify:decision": "tsx scripts/verify-decision.ts"
+    "verify:decision": "tsx scripts/verify-decision.ts",
+    "verify:round": "tsx scripts/verify-round.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1"

@@ -38,7 +38,7 @@ const FILES = sourceFiles().map((path) => ({
  * when it was allowed to exist. Both are useful and they are not the same
  * question.
  */
-const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3>> = {
+const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4>> = {
   "domain/phase.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
@@ -60,6 +60,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3>> = {
   "codex/tui-transport.ts": 2,
   "codex/turn-runner.ts": 2,
 
+  "domain/round.ts": 4,
+  "codex/subagent.ts": 4,
+
   "domain/question.ts": 3,
   "store/question-store.ts": 3,
   "plugin/protocol.ts": 3,
@@ -69,7 +72,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3>> = {
   // layer's enum constants. Placing it at the top is not an exemption: nothing
   // in production imports it downward -- only tests and the entry script read
   // it -- so the downward-only rule still holds everywhere it is checked.
-  "db/schema.ts": 3,
+  "db/schema.ts": 4,
 };
 
 const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
@@ -80,7 +83,7 @@ const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
  * for orphans, so a module reachable only from a command still counts as
  * reached, and one reachable from nowhere still does not.
  */
-const ENTRY_POINTS = ["scripts/verify-rebuild.ts", "scripts/verify-decision.ts"].map((path) => ({
+const ENTRY_POINTS = ["scripts/verify-rebuild.ts", "scripts/verify-decision.ts", "scripts/verify-round.ts"].map((path) => ({
   path,
   text: readFileSync(join(process.cwd(), path), "utf-8"),
 }));
