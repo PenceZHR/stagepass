@@ -102,6 +102,29 @@ describe("L3 · a batch is one form, not a conversation", () => {
   it("asks nothing when there is nothing open", () => {
     assert.equal(clarificationQuestion({ title: "t", items: [] }), null);
   });
+
+  /**
+   * `required` 在客户端是硬闸门，不是提示。
+   *
+   * 2026-07-30 在 Codex TUI 实测：选择器写着
+   * `Field 3/17 (17 required unanswered)`，而在还有必填没答的时候按回车，
+   * **屏幕上什么都不会发生** —— 没有报错、没有提示，看着和终端卡死一模一样。
+   *
+   * 所以一格「可以留空」必须在 schema 上说，不能只在 title 里说。
+   */
+  it("把 optional 的那些格子留在 required 之外", () => {
+    const question = clarificationQuestion({
+      title: "t",
+      items: [
+        { id: "B01", question: "给谁用？", options: ["我", "团队", "外部"] },
+        { id: "B01x", question: "你自己怎么说？", options: [], optional: true },
+      ],
+    })!;
+    assert.deepEqual(question.requestedSchema.required, ["B01"]);
+    // 但两格都在，都画得出来 —— optional 说的是「可以不答」，不是「不问」。
+    assert.deepEqual(Object.keys(question.requestedSchema.properties),
+      ["B01", "B01x"]);
+  });
 });
 
 describe("L3 · reading what came back", () => {

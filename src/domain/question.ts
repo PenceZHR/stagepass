@@ -152,6 +152,18 @@ export interface ClarificationItem {
   readonly id: string;
   readonly question: string;
   readonly options: readonly string[];
+  /**
+   * 这一格可以留空吗。默认不可以 —— 一道问出去的题默认是要答的。
+   *
+   * **这不是排版偏好，`required` 在客户端是硬闸门**（2026-07-30 在 Codex TUI 实测）：
+   * 选择器右上角写着 `Field 3/17 (17 required unanswered)`，而在还有必填没答的时候
+   * 按回车 —— **屏幕上什么都不会发生**，没有报错、没有提示。人只会以为终端卡住了。
+   *
+   * 所以「可以留空」这句话必须落到 schema 上，否则它是一句假话：批次 A 把每题摊成
+   * 两格之后，17 格全进了 `required`，标着「（可以留空）」和「选了也可以补充」的
+   * 那 9 格一个都留不了空。
+   */
+  readonly optional?: boolean;
 }
 
 /**
@@ -161,6 +173,10 @@ export interface ClarificationItem {
  * Measured, and the reason a batch needs no round trips: three fields including
  * a boolean came back together as
  * `{"action":"accept","content":{"q1":"…","q2":"…","q3":true}}`.
+ *
+ * **字段的显示顺序不由这里决定 —— 客户端按字段名排序。** 2026-07-30 实测：这里按
+ * `B1, B1x, …, B8, B8x, B0` 的顺序写出去，选择器画出来的第一格是 `B0`。所以要让
+ * 顺序符合预期，只能让**字段名本身**排出那个顺序（见 `domain/brief.ts`）。
  */
 export function clarificationQuestion(input: {
   title: string;
@@ -181,7 +197,8 @@ export function clarificationQuestion(input: {
     message: input.title,
     requestedSchema: {
       type: "object",
-      required: input.items.map((item) => item.id),
+      required: input.items.filter((item) => item.optional !== true)
+        .map((item) => item.id),
       properties,
     },
   };

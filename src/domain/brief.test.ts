@@ -48,13 +48,64 @@ describe("brief · 读模型提的问题清单", () => {
      * elicitation 的硬约束：一个字段有 enum 就是下拉，没有就是自由输入 ——
      * **没有「选项 + 或者自己写」那种字段**。所以想让人越过选项说话，只能给第二格。
      */
-    assert.deepEqual(items.slice(0, 4).map((item) => item.id), ["B1", "B1x", "B2", "B2x"]);
+    assert.deepEqual(items.slice(0, 4).map((item) => item.id),
+      ["B01", "B01x", "B02", "B02x"]);
     assert.equal(items[0]?.question, "这个改动主要给谁用？");
     // 模型没有机会决定 id，也删不掉那个逃逸项。
     assert.deepEqual(items[0]?.options,
       ["只给我自己", "团队里的人", "外部用户", ESCAPE_OPTION]);
     // 自己写那格没有 enum，所以是自由文本。
     assert.deepEqual(items[1]?.options, []);
+  });
+
+  it("**id 排序之后就是显示顺序** —— 客户端按字段名排，不按这里的书写顺序", () => {
+    /*
+     * 2026-07-30 在 Codex TUI 实测出来的：这里按 `B1, B1x, …, B0` 的顺序写出去，
+     * 选择器画的第一格是 `B0`（`Field 1/17`）。客户端把 properties 排了序，
+     * 所以**顺序只能编码在名字里**。
+     *
+     * 这条测试盯的是补零和 `BZ` 那两个决定：任何一个被"简化"掉，它就红。
+     */
+    const items = readBriefProposal(fenced(THREE));
+    const ids = items.map((item) => item.id);
+    assert.deepEqual(ids, [...ids].sort(),
+      "字段名排序必须等于要给人看的顺序，否则选择器会把题和它的自由填写格拆开");
+    // 每一题紧跟着自己那格，自由填写那格排最后。
+    assert.deepEqual(ids,
+      ["B01", "B01x", "B02", "B02x", "B03", "B03x", FREE_TEXT_ID]);
+  });
+
+  it("每题那格「你自己怎么说」是 optional —— 否则「选了也可以补充」是假话", () => {
+    /*
+     * 客户端把 `required` 当硬闸门：还有必填没答时按回车**什么都不发生**，没有
+     * 报错也没有提示（2026-07-30 实测，`Field 3/17 (17 required unanswered)`）。
+     * 所以「选了也可以补充」这句话必须落到 schema 上，不能只写在标题里。
+     */
+    const items = readBriefProposal(fenced(THREE));
+    for (const item of items) {
+      if (item.id === FREE_TEXT_ID) continue; // 它必填，理由见下一条
+      const own = item.options.length === 0;
+      assert.equal(item.optional === true, own,
+        `${item.id}：有选项的必答，「你自己怎么说」可留空`);
+    }
+  });
+
+  it("**最后那一格必填** —— 空的自由文本格会吃掉回车，而整张表只能从最后一格提交", () => {
+    /*
+     * 这一条是纯粹的实测约束，不是产品偏好（2026-07-30）：
+     *
+     *   光标停在一个空的自由文本格上按回车 → 屏幕上什么都不发生。
+     *   `optional` 不管用，必填项全答完了也不管用，底下写着 `enter to submit all`
+     *   也不管用。
+     *
+     * 而提交只发生在最后一格。所以最后一格要么是选项格（回车总有值可提交），要么
+     * 必填。它是自由文本，于是必填。**把 optional 加回去，这张表就交不上去了。**
+     */
+    const items = readBriefProposal(fenced(THREE));
+    const last = items.at(-1)!;
+    assert.equal(last.id, FREE_TEXT_ID);
+    assert.notEqual(last.optional, true,
+      "最后一格是可留空的自由文本 = 表单交不上去，而且不说为什么");
   });
 
   it("**总是多出一道自由填写，模型删不掉**", () => {
@@ -139,7 +190,7 @@ describe("brief · 人答完之后那一段就是需求", () => {
     const brief = briefFrom(items, {
       action: "accept",
       content: {
-        B1: "团队里的人", B2: "有测试覆盖", B3: "不动数据库",
+        B01: "团队里的人", B02: "有测试覆盖", B03: "不动数据库",
         [FREE_TEXT_ID]: "上线前要能一键回滚",
       },
     });
@@ -154,7 +205,7 @@ describe("brief · 人答完之后那一段就是需求", () => {
     const items = readBriefProposal(fenced(THREE));
     const brief = briefFrom(items, {
       action: "accept",
-      content: { B1: "只给我自己", B2: "页面上看得到结果", B3: "没有明确排除" },
+      content: { B01: "只给我自己", B02: "页面上看得到结果", B03: "没有明确排除" },
     });
     assert.ok(brief);
     assert.doesNotMatch(brief, /undefined/);
@@ -169,7 +220,7 @@ describe("brief · 人答完之后那一段就是需求", () => {
   it("一道必答的没答 —— 返回 null", () => {
     const items = readBriefProposal(fenced(THREE));
     assert.equal(
-      briefFrom(items, { action: "accept", content: { B1: "只给我自己" } }),
+      briefFrom(items, { action: "accept", content: { B01: "只给我自己" } }),
       null);
   });
 });
@@ -188,8 +239,8 @@ describe("brief · 自己写的优先于选项", () => {
 
   it("选了「都不对」并写了自己的话 —— 只留他的话", () => {
     const brief = answer({
-      B1: ESCAPE_OPTION, [ownFieldId("B1")]: "给我们组里另外两个后端",
-      B2: "有测试覆盖", B3: "不动数据库",
+      B01: ESCAPE_OPTION, [ownFieldId("B01")]: "给我们组里另外两个后端",
+      B02: "有测试覆盖", B03: "不动数据库",
     });
     assert.ok(brief);
     assert.match(brief, /给我们组里另外两个后端/);
@@ -199,8 +250,8 @@ describe("brief · 自己写的优先于选项", () => {
   it("**选了某一项又补充了文字 —— 两句都留着**", () => {
     // 备选说明他大致同意哪一档，补充说明他到底要什么。丢掉任何一句都是丢信息。
     const brief = answer({
-      B1: "团队里的人", [ownFieldId("B1")]: "但只限后端，前端不算",
-      B2: "有测试覆盖", B3: "不动数据库",
+      B01: "团队里的人", [ownFieldId("B01")]: "但只限后端，前端不算",
+      B02: "有测试覆盖", B03: "不动数据库",
     });
     assert.ok(brief);
     assert.match(brief, /团队里的人/);
@@ -210,14 +261,14 @@ describe("brief · 自己写的优先于选项", () => {
   it("说了「都不对」却什么也没写 —— 这一题算没答", () => {
     // 不许拿一个空的逃逸项充数：那是「我不同意你列的」，不是一个答案。
     assert.equal(answer({
-      B1: ESCAPE_OPTION, B2: "有测试覆盖", B3: "不动数据库",
+      B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: "不动数据库",
     }), null);
   });
 
   it("只写了自己的话、没点选项 —— 也算答了", () => {
     const brief = answer({
-      [ownFieldId("B1")]: "其实是给运维用的",
-      B2: "有测试覆盖", B3: "不动数据库",
+      [ownFieldId("B01")]: "其实是给运维用的",
+      B02: "有测试覆盖", B03: "不动数据库",
     });
     assert.ok(brief);
     assert.match(brief, /其实是给运维用的/);
@@ -225,8 +276,8 @@ describe("brief · 自己写的优先于选项", () => {
 
   it("自己写那些格子不单独成行 —— 它们跟着自己的题", () => {
     const brief = answer({
-      B1: "团队里的人", B2: "有测试覆盖", B3: "不动数据库",
-      [ownFieldId("B2")]: "端到端那种",
+      B01: "团队里的人", B02: "有测试覆盖", B03: "不动数据库",
+      [ownFieldId("B02")]: "端到端那种",
     });
     assert.ok(brief);
     // 「↑ 上面这题」那句提示语是给选择器看的，不该出现在需求里。

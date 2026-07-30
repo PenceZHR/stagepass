@@ -33,8 +33,15 @@ import type { Answer, ClarificationItem } from "./question";
  * ## 这个模块是纯的
  */
 
-/** 那道自由填写的 id。StagePass 无条件追加，模型碰不到。 */
-export const FREE_TEXT_ID = "B0";
+/**
+ * 那道自由填写的 id。StagePass 无条件追加，模型碰不到。
+ *
+ * **`Z` 不是随便挑的字母 —— 它是这一格排在最后的唯一原因。** 见下面 `fieldId`：
+ * 选择器按字段名排序，而 `Z` 大于任何数字，所以它落在 `B08x` 之后。
+ * 原来叫 `B0`，于是「还有什么必须说清楚的？」成了人看见的**第一格**（2026-07-30
+ * 实测：`Field 1/17`）—— 在被问到任何一个具体问题之前，先被问「还有什么」。
+ */
+export const FREE_TEXT_ID = "BZ";
 
 /** 一次最多问几件事。再多没人答得完，而答不完的问卷等于没问。 */
 const MAX_ITEMS = 8;
@@ -56,7 +63,21 @@ const MIN_OPTIONS = 3;
  */
 export const ESCAPE_OPTION = "都不对，我自己写";
 
-/** 每题跟着的那格自由文本的 id：问题 id 加个 x。 */
+/**
+ * 第 n 题的字段 id。**两位数补零，因为字段名就是显示顺序。**
+ *
+ * 2026-07-30 在 Codex TUI 实测：`clarificationQuestion` 按 `B1, B1x, …, B8, B8x, B0`
+ * 写出去，选择器画出来的第一格是 `B0` —— 客户端**按字段名排序**，不按 schema 里
+ * properties 的书写顺序。所以顺序只能编码在名字里。
+ *
+ * 补零管的是 `MAX_ITEMS` 哪天被提上去：`B1 < B10 < B1x`，不补零的话第 10 题会插到
+ * 第 1 题和它自己那格自由文本中间，而**每一题和它的「你自己怎么说」必须相邻** ——
+ * 隔开了，人就得在十几格里自己找配对。`brief.test.ts` 里那条「顺序等于排序」的
+ * 测试盯着这件事。
+ */
+const fieldId = (n: number): string => `B${String(n).padStart(2, "0")}`;
+
+/** 每题跟着的那格自由文本的 id：问题 id 加个 x。排序上它紧跟自己那题。 */
 export const ownFieldId = (id: string): string => `${id}x`;
 
 const FENCE = /```brief\s*([\s\S]*?)```/g;
@@ -135,7 +156,7 @@ export function readBriefProposal(text: string): ClarificationItem[] {
       // 一个选项不是在问，是在通知；两个几乎总是一个假二分。
       throw new BriefProposalVoidError("too_few_options", question.slice(0, 40));
     }
-    proposed.push({ id: `B${proposed.length + 1}`, question, options });
+    proposed.push({ id: fieldId(proposed.length + 1), question, options });
   }
 
   if (proposed.length === 0) {
@@ -154,6 +175,11 @@ export function readBriefProposal(text: string): ClarificationItem[] {
    * 之外还能说话，只能给他第二格。
    *
    * 顺带一个好处：选了某一项之后**仍然可以补充**。选项和自己写不是二选一。
+   *
+   * **那第二格必须是 `optional`。** 客户端把 `required` 当硬闸门：还有必填没答时
+   * 按回车**什么都不会发生**（2026-07-30 实测）。摊成两格却让两格都必填，等于把
+   * 一次 8 下回车的问卷变成 17 格全要动手，而其中 8 格标着「选了也可以补充」——
+   * 那句话就成了假话。
    */
   const asked: ClarificationItem[] = [];
   for (const item of proposed) {
@@ -167,13 +193,36 @@ export function readBriefProposal(text: string): ClarificationItem[] {
       id: ownFieldId(item.id),
       question: `↑ 上面这题，你自己怎么说？（选了也可以补充；选「${ESCAPE_OPTION}」就必须写）`,
       options: [],
+      // 「必须写」由 briefFrom 兑现（选了逃逸项又没写字 = 这题没答），不由客户端 ——
+      // 它只会数必填，数不出「B03 选了什么所以 B03x 才必填」这种条件。
+      optional: true,
     });
   }
 
-  // 全局那一格还留着：它管的是**模型压根没问到**的东西，和每题的补充不是一回事。
+  /*
+   * 全局那一格还留着：它管的是**模型压根没问到**的东西，和每题的补充不是一回事。
+   *
+   * ## 它必填，而且这不是产品偏好 —— 是最后一格的位置逼出来的
+   *
+   * 2026-07-30 实测：**空的自由文本格会吃掉回车。** 光标停在一个没填字的文本格上
+   * 按回车，屏幕上什么都不会发生 —— 哪怕这一格是 `optional`、哪怕必填项已经全答完、
+   * 哪怕底下明明写着 `enter to submit all`。而整张表**只能从最后一格提交**。
+   *
+   * 两条合起来：**最后一格如果是「可以留空的自由文本」，这张表就交不上去。** 那正是
+   * 我先前那一版的状态：8 个必填全答完，光标在 `BZ` 上，回车一按没反应、也没有任何
+   * 提示 —— 和终端卡死一模一样。
+   *
+   * 出路只有两条：让最后一格是**选项格**（回车总有个值可提交），或者让它**必填**。
+   * 选后者，因为前者要把每题的「你自己怎么说」挪到选项前面去，而那一格的文案是
+   * 「↑ 上面这题」—— 顺序是用户定的。
+   *
+   * 必填的代价要说清楚：**每次录需求都得亲手写一句。** 换来的是必填计数器会说
+   * 「还差 1 个」，而不是一个交不上去又不说为什么的表单。所以这一格的文案也跟着改：
+   * 与其让人写「暂无」交差，不如问一句他答得出、也值得答的。
+   */
   return [...asked, {
     id: FREE_TEXT_ID,
-    question: "还有什么必须说清楚的？（可以留空）",
+    question: "最后一句（必填）：这次最要紧的是什么？上面没问到的也写在这里。",
     options: [],
   }];
 }
