@@ -71,6 +71,97 @@ const seedProducer = (context: ReturnType<typeof open>, blocking = true) =>
     [{ text: "每条需求都有可测的验收标准", blocking }],
   );
 
+/**
+ * 谁给谁打分。
+ *
+ * 用户 2026-07-30 拍板：**绝对不能红方自评**，而且所有阶段都改。
+ *
+ * 依据是实测的：五个阶段跑下来，红方自评累计 20 条**全部 yes，一个 no 都没有** ——
+ * 那不是判定，是橡皮图章，和「模型说没问题」是同一件事，正是这个产品存在的理由的反面。
+ *
+ * 排完之后是一条链，没有人给自己打分：
+ *
+ *   producer  蓝方判红方   —— 这一轮的产出够不够格
+ *   critic    裁判判蓝方   —— 这一轮挑问题挑得怎么样
+ *   verdict   谁都不判     —— 交给人（弹窗里对照裁判的表态自己看）
+ *
+ * **一个参与者只背一份标准**，这不是审美：`readAssessments` 见到 fence 里有不认识的
+ * key 会作废整份，所以两份标准塞进同一个人的提示词，两份都会作废。
+ */
+describe("L5 · 没有人给自己打分", () => {
+  const seedCritic = (context: ReturnType<typeof open>) =>
+    context.rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "critic" },
+      [{ text: "每条问题都指向正方产出里的具体位置", blocking: true }]);
+
+  it("**producer 的判定读蓝方的话，不读红方的**", async () => {
+    const context = open();
+    seedProducer(context);
+    // 红方给自己打满分，蓝方说不合格。听蓝方的。
+    const settled = await run(context, {
+      red: answer() + "\n" + rubricBlock(["K1 yes 我写得很好"]),
+      blue: answer() + "\n" + rubricBlock(["K1 no 第 2 节只写了「要快」"]),
+    });
+    assert.equal(settled.assessments.producer[0]?.verdict, "no",
+      "读的还是红方的自评");
+    assert.match(settled.assessments.producer[0]?.evidence ?? "", /要快/);
+  });
+
+  it("**红方的提示词里一条标准都没有** —— 它是被判的那个", async () => {
+    const context = open();
+    seedProducer(context);
+    const transport = new ScriptedCodexTransport(['```json\n{"verdicts":{}}\n```']);
+    await runRubricRound({
+      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      round: 1, task: "写 Spec", judgeThreadId: null,
+    }, {
+      transport, gaps: context.gaps, rubrics: context.rubrics,
+      readRole: roles(answer(), answer()),
+    });
+
+    const prompt = transport.dispatches[0]!.prompt;
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.doesNotMatch(redSection, /```rubric/,
+      "红方还是拿到了一份标准 —— 它会对着它给自己打分");
+    // 而蓝方拿到了，并且被告知判的是谁的活儿。
+    const blueSection = prompt.slice(prompt.indexOf(`2. ${BLUE}`));
+    assert.match(blueSection, /```rubric/);
+    assert.match(blueSection, /正方/, "没告诉蓝方它判的是谁");
+  });
+
+  it("critic 的判定读裁判的话 —— 蓝方也不自评", async () => {
+    const context = open();
+    seedCritic(context);
+    const settled = await run(context, {
+      blue: answer() + "\n" + rubricBlock(["K1 yes 我挑得很准"]),
+      judge: '```json\n{"verdicts":{}}\n```\n' + rubricBlock(["K1 no 有两条没指位置"]),
+    });
+    assert.equal(settled.assessments.critic[0]?.verdict, "no", "读的还是蓝方的自评");
+  });
+
+  it("**verdict 那份不进对抗** —— 谁的提示词里都没有，也不产生判定", async () => {
+    const context = open();
+    context.rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "verdict" },
+      [{ text: "关闭一个问题必须写清它为什么不再成立", blocking: true }]);
+
+    const transport = new ScriptedCodexTransport(['```json\n{"verdicts":{}}\n```']);
+    const settled = await runRubricRound({
+      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      round: 1, task: "写 Spec", judgeThreadId: null,
+    }, {
+      transport, gaps: context.gaps, rubrics: context.rubrics,
+      readRole: roles(answer(), answer()),
+    });
+
+    assert.doesNotMatch(transport.dispatches[0]!.prompt, /```rubric/,
+      "verdict 那份被塞给某个模型了 —— 它只该给人看");
+    assert.deepEqual(settled.assessments.verdict, []);
+    // 也不许因此挂一条挡门的 standard —— 它压根不参与判定。
+    assert.deepEqual(settled.gaps, []);
+  });
+});
+
 describe("L5 · rubric 判定接进一轮对抗", () => {
   it("没有任何 rubric 时，行为和加这套东西之前一样", async () => {
     const context = open();
@@ -86,8 +177,8 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     seedProducer(context);
 
     const settled = await run(context, {
-      red: answer() + "\n" + rubricBlock(["K1 no 第 2 条只写了「要快」"]),
-      blue: answer([{ id: "S-1", severity: "P0", title: "范围冲突" }]),
+      blue: answer([{ id: "S-1", severity: "P0", title: "范围冲突" }])
+        + "\n" + rubricBlock(["K1 no 第 2 条只写了「要快」"]),
     });
 
     const standard = settled.gaps.find((gap) => gap.id === standardGapId("producer", "K1"));
@@ -103,7 +194,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     const context = open();
     seedProducer(context);
     const settled = await run(context, {
-      red: answer() + "\n" + rubricBlock(["K1 yes 三条都写了"]),
+      blue: answer() + "\n" + rubricBlock(["K1 yes 三条都写了"]),
     });
     assert.deepEqual(settled.gaps, []);
     assert.equal(settled.assessments.producer[0]?.verdict, "yes");
@@ -124,7 +215,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     // 不认识的 key 会让整份作废。若因此跳过 rubric，一份写坏的输出就比一份诚实答
     // no 的输出更容易过闸门 —— 那是这套机制的反面。
     const settled = await run(context, {
-      red: answer() + "\n" + rubricBlock(["K1 yes 行", "K-伪造 yes 也行"]),
+      blue: answer() + "\n" + rubricBlock(["K1 yes 行", "K-伪造 yes 也行"]),
     });
     assert.equal(settled.assessments.producer[0]?.verdict, "not_assessed");
     assert.match(settled.assessments.producer[0]?.evidence ?? "", /作废/);
@@ -135,13 +226,13 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     const context = open();
     seedProducer(context, false);
     const settled = await run(context, {
-      red: answer() + "\n" + rubricBlock(["K1 no 确实没写"]),
+      blue: answer() + "\n" + rubricBlock(["K1 no 确实没写"]),
     });
     assert.equal(settled.assessments.producer[0]?.verdict, "no");
     assert.deepEqual(settled.gaps, []);
   });
 
-  it("三个角色各判各的 —— 红蓝裁判的 rubric 互不相干", async () => {
+  it("两份标准各判各的 —— 蓝方判红方、裁判判蓝方，互不相干", async () => {
     const context = open();
     seedProducer(context);
     context.rubrics.save(
@@ -149,8 +240,9 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
       [{ text: "每条问题都指向正方产出里的具体位置", blocking: true }]);
 
     const settled = await run(context, {
-      red: answer() + "\n" + rubricBlock(["K1 yes 都写了"]),
-      blue: answer() + "\n" + rubricBlock(["K2 no 有两条没指位置"]),
+      // 蓝方背 producer 那份（判红方），裁判背 critic 那份（判蓝方）。
+      blue: answer() + "\n" + rubricBlock(["K1 yes 都写了"]),
+      judge: '```json\n{"verdicts":{}}\n```\n' + rubricBlock(["K2 no 有两条没指位置"]),
     });
 
     assert.equal(settled.assessments.producer[0]?.verdict, "yes");
@@ -161,11 +253,11 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
   it("下一轮答了 yes —— 上一轮开的 standard 关掉", async () => {
     const context = open();
     seedProducer(context);
-    await run(context, { red: answer() + "\n" + rubricBlock(["K1 no 缺"]), round: 1 });
+    await run(context, { blue: answer() + "\n" + rubricBlock(["K1 no 缺"]), round: 1 });
     assert.equal(context.gaps.blockers(CHANGE, "Spec").length, 1);
 
     const settled = await run(context, {
-      red: answer() + "\n" + rubricBlock(["K1 yes 补上了"]), round: 2,
+      blue: answer() + "\n" + rubricBlock(["K1 yes 补上了"]), round: 2,
     });
     const standard = settled.gaps.find((gap) => gap.id === standardGapId("producer", "K1"));
     assert.equal(standard?.status, "closed");
@@ -175,7 +267,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
   it("判定按轮存下来了 —— 后面读得到", async () => {
     const context = open();
     seedProducer(context);
-    await run(context, { red: answer() + "\n" + rubricBlock(["K1 no 缺"]), round: 3 });
+    await run(context, { blue: answer() + "\n" + rubricBlock(["K1 no 缺"]), round: 3 });
 
     const stored = context.rubrics.assessments(CHANGE, "Spec", "producer", 3);
     assert.equal(stored[0]?.verdict, "no");

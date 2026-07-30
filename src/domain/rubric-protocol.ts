@@ -59,11 +59,21 @@ export interface ReadAssessment {
  * **不提 `not_assessed`。** 契约里出现它就等于邀请模型去用它，而它根本不是一个
  * 可选的答案。
  */
-export function rubricContract(criteria: readonly Criterion[]): string {
+/**
+ * `subject` 说的是**判的是谁的活儿**。
+ *
+ * 从「每个角色对照自己那份」改成「判别人那份」之后（用户 2026-07-30：绝对不能红方
+ * 自评），这句话就不能省：一份主语中立的契约递给蓝方，它会顺理成章地对照自己刚写的
+ * 那些问题打分，而我们要的是它判红方的产出。
+ */
+export function rubricContract(
+  criteria: readonly Criterion[],
+  subject: string,
+): string {
   if (criteria.length === 0) return "本阶段没有需要逐条判定的标准。";
 
   return [
-    `逐条判定下面 ${criteria.length} 条标准，每条只答「满足」或「不满足」。`,
+    `对照下面 ${criteria.length} 条标准逐条判定${subject}，每条只答「满足」或「不满足」。`,
     "不要打分，不要写「部分满足」，不要合并或跳过任何一条。",
     "",
     ...criteria.map((entry) => `${entry.key}  ${entry.text}`),

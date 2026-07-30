@@ -139,7 +139,7 @@ describe("rubric 协议 · 作废整份的情况", () => {
 
 describe("rubric 协议 · 契约由 StagePass 生成", () => {
   it("把每条 criterion 的 key 和正文都摆出来", () => {
-    const contract = rubricContract(CRITERIA);
+    const contract = rubricContract(CRITERIA, "正方这一轮的产出");
     for (const entry of CRITERIA) {
       assert.ok(contract.includes(entry.key), `契约里没有 ${entry.key}`);
       assert.ok(contract.includes(entry.text), `契约里没有 ${entry.text} 的正文`);
@@ -148,10 +148,15 @@ describe("rubric 协议 · 契约由 StagePass 生成", () => {
 
   it("不告诉模型 not_assessed 这个值存在", () => {
     // 契约里出现它，就等于邀请模型去用它。
-    assert.ok(!rubricContract(CRITERIA).includes("not_assessed"));
+    assert.ok(!rubricContract(CRITERIA, "正方这一轮的产出").includes("not_assessed"));
+  });
+
+  it("**说清判的是谁的活儿** —— 少了它，蓝方会去判自己刚写的那些问题", () => {
+    // 从「各自对照自己那份」改成「判别人那份」之后，主语不能省（用户 2026-07-30）。
+    assert.ok(rubricContract(CRITERIA, "正方这一轮的产出").includes("正方这一轮的产出"));
   });
 
   it("空 rubric 也给得出契约，不抛", () => {
-    assert.equal(typeof rubricContract([]), "string");
+    assert.equal(typeof rubricContract([], "正方这一轮的产出"), "string");
   });
 });
