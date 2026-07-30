@@ -7,6 +7,7 @@ import { BLUE } from "../domain/round";
 import { ScriptedCodexTransport, type CodexTransport, type TurnDispatch } from "../codex/transport";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
+import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
@@ -55,6 +56,7 @@ function runner(
     rubrics: context.rubrics,
     changes: context.changes,
     bindings: context.bindings,
+    evidence: new EvidenceStore(context.db),
     readRole,
     taskFor: () => "写 PRD",
   });
@@ -126,6 +128,85 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
       context.gaps.all(CHANGE, "PRD").find((gap) => gap.id === "S-1")?.openedRound,
       2,
       "失败后的重跑没算进轮次",
+    );
+  });
+});
+
+describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
+  /**
+   * 每个阶段一条新线程（§6.5 规则 2），线程之间只能靠文档传信息 ——
+   * binding-store 的注释写明「every phase's opening prompt has to carry its
+   * upstream documents itself」。PRD 只靠 brief 就够；Spec 起，红方被要求
+   * 「Turn the approved PRD into…」，**却没人告诉它 PRD 在哪** —— 它只能去猜，
+   * 而「凭空生成」正是这个产品要防的事。
+   */
+  it("Spec 的任务书里列着 PRD 的产物路径", async () => {
+    const context = open();
+    // 把 Change 摆到 Spec：PRD 跑过、批准过（离线手段，L1 的假答案纪律）。
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    new EvidenceStore(context.db).put(CHANGE, "PRD", {
+      artifactIds: ["docs/prd/countdown.md"], blockers: [], waivedBlockerIds: [],
+    });
+    context.changes.apply(CHANGE, "approve");
+    assert.equal(context.changes.read(CHANGE).state.phase, "Spec");
+
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const prompt = transport.dispatches[0]?.prompt ?? "";
+    assert.match(prompt, /docs\/prd\/countdown\.md/, "上游产物的路径没进任务书");
+    assert.match(prompt, /PRD/, "没说这份产物是哪个阶段的");
+  });
+
+  it("走到 TestPlan 时，四份上游按线的顺序全在", async () => {
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    const line: [string, string][] = [
+      ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"],
+      ["TechSpec", "docs/techspec.md"], ["Plan", "docs/plan.md"],
+    ];
+    for (const [phase, artifact] of line) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase as Parameters<typeof evidence.put>[1], {
+        artifactIds: [artifact], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    assert.equal(context.changes.read(CHANGE).state.phase, "TestPlan");
+
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const prompt = transport.dispatches[0]?.prompt ?? "";
+    const positions = line.map(([, artifact]) => prompt.indexOf(artifact));
+    assert.ok(positions.every((at) => at >= 0),
+      `有上游没进任务书：${JSON.stringify(positions)}`);
+    // 顺序就是线的顺序 —— 读的人按它从头到尾走一遍。
+    assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
+  });
+
+  it("PRD 自己没有上游 —— 任务书里不出现上游那一节", async () => {
+    const context = open();
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    assert.doesNotMatch(
+      transport.dispatches[0]?.prompt ?? "", /上游/,
+      "没有上游却画了一节空的，模型会去找不存在的东西",
     );
   });
 });

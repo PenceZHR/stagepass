@@ -561,6 +561,7 @@ async function runRound(input: {
       rubrics: new RubricStore(database),
       changes: new ChangeStore(database),
       bindings: new BindingStore(database),
+      evidence: new EvidenceStore(database),
       readRole: (parentThreadId, agentPath) =>
         readRoleTranscript({ lookup, parentThreadId, agentPath }),
       taskFor: (each) => MINIMAL_PHASE_INSTRUCTIONS[each as Phase],

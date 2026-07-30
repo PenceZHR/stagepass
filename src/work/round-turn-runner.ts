@@ -1,8 +1,10 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
+import { PHASES } from "../domain/phase";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
+import type { EvidenceStore } from "../store/evidence-store";
 
 /**
  * 把一个阶段「跑一次」变成**跑一轮对抗**。
@@ -32,6 +34,8 @@ import type { ChangeStore } from "../store/change-store";
 export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   readonly changes: ChangeStore;
   readonly bindings: BindingStore;
+  /** 上游阶段产出了什么 —— 任务书要把它们的路径带给红方。 */
+  readonly evidence: EvidenceStore;
   /** 红方要做什么。按阶段给一句话。 */
   readonly taskFor: (phase: string) => string;
 }
@@ -110,13 +114,40 @@ export class RoundTurnRunner implements TurnRunner {
       // gap 的 openedRound 和 rubric 判定都按它记，「第几轮发现的」在两张表里
       // 说的是同一件事。
       round,
-      // 通用指令 + **人自己答出来的需求**。后者是这一整套的重点：模型不再需要猜
-      // 「this change」是什么。
+      /*
+       * 通用指令 + **人自己答出来的需求** + **上游已批准的产物路径**。
+       *
+       * 后两样各堵一个「凭空生成」的口子：brief 让模型不用猜「this change」是什么；
+       * 上游路径让 Spec 起的阶段不用猜「the approved PRD」在哪 —— 每个阶段一条新
+       * 线程（§6.5 规则 2），线程之间只能靠文档传信息，而这一条正是 binding-store
+       * 注释里写明的代价：「every phase's opening prompt has to carry its upstream
+       * documents itself」。
+       *
+       * 规则是阶段无关的：当前阶段之前、有产出的阶段，按线的顺序逐条列。不建
+       * 每阶段的映射表 —— 那是 PHASES 这条线的第二份拷贝，两份必然漂移。
+       * 能走到阶段 N 就意味着 N 之前的都被批准过（approve 是离开一个阶段的唯一
+       * 前进路），所以「有产出的上游」就是「已批准的上游」。
+       */
       task: [
         this.options.taskFor(phase),
         "",
         "人要的是这些（他自己在选择器里答的，不是模型猜的）：",
         change.brief,
+        ...(() => {
+          const upstream = PHASES
+            .slice(0, PHASES.indexOf(phase))
+            .map((each) => ({
+              phase: each,
+              artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
+            }))
+            .filter((entry) => entry.artifactIds.length > 0);
+          return upstream.length === 0 ? [] : [
+            "",
+            "已批准的上游文档（先读完再动手，它们是这一阶段的输入）：",
+            ...upstream.map((entry) =>
+              `- ${entry.phase}: ${entry.artifactIds.join("、")}`),
+          ];
+        })(),
       ].join("\n"),
       // 同一个 (Change, 阶段) 复用同一个裁判线程。
       //
