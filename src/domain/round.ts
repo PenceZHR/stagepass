@@ -1,4 +1,4 @@
-import { RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
+import { jsonAnswerIn, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
@@ -29,8 +29,18 @@ import { redReviewsOthers, type Phase } from "./phase";
  * ## This module is pure
  */
 
-export const RED = "/root/red";
-export const BLUE = "/root/blue";
+/**
+ * 两方在提示词里的名字。
+ *
+ * **原来它们是 `/root/red` / `/root/blue`，是子 Agent 的身份路径** —— StagePass 靠那个
+ * 从 Codex 的库里认哪条线程是谁。那条路 2026-07-30 废掉了（`readAgents`：改由裁判把
+ * 两个 `agent_id` 报进答案），于是路径这个概念在这里就成了死重：它不再指向任何东西，
+ * 留着只会让下一个人以为它还有作用。
+ *
+ * 现在它们只是提示词里的区段标签，仅此而已。
+ */
+export const RED = "正方";
+export const BLUE = "反方";
 
 export interface RoundInstructions {
   readonly phase: Phase;
@@ -224,18 +234,14 @@ export function judgePrompt(input: RoundInstructions): string {
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
     "",
-    "派生两个子 Agent。**用原生的 `spawn_agent` 工具，`task_name` 分别设成"
-    + ` \`${RED.replace("/root/", "")}\` 和 \`${BLUE.replace("/root/", "")}\`** ——`,
-    `它们的身份路径会因此成为 "${RED}" 和 "${BLUE}"，后续追加任务用 \`followup_task\``,
-    "（`target` 填那个身份路径）。",
-    "",
-    "**不要用 `exec` 里的 `multi_agent_v1__spawn_agent`** —— 那条路没有 `task_name`，",
-    "派出去的子 Agent 没有身份路径，这一轮的产出就找不回来，整轮作废。",
+    "派生两个子 Agent，一个当正方、一个当反方。**你手上哪个 spawn 工具都行** ——",
+    "StagePass 靠你在最后报出来的那两个 `agent_id` 取证，不靠工具怎么叫、也不靠",
+    "它们叫什么路径。**记下这两个 id，最后要填进 `agents`。**",
     "",
     "**一个跑完再派下一个，不要并行。** 反方要拿到正方的产出才能开始审 ——",
     "并行的话它会对着空气写意见，而那份意见没有任何价值。",
     "",
-    `1. ${RED} —— 正方。任务：`,
+    `1. ${RED}。任务：`,
     input.task,
     ...redFixList(input.openGaps),
     ...idRule(input.phase, "red"),
@@ -243,7 +249,7 @@ export function judgePrompt(input: RoundInstructions): string {
     RESULT_CONTRACT,
     ...extra(input.addenda?.red),
     "",
-    `2. ${BLUE} —— 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。`,
+    `2. ${BLUE}。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。`,
     blueReach(input.phase),
     ...(idRule(input.phase, "blue").length > 0
       ? idRule(input.phase, "blue")
@@ -291,13 +297,10 @@ const VERDICT_KINDS = ["closed", "still_open"] as const;
  * having said nothing.
  */
 export function readVerdicts(text: string): VerdictReport {
-  const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/g)]
-    .map((match) => match[1]!.trim());
-  const candidate = fences.length > 0 ? fences[fences.length - 1]! : text.trim();
-
+  // 同上：一个概念一个找法。
   let parsed: unknown;
   try {
-    parsed = JSON.parse(candidate);
+    parsed = JSON.parse(jsonAnswerIn(text) ?? "");
   } catch {
     return { verdicts: {} };
   }
@@ -365,15 +368,14 @@ export interface RoundAgents {
  * 和「蓝方没发现问题」变成同一件事，而那是这套机制最不能容忍的混淆。
  */
 export function readAgents(text: string): RoundAgents {
-  const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/g)]
-    .map((match) => match[1]!.trim());
-  const candidate = fences.length > 0 ? fences[fences.length - 1]! : text.trim();
-
+  // 和红蓝那边**同一个**找法（`jsonAnswerIn`）。三处各严各的，就会出现「红方漏了
+  // 围栏能读、裁判漏了围栏读不了」这种说不出道理的差别 —— 而它咬过一次。
+  const candidate = jsonAnswerIn(text);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(candidate);
+    parsed = JSON.parse(candidate ?? "");
   } catch {
-    throw new UnreadableAgentsError("裁判的答复不是一个 json 块");
+    throw new UnreadableAgentsError("答复里找不到一个完整的 json 对象");
   }
   const agents = (parsed as { agents?: unknown } | null)?.agents as
     { red?: unknown; blue?: unknown } | undefined;

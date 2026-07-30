@@ -119,6 +119,12 @@ const FENCE = /```json\s*([\s\S]*?)```/g;
  *
  * 有围栏时这条根本不会被调用：正文里举例写的 JSON 不许盖过围栏里的答案。
  */
+export function jsonAnswerIn(text: string): string | null {
+  const fences = [...text.matchAll(FENCE)].map((match) => match[1]!.trim());
+  if (fences.length > 0) return fences[fences.length - 1]!;
+  return lastJsonObject(text);
+}
+
 function lastJsonObject(text: string): string | null {
   const end = text.lastIndexOf("}");
   if (end === -1) return null;
@@ -138,10 +144,7 @@ function lastJsonObject(text: string): string | null {
 }
 
 export function parseTurnResult(text: string): TurnResult {
-  const fences = [...text.matchAll(FENCE)].map((match) => match[1]!.trim());
-  const candidate = fences.length > 0
-    ? fences[fences.length - 1]!
-    : (lastJsonObject(text) ?? text.trim());
+  const candidate = jsonAnswerIn(text) ?? text.trim();
 
   let parsed: unknown;
   try {

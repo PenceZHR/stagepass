@@ -1032,8 +1032,11 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       const argv = pty.started.find((entry) => entry.phase === "PRD")?.argv ?? [];
       const prompt = argv.join(" ");
       assert.match(prompt, /裁判/, "没有裁判");
-      assert.match(prompt, /\/root\/red/, "没有让它派生红方");
-      assert.match(prompt, /\/root\/blue/, "没有让它派生蓝方");
+      // 「/root/red」那套身份路径 2026-07-30 废掉了（取证改成裁判报 agent_id），
+      // 现在两方在提示词里就叫正方 / 反方。
+      assert.match(prompt, /1\. 正方/, "没有让它派生正方");
+      assert.match(prompt, /2\. 反方/, "没有让它派生反方");
+      assert.match(prompt, /agent_id/, "没告诉它要把两个 id 报回来");
     });
   });
 
@@ -1678,8 +1681,8 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       assert.equal(result.continued?.phase, "PRD");
       // 派出去的那一轮提示词里带着裁判和红蓝 —— 是一轮对抗，不是一次 turn。
       const argv = pty.started.map((entry) => entry.argv.join(" ")).join("\n");
-      assert.match(argv, /\/root\/red/);
-      assert.match(argv, /\/root\/blue/);
+      assert.match(argv, /1\. 正方/);
+      assert.match(argv, /2\. 反方/);
       // 而且人刚写的那句话进了下一轮的提示词。
       assert.match(argv, /按第 3 节那种写法改/);
     });
@@ -1707,7 +1710,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       };
       assert.equal(result.continued?.ran, true, "retry 之后没有自动续跑");
       assert.match(pty.started.map((each) => each.argv.join(" ")).join("\n"),
-        /\/root\/red/);
+        /1\. 正方/);
     });
   });
 
