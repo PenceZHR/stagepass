@@ -224,7 +224,11 @@ export function judgePrompt(input: RoundInstructions): string {
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
     "",
-    `派生两个子 Agent，路径必须精确是 "${RED}" 和 "${BLUE}"：`,
+    `派生两个子 Agent。这两个路径是它们的**身份**（agent path），不是工作目录 ——`,
+    `必须精确设成 "${RED}" 和 "${BLUE}"，设错了这一轮的产出就找不回来。`,
+    "",
+    "**一个跑完再派下一个，不要并行。** 反方要拿到正方的产出才能开始审 ——",
+    "并行的话它会对着空气写意见，而那份意见没有任何价值。",
     "",
     `1. ${RED} —— 正方。任务：`,
     input.task,
