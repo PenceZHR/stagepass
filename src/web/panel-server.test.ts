@@ -14,6 +14,7 @@ import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
 
+import { RESPONSE_AGREE, RESPONSE_DISMISS } from "../domain/question";
 import { createPanelServer } from "./panel-server";
 import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
@@ -636,7 +637,7 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
       // 手工放一条这条 criterion 派生的 standard，模拟上一轮判了 no。
       new GapStore(database).replace(CHANGE, "Spec", [{
         id: `RB:producer:${key}`, kind: "standard", severity: null,
-        title: "挡着的", status: "open", openedRound: 1, resolution: null,
+        title: "挡着的", status: "open", openedRound: 1, resolution: null, note: null,
       }]);
       assert.equal(new GapStore(database).blockers(CHANGE, "Spec").length, 1);
 
@@ -883,6 +884,167 @@ describe("panel · 接受风险也走选择器", () => {
       // 而且是送进终端，不是网页上直接办了。
       const argv = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
       assert.match(argv, /stagepass_ask/);
+    });
+  });
+});
+
+/*
+ * 「回应蓝方」和裁决同一次问出来（用户 2026-07-30 的第 ⑤ 步）。
+ *
+ * 这里验的是**接线**：题里有没有那些格子、答案回来之后表态有没有落到 gaps 上、
+ * 落不下去的有没有报回来。分流规则本身在 `domain/gap.ts` / `domain/question.ts`
+ * 离线证过，不在这儿重证一遍。
+ */
+describe("panel · 回应蓝方和裁决同一次问出来", () => {
+  /** 走到一个 settled 的 PRD，手里有两条 open 的 P1 —— 也就是一轮跑完的样子。 */
+  const settledWithGaps = (database: Database.Database): void => {
+    const changes = new ChangeStore(database);
+    new GapStore(database).replace(CHANGE, "PRD", [
+      {
+        id: "SPEC-1", kind: "finding", severity: "P1", title: "验收标准不可测",
+        status: "open", openedRound: 1, resolution: null, note: null,
+      },
+      {
+        id: "SPEC-2", kind: "finding", severity: "P1", title: "范围与 PRD 冲突",
+        status: "open", openedRound: 1, resolution: null, note: null,
+      },
+    ]);
+    new EvidenceStore(database).put(CHANGE, "PRD", {
+      artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+    });
+    changes.apply(CHANGE, "start");
+    changes.apply(CHANGE, "settle");
+  };
+
+  /** 替人在选择器里答一次：直接写 answers 那一行，插件写的就是这一行。 */
+  const answer = (database: Database.Database, content: Record<string, string>): string => {
+    const questionId = (database.prepare(
+      "SELECT id FROM questions WHERE change_id = ? ORDER BY asked_at DESC",
+    ).get(CHANGE) as { id: string }).id;
+    database.prepare(
+      "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
+    ).run(questionId, "accept", JSON.stringify(content), new Date().toISOString());
+    return questionId;
+  };
+
+  it("题里一条 gap 两格，最后才是裁决", async () => {
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      void open(`/api/ask?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+      const asked = database.prepare(
+        "SELECT schema_json FROM questions WHERE change_id = ?").get(CHANGE) as
+        { schema_json: string } | undefined;
+      // 这个文件在 src/web/ 外面（.test.ts 不算 pty 模块），所以这里可以 parse。
+      const schema = JSON.parse(asked?.schema_json ?? "{}") as {
+        required: string[]; properties: Record<string, { title: string }>;
+      };
+      assert.deepEqual(Object.keys(schema.properties),
+        ["R01", "R01x", "R02", "R02x", "RY", "decision"]);
+      // 自己写和提新问题都可以留空；四个选项和裁决必填。
+      assert.deepEqual(schema.required, ["R01", "R02", "decision"]);
+      assert.match(schema.properties.R01!.title, /SPEC-1/);
+    });
+  });
+
+  it("表态落到 gaps 上，而且**在闸门之前** —— 否则人刚说的话对这一次没有影响", async () => {
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_DISMISS, R01x: "验收标准在第 3 节，反方没读到",
+        R02: RESPONSE_AGREE, R02x: "范围要按 PRD 收窄",
+        RY: "没说清楚失败时回滚到哪",
+        decision: "reject",
+      });
+
+      const result = await (await asking).json() as {
+        refused: unknown[]; raised: string | null;
+      };
+      assert.deepEqual(result.refused, []);
+      assert.equal(result.raised, "HUMAN-1");
+
+      const gaps = new GapStore(database).all(CHANGE, "PRD");
+      const byId = new Map(gaps.map((gap) => [gap.id, gap]));
+      // 驳回 = closed + 我写的理由。
+      assert.equal(byId.get("SPEC-1")?.status, "closed");
+      assert.equal(byId.get("SPEC-1")?.resolution, "验收标准在第 3 节，反方没读到");
+      // 同意 = 留着，我的话落在 note 上，跟着它进下一轮。
+      assert.equal(byId.get("SPEC-2")?.status, "open");
+      assert.equal(byId.get("SPEC-2")?.note, "范围要按 PRD 收窄");
+      // 我自己提的那条：HUMAN-1 / finding / P1，开着。
+      assert.equal(byId.get("HUMAN-1")?.severity, "P1");
+      assert.equal(byId.get("HUMAN-1")?.title, "没说清楚失败时回滚到哪");
+    });
+  });
+
+  it("**驳回没写理由 —— 那一条留着不动，而且报回来**", async () => {
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE, decision: "reject",
+      });
+
+      const result = await (await asking).json() as {
+        refused: { id: string; code: string }[];
+      };
+      // 人已经答完走了。静默跳过 = 他点了一下什么都没发生，那正是要防的失败。
+      assert.deepEqual(result.refused, [{ id: "SPEC-1", code: "reason_missing" }]);
+      assert.equal(new GapStore(database).all(CHANGE, "PRD")
+        .find((gap) => gap.id === "SPEC-1")?.status, "open");
+    });
+  });
+
+  it("**别人在你回答的时候动了证据 —— 一条表态都不落**", async () => {
+    /*
+     * fence 查在落表态**之前**，问的是「别人动过吗」。放到之后去查，查的就只是
+     * 「我刚写完的东西还在不在」—— 那时它永远成立，fence 就成了装饰。
+     */
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+
+      // 有别的东西在这中间又开了一条问题 —— 人没看见过它。
+      new GapStore(database).replace(CHANGE, "PRD", [{
+        id: "SPEC-9", kind: "finding", severity: "P0", title: "人没看见过的这一条",
+        status: "open", openedRound: 2, resolution: null, note: null,
+      }]);
+      answer(database, {
+        R01: RESPONSE_DISMISS, R01x: "不成立", R02: RESPONSE_AGREE, decision: "reject",
+      });
+
+      const result = await (await asking).json() as { reason: string };
+      assert.equal(result.reason, "gate_moved");
+      // SPEC-1 原样留着 —— 那一次驳回没有落地。
+      assert.equal(new GapStore(database).all(CHANGE, "PRD")
+        .find((gap) => gap.id === "SPEC-1")?.status, "open");
+    });
+  });
+
+  it("一道没有 gap 的裁决 —— 和加这个之前逐字一样", async () => {
+    await withPanel(async ({ open, database }) => {
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, { decision: "approve" });
+
+      const result = await (await asking).json() as {
+        responses: Record<string, unknown>; raised: string | null;
+      };
+      assert.deepEqual(result.responses, {});
+      assert.equal(result.raised, null);
+      assert.equal(changes.read(CHANGE).state.phase, "Spec");
     });
   });
 });

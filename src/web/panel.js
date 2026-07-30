@@ -188,6 +188,31 @@ function say(message) {
   stageNote.textContent = message;
 }
 
+/** 服务端说某一条表态没落地时的原因，翻成人话。 */
+const REFUSAL_WORDS = {
+  reason_missing: "没写理由，所以这一条留着没动",
+  unknown_gap: "这一条在你回答的时候已经不是未解决状态了",
+  standard_not_waivable: "这是一条标准，出口是在「标准」页签里撤下它",
+};
+
+/**
+ * 你刚刚说了什么，以及有没有哪一条没落地。
+ *
+ * **没落地的必须说出来。** 人已经答完走了，一次静默跳过等于他点了一下什么都没发生 ——
+ * 而那正是这个项目从头到尾在防的那一种失败。
+ */
+function saidWhat(result) {
+  const parts = [];
+  const responded = Object.keys(result.responses ?? {}).length;
+  if (responded > 0) parts.push(`你对 ${responded} 条问题表了态`);
+  if (result.raised) parts.push(`你自己提的那条记成了 ${result.raised}`);
+  parts.push(`裁决 ${JSON.stringify(result.answer)} → ${JSON.stringify(result.outcome)}`);
+  for (const refused of result.refused ?? []) {
+    parts.push(`⚠ ${refused.id}：${REFUSAL_WORDS[refused.code] ?? refused.code}`);
+  }
+  return parts.join("；");
+}
+
 /**
  * Put the gate decision to the human, in Codex.
  *
@@ -208,7 +233,7 @@ async function ask() {
     } else if (!result.answered) {
       say("问题已经在终端里了，等你在 Codex 的选择器里选。");
     } else {
-      say(`你选了 ${JSON.stringify(result.answer)} → ${JSON.stringify(result.outcome)}`);
+      say(saidWhat(result));
     }
   } finally {
     askButton.textContent = "请 Codex 问我";
@@ -794,8 +819,12 @@ function nextStep(entry) {
     return decidableActions().length > 0
       ? {
           what: "请 Codex 问我",
-          why: "这一轮跑完了，闸门在等你的明确决定。裁决发生在 Codex 自己的选择器里，"
-            + "网页上没有、也不会有 approve 按钮。",
+          why: openGaps(entry).length > 0
+            ? `这一轮跑完了。选择器里会把这 ${openGaps(entry).length} 条问题一条一道题地`
+              + "问你 —— 同意 / 不同意 / 先接受风险 / 我自己说，每条都能写自己的话，"
+              + "最后才是裁决。"
+            : "这一轮跑完了，闸门在等你的明确决定。裁决发生在 Codex 自己的选择器里，"
+              + "网页上没有、也不会有 approve 按钮。",
         }
       : {
           what: "看「问题」里挡着的东西",
@@ -974,6 +1003,18 @@ function drawGaps(entry) {
       const why = document.createElement("em");
       why.textContent = gap.resolution;
       text.append(why);
+    }
+    /*
+     * 人对这一条说过的话。
+     *
+     * **它跟着这条问题进了下一轮的提示词**，所以人得看得见自己说过什么 —— 否则
+     * 「我上一轮已经交代过了」和「我以为我交代过了」在界面上一模一样。
+     */
+    if (gap.note) {
+      const mine = document.createElement("em");
+      mine.className = "gap-note";
+      mine.textContent = `你说：${gap.note}`;
+      text.append(mine);
     }
 
     row.append(severity, text);

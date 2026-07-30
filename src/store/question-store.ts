@@ -229,7 +229,20 @@ export class QuestionStore {
    * evidence that has since moved is refused with `GateMovedError` rather than
    * applied to evidence the human never saw.
    */
-  apply(questionId: string): ApplyOutcome {
+  apply(questionId: string, options?: {
+    /**
+     * 这个答案**自己**动了闸门所依据的证据，所以 command 那一层要对着新的快照查。
+     *
+     * 唯一的用处是「回应蓝方」那道题：人在同一次回答里既驳回了几条问题、又做了裁决。
+     * 驳回改的正是 `snapshotOf` 哈希的那份 blocker 名单，于是**存下来的 fence 必然
+     * 对不上** —— 而它对不上的原因是人自己刚说的话，不是「有人在他想的时候动了东西」。
+     *
+     * **fence 没有被放宽，只是挪了位置**：调用方必须在落表态**之前**先
+     * `assertFenceHolds` 一次。那一次查的才是真问题（别人动过没有），这里查的只是
+     * 「我刚写完的东西还在不在」。顺序反过来就成了真的绕过 fence。
+     */
+    readonly rebaseFence?: boolean;
+  }): ApplyOutcome {
     const record = this.read(questionId);
     const answer = this.readAnswerFor(questionId);
     if (!answer) throw new QuestionNotOpenError(questionId, record.status);
@@ -255,7 +268,9 @@ export class QuestionStore {
       changeId: record.changeId,
       action,
       idempotencyKey: `question:${questionId}`,
-      expectedSnapshot: record.expectedSnapshot,
+      expectedSnapshot: options?.rebaseFence === true
+        ? this.commands.gateFor(record.changeId).snapshot
+        : record.expectedSnapshot,
     });
     finish();
     return { kind: "advanced", action };

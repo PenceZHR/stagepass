@@ -283,6 +283,12 @@ CREATE TABLE IF NOT EXISTS gaps (
   status        TEXT NOT NULL CHECK (status IN (${quoted(GAP_STATUSES)})),
   opened_round  INTEGER NOT NULL,
   resolution    TEXT NULL,
+  -- 人对这一条说的话，会跟着它进下一轮。
+  --
+  -- 和 resolution 分开是因为它们答的是两个问题：resolution 说「它为什么不再挡着」，
+  -- note 说「它还挡着，而这是我要红方注意的」。合成一列，「我驳回了它」和「我要求
+  -- 照我说的改」就成了同一行。
+  note          TEXT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (change_id, phase, id),
   -- A gap that has left the open state says why. Without this, "closed" and "forgotten"
@@ -463,6 +469,7 @@ export function migrate(database: {
 }): void {
   const added: [table: string, column: string, type: string][] = [
     ["projects", "path", "TEXT"],
+    ["gaps", "note", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];

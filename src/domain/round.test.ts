@@ -9,7 +9,8 @@ const answer = (artifacts: string[], blockers: object[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: artifacts, blockers }) + "\n```";
 
 const gap = (id: string, title: string): Gap => ({
-  id, kind: "finding", severity: "P1", title, status: "open", openedRound: 1, resolution: null,
+  id, kind: "finding", severity: "P1", title, status: "open", openedRound: 1,
+  resolution: null, note: null,
 });
 
 describe("L4 · what the judge is told", () => {
@@ -82,7 +83,7 @@ describe("L4 · what the judge is told", () => {
       openGaps: [{
         id: "RB:producer:RBC-a", kind: "standard", severity: null,
         title: "每条需求都有可测的验收标准",
-        status: "open", openedRound: 1, resolution: null,
+        status: "open", openedRound: 1, resolution: null, note: null,
       }],
     });
     assert.match(prompt, /RB:producer:RBC-a \[标准\]/);
@@ -133,6 +134,16 @@ describe("L4 · 人提的要求单独一区", () => {
     assert.match(prompt, /人明确要求下一轮处理的/);
     assert.doesNotMatch(prompt, /之前轮次报出来的问题/);
     assert.doesNotMatch(prompt, /没有未关闭的问题/);
+  });
+
+  it("**人对某一条说的话跟着它进提示词**", () => {
+    // 这是「我的话进下一轮」那条的落点。不带上它，人在选择器里逐条写的东西就只存在
+    // 于库里，红方下一轮照样不知道他要什么。
+    const prompt = judgePrompt({
+      phase: "PRD", round: 2, task: "t",
+      openGaps: [{ ...gap("SPEC-1", "验收不可测"), note: "按第 3 节那种写法逐条写" }],
+    });
+    assert.match(prompt, /人说：按第 3 节那种写法逐条写/);
   });
 
   it("**仍然可以被判 closed** —— 这里管的是措辞，不是给它免疫", () => {

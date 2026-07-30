@@ -724,6 +724,14 @@ body::after {
   display: block; margin-top: 6px; font-style: normal;
   font: 400 11.5px/1.6 var(--serif); color: rgba(255,255,255,.56);
 }
+/*
+ * 人自己对这一条说过的话。**它跟着这条问题进了下一轮的提示词**，所以要比结案理由
+ * 更显眼一点 —— 看不见自己说过什么，「我交代过了」和「我以为我交代过了」就一样了。
+ */
+.gap-text em.gap-note {
+  padding-left: 9px; border-left: 2px solid var(--sand-deep);
+  color: var(--sand-strong);
+}
 
 /*
  * 一份产出的正文。

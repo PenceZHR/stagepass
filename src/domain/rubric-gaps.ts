@@ -100,6 +100,8 @@ export function applyAssessments(
       kind: "standard",
       // 二元判断没有严重度。schema 的配对 CHECK 也不让它有。
       severity: null,
+      // 人对一条标准说的话没有容器 —— 它的出口是撤下那条 criterion，不是留言。
+      note: null,
       // 快照，永不回溯派生 —— 标题若跟着当前 rubric 变，snapshot 就会动。
       title: assessment.criterionText,
       status: "open",

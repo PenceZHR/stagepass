@@ -44,6 +44,14 @@ export interface Gap {
   readonly openedRound: number;
   /** Why it was closed or waived. Never empty once it leaves `open`. */
   readonly resolution: string | null;
+  /**
+   * 人对这一条说的话，跟着它进下一轮。null = 人还没说过。
+   *
+   * 和 `resolution` 分开，因为它们答的是两个问题：`resolution` 说「它为什么不再
+   * 挡着」，`note` 说「它还挡着，而这是我要红方注意的」。合成一个字段，「我驳回了
+   * 它」和「我要求照我说的改」就成了同一行。
+   */
+  readonly note: string | null;
 }
 
 export type Verdict =
@@ -128,7 +136,80 @@ export function raise(
     status: "open",
     openedRound: input.round,
     resolution: null,
+    // 标题就是他的话，不用再抄一份到 note 里（E3：一份实现，一处存放）。
+    note: null,
   }];
+}
+
+/**
+ * 人对每一条 open gap 的表态 —— 「回应蓝方」这个动作的落点。
+ *
+ * ## 为什么要有这一步
+ *
+ * 用户 2026-07-30 的五步场景，第 ⑤ 步是「我要么再开一轮，要么接受」。在这之前那一步
+ * 只有一个 approve / reject，人对**具体哪一条**的看法没有容器：他觉得反方第一条提错
+ * 了、第二条可以带着走、第三条必须改 —— 三种意思只能压成一个 reject，然后下一轮的
+ * 红方什么也不知道。
+ *
+ * ```
+ * agree     这条成立，红方下轮必须改   -> 保持 open，我的话落在 note 上进下一轮
+ * dismiss   这条不成立                 -> closed（以人为主）
+ * waive     问题还在，我接受这个风险   -> waived
+ * ```
+ *
+ * ## 落不下去的**报回去**，不静默丢掉
+ *
+ * 一次驳回或接受没有理由就落不下去（那是 `dismiss` / `waive` 的规矩）。而这时人已经
+ * 答完走了，所以**必须报回去**：静默跳过等于他点了一下什么都没发生，而那正是这一整
+ * 轮排查花掉的时间。
+ */
+export type GapResponse =
+  | { readonly kind: "agree"; readonly note: string }
+  | { readonly kind: "dismiss"; readonly reason: string }
+  | { readonly kind: "waive"; readonly reason: string };
+
+export interface RespondResult {
+  readonly gaps: Gap[];
+  /** 没能落地的那些，以及为什么。 */
+  readonly refused: readonly {
+    readonly id: string;
+    readonly code: InvalidVerdictError["code"];
+  }[];
+}
+
+export function respond(
+  before: readonly Gap[],
+  responses: Readonly<Record<string, GapResponse>>,
+): RespondResult {
+  let gaps = [...before];
+  const refused: { id: string; code: InvalidVerdictError["code"] }[] = [];
+
+  for (const [gapId, response] of Object.entries(responses)) {
+    try {
+      if (response.kind === "dismiss") {
+        gaps = dismiss(gaps, gapId, response.reason);
+        continue;
+      }
+      if (response.kind === "waive") {
+        gaps = waive(gaps, gapId, response.reason);
+        continue;
+      }
+      // agree：这条留着，只是带上人的话。
+      const gap = gaps.find((candidate) => candidate.id === gapId);
+      if (!gap || gap.status !== "open") throw new InvalidVerdictError("unknown_gap");
+      const note = response.note.trim();
+      // 没写字就什么都不改。**沉默不覆盖上一轮写过的话** —— 这个模块从头到尾的
+      // 规矩就是沉默什么都不改。
+      if (note === "") continue;
+      gaps = gaps.map((candidate) =>
+        candidate.id === gapId ? { ...candidate, note } : candidate);
+    } catch (error) {
+      if (!(error instanceof InvalidVerdictError)) throw error;
+      refused.push({ id: gapId, code: error.code });
+    }
+  }
+
+  return { gaps, refused };
 }
 
 export interface RoundOutcome {
@@ -201,6 +282,7 @@ export function applyRound(
       status: "open",
       openedRound: outcome.round,
       resolution: null,
+      note: null,
     });
   }
 

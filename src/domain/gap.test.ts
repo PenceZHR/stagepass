@@ -22,6 +22,7 @@ function gap(patch: Partial<Gap> = {}): Gap {
     status: "open",
     openedRound: 1,
     resolution: null,
+    note: null,
     ...patch,
   };
 }
@@ -230,7 +231,7 @@ describe("L1 · standard 的出口不是 waive", () => {
   const standard: Gap = {
     id: "RB:producer:RBC-a", kind: "standard", severity: null,
     title: "每条需求都有可测的验收标准",
-    status: "open", openedRound: 1, resolution: null,
+    status: "open", openedRound: 1, resolution: null, note: null,
   };
 
   it("waive 一条 standard —— 拒绝", () => {
@@ -344,6 +345,7 @@ describe("L1 · 人自己提一个问题", () => {
       status: "open",
       openedRound: 3,
       resolution: null,
+      note: null,
     });
     assert.equal(isHumanGap(only!), true);
     assert.equal(isHumanGap(gap()), false);

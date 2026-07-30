@@ -5,9 +5,12 @@ import {
   blockersFrom,
   dismiss,
   raise,
+  respond,
   waive,
   waivedFrom,
   type Gap,
+  type GapResponse,
+  type RespondResult,
   type RoundOutcome,
 } from "../domain/gap";
 import type { Phase } from "../domain/phase";
@@ -33,6 +36,7 @@ interface GapRow {
   status: Gap["status"];
   opened_round: number;
   resolution: string | null;
+  note: string | null;
 }
 
 export class GapStore {
@@ -43,7 +47,7 @@ export class GapStore {
 
   all(changeId: string, phase: Phase): Gap[] {
     const rows = this.database.prepare(
-      `SELECT id, kind, severity, title, status, opened_round, resolution
+      `SELECT id, kind, severity, title, status, opened_round, resolution, note
          FROM gaps WHERE change_id = ? AND phase = ? ORDER BY opened_round, id`,
     ).all(changeId, phase) as GapRow[];
     return rows.map((row) => ({
@@ -54,6 +58,7 @@ export class GapStore {
       status: row.status,
       openedRound: row.opened_round,
       resolution: row.resolution,
+      note: row.note,
     }));
   }
 
@@ -109,6 +114,21 @@ export class GapStore {
   }
 
   /**
+   * 人对每一条 open gap 的表态，一次落盘。
+   *
+   * 返回没落地的那些 —— 人已经答完走了，静默跳过等于他点了一下什么都没发生。
+   */
+  respond(
+    changeId: string,
+    phase: Phase,
+    responses: Readonly<Record<string, GapResponse>>,
+  ): RespondResult {
+    const result = respond(this.all(changeId, phase), responses);
+    this.write(changeId, phase, result.gaps);
+    return result;
+  }
+
+  /**
    * 人自己提一个问题。返回**新开那一条**，因为调用方要把 id 说回给人。
    *
    * 号由 `raise` 从库里现有的 `HUMAN-` 里顺出来，所以两次调用之间不会撞号。
@@ -145,8 +165,8 @@ export class GapStore {
     const at = this.now().toISOString();
     const upsert = this.database.prepare(
       `INSERT INTO gaps
-         (id, change_id, phase, kind, severity, title, status, opened_round, resolution, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, change_id, phase, kind, severity, title, status, opened_round, resolution, note, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (change_id, phase, id) DO UPDATE SET
          kind = excluded.kind,
          severity = excluded.severity,
@@ -154,13 +174,14 @@ export class GapStore {
          status = excluded.status,
          opened_round = excluded.opened_round,
          resolution = excluded.resolution,
+         note = excluded.note,
          updated_at = excluded.updated_at`,
     );
     this.database.transaction(() => {
       for (const gap of gaps) {
         upsert.run(
           gap.id, changeId, phase, gap.kind, gap.severity, gap.title,
-          gap.status, gap.openedRound, gap.resolution, at,
+          gap.status, gap.openedRound, gap.resolution, gap.note, at,
         );
       }
     })();

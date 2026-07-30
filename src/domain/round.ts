@@ -71,8 +71,14 @@ const extra = (text: string | undefined): string[] =>
  * REMAP §5.1）。原来无条件插 `[${gap.severity}]`，于是每条 rubric 派生的 gap 在裁判
  * 眼里都是 `[null]`：一个模型看不懂的分级，而它正要对这条表态。
  */
-const gapLine = (gap: Gap): string =>
-  `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`;
+const gapLine = (gap: Gap): string => {
+  const head = `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`;
+  /*
+   * 人对这一条说过的话跟着它进提示词。**这是「我的话进下一轮」那条的落点** ——
+   * 不带上它，人在选择器里逐条写的东西就只存在于库里，红方下一轮照样不知道他要什么。
+   */
+  return gap.note === null ? head : `${head}\n  人说：${gap.note}`;
+};
 
 export function judgePrompt(input: RoundInstructions): string {
   /*

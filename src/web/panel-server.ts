@@ -12,9 +12,10 @@ import { createSubAgentLookup, readRoleTranscript } from "../codex/subagent";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
+  responsesFrom,
 } from "../domain/question";
 import { briefContract, readBriefProposal, briefFrom, BriefProposalVoidError } from "../domain/brief";
-import { GateMovedError } from "../domain/gate";
+import { GateMovedError, GateRefusedError } from "../domain/gate";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { BindingStore } from "../store/binding-store";
@@ -844,14 +845,34 @@ export async function handle(
     }
 
     const gate = new CommandStore(database).gateFor(changeId);
-    const blockers = new GapStore(database).blockers(changeId, phase);
+    const gaps = new GapStore(database);
+    const blockers = gaps.blockers(changeId, phase);
+    /*
+     * 「回应蓝方」和裁决**同一次问出来**。
+     *
+     * 顺序是 open gap 在库里的顺序（`GapStore.all` 按 `opened_round, id` 排），而
+     * `responsesFrom` 靠位置对应回来 —— 所以这个名单必须和读答案时用的是同一个。
+     * 名单变了 snapshot 就变了，fence 会在落地之前拒掉，不会把答案套到别的问题上。
+     */
+    const allGaps = gaps.all(changeId, phase);
+    const openGaps = allGaps.filter((gap) => gap.status === "open");
+    /*
+     * 人提的那条算第几轮发现的。
+     *
+     * 取现有 gap 里最大的那个轮次 —— 他是**看着这一轮的产出**提出来的，所以和这一轮
+     * 报出来的问题记同一个号。一条 gap 都没有时是第 1 轮。
+     *
+     * （轮次本身现在是 `job.attempt`，而每次「跑这个阶段」都新建一个 job、attempt
+     * 都是 1，所以第二轮在库里仍然记成第 1 轮。那是已有的问题，不是这里引进来的。）
+     */
+    const raiseRound = Math.max(1, ...allGaps.map((gap) => gap.openedRound));
     const question = gateDecisionQuestion({
       phase,
       gate,
       summary: blockers.length === 0
         ? "证据已到齐，没有挡住闸门的问题。"
-        : `${blockers.length} 项问题仍然挡着闸门：`
-          + blockers.map((blocker) => `${blocker.id}[${blocker.severity}]`).join(" "),
+        : `${blockers.length} 项问题仍然挡着闸门。先逐条说你怎么看，最后再裁决。`,
+      openGaps,
     });
     // No question rather than an empty one: putting a decision to someone that
     // they cannot make is worse than not asking (domain/question.ts).
@@ -896,9 +917,63 @@ export async function handle(
       json(response, { asked: true, answered: false, phase, questionId });
       return;
     }
+
+    /*
+     * ── 三步，顺序是承重的 ────────────────────────────────
+     *
+     * 1. **先查 fence。** 问的是「人回答的这段时间里，别人动过这份证据吗」。这一步
+     *    必须在自己动手之前，否则查的就只是「我刚写完的东西还在不在」。
+     * 2. **落人对每一条问题的表态。** 一次驳回或接受会把一条 blocker 从名单里拿掉，
+     *    而闸门算的正是那个名单 —— 先裁决就是拿着旧名单裁决，人刚说的话对这一次没有
+     *    任何影响。
+     * 3. **再走闸门**，对着表态之后的新快照（`rebaseFence`）。存下来的那份 fence
+     *    必然对不上，而对不上的原因是**人自己刚说的话** —— 那不是 fence 要防的东西。
+     *
+     * 表态本身**不推动闸门**：它只改 gaps。推动闸门的仍然只有 `decision` 那一格，
+     * 走 `questions.apply` 这一条路（§5.3：没有第二条能推动闸门的路）。
+     */
+    try {
+      questions.assertFenceHolds(questionId);
+    } catch (error: unknown) {
+      if (!(error instanceof GateMovedError)) throw error;
+      questions.settle(questionId);
+      json(response, {
+        asked: true, answered: true, phase, questionId, answer,
+        reason: "gate_moved",
+      });
+      return;
+    }
+
+    const responded = responsesFrom({ question, answer, openGaps });
+    const applied = Object.keys(responded.responses).length === 0
+      ? { refused: [] as { id: string; code: string }[] }
+      : gaps.respond(changeId, phase, responded.responses);
+    // 人自己提的那一条 —— 它挡闸门，所以要在裁决之前落进去。
+    const raised = responded.raised === ""
+      ? null
+      : gaps.raise(changeId, phase, responded.raised, raiseRound);
+
+    /*
+     * 裁决可能在人自己的表态之后就不合法了 —— 最典型的是他刚提了一条新要求，
+     * 又选了「批准」。**那时闸门该拒，而且要说出来**：默默当成没发生，人会以为
+     * 批准了。
+     */
+    let outcome: unknown;
+    try {
+      outcome = questions.apply(questionId, { rebaseFence: true });
+    } catch (error: unknown) {
+      if (!(error instanceof GateRefusedError)) throw error;
+      questions.settle(questionId);
+      outcome = { kind: "refused", action: error.action, reason: error.reason };
+    }
+
     json(response, {
       asked: true, answered: true, phase, questionId, answer,
-      outcome: questions.apply(questionId),
+      /** 每一条表态落地了没有，没落地的说清是为什么 —— 人已经走了，不许静默丢掉。 */
+      responses: responded.responses,
+      refused: applied.refused,
+      raised: raised?.id ?? null,
+      outcome,
       state: changes.read(changeId).state,
     });
     return;
