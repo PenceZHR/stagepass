@@ -80,6 +80,52 @@ const gapLine = (gap: Gap): string => {
   return gap.note === null ? head : `${head}\n  人说：${gap.note}`;
 };
 
+/**
+ * 上一轮报出来的问题，交给**动手的那个人**。
+ *
+ * ## 为什么它必须存在
+ *
+ * 在这之前 open gap 只出现在裁判那一区，红方拿到的只有阶段指令 + 需求 + 上游文档。
+ * 于是「红方根据蓝方的判断修正」这句话**没有载体**：红方每一轮都是从零重写，而不是
+ * 照着意见改。2026-07-30 CHG-002 那次续跑就是活样本 —— 人在选择器里对三条问题逐条
+ * 写了意见，那些话进了 gap 的 note，而红方一个字都没看到。`gapLine` 上面那段注释
+ * 写着「不带上它，红方下一轮照样不知道他要什么」，本意一直在，线没接到红方。
+ *
+ * ## 为什么是「改掉，或者写清为什么不改」
+ *
+ * 只说「改掉」，红方遇到一条它认为不成立的问题就只能假装改。而一条它不认同的问题，
+ * 正确的出口是**把理由写进产出**，让蓝方和人去看那个理由 —— 那正是下一轮蓝方要判、
+ * 裁判要表态的东西。逼它服从会把分歧藏起来。
+ *
+ * ## 裁判那一份没有被拿走
+ *
+ * 同一份名单两边都有，指令不同：红方是「去处理」，裁判是「逐条表态」。少了裁判那份，
+ * 就没人对「这条到底还成不成立」下结论；少了红方这份，就没人去改。
+ */
+const redFixList = (openGaps: readonly Gap[]): string[] => {
+  if (openGaps.length === 0) return [];
+  const indent = (gap: Gap): string =>
+    gapLine(gap).split("\n").map((line) => `   ${line}`).join("\n");
+  // 人提的排在模型报的前面，**和裁判那一区同一个顺序、同一个理由**：先看要求，
+  // 再看建议。两边的顺序不一致，等于告诉红方和裁判两件不同的事哪个更要紧。
+  const human = openGaps.filter(isHumanGap);
+  const found = openGaps.filter((gap) => !isHumanGap(gap));
+  const lines: string[] = [];
+  if (human.length > 0) {
+    lines.push("   人明确要求这一轮处理的（不许当成建议）：", ...human.map(indent));
+  }
+  if (found.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("   上一轮报出来的问题：", ...found.map(indent));
+  }
+  return [
+    "",
+    ...lines,
+    "   以上每一条都要处理 —— 改掉它，或者在产出里写清楚为什么它不成立。",
+    "",
+  ];
+};
+
 export function judgePrompt(input: RoundInstructions): string {
   /*
    * 人提的问题**单独一区，措辞和模型报的不一样**（用户 2026-07-30）。
@@ -117,6 +163,7 @@ export function judgePrompt(input: RoundInstructions): string {
     "",
     `1. ${RED} —— 正方。任务：`,
     input.task,
+    ...redFixList(input.openGaps),
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,
     ...extra(input.addenda?.red),

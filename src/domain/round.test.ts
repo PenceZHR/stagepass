@@ -91,6 +91,64 @@ describe("L4 · what the judge is told", () => {
   });
 });
 
+describe("L4 · 红方看得到上一轮被挑出了什么", () => {
+  /**
+   * 「红方根据蓝方的判断修正」在这之前**没有载体**：open gap 只送进裁判那一区，
+   * 红方拿到的只有阶段指令 + 需求 + 上游文档。于是它每一轮都是从零重写，而不是
+   * 照着意见改 —— 2026-07-30 CHG-002 那次续跑就是这样：人在选择器里逐条写了意见，
+   * 那些话进了 gap 的 note，红方一个字都没看到。
+   *
+   * 裁判仍然要拿到同一份名单，但两边的指令不同：红方是「去改」，裁判是「表态」。
+   */
+  it("上一轮的问题也送到红方那一区", () => {
+    const prompt = judgePrompt({
+      phase: "Spec", round: 2, task: "写出 Spec",
+      openGaps: [gap("SPEC-1", "验收标准不可测")],
+    });
+    // 用编号锚点切，不用裸路径 —— 开头那行「路径必须精确是 …」里两个路径都出现过，
+    // 拿 indexOf(RED) 切出来的是那一行的中间十几个字符，任何断言都会假红。
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.match(redSection, /SPEC-1/, "红方那一区没有上一轮的问题");
+    assert.match(redSection, /验收标准不可测/);
+  });
+
+  it("**人自己说的那句话跟着送到红方**", () => {
+    // 人的原话是这一整套里分量最重的输入。它进了库却到不了动手的那个人手上，
+    // 等于没记。
+    const prompt = judgePrompt({
+      phase: "Spec", round: 2, task: "t",
+      openGaps: [{
+        ...gap("SPEC-1", "验收标准不可测"),
+        note: "把那个同步接口整段删掉，不要留占位",
+      }],
+    });
+    // 用编号锚点切，不用裸路径 —— 开头那行「路径必须精确是 …」里两个路径都出现过，
+    // 拿 indexOf(RED) 切出来的是那一行的中间十几个字符，任何断言都会假红。
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.match(redSection, /把那个同步接口整段删掉/);
+  });
+
+  it("第一轮没有任何问题时，红方那一区不出现空名单", () => {
+    const prompt = judgePrompt({
+      phase: "Spec", round: 1, task: "写出 Spec", openGaps: [],
+    });
+    // 用编号锚点切，不用裸路径 —— 开头那行「路径必须精确是 …」里两个路径都出现过，
+    // 拿 indexOf(RED) 切出来的是那一行的中间十几个字符，任何断言都会假红。
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.doesNotMatch(redSection, /上一轮/,
+      "没有上一轮却提上一轮，模型会去找不存在的东西");
+  });
+
+  it("裁判那一份没被拿走 —— 两边都要有，指令不同", () => {
+    const prompt = judgePrompt({
+      phase: "Spec", round: 2, task: "t", openGaps: [gap("SPEC-1", "x")],
+    });
+    const judgeSection = prompt.slice(prompt.indexOf("轮到你"));
+    assert.match(judgeSection, /SPEC-1/, "裁判那一区的名单丢了");
+    assert.match(judgeSection, /沉默等于仍然存在/);
+  });
+});
+
 describe("L4 · 人提的要求单独一区", () => {
   /*
    * 用户 2026-07-30：「judgePrompt 把人开的那些单独列出来，措辞要区别于模型报的。」
