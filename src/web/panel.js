@@ -499,6 +499,8 @@ async function load() {
     + (projectParam ? `&project=${encodeURIComponent(projectParam)}` : ""))).json();
   phases = panel.phases;
   panelState = panel;
+  // 一轮跑完文件就是新的了 —— 缓存活过 load() 会让人读到上一轮的产出。
+  artifactCache.clear();
   drawWorkspace(panel);
   drawOrbit();
 
@@ -830,11 +832,23 @@ async function closeTerminal() {
 }
 
 /**
- * 红方这一阶段产出了什么。
+ * 读过的产出正文，`阶段\n路径` -> 那次响应。
+ *
+ * 有它是因为 `drawSheet` 会被重画好几次（load 之后、切页签、按完按钮），每次都重新
+ * 取一遍会让正文闪成「读取中…」再回来。`load()` 里清掉 —— 一轮跑完文件就是新的了。
+ */
+const artifactCache = new Map();
+
+/**
+ * 红方这一阶段产出了什么 —— **连正文一起**。
  *
  * 「红蓝双方主张摘要」在新树上就是两样：蓝方的主张是下面那些 finding，红方的主张
  * 是它产出的东西。**只看得见「有人挑了三条毛病」而看不见「他挑的是什么东西」，
  * 那个列表是悬着的。**
+ *
+ * 所以正文直接摊在这儿，不藏在一次点击后面：用户 2026-07-30 的原话是「他们把 PRD
+ * 和建议一起带回给我 —— 现在只有建议，我拿不到那份 PRD」。**只显示文件名等于没带
+ * 回来。** 高度封顶、自己滚，这样它不会把下面的问题列表顶出视野。
  */
 function drawProduced(entry) {
   const box = document.createElement("div");
@@ -852,19 +866,63 @@ function drawProduced(entry) {
   }
   for (const artifact of entry.produced) {
     const row = document.createElement("div");
-    row.className = "gap closed";
-    const tag = document.createElement("b");
-    tag.className = "gap-sev";
-    tag.textContent = "产出";
-    const text = document.createElement("div");
-    text.className = "gap-text";
-    const title = document.createElement("strong");
-    title.textContent = artifact;
-    text.append(title);
-    row.append(tag, text);
+    row.className = "artifact";
+
+    const path = document.createElement("p");
+    path.className = "artifact-path";
+    path.textContent = artifact;
+    path.title = artifact;
+
+    const body = document.createElement("pre");
+    body.className = "artifact-body";
+    body.textContent = "读取中…";
+    row.append(path, body);
     box.append(row);
+    fillArtifact(entry.phase, artifact, body);
   }
   return box;
+}
+
+/** 服务端读不到时的原因，翻成人话。原样显示 `not_produced_here` 等于没说。 */
+const ARTIFACT_REFUSALS = {
+  not_produced_here: "库里没把这份东西记成这个阶段的产出 —— 面板不去别处找它。",
+  project_has_no_path: "这个项目没有路径，所以不知道该到哪儿去找这份产出。",
+  gone: "这份产出不在了 —— 被移走或删掉了。库里还记着它，磁盘上没有。",
+  outside_project: "这条路径落在项目目录外面，不给读。",
+  not_a_file: "这条路径不是一个文件。",
+  too_big: "这份东西太大，不在弹窗里读。",
+};
+
+/**
+ * 把正文填进去。
+ *
+ * 读不到就**说出来**，不留一块空白：一块空白和「这份 PRD 是空的」看着一模一样，
+ * 而两者要做的事完全不同（M7）。
+ */
+async function fillArtifact(phase, artifact, into) {
+  const key = `${phase}\n${artifact}`;
+  let read = artifactCache.get(key);
+  if (!read) {
+    try {
+      read = await (await fetch(
+        `/api/artifact?change=${encodeURIComponent(changeId)}`
+        + `&phase=${encodeURIComponent(phase)}&id=${encodeURIComponent(artifact)}`)).json();
+    } catch (error) {
+      read = { readable: false, reason: `fetch_failed:${error.message}` };
+    }
+    artifactCache.set(key, read);
+  }
+  // 弹窗可能已经换到别的阶段去了；那时这个节点已经不在文档里，写它没有意义。
+  if (!into.isConnected) return;
+
+  if (read.readable) {
+    into.classList.remove("bad");
+    into.textContent = read.text === "" ? "（这份产出是空的。）" : read.text;
+    return;
+  }
+  into.classList.add("bad");
+  into.textContent = ARTIFACT_REFUSALS[read.reason]
+    ?? `读不到这份产出：${read.reason}`;
 }
 
 function drawGaps(entry) {

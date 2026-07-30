@@ -545,9 +545,16 @@ body::after {
  * 高度被约束住时才会滚。不给它约束，内容长了就整体撑破 max-height，然后被
  * `overflow: hidden` 从底下裁掉 —— 先没的正是底部那排动作按钮。
  */
+/*
+ * 尺寸 2026-07-30 放大过一次，理由是内容变了而不是想大一点：产出的**正文**从这天起
+ * 显示在这里，而一份 PRD 有三千多字。放大之前 `.sheet-body` 只有 273px 高，比正文框
+ * 本身还矮 —— 于是外层滚一层、里层再滚一层，一次看得见十行。
+ *
+ * 弹窗仍然是弹窗：Esc / ✕ / 点遮罩三条关闭路径一条没动，它也仍然不常驻（交接 §5.0.2）。
+ */
 .sheet {
   display: flex; flex-direction: column;
-  width: min(560px, calc(100vw - 48px)); max-height: min(78vh, 720px);
+  width: min(720px, calc(100vw - 48px)); max-height: min(88vh, 860px);
   margin: auto; padding: 0; border: 1px solid rgba(255,255,255,.19); border-radius: 20px;
   background: oklch(0.185 0.036 295 / 94%); backdrop-filter: blur(26px) saturate(115%);
   color: var(--foreground); box-shadow: 0 40px 120px rgba(14,10,22,.6);
@@ -716,6 +723,39 @@ body::after {
 .gap-text em {
   display: block; margin-top: 6px; font-style: normal;
   font: 400 11.5px/1.6 var(--serif); color: rgba(255,255,255,.56);
+}
+
+/*
+ * 一份产出的正文。
+ *
+ * **高度封顶、自己滚**，这是承重的：一份 PRD 有几百行，不封顶它会把下面那串问题
+ * 顶到视野外面 —— 而人要做的判断恰恰是「对着这份东西看这些毛病成不成立」。
+ * 两样都得在同一屏里够得着。
+ */
+.artifact { padding: 12px 0; border-top: 1px solid rgba(255,255,255,.085); }
+.artifact-path {
+  margin: 0 0 8px;
+  font: 500 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .04em; color: rgba(255,255,255,.44);
+  overflow-wrap: anywhere;
+}
+.artifact-body {
+  /*
+   * 封顶要**比 `.sheet-body` 矮**，不然内外两层都在滚，而里层比外层可见区还高 ——
+   * 一次看得见十行。300px 是在 720p 下量出来的：那时 `.sheet-body` 约 410px，
+   * 剩下的一百来 px 正好让下面那句「N 项挡着闸门」留在视野里。
+   */
+  max-height: 300px; overflow: auto; margin: 0;
+  padding: 13px 15px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+  background: rgba(0,0,0,.16);
+  /* 产出是 markdown，按原样排 —— 折行是因为超宽的行会把弹窗撑出横向滚动条。 */
+  font: 400 12px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(255,255,255,.74);
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
+}
+.artifact-body.bad {
+  font-family: var(--serif); font-size: 12.5px; color: var(--problem);
+  white-space: normal;
 }
 
 /*

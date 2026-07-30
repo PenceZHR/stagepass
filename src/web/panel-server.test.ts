@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { BindingStore } from "../store/binding-store";
+import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
@@ -364,6 +367,98 @@ describe("panel · pass and fail per phase", () => {
         [["G1", "open"], ["G2", "closed"]]);
       assert.deepEqual(forPhase("Spec").map((gap) => gap.id), ["S1"]);
       assert.deepEqual(forPhase("TechSpec"), []);
+    });
+  });
+});
+
+/*
+ * 弹窗要能拿到那份产出的**正文**，不只是文件名。
+ *
+ * 用户 2026-07-30 的原话：「他们把 PRD 和建议一起带回给我 —— 现在只有建议，我拿不到
+ * 那份 PRD。」蓝方挑的毛病看得见、被挑的那份东西看不见，那串建议就是悬着的。
+ *
+ * 测试的项目路径是 `/tmp`（见 withPanel），所以产出也写在 /tmp 下面。
+ */
+describe("panel · 产出的正文读得到，读不到要说为什么", () => {
+  const produce = (database: Database.Database, ids: string[]): void => {
+    new EvidenceStore(database).put(CHANGE, "PRD", {
+      artifactIds: ids, blockers: [], waivedBlockerIds: [],
+    });
+  };
+  const readArtifact = async (
+    open: (path: string, init?: RequestInit) => Promise<Response>,
+    id: string,
+  ) => await (await open(
+    `/api/artifact?change=${CHANGE}&phase=PRD&id=${encodeURIComponent(id)}`,
+  )).json() as { readable: boolean; reason?: string; text?: string };
+
+  it("读得到正文", async () => {
+    const directory = mkdtempSync("/tmp/sp-artifact-");
+    const file = join(directory, "prd.md");
+    writeFileSync(file, "# 排行榜\n\n只给我自己看。\n");
+    try {
+      await withPanel(async ({ open, database }) => {
+        produce(database, [file]);
+        const read = await readArtifact(open, file);
+        assert.equal(read.readable, true);
+        assert.match(read.text!, /只给我自己看/);
+      });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("相对路径按项目目录解 —— L4 的红方报的就是 `spec.md` 这种", async () => {
+    const name = `sp-artifact-relative-${process.pid}.md`;
+    writeFileSync(join("/tmp", name), "相对路径也读得到");
+    try {
+      await withPanel(async ({ open, database }) => {
+        produce(database, [name]);
+        const read = await readArtifact(open, name);
+        assert.equal(read.readable, true);
+        assert.match(read.text!, /相对路径也读得到/);
+      });
+    } finally { rmSync(join("/tmp", name), { force: true }); }
+  });
+
+  it("**库里没记成这个阶段的产出 —— 不给读**", async () => {
+    // 否则这个端点就是「照 query 参数读任意文件」，而 query 是浏览器给的。
+    const directory = mkdtempSync("/tmp/sp-artifact-");
+    const file = join(directory, "secret.md");
+    writeFileSync(file, "不该被读到");
+    try {
+      await withPanel(async ({ open, database }) => {
+        produce(database, ["/tmp/something-else.md"]);
+        const read = await readArtifact(open, file);
+        assert.equal(read.readable, false);
+        assert.equal(read.reason, "not_produced_here");
+      });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("**落在项目目录外 —— 不给读**，哪怕库里列着它", async () => {
+    /*
+     * `artifactIds` 是**模型**写的。一个想歪的模型往里放 `~/.ssh/id_rsa`，
+     * 「只读库里列着的」挡不住它 —— 挡得住的是这一条。
+     */
+    const outside = mkdtempSync(join(tmpdir(), "sp-artifact-outside-"));
+    const file = join(outside, "elsewhere.md");
+    writeFileSync(file, "在项目外面");
+    try {
+      await withPanel(async ({ open, database }) => {
+        produce(database, [file]);
+        const read = await readArtifact(open, file);
+        assert.equal(read.readable, false);
+        assert.equal(read.reason, "outside_project");
+      });
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  it("文件不在了 —— 说出来，不给一块空白", async () => {
+    // 一块空白和「这份 PRD 是空的」看着一模一样，而两者要做的事完全不同（M7）。
+    await withPanel(async ({ open, database }) => {
+      produce(database, ["/tmp/sp-artifact-never-written.md"]);
+      const read = await readArtifact(open, "/tmp/sp-artifact-never-written.md");
+      assert.equal(read.readable, false);
+      assert.equal(read.reason, "gone");
     });
   });
 });

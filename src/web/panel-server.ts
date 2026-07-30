@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
@@ -72,6 +72,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  */
 const THREADED_PHASES: readonly Phase[] =
   PHASES.filter((phase) => phase !== "Done");
+
+/**
+ * 一份产出最大读多大，超过就只报大小、不读。
+ *
+ * 弹窗里要看的是一份文档。比这还大的东西**不是拿来在弹窗里读的**，而无条件读进内存
+ * 会让一个模型写歪的文件把面板拖死。
+ */
+const ARTIFACT_MAX_BYTES = 2_000_000;
 
 /** Passed, failed, or neither yet. */
 type PhaseMark = "approved" | "problem" | null;
@@ -533,6 +541,88 @@ export async function handle(
           produced,
         };
       }),
+    });
+    return;
+  }
+
+  /*
+   * 一份产出的正文。
+   *
+   * ## 为什么这一条最要紧
+   *
+   * 在这之前弹窗只显示 artifactIds 里的**文件名**。用户 2026-07-30 的原话：
+   * 「他们把 PRD 和建议一起带回给我 —— 现在只有建议，我拿不到那份 PRD。」
+   * 五步场景的第 ④ 步就断在这儿：红蓝对抗跑完了，蓝方挑的毛病看得见，**被挑的那
+   * 份东西看不见** —— 那份建议是悬着的，人没法判断该不该接受。
+   *
+   * ## 这不违反 §9.3
+   *
+   * 那条护栏管的是**pty 的字节**：不许读懂 Codex 画在终端里的东西。这里读的是模型
+   * **落在磁盘上的产物**，和 `codex/rollout.ts` 读 rollout、`codex/subagent.ts` 读
+   * 子 Agent 的文件同一类动作。区别是判据性的：pty 输出是「界面」，产物是「文档」。
+   *
+   * ## 只读，而且只读这个阶段自己报出来的那些
+   *
+   * 路径必须出现在这个 (Change, 阶段) 的 `artifactIds` 里，而且落在项目目录内 ——
+   * 两道都不省。`artifactIds` 是模型写的，一个想歪的模型可以往里放
+   * `~/.ssh/id_rsa`；「只读库里列着的」挡不住那个，「必须在项目目录内」才挡得住。
+   *
+   * 读接口不写任何东西（M5）。
+   */
+  if (url.pathname === "/api/artifact" && request.method === "GET") {
+    const changeId = url.searchParams.get("change") ?? "";
+    const phaseName = url.searchParams.get("phase") ?? "";
+    const wanted = url.searchParams.get("id") ?? "";
+    if (!isPhase(phaseName)) { response.writeHead(404).end("no_such_phase"); return; }
+
+    const listed = new EvidenceStore(database).read(changeId, phaseName).artifactIds;
+    if (!listed.includes(wanted)) {
+      // 不是这个阶段报出来的东西。**不猜、不去别处找。**
+      json(response, { path: wanted, readable: false, reason: "not_produced_here" });
+      return;
+    }
+    const root = sessions.workspaceFor(changeId);
+    if (root === null) {
+      json(response, { path: wanted, readable: false, reason: "project_has_no_path" });
+      return;
+    }
+
+    /*
+     * 相对路径按项目目录解 —— 模型两种都写得出来（L4 那次是 `spec.md`，PRD 那次是
+     * 绝对路径）。解完再查它有没有跑出项目目录，`realpathSync` 是为了让
+     * `../../..` 和软链都在同一处被摊平。
+     */
+    let real: string;
+    let realRoot: string;
+    try {
+      realRoot = realpathSync(root);
+      real = realpathSync(isAbsolute(wanted) ? wanted : join(realRoot, wanted));
+    } catch {
+      // 文件被移走或删了。**说出来** —— 一个空白的正文框和「这份产出不见了」是
+      // 两件完全不同的事（M7）。
+      json(response, { path: wanted, readable: false, reason: "gone" });
+      return;
+    }
+    if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+      json(response, { path: wanted, readable: false, reason: "outside_project" });
+      return;
+    }
+    const stat = statSync(real);
+    if (!stat.isFile()) {
+      json(response, { path: wanted, readable: false, reason: "not_a_file" });
+      return;
+    }
+    if (stat.size > ARTIFACT_MAX_BYTES) {
+      json(response, {
+        path: wanted, readable: false, reason: "too_big", bytes: stat.size,
+      });
+      return;
+    }
+    json(response, {
+      path: wanted,
+      readable: true,
+      bytes: stat.size,
+      text: readFileSync(real, "utf-8"),
     });
     return;
   }
