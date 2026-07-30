@@ -9,6 +9,9 @@ import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import { createSubAgentLookup, readRoleTranscript } from "../codex/subagent";
+import {
+  archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
+} from "../codex/archive";
 import { BLUE, RED } from "../domain/round";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { JobStore } from "../work/job-store";
@@ -140,6 +143,8 @@ export interface PanelOptions {
   readonly session: PtySessionOptions;
   /** Injected so the routing half is provable without spawning Codex. */
   readonly start?: typeof startPtySession;
+  /** 同理：归档那一层也要能在不碰 Codex 的情况下证明。 */
+  readonly archive?: ArchiveOps;
   /**
    * 一轮最多等多久。默认 30 分钟。
    *
@@ -210,8 +215,12 @@ export class ProjectPathMissingError extends Error {
 
 export class PanelSessions {
   private readonly live = new Map<string, LiveSession>();
+  /** 归档那一层。测试注入假的，生产用真的 —— 和 `start` 同一个路子。 */
+  readonly archive: ArchiveOps;
 
-  constructor(private readonly options: PanelOptions) {}
+  constructor(private readonly options: PanelOptions) {
+    this.archive = options.archive ?? createArchiveOps();
+  }
 
   private static key(changeId: string, phase: Phase): string {
     return `${changeId} ${phase}`;
@@ -282,6 +291,23 @@ export class PanelSessions {
      */
     const cwd = this.workspaceFor(changeId);
     if (cwd === null) throw new ProjectPathMissingError(changeId);
+
+    /*
+     * **resume 之前先把线程弄成 resume 得动的。**
+     *
+     * 一条被归档的会话，`codex resume` 一起来就退，而这一侧只看得见「进程没了」——
+     * 2026-07-30 用户就撞在这上面。归档是外面的动作（不是 StagePass、也不是进程退出），
+     * 所以这里每次 resume 都先确认一遍。**只在真的被归档时才动手**：`codex unarchive`
+     * 对一条没被归档的会话会报错。
+     *
+     * 查不到状态就照旧往下走 —— 退回加这一层之前的行为，不因为读不到别人的库就不干活。
+     */
+    if (argv[0] === "resume" && argv[1] !== undefined) {
+      const outcome = ensureResumable(argv[1], this.archive);
+      if (outcome !== "already_open" && outcome !== "unknown") {
+        console.log(`[panel] ${changeId}/${phase} 的线程 ${argv[1]} —— ${outcome}`);
+      }
+    }
 
     const start = this.options.start ?? startPtySession;
     const session = start({
@@ -1204,6 +1230,31 @@ export async function handle(
       if (!(error instanceof GateRefusedError)) throw error;
       questions.settle(questionId);
       outcome = { kind: "refused", action: error.action, reason: error.reason };
+    }
+
+    /*
+     * **批准了就归档这个阶段的线程。**
+     *
+     * 用户 2026-07-30 拍板的那一半：「Archive 只能我在 stage 跑完了之后，才能自动地
+     * archive。」归档从此标记的是「这个阶段结束了」，而不是「Codex 那边有人清了一下」。
+     *
+     * 只由批准触发，别的地方一概不许调 —— 一个**还没批准**的阶段的线程被归档，
+     * 下一次 resume 就会一起来就死，那正是这条路要收拾的事。
+     *
+     * `phase` 是转移**之前**的那个，也就是刚被批准的那个，正好是要归档的那一条。
+     * Fix 会被反复进入（§6.5 规则 2），但它被批准时活儿也确实完了；下次再进 Fix，
+     * `launchInto` 那边会自动把它解开。
+     */
+    if (
+      typeof outcome === "object" && outcome !== null
+      && (outcome as { kind?: unknown }).kind === "advanced"
+      && (outcome as { action?: unknown }).action === "approve"
+    ) {
+      const bound = new BindingStore(database).find(changeId, phase);
+      if (bound?.status === "bound") {
+        const done = archiveFinished(bound.threadId, sessions.archive);
+        console.log(`[panel] ${changeId}/${phase} 已批准，线程 ${bound.threadId} —— ${done}`);
+      }
     }
 
     /*

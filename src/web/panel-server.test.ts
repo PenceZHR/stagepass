@@ -18,7 +18,7 @@ import { JobStore } from "../work/job-store";
 import {
   decisionLabel, RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE,
 } from "../domain/question";
-import { createPanelServer } from "./panel-server";
+import { createPanelServer, type PanelOptions } from "./panel-server";
 import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
 
@@ -94,6 +94,8 @@ async function withPanel(
     database: Database.Database;
     open: (path: string, init?: RequestInit) => Promise<Response>;
   }) => Promise<void>,
+  /** 额外注入的依赖。归档那一层要能在不碰 Codex 的情况下验。 */
+  extra: { archive?: PanelOptions["archive"] } = {},
 ): Promise<void> {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
@@ -143,6 +145,18 @@ async function withPanel(
     // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
     // 测试会陪着默认的 30 分钟一起等。
     database, session: { cwd: "/tmp" }, start, turnTimeoutMs: 200,
+    /*
+     * **默认注入一个什么都不知道的假的。**
+     *
+     * 不注入的话用的是真的那一套，而它会去读 `~/.codex/state_5.sqlite` —— 测试跑一遍
+     * 就摸了一次用户的 Codex 库。这里一律「查不到状态」，也就是退回加归档那一层之前
+     * 的行为，跟别的测试原来验的东西逐字一致。
+     */
+    archive: extra.archive ?? {
+      isArchived: () => null,
+      unarchive: () => { throw new Error("测试里不许真的动 Codex"); },
+      archive: () => { throw new Error("测试里不许真的动 Codex"); },
+    },
   });
   await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -563,6 +577,113 @@ describe("panel · 一轮跑到哪了", () => {
       assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
         .get() as { n: number }).n, 0);
     });
+  });
+});
+
+/*
+ * 归档：用户 2026-07-30 拍板的形状 ——
+ * **批准之前遇到归档就自动解开；批准之后由 StagePass 主动归档。**
+ *
+ * 规则本身在 `codex/archive.ts` 离线证过，这里验的是**接线**：resume 那条路上真的
+ * 会先解归档，批准那条路上真的会归档。
+ */
+describe("panel · 归档由 StagePass 自己管", () => {
+  /** 一个假的 Codex 归档状态，记下每一次动作。 */
+  const fakeArchive = (initial: Record<string, boolean>) => {
+    const state = { ...initial };
+    const calls: string[] = [];
+    return {
+      calls,
+      isArchived: (id: string) => (id in state ? state[id]! : null),
+      unarchive: (id: string) => { calls.push(`unarchive ${id}`); state[id] = false; },
+      archive: (id: string) => { calls.push(`archive ${id}`); state[id] = true; },
+    };
+  };
+
+  it("**resume 一条被归档的线程之前，先解开它**", async () => {
+    /*
+     * 2026-07-30 用户就撞在这上面：线程被归档 → `codex resume` 一起来就退 →
+     * 界面只看得见「进程没了」。现在每次 resume 都先确认一遍。
+     */
+    const archive = fakeArchive({ "THREAD-OLD": true });
+    await withPanel(async ({ open, database, pty }) => {
+      new BindingStore(database).bind(CHANGE, "PRD", "THREAD-OLD");
+      await open(`/pty/${CHANGE}/PRD`);              // 浏览用的 resume
+      await new Promise((resolve) => { setTimeout(resolve, 80); });
+
+      assert.deepEqual(archive.calls, ["unarchive THREAD-OLD"]);
+      // 而且确实是走 resume 起的，不是新开一条线程。
+      assert.equal(resumedThread(pty.started[0]?.argv ?? []), "THREAD-OLD");
+    }, { archive });
+  });
+
+  it("没被归档的线程 —— 一根手指都不动", () => {
+    // `codex unarchive` 对一条没被归档的会话会报错（实测），所以不能无脑先跑一遍。
+    const archive = fakeArchive({ "THREAD-OK": false });
+    return withPanel(async ({ open, database }) => {
+      new BindingStore(database).bind(CHANGE, "PRD", "THREAD-OK");
+      await open(`/pty/${CHANGE}/PRD`);
+      await new Promise((resolve) => { setTimeout(resolve, 80); });
+      assert.deepEqual(archive.calls, []);
+    }, { archive });
+  });
+
+  it("**批准一个阶段之后，归档它那条线程**", async () => {
+    const archive = fakeArchive({ "THREAD-PRD": false });
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      new BindingStore(database).bind(CHANGE, "PRD", "THREAD-PRD");
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      const questionId = (database.prepare(
+        "SELECT id FROM questions WHERE change_id = ? ORDER BY asked_at DESC",
+      ).get(CHANGE) as { id: string }).id;
+      database.prepare(
+        "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
+      ).run(questionId, "accept",
+        JSON.stringify({ decision: decisionLabel("approve", "PRD") }),
+        new Date().toISOString());
+      await asking;
+
+      assert.equal(changes.read(CHANGE).state.phase, "Spec");
+      assert.deepEqual(archive.calls, ["archive THREAD-PRD"]);
+    }, { archive });
+  });
+
+  it("**没批准就不许归档** —— 再来一轮之后那条线程还得能用", async () => {
+    const archive = fakeArchive({ "THREAD-PRD": false });
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      new BindingStore(database).bind(CHANGE, "PRD", "THREAD-PRD");
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.setBrief(CHANGE, "需求");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      const questionId = (database.prepare(
+        "SELECT id FROM questions WHERE change_id = ? ORDER BY asked_at DESC",
+      ).get(CHANGE) as { id: string }).id;
+      database.prepare(
+        "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
+      ).run(questionId, "accept",
+        JSON.stringify({ decision: decisionLabel("reject", "PRD") }),
+        new Date().toISOString());
+      await asking;
+
+      // 一次 archive 都不许有 —— 这个阶段还没完，它下一轮还要接着用那条线程。
+      assert.ok(!archive.calls.some((each) => each.startsWith("archive ")),
+        archive.calls.join(" / "));
+    }, { archive });
   });
 });
 
