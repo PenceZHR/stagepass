@@ -184,15 +184,36 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
     assert.deepEqual(reading.outcome.found, []);
   });
 
-  it("**QA 没被谈过，一律不动** —— 保守是因为没谈，不是因为想清楚了", () => {
+  it("**QA 也算** —— 红方跑的是 Build 的产出，不是自审", () => {
+    /*
+     * 用户 2026-07-30 定的通则：「红方写或者审，但绝对不能自审，然后蓝方来纠错，
+     * 都是按这个格式。」QA 的红方跑测试，报的是 Build 那份代码的问题 —— 和 Review
+     * 同一个形状，所以同一个待遇。
+     *
+     * （在这之前 QA 被排除在外，理由是「还没谈过」。现在谈过了。）
+     */
     const reading = readRound({
       phase: "QA", round: 1,
       red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了" }]),
-      blue: answer([], []),
+      blue: answer([], [{ id: "QAB-1", severity: "P1", title: "你跳过了第 5 条" }]),
       judge: '```json\n{"verdicts":{}}\n```',
     });
-    assert.deepEqual(reading.outcome.found, [],
-      "QA 被顺手改了 —— 它的形状还没谈过");
+    assert.deepEqual(reading.outcome.found.map((e) => e.id).sort(),
+      ["QA-1", "QAB-1"], "QA 红方跑出来的失败被丢了");
+  });
+
+  it("**Merge / Retro / Fix 仍然不算** —— 它们红方产的是自己的东西", () => {
+    // Fix 的红方在改自己要交的代码，Merge/Retro 在写自己的总结 —— 都是自审，
+    // 那条默认规矩在那儿是对的。
+    for (const phase of ["Merge", "Retro", "Fix"] as const) {
+      const reading = readRound({
+        phase, round: 1,
+        red: red([{ id: "X-1", severity: "P0", title: "我自己觉得有问题" }]),
+        blue: answer([], []),
+        judge: '```json\n{"verdicts":{}}\n```',
+      });
+      assert.deepEqual(reading.outcome.found, [], `${phase} 被顺手改了`);
+    }
   });
 
   it("**提示词里给两边分了 id 前缀** —— 让它压根不该撞", () => {
@@ -203,6 +224,13 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
     const blueSection = prompt.slice(prompt.indexOf(`2. ${BLUE}`));
     assert.match(redSection, /RV-/, "没告诉红方它的 id 前缀");
     assert.match(blueSection, /RVB-/, "没告诉蓝方它的 id 前缀");
+  });
+
+  it("**QA 也要分前缀** —— 那儿两边同样都在报问题", () => {
+    const prompt = judgePrompt({ phase: "QA", round: 1, task: "t", openGaps: [] });
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.match(redSection, /QA-/, "没告诉红方它的 id 前缀");
+    assert.match(prompt.slice(prompt.indexOf(`2. ${BLUE}`)), /QAB-/, "没告诉蓝方它的");
   });
 
   it("设计阶段不提前缀 —— 那儿只有蓝方报问题", () => {
@@ -265,9 +293,21 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
     assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
   });
 
+  it("**QA：两边都能跑** —— 这是唯一一个活儿本身就是执行的阶段", () => {
+    /*
+     * Review 那条规矩里写着「跑起来验是 QA 的活儿」。到了 QA，跑就是正题 ——
+     * 而一个跑不了东西的蓝方，没法核对一份「我跑了、结果是这样」的报告，
+     * 它只能检查报告自洽不自洽。
+     */
+    const prompt = judgePrompt({ phase: "QA", round: 1, task: "t", openGaps: [] });
+    assert.doesNotMatch(prompt, /不要去读仓库/, "QA 的蓝方还看不见代码");
+    assert.doesNotMatch(prompt, /不要自己执行/, "QA 的蓝方还不许跑 —— 那它核对不了");
+    assert.match(prompt, /自己跑一遍/, "没告诉蓝方它可以自己跑");
+  });
+
   it("没谈过的阶段一律不动 —— 保守是因为没谈，不是因为想清楚了", () => {
-    // QA / Fix / Merge / Retro 的形状都还没谈过。
-    for (const phase of ["QA", "Fix", "Merge", "Retro"] as const) {
+    // Fix / Merge / Retro 的形状还没谈过。
+    for (const phase of ["Fix", "Merge", "Retro"] as const) {
       const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
       assert.match(prompt, /不要去读仓库/, `${phase} 被顺手改了，而它没被谈过`);
     }

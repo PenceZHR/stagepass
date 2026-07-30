@@ -138,9 +138,14 @@ const gapLine = (gap: Gap): string => {
  *
  * 和 Build 一样不许自己执行：那是 QA 的活儿，在这里跑等于把两个阶段揉成一个。
  *
+ * ## QA：活儿本身就是执行
+ *
+ * 到 QA，「跑」就是正题。一个跑不了东西的反方核对不了一份「我跑了、结果是这样」的
+ * 报告 —— 它只能检查报告自洽不自洽，而那不叫核对。所以这里两边都能跑。
+ *
  * ## 别的阶段一律不动
  *
- * QA / Fix / Merge / Retro 的形状还没谈过。没谈过的沿用设计阶段那条 ——
+ * Fix / Merge / Retro 的形状还没谈过。没谈过的沿用设计阶段那条 ——
  * **保守是因为没谈，不是因为想清楚了**，这句话写在这里免得下次被当成结论。
  */
 const blueReach = (phase: string): string => {
@@ -152,6 +157,11 @@ const blueReach = (phase: string): string => {
     return "   可以读被审的那个 commit 涉及的文件，以及它们的直接调用方 —— 自己去看，"
       + "不要只凭正方的报告下结论。不要自己执行任何东西，也不要动手修：跑起来验是 QA 的活儿。";
   }
+  if (phase === "QA") {
+    return "   可以读代码，也**可以自己跑一遍**验证正方报的结果 —— 这是唯一一个活儿本身"
+      + "就是执行的阶段，一个跑不了东西的反方核对不了一份「我跑了、结果是这样」的报告。"
+      + "不要动手改代码：这一轮的活儿是验，不是修。";
+  }
   return "   只许基于正方产出提出问题，不要去读仓库、不要自己动手修。";
 };
 
@@ -162,10 +172,14 @@ const blueReach = (phase: string): string => {
  * 审的是同一份代码，各自起一个 `REVIEW-1` 是完全可能的。「留哪一条」永远是个将就，
  * 分前缀让这件事结构上不会发生。
  *
+ * 名单和 `redReviewsOthers` 是同一批阶段，而且必然如此：**只有红方的发现也算数的
+ * 阶段，两边才会共用一个 id 空间**。这两处要一起改。
+ *
  * 别的阶段只有蓝方报问题，不需要这套 —— 给红方讲一套它用不上的规矩只是噪音。
  */
 const ID_PREFIX: Readonly<Record<string, { red: string; blue: string }>> = {
   Review: { red: "RV-", blue: "RVB-" },
+  QA: { red: "QA-", blue: "QAB-" },
 };
 
 const idRule = (phase: string, side: "red" | "blue"): string[] => {

@@ -61,7 +61,12 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
     + " naming the commit you reviewed, and report every defect you find as a blocker,"
     + " by severity -- each one naming the file and position.",
   Fix: "Fix the blocking problems that were reported. Change nothing beyond what they require.",
-  QA: "Run the approved test plan against the current code and report what actually happened.",
+  // QA 的产出是一份**报告**，而它必须写清测的是哪个 commit —— 和 Review 同一个理由。
+  // 失败的用例另有去处：QA 里红方报的 blockers 会进 gaps（`redReviewsOthers`）。
+  // 反方在这一阶段可以自己跑，所以「我跑了」这句话是**会被复核的**。
+  QA: "Run the approved test plan against the code produced by Build. Write a QA report"
+    + " naming the commit you tested and the exact commands you ran, and report every"
+    + " failure as a blocker -- each one with the case it came from and the actual output.",
   Merge: "Summarise requirements, design, implementation, review and test facts, and state whether anything still blocks delivery.",
   Retro: "Record what worked, what went wrong, and what should carry into the next change.",
   Done: "Write the delivery note: what was built, how to use it, what changed, and what is knowingly still open.",
