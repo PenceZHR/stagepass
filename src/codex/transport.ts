@@ -26,6 +26,16 @@ export interface TurnDispatch {
   /** The thread to continue, or null to start one. */
   readonly threadId: string | null;
   readonly prompt: string;
+  /**
+   * 线程 id 一确定就叫一声，**别等 turn 跑完**。
+   *
+   * 一个 turn 要跑几分钟，而线程在开头就建出来了。等到 `runTurn` 返回才拿 id 的
+   * 后果实测过两个：进度端点在第一轮全程说不出「走到哪了」（子 Agent 要从这个 id
+   * 查）；一轮中途死掉时线程明明建了、StagePass 却什么都没记下来。
+   *
+   * 回调抛出的异常不吞 —— 记录失败就该让这一轮失败，静默丢掉等于回到没有它的样子。
+   */
+  readonly onThread?: (threadId: string) => void;
 }
 
 export interface TurnDelivery {
@@ -66,6 +76,8 @@ export class ScriptedCodexTransport implements CodexTransport {
 
   async runTurn(dispatch: TurnDispatch): Promise<TurnDelivery> {
     this.dispatches.push(dispatch);
+    // 和真 transport 同一个顺序：线程先出现，然后 turn 才有下文 —— 失败也一样。
+    dispatch.onThread?.(dispatch.threadId ?? this.threadId);
     const next = this.replies.shift();
     if (next === undefined) {
       throw new CodexUnavailableError("scripted_transport_exhausted");

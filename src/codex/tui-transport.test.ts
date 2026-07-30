@@ -107,6 +107,34 @@ describe("L2 · running a turn in the TUI", () => {
     );
   });
 
+  it("**线程一被认出来就叫 onThread —— 即使这个 turn 永远跑不完**", async () => {
+    /*
+     * 一个 turn 要跑几分钟，而线程在开头就建出来了。等 runTurn 返回才拿 id 的话，
+     * 第一轮全程说不出「走到哪了」，中途死掉的轮什么都不留。所以 id 一确定就得
+     * 说出去 —— 连失败的 turn 也一样。
+     */
+    const store = sessions();
+    const clock = fakeTime();
+    const transport = new CodexTuiTransport({
+      cwd: "/tmp", sessionsDir: store.root, ...clock,
+      // 线程建了、提示词也送到了，但 task_complete 永远不来。
+      launch: () => store.write(THREAD, [
+        line({ type: "task_started" }),
+        line({ type: "user_message", message: "first ever" }),
+      ].join("\n")),
+    });
+
+    const seen: string[] = [];
+    await assert.rejects(
+      transport.runTurn({
+        threadId: null, prompt: "first ever",
+        onThread: (threadId) => { seen.push(threadId); },
+      }),
+      CodexUnavailableError,
+    );
+    assert.deepEqual(seen, [THREAD], "turn 失败了，但线程 id 早就该说出去了");
+  });
+
   it("**别的 Codex 同时建了线程时，认的是带着我们提示词的那个**", async () => {
     /*
      * 2026-07-29 实测栽过一次。原先的做法是「启动之后第一个没见过的线程 id」，

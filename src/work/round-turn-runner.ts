@@ -66,13 +66,50 @@ export class RoundTurnRunner implements TurnRunner {
       throw new Error(`change_has_no_brief:${job.changeId}`);
     }
 
+    /*
+     * **轮次从账本数，不用 `job.attempt`。**
+     *
+     * attempt 是「这个 job 的第几次尝试」，而每次「跑这个阶段」都新建一个 job ——
+     * 于是它恒等于 1。实测过的后果：CHG-002 跑了两轮，`gaps.opened_round` 全是 1，
+     * 「第几轮发现的」在库里是假话，而 REMAP §3.5「按轮读，不按 run 读」建在这个
+     * 数上。
+     *
+     * 账本 append-only：这个阶段第几次落到 `running`（`start` 和 `retry`，只有
+     * 这两个动作落进 running），就是第几轮。`queueTurn` 在派发之前就把这一轮的
+     * `start` 写进去了，所以这里数出来的正是**当前**这一轮。失败后的 retry 也
+     * 天然算得进去 —— 那确实是新的一轮。
+     */
+    const round = this.options.changes.ledger(job.changeId)
+      .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
+      .length;
+
+    /*
+     * **裁判线程一出现就绑上，不等整轮跑完。**
+     *
+     * 绑定原来只写在这个方法的最后一行，于是第一轮跑到一半时 `/api/progress` 说不出
+     * 「走到哪了」（子 Agent 要从裁判 threadId 查），而中途死掉的第一轮什么都不留 ——
+     * 线程建了，StagePass 却不认识它。gap 的设计是跨轮存活，线程也该是：它是这个
+     * (Change, 阶段) 的对话，不是这一轮成功与否的奖品。
+     *
+     * `bind` 幂等，所以结尾那次照旧保留 —— 它是「一轮走完了绑定必须在」的兜底。
+     */
+    const inner = this.options.transport;
+    const transport: typeof inner = {
+      runTurn: (dispatch) => inner.runTurn({
+        ...dispatch,
+        onThread: (threadId) => {
+          this.options.bindings.bind(job.changeId, phase, threadId);
+        },
+      }),
+    };
+
     const settled = await runRubricRound({
       projectId: change.projectId,
       changeId: job.changeId,
       phase,
-      // 轮次用 job 的第几次尝试。gap 的 openedRound 和 rubric 判定都按它记，
-      // 所以「第几轮发现的」在两张表里说的是同一件事。
-      round: job.attempt,
+      // gap 的 openedRound 和 rubric 判定都按它记，「第几轮发现的」在两张表里
+      // 说的是同一件事。
+      round,
       // 通用指令 + **人自己答出来的需求**。后者是这一整套的重点：模型不再需要猜
       // 「this change」是什么。
       task: [
@@ -90,7 +127,7 @@ export class RoundTurnRunner implements TurnRunner {
         const bound = this.options.bindings.find(job.changeId, phase);
         return bound?.status === "bound" ? bound.threadId : null;
       })(),
-    }, this.options);
+    }, { ...this.options, transport });
 
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
 

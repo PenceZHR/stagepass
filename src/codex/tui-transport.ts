@@ -132,6 +132,8 @@ export class CodexTuiTransport implements CodexTransport {
 
     const threadId = dispatch.threadId
       ?? await this.awaitNewThread(new Set(before.keys()), dispatch.prompt);
+    // id 一确定就说出去，别等 awaitTurn —— 那一步是整轮里最长的（见 TurnDispatch）。
+    dispatch.onThread?.(threadId);
     const text = await this.awaitTurn(threadId, priorRecords);
     return { threadId, text };
   }
