@@ -13,6 +13,7 @@ import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
+import { JobStore } from "../work/job-store";
 
 import {
   decisionLabel, RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE,
@@ -465,6 +466,102 @@ describe("panel · 产出的正文读得到，读不到要说为什么", () => {
       const read = await readArtifact(open, "/tmp/sp-artifact-never-written.md");
       assert.equal(read.readable, false);
       assert.equal(read.reason, "gone");
+    });
+  });
+});
+
+/*
+ * 跑一轮时说得出它在干什么。
+ *
+ * 用户 2026-07-30：「跑一轮的时候界面几分钟不说话，我以为它挂了。」而更糟的那一格
+ * 同一天撞到了：`status = running` 而那个阶段一个活进程都没有 —— 派出去的 Codex 早就
+ * 没了，面板会一直坐到 30 分钟超时。**「在跑」和「已经死了」在界面上是同一个样子。**
+ */
+describe("panel · 一轮跑到哪了", () => {
+  interface Progress {
+    phase: string;
+    status: string;
+    live: boolean;
+    job: { id: string; status: string; elapsedMs: number } | null;
+    spawned: string[];
+    stage: string | null;
+    processGone: boolean;
+  }
+  const progressOf = async (
+    open: (path: string, init?: RequestInit) => Promise<Response>,
+  ) => await (await open(`/api/progress?change=${CHANGE}`)).json() as Progress;
+
+  it("什么都没跑过 —— 老实说没有 job，也没有阶段", async () => {
+    await withPanel(async ({ open }) => {
+      const progress = await progressOf(open);
+      assert.deepEqual(
+        { phase: progress.phase, status: progress.status, job: progress.job },
+        { phase: "PRD", status: "pending", job: null });
+      assert.equal(progress.stage, null);
+      assert.equal(progress.processGone, false);
+    });
+  });
+
+  it("**status 说在跑、可是没有活进程 —— 这一格必须有名字**", async () => {
+    /*
+     * 这就是那个会静默烧掉 30 分钟的状态。今天界面上它和「在跑」长得一模一样，
+     * 所以它得有一个字段，界面才说得出「这一轮实际上已经死了」。
+     */
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).apply(CHANGE, "start");
+      const progress = await progressOf(open);
+      assert.equal(progress.status, "running");
+      assert.equal(progress.live, false);
+      assert.equal(progress.processGone, true);
+    });
+  });
+
+  it("进程还在时不许报「已经死了」", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).apply(CHANGE, "start");
+      await open(`/pty/${CHANGE}/PRD`);          // 起一个活会话
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+      const progress = await progressOf(open);
+      assert.equal(progress.live, true);
+      assert.equal(progress.processGone, false);
+    });
+  });
+
+  it("报得出这一轮跑了多久", async () => {
+    await withPanel(async ({ open, database }) => {
+      new JobStore(database).enqueue({
+        id: "JOB-P", changeId: CHANGE, kind: "phase_turn",
+        deadlineAt: Date.now() + 60_000, maxAttempts: 1,
+      });
+      const progress = await progressOf(open);
+      assert.equal(progress.job?.id, "JOB-P");
+      assert.equal(progress.job?.status, "queued");
+      assert.ok((progress.job?.elapsedMs ?? -1) >= 0);
+    });
+  });
+
+  /**
+   * `stage` 只在第二轮起算得出来：子 Agent 要从裁判的 threadId 去查，而绑定是一轮
+   * 跑完才写的。**第一轮就是 null，界面照实说「还看不出走到哪一步」** —— 不编阶段名。
+   */
+  it("没有裁判线程 —— stage 是 null，不猜", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).apply(CHANGE, "start");
+      assert.equal((await progressOf(open)).stage, null);
+    });
+  });
+
+  it("**只读** —— 拉一百次进度，账本一行都不多", async () => {
+    // M5：读接口不许写。老树的 listBaselineDocs 在 GET 里 scaffold 十个文件，
+    // 打开项目页就能让正在跑的阶段判为越界。
+    await withPanel(async ({ open, database }) => {
+      const count = () => (database.prepare(
+        "SELECT COUNT(*) AS n FROM change_events").get() as { n: number }).n;
+      const before = count();
+      for (let each = 0; each < 5; each += 1) await progressOf(open);
+      assert.equal(count(), before);
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0);
     });
   });
 });

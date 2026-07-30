@@ -52,6 +52,43 @@ export interface TurnRunner {
 }
 
 /**
+ * 收拾主已经死了的活。**进程重启时调一次。**
+ *
+ * ## 为什么它必须存在，而且必须在这一层
+ *
+ * `JobStore.recover` 早就写好了、也离线证过 —— 但在新树里**一个生产调用者都没有**
+ * （只有它自己的测试在调）。于是 2026-07-30 实测到了它本该防住的那件事：面板被杀掉，
+ * 库里留下一个 `running` 的 job 和一个 `running` 的 Change，而
+ * **`running` 的 Change 只允许 `settle` / `fail`** —— 两个都不是人能裁决的动作，
+ * 于是「跑这个阶段」和「请 Codex 问我」全灰，那个 Change **永远动不了了**。
+ *
+ * 而 `JobStore.recover` 只收拾 job，不动 Change：它是 L1 的 store，不该知道状态机。
+ * 所以这一步放在这里 —— 和 `runOnce` 的 catch 一样，**失败要在两个地方都记上**。
+ * 只记一个，就是老树那种「绿色的 job 压在一个从没动过的 Change 上面」。
+ *
+ * ## 判据是租约过期，不是「看起来卡住了」
+ *
+ * 只有 `expires_at <= now` 的 job 会被收拾（`JobStore.recover` 定的）。一个还在心跳
+ * 的 job 不会被这里碰到 —— 那正是租约存在的意义，不许在这儿用「跑了很久」去猜。
+ */
+export function recoverStuckTurns(
+  database: Database.Database,
+  now: number,
+): { resumed: readonly string[]; failed: readonly { id: string; reason: string }[] } {
+  const jobs = new JobStore(database);
+  const changes = new ChangeStore(database);
+  const summary = jobs.recover(now);
+
+  for (const each of summary.failed) {
+    const changeId = jobs.read(each.id).changeId;
+    // 幂等：Change 可能已经不是 running 了（比如上一次恢复已经处理过），那就不用再动。
+    if (changes.read(changeId).state.status !== "running") continue;
+    changes.apply(changeId, "fail");
+  }
+  return summary;
+}
+
+/**
  * A scripted turn, for driving the loop offline.
  *
  * `L1`'s stand-in for Codex. Deliberately dumb: it returns what it was told to

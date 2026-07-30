@@ -9,7 +9,9 @@ import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import { createSubAgentLookup, readRoleTranscript } from "../codex/subagent";
+import { BLUE, RED } from "../domain/round";
 import { RoundTurnRunner } from "../work/round-turn-runner";
+import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
   responsesFrom, isAnotherRound, DECISION_FIELD,
@@ -646,6 +648,97 @@ export async function handle(
           produced,
         };
       }),
+    });
+    return;
+  }
+
+  /*
+   * 一轮跑到哪了。
+   *
+   * ## 为什么非要有它
+   *
+   * 用户 2026-07-30 的原话：「跑一轮的时候界面几分钟不说话，我以为它挂了。」而这不是
+   * 舒适度问题 —— 同一天我自己撞上了更糟的那一格：`changes.status = running`，而那个
+   * 阶段**一个活进程都没有**。派出去的 Codex 早就没了，面板会一直坐到 30 分钟超时才
+   * 报一句「超时」，而真正的原因永远不出现。**「在跑」和「已经死了」在界面上是同一
+   * 个样子。**
+   *
+   * ## 两条硬约束都守住
+   *
+   * - **不解析 pty 输出**（PRD §9.3）。这里一个字节都不碰 pty。
+   * - 进度只来自**库**和**进程状态**，外加 Codex 自己的 `state_5.sqlite`
+   *   （`codex/subagent.ts` 早就在读它，读的是「这个线程派生了哪几个子 Agent」，
+   *   和读 rollout 同一类动作）。
+   *
+   * ## 说不出来就说不出来
+   *
+   * `stage` 只在**第二轮起**算得出来 —— 子 Agent 要从裁判的 threadId 去查，而绑定是
+   * 一轮跑完才写的。第一轮它就是 `null`，界面照实说「还看不出走到哪一步」。
+   * **不编一个阶段名**：这一屏存在的意义就是不再让人猜，编一个就白做了。
+   *
+   * 只读，不写任何东西（M5）。
+   */
+  if (url.pathname === "/api/progress" && request.method === "GET") {
+    const changeId = url.searchParams.get("change") ?? "";
+    let state: ChangeState;
+    try {
+      state = new ChangeStore(database).read(changeId).state;
+    } catch {
+      response.writeHead(404).end("no such change");
+      return;
+    }
+    const phase = state.phase;
+    const live = sessions.has(changeId, phase);
+    const job = new JobStore(database).latestFor(changeId);
+
+    /*
+     * 裁判派生了哪几个子 Agent —— 这是唯一能说出「红方在写 / 蓝方在挑」的信号。
+     *
+     * 整段包在 try 里：它读的是别人的库，Codex 改了表名这里就该**报不知道**，
+     * 而不是把整个进度端点带崩。
+     */
+    let spawned: string[] = [];
+    let stageKnown = false;
+    try {
+      const bound = new BindingStore(database).find(changeId, phase);
+      if (bound?.status === "bound") {
+        spawned = createSubAgentLookup().children(bound.threadId)
+          .map((record) => record.agentPath);
+        stageKnown = true;
+      }
+    } catch {
+      stageKnown = false; // 查不到就是查不到，不猜
+    }
+
+    json(response, {
+      phase,
+      status: state.status,
+      live,
+      job: job === null ? null : {
+        id: job.id,
+        status: job.status,
+        startedAt: job.createdAt,
+        elapsedMs: Date.now() - Date.parse(job.createdAt),
+      },
+      /** 看见的子 Agent 路径，原样给出去 —— 界面自己决定怎么说。 */
+      spawned,
+      /**
+       * 走到哪一步。`null` = 说不出来（第一轮，或者查不到子 Agent）。
+       *
+       * 只报**看得见的东西**：红方出现了、蓝方也出现了。蓝方出现之后是「蓝方还在挑」
+       * 还是「裁判在裁」，这一侧分不出来 —— 所以不报第三档。
+       */
+      stage: !stageKnown
+        ? null
+        : spawned.includes(BLUE)
+          ? "blue_attacking"
+          : spawned.includes(RED) ? "red_writing" : "judge_starting",
+      /**
+       * **承重的那一格**：状态说在跑，可是没有活进程 —— 派出去的那个 Codex 已经没了。
+       *
+       * 今天这一格会静默烧掉 30 分钟。它必须有名字，界面才说得出这句话。
+       */
+      processGone: state.status === "running" && !live,
     });
     return;
   }

@@ -20,6 +20,7 @@ import { SCHEMA_SQL, migrate } from "../src/db/schema";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { RubricStore } from "../src/store/rubric-store";
+import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 
 function argument(name: string): string | undefined {
@@ -38,6 +39,19 @@ database.pragma("foreign_keys = ON");
 database.exec(SCHEMA_SQL);
 // 旧库补列。SCHEMA_SQL 只会建新表，不会给已存在的表加列 —— 见 migrate 的注释。
 migrate(database);
+
+/*
+ * 收拾上一次进程死掉时留下的活。**这是 L1 崩溃恢复的生产调用者。**
+ *
+ * 在它之前一个都没有：`JobStore.recover` 写好了、离线证过，但没人调。于是
+ * 2026-07-30 实测到它本该防住的那件事 —— 面板被杀掉，库里留下一个 `running` 的
+ * Change，而 `running` 只允许 `settle` / `fail`，两个都不是人能裁决的动作，
+ * 那个 Change 就**永远动不了了**（所有按钮全灰）。
+ *
+ * 放在建表之后、起服务之前：恢复要在任何人看见这个库之前做完，否则第一眼看到的是
+ * 一个假的「在跑」。
+ */
+const recovered = recoverStuckTurns(database, Date.now());
 
 // One project for the workspace Codex runs in, so the first column has
 // something real to show. `ensure` is idempotent, so restarting is safe.
@@ -110,6 +124,14 @@ process.on("SIGTERM", () => { stop(sessions); });
 server.listen(port, () => {
   console.log(`面板   http://localhost:${port}/?change=${encodeURIComponent(changeId)}`);
   console.log(`数据库 ${dbPath}`);
+  // 恢复要说出来。静默恢复和「什么都没发生」在屏幕上一模一样，而它刚刚把一个
+  // Change 从「在跑」改成了「上一轮失败了」—— 那是人需要知道的事。
+  if (recovered.failed.length > 0 || recovered.resumed.length > 0) {
+    console.log(`恢复   上次死掉时留下的活：`
+      + `${recovered.failed.length} 个判为失败（可以 retry），`
+      + `${recovered.resumed.length} 个重新排队`);
+    for (const each of recovered.failed) console.log(`       ${each.id} —— ${each.reason}`);
+  }
   if (installed > 0) console.log(`出厂标准 补了 ${installed} 份（全部不阻断）`);
   console.log("\n每个阶段一个终端。点开一个 tab 就在那个阶段的线程里起一个 Codex。");
   console.log("Ctrl-C 结束。");

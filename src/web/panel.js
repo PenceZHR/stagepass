@@ -147,6 +147,84 @@ function statusOf(entry) {
  */
 const lineFor = (entry) => (entry.mark ? MARK[entry.mark].line : statusOf(entry).long);
 
+/*
+ * ── 跑一轮时说得出它在干什么 ──────────────────────────────
+ *
+ * 用户 2026-07-30 的原话：「跑一轮的时候界面几分钟不说话，我以为它挂了。」
+ *
+ * 而它不只是不好看。同一天撞到过更糟的那一格：`status = running` 而那个阶段一个活
+ * 进程都没有 —— 派出去的 Codex 早就没了，面板会一直坐到 30 分钟超时。
+ * **「在跑」和「已经死了」在界面上是同一个样子**，而这一段就是为了把它们分开。
+ *
+ * 两条硬约束都守住：一个字节都不碰 pty（PRD §9.3），进度只来自 `/api/progress`
+ * （库 + 进程状态）；**只写弹窗和左面板，环那一屏什么都不加**（交接 §5.0 第 4 条）。
+ */
+const PROGRESS_EVERY_MS = 3_000;
+
+/** 轮询而不是 SSE：笨，但一个只读的 GET 骗不了人，断了也自己会好。 */
+let progressTimer = null;
+
+const STAGE_WORDS = {
+  judge_starting: "裁判起来了，还没派生红蓝",
+  red_writing: "红方在写",
+  blue_attacking: "蓝方在挑毛病",
+};
+
+/** 3:20 这种。毫秒对人没有意义。 */
+function spell(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/**
+ * 一次进度，翻成一句话。
+ *
+ * 说不出阶段就**说不出**，不编一个阶段名 —— 这一屏存在的意义就是不再让人猜，
+ * 编一个就白做了。
+ */
+function progressWords(progress) {
+  if (progress.processGone) {
+    return `⚠ ${progress.phase} 记着在跑，但那个 Codex 进程已经不在了`
+      + `（已经 ${spell(progress.job?.elapsedMs ?? 0)}）。`
+      + "它会一直等到超时才报错 —— 这一轮实际上已经死了。";
+  }
+  if (progress.status !== "running") return null;
+  const elapsed = spell(progress.job?.elapsedMs ?? 0);
+  return progress.stage === null
+    ? `${progress.phase} 在跑，已经 ${elapsed}。还看不出走到哪一步`
+      + "（第一轮看不出来 —— 裁判的线程要跑完才绑上）。"
+    : `${progress.phase} 在跑，已经 ${elapsed}：${STAGE_WORDS[progress.stage] ?? progress.stage}。`;
+}
+
+async function pollProgress() {
+  let progress;
+  try {
+    progress = await (await fetch(
+      `/api/progress?change=${encodeURIComponent(changeId)}`)).json();
+  } catch {
+    return; // 一次没拉到不说话，下一次再说 —— 报「读不到进度」比没有进度更吵
+  }
+  const words = progressWords(progress);
+  if (words === null) return;
+  // 写在弹窗那一行。人是从弹窗里按下「跑这个阶段」的，结果就该回到那儿。
+  sheetLine.textContent = words;
+  if (progress.status === "running" && !progress.processGone) {
+    runButton.textContent = `在跑 ${spell(progress.job?.elapsedMs ?? 0)}`;
+  }
+}
+
+function startProgress() {
+  if (progressTimer !== null) return;
+  void pollProgress();
+  progressTimer = setInterval(() => { void pollProgress(); }, PROGRESS_EVERY_MS);
+}
+
+function stopProgress() {
+  if (progressTimer === null) return;
+  clearInterval(progressTimer);
+  progressTimer = null;
+}
+
 /**
  * Dispatch the Change's current phase.
  *
@@ -157,6 +235,9 @@ const lineFor = (entry) => (entry.mark ? MARK[entry.mark].line : statusOf(entry)
 async function run() {
   runButton.disabled = true;
   runButton.textContent = "派发中…";
+  // 这个 fetch 要等整一轮（几分钟）。**进度靠一条独立的只读轮询**，不靠它 ——
+  // 等它回来才说话，就是现在这个「几分钟不说话」。
+  startProgress();
   try {
     const result = await (await fetch(
       `/api/run?change=${encodeURIComponent(changeId)}`, { method: "POST" },
@@ -169,6 +250,7 @@ async function run() {
       say(`${result.phase} 跑完了：${JSON.stringify(result.outcome)}`);
     }
   } finally {
+    stopProgress();
     runButton.textContent = "跑这个阶段";
     await load();
   }
@@ -544,6 +626,14 @@ async function load() {
   renderStatus(null);
   // run / ask 走完都会 load()，闸门和问题可能已经变了 —— 弹窗还开着就重画它。
   if (sheetPhase) drawSheet(sheetPhase);
+
+  /*
+   * **一轮可能不是这个页面派出去的**：D 的「再来一轮」在 /api/ask 里就续跑了，
+   * 而人也可能是跑到一半才打开这个页面。所以进度轮询由「库里是不是在跑」决定，
+   * 不只由「我刚按过跑」决定。
+   */
+  if (panel.status === "running") startProgress();
+  else stopProgress();
 }
 
 /**

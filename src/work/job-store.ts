@@ -128,6 +128,38 @@ export class JobStore {
   }
 
   /**
+   * 这个 Change 最近排的那个 job。没有就是 null。**只读。**
+   *
+   * ## 为什么它不返回 `Job`
+   *
+   * 进度那一屏要说的是「已经跑了多久」，而那要 `created_at` —— 而 `Job` 上没有这一列，
+   * 因为在它之前没有任何一处需要它。为一个调用方给 `Job` 加一列，等于让每个用 `Job`
+   * 的地方都多背一个它不关心的字段；所以这里给一个**窄的读**，字段就是那一屏要的那几个。
+   *
+   * 「最近」按 `created_at` 取，不按 rowid：一个 Change 的 job id 里带时间戳，
+   * 但排序要按库说的算，不按 id 的字面顺序。
+   */
+  latestFor(changeId: string): {
+    id: string;
+    status: JobStatus;
+    createdAt: string;
+    attempt: number;
+  } | null {
+    const row = this.database.prepare(
+      `SELECT id, status, attempt, created_at FROM jobs
+        WHERE change_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(changeId) as
+      | { id: string; status: JobStatus; attempt: number; created_at: string }
+      | undefined;
+    return row === undefined
+      ? null
+      : {
+          id: row.id, status: row.status, attempt: row.attempt,
+          createdAt: row.created_at,
+        };
+  }
+
+  /**
    * Take the oldest queued job, or nothing.
    *
    * A job whose attempts are spent is failed here rather than handed out, so a

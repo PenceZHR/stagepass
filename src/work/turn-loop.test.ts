@@ -9,7 +9,9 @@ import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { CommandStore } from "../store/command-store";
 import { JobStore } from "./job-store";
-import { ScriptedTurnRunner, TurnLoop, type TurnOutcome } from "./turn-loop";
+import {
+  recoverStuckTurns, ScriptedTurnRunner, TurnLoop, type TurnOutcome,
+} from "./turn-loop";
 
 const AT = "2026-07-28T00:00:00.000Z";
 const T0 = 1_000_000;
@@ -38,6 +40,66 @@ function open(script: (TurnOutcome | Error)[]) {
     }),
   };
 }
+
+/*
+ * 收拾主已经死了的活。
+ *
+ * `JobStore.recover` 早就写好、也离线证过 —— 但在这之前**一个生产调用者都没有**。
+ * 2026-07-30 于是实测到了它本该防住的那件事：面板被杀掉，库里留下一个 `running` 的
+ * Change，而 `running` 只允许 `settle` / `fail`，两个都不是人能裁决的动作 ——
+ * 那个 Change 永远动不了了，界面上所有按钮全灰。
+ */
+describe("L1 · 进程死了之后，那个 Change 还能动", () => {
+  const LEASE = 30 * 60_000;
+
+  /** 摆出「有人 claim 了这个 job 然后进程死了」那个状态。 */
+  const stranded = () => {
+    const context = open([]);
+    context.jobs.enqueue({
+      id: "JOB-DEAD", changeId: "CHG-1", kind: "phase_turn",
+      deadlineAt: T0 + LEASE, maxAttempts: 1,
+    });
+    context.jobs.claimNext({ owner: "panel", token: "tok", now: T0, ttlMs: LEASE });
+    context.changes.apply("CHG-1", "start");
+    return context;
+  };
+
+  it("**租约过期之后，job 和 Change 两边都记上失败**", () => {
+    const { database, changes, jobs } = stranded();
+    // 只记一边，就是老树那种「绿色的 job 压在一个从没动过的 Change 上面」。
+    const summary = recoverStuckTurns(database, T0 + LEASE + 1);
+    assert.deepEqual(summary.failed.map((each) => each.id), ["JOB-DEAD"]);
+    assert.equal(jobs.read("JOB-DEAD").status, "failed");
+    assert.equal(changes.read("CHG-1").state.status, "blocked");
+  });
+
+  it("收拾完之后人能 retry —— 那个 Change 不再是死的", () => {
+    const { database, changes } = stranded();
+    recoverStuckTurns(database, T0 + LEASE + 1);
+    // blocked 允许 retry，而 running 只允许 settle / fail（两个都不是人能裁决的）。
+    assert.doesNotThrow(() => changes.apply("CHG-1", "retry"));
+  });
+
+  it("**租约还没过期的不许碰** —— 判据是租约，不是「跑了很久」", () => {
+    const { database, changes } = stranded();
+    assert.deepEqual(recoverStuckTurns(database, T0 + 1), { resumed: [], failed: [] });
+    assert.equal(changes.read("CHG-1").state.status, "running");
+  });
+
+  it("没有死掉的活时什么都不做", () => {
+    const { database } = open([]);
+    assert.deepEqual(recoverStuckTurns(database, T0 + LEASE + 1),
+      { resumed: [], failed: [] });
+  });
+
+  it("再收拾一次是幂等的", () => {
+    const { database, changes } = stranded();
+    recoverStuckTurns(database, T0 + LEASE + 1);
+    const status = changes.read("CHG-1").state.status;
+    recoverStuckTurns(database, T0 + LEASE + 2);
+    assert.equal(changes.read("CHG-1").state.status, status);
+  });
+});
 
 describe("L1 · a phase runs, produces evidence, and the gate reads it", () => {
   /**
