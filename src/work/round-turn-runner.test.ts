@@ -13,6 +13,7 @@ import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
 import { TurnLoop } from "./turn-loop";
 import { RoundTurnRunner } from "./round-turn-runner";
+import type { RepoOps } from "./repo";
 
 /**
  * RoundTurnRunner：把「跑这个阶段」接成一轮对抗的那根线。
@@ -49,6 +50,7 @@ function runner(
   context: ReturnType<typeof open>,
   transport: CodexTransport,
   readRole: (thread: string, path: string) => string,
+  repo?: RepoOps,
 ): RoundTurnRunner {
   return new RoundTurnRunner({
     transport,
@@ -57,6 +59,9 @@ function runner(
     changes: context.changes,
     bindings: context.bindings,
     evidence: new EvidenceStore(context.db),
+    // 测试**绝不碰真 git**：默认给一个什么都不做的。
+    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
+    workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     readRole,
     taskFor: () => "写 PRD",
   });
@@ -208,6 +213,94 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
       transport.dispatches[0]?.prompt ?? "", /上游/,
       "没有上游却画了一节空的，模型会去找不存在的东西",
     );
+  });
+});
+
+describe("RoundTurnRunner · Build 的产出是 commit", () => {
+  /**
+   * 用户 2026-07-30 拍板：Build 一轮的产出记成 commit。
+   *
+   * 文件列表说不出「改了什么」（同一个路径改前改后都是它），diff 说不出「基于哪一版」。
+   * commit 两样都有，还多了稳定 id、能 revert、能进 fence。
+   *
+   * **红方自己报的 artifactIds 被换掉，不是并列。** 并列会让同一轮的产出有两种说法，
+   * 而下游（弹窗、fence、下一轮的蓝方）得挑一个信 —— 那正是「一个概念一个名字」要挡的。
+   */
+  const atBuild = (context: ReturnType<typeof open>): void => {
+    const evidence = new EvidenceStore(context.db);
+    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan"] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [`${phase}.md`], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    assert.equal(context.changes.read(CHANGE).state.phase, "Build");
+  };
+
+  /** 记下每一次调用的假 git。测试绝不碰真仓库。 */
+  const fakeRepo = (sha: string | null) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      dirtyPaths: () => [],
+      commitAll: (_cwd: string, message: string) => {
+        calls.push(`commit ${message}`);
+        return sha;
+      },
+      show: () => null,
+    };
+  };
+
+  it("**红方报的路径被换成 commit 的 sha**", async () => {
+    const context = open();
+    atBuild(context);
+    const repo = fakeRepo("a1b2c3d4e5f6");
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]),
+        () => answer(), repo),
+    });
+    await dispatchRound(loop, "J1");
+
+    assert.deepEqual(
+      new EvidenceStore(context.db).read(CHANGE, "Build").artifactIds,
+      ["a1b2c3d4e5f6"],
+      "产出还是红方自己报的路径",
+    );
+    // 提交信息要说得出是哪个 Change 的第几轮 —— 人在 git log 里看得懂。
+    assert.match(repo.calls[0] ?? "", new RegExp(CHANGE));
+  });
+
+  it("**红方什么都没改 —— 不许伪装成有产出**", async () => {
+    const context = open();
+    atBuild(context);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]),
+        () => answer(), fakeRepo(null)),
+    });
+    await dispatchRound(loop, "J1");
+
+    // 闸门不放行一个什么都没产出的阶段，而这正是那一格该有的样子。
+    assert.deepEqual(
+      new EvidenceStore(context.db).read(CHANGE, "Build").artifactIds, []);
+  });
+
+  it("设计阶段不走这条路 —— 产出仍然是红方报的那个路径", async () => {
+    const context = open();
+    const repo = fakeRepo("a1b2c3d4e5f6");
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]),
+        () => answer(), repo),
+    });
+    await dispatchRound(loop, "J1");   // 还在 PRD
+
+    assert.deepEqual(
+      new EvidenceStore(context.db).read(CHANGE, "PRD").artifactIds, ["prd.md"]);
+    assert.deepEqual(repo.calls, [], "设计阶段也去 commit 了");
   });
 });
 

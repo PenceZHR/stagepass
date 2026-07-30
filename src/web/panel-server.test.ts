@@ -95,7 +95,7 @@ async function withPanel(
     open: (path: string, init?: RequestInit) => Promise<Response>;
   }) => Promise<void>,
   /** 额外注入的依赖。归档那一层要能在不碰 Codex 的情况下验。 */
-  extra: { archive?: PanelOptions["archive"] } = {},
+  extra: { archive?: PanelOptions["archive"]; repo?: PanelOptions["repo"] } = {},
 ): Promise<void> {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
@@ -156,6 +156,17 @@ async function withPanel(
       isArchived: () => null,
       unarchive: () => { throw new Error("测试里不许真的动 Codex"); },
       archive: () => { throw new Error("测试里不许真的动 Codex"); },
+    },
+    /*
+     * **默认注入一个绝不碰 git 的。**
+     *
+     * 不注入的话用的是真的那一套，而它会在**这棵树**上跑 `git add -A` + `git commit`
+     * —— 测试跑一遍就把工作区里所有没提交的东西提交掉。这一格是承重的。
+     */
+    repo: extra.repo ?? {
+      dirtyPaths: () => [],
+      commitAll: () => { throw new Error("测试里不许真的动 git"); },
+      show: () => { throw new Error("测试里不许真的动 git"); },
     },
   });
   await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
@@ -1249,6 +1260,87 @@ describe("panel · 接受风险也走选择器", () => {
  * 落不下去的有没有报回来。分流规则本身在 `domain/gap.ts` / `domain/question.ts`
  * 离线证过，不在这儿重证一遍。
  */
+describe("panel · Build 要在干净的工作树上跑", () => {
+  /**
+   * Build 的产出是 commit，而 StagePass 提交的是「工作树里所有的改动」—— 它分不出
+   * 哪一行是红方写的、哪一行是人自己写了一半的。
+   *
+   * 所以派发之前必须确认树是干净的，否则这一次 commit 会**把人没提交的活儿一起
+   * 卷进去**，而那是不该替他做的事。干净之后，「这一轮改了什么」才有唯一定义：
+   * commit 边界严格等于轮次边界。
+   */
+  const dirty: PanelOptions["repo"] = {
+    dirtyPaths: () => ["半成品.md"], commitAll: () => null, show: () => null,
+  };
+
+  const advanceToBuild = (database: Database.Database): void => {
+    const changes = new ChangeStore(database);
+    changes.setBrief(CHANGE, "需求");
+    advanceTo(changes, "Build");
+  };
+
+  it("**树脏就不派发，而且说清是哪几个文件**", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      advanceToBuild(database);
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as
+        { ran: boolean; reason?: string; dirty?: string[] };
+
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "workspace_dirty");
+      assert.deepEqual(ran.dirty, ["半成品.md"], "没说是哪几个文件，人无从下手");
+      assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
+      // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0);
+    }, { repo: dirty });
+  });
+
+  it("设计阶段不查这个 —— 人手里有没有没提交的东西和写文档无关", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 120); });
+      // 排出去了就说明没被那道闸拦住。
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 1);
+    }, { repo: dirty });
+  });
+});
+
+describe("panel · 弹窗里读得到一个 commit", () => {
+  it("**产出是 sha 时给的是 diff，不是「文件不见了」**", async () => {
+    await withPanel(async ({ open, database }) => {
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["a1b2c3d"], blockers: [], waivedBlockerIds: [],
+      });
+      const read = await (await open(
+        `/api/artifact?change=${CHANGE}&phase=PRD&id=a1b2c3d`)).json() as
+        { readable: boolean; text?: string; kind?: string };
+
+      assert.equal(read.readable, true, "sha 被当成路径去找文件了");
+      assert.equal(read.kind, "commit");
+      assert.match(read.text ?? "", /\+export const x = 1;/);
+    }, {
+      repo: {
+        dirtyPaths: () => [],
+        commitAll: () => null,
+        show: () => "commit a1b2c3d\n\n    加了 x\n\n+export const x = 1;\n",
+      },
+    });
+  });
+
+  it("这个阶段没报过的 sha —— 照样拒，不去 git 里翻", async () => {
+    await withPanel(async ({ open }) => {
+      const read = await (await open(
+        `/api/artifact?change=${CHANGE}&phase=PRD&id=deadbee`)).json() as
+        { readable: boolean; reason?: string };
+      assert.equal(read.readable, false);
+      assert.equal(read.reason, "not_produced_here");
+    });
+  });
+});
+
 describe("panel · 裁决前看得见这一轮的标准判定", () => {
   /**
    * 用户 2026-07-30：**要不要继续对抗由人决定，不做成全自动**。

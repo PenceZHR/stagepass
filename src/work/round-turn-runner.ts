@@ -5,6 +5,7 @@ import { PHASES } from "../domain/phase";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
+import type { RepoOps } from "./repo";
 
 /**
  * 把一个阶段「跑一次」变成**跑一轮对抗**。
@@ -36,6 +37,10 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   readonly bindings: BindingStore;
   /** 上游阶段产出了什么 —— 任务书要把它们的路径带给红方。 */
   readonly evidence: EvidenceStore;
+  /** git。Build 一轮的产出是一个 commit（见 `work/repo.ts`）。 */
+  readonly repo: RepoOps;
+  /** 这个 Change 的仓库在哪。拿不到就不 commit。 */
+  readonly workspaceFor: (changeId: string) => string | null;
   /** 红方要做什么。按阶段给一句话。 */
   readonly taskFor: (phase: string) => string;
 }
@@ -163,10 +168,51 @@ export class RoundTurnRunner implements TurnRunner {
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
 
     return {
-      artifactIds: settled.artifactIds,
+      artifactIds: this.producedBy(job.changeId, phase, round, settled.artifactIds),
       // 空的，理由见文件开头 —— 这一轮的问题已经落库了。
       blockers: [],
       verdicts: {},
     };
+  }
+
+  /**
+   * 这一轮到底产出了什么。
+   *
+   * ## 设计阶段：红方报的路径
+   *
+   * 一份文档天然对应一个路径，一个路径就说全了。
+   *
+   * ## Build：一个 commit（用户 2026-07-30 拍板）
+   *
+   * 文件列表说不出「改了什么」—— 同一个路径，改之前改之后都是它；diff 说不出
+   * 「基于哪一版」，而下一轮的蓝方正需要这个。commit 两样都有，还多了稳定 id、
+   * 能 revert、能进 fence。
+   *
+   * **是替换，不是并列。** 两种说法并存，下游（弹窗、fence、下一轮的蓝方）就得挑
+   * 一个信 —— 那正是「一个概念一个名字」要挡的事。
+   *
+   * ## 提交在这里，因为这是红蓝都干完了的那一刻
+   *
+   * 蓝方读的是工作树（它现在能读改动涉及的代码），所以 commit 必须在它读完之后。
+   * `runRubricRound` 返回时整个裁判 turn 已经结束，红蓝都收工了 —— 这一行是最早的
+   * 安全点，也是最晚的必要点。
+   *
+   * ## 什么都没改就返回空，不造空 commit
+   *
+   * 「红方这一轮什么都没写」是人需要知道的事，而闸门本来就不放行一个什么都没产出的
+   * 阶段。造一个空 commit 会把这件事伪装成有产出，然后闸门放行 —— 那是最坏的一种谎。
+   */
+  private producedBy(
+    changeId: string,
+    phase: string,
+    round: number,
+    reported: readonly string[],
+  ): readonly string[] {
+    if (phase !== "Build") return reported;
+    const cwd = this.options.workspaceFor(changeId);
+    if (cwd === null) return reported;
+    const sha = this.options.repo.commitAll(
+      cwd, `StagePass ${changeId} ${phase} 第 ${round} 轮`);
+    return sha === null ? [] : [sha];
   }
 }

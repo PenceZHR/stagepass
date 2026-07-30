@@ -15,6 +15,7 @@ import {
 import { BLUE, RED } from "../domain/round";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { assessorOf } from "../work/rubric-round";
+import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
@@ -148,6 +149,11 @@ export interface PanelOptions {
   /** 同理：归档那一层也要能在不碰 Codex 的情况下证明。 */
   readonly archive?: ArchiveOps;
   /**
+   * git。同理，而且这一格更要紧：真的那一套会在项目仓库里 `add -A` + `commit`，
+   * 测试里没换掉就等于每跑一次测试就提交一次工作区。
+   */
+  readonly repo?: RepoOps;
+  /**
    * 一轮最多等多久。默认 30 分钟。
    *
    * 不只是给测试用的旋钮：一轮对抗真的会停在审批上等人（PRD §6.6），而
@@ -234,9 +240,12 @@ export class PanelSessions {
   private readonly corpses = new Map<string, Uint8Array[]>();
   /** 归档那一层。测试注入假的，生产用真的 —— 和 `start` 同一个路子。 */
   readonly archive: ArchiveOps;
+  /** git 那一层。同一个路子，理由见 `PanelOptions.repo`。 */
+  readonly repo: RepoOps;
 
   constructor(private readonly options: PanelOptions) {
     this.archive = options.archive ?? createArchiveOps();
+    this.repo = options.repo ?? createRepoOps();
   }
 
   private static key(changeId: string, phase: Phase): string {
@@ -499,7 +508,11 @@ async function runRound(input: {
   phase: Phase;
   sessions: PanelSessions;
   options: PanelOptions;
-}): Promise<{ ran: boolean; phase: Phase; reason?: string; outcome?: unknown }> {
+}): Promise<{
+  ran: boolean; phase: Phase; reason?: string; outcome?: unknown;
+  /** 树脏时是哪几个文件。人得知道从哪下手。 */
+  dirty?: readonly string[];
+}> {
   const { changeId, phase, sessions, options } = input;
   const database = options.database;
 
@@ -548,6 +561,26 @@ async function runRound(input: {
   if (sessions.workspaceFor(changeId) === null) {
     return { ran: false, phase, reason: "project_has_no_path" };
   }
+  /*
+   * **Build 要在干净的工作树上跑。**
+   *
+   * Build 一轮的产出是一个 commit（用户 2026-07-30），而 StagePass 提交的是「工作树里
+   * 所有的改动」—— 它分不出哪一行是红方写的、哪一行是人自己写了一半的。树脏就跑，
+   * 这一次 commit 会**把人没提交的活儿一起卷进去**，而那是不该替他做的事。
+   *
+   * 干净之后，「这一轮改了什么」才有唯一定义：commit 边界严格等于轮次边界。
+   *
+   * **只有 Build 查这个**：设计阶段的产出是一份文档、一个路径就说全了，人手里有没有
+   * 没提交的东西和写文档无关，拦它只会让人没法干活。
+   *
+   * 把文件列出来，因为「树脏了」这句话本身没法让人动手 —— 他得知道是哪几个。
+   */
+  if (phase === "Build") {
+    const dirty = sessions.repo.dirtyPaths(sessions.workspaceFor(changeId)!);
+    if (dirty.length > 0) {
+      return { ran: false, phase, reason: "workspace_dirty", dirty };
+    }
+  }
 
   const lookup = createSubAgentLookup();
   const loop = new TurnLoop({
@@ -564,6 +597,8 @@ async function runRound(input: {
       changes: new ChangeStore(database),
       bindings: new BindingStore(database),
       evidence: new EvidenceStore(database),
+      repo: sessions.repo,
+      workspaceFor: (each) => sessions.workspaceFor(each),
       readRole: (parentThreadId, agentPath) =>
         readRoleTranscript({ lookup, parentThreadId, agentPath }),
       taskFor: (each) => MINIMAL_PHASE_INSTRUCTIONS[each as Phase],
@@ -853,6 +888,24 @@ export async function handle(
     const root = sessions.workspaceFor(changeId);
     if (root === null) {
       json(response, { path: wanted, readable: false, reason: "project_has_no_path" });
+      return;
+    }
+
+    /*
+     * 产出是一个 commit（Build 走这条，见 `work/repo.ts`）。
+     *
+     * 判据是**这一格长得像不像 sha**，而不是「这是不是 Build 阶段」：一个阶段产出
+     * 什么形态是那一轮的事实，不该由读的人按阶段去猜 —— 猜错的那一天，Build 的
+     * commit 会被当成路径去磁盘上找，回来一句「这份产出不见了」。
+     *
+     * 上面那道「必须在 artifactIds 里」的闸照旧管着这一条：一个不是这个阶段报出来的
+     * sha，走不到这里。
+     */
+    if (looksLikeSha(wanted)) {
+      const shown = sessions.repo.show(root, wanted);
+      json(response, shown === null
+        ? { path: wanted, readable: false, reason: "gone", kind: "commit" }
+        : { path: wanted, readable: true, kind: "commit", bytes: shown.length, text: shown });
       return;
     }
 

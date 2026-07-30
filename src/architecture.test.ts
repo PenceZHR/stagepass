@@ -74,6 +74,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/rubric-defaults.ts": 5,
   "work/rubric-round.ts": 5,
   "work/round-turn-runner.ts": 5,
+  // git。和 `codex/archive.ts` 同一个形状（包一个外部命令、整层可注入），所以同一层。
+  // 它不 import 我们自己的任何东西，所以层数只影响「谁可以用它」——2 让 L2 起都能用。
+  "work/repo.ts": 2,
   "store/rubric-store.ts": 5,
 
   // The panel is not a new layer, but its two halves sit at different ones.
