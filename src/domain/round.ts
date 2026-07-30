@@ -224,8 +224,13 @@ export function judgePrompt(input: RoundInstructions): string {
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
     "",
-    `派生两个子 Agent。这两个路径是它们的**身份**（agent path），不是工作目录 ——`,
-    `必须精确设成 "${RED}" 和 "${BLUE}"，设错了这一轮的产出就找不回来。`,
+    "派生两个子 Agent。**用原生的 `spawn_agent` 工具，`task_name` 分别设成"
+    + ` \`${RED.replace("/root/", "")}\` 和 \`${BLUE.replace("/root/", "")}\`** ——`,
+    `它们的身份路径会因此成为 "${RED}" 和 "${BLUE}"，后续追加任务用 \`followup_task\``,
+    "（`target` 填那个身份路径）。",
+    "",
+    "**不要用 `exec` 里的 `multi_agent_v1__spawn_agent`** —— 那条路没有 `task_name`，",
+    "派出去的子 Agent 没有身份路径，这一轮的产出就找不回来，整轮作废。",
     "",
     "**一个跑完再派下一个，不要并行。** 反方要拿到正方的产出才能开始审 ——",
     "并行的话它会对着空气写意见，而那份意见没有任何价值。",

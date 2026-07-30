@@ -110,9 +110,20 @@ describe("L4 · 裁判必须先跑完正方再派反方", () => {
    * 裁判把 `/root/red` 当成了「工作路径标识」（它自己的原话）。StagePass 于是
    * 找不到它们，大声失败（这是对的），但一轮白烧。
    */
-  it("**说明白：那两个路径是子 Agent 的身份，不是工作目录**", () => {
+  it("**点名那个工具和那个参数** —— 另一个入口设不上 task_name", () => {
+    /*
+     * 2026-07-30 实测出来的真相：有两个派生入口，只有一个设得上 agent_path。
+     *
+     *   原生 spawn_agent({task_name:"red"})          -> agent_path = /root/red  ✓
+     *   exec 里的 multi_agent_v1__spawn_agent({...})  -> agent_path 是空的       ✗
+     *
+     * 提示词原来只说「路径必须精确是 /root/red」，裁判自己去 ALL_TOOLS 里找，
+     * 找到了后者，于是两轮 Review 白烧。说清楚工具名和参数名，别让它猜。
+     */
     const prompt = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
-    assert.match(prompt, /身份|不是.*目录/, "没说清那是身份，裁判会当成工作目录");
+    assert.match(prompt, /spawn_agent/, "没点名工具");
+    assert.match(prompt, /task_name/, "没点名那个参数 —— 换个入口就设不上");
+    assert.match(prompt, /multi_agent_v1/, "没说清哪条路是错的");
   });
 });
 
