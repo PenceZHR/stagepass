@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
+import { realpathSync } from "node:fs";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
@@ -64,6 +65,8 @@ function advanceTo(changes: ChangeStore, target: Phase): void {
 
 interface Fake {
   started: { changeId: string; phase: string; argv: string[] }[];
+  /** 每次启动用的 cwd。**Codex 跑在哪个仓库，靠它验。** */
+  startedCwd: string[];
   written: Uint8Array[];
   resized: { cols: number; rows: number }[];
   emit(bytes: Uint8Array): void;
@@ -87,22 +90,28 @@ async function withPanel(
   // 带上一个 project：rubric 有项目级默认，所以它要知道自己属于谁。
   // 不能建完再 UPDATE —— ck_changes_ledger 会拒绝任何没有配套账本行的更新，
   // 而那条触发器正是这么设计的。
-  new ProjectStore(database).ensure(PROJECT, "p");
+  // **项目必须有路径**：Codex 跑在项目的目录里（2026-07-30 起），没有路径
+  // launchInto 会抛 ProjectPathMissingError。用 /tmp，测试里的 pty 是假的，不会真跑。
+  new ProjectStore(database).ensure(PROJECT, "p", "/tmp");
   new ChangeStore(database).create(CHANGE, { projectId: PROJECT });
 
   const started: Fake["started"] = [];
+  const startedCwd: string[] = [];
   const written: Uint8Array[] = [];
   const resized: Fake["resized"] = [];
   const emitters: ((bytes: Uint8Array) => void)[] = [];
   const pty: Fake = {
-    started, written, resized,
+    started, startedCwd, written, resized,
     emit: (bytes) => { for (const listener of emitters) listener(bytes); },
   };
 
   const start = ((input: {
-    changeId: string; phase: string; argv: string[];
+    changeId: string; phase: string; argv: string[]; options: { cwd: string };
   }): PtySession => {
-    started.push({ ...input });
+    started.push({
+      changeId: input.changeId, phase: input.phase, argv: input.argv,
+    });
+    startedCwd.push(input.options.cwd);
     let alive = true;
     return {
       changeId: input.changeId,
@@ -655,8 +664,9 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
 describe("panel · 能从界面上开新活", () => {
   it("建一个 Project，并且一建出来就带上出厂标准", async () => {
     await withPanel(async ({ open, database }) => {
+      // 路径必填 —— 一个 Project 就是一个仓库，Codex 跑在这个目录里。
       const created = await (await open(
-        `/api/project?name=${encodeURIComponent("新项目")}`, { method: "POST" },
+        `/api/project?name=${encodeURIComponent("新项目")}&path=/tmp`, { method: "POST" },
       )).json() as { created: boolean; id: string; name: string };
 
       assert.equal(created.created, true);
@@ -788,6 +798,89 @@ describe("panel · 「没有这个 Change」不许降级成「没有 rubric」",
       assert.equal((await open("/api/rubric?change=CHG-不存在&phase=Spec")).status, 404);
       // 真的存在的照常给。
       assert.equal((await open(`/api/rubric?change=${CHANGE}&phase=Spec`)).status, 200);
+    });
+  });
+});
+
+/**
+ * 一个 Project 就是一个仓库，Codex 跑在它的目录里。
+ *
+ * 用户 2026-07-30 发现的洞：在这之前 `projects` 只有 id 和 name，而 pty 的 cwd 是
+ * 服务启动时定死的一个值。于是新建一个项目、在它下面建 Change、按「跑这个阶段」——
+ * **Codex 跑在 stagepass 这个仓库里，用的还是 workspace-write，而且没有任何提示。**
+ */
+describe("panel · Codex 跑在项目的目录里", () => {
+  it("pty 起在项目的 path 上，不是服务启动时那个 cwd", async () => {
+    await withPanel(async ({ open, pty }) => {
+      // withPanel 把项目的 path 设成 /tmp，而 session.cwd 是 "/tmp" 之外的值时
+      // 这条才有意义 —— 所以断言的是「用了项目那个」。
+      await open(`/pty/${CHANGE}/PRD`);
+      assert.equal(pty.started.length, 1);
+      assert.equal(pty.startedCwd[0], "/tmp");
+    });
+  });
+
+  it("**项目没写路径 —— 不许跑，而且在排队之前就拒**", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求有了，但项目没路径");
+      // 把路径抹掉，模拟旧库里那些没有 path 的项目。
+      database.prepare("UPDATE projects SET path = NULL WHERE id = ?").run(PROJECT);
+
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, false);
+      assert.match(ran.reason ?? "", /project_has_no_path/);
+      assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
+
+      // 状态机也不许动 —— 前置条件不满足不是「这一轮失败了」。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
+    });
+  });
+
+  it("拿不到路径时连终端都不起 —— 不回落到某个默认目录", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      database.prepare("UPDATE projects SET path = NULL WHERE id = ?").run(PROJECT);
+      // 回落会让「跑在正确的仓库」和「跑在恰好启动时那个仓库」看起来一模一样。
+      assert.equal((await open(`/pty/${CHANGE}/PRD`)).status, 500);
+      assert.equal(pty.started.length, 0);
+    });
+  });
+});
+
+describe("panel · 新建 Project 必须给路径", () => {
+  it("路径必填", async () => {
+    await withPanel(async ({ open }) => {
+      assert.equal(
+        (await open(`/api/project?name=${encodeURIComponent("新项目")}`,
+          { method: "POST" })).status, 400);
+    });
+  });
+
+  it("相对路径 —— 拒绝（相对谁？相对服务端的 cwd 就又回到那个洞了）", async () => {
+    await withPanel(async ({ open }) => {
+      assert.equal(
+        (await open("/api/project?name=x&path=some/where", { method: "POST" })).status, 400);
+    });
+  });
+
+  it("不存在的路径 —— 拒绝", async () => {
+    await withPanel(async ({ open }) => {
+      assert.equal(
+        (await open("/api/project?name=x&path=/nope/nowhere", { method: "POST" })).status, 400);
+    });
+  });
+
+  it("给了一个真目录 —— 建成，并且带上出厂标准", async () => {
+    await withPanel(async ({ open, database }) => {
+      const created = await (await open(
+        `/api/project?name=${encodeURIComponent("新项目")}&path=/tmp`, { method: "POST" },
+      )).json() as { created: boolean; id: string; path: string };
+      assert.equal(created.created, true);
+      // realpath：macOS 上 /tmp 是 /private/tmp 的软链，而 Codex 按真实路径记信任。
+      assert.equal(created.path, realpathSync("/tmp"));
+      assert.ok(new RubricStore(database).current({
+        projectId: created.id, changeId: null, phase: "PRD", role: "producer",
+      }) !== null);
     });
   });
 });

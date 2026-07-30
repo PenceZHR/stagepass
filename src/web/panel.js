@@ -392,7 +392,12 @@ function drawWorkspace(panel) {
     sub.textContent = project.id;
     const count = document.createElement("span");
     count.className = "muted";
-    count.textContent = `${project.changes} changes`;
+    // **路径要看得见。** 一个项目最要紧的事实就是「Codex 会在哪跑」；不显示它，
+    // 「跑在正确的仓库」和「跑在恰好启动时那个仓库」在界面上一模一样。
+    count.textContent = project.path === null
+      ? `${project.changes} changes · 没有路径，跑不了`
+      : `${project.changes} changes · ${project.path}`;
+    if (project.path === null) count.classList.add("bad");
     row.append(name, sub, count);
 
     // Clicking a project toggles the workspace open and shut. Picking a
@@ -874,7 +879,21 @@ document.getElementById("expand").addEventListener("click", () => { setCollapsed
 document.getElementById("new-project").addEventListener("click", () => {
   const name = prompt("新 Project 叫什么？");
   if (name === null || name.trim() === "") return;
-  void fetch(`/api/project?name=${encodeURIComponent(name.trim())}`, { method: "POST" })
+
+  /*
+   * **必须问路径。** 一个 Project 就是一个仓库，Codex 就跑在这个目录里。
+   *
+   * 在这之前不问，于是新建的项目「不知道在哪」—— 而 Codex 照样跑在服务启动时那个
+   * cwd 里（也就是 stagepass 自己），用的还是 workspace-write。用户 2026-07-30 撞上
+   * 的就是这个。
+   */
+  const path = prompt(
+    `「${name.trim()}」的代码在哪？（绝对路径，Codex 会在这个目录里跑）`,
+  );
+  if (path === null || path.trim() === "") return;
+
+  void fetch(`/api/project?name=${encodeURIComponent(name.trim())}`
+    + `&path=${encodeURIComponent(path.trim())}`, { method: "POST" })
     .then(async (response) => {
       if (!response.ok) throw new Error(await response.text());
       return response.json();

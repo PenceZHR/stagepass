@@ -193,7 +193,13 @@ body::after {
   font: 500 10px/1 ui-monospace, monospace; letter-spacing: .07em;
   color: rgba(255,255,255,.42); text-transform: uppercase;
 }
-.row .muted { color: rgba(255,255,255,.34); font-size: 11px; margin-top: 6px; display: block; }
+.row .muted {
+  color: rgba(255,255,255,.34); font-size: 11px; margin-top: 6px; display: block;
+  /* 路径可能很长；截断而不是把这一列撑宽 */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 没有路径的项目跑不了 —— 这不是普通的灰色说明，是一条要人处理的事。 */
+.row .muted.bad { color: var(--problem); }
 
 /* ── 第三列 ───────────────────────────────────────────── */
 .col.stage { position: relative; }

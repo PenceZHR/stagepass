@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
@@ -173,6 +173,19 @@ interface LiveSession {
   readonly scrollback: Uint8Array[];
 }
 
+/**
+ * 这个 Change 所属的项目没写路径，所以不知道该在哪跑 Codex。
+ *
+ * 是个具名错误，而不是回落到某个默认目录：回落会让「跑在正确的仓库」和「跑在恰好
+ * 启动时那个仓库」看起来一模一样，而那正是这条要挡的洞。
+ */
+export class ProjectPathMissingError extends Error {
+  constructor(readonly changeId: string) {
+    super(`change ${changeId} has no project path; nothing knows where to run Codex`);
+    this.name = "ProjectPathMissingError";
+  }
+}
+
 export class PanelSessions {
   private readonly live = new Map<string, LiveSession>();
 
@@ -180,6 +193,21 @@ export class PanelSessions {
 
   private static key(changeId: string, phase: Phase): string {
     return `${changeId} ${phase}`;
+  }
+
+  /**
+   * 这个 Change 该在哪个目录里跑，拿不到就是 null。
+   *
+   * Change -> Project -> path。三处任意一处缺失都返回 null，**不猜**。
+   */
+  workspaceFor(changeId: string): string | null {
+    try {
+      const projectId = new ChangeStore(this.options.database).read(changeId).projectId;
+      if (projectId === null) return null;
+      return new ProjectStore(this.options.database).read(projectId).path;
+    } catch {
+      return null; // 没有这个 Change，或者没有那个 Project
+    }
   }
 
   has(changeId: string, phase: Phase): boolean {
@@ -220,8 +248,24 @@ export class PanelSessions {
     const existing = this.live.get(key);
     if (existing && existing.session.alive) return existing;
 
+    /*
+     * **Codex 跑在这个 Change 所属项目的目录里，不是服务启动时那个 cwd。**
+     *
+     * 用户 2026-07-30 发现的洞：在这之前 cwd 是 `options.session.cwd` 一个定死的值，
+     * 于是无论你选了哪个项目，Codex 都跑在同一个仓库里 —— 新建一个项目，它却在改
+     * stagepass 本身，用的还是 workspace-write，而且没有任何提示。
+     *
+     * 拿不到路径就**不起进程**，不回落到那个 cwd：回落正是那个洞的形状 —— 它让
+     * 「跑在正确的仓库」和「跑在恰好启动时那个仓库」看起来一模一样。
+     */
+    const cwd = this.workspaceFor(changeId);
+    if (cwd === null) throw new ProjectPathMissingError(changeId);
+
     const start = this.options.start ?? startPtySession;
-    const session = start({ changeId, phase, argv, options: this.options.session });
+    const session = start({
+      changeId, phase, argv,
+      options: { ...this.options.session, cwd },
+    });
 
     const entry: LiveSession = { session, listeners: new Set(), scrollback: [] };
     let buffered = 0;
@@ -475,13 +519,43 @@ export async function handle(
     const name = (url.searchParams.get("name") ?? "").trim();
     if (name === "") { response.writeHead(400).end("name_required"); return; }
 
+    /*
+     * **路径必填，而且当场校验。**
+     *
+     * 一个 Project 就是一个仓库（用户 2026-07-30 拍板），Codex 就跑在这个目录里。
+     * 建一个没有路径的项目，等于建一个「不知道在哪」的项目 —— 那正是用户撞上的洞。
+     *
+     * 三条都查，因为错在这里发现比在 pty 里发现便宜得多：必须是绝对路径（相对路径
+     * 相对谁？服务端的 cwd 吗 —— 那就又回到那个洞了）、必须存在、必须是目录。
+     */
+    const rawPath = (url.searchParams.get("path") ?? "").trim();
+    if (rawPath === "") { response.writeHead(400).end("path_required"); return; }
+    if (!isAbsolute(rawPath)) { response.writeHead(400).end("path_must_be_absolute"); return; }
+    let path: string;
+    try {
+      // realpath：macOS 上 /var 是 /private/var 的软链，而 Codex 按真实路径记目录
+      // 信任（今天实测过）。存两个不同的字符串指同一个目录，只会埋下一个坑。
+      path = realpathSync(rawPath);
+      if (!statSync(path).isDirectory()) {
+        response.writeHead(400).end("path_is_not_a_directory");
+        return;
+      }
+    } catch {
+      response.writeHead(400).end("path_does_not_exist");
+      return;
+    }
+
     const projects = new ProjectStore(database);
     const id = mintId("PRJ", projects.list().map((entry) => entry.id));
-    const created = projects.ensure(id, name);
+    const created = projects.ensure(id, name, path);
     // 新项目一建出来就带上出厂标准 —— 全部不阻断，见 domain/rubric-defaults.ts。
     // 不装的话，这个项目的每个阶段都是空 rubric，人得逐个手写才能开始用。
     new RubricStore(database).installDefaults(created.id);
-    json(response, { created: true, id: created.id, name: created.name });
+    json(response, {
+      created: true, id: created.id, name: created.name,
+      // 把路径回给界面：人得看得见「它建在哪」—— 那正是用户撞上的洞。
+      path: created.path,
+    });
     return;
   }
 
@@ -995,6 +1069,17 @@ export async function handle(
      */
     if (brief === null) {
       json(response, { ran: false, reason: "change_has_no_brief", phase });
+      return;
+    }
+    /*
+     * 项目没写路径也不跑。
+     *
+     * 和上面那条同一个形状、同一个理由：**前置条件不满足不该把 Change 打成 blocked**。
+     * `PanelSessions.launchInto` 里也会拒（防御在两层），但那一层抛出来会被 TurnLoop
+     * 当成「这一轮跑失败了」。
+     */
+    if (sessions.workspaceFor(changeId) === null) {
+      json(response, { ran: false, reason: "project_has_no_path", phase });
       return;
     }
 

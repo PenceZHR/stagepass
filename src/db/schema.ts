@@ -41,6 +41,16 @@ export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
+  -- 这个项目的代码在哪。**Codex 就跑在这个目录里。**
+  --
+  -- 2026-07-30 用户发现的洞：在这之前 projects 只有 id 和 name，而 pty 的 cwd 是
+  -- 服务启动时定死的一个值（scripts/panel.ts 里的 process.cwd()）。于是你新建一个
+  -- 项目、在它下面建 Change、按「跑这个阶段」—— Codex 跑在 stagepass 这个仓库里，
+  -- 用的还是 workspace-write。**它会读写本仓库，同时声称在给你那个项目干活。**
+  --
+  -- 可空是为了不弄坏已有的库；但没有它不许跑（panel-server 在排队之前就拒），
+  -- 和 change_briefs 同一个 fail-closed 形状。空字符串不算路径，所以有 CHECK。
+  path        TEXT     NULL CHECK (path IS NULL OR length(trim(path)) > 0),
   created_at  TEXT NOT NULL
 );
 
@@ -430,3 +440,34 @@ CREATE TABLE IF NOT EXISTS rubric_assessments (
   PRIMARY KEY (change_id, phase, role, round, criterion_key)
 );
 `;
+
+/**
+ * 给已经存在的库补上后来才加的列。
+ *
+ * ## 为什么 SCHEMA_SQL 一个人不够
+ *
+ * 它整篇是 `CREATE TABLE IF NOT EXISTS`。新表没问题 —— 不存在就建。但**已经存在的
+ * 表不会因此多出一列**：那条语句直接跳过，然后 `SELECT id, name, path` 抛
+ * 「no such column: path」，一个旧库就这么打不开了。
+ *
+ * 2026-07-30 我自己撞上这个，当时手跑了一次 ALTER 就过去了 —— 而真实的旧库没人替它
+ * 跑。所以补在这里。
+ *
+ * SQLite 没有 `ADD COLUMN IF NOT EXISTS`，所以先问 `table_info` 再决定加不加。
+ * 这不是一套迁移框架，也不假装是：**只处理「加一个可空列」这一种**。真需要改列类型
+ * 或搬数据的那天，请正经写迁移，不要把它塞进这里。
+ */
+export function migrate(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+}): void {
+  const added: [table: string, column: string, type: string][] = [
+    ["projects", "path", "TEXT"],
+  ];
+  for (const [table, column, type] of added) {
+    const columns = database.pragma(`table_info(${table})`) as { name: string }[];
+    if (columns.length === 0) continue;               // 表还不存在，SCHEMA_SQL 会建
+    if (columns.some((entry) => entry.name === column)) continue;
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}

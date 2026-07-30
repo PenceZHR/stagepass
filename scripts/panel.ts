@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
-import { SCHEMA_SQL } from "../src/db/schema";
+import { SCHEMA_SQL, migrate } from "../src/db/schema";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { RubricStore } from "../src/store/rubric-store";
@@ -36,12 +36,23 @@ const database = new Database(dbPath);
 database.pragma("journal_mode = WAL");
 database.pragma("foreign_keys = ON");
 database.exec(SCHEMA_SQL);
+// 旧库补列。SCHEMA_SQL 只会建新表，不会给已存在的表加列 —— 见 migrate 的注释。
+migrate(database);
 
 // One project for the workspace Codex runs in, so the first column has
 // something real to show. `ensure` is idempotent, so restarting is safe.
 const projectId = argument("project") ?? "PRJ-001";
+/*
+ * 默认项目**必须带上路径**，因为 Codex 就跑在项目的目录里（2026-07-30 起）。
+ *
+ * 不给的话就是这个进程的 cwd —— 也就是过去那个隐式行为，只是现在它被明确写进库里，
+ * 而不是藏在服务端一个定死的 cwd 里。区别是：现在你在界面上能看见它跑在哪，别的
+ * 项目也不会被悄悄指到这儿来。
+ */
 const project = new ProjectStore(database).ensure(
-  projectId, argument("project-name") ?? basename(process.cwd()),
+  projectId,
+  argument("project-name") ?? basename(process.cwd()),
+  argument("project-path") ?? process.cwd(),
 );
 
 // 出厂标准：只补空缺，人改过的一个字都不碰，所以每次启动都调是安全的。
