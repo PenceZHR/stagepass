@@ -15,6 +15,7 @@ import {
 import { BLUE, RED } from "../domain/round";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { assessorOf } from "../work/rubric-round";
+import { createTrustOps, type TrustOps } from "../codex/trust";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
@@ -153,6 +154,8 @@ export interface PanelOptions {
    * 测试里没换掉就等于每跑一次测试就提交一次工作区。
    */
   readonly repo?: RepoOps;
+  /** Codex 的目录信任。同一个路子 —— 真的那一套会去读用户的 `~/.codex/config.toml`。 */
+  readonly trust?: TrustOps;
   /**
    * 一轮最多等多久。默认 30 分钟。
    *
@@ -242,10 +245,13 @@ export class PanelSessions {
   readonly archive: ArchiveOps;
   /** git 那一层。同一个路子，理由见 `PanelOptions.repo`。 */
   readonly repo: RepoOps;
+  /** 目录信任那一层。同上。 */
+  readonly trust: TrustOps;
 
   constructor(private readonly options: PanelOptions) {
     this.archive = options.archive ?? createArchiveOps();
     this.repo = options.repo ?? createRepoOps();
+    this.trust = options.trust ?? createTrustOps();
   }
 
   private static key(changeId: string, phase: Phase): string {
@@ -512,6 +518,8 @@ async function runRound(input: {
   ran: boolean; phase: Phase; reason?: string; outcome?: unknown;
   /** 树脏时是哪几个文件。人得知道从哪下手。 */
   dirty?: readonly string[];
+  /** 没被信任的那个目录。人要拿它去手动答一次 Codex 的信任提问。 */
+  workspace?: string;
 }> {
   const { changeId, phase, sessions, options } = input;
   const database = options.database;
@@ -560,6 +568,27 @@ async function runRound(input: {
    */
   if (sessions.workspaceFor(changeId) === null) {
     return { ran: false, phase, reason: "project_has_no_path" };
+  }
+  /*
+   * **Codex 没信任过这个目录就别派。**
+   *
+   * 2026-07-30 实测：派下去之后 30 分钟拿到 `no new Codex session appeared`。真实
+   * 情况是 Codex 起来了、停在「Do you trust the contents of this directory?」上等人
+   * 按，而这一侧看得见的只有「没有新线程」——**界面上它和「在跑」一模一样**，正是
+   * 这个产品从头到尾在防的那一类。而且每加一个新项目都会撞一次。
+   *
+   * **只有明确的 `false` 才拦。** 查不出来（配置读不到、Codex 换了格式）就照旧往下
+   * 走 —— 和归档那一层同一条规矩：不因为读不到别人的东西就不干活。
+   *
+   * **不替人答那个提问。** 答一次就往用户的 `~/.codex/config.toml` 里写一条信任，
+   * 而信任是人对一个目录的授权，不是 StagePass 的决定（我 2026-07-30 越过这条线一次，
+   * 后来要清理）。所以这里只说清楚，让他自己去答。
+   */
+  if (sessions.trust.isTrusted(sessions.workspaceFor(changeId)!) === false) {
+    return {
+      ran: false, phase, reason: "workspace_not_trusted",
+      workspace: sessions.workspaceFor(changeId)!,
+    };
   }
   /*
    * **Build 要在干净的工作树上跑。**

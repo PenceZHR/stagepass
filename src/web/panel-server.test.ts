@@ -95,7 +95,11 @@ async function withPanel(
     open: (path: string, init?: RequestInit) => Promise<Response>;
   }) => Promise<void>,
   /** 额外注入的依赖。归档那一层要能在不碰 Codex 的情况下验。 */
-  extra: { archive?: PanelOptions["archive"]; repo?: PanelOptions["repo"] } = {},
+  extra: {
+    archive?: PanelOptions["archive"];
+    repo?: PanelOptions["repo"];
+    trust?: PanelOptions["trust"];
+  } = {},
 ): Promise<void> {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
@@ -168,6 +172,14 @@ async function withPanel(
       commitAll: () => { throw new Error("测试里不许真的动 git"); },
       show: () => { throw new Error("测试里不许真的动 git"); },
     },
+    /*
+     * **默认「查不出来」。**
+     *
+     * 不注入的话读的是用户真的 `~/.codex/config.toml` —— 测试跑一遍就摸一次他的配置，
+     * 而且结果会随那个文件变（`/tmp` 在不在名单里决定测试红不红）。`null` 等于退回
+     * 加这一层之前的行为，别的测试原来验的东西一个字都不变。
+     */
+    trust: extra.trust ?? { isTrusted: () => null },
   });
   await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -1260,6 +1272,44 @@ describe("panel · 接受风险也走选择器", () => {
  * 落不下去的有没有报回来。分流规则本身在 `domain/gap.ts` / `domain/question.ts`
  * 离线证过，不在这儿重证一遍。
  */
+describe("panel · Codex 没信任过这个目录就别派", () => {
+  /**
+   * 2026-07-30 实测：给一个 Codex 没信任过的工作区派一轮，30 分钟之后拿到
+   * `codex_unavailable: no new Codex session appeared`。真实情况是它起来了、停在
+   * 「Do you trust the contents of this directory?」上等人按 —— 而这一侧看得见的
+   * 只有「没有新线程」。**界面上它和「在跑」一模一样。**
+   *
+   * 而且不是边角情况：**每加一个新项目都会撞一次**。
+   */
+  it("**明确没信任 —— 不派，并且说清怎么办**", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as
+        { ran: boolean; reason?: string; workspace?: string };
+
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "workspace_not_trusted");
+      assert.equal(ran.workspace, "/tmp", "没说是哪个目录，人无从下手");
+      assert.equal(pty.started.length, 0, "起了一个注定停在提问上的 Codex");
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0, "拦在排队之前，不是跑起来再失败");
+    }, { trust: { isTrusted: () => false } });
+  });
+
+  it("**查不出来 —— 照旧往下走**，不是拦住", async () => {
+    // 读不到别人的配置就拦，等于一个把 Codex 配置换了地方的人从此什么都跑不了。
+    // 和归档那一层同一条规矩：查不到就退回加这一层之前的行为。
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 120); });
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 1, "查不出来却把派发拦住了");
+    }, { trust: { isTrusted: () => null } });
+  });
+});
+
 describe("panel · Build 要在干净的工作树上跑", () => {
   /**
    * Build 的产出是 commit，而 StagePass 提交的是「工作树里所有的改动」—— 它分不出

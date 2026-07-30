@@ -59,6 +59,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/transport.ts": 2,
   "codex/invocation.ts": 2,
   "codex/archive.ts": 2,
+  // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。
+  "codex/trust.ts": 2,
   "codex/rollout.ts": 2,
   "codex/tui-transport.ts": 2,
   "codex/turn-runner.ts": 2,

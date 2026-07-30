@@ -273,6 +273,29 @@ function runRefusal(result) {
   if (result.reason === "project_has_no_path") {
     return "这个项目没有路径，Codex 不知道该在哪跑。";
   }
+  if (result.reason === "workspace_not_trusted") {
+    /*
+     * 这一条必须给出**具体怎么办**，因为出路不在这个界面上：Codex 的目录信任只有
+     * 人自己答得了（替他答就是往他的 ~/.codex/config.toml 里写东西）。
+     *
+     * 不拦的后果实测过：Codex 起来、停在那个提问上、没人按，这一侧等满 30 分钟拿到
+     * 一句「TUI 好像没起来」。
+     */
+    return `Codex 还没信任过 ${result.workspace}。派下去它会停在「Do you trust the`
+      + " contents of this directory?」上等人按，而这一屏看不见它 —— 所以先拦住了。"
+      + "出路：在那个目录里手动跑一次 codex，答 Yes，然后回来再按。";
+  }
+  if (result.reason === "workspace_dirty") {
+    /*
+     * Build 的产出是一个 commit，而 StagePass 提交的是工作树里所有的改动 —— 它分不出
+     * 哪一行是红方写的、哪一行是你自己写了一半的。所以把文件列出来：「树脏了」这句话
+     * 本身没法让人动手。
+     */
+    const files = (result.dirty ?? []).join("、");
+    return `${result.phase} 要在干净的工作树上跑，现在有没提交的改动：${files}。`
+      + "这一轮的产出会记成一个 commit，而 StagePass 分不出哪一行是模型写的、"
+      + "哪一行是你自己写了一半的 —— 先提交或撤掉它们。";
+  }
   return `没跑起来：${result.reason}`;
 }
 
