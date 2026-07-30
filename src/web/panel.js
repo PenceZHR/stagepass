@@ -225,6 +225,77 @@ async function ask() {
  * (1 - 2×0.045) / 2 = 0.455 倍环宽，节点因此正好骑在轨道上。**改一个就要改另一个**，
  * 否则节点会浮在轨道内侧或外侧。
  */
+/**
+ * 录入需求：模型读仓库提问题 -> 人在选择器里答。
+ *
+ * **和 approve / waive 同一条路**：网页只组题、把题送进那个阶段的终端，答在 Codex
+ * 自己的选择器里发生。网页不代答，也没有「直接填需求」的输入框。
+ *
+ * 在这之前这一步整个不存在，于是 PRD 阶段的红方收到的是一句写死的通用指令，
+ * 「this change」是哪个 change 它从来不知道 —— 那份 PRD 只能是编的。
+ */
+async function recordBrief() {
+  briefButton.disabled = true;
+  briefButton.textContent = "模型在读仓库…";
+  const at = phases.find((entry) => entry.current);
+  closeSheet();
+  if (at) void enter(at.phase);
+  try {
+    const result = await (await fetch(
+      `/api/brief?change=${encodeURIComponent(changeId)}`, { method: "POST" },
+    )).json();
+    if (!result.asked) {
+      say(result.reason === "no_items"
+        ? "模型一条问题都没提出来。这不算「不需要问」—— 再试一次，或看终端里它说了什么。"
+        : `没问成：${result.reason}${result.detail ? `（${result.detail}）` : ""}`);
+    } else if (!result.answered) {
+      say("问题已经在终端里了，等你在 Codex 的选择器里答。");
+    } else if (!result.recorded) {
+      say("没记下任何需求 —— 你按了 Esc，或者有必答的没填。");
+    } else {
+      say("需求记下了。现在可以跑这个阶段 —— 红方会拿着它去写，而不是自己猜。");
+    }
+  } finally {
+    briefButton.textContent = "说清楚我要什么";
+    await load();
+  }
+}
+
+/**
+ * 接受一条已知风险。
+ *
+ * 同样走选择器：选哪一条、写什么理由都在 Codex 里。这里没有、也不许有一个「直接
+ * 接受」的按钮 —— 那就成了网页上的裁决入口（PRD §1）。
+ */
+async function waive() {
+  waiveButton.disabled = true;
+  waiveButton.textContent = "已送进终端…";
+  const at = phases.find((entry) => entry.current);
+  closeSheet();
+  if (at) void enter(at.phase);
+  try {
+    const result = await (await fetch(
+      `/api/waive?change=${encodeURIComponent(changeId)}`, { method: "POST" },
+    )).json();
+    if (!result.asked) {
+      say(result.reason === "nothing_waivable"
+        ? "这个阶段没有可以接受的风险（只有 P1 的问题可以，P0 不行）。"
+        : `没问成：${result.reason}`);
+    } else if (!result.answered) {
+      say("问题已经在终端里了，等你在 Codex 的选择器里选。");
+    } else if (result.reason === "gate_moved") {
+      say("闸门在你想的这段时间里动了 —— 这个决定作废，重新看一遍再定。");
+    } else if (!result.waived) {
+      say("没有接受任何风险 —— 你按了 Esc，或者名单在这期间变了。");
+    } else {
+      say(`已接受 ${result.gapId}。它还在，只是不再挡闸门，交付说明里会列出来。`);
+    }
+  } finally {
+    waiveButton.textContent = "接受一条风险";
+    await load();
+  }
+}
+
 function placeNodes() {
   const radius = wrap.clientWidth * 0.455;
   wrap.querySelectorAll(".stage-node").forEach((node) => {

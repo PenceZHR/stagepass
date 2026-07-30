@@ -309,3 +309,49 @@ function withoutComments(text: string): string {
     .replaceAll(/\/\*[\s\S]*?\*\//g, "")
     .replaceAll(/^\s*\/\/.*$/gm, "");
 }
+
+describe("standing · 每个按钮的处理器都指向一个真的函数", () => {
+  /**
+   * 2026-07-29 抓到过两个死按钮：`recordBrief` 和 `waive`。
+   *
+   * 两次都是同一个原因：用脚本改文件时 `str.replace` 的锚点没匹配上，**它不报错，
+   * 原样返回**。于是监听器插进去了，函数没插进去。表现是「按钮看着能点，按下去
+   * 什么都不发生」—— 而 `pnpm check` 全绿，`node --check` 也全绿，因为
+   * `ReferenceError` 只在**点下去的那一刻**才发生。
+   *
+   * 这就是老树那种病的活体样本：有标签、有渲染、永远执行不了（PRD §2.3）。
+   * 只是这次它长在前端，而前端没有类型检查兜着。
+   *
+   * 这条护栏是机械的：panel.js 里每个 `addEventListener(..., () => fn())` 里的
+   * `fn`，必须在同一个文件里有定义。
+   */
+  const panel = readFileSync(join(SRC, "web", "panel.js"), "utf-8");
+
+  it("panel.js 里没有指向未定义函数的处理器", () => {
+    const defined = new Set<string>();
+    for (const match of panel.matchAll(/(?:async\s+)?function\s+(\w+)\s*\(/g)) {
+      defined.add(match[1]!);
+    }
+    // 箭头函数常量也算：`const foo = (x) => …`
+    for (const match of panel.matchAll(/const\s+(\w+)\s*=\s*(?:async\s*)?\(/g)) {
+      defined.add(match[1]!);
+    }
+
+    const dead: string[] = [];
+    for (const match of panel.matchAll(
+      /addEventListener\(\s*"\w+"\s*,\s*\([^)]*\)\s*=>\s*\{?\s*(?:void\s+)?(\w+)\(/g,
+    )) {
+      const name = match[1]!;
+      if (!defined.has(name)) dead.push(name);
+    }
+    assert.deepEqual(dead, [], "这些处理器点下去会抛 ReferenceError");
+  });
+
+  it("这条护栏不是空转的 —— 它确实找到了处理器", () => {
+    // 正则一旦被改坏，上面那条会静默变绿。这里保证它至少匹配到了几个。
+    const found = [...panel.matchAll(
+      /addEventListener\(\s*"\w+"\s*,\s*\([^)]*\)\s*=>\s*\{?\s*(?:void\s+)?(\w+)\(/g,
+    )];
+    assert.ok(found.length >= 8, `只匹配到 ${found.length} 个处理器，正则可能坏了`);
+  });
+});
