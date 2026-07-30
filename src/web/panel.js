@@ -1076,7 +1076,16 @@ function drawProduced(entry) {
 
     const path = document.createElement("p");
     path.className = "artifact-path";
-    path.textContent = artifact;
+    /*
+     * Build 的产出是一个 commit（用户 2026-07-30），所以这一格会是一串 sha。
+     * **给它一个词自报家门** —— 一串裸的十六进制和一个古怪的文件名长得一样，
+     * 而人得知道下面那段是 diff 不是文件正文。
+     *
+     * 判据和服务端同一条（`looksLikeSha`）。这里是显示用的一句话，不是判定：
+     * 真正决定读文件还是读 commit 的是服务端，界面认错了最多是标签不好看。
+     */
+    const isCommit = /^[0-9a-f]{7,40}$/.test(artifact);
+    path.textContent = isCommit ? `commit ${artifact}` : artifact;
     path.title = artifact;
 
     const body = document.createElement("pre");

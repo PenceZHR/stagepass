@@ -51,6 +51,25 @@ describe("repo · 干净还是脏", () => {
     assert.deepEqual(createRepoOps().dirtyPaths(cwd), ["scratch.md"]);
   });
 
+  it("**中文文件名要原样报出来** —— git 默认会把它转义成八进制", () => {
+    /*
+     * 2026-07-30 在真面板上撞到的：界面收到的是 `"\350\215\211\347\250\277.md"`。
+     * 列文件的**全部意义**就是让人知道是哪一个，而这串东西没人认得出来。
+     *
+     * 单元测试第一版漏掉了它，因为那一版用的是假 git 的返回值 —— 转义发生在真 git
+     * 那一侧。这条必须跑在真 git 上。
+     */
+    const cwd = repo();
+    writeFileSync(join(cwd, "草稿.md"), "我自己写了一半的东西\n");
+    assert.deepEqual(createRepoOps().dirtyPaths(cwd), ["草稿.md"]);
+  });
+
+  it("名字里有空格也不许被截断", () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, "my notes.md"), "x\n");
+    assert.deepEqual(createRepoOps().dirtyPaths(cwd), ["my notes.md"]);
+  });
+
   it("不是 git 仓库 —— 当成干净，不是当成脏", () => {
     // 反过来会让一个没用 git 的项目永远跑不了 Build。
     assert.deepEqual(

@@ -62,12 +62,22 @@ export function createRepoOps(options: {
   return {
     dirtyPaths(cwd) {
       try {
-        return run(cwd, ["status", "--porcelain"])
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line !== "")
-          // `XY 路径` —— 前两位是状态码。改名是 `R  旧 -> 新`，取整段就够人看懂。
-          .map((line) => line.slice(line.indexOf(" ") + 1).trim());
+        /*
+         * **`-z`，不是裸的 `--porcelain`。**
+         *
+         * 裸的那个会把非 ASCII 的文件名**转义成八进制并加上引号** —— 2026-07-30 在真
+         * 面板上撞到的样子是 `"\350\215\211\347\250\277.md"`。而列出这些文件的全部
+         * 意义就是让人知道是哪一个，那串东西没人认得出来。它还会对名字里的空格加引号。
+         *
+         * `-z` 用 NUL 分隔、路径原样不转义。代价是格式变了：每条记录是 `XY 路径`，
+         * 而改名会**多出一条**只有旧路径、没有状态码的记录 —— 对「哪些东西没提交」
+         * 这个问题来说，把新旧两个名字都列出来正好是人要看的。
+         */
+        return run(cwd, ["status", "--porcelain", "-z"])
+          .split("\0")
+          .filter((record) => record !== "")
+          .map((record) =>
+            record.length > 3 && record[2] === " " ? record.slice(3) : record);
       } catch {
         /*
          * 不是个 git 仓库，或者 git 不在。**当成「没有未提交的东西」往下走。**
