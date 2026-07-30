@@ -53,7 +53,13 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   Build: "Implement the approved plan. Change nothing outside the files the plan allows."
     + " Run what you changed and report the exact command and its output --"
     + " the reviewer cannot run anything, so unreported means unverified.",
-  Review: "Review the adopted code independently. Report every defect you find, by severity.",
+  // Review 的产出是一份**报告**，而它必须写清审的是哪个 commit —— 审 A 不等于审 B，
+  // 而下一轮、下一个阶段都要知道这份意见是对着哪一版说的。
+  // 缺陷本身另有去处：Review 里红方报的 blockers 会进 gaps（domain/phase.ts 的
+  // `redReviewsOthers`），所以这里要它「报出来」而不是「写进正文」。
+  Review: "Review the code produced by Build, independently. Write a review report"
+    + " naming the commit you reviewed, and report every defect you find as a blocker,"
+    + " by severity -- each one naming the file and position.",
   Fix: "Fix the blocking problems that were reported. Change nothing beyond what they require.",
   QA: "Run the approved test plan against the current code and report what actually happened.",
   Merge: "Summarise requirements, design, implementation, review and test facts, and state whether anything still blocks delivery.",

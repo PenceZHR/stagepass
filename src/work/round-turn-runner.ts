@@ -5,7 +5,7 @@ import { PHASES } from "../domain/phase";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
-import type { RepoOps } from "./repo";
+import { looksLikeSha, type RepoOps } from "./repo";
 
 /**
  * 把一个阶段「跑一次」变成**跑一轮对抗**。
@@ -44,6 +44,19 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   /** 红方要做什么。按阶段给一句话。 */
   readonly taskFor: (phase: string) => string;
 }
+
+/**
+ * 一份上游产物在任务书里怎么写。
+ *
+ * **一个 commit 不是一份文档。** Build 的产出是 sha，而这一节原来的抬头是「已批准的
+ * 上游文档（先读完再动手）」—— 红方会拿着 `349c17d7…` 当文件名去找，然后报一条
+ * 「这个文件不存在」，白烧一轮。
+ *
+ * 判据用的是 `looksLikeSha`，和服务端读产出那一条**同一个**：一个阶段产出什么形态是
+ * 那一轮的事实，两处各判一套必然漂移。
+ */
+const describeArtifact = (id: string): string =>
+  looksLikeSha(id) ? `commit ${id}（用 \`git show ${id}\` 看这一轮的改动）` : id;
 
 export class RoundTurnRunner implements TurnRunner {
   constructor(private readonly options: RoundTurnRunnerOptions) {}
@@ -148,9 +161,9 @@ export class RoundTurnRunner implements TurnRunner {
             .filter((entry) => entry.artifactIds.length > 0);
           return upstream.length === 0 ? [] : [
             "",
-            "已批准的上游文档（先读完再动手，它们是这一阶段的输入）：",
+            "已批准的上游产物（先看完再动手，它们是这一阶段的输入）：",
             ...upstream.map((entry) =>
-              `- ${entry.phase}: ${entry.artifactIds.join("、")}`),
+              `- ${entry.phase}: ${entry.artifactIds.map(describeArtifact).join("、")}`),
           ];
         })(),
       ].join("\n"),

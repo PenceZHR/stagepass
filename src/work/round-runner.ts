@@ -99,6 +99,7 @@ export async function runRound(
   const blue = dependencies.readRole(delivery.threadId, BLUE);
 
   const reading = readRound({
+    phase: request.phase,
     round: request.round,
     red,
     blue,

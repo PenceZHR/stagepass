@@ -2,7 +2,7 @@ import { RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
-import type { Phase } from "./phase";
+import { redReviewsOthers, type Phase } from "./phase";
 
 /**
  * One adversarial round: red produces, blue attacks, the judge settles.
@@ -120,16 +120,52 @@ const gapLine = (gap: Gap): string => {
  * 调用方**（范围有界，才不会滑回「调查这个项目」），**但不自己执行** —— 「跑过没有」
  * 那类标准由红方交运行证据，让蓝方去跑会把一轮的耗时和不确定性都放大一截。
  *
+ * ## Review：对象就是代码，而且两边都在审它
+ *
+ * Review 里红方审的是 Build 的产出，蓝方的活儿是「你漏了什么、这条成不成立」——
+ * 那要**自己去看**才答得出来。不给它读，它就只能看着红方的报告自说自话，而一份
+ * 没人复核的 review 报告和没有 review 是一回事（用户 2026-07-30 拍板）。
+ *
+ * 和 Build 一样不许自己执行：那是 QA 的活儿，在这里跑等于把两个阶段揉成一个。
+ *
  * ## 别的阶段一律不动
  *
- * Review / QA / Fix 的形状还没谈过（PRD §六 只谈了 Build）。没谈过的沿用设计阶段
- * 那条 —— **保守是因为没谈，不是因为想清楚了**，这句话写在这里免得下次被当成结论。
+ * QA / Fix / Merge / Retro 的形状还没谈过。没谈过的沿用设计阶段那条 ——
+ * **保守是因为没谈，不是因为想清楚了**，这句话写在这里免得下次被当成结论。
  */
-const blueReach = (phase: string): string =>
-  phase === "Build"
-    ? "   可以读这一轮改动涉及的文件，以及它们的直接调用方 —— 只读这些，"
-      + "不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。"
-    : "   只许基于正方产出提出问题，不要去读仓库、不要自己动手修。";
+const blueReach = (phase: string): string => {
+  if (phase === "Build") {
+    return "   可以读这一轮改动涉及的文件，以及它们的直接调用方 —— 只读这些，"
+      + "不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。";
+  }
+  if (phase === "Review") {
+    return "   可以读被审的那个 commit 涉及的文件，以及它们的直接调用方 —— 自己去看，"
+      + "不要只凭正方的报告下结论。不要自己执行任何东西，也不要动手修：跑起来验是 QA 的活儿。";
+  }
+  return "   只许基于正方产出提出问题，不要去读仓库、不要自己动手修。";
+};
+
+/**
+ * Review 里红蓝**都在报缺陷**，共用一个 id 空间 —— 所以给两边分前缀。
+ *
+ * 不分的后果不是「乱」，是**静默丢一条**：`readRound` 撞 id 时只留第一条，而两边
+ * 审的是同一份代码，各自起一个 `REVIEW-1` 是完全可能的。「留哪一条」永远是个将就，
+ * 分前缀让这件事结构上不会发生。
+ *
+ * 别的阶段只有蓝方报问题，不需要这套 —— 给红方讲一套它用不上的规矩只是噪音。
+ */
+const ID_PREFIX: Readonly<Record<string, { red: string; blue: string }>> = {
+  Review: { red: "RV-", blue: "RVB-" },
+};
+
+const idRule = (phase: string, side: "red" | "blue"): string[] => {
+  const prefix = ID_PREFIX[phase]?.[side];
+  return prefix === undefined ? [] : [
+    `   每个问题一个稳定 id，**必须以 \`${prefix}\` 开头**`
+    + `（例如 \`${prefix}NULL-DEREF-1\`）—— 另一边用的是别的前缀，撞了会丢一条。`
+    + "同一个问题在后续轮次要用同一个 id。",
+  ];
+};
 
 const redFixList = (openGaps: readonly Gap[]): string[] => {
   if (openGaps.length === 0) return [];
@@ -193,13 +229,16 @@ export function judgePrompt(input: RoundInstructions): string {
     `1. ${RED} —— 正方。任务：`,
     input.task,
     ...redFixList(input.openGaps),
+    ...idRule(input.phase, "red"),
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,
     ...extra(input.addenda?.red),
     "",
     `2. ${BLUE} —— 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。`,
     blueReach(input.phase),
-    "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
+    ...(idRule(input.phase, "blue").length > 0
+      ? idRule(input.phase, "blue")
+      : ["   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。"]),
     `   要求它按同样的格式作答，把问题放进 blockers。`,
     ...extra(input.addenda?.blue),
     "",
@@ -274,6 +313,8 @@ export function readVerdicts(text: string): VerdictReport {
 }
 
 export interface RoundTranscript {
+  /** 哪个阶段。红方报的问题算不算数，按它定（`redReviewsOthers`）。 */
+  readonly phase: string;
   readonly round: number;
   /** What red's own rollout said. */
   readonly red: string;
@@ -295,7 +336,29 @@ export interface RoundReading {
  * own work is not an adversarial finding, and counting it would let red decide
  * how bad its own output is -- which is blue's job precisely because red cannot
  * do it.
+ *
+ * ## 例外：红方审的是别人的东西时（`redReviewsOthers`）
+ *
+ * 上面那条理由到 Review 就不成立了 —— 红方审的是 Build 的产出，不是自己写的。
+ * 而 Review 的活儿**就是**找缺陷，照旧丢掉等于这个阶段什么都不产出
+ * （用户 2026-07-30 拍板）。那时两边的发现合并，**红方在前**。
+ *
+ * 撞 id 的按先到的算：两边审的是同一份代码，撞 id 是真会发生的，而一个 id 只能
+ * 指一件事。合并时留第一条，等价于 `applyRound` 后面那道去重 —— 但**在这里就去，
+ * 免得同一个 id 带着两种标题往下走**。提示词里还给两边分了前缀，让它压根不该撞。
  */
+/** 同一个 id 只留第一条。理由见 `readRound` 上面那段。 */
+function dedupeById(
+  found: RoundOutcome["found"],
+): RoundOutcome["found"] {
+  const seen = new Set<string>();
+  return found.filter((each) => {
+    if (seen.has(each.id)) return false;
+    seen.add(each.id);
+    return true;
+  });
+}
+
 export function readRound(transcript: RoundTranscript): RoundReading {
   const red = parseTurnResult(transcript.red);
   let blueBlockers: RoundOutcome["found"];
@@ -312,11 +375,20 @@ export function readRound(transcript: RoundTranscript): RoundReading {
       : error;
   }
 
+  const found = redReviewsOthers(transcript.phase)
+    ? dedupeById([
+        ...red.blockers.map((blocker) => ({
+          id: blocker.id, severity: blocker.severity, title: blocker.title,
+        })),
+        ...blueBlockers,
+      ])
+    : blueBlockers;
+
   return {
     artifactIds: red.artifactIds,
     outcome: {
       round: transcript.round,
-      found: blueBlockers,
+      found,
       verdicts: readVerdicts(transcript.judge).verdicts,
     },
   };

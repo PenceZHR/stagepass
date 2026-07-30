@@ -91,6 +91,96 @@ describe("L4 · what the judge is told", () => {
   });
 });
 
+describe("L4 · Review 里红方找到的缺陷也算数", () => {
+  /**
+   * 「红方报的问题一概不算」这条规矩有它的理由 —— **产出者报告自己作品的问题不是
+   * 对抗性发现**，让红方决定自己的东西有多糟，正是蓝方存在的原因。
+   *
+   * **到 Review 这条理由不成立了**：红方审的不是自己的作品，是 Build 的产出。而
+   * Review 的活儿**就是**找缺陷，照旧丢掉等于这个阶段什么都不产出（用户 2026-07-30
+   * 拍板：Review 破例）。
+   *
+   * 破例只给 Review。QA 看着像同类，但它没被谈过 —— **保守是因为没谈，不是因为
+   * 想清楚了**，所以下面有一条守卫钉着它。
+   */
+  const red = (blockers: object[]) =>
+    "```json\n" + JSON.stringify({ artifactIds: ["review.md"], blockers }) + "\n```";
+
+  it("**Review：红方报的缺陷进 gaps**", () => {
+    const reading = readRound({
+      phase: "Review", round: 1,
+      red: red([{ id: "RV-1", severity: "P0", title: "空指针没处理" }]),
+      blue: answer([], [{ id: "RVB-1", severity: "P1", title: "你漏了错误路径" }]),
+      judge: '```json\n{"verdicts":{}}\n```',
+    });
+    assert.deepEqual(
+      reading.outcome.found.map((each) => each.id).sort(),
+      ["RV-1", "RVB-1"],
+      "红方的发现被丢了 —— 那正是 Review 唯一的产出",
+    );
+  });
+
+  it("设计阶段照旧：红方报自己的问题一概不算", () => {
+    const reading = readRound({
+      phase: "Spec", round: 1,
+      red: red([{ id: "SELF-1", severity: "P0", title: "我自己觉得这里不太好" }]),
+      blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测" }]),
+      judge: '```json\n{"verdicts":{}}\n```',
+    });
+    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
+  });
+
+  it("**Build 也照旧** —— 红方写的代码是它自己的作品", () => {
+    const reading = readRound({
+      phase: "Build", round: 1,
+      red: red([{ id: "SELF-1", severity: "P0", title: "我知道这里有问题" }]),
+      blue: answer([], []),
+      judge: '```json\n{"verdicts":{}}\n```',
+    });
+    assert.deepEqual(reading.outcome.found, []);
+  });
+
+  it("**QA 没被谈过，一律不动** —— 保守是因为没谈，不是因为想清楚了", () => {
+    const reading = readRound({
+      phase: "QA", round: 1,
+      red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了" }]),
+      blue: answer([], []),
+      judge: '```json\n{"verdicts":{}}\n```',
+    });
+    assert.deepEqual(reading.outcome.found, [],
+      "QA 被顺手改了 —— 它的形状还没谈过");
+  });
+
+  it("**提示词里给两边分了 id 前缀** —— 让它压根不该撞", () => {
+    // Review 里红蓝都在报缺陷，共用一个 id 空间。撞了就只能留一条（下面那条测试），
+    // 而「留哪一条」永远是个将就。分前缀让这件事结构上不会发生。
+    const prompt = judgePrompt({ phase: "Review", round: 1, task: "t", openGaps: [] });
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    const blueSection = prompt.slice(prompt.indexOf(`2. ${BLUE}`));
+    assert.match(redSection, /RV-/, "没告诉红方它的 id 前缀");
+    assert.match(blueSection, /RVB-/, "没告诉蓝方它的 id 前缀");
+  });
+
+  it("设计阶段不提前缀 —— 那儿只有蓝方报问题", () => {
+    const prompt = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.doesNotMatch(redSection, /RV-/, "给红方讲了一套它用不上的规矩");
+  });
+
+  it("两边报了同一个 id —— 不许悄悄吃掉一条", () => {
+    // 两边都在审同一份代码，撞 id 是真会发生的。撞了就是同一条问题的两种说法，
+    // 而 applyRound 按 id 去重 —— 后来那条会被静默丢掉。所以提示词里给两边分了
+    // 前缀（见 judgePrompt），这里钉住「撞了也不会多出一条假的」。
+    const reading = readRound({
+      phase: "Review", round: 1,
+      red: red([{ id: "RV-1", severity: "P0", title: "红方这么说" }]),
+      blue: answer([], [{ id: "RV-1", severity: "P1", title: "蓝方那么说" }]),
+      judge: '```json\n{"verdicts":{}}\n```',
+    });
+    assert.equal(reading.outcome.found.filter((e) => e.id === "RV-1").length, 1);
+  });
+});
+
 describe("L4 · 蓝方的规矩按阶段定", () => {
   /**
    * 「只许基于正方产出、不要去读仓库」原来是写死的一句，五个设计阶段共用。
@@ -119,9 +209,21 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
     assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
   });
 
-  it("Build 之外的执行阶段维持原样 —— 这一条只为 Build 开", () => {
-    // Review/QA 的形状还没谈（§六 只谈了 Build）。没谈的一律不动。
-    for (const phase of ["Review", "QA", "Fix", "Merge", "Retro"] as const) {
+  it("**Review：和红方一样能读被审的那个 commit**", () => {
+    /*
+     * Review 的对象就是代码。蓝方不读代码，就只能看着红方的 review 报告自说自话 ——
+     * 而它的活儿正是「你漏了什么、这条成不成立」，那要自己去看才答得出来
+     * （用户 2026-07-30 拍板）。
+     */
+    const prompt = judgePrompt({ phase: "Review", round: 1, task: "t", openGaps: [] });
+    assert.doesNotMatch(prompt, /不要去读仓库/, "Review 的蓝方还看不见代码");
+    assert.match(prompt, /commit/, "没说读的是被审的那个 commit");
+    assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
+  });
+
+  it("没谈过的阶段一律不动 —— 保守是因为没谈，不是因为想清楚了", () => {
+    // QA / Fix / Merge / Retro 的形状都还没谈过。
+    for (const phase of ["QA", "Fix", "Merge", "Retro"] as const) {
       const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
       assert.match(prompt, /不要去读仓库/, `${phase} 被顺手改了，而它没被谈过`);
     }
@@ -293,6 +395,7 @@ describe("L4 · reading the judge's verdicts", () => {
 describe("L4 · each role is read from its own transcript", () => {
   it("takes artifacts from red and problems from blue", () => {
     const reading = readRound({
+      phase: "Spec",
       round: 2,
       red: answer(["spec.md"]),
       blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突" }]),
@@ -312,6 +415,7 @@ describe("L4 · each role is read from its own transcript", () => {
    */
   it("ignores problems red reported about its own work", () => {
     const reading = readRound({
+      phase: "Spec",
       round: 1,
       red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行" }]),
       blue: answer([], []),
@@ -328,6 +432,7 @@ describe("L4 · each role is read from its own transcript", () => {
   it("fails the round when blue's answer cannot be read", () => {
     assert.throws(
       () => readRound({
+        phase: "Spec",
         round: 1, red: answer(["spec.md"]), blue: "看起来没问题", judge: "",
       }),
       (error: unknown) =>
@@ -338,13 +443,14 @@ describe("L4 · each role is read from its own transcript", () => {
 
   it("fails the round when red produced nothing readable", () => {
     assert.throws(
-      () => readRound({ round: 1, red: "写完了", blue: answer([]), judge: "" }),
+      () => readRound({ phase: "Spec", round: 1, red: "写完了", blue: answer([]), judge: "" }),
       TurnResultUnparsableError,
     );
   });
 
   it("carries the judge's verdicts into the round's outcome", () => {
     const reading = readRound({
+      phase: "Spec",
       round: 3,
       red: answer(["spec.md"]),
       blue: answer([]),

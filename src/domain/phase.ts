@@ -80,6 +80,29 @@ export function sendsToFix(phase: Phase): boolean {
   return SENDS_TO_FIX.has(phase);
 }
 
+/**
+ * 这些阶段里，**红方审的是别人的东西**，所以它报出来的问题算数。
+ *
+ * ## 它推翻的是哪条规矩
+ *
+ * 一轮对抗默认忽略红方报的问题（`readRound`）：产出者报告自己作品的毛病不是对抗性
+ * 发现，让红方决定自己的东西有多糟，正是蓝方存在的理由。
+ *
+ * **到 Review 这条理由不成立** —— 红方审的是 Build 的产出，不是自己写的。而 Review
+ * 的活儿就是找缺陷，照旧丢掉等于这个阶段什么都不产出（用户 2026-07-30 拍板）。
+ *
+ * ## 为什么只有 Review
+ *
+ * QA 看着像同类（它也是在报告别人的东西出了什么事），**但它的形状还没谈过**。
+ * 这个名单里少一个阶段，最坏是那个阶段的红方白报一次；多一个没想清楚的，就是让
+ * 一个模型对自己的产出的评价直接变成挡门的东西。保守的方向是明确的。
+ */
+const RED_REVIEWS_OTHERS: ReadonlySet<Phase> = new Set<Phase>(["Review"]);
+
+export function redReviewsOthers(phase: string): boolean {
+  return isPhase(phase) && RED_REVIEWS_OTHERS.has(phase);
+}
+
 /** The phase every Change starts in. */
 export const FIRST_PHASE: Phase = "PRD";
 

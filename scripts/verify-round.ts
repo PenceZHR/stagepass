@@ -66,6 +66,7 @@ function readOnly(judgeThreadId: string): void {
   }
 
   const transcript = {
+    phase: "Spec" as const,
     round: 1,
     red: readRoleTranscript({ lookup, parentThreadId: judgeThreadId, agentPath: RED }),
     blue: readRoleTranscript({ lookup, parentThreadId: judgeThreadId, agentPath: BLUE }),

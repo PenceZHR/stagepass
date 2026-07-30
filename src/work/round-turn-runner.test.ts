@@ -200,6 +200,42 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
   });
 
+  it("**上游是一个 commit 时，说它是 commit** —— 别让红方拿 sha 去找文件", async () => {
+    /*
+     * Build 的产出是 sha，而这一节的抬头写着「已批准的上游文档（先读完再动手）」——
+     * 红方会拿着 `349c17d7…` 当文件名去找，然后报一条「文件不存在」。
+     * 判据和服务端读产出那一条同一个（`looksLikeSha`），不另算一套。
+     */
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    for (const [phase, artifact] of [
+      ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"], ["TechSpec", "docs/ts.md"],
+      ["Plan", "docs/plan.md"], ["TestPlan", "docs/tp.md"],
+      ["Build", "349c17d7d10414882f2c91f3241fda2645534645"],
+    ] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [artifact], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    assert.equal(context.changes.read(CHANGE).state.phase, "Review");
+
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const prompt = transport.dispatches[0]?.prompt ?? "";
+    assert.match(prompt, /commit 349c17d7/, "sha 没被标成 commit");
+    assert.match(prompt, /git show/, "没告诉红方怎么看这个 commit");
+    // 而路径那些照旧原样列出来。
+    assert.match(prompt, /docs\/prd\.md/);
+  });
+
   it("PRD 自己没有上游 —— 任务书里不出现上游那一节", async () => {
     const context = open();
     const transport = new ScriptedCodexTransport([judgeSays]);
