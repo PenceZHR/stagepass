@@ -857,10 +857,33 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       const response = await open(`/api/run?change=${CHANGE}`, { method: "POST" });
       assert.equal(response.status, 200, "500 + 空 body 就是那个死按钮");
       assert.deepEqual(await response.json(),
-        { ran: false, phase: "PRD", reason: "phase_not_pending:blocked" });
+        { ran: false, phase: "PRD", reason: "phase_cannot_queue:blocked" });
       // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
       assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
         .get() as { n: number }).n, 0);
+    });
+  });
+
+  it("**`running` 能派** —— 人 retry 之后就停在那儿，那时正需要派一轮", async () => {
+    /*
+     * 这条是上一条的另一半，而我第一版把它写错了：只放 `pending` 会把 retry 之后
+     * 那一步堵死。名单要跟着 `TurnLoop.queueTurn` 走 —— 它收 `pending`（自己补一个
+     * `start`）和 `running`（人刚 retry 过）。
+     */
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "人答出来的需求");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "fail");
+      changes.apply(CHANGE, "retry");
+      assert.equal(changes.read(CHANGE).state.status, "running");
+
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, true, ran.reason);
+      // 真的排出去了 —— 不是「没拒绝」而已。
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 1);
     });
   });
 

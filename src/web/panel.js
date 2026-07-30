@@ -231,12 +231,14 @@ function runRefusal(result) {
     return `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
       + "先「结束这个终端」。";
   }
-  if ((result.reason ?? "").startsWith("phase_not_pending:")) {
-    const status = result.reason.slice("phase_not_pending:".length);
+  if ((result.reason ?? "").startsWith("phase_cannot_queue:")) {
+    const status = result.reason.slice("phase_cannot_queue:".length);
     return status === "blocked"
       ? `${result.phase} 上一轮跑失败了，现在只接受 retry —— 而 retry 是你的裁决，`
         + "走「请 Codex 问我」，不走这个按钮。"
-      : `${result.phase} 现在是 ${status}，派不了新的一轮（只有 pending 能派）。`;
+      : status === "settled"
+        ? `${result.phase} 这一轮跑完了，先裁决（批准 / 再来一轮）再说。`
+        : `${result.phase} 现在是 ${status}，派不了新的一轮。`;
   }
   if (result.reason === "change_has_no_brief") {
     return "还没说清楚这次改动要什么。先按「说清楚我要什么」。";
@@ -869,13 +871,17 @@ function drawSheet(phase) {
   const decidable = decidableActions();
   runButton.hidden = !entry.current;
   /*
-   * **只有 `pending` 能派。** 派一轮的第一步是 `start`，而只有 `pending` 接受它。
-   * 2026-07-30 实测：在一个 `blocked` 的阶段上按下去，回来的是 HTTP 500、空 body，
-   * 界面显示「没跑起来：undefined」—— 亮着的按钮、按下去什么也没有，正是老树那种病。
-   * `blocked` 的出口是 retry，而 retry 是人的裁决：走「请 Codex 问我」。
+   * **能派的只有 `pending` 和 `running`**，和服务端 `runRound` 那份名单同一份。
+   *
+   * `running` 也在里面不是笔误：人 `retry` 之后状态就在那儿，而那时正需要派一轮。
+   * 真正在跑的那一轮由 `entry.live` 挡住（一个阶段同时只许一个进程）。
+   *
+   * 2026-07-30 实测：在 `blocked` 上按下去回来的是 HTTP 500、空 body，界面显示
+   * 「没跑起来：undefined」—— 亮着的按钮、按下去什么也没有，正是老树那种病。
    */
+  const status = panelState?.status ?? "pending";
   runButton.disabled = entry.live || needsBrief
-    || (panelState?.status ?? "pending") !== "pending";
+    || (status !== "pending" && status !== "running");
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
 

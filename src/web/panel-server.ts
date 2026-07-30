@@ -459,20 +459,23 @@ async function runRound(input: {
     return { ran: false, phase, reason: "phase_already_running" };
   }
   /*
-   * **只有 `pending` 能派。**
+   * **只有 `pending` 和 `running` 能派。这份名单和 `TurnLoop.queueTurn` 是同一份。**
    *
-   * 派一轮的第一步是给 Change 应用 `start`，而 `start` 只有 `pending` 接受
-   * （`ACCEPTS` 那张表）。别的状态下这一句会抛 `IllegalTransitionError` ——
-   * 2026-07-30 实测：一个 `blocked` 的阶段上按「跑这个阶段」，回来的是
-   * **HTTP 500、空 body**，界面显示「没跑起来：undefined」。
+   * `queueTurn` 收 `pending`（自己补一个 `start`）和 `running`（人刚 `retry` 过，
+   * 状态已经在那儿了）；别的状态它直接抛。而抛出来的后果 2026-07-30 实测过：
+   * 一个 `blocked` 的阶段上按「跑这个阶段」，回来的是 **HTTP 500、空 body**，
+   * 界面显示「没跑起来：undefined」，而下一步那行偏偏正在让人按它 —— 老树那种病。
    *
-   * 那正是老树那种病：按钮亮着、文案让你按、按下去什么也没有。所以这里先拦住，
-   * 并且**说出是哪一种**：`blocked` 的出口是 `retry`，而 retry 是人的裁决 ——
-   * 走「请 Codex 问我」，不走这个按钮。
+   * 所以这里先拦住，**并且说出是哪一种**。两条出口分别是：
+   *   blocked  -> retry，而 retry 是人的裁决，走「请 Codex 问我」
+   *   settled  -> 先裁决（批准 / 再来一轮）
+   *
+   * **第一版我写成了「只有 pending」，那是错的** —— 那会把 retry 之后那一步堵死：
+   * `retry` 把 Change 推到 `running`，而那时正需要派一轮。名单要跟着 `queueTurn` 走。
    */
   const status = new ChangeStore(database).read(changeId).state.status;
-  if (status !== "pending") {
-    return { ran: false, phase, reason: `phase_not_pending:${status}` };
+  if (status !== "pending" && status !== "running") {
+    return { ran: false, phase, reason: `phase_cannot_queue:${status}` };
   }
   /*
    * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
