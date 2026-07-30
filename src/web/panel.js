@@ -225,6 +225,28 @@ function stopProgress() {
   progressTimer = null;
 }
 
+/** 没派起来时说清是哪一种。原样吐一个 reason 等于没说。 */
+function runRefusal(result) {
+  if (result.reason === "phase_already_running") {
+    return `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
+      + "先「结束这个终端」。";
+  }
+  if ((result.reason ?? "").startsWith("phase_not_pending:")) {
+    const status = result.reason.slice("phase_not_pending:".length);
+    return status === "blocked"
+      ? `${result.phase} 上一轮跑失败了，现在只接受 retry —— 而 retry 是你的裁决，`
+        + "走「请 Codex 问我」，不走这个按钮。"
+      : `${result.phase} 现在是 ${status}，派不了新的一轮（只有 pending 能派）。`;
+  }
+  if (result.reason === "change_has_no_brief") {
+    return "还没说清楚这次改动要什么。先按「说清楚我要什么」。";
+  }
+  if (result.reason === "project_has_no_path") {
+    return "这个项目没有路径，Codex 不知道该在哪跑。";
+  }
+  return `没跑起来：${result.reason}`;
+}
+
 /**
  * Dispatch the Change's current phase.
  *
@@ -243,9 +265,7 @@ async function run() {
       `/api/run?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     )).json();
     if (result.ran === false) {
-      say(result.reason === "phase_already_running"
-        ? `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程。`
-        : `没跑起来：${result.reason}`);
+      say(runRefusal(result));
     } else {
       say(`${result.phase} 跑完了：${JSON.stringify(result.outcome)}`);
     }
@@ -848,7 +868,14 @@ function drawSheet(phase) {
 
   const decidable = decidableActions();
   runButton.hidden = !entry.current;
-  runButton.disabled = entry.live || needsBrief || panelState?.status === "settled";
+  /*
+   * **只有 `pending` 能派。** 派一轮的第一步是 `start`，而只有 `pending` 接受它。
+   * 2026-07-30 实测：在一个 `blocked` 的阶段上按下去，回来的是 HTTP 500、空 body，
+   * 界面显示「没跑起来：undefined」—— 亮着的按钮、按下去什么也没有，正是老树那种病。
+   * `blocked` 的出口是 retry，而 retry 是人的裁决：走「请 Codex 问我」。
+   */
+  runButton.disabled = entry.live || needsBrief
+    || (panelState?.status ?? "pending") !== "pending";
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
 
@@ -912,8 +939,11 @@ function nextStep(entry) {
   }
   if (panelState?.status === "blocked") {
     return {
-      what: "跑这个阶段",
-      why: "上一轮跑失败了。再跑一次 —— 失败的原因在「问题」里。",
+      what: "请 Codex 问我",
+      // 这一行是当成纯文本渲染的（`textContent`），所以不写 markdown 的星号 ——
+      // 界面上会原样出现两个 `**`。
+      why: "上一轮跑失败了。这个阶段现在只接受 retry，而 retry 是你的裁决 ——"
+        + "所以它在 Codex 的选择器里问，不在这个按钮上。失败的原因在「问题」里。",
     };
   }
   if (panelState?.status === "settled") {

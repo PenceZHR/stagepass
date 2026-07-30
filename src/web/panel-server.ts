@@ -459,6 +459,22 @@ async function runRound(input: {
     return { ran: false, phase, reason: "phase_already_running" };
   }
   /*
+   * **只有 `pending` 能派。**
+   *
+   * 派一轮的第一步是给 Change 应用 `start`，而 `start` 只有 `pending` 接受
+   * （`ACCEPTS` 那张表）。别的状态下这一句会抛 `IllegalTransitionError` ——
+   * 2026-07-30 实测：一个 `blocked` 的阶段上按「跑这个阶段」，回来的是
+   * **HTTP 500、空 body**，界面显示「没跑起来：undefined」。
+   *
+   * 那正是老树那种病：按钮亮着、文案让你按、按下去什么也没有。所以这里先拦住，
+   * 并且**说出是哪一种**：`blocked` 的出口是 `retry`，而 retry 是人的裁决 ——
+   * 走「请 Codex 问我」，不走这个按钮。
+   */
+  const status = new ChangeStore(database).read(changeId).state.status;
+  if (status !== "pending") {
+    return { ran: false, phase, reason: `phase_not_pending:${status}` };
+  }
+  /*
    * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
    *
    * RoundTurnRunner 里也有同一条检查（防御在两层），但只靠那一层是不够的：

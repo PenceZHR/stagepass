@@ -839,6 +839,31 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
     });
   });
 
+  it("**不是 pending 的阶段派不了** —— 而且说清是哪一种", async () => {
+    /*
+     * 2026-07-30 实测到的死按钮：一个 `blocked` 的阶段上按「跑这个阶段」，回来的是
+     * **HTTP 500、空 body**，界面显示「没跑起来：undefined」。原因是派一轮的第一步是
+     * `start`，而只有 `pending` 接受它。
+     *
+     * `blocked` 的出口是 `retry`，而 retry 是人的裁决 —— 走选择器，不走这个按钮。
+     */
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "人答出来的需求");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "fail");
+      assert.equal(changes.read(CHANGE).state.status, "blocked");
+
+      const response = await open(`/api/run?change=${CHANGE}`, { method: "POST" });
+      assert.equal(response.status, 200, "500 + 空 body 就是那个死按钮");
+      assert.deepEqual(await response.json(),
+        { ran: false, phase: "PRD", reason: "phase_not_pending:blocked" });
+      // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0);
+    });
+  });
+
   it("**没有录入需求 —— 不许跑**", async () => {
     await withPanel(async ({ open, pty }) => {
       /*
