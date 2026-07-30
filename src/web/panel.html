@@ -699,6 +699,28 @@ body::after {
   font: 400 11.5px/1.6 var(--serif); color: rgba(255,255,255,.56);
 }
 
+/*
+ * 表单字段。只给新建 Project 用 —— **网页上能填的东西非常有限**（PRD §1.1），
+ * 多一个输入框之前先想清楚它填的是不是「对这一次产物的判断」。
+ */
+.field { display: block; margin-top: 18px; }
+.field span {
+  display: block; margin-bottom: 7px;
+  font: 700 9px/1 ui-sans-serif, sans-serif; letter-spacing: .14em;
+  text-transform: uppercase; color: rgba(255,255,255,.46);
+}
+.field input {
+  width: 100%; padding: 11px 13px;
+  border: 1px solid rgba(255,255,255,.18); border-radius: 10px;
+  background: rgba(255,255,255,.04); color: var(--foreground);
+  /* 路径用等宽：一个 l 和一个 1 的区别，在衬线里看不出来。 */
+  font: 500 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.field input:focus-visible {
+  outline: none; border-color: rgba(225,198,160,.6);
+  background: rgba(255,255,255,.07);
+}
+
 .sheet-foot {
   flex: 0 0 auto;
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
@@ -833,6 +855,44 @@ body::after {
       底下三个按钮：进终端 / 跑这个阶段 / 请 Codex 问我。
       **没有 approve / reject，也不许加**（PRD §1）。
     -->
+    <!--
+      新建 Project。**路径是要粘贴、要核对的东西**，所以是表单而不是 prompt：
+      prompt 是两个先后弹出的框，看不见彼此，也没法把服务端的拒绝原因说在字段旁边。
+
+      仍然不进主屏 —— 它是个 <dialog>，和阶段弹窗同一个位置（§5.0 第 4 条管的是
+      环那一屏，不是弹窗）。
+    -->
+    <dialog class="sheet" id="project-sheet">
+      <div class="sheet-head">
+        <div>
+          <small>New Project</small>
+          <h2>一个 Project 就是一个仓库</h2>
+        </div>
+        <button class="sheet-close" id="project-cancel" type="button" aria-label="取消">✕</button>
+      </div>
+      <div class="sheet-body">
+        <p class="sheet-line">Codex 会在你给的这个目录里跑。给错了它就改错仓库。</p>
+        <label class="field">
+          <span>名字</span>
+          <input id="project-name" type="text" autocomplete="off" placeholder="例如 my-app">
+        </label>
+        <label class="field">
+          <span>代码在哪（绝对路径）</span>
+          <input id="project-path" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="/Users/you/code/my-app">
+        </label>
+        <p class="rubric-note bad" id="project-error" hidden></p>
+        <!-- HTML 里不认 markdown：要加粗就用 <strong>，写 ** 只会原样显示两个星号。 -->
+        <p class="sheet-empty">
+          提示：Codex 的目录信任<strong>不从父目录继承</strong>，也不能由 StagePass 代设。
+          没被信任过的目录，第一次跑会停在信任提示上等你按一下。
+        </p>
+      </div>
+      <div class="sheet-foot">
+        <button class="ask" id="project-create" type="button">建立</button>
+      </div>
+    </dialog>
+
     <dialog class="sheet" id="sheet">
       <div class="sheet-head">
         <div>

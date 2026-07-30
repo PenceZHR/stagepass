@@ -876,36 +876,80 @@ document.getElementById("expand").addEventListener("click", () => { setCollapsed
  * 为了收一个名字铺一整块常驻 UI 正是它要挡的。**要改成好看的表单之前先读
  * 交接 §5.0 第 4 条。**
  */
-document.getElementById("new-project").addEventListener("click", () => {
-  const name = prompt("新 Project 叫什么？");
-  if (name === null || name.trim() === "") return;
+/*
+ * 新建 Project。
+ *
+ * 表单而不是 prompt：**路径是要粘贴、要核对的东西**。prompt 是两个先后弹出的框，
+ * 看不见彼此，服务端的拒绝原因也只能落到一个 alert 里 —— 而这里的错（不是绝对路径 /
+ * 目录不存在）恰恰需要贴在字段旁边说。
+ *
+ * 仍然不进主屏：它是个 <dialog>，和阶段弹窗同一个位置。
+ */
+const projectSheet = document.getElementById("project-sheet");
+const projectName = document.getElementById("project-name");
+const projectPath = document.getElementById("project-path");
+const projectError = document.getElementById("project-error");
 
-  /*
-   * **必须问路径。** 一个 Project 就是一个仓库，Codex 就跑在这个目录里。
-   *
-   * 在这之前不问，于是新建的项目「不知道在哪」—— 而 Codex 照样跑在服务启动时那个
-   * cwd 里（也就是 stagepass 自己），用的还是 workspace-write。用户 2026-07-30 撞上
-   * 的就是这个。
-   */
-  const path = prompt(
-    `「${name.trim()}」的代码在哪？（绝对路径，Codex 会在这个目录里跑）`,
+/** 服务端的拒绝原因，翻成人话。原样显示 `path_must_be_absolute` 等于没说。 */
+const PROJECT_REFUSALS = {
+  name_required: "名字不能空。",
+  path_required: "得给一个路径 —— Codex 要在某个目录里跑。",
+  path_must_be_absolute: "要绝对路径。相对路径相对谁？相对服务端的目录，那就又回到「不知道跑在哪」了。",
+  path_does_not_exist: "这个路径不存在。",
+  path_is_not_a_directory: "这是个文件，不是目录。",
+};
+
+function openProjectSheet() {
+  projectName.value = "";
+  projectPath.value = "";
+  projectError.hidden = true;
+  if (!projectSheet.open) projectSheet.showModal();
+  projectName.focus();
+}
+
+async function createProject() {
+  const name = projectName.value.trim();
+  const path = projectPath.value.trim();
+  // 先在本地挡掉空值，省一次往返；服务端仍然会各查一遍（两层都要有）。
+  if (name === "") { showProjectError("name_required"); projectName.focus(); return; }
+  if (path === "") { showProjectError("path_required"); projectPath.focus(); return; }
+
+  const response = await fetch(
+    `/api/project?name=${encodeURIComponent(name)}&path=${encodeURIComponent(path)}`,
+    { method: "POST" },
   );
-  if (path === null || path.trim() === "") return;
+  if (!response.ok) {
+    showProjectError((await response.text()).trim());
+    projectPath.focus();
+    return;
+  }
+  const created = await response.json();
+  projectSheet.close();
+  // 建完直接切过去 —— 建了却停在原地，人得再找一次它在哪。
+  location.search = `?change=${encodeURIComponent(changeId)}`
+    + `&project=${encodeURIComponent(created.id)}`;
+}
 
-  void fetch(`/api/project?name=${encodeURIComponent(name.trim())}`
-    + `&path=${encodeURIComponent(path.trim())}`, { method: "POST" })
-    .then(async (response) => {
-      if (!response.ok) throw new Error(await response.text());
-      return response.json();
-    })
-    .then((created) => {
-      // 建完直接切过去 —— 建了却停在原地，人得再找一次它在哪。
-      location.search = `?change=${encodeURIComponent(changeId)}`
-        + `&project=${encodeURIComponent(created.id)}`;
-    })
-    // 不接住就是「按了没反应」，和「建好了但界面没刷」长得一模一样。
-    .catch((error) => { alert(`没建成：${error.message}`); });
+function showProjectError(reason) {
+  projectError.textContent = PROJECT_REFUSALS[reason] ?? `没建成：${reason}`;
+  projectError.hidden = false;
+}
+
+document.getElementById("new-project").addEventListener("click", () => {
+  openProjectSheet();
 });
+document.getElementById("project-create").addEventListener("click", () => {
+  void createProject();
+});
+document.getElementById("project-cancel").addEventListener("click", () => {
+  projectSheet.close();
+});
+// 在任一字段里回车就提交 —— 填完路径还要去找按钮，是没必要的一步。
+for (const field of [projectName, projectPath]) {
+  field.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); void createProject(); }
+  });
+}
 
 document.getElementById("new-change").addEventListener("click", () => {
   const projectId = panelState?.selectedProject
