@@ -215,6 +215,21 @@ export class ProjectPathMissingError extends Error {
 
 export class PanelSessions {
   private readonly live = new Map<string, LiveSession>();
+  /**
+   * 死掉的会话留下的最后一屏，按 (Change, 阶段) 各留一具。
+   *
+   * ## 为什么要留尸体
+   *
+   * 一个刚起来就死的进程，它临死前那句话就是死因（最常见：`session … is archived`）。
+   * 而 onExit 把会话删掉时 scrollback 跟着没了，`/pty/…` 又是「打开就起一个新的」——
+   * **回不去看尸体**。2026-07-30 查归档那次，这句话是在仓库外用 node-pty 探针重放
+   * 同一条 argv 才拿到的；死因不该那么贵。
+   *
+   * 下一个会话起来时，这段字节先进它的 scrollback（也就是先回放给每个来看的人），
+   * 新 TUI 一重画自然把它盖掉。**字节仍然是字节**：存的是原样的 Uint8Array，回放
+   * 也是原样写出去，不解析（§9.3）。上限继承 SCROLLBACK_BYTES，代价只有一点内存。
+   */
+  private readonly corpses = new Map<string, Uint8Array[]>();
   /** 归档那一层。测试注入假的，生产用真的 —— 和 `start` 同一个路子。 */
   readonly archive: ArchiveOps;
 
@@ -315,10 +330,13 @@ export class PanelSessions {
       options: { ...this.options.session, cwd },
     });
 
+    // 上一具尸体的最后一屏先垫进去 —— 每个来看这个新会话的人都会先看到它，
+    // 然后才是新进程的输出。见 `corpses` 那段注释。
+    const corpse = this.corpses.get(key) ?? [];
     const entry: LiveSession = {
-      session, listeners: new Set(), enders: new Set(), scrollback: [],
+      session, listeners: new Set(), enders: new Set(), scrollback: [...corpse],
     };
-    let buffered = 0;
+    let buffered = corpse.reduce((total, chunk) => total + chunk.byteLength, 0);
     session.onBytes((bytes) => {
       entry.scrollback.push(bytes);
       buffered += bytes.byteLength;
@@ -345,6 +363,10 @@ export class PanelSessions {
        * 症状还很难查：新起的那个是**浏览用**的（没有提示词），人进终端看见一个空
        * composer，而正在跑的那一轮在另一个看不见的进程里。
        */
+      // 尸体在身份判定**之前**留：无论这条 onExit 是不是当前会话的，死的都是
+      // `entry` 自己，它的最后一屏就该由它自己留下。拷贝一份，免得留下的引用
+      // 还被后续写入动到。
+      this.corpses.set(key, [...entry.scrollback]);
       if (this.live.get(key) !== entry) return;
       this.live.delete(key);
       // **告诉正在看的人它没了。** 不通知的话响应一直开着，浏览器停在最后一帧，
@@ -717,9 +739,10 @@ export async function handle(
    *
    * ## 说不出来就说不出来
    *
-   * `stage` 只在**第二轮起**算得出来 —— 子 Agent 要从裁判的 threadId 去查，而绑定是
-   * 一轮跑完才写的。第一轮它就是 `null`，界面照实说「还看不出走到哪一步」。
+   * `stage` 要靠裁判的 threadId 去查子 Agent，而 id 要等 transport 认出线程才有 ——
+   * 第一轮的开头几十秒它就是 `null`，界面照实说「还看不出走到哪一步」。
    * **不编一个阶段名**：这一屏存在的意义就是不再让人猜，编一个就白做了。
+   * （绑定现在是线程一出现就写的 —— `TurnDispatch.onThread`；在那之前仍然是 null。）
    *
    * 只读，不写任何东西（M5）。
    */
@@ -1103,9 +1126,6 @@ export async function handle(
      *
      * 取现有 gap 里最大的那个轮次 —— 他是**看着这一轮的产出**提出来的，所以和这一轮
      * 报出来的问题记同一个号。一条 gap 都没有时是第 1 轮。
-     *
-     * （轮次本身现在是 `job.attempt`，而每次「跑这个阶段」都新建一个 job、attempt
-     * 都是 1，所以第二轮在库里仍然记成第 1 轮。那是已有的问题，不是这里引进来的。）
      */
     const raiseRound = Math.max(1, ...allGaps.map((gap) => gap.openedRound));
     const question = gateDecisionQuestion({

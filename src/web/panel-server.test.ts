@@ -555,8 +555,9 @@ describe("panel · 一轮跑到哪了", () => {
   });
 
   /**
-   * `stage` 只在第二轮起算得出来：子 Agent 要从裁判的 threadId 去查，而绑定是一轮
-   * 跑完才写的。**第一轮就是 null，界面照实说「还看不出走到哪一步」** —— 不编阶段名。
+   * `stage` 要从裁判的 threadId 查子 Agent。绑定现在是线程一出现就写的，但在
+   * transport 认出线程之前（第一轮的开头）它还不存在 —— **那时就是 null，界面照实
+   * 说「还看不出走到哪一步」**，不编阶段名。
    */
   it("没有裁判线程 —— stage 是 null，不猜", async () => {
     await withPanel(async ({ open, database }) => {
@@ -722,6 +723,38 @@ describe("panel · bytes go through untouched", () => {
 
       assert.deepEqual(Array.from(value!), Array.from(banner));
       assert.equal(pty.started.length, 1, "replay must not start a second process");
+    });
+  });
+
+  it("**一个死掉的会话的最后一屏，下一次打开时先回放出来**", async () => {
+    /*
+     * 一个刚起来就死的进程（最常见：线程被归档，`codex resume` 一起来就退），它
+     * 临死前打出来的那句话正是死因 —— 而注册表原来在 onExit 里把会话连 scrollback
+     * 一起删掉，`/pty/…` 又是「打开就起一个新的」，于是**回不去看尸体**。归档那句
+     * 报错是靠仓库外的 node-pty 探针重放同一条 argv 才拿到的，不该那么贵。
+     *
+     * 字节仍然是字节：留下的是原样的 Uint8Array，回放也是原样写回，不解析（§9.3）。
+     */
+    await withPanel(async ({ open, pty }) => {
+      const first = await open(`/pty/${CHANGE}/PRD`);
+      const lastWords = new Uint8Array(Buffer.from("session is archived", "utf-8"));
+      pty.emit(lastWords);
+      await first.body!.cancel();   // 人走开了……
+      pty.exitOne(0);               // ……然后进程自己死了
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+
+      const second = await open(`/pty/${CHANGE}/PRD`);
+      assert.equal(pty.started.length, 2, "死了之后再打开，该起的是一个新进程");
+      const reader = second.body!.getReader();
+      const { value } = await Promise.race([
+        reader.read(),
+        new Promise<{ value?: Uint8Array }>((resolve) => {
+          setTimeout(() => { resolve({}); }, 300);
+        }),
+      ]);
+      assert.ok(value, "新会话起来了，尸体的最后一屏却没回放 —— 遗言看不到");
+      assert.deepEqual(Array.from(value), Array.from(lastWords));
+      reader.releaseLock();
     });
   });
 
