@@ -53,10 +53,82 @@ export type Verdict =
   | { readonly kind: "still_open"; readonly reason: string };
 
 export class InvalidVerdictError extends Error {
-  constructor(readonly code: "reason_missing" | "unknown_gap" | "standard_not_waivable") {
+  constructor(readonly code:
+    | "reason_missing"
+    | "unknown_gap"
+    | "standard_not_waivable"
+    | "title_missing") {
     super(code);
     this.name = "InvalidVerdictError";
   }
+}
+
+/**
+ * 人自己开的问题，靠 id 前缀区分。
+ *
+ * ## 为什么是前缀，而不是新加一列
+ *
+ * 用户 2026-07-30 拍板：「人开的 gap 兼容现有结构，别新增 kind。」`kind` 答的是
+ * 「这是一个发现的问题，还是一条没被满足的标准」—— 那是**问题的性质**，而「谁提的」
+ * 是另一个维度。塞进 `kind` 会让 `finding` 的两条不变量（必带严重度、可以 waive）
+ * 对第三个值意味着什么变成一道新题。
+ *
+ * 前缀已经是这棵树里的先例：rubric 派生的 gap 是 `RB:<role>:<key>`（REMAP §五）。
+ * 同一个办法用第二次，不是新机制。
+ *
+ * 落到字段上：`kind: "finding"`、`severity: "P1"`。
+ * - `finding` —— schema 那条配对 CHECK 要求 finding 必有严重度，standard 必无。
+ * - `P1` 而不是 P0 —— P0 不可豁免，而这是**我自己**提的要求；「我改主意了」
+ *   必须还能走 waive，否则人给自己设了一道自己也打不开的闸门。
+ */
+const HUMAN_GAP_PREFIX = "HUMAN-";
+
+/** 人开的第 n 个问题的 id。 */
+export const humanGapId = (n: number): string => `${HUMAN_GAP_PREFIX}${n}`;
+
+/** 这条 gap 是人提的吗。判据只有 id 前缀，别在别处另算一套。 */
+export const isHumanGap = (gap: { readonly id: string }): boolean =>
+  gap.id.startsWith(HUMAN_GAP_PREFIX);
+
+/**
+ * 人自己提一个问题。
+ *
+ * ## 它和一轮报出来的问题差在哪
+ *
+ * 差在**谁不许把它当建议**。模型报的问题，裁判下一轮可以判它 `closed`；人提的问题
+ * 也一样能被判 closed —— 但提示词里必须把两者分开列（见 `domain/round.ts` 的
+ * `judgePrompt`），否则「用户明确要求的」和「反方顺口提的」在裁判眼里一模一样。
+ *
+ * ## id 由这里分配
+ *
+ * 和 `domain/brief.ts` 里那条同一个理由：人写的是标题，编号不是他要操心的东西。
+ * 顺号取现有 `HUMAN-` 里最大的加一 —— **算所有的，不只 open 的**：一个被关掉的
+ * `HUMAN-3` 如果把号让出去，新问题会顶着旧问题的 id，而 `applyRound` 里
+ * 「re-finding 一个 closed 的会重开它」当场就把两者混成一条。
+ */
+export function raise(
+  gaps: readonly Gap[],
+  input: { readonly title: string; readonly round: number },
+): Gap[] {
+  const title = input.title.trim();
+  // 一个没有正文的问题，下一轮没人知道该改什么。
+  if (title === "") throw new InvalidVerdictError("title_missing");
+
+  const used = gaps
+    .filter(isHumanGap)
+    .map((gap) => Number(gap.id.slice(HUMAN_GAP_PREFIX.length)))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const next = used.length === 0 ? 1 : Math.max(...used) + 1;
+
+  return [...gaps, {
+    id: humanGapId(next),
+    kind: "finding",
+    severity: "P1",
+    title,
+    status: "open",
+    openedRound: input.round,
+    resolution: null,
+  }];
 }
 
 export interface RoundOutcome {
@@ -158,6 +230,47 @@ export function waive(gaps: readonly Gap[], gapId: string, reason: string): Gap[
   return gaps.map((candidate) =>
     candidate.id === gapId
       ? { ...candidate, status: "waived" as const, resolution: reason }
+      : candidate);
+}
+
+/**
+ * 人驳回一条问题：**这条不成立。**
+ *
+ * ## 它是 waive 的镜像，而两者说的是三句不同的话
+ *
+ * ```
+ * waive    问题还在，我接受这个风险          -> waived
+ * dismiss  这条不成立，别再拿它挡我          -> closed
+ * 撤下标准  这件事本来就不该要求              -> rubric 那边，也落 closed
+ * ```
+ *
+ * 用户 2026-07-30 拍板：「人允许驳回蓝方的发现，**以人为主**。」在这之前人没有这条
+ * 路 —— 一条蓝方提错的问题只能等模型下一轮自己改主意，而模型不一定会。那时人唯一的
+ * 出口是 waive，也就是被迫说「问题还在但我接受」去表达「你搞错了」。**两句话不是
+ * 一回事，而账本记的是他说了哪一句。**
+ *
+ * ## 落 closed 而不是 waived
+ *
+ * `waived` 的语义是「问题还在，有人决定带着它走」，交付说明里要列出来。驳回说的是
+ * 它压根不成立，没有什么要带着走的。这和 REMAP §3.1 给「撤下一条标准」定的是同一
+ * 个理由。
+ *
+ * ## 和 waive 一样拒绝 standard
+ *
+ * 一条没被满足的标准，出口是**撤下那条 criterion**，不是在这里驳回它 —— 那条标准
+ * 还挂着，下一轮判定还会再开一条一模一样的 gap 出来（REMAP §3.4：退休需要正面证据）。
+ * 让 dismiss 关掉 standard，等于给了一条这一轮有效、下一轮就失效的假出口。
+ */
+export function dismiss(gaps: readonly Gap[], gapId: string, reason: string): Gap[] {
+  // 理由必填，和 applyRound 拒绝一个没有 reason 的 close 完全同构：一次没有理由的
+  // 驳回，和「这一轮忘了提」在库里长得一模一样。
+  if (reason.trim() === "") throw new InvalidVerdictError("reason_missing");
+  const gap = gaps.find((candidate) => candidate.id === gapId);
+  if (!gap || gap.status !== "open") throw new InvalidVerdictError("unknown_gap");
+  if (gap.kind === "standard") throw new InvalidVerdictError("standard_not_waivable");
+  return gaps.map((candidate) =>
+    candidate.id === gapId
+      ? { ...candidate, status: "closed" as const, resolution: reason }
       : candidate);
 }
 

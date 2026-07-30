@@ -70,6 +70,79 @@ describe("L4 · what the judge is told", () => {
       /没有未关闭的问题/,
     );
   });
+
+  /**
+   * 一条 `standard` 没有 severity（rubric 是二元判断，REMAP §5.1）。原来无条件插
+   * `[${gap.severity}]`，于是每条 rubric 派生的 gap 在裁判眼里都是 `[null]` ——
+   * 一个模型看不懂的分级，而它正要对这条表态。
+   */
+  it("一条 standard 写「标准」，不写 [null]", () => {
+    const prompt = judgePrompt({
+      phase: "Spec", round: 2, task: "t",
+      openGaps: [{
+        id: "RB:producer:RBC-a", kind: "standard", severity: null,
+        title: "每条需求都有可测的验收标准",
+        status: "open", openedRound: 1, resolution: null,
+      }],
+    });
+    assert.match(prompt, /RB:producer:RBC-a \[标准\]/);
+    assert.doesNotMatch(prompt, /\[null\]/);
+  });
+});
+
+describe("L4 · 人提的要求单独一区", () => {
+  /*
+   * 用户 2026-07-30：「judgePrompt 把人开的那些单独列出来，措辞要区别于模型报的。」
+   *
+   * 混在一起列，「用户明确要求的」和「反方顺口提的」在裁判眼里一模一样 —— 而分量
+   * 不一样：判一条模型报的问题不成立是裁判的本职；一条人提的要求，它不该拿「我觉得
+   * 这个建议可以不采纳」把它关掉。
+   */
+  const human = (id: string, title: string): Gap => ({ ...gap(id, title) });
+
+  it("分区，而且措辞明确说了它不是建议", () => {
+    const prompt = judgePrompt({
+      phase: "PRD", round: 2, task: "t",
+      openGaps: [
+        gap("SPEC-1", "验收不可测"),
+        human("HUMAN-1", "没说清楚失败时回滚到哪"),
+      ],
+    });
+    assert.match(prompt, /人明确要求下一轮处理的（不许当成建议）/);
+    assert.match(prompt, /HUMAN-1 \[P1\] 没说清楚失败时回滚到哪/);
+    assert.match(prompt, /之前轮次报出来的问题/);
+    // 人提的排在模型报的前面 —— 先看要求，再看建议。
+    assert.ok(prompt.indexOf("HUMAN-1") < prompt.indexOf("SPEC-1"));
+  });
+
+  it("没有人提的问题时**不出现那一区**，也不留一段空白", () => {
+    // 提示词里一段没内容的标题是噪音，而噪音会挤掉真正要读的东西。
+    const prompt = judgePrompt({
+      phase: "PRD", round: 2, task: "t", openGaps: [gap("SPEC-1", "验收不可测")],
+    });
+    assert.doesNotMatch(prompt, /人明确要求/);
+    // 只有模型报的那些时也不加那句分隔标题 —— 没有第二区要跟它分开。
+    assert.doesNotMatch(prompt, /之前轮次报出来的问题/);
+    assert.match(prompt, /SPEC-1 \[P1\] 验收不可测/);
+  });
+
+  it("只有人提的问题时，模型那一区也不出现", () => {
+    const prompt = judgePrompt({
+      phase: "PRD", round: 2, task: "t", openGaps: [human("HUMAN-1", "我要的")],
+    });
+    assert.match(prompt, /人明确要求下一轮处理的/);
+    assert.doesNotMatch(prompt, /之前轮次报出来的问题/);
+    assert.doesNotMatch(prompt, /没有未关闭的问题/);
+  });
+
+  it("**仍然可以被判 closed** —— 这里管的是措辞，不是给它免疫", () => {
+    // 人的要求真被满足了就该关掉。加一层「人提的不可关闭」等于让人给自己设一道
+    // 自己也打不开的闸门。
+    const prompt = judgePrompt({
+      phase: "PRD", round: 2, task: "t", openGaps: [human("HUMAN-1", "我要的")],
+    });
+    assert.match(prompt, /"kind": "closed" \| "still_open"/);
+  });
 });
 
 describe("L4 · reading the judge's verdicts", () => {

@@ -4,7 +4,11 @@ import { describe, it } from "node:test";
 import {
   applyRound,
   blockersFrom,
+  dismiss,
+  humanGapId,
   InvalidVerdictError,
+  isHumanGap,
+  raise,
   waive,
   waivedFrom,
   type Gap,
@@ -246,5 +250,140 @@ describe("L1 · standard 的出口不是 waive", () => {
     const finding: Gap = { ...standard, id: "G-1", kind: "finding", severity: "P1" };
     const [after] = waive([finding], "G-1", "这一版先接受");
     assert.equal(after?.status, "waived");
+  });
+
+  it("dismiss 一条 standard —— 同样拒绝", () => {
+    /*
+     * 理由和 waive 那条不同，要分开说：一条标准还挂在 rubric 上，这一轮把它派生的
+     * gap 驳回了，**下一轮判定会再开一条一模一样的出来**（REMAP §3.4：退休需要
+     * 正面证据）。所以这是一条这一轮有效、下一轮就失效的假出口。
+     */
+    assert.throws(
+      () => dismiss([standard], standard.id, "我觉得这条不成立"),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidVerdictError);
+        assert.equal(error.code, "standard_not_waivable");
+        return true;
+      });
+  });
+});
+
+describe("L1 · 人驳回一条发现 —— 以人为主", () => {
+  /*
+   * 用户 2026-07-30 拍板：「人允许驳回蓝方的发现，以人为主。」
+   *
+   * 在这之前人没有这条路：一条蓝方提错的问题只能等模型下一轮自己改主意。那时唯一
+   * 的出口是 waive —— 也就是被迫说「问题还在但我接受」去表达「你搞错了」。
+   * **两句话不是一回事，而账本记的是他说了哪一句。**
+   */
+  it("驳回落 closed，带着我写的理由", () => {
+    const [after] = dismiss([gap()], "G-1", "验收标准在第 3 节，反方没读到");
+    assert.equal(after?.status, "closed");
+    assert.equal(after?.resolution, "验收标准在第 3 节，反方没读到");
+  });
+
+  it("**驳回不是 waive** —— 一条被驳回的问题不进交付说明", () => {
+    // waived 说的是「问题还在，我带着它走」，那要列进交付说明；驳回说的是它压根
+    // 不成立，没有什么要带着走的。
+    assert.deepEqual(waivedFrom(dismiss([gap()], "G-1", "不成立")), []);
+  });
+
+  it("没有理由 —— 拒绝", () => {
+    for (const reason of ["", "   "]) {
+      assert.throws(() => dismiss([gap()], "G-1", reason),
+        (error: unknown) => {
+          assert.ok(error instanceof InvalidVerdictError);
+          assert.equal(error.code, "reason_missing");
+          return true;
+        });
+    }
+  });
+
+  it("驳回一条不是 open 的 —— 拒绝", () => {
+    assert.throws(
+      () => dismiss([gap({ status: "waived", resolution: "r" })], "G-1", "不成立"),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidVerdictError);
+        assert.equal(error.code, "unknown_gap");
+        return true;
+      });
+  });
+
+  it("被驳回之后，下一轮再报出来它会重开 —— 这条**故意**不拦", () => {
+    /*
+     * 驳回是「按我现在看到的，这条不成立」，不是给这个 id 永久免疫。反方下一轮
+     * 拿着新证据再报一次，它就该回来 —— 那正是 `applyRound` 里「re-finding 一个
+     * closed 的会重开它」。
+     */
+    const dismissed = dismiss([gap()], "G-1", "反方没读到第 3 节");
+    const after = applyRound(dismissed, {
+      round: 2,
+      found: [{ id: "G-1", severity: "P1", title: "第 3 节那条也不可测" }],
+      verdicts: {},
+    });
+    assert.equal(after[0]?.status, "open");
+    assert.equal(after[0]?.openedRound, 2);
+  });
+});
+
+describe("L1 · 人自己提一个问题", () => {
+  it("落成 HUMAN-1 / finding / P1", () => {
+    /*
+     * 用户 2026-07-30 拍板的兼容判据，逐条钉住：
+     *   kind    finding —— schema 那条配对 CHECK 要求 finding 必有严重度
+     *   severity P1     —— 不是 P0：P0 不可豁免，而这是我自己提的要求，
+     *                      「我改主意了」必须还能走 waive
+     *   id      HUMAN- 前缀 —— 和 rubric 的 RB: 前缀同一个先例，不新增 kind
+     */
+    const [only] = raise([], { title: "没说清楚失败时回滚到哪", round: 3 });
+    assert.deepEqual(only, {
+      id: "HUMAN-1",
+      kind: "finding",
+      severity: "P1",
+      title: "没说清楚失败时回滚到哪",
+      status: "open",
+      openedRound: 3,
+      resolution: null,
+    });
+    assert.equal(isHumanGap(only!), true);
+    assert.equal(isHumanGap(gap()), false);
+  });
+
+  it("顺号，而且**算所有的、不只 open 的**", () => {
+    /*
+     * 让号出来重用会撞上 `applyRound` 里「re-finding 一个 closed 的会重开它」：
+     * 新问题顶着旧问题的 id，两条被混成一条，而旧问题的标题还留在那儿。
+     */
+    const one = raise([], { title: "第一条", round: 1 });
+    const closed = dismiss(one, "HUMAN-1", "我自己撤了");
+    const two = raise(closed, { title: "第二条", round: 2 });
+    assert.deepEqual(two.map((each) => each.id), ["HUMAN-1", "HUMAN-2"]);
+  });
+
+  it("和模型报的问题共存，不互相占号", () => {
+    const mixed = raise([gap({ id: "SPEC-1" })], { title: "我要的", round: 1 });
+    assert.deepEqual(mixed.map((each) => each.id), ["SPEC-1", "HUMAN-1"]);
+  });
+
+  it("id 只有这一个拼法", () => {
+    // 别在别处再拼一次 `"HUMAN-" + n`：那就是两份实现（E3）。
+    assert.equal(raise([], { title: "t", round: 1 })[0]?.id, humanGapId(1));
+  });
+
+  it("空标题 —— 拒绝，下一轮没人知道该改什么", () => {
+    for (const title of ["", "  \n "]) {
+      assert.throws(() => raise([], { title, round: 1 }),
+        (error: unknown) => {
+          assert.ok(error instanceof InvalidVerdictError);
+          assert.equal(error.code, "title_missing");
+          return true;
+        });
+    }
+  });
+
+  it("它挡闸门，但我改主意还能 waive", () => {
+    const raised = raise([], { title: "我要的", round: 1 });
+    assert.deepEqual(blockersFrom(raised).map((each) => each.id), ["HUMAN-1"]);
+    assert.equal(waive(raised, "HUMAN-1", "想清楚了，这版先不做")[0]?.status, "waived");
   });
 });

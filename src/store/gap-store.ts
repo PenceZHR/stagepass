@@ -3,6 +3,8 @@ import type Database from "better-sqlite3";
 import {
   applyRound,
   blockersFrom,
+  dismiss,
+  raise,
   waive,
   waivedFrom,
   type Gap,
@@ -92,6 +94,29 @@ export class GapStore {
     const next = waive(this.all(changeId, phase), gapId, reason);
     this.write(changeId, phase, next);
     return next;
+  }
+
+  /** 人驳回一条问题：这条不成立。落 closed，理由必填。 */
+  dismiss(
+    changeId: string,
+    phase: Phase,
+    gapId: string,
+    reason: string,
+  ): Gap[] {
+    const next = dismiss(this.all(changeId, phase), gapId, reason);
+    this.write(changeId, phase, next);
+    return next;
+  }
+
+  /**
+   * 人自己提一个问题。返回**新开那一条**，因为调用方要把 id 说回给人。
+   *
+   * 号由 `raise` 从库里现有的 `HUMAN-` 里顺出来，所以两次调用之间不会撞号。
+   */
+  raise(changeId: string, phase: Phase, title: string, round: number): Gap {
+    const next = raise(this.all(changeId, phase), { title, round });
+    this.write(changeId, phase, next);
+    return next[next.length - 1]!;
   }
 
   /**

@@ -1,5 +1,6 @@
 import { RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
 import { parseTurnResult } from "./turn";
+import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
 import type { Phase } from "./phase";
 
@@ -63,12 +64,45 @@ const extra = (text: string | undefined): string[] =>
  * its own thread, which is the only arrangement where blue has not already read
  * every word of red's self-justification.
  */
+/**
+ * 一条 gap 在提示词里长什么样。
+ *
+ * `standard` 写「标准」而不是它的 severity —— 它**没有** severity（rubric 是二元判断，
+ * REMAP §5.1）。原来无条件插 `[${gap.severity}]`，于是每条 rubric 派生的 gap 在裁判
+ * 眼里都是 `[null]`：一个模型看不懂的分级，而它正要对这条表态。
+ */
+const gapLine = (gap: Gap): string =>
+  `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`;
+
 export function judgePrompt(input: RoundInstructions): string {
-  const gaps = input.openGaps.length === 0
+  /*
+   * 人提的问题**单独一区，措辞和模型报的不一样**（用户 2026-07-30）。
+   *
+   * 混在一起列，「用户明确要求的」和「反方顺口提的」在裁判眼里一模一样 —— 而它们
+   * 的分量不一样：一条模型报的问题，裁判判它不成立是它的本职；一条人提的要求，
+   * 裁判不该拿「我觉得这个建议可以不采纳」把它关掉。
+   *
+   * 分区判据只有 id 前缀（`isHumanGap`），和 rubric 派生 gap 用 `RB:` 前缀是同一个
+   * 先例。**它仍然可以被判 closed** —— 人的要求真被满足了就该关掉；这里管的是
+   * 措辞，不是给它加一层不可关闭的特权。
+   */
+  const human = input.openGaps.filter(isHumanGap);
+  const found = input.openGaps.filter((gap) => !isHumanGap(gap));
+
+  const sections: string[] = [];
+  if (human.length > 0) {
+    sections.push(
+      "**人明确要求下一轮处理的（不许当成建议）：**",
+      ...human.map(gapLine),
+    );
+  }
+  if (found.length > 0) {
+    if (sections.length > 0) sections.push("", "之前轮次报出来的问题：");
+    sections.push(...found.map(gapLine));
+  }
+  const gaps = sections.length === 0
     ? "（本阶段目前没有未关闭的问题。）"
-    : input.openGaps
-      .map((gap) => `- ${gap.id} [${gap.severity}] ${gap.title}`)
-      .join("\n");
+    : sections.join("\n");
 
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
