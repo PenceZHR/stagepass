@@ -877,6 +877,26 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
     open(`/api/rubric?change=${CHANGE}&phase=Spec&role=${role}`,
       { method: "POST", body: JSON.stringify(body) });
 
+  it("**每一份都说清由谁判** —— 界面靠它,不许自己抄一份", async () => {
+    /*
+     * 「没有人给自己打分」排完之后是一条链：蓝方判红方、裁判判蓝方、裁判自己那份
+     * 交给人。界面必须照实说得出「这一份不进对抗」—— 否则 verdict 那一栏会显示成
+     * 「这个角色当时没有 rubric」,而那是**假话**:标准在,只是不再由模型判。
+     *
+     * 判据从服务端来,不在 panel.js 里抄一份 —— 抄一份就是同一条规则的第二份拷贝,
+     * 而它们必然漂移。
+     */
+    await withPanel(async ({ open }) => {
+      const body = await (await open(`/api/rubric?change=${CHANGE}&phase=Spec`)).json() as {
+        roles: { role: string; assessedBy: string | null }[];
+      };
+      assert.deepEqual(
+        Object.fromEntries(body.roles.map((each) => [each.role, each.assessedBy])),
+        { producer: "blue", critic: "judge", verdict: null },
+      );
+    });
+  });
+
   it("存一份，读回来", async () => {
     await withPanel(async ({ open, database: _database }) => {
       const saved = await (await post(open, "producer", {

@@ -1523,6 +1523,10 @@ async function loadRubric(phase, role) {
   editing = {
     phase, role,
     scope: mine?.scope ?? "project",
+    // 这一份由谁判，null = 不进对抗（人自己看）。**服务端给的,这边不算。**
+    // 「谁判谁」那条链的判据只有一份（work/rubric-round.ts 的 ASSESSED_BY），
+    // 在这里抄一遍就是第二份拷贝,而漂移的那天界面会理直气壮地说错话。
+    assessedBy: mine?.assessedBy ?? null,
     // 存的那一版留一份，用来算「这次编辑会退休掉什么」—— 那决定要不要问理由。
     saved: mine?.criteria ?? [],
     drafts: (mine?.criteria ?? []).map((entry) => ({
@@ -1671,6 +1675,27 @@ function drawVerdicts() {
 
   const head = document.createElement("p");
   head.className = "sheet-section";
+
+  /*
+   * 不进对抗的那一份（裁判自己那份）——**照实说**。
+   *
+   * 这一支要排在最前面：对它来说「这个阶段还没跑过判定」和「这个角色当时没有
+   * rubric」两句话都是假的。标准在，只是链排到裁判就没有下一个模型了，让它对照
+   * 自己那份打分等于把刚拿掉的毛病装回去。所以它交给人。
+   *
+   * 这一屏的文案不许写 markdown —— textContent 会把星号原样画出来。
+   */
+  if (editing.assessedBy === null) {
+    head.textContent = "这一份不进对抗，由你自己判";
+    box.append(head);
+    const why = document.createElement("p");
+    why.className = "rubric-note";
+    why.textContent = "裁判是你直接在读的那一个：对照下面这几条，看它这一轮的表态"
+      + "（关掉了哪些问题、理由站不站得住）。模型不判它 —— 让它给自己打分，"
+      + "就回到「模型说没问题」了。";
+    box.append(why);
+    return box;
+  }
 
   if (!round) {
     head.textContent = "这个阶段还没跑过 rubric 判定";

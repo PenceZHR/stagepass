@@ -69,6 +69,19 @@ const ASSESSED_BY: Readonly<
   verdict: null,
 };
 
+/**
+ * 这一份标准由谁判，`null` = 不进对抗（交给人）。
+ *
+ * 面板要照实说得出「这一份不进对抗，你自己对照裁判的表态看」—— 不说，verdict 那一栏
+ * 会显示成「这个角色当时没有 rubric」，而那是**假话**：标准在，只是不再由模型判。
+ *
+ * 导出来，是为了让界面**读**这条规则而不是**抄**它。同一条规则的两份拷贝必然漂移，
+ * 而漂移的那一天，界面会理直气壮地说错话。
+ */
+export const assessorOf = (
+  role: RubricRole,
+): keyof RoundSettled["transcripts"] | null => ASSESSED_BY[role]?.by ?? null;
+
 export interface RubricRoundRequest extends RoundRequest {
   /** rubric 有项目级默认，所以要知道这个 Change 属于哪个项目。 */
   readonly projectId: string;

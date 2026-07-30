@@ -14,6 +14,7 @@ import {
 } from "../codex/archive";
 import { BLUE, RED } from "../domain/round";
 import { RoundTurnRunner } from "../work/round-turn-runner";
+import { assessorOf } from "../work/rubric-round";
 import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
@@ -1007,6 +1008,13 @@ export async function handle(
             : (current.scope.changeId === null ? "project" : "change"),
           version: current?.version ?? 0,
           criteria: current?.criteria ?? [],
+          /**
+           * 这一份由谁判，null = 不进对抗（人自己看）。
+           *
+           * **从 domain 读，界面不许自己抄一份。** 少了它，verdict 那一栏会显示
+           * 「这个角色当时没有 rubric」—— 标准明明在，只是不再由模型判。
+           */
+          assessedBy: assessorOf(role),
         };
       }),
     });
