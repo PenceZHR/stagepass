@@ -2,7 +2,7 @@ import { blockersFrom, type Gap } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
-  BLUE, judgePrompt, RED, readRound, type RoundInstructions,
+  judgePrompt, readAgents, readRound, type RoundInstructions,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
@@ -48,8 +48,14 @@ export interface RoundRequest {
 export interface RoundDependencies {
   readonly transport: CodexTransport;
   readonly gaps: GapStore;
-  /** What one role said in its own words, read from its own rollout. */
-  readonly readRole: (parentThreadId: string, agentPath: string) => string;
+  /**
+   * 一条线程自己说的话，按线程 id 读。
+   *
+   * **不再按 `agent_path` 认红蓝** —— 那一列只有原生 `spawn_agent({task_name})`
+   * 会设，而那个工具不是每个 Codex 会话都有（2026-07-30 实测）。现在由裁判把它
+   * 派生的两个 `agent_id` 报进答案。
+   */
+  readonly readThread: (threadId: string) => string;
 }
 
 export interface RoundSettled {
@@ -94,9 +100,15 @@ export async function runRound(
     }),
   });
 
-  // Read both roles first. See the note above on why this cannot be reordered.
-  const red = dependencies.readRole(delivery.threadId, RED);
-  const blue = dependencies.readRole(delivery.threadId, BLUE);
+  /*
+   * 裁判报出来的那两条线程，然后读它们自己的话。
+   *
+   * **顺序不能换**（见文件开头）：两边都读到了，才允许写 gap。裁判没报 id 会在这里
+   * 抛 —— 那是对的，一轮读不到正反两方说了什么，就不该在闸门那边留下任何痕迹。
+   */
+  const agents = readAgents(delivery.text);
+  const red = dependencies.readThread(agents.red);
+  const blue = dependencies.readThread(agents.blue);
 
   const reading = readRound({
     phase: request.phase,

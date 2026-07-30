@@ -4,7 +4,6 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { RESULT_CONTRACT } from "../domain/turn";
-import { BLUE, RED } from "../domain/round";
 import { ScriptedCodexTransport } from "../codex/transport";
 import { ChangeStore } from "../store/change-store";
 import { GapStore } from "../store/gap-store";
@@ -38,15 +37,25 @@ function answer(input: {
   }) + "\n```";
 }
 
-function verdicts(record: Record<string, { kind: string; reason: string }>): string {
-  return "```json\n" + JSON.stringify({ verdicts: record }) + "\n```";
+/**
+ * 裁判的答复：**必须报出两条子 Agent 的线程 id**，正文才读得到
+ * （`domain/round.ts` 的 `readAgents`）。
+ */
+function verdicts(record: Record<string, { kind: string; reason: string }> = {}): string {
+  return "```json\n" + JSON.stringify({
+    agents: { red: RED_THREAD, blue: BLUE_THREAD }, verdicts: record,
+  }) + "\n```";
 }
 
+const RED_THREAD = "T-RED";
+const BLUE_THREAD = "T-BLUE";
+
+/** 按线程 id 给出那一方说的话。 */
 const roles = (red: string, blue: string) =>
-  (_parent: string, path: string): string => {
-    if (path === RED) return red;
-    if (path === BLUE) return blue;
-    throw new Error(`unexpected role ${path}`);
+  (threadId: string): string => {
+    if (threadId === RED_THREAD) return red;
+    if (threadId === BLUE_THREAD) return blue;
+    throw new Error(`unexpected thread ${threadId}`);
   };
 
 describe("L4 · a round turns blue's attack into gaps the gate can read", () => {
@@ -60,7 +69,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       {
         transport,
         gaps,
-        readRole: roles(
+        readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
           answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
         ),
@@ -81,7 +90,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const dependencies = {
       transport,
       gaps,
-      readRole: roles(
+      readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
         answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
       ),
@@ -112,14 +121,14 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const dependencies = {
       transport,
       gaps,
-      readRole: (_parent: string, path: string) => path === RED
+      readThread: (threadId: string) => threadId === RED_THREAD
         ? answer({ artifactIds: ["spec.md"] })
         : answer({ blockers: [] }),
     };
     const first = {
       transport,
       gaps,
-      readRole: roles(
+      readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
         answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
       ),
@@ -149,7 +158,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const withBlue = (blockers: { id: string; severity: string; title: string }[]) => ({
       transport,
       gaps,
-      readRole: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers })),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers })),
     });
 
     await runRound({ ...request, round: 1 },
@@ -172,8 +181,8 @@ describe("L4 · a round that half happened settles nothing", () => {
       {
         transport,
         gaps,
-        readRole: (_parent, path) => {
-          if (path === RED) return answer({ artifactIds: ["spec.md"] });
+        readThread: (threadId) => {
+          if (threadId === RED_THREAD) return answer({ artifactIds: ["spec.md"] });
           throw new Error("no sub-agent at /root/blue");
         },
       },
@@ -193,7 +202,7 @@ describe("L4 · a round that half happened settles nothing", () => {
       {
         transport,
         gaps,
-        readRole: roles(
+        readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
           "蓝方觉得这份 Spec 大体没问题。",
         ),

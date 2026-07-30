@@ -29,7 +29,7 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../src/db/schema";
 import { RUBRIC_ROLES, type RubricRole } from "../src/domain/rubric";
-import { createSubAgentLookup, readRoleTranscript } from "../src/codex/subagent";
+import { readThreadTranscript } from "../src/codex/subagent";
 import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
@@ -99,7 +99,6 @@ async function main(): Promise<void> {
   }
 
   const gaps = new GapStore(database);
-  const lookup = createSubAgentLookup();
   const transport = new CodexTuiTransport({
     // 空目录是故意的：指向一个大仓库，模型头几分钟都在读代码而不是做这一轮。
     cwd: stableWorkspace("stagepass-verify-rubric-cwd"),
@@ -125,8 +124,7 @@ async function main(): Promise<void> {
     { projectId: project.id, changeId: CHANGE, phase: PHASE, round: 1, task: TASK, judgeThreadId: null },
     {
       transport, gaps, rubrics,
-      readRole: (parentThreadId, agentPath) =>
-        readRoleTranscript({ lookup, parentThreadId, agentPath }),
+      readThread: (threadId) => readThreadTranscript({ threadId }),
     },
   );
 

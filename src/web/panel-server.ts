@@ -8,11 +8,10 @@ import { PHASES, isPhase, type Phase } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
-import { createSubAgentLookup, readRoleTranscript } from "../codex/subagent";
+import { createSubAgentLookup, readThreadTranscript } from "../codex/subagent";
 import {
   archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
 } from "../codex/archive";
-import { BLUE, RED } from "../domain/round";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { assessorOf } from "../work/rubric-round";
 import { createTrustOps, type TrustOps } from "../codex/trust";
@@ -611,7 +610,6 @@ async function runRound(input: {
     }
   }
 
-  const lookup = createSubAgentLookup();
   const loop = new TurnLoop({
     database,
     runner: new RoundTurnRunner({
@@ -628,8 +626,7 @@ async function runRound(input: {
       evidence: new EvidenceStore(database),
       repo: sessions.repo,
       workspaceFor: (each) => sessions.workspaceFor(each),
-      readRole: (parentThreadId, agentPath) =>
-        readRoleTranscript({ lookup, parentThreadId, agentPath }),
+      readThread: (threadId) => readThreadTranscript({ threadId }),
       taskFor: (each) => MINIMAL_PHASE_INSTRUCTIONS[each as Phase],
     }),
   });
@@ -832,13 +829,12 @@ export async function handle(
      * 整段包在 try 里：它读的是别人的库，Codex 改了表名这里就该**报不知道**，
      * 而不是把整个进度端点带崩。
      */
-    let spawned: string[] = [];
+    let spawned = 0;
     let stageKnown = false;
     try {
       const bound = new BindingStore(database).find(changeId, phase);
       if (bound?.status === "bound") {
-        spawned = createSubAgentLookup().children(bound.threadId)
-          .map((record) => record.agentPath);
+        spawned = createSubAgentLookup().spawnCount(bound.threadId);
         stageKnown = true;
       }
     } catch {
@@ -855,7 +851,7 @@ export async function handle(
         startedAt: job.createdAt,
         elapsedMs: Date.now() - Date.parse(job.createdAt),
       },
-      /** 看见的子 Agent 路径，原样给出去 —— 界面自己决定怎么说。 */
+      /** 这一轮派生了几个子 Agent。原样给出去 —— 界面自己决定怎么说。 */
       spawned,
       /**
        * 走到哪一步。`null` = 说不出来（第一轮，或者查不到子 Agent）。
@@ -865,9 +861,11 @@ export async function handle(
        */
       stage: !stageKnown
         ? null
-        : spawned.includes(BLUE)
-          ? "blue_attacking"
-          : spawned.includes(RED) ? "red_writing" : "judge_starting",
+        // **数个数，不看 agent_path** —— 那一列只有一个派生入口会设，而它不是每个
+        // 会话都有（codex/subagent.ts 开头）。派生了 1 个 = 红方在写，2 个 = 轮到
+        // 蓝方了。蓝方之后是「还在挑」还是「裁判在裁」这一侧分不出来，不报第三档。
+        : spawned >= 2 ? "blue_attacking"
+          : spawned === 1 ? "red_writing" : "judge_starting",
       /**
        * **承重的那一格**：状态说在跑，可是没有活进程 —— 派出去的那个 Codex 已经没了。
        *

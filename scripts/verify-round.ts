@@ -18,9 +18,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../src/db/schema";
-import { applyRound, blockersFrom } from "../src/domain/gap";
-import { BLUE, RED, readRound } from "../src/domain/round";
-import { createSubAgentLookup, readRoleTranscript } from "../src/codex/subagent";
+import { readThreadTranscript } from "../src/codex/subagent";
 import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
@@ -54,34 +52,6 @@ const TASK = [
   "写清楚：用户能观察到的行为、边界情况、以及验收标准。",
 ].join("\n");
 
-/** The old read-only mode: inspect a round that already ran. */
-function readOnly(judgeThreadId: string): void {
-  const lookup = createSubAgentLookup();
-  const children = lookup.children(judgeThreadId);
-  console.log("judge     ", judgeThreadId);
-  console.log("spawned   ", children.map((child) => child.agentPath).join(", ") || "(nothing)");
-  if (children.length === 0) {
-    console.error("\nThat thread spawned no sub-agents; there is no round here to read.");
-    process.exit(1);
-  }
-
-  const transcript = {
-    phase: "Spec" as const,
-    round: 1,
-    red: readRoleTranscript({ lookup, parentThreadId: judgeThreadId, agentPath: RED }),
-    blue: readRoleTranscript({ lookup, parentThreadId: judgeThreadId, agentPath: BLUE }),
-    judge: "",
-  };
-  console.log("\n--- 红方，它自己说的 ---\n" + transcript.red.slice(0, 400));
-  console.log("\n--- 蓝方，它自己说的（没有经过裁判转述）---\n" + transcript.blue.slice(0, 400));
-
-  const reading = readRound(transcript);
-  const gaps = applyRound([], reading.outcome);
-  console.log("\n--- 这一轮对 gap 的影响 ---");
-  console.log("artifacts ", reading.artifactIds.join(", ") || "(none)");
-  console.log("blockers  ", blockersFrom(gaps).map((gap) => `${gap.id}[${gap.severity}]`).join(" ") || "(none)");
-}
-
 async function live(): Promise<void> {
   const dbPath = join(mkdtempSync(join(tmpdir(), "stagepass-round-")), "ship.db");
   const database = new Database(dbPath);
@@ -91,7 +61,6 @@ async function live(): Promise<void> {
   new ChangeStore(database).create(CHANGE);
 
   const gaps = new GapStore(database);
-  const lookup = createSubAgentLookup();
   const transport = new CodexTuiTransport({
     // An empty directory on purpose: pointed at a big repository the model
     // spends the first minutes reading code instead of doing the round.
@@ -109,8 +78,7 @@ async function live(): Promise<void> {
     {
       transport,
       gaps,
-      readRole: (parentThreadId, agentPath) =>
-        readRoleTranscript({ lookup, parentThreadId, agentPath }),
+      readThread: (threadId) => readThreadTranscript({ threadId }),
     },
   );
 
@@ -132,15 +100,13 @@ async function live(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [flag, value] = process.argv.slice(2);
-  if (flag === "--read") {
-    if (!value) {
-      console.error("usage: pnpm verify:round --read <judge-thread-id>");
-      process.exit(1);
-    }
-    readOnly(value);
-    return;
-  }
+  /*
+   * `--read <judge-thread-id>`（事后翻一轮已经跑过的）**删掉了**。
+   *
+   * 它建在「从 `agent_path` 认红蓝」上，而那条路已经没了 —— 现在红蓝是裁判在答复里
+   * 报出来的（`domain/round.ts` 的 `readAgents`），事后只拿一个裁判线程 id 是复原
+   * 不出来的。留一个跑不通的模式，就是这棵树最恨的那种「有标签、执行不了」。
+   */
   await live();
 }
 

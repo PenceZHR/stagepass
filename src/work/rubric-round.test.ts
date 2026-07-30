@@ -45,9 +45,16 @@ const answer = (blockers: { id: string; severity: string; title: string }[] = []
 
 const rubricBlock = (lines: string[]) => ["```rubric", ...lines, "```"].join("\n");
 
-/** 红蓝各自的 rollout 由 readRole 提供；裁判的是 transport 的返回。 */
+const RED_THREAD = "T-RED";
+const BLUE_THREAD = "T-BLUE";
+
+/** 红蓝各自的 rollout 按线程 id 读；裁判的是 transport 的返回。 */
 const roles = (red: string, blue: string) =>
-  (_thread: string, path: string) => (path === RED ? red : path === BLUE ? blue : "");
+  (threadId: string) => (threadId === RED_THREAD ? red : threadId === BLUE_THREAD ? blue : "");
+
+/** 裁判的答复必须带上那两条线程 id，正文才读得到。 */
+const asJudge = (body: string) => body.replace(
+  '{"verdicts"', `{"agents":{"red":"${RED_THREAD}","blue":"${BLUE_THREAD}"},"verdicts"`);
 
 async function run(context: ReturnType<typeof open>, input: {
   red?: string; blue?: string; judge?: string; round?: number;
@@ -57,11 +64,11 @@ async function run(context: ReturnType<typeof open>, input: {
     round: input.round ?? 1, task: "写 Spec", judgeThreadId: null,
   }, {
     transport: new ScriptedCodexTransport([
-      input.judge ?? '```json\n{"verdicts":{}}\n```',
+      asJudge(input.judge ?? '```json\n{"verdicts":{}}\n```'),
     ]),
     gaps: context.gaps,
     rubrics: context.rubrics,
-    readRole: roles(input.red ?? answer(), input.blue ?? answer()),
+    readThread: roles(input.red ?? answer(), input.blue ?? answer()),
   });
 }
 
@@ -110,13 +117,13 @@ describe("L5 · 没有人给自己打分", () => {
   it("**红方的提示词里一条标准都没有** —— 它是被判的那个", async () => {
     const context = open();
     seedProducer(context);
-    const transport = new ScriptedCodexTransport(['```json\n{"verdicts":{}}\n```']);
+    const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readRole: roles(answer(), answer()),
+      readThread: roles(answer(), answer()),
     });
 
     const prompt = transport.dispatches[0]!.prompt;
@@ -145,13 +152,13 @@ describe("L5 · 没有人给自己打分", () => {
       { projectId: PROJECT, changeId: null, phase: "Spec", role: "verdict" },
       [{ text: "关闭一个问题必须写清它为什么不再成立", blocking: true }]);
 
-    const transport = new ScriptedCodexTransport(['```json\n{"verdicts":{}}\n```']);
+    const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
     const settled = await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readRole: roles(answer(), answer()),
+      readThread: roles(answer(), answer()),
     });
 
     assert.doesNotMatch(transport.dispatches[0]!.prompt, /```rubric/,
@@ -279,13 +286,13 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
   it("契约进了裁判的提示词 —— 三个角色的 key 都在里面", async () => {
     const context = open();
     seedProducer(context);
-    const transport = new ScriptedCodexTransport(['```json\n{"verdicts":{}}\n```']);
+    const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readRole: roles(answer(), answer()),
+      readThread: roles(answer(), answer()),
     });
 
     // 模型答不出它没被问过的题。契约没进提示词，整套就只是在惩罚它不知道的事。

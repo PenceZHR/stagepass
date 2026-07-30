@@ -520,7 +520,8 @@ describe("panel · 一轮跑到哪了", () => {
     status: string;
     live: boolean;
     job: { id: string; status: string; elapsedMs: number } | null;
-    spawned: string[];
+    /** 这一轮派生了几个子 Agent。数个数，不看 agent_path。 */
+    spawned: number;
     stage: string | null;
     processGone: boolean;
   }

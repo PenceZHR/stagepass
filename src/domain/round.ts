@@ -256,7 +256,11 @@ export function judgePrompt(input: RoundInstructions): string {
     gaps,
     "",
     "用一个 ```json 块回答，不要复述正方或反方说了什么：",
-    '{"verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}}}',
+    '{"agents": {"red": "<正方的 agent_id>", "blue": "<反方的 agent_id>"},',
+    ' "verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}}}',
+    "",
+    "`agents` 里填 `spawn_agent` 返回的那两个 `agent_id`。**这两个 id 是这一轮唯一的",
+    "取证入口** —— 少一个、写错一个，这一轮就作废，而正反两方说的话谁也看不到。",
     "",
     "沉默等于仍然存在 —— 你没提到的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
@@ -319,6 +323,72 @@ export function readVerdicts(text: string): VerdictReport {
       : { kind: "still_open", reason: entry.reason };
   }
   return { verdicts };
+}
+
+export class UnreadableAgentsError extends Error {
+  constructor(readonly detail: string) {
+    super(`agents_unreadable: ${detail}`);
+    this.name = "UnreadableAgentsError";
+  }
+}
+
+export interface RoundAgents {
+  /** 正方那条子 Agent 线程。 */
+  readonly red: string;
+  /** 反方那条。 */
+  readonly blue: string;
+}
+
+/**
+ * 裁判报出来的两条子 Agent 线程 id。
+ *
+ * ## 为什么由裁判报，而不是从 Codex 的库里认
+ *
+ * 原来靠 `threads.agent_path`（`/root/red`）认。2026-07-30 实测：**只有原生
+ * `spawn_agent({task_name})` 会设那一列，而那个工具不是每个会话都有** —— 没有它的
+ * 会话里，裁判只能走 `exec` 里的 `multi_agent_v1__spawn_agent`，那条路没有
+ * `task_name`，于是 `agent_path` 是 NULL，StagePass 报 `no sub-agent at /root/red`，
+ * **每个阶段的每一轮都跑不了**。光靠提示词修不好：工具不在，模型再听话也设不上。
+ *
+ * 裁判**总是**拿得到 id（两个派生入口都返回 `agent_id`），所以让它报出来。
+ * 顺带把对 Codex 私有库的依赖去掉了 —— rollout 文件名里就带着 thread id。
+ *
+ * ## 「不经裁判转述」没有被削弱
+ *
+ * 它报的是**指针**，正文照旧从那两条 rollout 里读。一个想软化蓝方的裁判做不到这件
+ * 事 —— 它能动的只有「去读哪一条」，而报错一条会让这一轮**大声失败**，不会变成一份
+ * 被软化的意见。
+ *
+ * ## 三种都抛，不降级
+ *
+ * 少一个、一个都没有、两个一样 —— 全部抛。降级成空 transcript 等于把「读不到蓝方」
+ * 和「蓝方没发现问题」变成同一件事，而那是这套机制最不能容忍的混淆。
+ */
+export function readAgents(text: string): RoundAgents {
+  const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/g)]
+    .map((match) => match[1]!.trim());
+  const candidate = fences.length > 0 ? fences[fences.length - 1]! : text.trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    throw new UnreadableAgentsError("裁判的答复不是一个 json 块");
+  }
+  const agents = (parsed as { agents?: unknown } | null)?.agents as
+    { red?: unknown; blue?: unknown } | undefined;
+  const red = agents?.red;
+  const blue = agents?.blue;
+  if (typeof red !== "string" || red.trim() === "") {
+    throw new UnreadableAgentsError("没有报出正方的线程 id");
+  }
+  if (typeof blue !== "string" || blue.trim() === "") {
+    throw new UnreadableAgentsError("没有报出反方的线程 id");
+  }
+  if (red.trim() === blue.trim()) {
+    throw new UnreadableAgentsError(`正反两方报成了同一条线程：${red}`);
+  }
+  return { red: red.trim(), blue: blue.trim() };
 }
 
 export interface RoundTranscript {

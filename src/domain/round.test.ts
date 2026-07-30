@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import type { Gap } from "./gap";
-import { BLUE, judgePrompt, readRound, readVerdicts, RED, UnreadableVerdictError } from "./round";
+import {
+  BLUE, judgePrompt, readAgents, readRound, readVerdicts, RED,
+  UnreadableAgentsError, UnreadableVerdictError,
+} from "./round";
 import { TurnResultUnparsableError } from "./turn";
 
 const answer = (artifacts: string[], blockers: object[] = []) =>
@@ -495,5 +498,75 @@ describe("L4 · each role is read from its own transcript", () => {
     assert.deepEqual(reading.outcome.verdicts, {
       "SPEC-1": { kind: "closed", reason: "已收窄" },
     });
+  });
+});
+
+/**
+ * 裁判必须报出它派生的那两个子 Agent 的线程 id。
+ *
+ * ## 为什么换成这条
+ *
+ * 原来 StagePass 靠 Codex 私有库里的 `threads.agent_path` 认红蓝。而 2026-07-30
+ * 实测发现**只有原生 `spawn_agent({task_name})` 会设那一列**，而那个工具**不是每个
+ * 会话都有** —— 没有它的会话里，每个阶段的每一轮都跑不了，症状是
+ * `no sub-agent at /root/red`。光靠提示词修不好：工具不在，模型再听话也设不上。
+ *
+ * 裁判**总是**拿得到 id（两个派生入口都返回 `agent_id`），所以让它报出来。
+ *
+ * ## 「不经裁判转述」那条保证没有被削弱
+ *
+ * 裁判提供的只是**指针**，StagePass 照旧去读那两条 rollout 的原文。一个想软化蓝方
+ * 的裁判仍然做不到 —— 它能改的只有「去读哪一条」，而报错 id 会让这一轮**大声失败**，
+ * 不会变成一份被软化的意见。
+ */
+describe("L4 · 裁判报出两个子 Agent 的线程 id", () => {
+  const judged = (agents: object, verdicts: object = {}) =>
+    "```json\n" + JSON.stringify({ agents, verdicts }) + "\n```";
+
+  it("读得出两个 id", () => {
+    assert.deepEqual(
+      readAgents(judged({ red: "019fb428-aaaa", blue: "019fb429-bbbb" })),
+      { red: "019fb428-aaaa", blue: "019fb429-bbbb" },
+    );
+  });
+
+  it("**少一个就是没有** —— 不许拿一个 id 去读两边", () => {
+    assert.throws(
+      () => readAgents(judged({ red: "019fb428-aaaa" })),
+      UnreadableAgentsError,
+    );
+  });
+
+  it("**压根没报 —— 大声失败，不是当成「两边都没说话」**", () => {
+    // 静默降级成空 transcript，等于把「读不到蓝方」和「蓝方没发现问题」变成同一件事，
+    // 而那是这套机制最不能容忍的一种混淆。
+    assert.throws(
+      () => readAgents('```json\n{"verdicts":{}}\n```'),
+      UnreadableAgentsError,
+    );
+  });
+
+  it("两个 id 一样 —— 也是错的", () => {
+    // 同一条线程不可能既是红方又是蓝方。放过它，两边会读到同一份文本，
+    // 而蓝方「没发现新问题」就成了必然。
+    assert.throws(
+      () => readAgents(judged({ red: "same", blue: "same" })),
+      UnreadableAgentsError,
+    );
+  });
+
+  it("verdicts 和 agents 在同一个块里，互不影响", () => {
+    const text = judged(
+      { red: "R1", blue: "B1" },
+      { "SPEC-1": { kind: "closed", reason: "第 2 节补上了" } },
+    );
+    assert.equal(readAgents(text).red, "R1");
+    assert.equal(readVerdicts(text).verdicts["SPEC-1"]?.kind, "closed");
+  });
+
+  it("**契约进了提示词** —— 模型答不出它没被问过的题", () => {
+    const prompt = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /"agents"/, "没告诉裁判要报 id");
+    assert.match(prompt, /agent_id/, "没说清报的是什么");
   });
 });

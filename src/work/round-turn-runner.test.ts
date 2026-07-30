@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { BLUE } from "../domain/round";
 import { ScriptedCodexTransport, type CodexTransport, type TurnDispatch } from "../codex/transport";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
@@ -42,14 +41,19 @@ function open() {
   };
 }
 
-const judgeSays = '```json\n{"verdicts":{}}\n```';
+const RED_THREAD = "T-RED";
+const BLUE_THREAD = "T-BLUE";
+/** 裁判的答复必须报出那两条子 Agent 的线程 id，正文才读得到。 */
+const judgeSays = '```json\n' + JSON.stringify({
+  agents: { red: RED_THREAD, blue: BLUE_THREAD }, verdicts: {},
+}) + '\n```';
 const answer = (blockers: { id: string; severity: string; title: string }[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: ["prd.md"], blockers }) + "\n```";
 
 function runner(
   context: ReturnType<typeof open>,
   transport: CodexTransport,
-  readRole: (thread: string, path: string) => string,
+  readThread: (threadId: string) => string,
   repo?: RepoOps,
 ): RoundTurnRunner {
   return new RoundTurnRunner({
@@ -62,7 +66,7 @@ function runner(
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
     repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
-    readRole,
+    readThread,
     taskFor: () => "写 PRD",
   });
 }
@@ -94,7 +98,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
       runner: runner(
         context,
         new ScriptedCodexTransport([judgeSays, judgeSays]),
-        (_thread, path) => (path === BLUE ? blueSays[blueRead++]! : answer()),
+        (threadId) => (threadId === BLUE_THREAD ? blueSays[blueRead++]! : answer()),
       ),
     });
 
@@ -117,8 +121,8 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
       runner: runner(
         context,
         new ScriptedCodexTransport([new Error("codex_died"), judgeSays]),
-        (_thread, path) =>
-          path === BLUE
+        (threadId) =>
+          threadId === BLUE_THREAD
             ? answer([{ id: "S-1", severity: "P1", title: "重跑那一轮发现的" }])
             : answer(),
       ),
