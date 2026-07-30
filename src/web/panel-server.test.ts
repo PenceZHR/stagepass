@@ -1335,6 +1335,32 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     });
   });
 
+  it("**终端一起来就死了 —— 立刻说，别等满 15 分钟**", async () => {
+    /*
+     * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
+     * `codex resume <id>` 一起来就退（`session … is archived`）。而那个等待循环原来
+     * 只盯答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
+     * 「在等你选」和「那边早就没了」长得一模一样。
+     *
+     * 判据是**进程状态**，不是 pty 的输出（§9.3）。
+     */
+    await withPanel(async ({ open, database, pty }) => {
+      new BindingStore(database).bind(CHANGE, "PRD", "THREAD-ARCHIVED");
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      pty.exit();                                   // 进程一起来就没了
+
+      const result = await (await asking).json() as {
+        answered: boolean; reason: string; threadId: string | null;
+      };
+      assert.equal(result.answered, false);
+      assert.equal(result.reason, "session_died_before_answering");
+      // 线程 id 要给出去 —— 最常见的原因是它被归档了，而解药 `codex unarchive` 要它。
+      assert.equal(result.threadId, "THREAD-ARCHIVED");
+    });
+  });
+
   it("一道没有 gap 的裁决 —— 和加这个之前逐字一样", async () => {
     await withPanel(async ({ open, database }) => {
       new EvidenceStore(database).put(CHANGE, "PRD", {

@@ -225,6 +225,33 @@ function stopProgress() {
   progressTimer = null;
 }
 
+/**
+ * 「没答上」的两种，翻成人话。
+ *
+ * 它们要做的事完全不同：一种是人还没去答，另一种是**那边的进程早就没了**。
+ * 后者最常见的原因是这个阶段绑的线程被 Codex 归档了 —— 而解药要那个线程 id，
+ * 所以服务端把它一起给了过来。
+ */
+function unansweredWords(result) {
+  if (result.reason !== "session_died_before_answering") {
+    return "问题已经在终端里了，等你在 Codex 的选择器里选。";
+  }
+  return `${result.phase} 的 Codex 一起来就退了，所以没人被问到。`
+    + (result.threadId
+      ? "最常见的原因是这个阶段绑的线程被 Codex 归档了 ——"
+        + ` 在终端里跑 codex unarchive ${result.threadId} 再试一次。`
+      : "");
+}
+/**
+ * 服务端把这次请求整个搞砸了吗。
+ *
+ * 服务端现在会把真实原因回给我们（原来是一个空 body 的 500，什么都不说）。
+ * **看见了就原样显示** —— 翻译它等于又把真实原因藏起来一次。
+ */
+function crashed(result) {
+  return result?.failed === true ? `出错了：${result.error}` : null;
+}
+
 /** 没派起来时说清是哪一种。原样吐一个 reason 等于没说。 */
 function runRefusal(result) {
   if (result.reason === "phase_already_running") {
@@ -266,7 +293,10 @@ async function run() {
     const result = await (await fetch(
       `/api/run?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     )).json();
-    if (result.ran === false) {
+    const broke = crashed(result);
+    if (broke !== null) {
+      say(broke);
+    } else if (result.ran === false) {
       say(runRefusal(result));
     } else {
       say(`${result.phase} 跑完了：${JSON.stringify(result.outcome)}`);
@@ -341,12 +371,15 @@ async function ask() {
     const result = await (await dispatchThenEnter(() => fetch(
       `/api/ask?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     ))).json();
-    if (!result.asked) {
+    const broke = crashed(result);
+    if (broke !== null) {
+      say(broke);
+    } else if (!result.asked) {
       say(result.reason === "no_decision_available"
         ? "这个闸门现在没有可做的裁决。"
         : `没问成：${result.reason}`);
     } else if (!result.answered) {
-      say("问题已经在终端里了，等你在 Codex 的选择器里选。");
+      say(unansweredWords(result));
     } else {
       say(saidWhat(result));
     }
@@ -408,12 +441,15 @@ async function recordBrief() {
     const result = await (await dispatchThenEnter(() => fetch(
       `/api/brief?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     ))).json();
-    if (!result.asked) {
+    const broke = crashed(result);
+    if (broke !== null) {
+      say(broke);
+    } else if (!result.asked) {
       say(result.reason === "no_items"
         ? "模型一条问题都没提出来。这不算「不需要问」—— 再试一次，或看终端里它说了什么。"
         : `没问成：${result.reason}${result.detail ? `（${result.detail}）` : ""}`);
     } else if (!result.answered) {
-      say("问题已经在终端里了，等你在 Codex 的选择器里答。");
+      say(unansweredWords(result));
     } else if (!result.recorded) {
       say("没记下任何需求 —— 你按了 Esc，或者有必答的没填。");
     } else {
@@ -457,12 +493,15 @@ async function waive() {
     const result = await (await dispatchThenEnter(() => fetch(
       `/api/waive?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     ))).json();
-    if (!result.asked) {
+    const broke = crashed(result);
+    if (broke !== null) {
+      say(broke);
+    } else if (!result.asked) {
       say(result.reason === "nothing_waivable"
         ? "这个阶段没有可以接受的风险（只有 P1 的问题可以，P0 不行）。"
         : `没问成：${result.reason}`);
     } else if (!result.answered) {
-      say("问题已经在终端里了，等你在 Codex 的选择器里选。");
+      say(unansweredWords(result));
     } else if (result.reason === "gate_moved") {
       say("闸门在你想的这段时间里动了 —— 这个决定作废，重新看一遍再定。");
     } else if (!result.waived) {

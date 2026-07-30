@@ -1125,12 +1125,35 @@ export async function handle(
     }));
 
     const deadline = Date.now() + 15 * 60_000;
+    let sessionDied = false;
     while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
+      /*
+       * **进程没了就别再等了。**
+       *
+       * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
+       * `codex resume <id>` 一起来就退（`session … is archived`）。而这里原来只盯
+       * 答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
+       * 「在等你选」和「那边早就没了」长得一模一样，正是这个项目从头到尾在防的那种。
+       *
+       * 判据是**进程状态**，不是 pty 的输出（§9.3）。
+       */
+      if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
       await new Promise((resolve) => { setTimeout(resolve, 1_000); });
     }
     const answer = questions.readAnswerFor(questionId);
     if (!answer) {
-      json(response, { asked: true, answered: false, phase, questionId });
+      json(response, {
+        asked: true, answered: false, phase, questionId,
+        /**
+         * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
+         * 的进程早就没了**。原来两种回来的都是同一个空结果。
+         */
+        reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
+        /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
+        threadId: sessionDied
+          ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
+          : null,
+      });
       return;
     }
 
@@ -1343,12 +1366,35 @@ export async function handle(
     }
 
     const deadline = Date.now() + 15 * 60_000;
+    let sessionDied = false;
     while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
+      /*
+       * **进程没了就别再等了。**
+       *
+       * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
+       * `codex resume <id>` 一起来就退（`session … is archived`）。而这里原来只盯
+       * 答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
+       * 「在等你选」和「那边早就没了」长得一模一样，正是这个项目从头到尾在防的那种。
+       *
+       * 判据是**进程状态**，不是 pty 的输出（§9.3）。
+       */
+      if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
       await new Promise((resolve) => { setTimeout(resolve, 1_000); });
     }
     const answer = questions.readAnswerFor(questionId);
     if (!answer) {
-      json(response, { asked: true, answered: false, phase, questionId });
+      json(response, {
+        asked: true, answered: false, phase, questionId,
+        /**
+         * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
+         * 的进程早就没了**。原来两种回来的都是同一个空结果。
+         */
+        reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
+        /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
+        threadId: sessionDied
+          ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
+          : null,
+      });
       return;
     }
 
@@ -1431,12 +1477,35 @@ export async function handle(
     }));
 
     const deadline = Date.now() + 15 * 60_000;
+    let sessionDied = false;
     while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
+      /*
+       * **进程没了就别再等了。**
+       *
+       * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
+       * `codex resume <id>` 一起来就退（`session … is archived`）。而这里原来只盯
+       * 答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
+       * 「在等你选」和「那边早就没了」长得一模一样，正是这个项目从头到尾在防的那种。
+       *
+       * 判据是**进程状态**，不是 pty 的输出（§9.3）。
+       */
+      if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
       await new Promise((resolve) => { setTimeout(resolve, 1_000); });
     }
     const answer = questions.readAnswerFor(questionId);
     if (!answer) {
-      json(response, { asked: true, answered: false, phase, questionId });
+      json(response, {
+        asked: true, answered: false, phase, questionId,
+        /**
+         * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
+         * 的进程早就没了**。原来两种回来的都是同一个空结果。
+         */
+        reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
+        /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
+        threadId: sessionDied
+          ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
+          : null,
+      });
       return;
     }
 
@@ -1598,9 +1667,28 @@ export function createPanelServer(options: PanelOptions): {
 } {
   const sessions = new PanelSessions(options);
   const server = createServer((request, response) => {
-    void handle(request, response, sessions, options).catch(() => {
-      if (!response.headersSent) response.writeHead(500);
-      response.end();
+    void handle(request, response, sessions, options).catch((error: unknown) => {
+      /*
+       * **失败必须说真话**（PRD §7 M7）。
+       *
+       * 这里原来是 `catch(() => { 500; end(); })` —— 一个空 body 的 500，服务端一句
+       * 都不记。2026-07-30 撞上了它的代价：用户点「请 Codex 问我」报错，而我这一侧
+       * 能看到的只有「题落库了、没有活进程」，**真实原因被这一行吃掉了**。
+       * 那正是 M7 记着的老树病：「把真实原因吞在 `record_failed` 里，一个 bug 要查一天」。
+       *
+       * 现在两处都说：写进面板的 stdout（跑面板的人看得见），也回给浏览器（人当场
+       * 看得见）。这是一个本机单用户的工具，藏错误没有换来任何东西。
+       */
+      const detail = error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+      console.error(`[panel] ${request.method ?? "?"} ${request.url ?? "?"} —— ${detail}`);
+      if (error instanceof Error && error.stack !== undefined) {
+        console.error(error.stack);
+      }
+      if (response.headersSent) { response.end(); return; }
+      response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ failed: true, error: detail }));
     });
   });
   server.on("close", () => { sessions.closeAll(); });
