@@ -845,6 +845,20 @@ export async function handle(
 
     const brief = briefFrom(items, answer);
     questions.settle(questionId);
+
+    /*
+     * 办完了就把这个会话关掉。
+     *
+     * **和前面那次「中途 close」是两件事**：中途关会掐断浏览器正在读的流，让人看不见
+     * 选择器（我踩过）。这里是流程真的走完了 —— 题问过、答案拿到、需求落库，那个
+     * Codex 只是坐在 composer 上没事干。
+     *
+     * 不关的话它一直 `live`，而 §6.5 规则 5 会挡住下一次派发：「跑这个阶段」永远是
+     * 灰的，界面上又没有结束终端的入口 —— 人就卡在录完需求之后那一步（2026-07-30
+     * 实测到这个死角）。
+     */
+    sessions.close(changeId, phase);
+
     if (brief === null) {
       // 按了 Esc，或者必答的没答完。**不拿一段空白往下走** —— 那等于又回到那份
       // 编出来的 PRD。
