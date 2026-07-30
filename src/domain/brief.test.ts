@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  ESCAPE_OPTION,
+  ownFieldId,
   briefContract,
   readBriefProposal,
   briefFrom,
@@ -40,12 +42,19 @@ const THREE = [
 ].join("\n");
 
 describe("brief · 读模型提的问题清单", () => {
-  it("问题和选项都读出来，id 由 StagePass 分配", () => {
+  it("每题摊成两个字段：选项一格、自己写一格", () => {
     const items = readBriefProposal(fenced(THREE));
-    // 模型没有机会决定 id —— 它决定不了的东西就不会撞上任何东西。
-    assert.deepEqual(items.slice(0, 3).map((item) => item.id), ["B1", "B2", "B3"]);
+    /*
+     * elicitation 的硬约束：一个字段有 enum 就是下拉，没有就是自由输入 ——
+     * **没有「选项 + 或者自己写」那种字段**。所以想让人越过选项说话，只能给第二格。
+     */
+    assert.deepEqual(items.slice(0, 4).map((item) => item.id), ["B1", "B1x", "B2", "B2x"]);
     assert.equal(items[0]?.question, "这个改动主要给谁用？");
-    assert.deepEqual(items[0]?.options, ["只给我自己", "团队里的人", "外部用户"]);
+    // 模型没有机会决定 id，也删不掉那个逃逸项。
+    assert.deepEqual(items[0]?.options,
+      ["只给我自己", "团队里的人", "外部用户", ESCAPE_OPTION]);
+    // 自己写那格没有 enum，所以是自由文本。
+    assert.deepEqual(items[1]?.options, []);
   });
 
   it("**总是多出一道自由填写，模型删不掉**", () => {
@@ -58,9 +67,9 @@ describe("brief · 读模型提的问题清单", () => {
 
   it("散文忽略，最后一个 fence 赢", () => {
     const items = readBriefProposal([
-      "```brief", "初稿的问题？ | 甲 | 乙", "```",
+      "```brief", "初稿的问题？ | 甲 | 乙 | 丙", "```",
       "想了一下，换成：",
-      "```brief", "改好的问题？ | 丙 | 丁", "```",
+      "```brief", "改好的问题？ | 丁 | 戊 | 己", "```",
     ].join("\n"));
     assert.equal(items[0]?.question, "改好的问题？");
   });
@@ -77,6 +86,22 @@ describe("brief · 读模型提的问题清单", () => {
         assert.equal(error.code, "no_items");
         return true;
       });
+  });
+
+  it("**只给两个选项也作废** —— 那几乎总是一个假二分", () => {
+    // 用户 2026-07-30：「三个选项不够，应该由模型自己定给几个」。下限提到 3，
+    // 上限不设 —— 几个够用由读过仓库的模型判断。
+    assert.throws(() => readBriefProposal(fenced("要不要做？ | 要 | 不要")),
+      (error: unknown) => {
+        assert.ok(error instanceof BriefProposalVoidError);
+        assert.equal(error.code, "too_few_options");
+        return true;
+      });
+  });
+
+  it("给四个、五个都行 —— 上限不设", () => {
+    const five = readBriefProposal(fenced("几档？ | 一 | 二 | 三 | 四 | 五"));
+    assert.equal(five[0]?.options.length, 6, "五个选项 + 一个逃逸项");
   });
 
   it("只给一个选项 —— 作废，那不是在问", () => {
@@ -98,7 +123,7 @@ describe("brief · 读模型提的问题清单", () => {
   });
 
   it("提太多 —— 作废，一次问二十件事没人答得完", () => {
-    const many = Array.from({ length: 9 }, (_, i) => `问题 ${i}？ | 甲 | 乙`).join("\n");
+    const many = Array.from({ length: 9 }, (_, i) => `问题 ${i}？ | 甲 | 乙 | 丙`).join("\n");
     assert.throws(() => readBriefProposal(fenced(many)),
       (error: unknown) => {
         assert.ok(error instanceof BriefProposalVoidError);
@@ -146,6 +171,66 @@ describe("brief · 人答完之后那一段就是需求", () => {
     assert.equal(
       briefFrom(items, { action: "accept", content: { B1: "只给我自己" } }),
       null);
+  });
+});
+
+describe("brief · 自己写的优先于选项", () => {
+  /*
+   * 用户 2026-07-30 的要求：「模型给了四个选项，但都不满足我，我需要在空白处打出
+   * 我自己的想法，让模型看到我真正在想什么，而不是只能点它给的选项。」
+   *
+   * 所以选项是**备选**，人的原话是**答案**。两者冲突时后者说了算 —— 否则那一格
+   * 就是装饰。
+   */
+  const items = readBriefProposal(fenced(THREE));
+  const answer = (content: Record<string, string>) =>
+    briefFrom(items, { action: "accept", content });
+
+  it("选了「都不对」并写了自己的话 —— 只留他的话", () => {
+    const brief = answer({
+      B1: ESCAPE_OPTION, [ownFieldId("B1")]: "给我们组里另外两个后端",
+      B2: "有测试覆盖", B3: "不动数据库",
+    });
+    assert.ok(brief);
+    assert.match(brief, /给我们组里另外两个后端/);
+    assert.doesNotMatch(brief, new RegExp(ESCAPE_OPTION), "逃逸项本身不该进需求");
+  });
+
+  it("**选了某一项又补充了文字 —— 两句都留着**", () => {
+    // 备选说明他大致同意哪一档，补充说明他到底要什么。丢掉任何一句都是丢信息。
+    const brief = answer({
+      B1: "团队里的人", [ownFieldId("B1")]: "但只限后端，前端不算",
+      B2: "有测试覆盖", B3: "不动数据库",
+    });
+    assert.ok(brief);
+    assert.match(brief, /团队里的人/);
+    assert.match(brief, /但只限后端，前端不算/);
+  });
+
+  it("说了「都不对」却什么也没写 —— 这一题算没答", () => {
+    // 不许拿一个空的逃逸项充数：那是「我不同意你列的」，不是一个答案。
+    assert.equal(answer({
+      B1: ESCAPE_OPTION, B2: "有测试覆盖", B3: "不动数据库",
+    }), null);
+  });
+
+  it("只写了自己的话、没点选项 —— 也算答了", () => {
+    const brief = answer({
+      [ownFieldId("B1")]: "其实是给运维用的",
+      B2: "有测试覆盖", B3: "不动数据库",
+    });
+    assert.ok(brief);
+    assert.match(brief, /其实是给运维用的/);
+  });
+
+  it("自己写那些格子不单独成行 —— 它们跟着自己的题", () => {
+    const brief = answer({
+      B1: "团队里的人", B2: "有测试覆盖", B3: "不动数据库",
+      [ownFieldId("B2")]: "端到端那种",
+    });
+    assert.ok(brief);
+    // 「↑ 上面这题」那句提示语是给选择器看的，不该出现在需求里。
+    assert.doesNotMatch(brief, /↑ 上面这题/);
   });
 });
 

@@ -39,6 +39,26 @@ export const FREE_TEXT_ID = "B0";
 /** 一次最多问几件事。再多没人答得完，而答不完的问卷等于没问。 */
 const MAX_ITEMS = 8;
 
+/**
+ * 每题至少几个选项。
+ *
+ * 2026-07-30 从 2 提到 3：用户原话是「三个选项不够，应该由模型自己定给几个」。
+ * **两个选项的题几乎总是一个假二分** —— 它把一个开放的问题伪装成一次表态。
+ * 上限刻意不设：几个够用由模型判断，它读过仓库，这件事它比这里清楚。
+ */
+const MIN_OPTIONS = 3;
+
+/**
+ * StagePass 无条件塞进每一题的最后一个选项。
+ *
+ * **模型列的选项不该限定你能说什么。** 有了它，「四个都不满意」是一个可以点下去的
+ * 答案，而不是一个只能靠留空表达的沉默。
+ */
+export const ESCAPE_OPTION = "都不对，我自己写";
+
+/** 每题跟着的那格自由文本的 id：问题 id 加个 x。 */
+export const ownFieldId = (id: string): string => `${id}x`;
+
 const FENCE = /```brief\s*([\s\S]*?)```/g;
 
 export class BriefProposalVoidError extends Error {
@@ -75,10 +95,14 @@ export function briefContract(input: { changeTitle: string | null }): string {
     "",
     `按下面的格式提 1 到 ${MAX_ITEMS} 个问题，一行一个，用 | 分隔：`,
     "```brief",
-    "问题？ | 选项一 | 选项二 | 选项三",
+    "问题？ | 选项一 | 选项二 | 选项三 | 选项四",
     "```",
-    "每个问题**至少要给两个选项** —— 只有一个选项的不是在问。",
-    "选项要具体，不要写「其他」：人总能自由补充，那一栏由系统追加。",
+    `每个问题**至少 ${MIN_OPTIONS} 个选项，上限没有** —— 几个够用你自己判断，`,
+    "你读过这个仓库，这件事你比我清楚。**两个选项通常是把开放问题伪装成一次表态**，",
+    "不要那样做；真实的取舍有几种就列几种。",
+    "",
+    "选项要具体，不要写「其他」或「都不对」：**那一项和一格自由输入都由系统追加**，",
+    "人总能越过你的选项直接说他要什么。你的任务是把真实的取舍列全，不是替他收口。",
   ].join("\n");
 }
 
@@ -107,8 +131,8 @@ export function readBriefProposal(text: string): ClarificationItem[] {
     if (question === "") {
       throw new BriefProposalVoidError("question_empty", line.slice(0, 60));
     }
-    if (options.length < 2) {
-      // 一个选项不是在问，是在通知。
+    if (options.length < MIN_OPTIONS) {
+      // 一个选项不是在问，是在通知；两个几乎总是一个假二分。
       throw new BriefProposalVoidError("too_few_options", question.slice(0, 40));
     }
     proposed.push({ id: `B${proposed.length + 1}`, question, options });
@@ -122,8 +146,32 @@ export function readBriefProposal(text: string): ClarificationItem[] {
     throw new BriefProposalVoidError("too_many", String(proposed.length));
   }
 
-  // 无条件追加，排在最后。空 options = 没有 enum = 自由文本。
-  return [...proposed, {
+  /*
+   * 每一题都摊成**两个字段**：选项一格，自己写一格。
+   *
+   * 这不是排版偏好，是 elicitation 的硬约束：一个字段有 `enum` 就是下拉选一个，
+   * 没有就是自由输入 —— **没有「选项 + 或者自己写」那种字段**。所以想让人在选项
+   * 之外还能说话，只能给他第二格。
+   *
+   * 顺带一个好处：选了某一项之后**仍然可以补充**。选项和自己写不是二选一。
+   */
+  const asked: ClarificationItem[] = [];
+  for (const item of proposed) {
+    asked.push({
+      id: item.id,
+      question: item.question,
+      // 逃逸项排在最后，模型碰不到它。
+      options: [...item.options, ESCAPE_OPTION],
+    });
+    asked.push({
+      id: ownFieldId(item.id),
+      question: `↑ 上面这题，你自己怎么说？（选了也可以补充；选「${ESCAPE_OPTION}」就必须写）`,
+      options: [],
+    });
+  }
+
+  // 全局那一格还留着：它管的是**模型压根没问到**的东西，和每题的补充不是一回事。
+  return [...asked, {
     id: FREE_TEXT_ID,
     question: "还有什么必须说清楚的？（可以留空）",
     options: [],
@@ -144,18 +192,42 @@ export function briefFrom(
 ): string | null {
   if (answer.action !== "accept") return null;
 
+  const read = (id: string): string => {
+    const given = answer.content[id];
+    return typeof given === "string" ? given.trim() : "";
+  };
+
   const lines: string[] = [];
   for (const item of items) {
-    const given = answer.content[item.id];
-    const text = typeof given === "string" ? given.trim() : "";
+    // 自由文本那些格子由它们的题一起处理，自己不单独成行。
+    if (item.options.length === 0 && item.id !== FREE_TEXT_ID) continue;
 
     if (item.id === FREE_TEXT_ID) {
       // 补充，不是必答。留空就不出现在需求里。
+      const text = read(item.id);
       if (text !== "") lines.push(`- ${item.question}\n  ${text}`);
       continue;
     }
-    if (text === "") return null; // 必答的没答
-    lines.push(`- ${item.question}\n  ${text}`);
+
+    /*
+     * **自己写的优先于选项。**
+     *
+     * 选项是模型给的备选，自己写的是人的原话 —— 两者冲突时后者说了算，否则那一格
+     * 就是装饰。选了某一项又补充了文字，两句都留着：备选说明他大致同意哪一档，
+     * 补充说明他到底要什么。
+     */
+    const chosen = read(item.id);
+    const own = read(ownFieldId(item.id));
+
+    if (own !== "") {
+      lines.push(chosen === "" || chosen === ESCAPE_OPTION
+        ? `- ${item.question}\n  ${own}`
+        : `- ${item.question}\n  ${chosen}\n  （他补充：${own}）`);
+      continue;
+    }
+    // 说了「都不对」却什么也没写 —— 这一题等于没答，不许拿一个空的逃逸项充数。
+    if (chosen === "" || chosen === ESCAPE_OPTION) return null;
+    lines.push(`- ${item.question}\n  ${chosen}`);
   }
 
   return lines.length === 0 ? null : lines.join("\n");
