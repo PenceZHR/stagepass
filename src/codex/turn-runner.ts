@@ -47,7 +47,12 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   TechSpec: "Turn the approved specification into a technical design: system behaviour, constraints, blast radius, and the main risks.",
   Plan: "Break the approved design into executable steps, each with its expected blast radius and how it will be verified.",
   TestPlan: "State what must be verified before this change can ship, and how -- automated where possible, manual where not.",
-  Build: "Implement the approved plan. Change nothing outside the files the plan allows.",
+  // 「跑一遍并交出证据」是被 rubric 判的（domain/rubric-defaults.ts 的 Build 那几条），
+  // 所以它必须**被要求**。判它的蓝方跑不了东西 —— 不写在这里，就是在罚模型没做一件
+  // 没人让它做的事，而那正是「模型答不出它没被问过的题」。
+  Build: "Implement the approved plan. Change nothing outside the files the plan allows."
+    + " Run what you changed and report the exact command and its output --"
+    + " the reviewer cannot run anything, so unreported means unverified.",
   Review: "Review the adopted code independently. Report every defect you find, by severity.",
   Fix: "Fix the blocking problems that were reported. Change nothing beyond what they require.",
   QA: "Run the approved test plan against the current code and report what actually happened.",
