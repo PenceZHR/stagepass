@@ -168,14 +168,14 @@ export function clarificationQuestion(input: {
 }): Question | null {
   if (input.items.length === 0) return null;
   const properties: Record<string, {
-    type: "string"; title: string; enum: readonly string[];
+    type: "string"; title: string; enum?: readonly string[];
   }> = {};
   for (const item of input.items) {
-    properties[item.id] = {
-      type: "string",
-      title: item.question,
-      enum: item.options,
-    };
+    // **选项为空就不发 enum** —— 那是一道自由填写。无条件发 enum 的话，它会变成
+    // 一个零个选项的下拉框：人打不开、也填不进去，看着像界面坏了。
+    properties[item.id] = item.options.length === 0
+      ? { type: "string", title: item.question }
+      : { type: "string", title: item.question, enum: item.options };
   }
   return {
     message: input.title,

@@ -91,6 +91,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "web/panel-server.ts": 5,
 
   "domain/question.ts": 3,
+  "domain/brief.ts": 3,
   "store/question-store.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
