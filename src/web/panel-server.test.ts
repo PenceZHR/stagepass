@@ -581,7 +581,9 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
  */
 describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
   it("派给 Codex 的提示词里有裁判、红方、蓝方", async () => {
-    await withPanel(async ({ open, pty }) => {
+    await withPanel(async ({ open, pty, database }) => {
+      // 没有需求就不许跑（见下面那条测试）。先把它录上。
+      new ChangeStore(database).setBrief(CHANGE, "我要一个重新生成按钮");
       // 不等它跑完 —— 真跑要 Codex。看的是**派出去的那条命令**长什么样。
       // 接住它：没有真 Codex，这一轮注定失败。不接就是未处理的 rejection，
       // 会变成一个和任何测试都对不上号的**文件级**失败。
@@ -596,8 +598,39 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
     });
   });
 
+  it("**没有录入需求 —— 不许跑**", async () => {
+    await withPanel(async ({ open, pty }) => {
+      /*
+       * 用户 2026-07-29 发现的洞：进 PRD 阶段没人问他要什么，直接就跑了。
+       * 那时红方收到的是一句写死的通用指令，「this change」是哪个 change 从来没被
+       * 告知 —— 那份 PRD 只能是编的，而下游每个阶段都写着「Turn the approved PRD
+       * into…」。
+       *
+       * 所以这里拒绝，而不是「有就用、没有就算」：**能绕过的录入等于装饰。**
+       */
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, false);
+      assert.match(ran.reason ?? "", /change_has_no_brief/);
+      assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
+    });
+  });
+
+  it("录了需求，它就出现在派出去的提示词里", async () => {
+    await withPanel(async ({ open, pty, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "上线前必须能一键回滚");
+      void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
+      await new Promise((resolve) => { setTimeout(resolve, 120); });
+
+      const prompt = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
+      // 模型不再需要猜「this change」是什么。
+      assert.match(prompt, /上线前必须能一键回滚/);
+    });
+  });
+
   it("rubric 装上了就进提示词 —— 模型答不出它没被问过的题", async () => {
     await withPanel(async ({ open, database, pty }) => {
+      new ChangeStore(database).setBrief(CHANGE, "我要一个重新生成按钮");
       const rubrics = new RubricStore(database);
       const saved = rubrics.save(
         { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },

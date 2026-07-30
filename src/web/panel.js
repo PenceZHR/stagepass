@@ -65,6 +65,7 @@ const tabGaps = document.getElementById("tab-gaps");
 const tabRubric = document.getElementById("tab-rubric");
 const enterButton = document.getElementById("enter");
 const waiveButton = document.getElementById("waive");
+const briefButton = document.getElementById("brief");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
 
@@ -573,7 +574,11 @@ function drawSheet(phase) {
   sheetTitle.textContent = entry.phase;
   paintMark(sheetMark, entry.mark);
   sheetLine.textContent = notice
-    ?? (entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry));
+    // 没录需求是**最要紧的那件事**，盖过闸门那句 —— 不然人看到的是"跑它会派发一次
+    // 真的 turn"，而按钮偏偏是灰的，两句话互相打脸。
+    ?? (entry.current && panelState?.brief === null
+      ? "还没说清楚这次改动要什么。先按「说清楚我要什么」—— 没有它，红方只能自己猜。"
+      : entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry))
 
   drawGaps(entry);
   sheetGaps.prepend(drawProduced(entry));
@@ -587,9 +592,19 @@ function drawSheet(phase) {
   waiveButton.hidden = !entry.current || waivable.length === 0;
   waiveButton.disabled = entry.live;
 
+  /*
+   * 没录需求之前，「说清楚我要什么」是唯一能按的动作。
+   *
+   * 服务端也会拦（/api/run 在排队之前就拒），但界面不该摆一个按了必然被拒的按钮 ——
+   * 那正是老树的病：有标签、有渲染、永远执行不了。
+   */
+  const needsBrief = panelState?.brief === null;
+  briefButton.hidden = !entry.current;
+  briefButton.disabled = entry.live;
+
   const decidable = decidableActions();
   runButton.hidden = !entry.current;
-  runButton.disabled = entry.live || panelState?.status === "settled";
+  runButton.disabled = entry.live || needsBrief || panelState?.status === "settled";
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
 }
@@ -758,6 +773,7 @@ async function attach(phase) {
 document.getElementById("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
+briefButton.addEventListener("click", () => { void recordBrief(); });
 waiveButton.addEventListener("click", () => { void waive(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 

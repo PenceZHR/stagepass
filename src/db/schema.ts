@@ -67,6 +67,28 @@ CREATE TABLE IF NOT EXISTS changes (
 
 CREATE INDEX IF NOT EXISTS ix_changes_project ON changes (project_id, created_at);
 
+-- 人到底要什么，用他自己答出来的话记下来。
+--
+-- ## 为什么是独立的一张表，不是 changes 上的一列
+--
+-- 实测撞出来的：changes 上的两条触发器要求**每一次 UPDATE 都是一次状态转移**
+-- （ck_changes_seq_advances 要 NEW.seq = OLD.seq + 1）。而录入需求不是转移 ——
+-- 没有 action 可记，seq 不该动。把它做成一列，就得放宽那条触发器，而它守的正是
+-- 「账本的完整性可以用算术检查」这条。
+--
+-- 换一张表，两条触发器一个字都不用动，「对 changes 的每一次 UPDATE 都是转移」
+-- 这句话仍然逐字成立。
+--
+-- 和 changes.title 的关键区别：**模型读这个。** 它是 PRD 阶段红方的任务书，下游
+-- 每个阶段都靠它知道这次改动到底是为了什么。之前这里是空的，于是红方收到的是一句
+-- 写死的通用指令，「this change」是哪个 change 从来没被告知，那份 PRD 只能是编的。
+-- 见 domain/brief.ts。
+CREATE TABLE IF NOT EXISTS change_briefs (
+  change_id   TEXT PRIMARY KEY REFERENCES changes(id),
+  brief       TEXT NOT NULL CHECK (length(trim(brief)) > 0),
+  updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS change_events (
   change_id   TEXT NOT NULL REFERENCES changes(id),
   seq         INTEGER NOT NULL,

@@ -38,6 +38,12 @@ export interface ChangeRecord {
   readonly projectId: string | null;
   /** What a person calls it, or null. Nothing decidable reads this either. */
   readonly title: string | null;
+  /**
+   * 人到底要什么，他自己答出来的话。null = 还没录入。
+   *
+   * 和 `title` 的区别：**模型读这个。** 它是 PRD 阶段红方的任务书。
+   */
+  readonly brief: string | null;
   readonly state: ChangeState;
   /** How many ledger entries this Change has. Its creation is entry 0. */
   readonly seq: number;
@@ -57,6 +63,7 @@ interface ChangeRow {
   id: string;
   project_id: string | null;
   title: string | null;
+  brief: string | null;
   phase: string;
   status: string;
   return_phase: string | null;
@@ -149,13 +156,14 @@ export class ChangeStore {
 
   read(changeId: string): ChangeRecord {
     const row = this.database.prepare(
-      "SELECT * FROM changes WHERE id = ?",
+      "SELECT c.*, b.brief FROM changes c LEFT JOIN change_briefs b ON b.change_id = c.id WHERE c.id = ?",
     ).get(changeId) as ChangeRow | undefined;
     if (!row) throw new ChangeNotFoundError(changeId);
     return {
       id: row.id,
       projectId: row.project_id,
       title: row.title,
+      brief: row.brief,
       state: toState(row),
       seq: row.seq,
       createdAt: row.created_at,
@@ -163,17 +171,41 @@ export class ChangeStore {
     };
   }
 
+  /**
+   * 记下人答出来的需求。
+   *
+   * **写的是 change_briefs，不是 changes。** 实测撞出来的：`changes` 上那两条触发器
+   * 要求每一次 UPDATE 都是一次状态转移（seq 必须 +1），而录入需求不是转移 —— 没有
+   * action 可记。做成一列就得放宽触发器；换一张表，触发器一个字都不用动。
+   */
+  setBrief(changeId: string, brief: string): ChangeRecord {
+    // 先确认 Change 在，否则外键会以一个不说明问题的报错抛出来。
+    this.read(changeId);
+    this.database.prepare(
+      `INSERT INTO change_briefs (change_id, brief, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT (change_id) DO UPDATE SET
+         brief = excluded.brief, updated_at = excluded.updated_at`,
+    ).run(changeId, brief, this.now().toISOString());
+    return this.read(changeId);
+  }
+
   /** Every Change, or every Change in one project. What a list column shows. */
   list(projectId?: string): ChangeRecord[] {
     const rows = (projectId === undefined
-      ? this.database.prepare("SELECT * FROM changes ORDER BY created_at").all()
+      ? this.database.prepare(
+          `SELECT c.*, b.brief FROM changes c
+             LEFT JOIN change_briefs b ON b.change_id = c.id ORDER BY c.created_at`,
+        ).all()
       : this.database.prepare(
-          "SELECT * FROM changes WHERE project_id = ? ORDER BY created_at",
+          `SELECT c.*, b.brief FROM changes c
+             LEFT JOIN change_briefs b ON b.change_id = c.id
+            WHERE c.project_id = ? ORDER BY c.created_at`,
         ).all(projectId)) as ChangeRow[];
     return rows.map((row) => ({
       id: row.id,
       projectId: row.project_id,
       title: row.title,
+      brief: row.brief,
       state: toState(row),
       seq: row.seq,
       createdAt: row.created_at,

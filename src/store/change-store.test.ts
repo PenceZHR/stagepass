@@ -232,3 +232,49 @@ describe("L0 · concurrent writers cannot both win", () => {
     }
   });
 });
+
+describe("L0 · 记下人答出来的需求", () => {
+  /*
+   * 写的是 change_briefs，**不是 changes 上的一列**。
+   *
+   * 实测撞出来的：changes 上那两条触发器要求每一次 UPDATE 都是一次状态转移
+   * （ck_changes_seq_advances 要 NEW.seq = OLD.seq + 1）。而录入需求不是转移 ——
+   * 没有 action 可记。做成一列就得放宽触发器；换一张表，触发器一个字都不用动。
+   */
+  it("**录入不推 seq，也不进账本**", () => {
+    const { store: changes } = open();
+    changes.create("CHG-1");
+    const after = changes.setBrief("CHG-1", "我要一个重新生成按钮");
+
+    assert.equal(after.brief, "我要一个重新生成按钮");
+    assert.equal(after.seq, 0, "录入需求不是状态转移，seq 不该动");
+    assert.deepEqual(changes.ledger("CHG-1").map((entry) => entry.action), ["create"]);
+  });
+
+  it("状态转移之后需求还在", () => {
+    const { store: changes } = open();
+    changes.create("CHG-1");
+    changes.setBrief("CHG-1", "我要一个重新生成按钮");
+    changes.apply("CHG-1", "start");
+    assert.equal(changes.read("CHG-1").brief, "我要一个重新生成按钮");
+  });
+
+  it("改一次就覆盖，不留两份", () => {
+    const { store: changes } = open();
+    changes.create("CHG-1");
+    changes.setBrief("CHG-1", "第一版");
+    assert.equal(changes.setBrief("CHG-1", "想清楚之后的第二版").brief, "想清楚之后的第二版");
+  });
+
+  it("没录入就是 null —— list 里也是", () => {
+    const { store: changes } = open();
+    changes.create("CHG-1");
+    assert.equal(changes.read("CHG-1").brief, null);
+    assert.equal(changes.list()[0]?.brief, null);
+  });
+
+  it("往不存在的 Change 上录 —— 报 ChangeNotFoundError，不是外键报错", () => {
+    const { store: changes } = open();
+    assert.throws(() => changes.setBrief("CHG-nope", "x"), ChangeNotFoundError);
+  });
+});

@@ -49,6 +49,23 @@ export class RoundTurnRunner implements TurnRunner {
       throw new Error(`change_has_no_project:${job.changeId}`);
     }
 
+    /*
+     * **没有需求就不许跑。任何阶段。**
+     *
+     * 这一条是用户 2026-07-29 发现的洞的正面修法。在这之前，红方收到的是一句写死的
+     * 通用指令（「Write the product requirement for this change…」），而「this change」
+     * 是哪个 change 从来没被告知 —— 那份 PRD 只能是编的，而下游每个阶段都写着
+     * 「Turn the approved PRD into…」，整条流水线建在一份凭空产生的需求上。
+     *
+     * 为什么是所有阶段而不只是 PRD：一条没有记录过需求的 Change，压根就不该在跑对抗
+     * 轮。一条规则，没有例外要记。
+     *
+     * 为什么是拒绝而不是「有就用、没有就算」：能绕过的录入等于装饰。
+     */
+    if (change.brief === null) {
+      throw new Error(`change_has_no_brief:${job.changeId}`);
+    }
+
     const settled = await runRubricRound({
       projectId: change.projectId,
       changeId: job.changeId,
@@ -56,7 +73,14 @@ export class RoundTurnRunner implements TurnRunner {
       // 轮次用 job 的第几次尝试。gap 的 openedRound 和 rubric 判定都按它记，
       // 所以「第几轮发现的」在两张表里说的是同一件事。
       round: job.attempt,
-      task: this.options.taskFor(phase),
+      // 通用指令 + **人自己答出来的需求**。后者是这一整套的重点：模型不再需要猜
+      // 「this change」是什么。
+      task: [
+        this.options.taskFor(phase),
+        "",
+        "人要的是这些（他自己在选择器里答的，不是模型猜的）：",
+        change.brief,
+      ].join("\n"),
       // 同一个 (Change, 阶段) 复用同一个裁判线程。
       //
       // **必须看 status。** 一条 detached 的绑定仍然留着 threadId —— 直接拿它去
