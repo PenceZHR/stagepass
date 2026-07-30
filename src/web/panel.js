@@ -66,6 +66,8 @@ const tabRubric = document.getElementById("tab-rubric");
 const enterButton = document.getElementById("enter");
 const waiveButton = document.getElementById("waive");
 const briefButton = document.getElementById("brief");
+const closeTermButton = document.getElementById("close-term");
+const nextStepLine = document.getElementById("next-step");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
 
@@ -721,6 +723,110 @@ function drawSheet(phase) {
   runButton.disabled = entry.live || needsBrief || panelState?.status === "settled";
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
+
+  // 出口：有活进程时才出现。没有它，上面每一个 disabled 都是一个没有出路的死结。
+  closeTermButton.hidden = !entry.live;
+
+  drawNextStep(entry);
+}
+
+/**
+ * 下一步该干什么，写成一句话。
+ *
+ * ## 为什么这不是装饰
+ *
+ * 在这之前，人只能靠「哪个按钮是亮的」去反推下一步 —— 而按钮全灰的时候（有活进程）
+ * 他连反推都做不到。用户 2026-07-30 的原话：**「我知道我在 PRD，但我不知道接下来该
+ * 做什么。」** 需求文档 §1 要的是「让缺少完整软件工程经验的用户也能按可靠流程完成
+ * 开发」，说出下一步就是这条本身。
+ *
+ * ## 一个来源
+ *
+ * 这里的判断和上面那些 `disabled` 用的是**同一批事实**，顺序也刻意排成一样。要改
+ * 「什么时候能按什么」，两处一起改 —— 让按钮亮着而这里说做不了（或者反过来），比
+ * 两边都不说更糟。
+ */
+function drawNextStep(entry) {
+  const step = nextStep(entry);
+  nextStepLine.hidden = step === null;
+  if (step === null) return;
+
+  nextStepLine.replaceChildren();
+  const what = document.createElement("b");
+  what.textContent = `下一步：${step.what}`;
+  const why = document.createElement("span");
+  why.textContent = step.why;
+  nextStepLine.append(what, why);
+}
+
+function nextStep(entry) {
+  // 顺序 = 优先级。第一条命中的就是答案。
+  if (entry.live) {
+    return {
+      what: "先结束这个终端",
+      why: "一个阶段同时只许有一个 Codex 进程，它开着的时候派不出新的东西 ——"
+        + "所以别的按钮都是灰的。看完就按「结束这个终端」。",
+    };
+  }
+  if (!entry.current) {
+    return {
+      what: "回到当前阶段",
+      why: `流程停在 ${panelState?.currentPhase ?? "别处"}，不是这里。`
+        + "点开一个未来的阶段只是打开看看，不会推动任何东西。",
+    };
+  }
+  if (panelState?.brief === null) {
+    return {
+      what: "说清楚我要什么",
+      why: "还没人问过你这次要什么。没有它，红方只能自己编一份需求，"
+        + "而后面每个阶段都建在那份编出来的东西上。",
+    };
+  }
+  if (panelState?.status === "blocked") {
+    return {
+      what: "跑这个阶段",
+      why: "上一轮跑失败了。再跑一次 —— 失败的原因在「问题」里。",
+    };
+  }
+  if (panelState?.status === "settled") {
+    return decidableActions().length > 0
+      ? {
+          what: "请 Codex 问我",
+          why: "这一轮跑完了，闸门在等你的明确决定。裁决发生在 Codex 自己的选择器里，"
+            + "网页上没有、也不会有 approve 按钮。",
+        }
+      : {
+          what: "看「问题」里挡着的东西",
+          why: "跑完了，但闸门现在没有可裁决的动作 —— 通常是还有问题挡着。",
+        };
+  }
+  return {
+    what: "跑这个阶段",
+    why: "需求已经记下了。跑它会派一轮红蓝对抗：红方拿你写的需求去做，蓝方挑毛病，"
+      + "裁判裁决，三个角色各自还要过一遍标准。要几分钟。",
+  };
+}
+
+/**
+ * 结束这个阶段的终端。
+ *
+ * **这是那个缺失的出口。** 结束一个进程不是业务决策 —— 它不推动闸门，也不对任何
+ * 产物下判断，所以它可以是网页上的一个按钮。
+ */
+async function closeTerminal() {
+  const phase = sheetPhase;
+  if (!phase) return;
+  closeTermButton.disabled = true;
+  try {
+    await fetch(
+      `/api/close?change=${encodeURIComponent(changeId)}`
+      + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
+    );
+    await load();
+    if (sheetPhase) drawSheet(sheetPhase);
+  } finally {
+    closeTermButton.disabled = false;
+  }
 }
 
 /**
@@ -907,6 +1013,7 @@ document.getElementById("back").addEventListener("click", () => { void leave(); 
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
+closeTermButton.addEventListener("click", () => { void closeTerminal(); });
 waiveButton.addEventListener("click", () => { void waive(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 

@@ -672,6 +672,25 @@ body::after {
 .sheet-line { margin: 16px 0 0; color: rgba(255,255,255,.6); font-size: 12.5px; line-height: 1.75; }
 .sheet-empty { margin: 18px 0 4px; font: 400 12px/1.7 var(--serif); color: rgba(255,255,255,.46); }
 
+/*
+ * 下一步。**弹窗里最该先被读到的一行**，所以给它一条竖边和一点背景 —— 不是为了
+ * 好看，是为了让眼睛先落在这儿而不是先落在那堆 gap 上。
+ */
+.next-step {
+  margin: 16px 0 0; padding: 11px 14px;
+  border-left: 2px solid var(--sand-deep); border-radius: 0 10px 10px 0;
+  background: rgba(225,198,160,.07);
+  font: 500 12.5px/1.75 ui-sans-serif, sans-serif; color: rgba(255,255,255,.9);
+}
+.next-step b {
+  color: var(--sand-strong); font-weight: 800;
+}
+.next-step span {
+  display: block; margin-top: 5px;
+  font-weight: 400; color: rgba(255,255,255,.58);
+}
+.next-step[hidden] { display: none; }
+
 .sheet-section {
   margin: 20px 0 8px;
   font: 700 9px/1 ui-sans-serif, sans-serif; letter-spacing: .16em;
@@ -945,11 +964,28 @@ body::after {
       </div>
       <div class="sheet-body">
         <p class="sheet-line" id="sheet-line"></p>
+        <!--
+          **下一步该干什么，直接写出来。**
+
+          在这之前，人只能靠「哪个按钮是亮的」去猜下一步 —— 而按钮全灰的时候
+          （有活进程）他连猜都没得猜。用户 2026-07-30 的原话：「我知道我在 PRD，
+          但我不知道接下来该做什么。」
+
+          需求文档 §1 说这个产品要「让缺少完整软件工程经验的用户也能按可靠流程完成
+          开发」。**说出下一步就是这条本身**，不是装饰。
+        -->
+        <p class="next-step" id="next-step" hidden></p>
         <div id="sheet-gaps"></div>
         <div id="sheet-rubric" hidden></div>
       </div>
       <div class="sheet-foot">
         <button class="enter" id="enter" type="button">进入终端</button>
+        <!--
+          结束这个终端 —— **界面上一直缺的那个出口**。每个动作在有活进程时都禁用
+          （一个阶段同时只许一个进程），而 TUI 不会自己退出：没有这个按钮，人一按
+          「进入终端」，那个阶段就永远卡住，只剩「进入终端」能按。
+        -->
+        <button class="enter" id="close-term" type="button" hidden>结束这个终端</button>
         <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
         <button class="run" id="run" type="button" hidden>跑这个阶段</button>
         <button class="run" id="waive" type="button" hidden>接受一条风险</button>

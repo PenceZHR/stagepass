@@ -350,8 +350,21 @@ export class PanelSessions {
 
   close(changeId: string, phase: Phase): void {
     const key = PanelSessions.key(changeId, phase);
-    this.live.get(key)?.session.kill();
+    const entry = this.live.get(key);
+    entry?.session.kill();
     this.live.delete(key);
+    /*
+     * **主动告诉正在看的人，不等 onExit。**
+     *
+     * `kill()` 之后 onExit 通常会来，也会顺手做这件事。但「通常」在这里不够：这条
+     * 路径是我们自己决定关掉它的，那就该由我们自己负责通知 —— 等一个可能迟到、
+     * 也可能因为 pty 实现而不来的回调，换来的就是浏览器对着一帧死画面继续等。
+     * 重复调用是无害的：`response.end()` 幂等，enders 随后被清空。
+     */
+    if (entry) {
+      for (const end of entry.enders) end();
+      entry.enders.clear();
+    }
   }
 
   closeAll(): void {
@@ -1140,6 +1153,26 @@ export async function handle(
       owner: "panel", token: jobId, now: at, ttlMs: 30 * 60_000,
     });
     json(response, { ran: true, phase, outcome });
+    return;
+  }
+
+  /*
+   * 结束一个阶段的终端。
+   *
+   * **这是界面上一直缺的那个出口。** 每个动作按钮在 `live` 时都禁用（一个阶段同时
+   * 只许一个进程，§6.5 规则 5），而 TUI 跑完一轮不会自己退出 —— 于是人一按「进入
+   * 终端」，那个阶段就永远卡住：所有按钮全灰，只剩「进入终端」能按，没有出路。
+   * 用户 2026-07-30 报的「I don't know what to do next」就是这个。
+   *
+   * 结束一个进程不是业务决策：它不推动闸门，也不对任何产物下判断。
+   */
+  if (url.pathname === "/api/close" && request.method === "POST") {
+    const changeId = url.searchParams.get("change") ?? "";
+    const phase = url.searchParams.get("phase") ?? "";
+    if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
+    const was = sessions.has(changeId, phase);
+    sessions.close(changeId, phase);
+    json(response, { closed: was, phase });
     return;
   }
 
