@@ -14,7 +14,9 @@ import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
 
-import { RESPONSE_AGREE, RESPONSE_DISMISS } from "../domain/question";
+import {
+  decisionLabel, RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE,
+} from "../domain/question";
 import { createPanelServer } from "./panel-server";
 import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
@@ -73,6 +75,8 @@ interface Fake {
   startedCwd: string[];
   /** 让进程退出。验「死终端要被察觉」那条用的。 */
   exit(): void;
+  /** 只让第 n 个起来的那个退出。验「旧的 onExit 不许删掉新的」那条用的。 */
+  exitOne(index: number): void;
   written: Uint8Array[];
   resized: { cols: number; rows: number }[];
   emit(bytes: Uint8Array): void;
@@ -111,6 +115,7 @@ async function withPanel(
     started, startedCwd, written, resized,
     emit: (bytes) => { for (const listener of emitters) listener(bytes); },
     exit: () => { for (const onExit of [...exiters]) onExit(0); },
+    exitOne: (index) => { exiters[index]?.(0); },
   };
 
   const start = ((input: {
@@ -547,6 +552,36 @@ describe("panel · one live process per phase thread", () => {
     });
   });
 
+  it("**关掉一个再起一个 —— 后来那个不许被前一个的 onExit 删掉**", async () => {
+    /*
+     * 2026-07-30 在真 Codex 上撞到的：D 的「答完直接续跑」是 `close()` 紧接着
+     * `launchInto()`，而 `close()` 只 `kill()`，进程的 onExit 是**异步**来的。
+     *
+     *   close → kill 旧的 → launchInto 存进新的 → 旧的 onExit 到了 → 把新的删掉
+     *
+     * 注册表从此认为这个阶段没有活进程，下一个 `open()` 就又起一个 —— 实测到两个
+     * codex 同时挂在同一个 (Change, 阶段) 上。§6.5 规则 5 的全部意义就是不许出现
+     * 这个：两个 `codex resume` 往同一个 rollout 追加，「哪一轮是我的」没有答案。
+     */
+    await withPanel(async ({ open, pty }) => {
+      // 起一个（浏览用），关掉它，再起一个 —— 中间不让 onExit 有机会先到。
+      await open(`/pty/${CHANGE}/PRD`);
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+      await open(`/api/close?change=${CHANGE}&phase=PRD`, { method: "POST" });
+      await open(`/pty/${CHANGE}/PRD`);
+      const afterRelaunch = pty.started.length;
+
+      // 只让**第一个**（已经被 kill 掉的那个）把 onExit 发出来。
+      pty.exitOne(0);
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+
+      // 再进一次终端：注册表里还认得那一个，所以不该再起第三个。
+      await open(`/pty/${CHANGE}/PRD`);
+      assert.equal(pty.started.length, afterRelaunch,
+        "旧进程的 onExit 把新会话删掉了，于是这里又起了一个 —— 同一个阶段两个进程");
+    });
+  });
+
   it("gives a different phase its own process", async () => {
     await withPanel(async ({ open, pty }) => {
       await open(`/pty/${CHANGE}/PRD`);
@@ -957,7 +992,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         R01: RESPONSE_DISMISS, R01x: "验收标准在第 3 节，反方没读到",
         R02: RESPONSE_AGREE, R02x: "范围要按 PRD 收窄",
         RY: "没说清楚失败时回滚到哪",
-        decision: "reject",
+        decision: decisionLabel("reject", "PRD"),
       });
 
       const result = await (await asking).json() as {
@@ -986,7 +1021,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
-        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE, decision: "reject",
+        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE, decision: decisionLabel("reject", "PRD"),
       });
 
       const result = await (await asking).json() as {
@@ -1015,7 +1050,8 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         status: "open", openedRound: 2, resolution: null, note: null,
       }]);
       answer(database, {
-        R01: RESPONSE_DISMISS, R01x: "不成立", R02: RESPONSE_AGREE, decision: "reject",
+        R01: RESPONSE_DISMISS, R01x: "不成立", R02: RESPONSE_AGREE,
+        decision: decisionLabel("reject", "PRD"),
       });
 
       const result = await (await asking).json() as { reason: string };
@@ -1023,6 +1059,108 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       // SPEC-1 原样留着 —— 那一次驳回没有落地。
       assert.equal(new GapStore(database).all(CHANGE, "PRD")
         .find((gap) => gap.id === "SPEC-1")?.status, "open");
+    });
+  });
+
+  it("**驳回完最后一条挡着的，同一次就批准得了** —— 不用再问一遍", async () => {
+    /*
+     * 这是「先落表态、再走闸门」那个顺序的兑现。组题时 approve 是被拒的
+     * （blocking_problem_outstanding），但那个拒**人在同一道题里就能清掉** ——
+     * 所以它照样被提供，而等裁决落地时闸门已经放行了。
+     */
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_DISMISS, R01x: "反方没读到第 3 节",
+        R02: RESPONSE_WAIVE, R02x: "这一版先带着它走",
+        decision: decisionLabel("approve", "PRD"),
+      });
+
+      const result = await (await asking).json() as { outcome: { kind: string } };
+      assert.equal(result.outcome.kind, "advanced");
+      // 批准 PRD = 进 Spec。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "Spec");
+    });
+  });
+
+  it("**提了新要求又选批准 —— 闸门拒，而且说出来**", async () => {
+    // 他自己刚提的要求挡住了他自己的批准。默默当成没发生，人会以为批准了。
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_DISMISS, R01x: "不成立",
+        R02: RESPONSE_DISMISS, R02x: "也不成立",
+        RY: "但是没说清楚失败时回滚到哪",
+        decision: decisionLabel("approve", "PRD"),
+      });
+
+      const result = await (await asking).json() as {
+        outcome: { kind: string; reason?: string }; raised: string | null;
+      };
+      assert.equal(result.raised, "HUMAN-1");
+      assert.deepEqual(result.outcome,
+        { kind: "refused", action: "approve", reason: "blocking_problem_outstanding" });
+      // 阶段一步都没动。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "PRD");
+    });
+  });
+
+  it("**选「再来一轮」就直接续跑** —— 不用回面板再按一次", async () => {
+    /*
+     * 用户 2026-07-30：「把现在的两步合成一步。」两步之所以是坑，不只是多点一下 ——
+     * 中间那一步看不出来还需要它，人会以为下一轮已经在跑了。
+     *
+     * 这里的 pty 是假的，所以那一轮必然读不到 rollout、`ran: true` 之后 outcome 是
+     * 失败的。验的是**有没有真的派出去**，不是那一轮的结果。
+     */
+    await withPanel(async ({ open, database, pty }) => {
+      settledWithGaps(database);
+      // 续跑要读需求（`runRound` 在排队之前就查）。
+      new ChangeStore(database).setBrief(CHANGE, "人自己答出来的需求");
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_AGREE, R01x: "按第 3 节那种写法改",
+        R02: RESPONSE_AGREE,
+        decision: decisionLabel("reject", "PRD"),
+      });
+
+      const result = await (await asking).json() as {
+        continued: { ran: boolean; phase: string } | null;
+      };
+      assert.equal(result.continued?.ran, true);
+      assert.equal(result.continued?.phase, "PRD");
+      // 派出去的那一轮提示词里带着裁判和红蓝 —— 是一轮对抗，不是一次 turn。
+      const argv = pty.started.map((entry) => entry.argv.join(" ")).join("\n");
+      assert.match(argv, /\/root\/red/);
+      assert.match(argv, /\/root\/blue/);
+      // 而且人刚写的那句话进了下一轮的提示词。
+      assert.match(argv, /按第 3 节那种写法改/);
+    });
+  });
+
+  it("「打回去修」不续跑 —— 那时 Change 已经在 Fix 了", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      advanceTo(changes, "Review");
+      new EvidenceStore(database).put(CHANGE, "Review", {
+        artifactIds: ["review.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, { decision: decisionLabel("reject", "Review") });
+
+      const result = await (await asking).json() as { continued: unknown };
+      assert.equal(result.continued, null);
+      // 活确实送到 Fix 去了。自动在一个刚到的阶段上开跑，等于替人决定 Fix 该做什么。
+      assert.equal(changes.read(CHANGE).state.phase, "Fix");
     });
   });
 
@@ -1037,7 +1175,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
 
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
-      answer(database, { decision: "approve" });
+      answer(database, { decision: decisionLabel("approve", "PRD") });
 
       const result = await (await asking).json() as {
         responses: Record<string, unknown>; raised: string | null;

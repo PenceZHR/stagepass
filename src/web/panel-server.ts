@@ -12,7 +12,7 @@ import { createSubAgentLookup, readRoleTranscript } from "../codex/subagent";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
-  responsesFrom,
+  responsesFrom, isAnotherRound, DECISION_FIELD,
 } from "../domain/question";
 import { briefContract, readBriefProposal, briefFrom, BriefProposalVoidError } from "../domain/brief";
 import { GateMovedError, GateRefusedError } from "../domain/gate";
@@ -300,6 +300,24 @@ export class PanelSessions {
       for (const listener of entry.listeners) listener(bytes);
     });
     session.onExit(() => {
+      /*
+       * **只删自己那一条。**
+       *
+       * 无条件 `delete(key)` 的后果 2026-07-30 在真 Codex 上撞到了：D 的「答完直接
+       * 续跑」是 `close()` 紧接着 `launchInto()`，而 `close()` 只 `kill()`，进程的
+       * `onExit` 是**异步**来的。于是顺序变成
+       *
+       *   close → kill 旧的 → launchInto 存进新的 → 旧的 onExit 到了 → 把**新的**删掉
+       *
+       * 注册表从此认为这个阶段没有活进程，下一个 `open()` 就又起了一个 —— 实测到
+       * 两个 codex 同时挂在同一个 (Change, 阶段) 上，而 §6.5 规则 5 的全部意义就是
+       * 不许出现这个。两个 `codex resume` 往同一个 rollout 追加，「哪一轮是我的」
+       * 就没有答案了（§6.4 坑 2）。
+       *
+       * 症状还很难查：新起的那个是**浏览用**的（没有提示词），人进终端看见一个空
+       * composer，而正在跑的那一轮在另一个看不见的进程里。
+       */
+      if (this.live.get(key) !== entry) return;
       this.live.delete(key);
       // **告诉正在看的人它没了。** 不通知的话响应一直开着，浏览器停在最后一帧，
       // 死终端和在思考的终端一模一样。见 LiveSession.enders 那段注释。
@@ -404,6 +422,92 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
     type: "text/javascript; charset=utf-8",
   },
 };
+
+/**
+ * 派一轮对抗，跑到它结算。
+ *
+ * ## 为什么它是一个函数，而不只是 `/api/run` 里的一段
+ *
+ * 「答完直接续跑」要用同一段（用户 2026-07-30：把 selector 里选 reject → 回面板按
+ * 「跑这个阶段」这两步合成一步）。抄一份到 `/api/ask` 里就是两份实现 —— 而这两份
+ * 只要有一处的前置检查漏掉，人就会得到一个被打成 blocked 的 Change 而不是一句
+ * 「还没录需求」。E3 说的就是这件事。
+ *
+ * ## 「跑这个阶段」跑的是一轮对抗，不是一次 turn
+ *
+ * 单次 turn 是让一个模型自己写、自己说没问题，闸门读它的自述 —— 这个产品存在的理由
+ * 就是不许那样。所以这里直接换掉 runner，而不是在界面上多一个按钮：两个「跑」、
+ * 没人说得清哪个是真的，那是老树的病。
+ *
+ * 裁判仍然跑在这个阶段自己的 pty 里（`launch` 那一行），所以你在面板上看得见它，
+ * 也看得见它什么时候停下来问你。
+ */
+async function runRound(input: {
+  changeId: string;
+  phase: Phase;
+  sessions: PanelSessions;
+  options: PanelOptions;
+}): Promise<{ ran: boolean; phase: Phase; reason?: string; outcome?: unknown }> {
+  const { changeId, phase, sessions, options } = input;
+  const database = options.database;
+
+  if (sessions.has(changeId, phase)) {
+    // §6.5 rule 5: one live process per phase thread. Dispatching into a
+    // terminal someone already has open would interleave two turns.
+    return { ran: false, phase, reason: "phase_already_running" };
+  }
+  /*
+   * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
+   *
+   * RoundTurnRunner 里也有同一条检查（防御在两层），但只靠那一层是不够的：
+   * TurnLoop 会把 runner 抛的错当成「这一轮跑失败了」，于是给 Change 应用 fail、
+   * 标成 blocked。而「还没录需求」是前置条件不满足，**不是这一轮失败** —— 因为它
+   * 把 Change 打成阻塞，就得再去 retry 才能恢复，白折腾一圈。
+   */
+  if (new ChangeStore(database).read(changeId).brief === null) {
+    return { ran: false, phase, reason: "change_has_no_brief" };
+  }
+  /*
+   * 项目没写路径也不跑。
+   *
+   * 和上面那条同一个形状、同一个理由：**前置条件不满足不该把 Change 打成 blocked**。
+   * `PanelSessions.launchInto` 里也会拒（防御在两层），但那一层抛出来会被 TurnLoop
+   * 当成「这一轮跑失败了」。
+   */
+  if (sessions.workspaceFor(changeId) === null) {
+    return { ran: false, phase, reason: "project_has_no_path" };
+  }
+
+  const lookup = createSubAgentLookup();
+  const loop = new TurnLoop({
+    database,
+    runner: new RoundTurnRunner({
+      transport: new CodexTuiTransport({
+        ...options.session,
+        ...(options.turnTimeoutMs === undefined
+          ? {} : { timeoutMs: options.turnTimeoutMs }),
+        launch: ({ argv }) => { sessions.launchInto(changeId, phase, argv); },
+      }),
+      gaps: new GapStore(database),
+      rubrics: new RubricStore(database),
+      changes: new ChangeStore(database),
+      bindings: new BindingStore(database),
+      readRole: (parentThreadId, agentPath) =>
+        readRoleTranscript({ lookup, parentThreadId, agentPath }),
+      taskFor: (each) => MINIMAL_PHASE_INSTRUCTIONS[each as Phase],
+    }),
+  });
+  const at = Date.now();
+  const jobId = `JOB-${changeId}-${phase}-${at}`;
+  loop.queueTurn({ changeId, jobId, deadlineAt: at + 30 * 60_000, maxAttempts: 1 });
+  return {
+    ran: true,
+    phase,
+    outcome: await loop.runOnce({
+      owner: "panel", token: jobId, now: at, ttlMs: 30 * 60_000,
+    }),
+  };
+}
 
 function readBody(request: IncomingMessage): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
@@ -967,6 +1071,25 @@ export async function handle(
       outcome = { kind: "refused", action: error.action, reason: error.reason };
     }
 
+    /*
+     * 选了「再来一轮」就**直接续跑**，不用人再回面板按一次「跑这个阶段」。
+     *
+     * 用户 2026-07-30：「把现在的两步合成一步。」两步之所以是坑，不只是多点一下 ——
+     * 中间那一步**看不出来还需要它**：裁决落完之后 Change 回到 pending，界面上没有
+     * 任何东西说「还差一次派发」，人会以为下一轮已经在跑了。
+     *
+     * 只有「再来一轮」续跑。**「打回去修」不续**：那时 Change 已经换到 Fix 了，
+     * 自动在一个刚到的阶段上开跑，等于替人决定了 Fix 该做什么。
+     */
+    const decided = answer.content[DECISION_FIELD];
+    const continued = isAnotherRound(decided)
+      // 那个阶段的终端这时还活着（题就是送进去的），所以先关掉它 —— 不然
+      // `runRound` 会撞上 §6.5 规则 5 直接拒。这不是绕过那条规则：那一轮的活
+      // 干完了，它只是坐在 composer 上没事干。
+      ? (sessions.close(changeId, phase),
+        await runRound({ changeId, phase, sessions, options }))
+      : null;
+
     json(response, {
       asked: true, answered: true, phase, questionId, answer,
       /** 每一条表态落地了没有，没落地的说清是为什么 —— 人已经走了，不许静默丢掉。 */
@@ -974,6 +1097,8 @@ export async function handle(
       refused: applied.refused,
       raised: raised?.id ?? null,
       outcome,
+      /** 续跑了没有，以及那一轮的结果。null = 这次裁决不是「再来一轮」。 */
+      continued,
       state: changes.read(changeId).state,
     });
     return;
@@ -1241,83 +1366,13 @@ export async function handle(
   if (url.pathname === "/api/run" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
     let phase: Phase;
-    let brief: string | null;
     try {
-      const change = new ChangeStore(database).read(changeId);
-      phase = change.state.phase;
-      brief = change.brief;
+      phase = new ChangeStore(database).read(changeId).state.phase;
     } catch {
       response.writeHead(404).end("no such change");
       return;
     }
-    if (sessions.has(changeId, phase)) {
-      // §6.5 rule 5: one live process per phase thread. Dispatching into a
-      // terminal someone already has open would interleave two turns.
-      json(response, { ran: false, reason: "phase_already_running", phase });
-      return;
-    }
-    /*
-     * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
-     *
-     * RoundTurnRunner 里也有同一条检查（防御在两层），但只靠那一层是不够的：
-     * TurnLoop 会把 runner 抛的错当成「这一轮跑失败了」，于是给 Change 应用 fail、
-     * 标成 blocked。而「还没录需求」是前置条件不满足，**不是这一轮失败** —— 因为它
-     * 把 Change 打成阻塞，就得再去 retry 才能恢复，白折腾一圈。
-     */
-    if (brief === null) {
-      json(response, { ran: false, reason: "change_has_no_brief", phase });
-      return;
-    }
-    /*
-     * 项目没写路径也不跑。
-     *
-     * 和上面那条同一个形状、同一个理由：**前置条件不满足不该把 Change 打成 blocked**。
-     * `PanelSessions.launchInto` 里也会拒（防御在两层），但那一层抛出来会被 TurnLoop
-     * 当成「这一轮跑失败了」。
-     */
-    if (sessions.workspaceFor(changeId) === null) {
-      json(response, { ran: false, reason: "project_has_no_path", phase });
-      return;
-    }
-
-    /*
-     * 「跑这个阶段」跑的是**一轮对抗**，不是一次 turn。
-     *
-     * 单次 turn 是让一个模型自己写、自己说没问题，闸门读它的自述 —— 这个产品存在
-     * 的理由就是不许那样。所以这里直接换掉 runner，而不是在界面上多一个按钮：
-     * 两个「跑」、没人说得清哪个是真的，那是老树的病。
-     *
-     * 裁判仍然跑在这个阶段自己的 pty 里（`launch` 那一行），所以你在面板上看得见
-     * 它，也看得见它什么时候停下来问你。
-     */
-    const lookup = createSubAgentLookup();
-    const loop = new TurnLoop({
-      database,
-      runner: new RoundTurnRunner({
-        transport: new CodexTuiTransport({
-          ...options.session,
-          ...(options.turnTimeoutMs === undefined
-            ? {} : { timeoutMs: options.turnTimeoutMs }),
-          launch: ({ argv }) => { sessions.launchInto(changeId, phase, argv); },
-        }),
-        gaps: new GapStore(database),
-        rubrics: new RubricStore(database),
-        changes: new ChangeStore(database),
-        bindings: new BindingStore(database),
-        readRole: (parentThreadId, agentPath) =>
-          readRoleTranscript({ lookup, parentThreadId, agentPath }),
-        taskFor: (phase) => MINIMAL_PHASE_INSTRUCTIONS[phase as Phase],
-      }),
-    });
-    const at = Date.now();
-    const jobId = `JOB-${changeId}-${phase}-${at}`;
-    loop.queueTurn({
-      changeId, jobId, deadlineAt: at + 30 * 60_000, maxAttempts: 1,
-    });
-    const outcome = await loop.runOnce({
-      owner: "panel", token: jobId, now: at, ttlMs: 30 * 60_000,
-    });
-    json(response, { ran: true, phase, outcome });
+    json(response, await runRound({ changeId, phase, sessions, options }));
     return;
   }
 

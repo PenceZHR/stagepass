@@ -206,9 +206,20 @@ function saidWhat(result) {
   const responded = Object.keys(result.responses ?? {}).length;
   if (responded > 0) parts.push(`你对 ${responded} 条问题表了态`);
   if (result.raised) parts.push(`你自己提的那条记成了 ${result.raised}`);
-  parts.push(`裁决 ${JSON.stringify(result.answer)} → ${JSON.stringify(result.outcome)}`);
+  if (result.outcome?.kind === "refused") {
+    // 他自己刚提的要求挡住了他自己的批准，这种最要说清楚。
+    parts.push(`⚠ 闸门拒了这次「${result.outcome.action}」：${result.outcome.reason}`);
+  } else {
+    parts.push(`裁决 → ${JSON.stringify(result.outcome)}`);
+  }
   for (const refused of result.refused ?? []) {
     parts.push(`⚠ ${refused.id}：${REFUSAL_WORDS[refused.code] ?? refused.code}`);
+  }
+  // 「再来一轮」会当场续跑，不用人再按一次「跑这个阶段」—— 所以要说出来它已经在跑了。
+  if (result.continued) {
+    parts.push(result.continued.ran
+      ? "下一轮已经派出去了"
+      : `下一轮没派出去：${result.continued.reason}`);
   }
   return parts.join("；");
 }
@@ -822,7 +833,8 @@ function nextStep(entry) {
           why: openGaps(entry).length > 0
             ? `这一轮跑完了。选择器里会把这 ${openGaps(entry).length} 条问题一条一道题地`
               + "问你 —— 同意 / 不同意 / 先接受风险 / 我自己说，每条都能写自己的话，"
-              + "最后才是裁决。"
+              + "最后问你「再来一轮，还是就这样批准」。选再来一轮就当场续跑，"
+              + "不用回来再按一次。"
             : "这一轮跑完了，闸门在等你的明确决定。裁决发生在 Codex 自己的选择器里，"
               + "网页上没有、也不会有 approve 按钮。",
         }

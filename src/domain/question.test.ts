@@ -6,8 +6,10 @@ import {
   BadQuestionShapeError,
   clarificationQuestion,
   decisionFrom,
+  decisionLabel,
   DECISION_FIELD,
   gateDecisionQuestion,
+  isAnotherRound,
   readAnswer,
   RESPONSE_AGREE,
   RESPONSE_DISMISS,
@@ -41,9 +43,10 @@ function ask(state: ChangeState, evidence: Evidence): Question | null {
 describe("L3 · the question offers exactly what the gate permits", () => {
   it("offers approve and reject on a clean settled phase", () => {
     const question = ask(SETTLED, CLEAN)!;
+    // enum 里是**人看见的那句话**，不是动作名 —— `reject` 这个词没人猜得到它是重跑。
     assert.deepEqual(
       question.requestedSchema.properties[DECISION_FIELD]?.enum,
-      ["approve", "reject"],
+      [decisionLabel("approve", "Spec"), decisionLabel("reject", "Spec")],
     );
     assert.equal(question.requestedSchema.required[0], DECISION_FIELD);
     assert.match(question.message, /Spec/);
@@ -54,17 +57,33 @@ describe("L3 · the question offers exactly what the gate permits", () => {
    * and then refused. Here the option list IS the gate's permitted list, so
    * there is nothing to keep in sync.
    */
-  it("drops approve when the gate refuses it", () => {
+  /**
+   * 2026-07-30 起这条变了：一个只被「还有问题挡着」拒掉的 approve **照样提供** ——
+   * 因为人在同一道题里就能把那些问题驳回或接受掉（用户要的「现在再跑一轮，还是就
+   * 这样批准？」）。判断权没有离开闸门：他没处理，落地时照样拒。
+   */
+  it("还有问题挡着时 approve 照样提供 —— 人能在同一次回答里清掉它", () => {
     assert.deepEqual(
       ask(SETTLED, WITH_P0)!.requestedSchema.properties[DECISION_FIELD]?.enum,
-      ["reject"],
+      [decisionLabel("approve", "Spec"), decisionLabel("reject", "Spec")],
     );
+  });
+
+  it("**什么都没产出时 approve 不提供** —— 那个拒是驳回问题清不掉的", () => {
+    // 驳回一条问题变不出一份产物来。这一条还是 §5.4：永远执行不了的选项不许出现。
+    const nothing = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, EMPTY_EVIDENCE),
+      summary: "s",
+    })!;
+    assert.deepEqual(nothing.requestedSchema.properties[DECISION_FIELD]?.enum,
+      [decisionLabel("reject", "Spec")]);
   });
 
   it("offers retry, and only retry, on a blocked phase", () => {
     assert.deepEqual(
       ask(BLOCKED, WITH_P0)!.requestedSchema.properties[DECISION_FIELD]?.enum,
-      ["retry"],
+      [decisionLabel("retry", "Spec")],
     );
   });
 
@@ -89,6 +108,63 @@ describe("L3 · the question offers exactly what the gate permits", () => {
         assert.ok(!offered.includes(system), `${state.status} offered ${system}`);
       }
     }
+  });
+});
+
+describe("L3 · 裁决那一格说人话", () => {
+  /*
+   * 用户 2026-07-30 的原话：「**reject 这个词没人猜得到它是重跑。**」
+   * 而它确实是：驳回一个设计阶段就是「在这儿再来一轮」，阶段一步都没动。
+   */
+  it("设计阶段的 reject 写「再来一轮」，而且不出现 reject 这个词", () => {
+    const offered = ask(SETTLED, CLEAN)!.requestedSchema
+      .properties[DECISION_FIELD]?.enum ?? [];
+    assert.ok(offered.some((label) => label.includes("再来一轮")), offered.join(" / "));
+    assert.ok(!offered.some((label) => label.includes("reject")));
+    assert.ok(offered.some((label) => label.includes("批准")));
+  });
+
+  it("**Review / QA 的 reject 写「打回去修」** —— 同一个动作，两句不同的话", () => {
+    // 驳回 Review 不是重跑 Review，是把活送到 Fix（`sendsToFix`）。用「再来一轮」
+    // 去说它就是在界面上撒谎。
+    for (const phase of ["Review", "QA"] as const) {
+      const offered = gateDecisionQuestion({
+        phase,
+        gate: computeGate({ phase, status: "settled", returnPhase: null }, CLEAN),
+        summary: "s",
+      })!.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+      assert.ok(offered.some((label) => label.includes("打回去修")), `${phase}: ${offered}`);
+      assert.ok(!offered.some((label) => label.includes("再来一轮")), phase);
+    }
+  });
+
+  it("那句话回来之后映射回动作 —— 两种 reject 说法都是 reject", () => {
+    for (const phase of ["Spec", "Review"] as const) {
+      const question = gateDecisionQuestion({
+        phase,
+        gate: computeGate({ phase, status: "settled", returnPhase: null }, CLEAN),
+        summary: "s",
+      })!;
+      assert.equal(decisionFrom(question, {
+        action: "accept", content: { decision: decisionLabel("reject", phase) },
+      }), "reject");
+    }
+  });
+
+  it("认不出来的那句话 —— 什么都不推动", () => {
+    // 失败的方向要在安全那一边：答案记下来，闸门不动。
+    assert.equal(decisionFrom(ask(SETTLED, CLEAN)!, {
+      action: "accept", content: { decision: "随便写一句" },
+    }), null);
+  });
+
+  it("`isAnotherRound` 只对「再来一轮」为真", () => {
+    // 「打回去修」不许续跑：那时 Change 已经换到 Fix 了，自动在一个刚到的阶段上
+    // 开跑，等于替人决定了 Fix 该做什么。
+    assert.equal(isAnotherRound(decisionLabel("reject", "Spec")), true);
+    assert.equal(isAnotherRound(decisionLabel("reject", "Review")), false);
+    assert.equal(isAnotherRound(decisionLabel("approve", "Spec")), false);
+    assert.equal(isAnotherRound(undefined), false);
   });
 });
 
@@ -250,7 +326,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     assert.deepEqual(answered({
       R01: RESPONSE_DISMISS, R01x: "验收标准在第 3 节，反方没读到",
       R02: RESPONSE_AGREE, R02x: "范围要按 PRD 收窄",
-      [DECISION_FIELD]: "reject",
+      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
     }).responses, {
       "SPEC-1": { kind: "dismiss", reason: "验收标准在第 3 节，反方没读到" },
       "SPEC-2": { kind: "agree", note: "范围要按 PRD 收窄" },
@@ -259,7 +335,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     assert.deepEqual(answered({
       R01: RESPONSE_WAIVE, R01x: "这一版先带着它走",
       R02: RESPONSE_OWN, R02x: "我要的是另一个意思",
-      [DECISION_FIELD]: "approve",
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
     }).responses, {
       "SPEC-1": { kind: "waive", reason: "这一版先带着它走" },
       // 「我自己说」等同「同意」：他的文字进下一轮，这一条留着。
@@ -269,7 +345,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
 
   it("同意但什么也没写 —— 也是一次表态，只是没有话要带", () => {
     assert.deepEqual(answered({
-      R01: RESPONSE_AGREE, R02: RESPONSE_AGREE, [DECISION_FIELD]: "reject",
+      R01: RESPONSE_AGREE, R02: RESPONSE_AGREE, [DECISION_FIELD]: decisionLabel("reject", "PRD"),
     }).responses, {
       "SPEC-1": { kind: "agree", note: "" },
       "SPEC-2": { kind: "agree", note: "" },
@@ -277,7 +353,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
   });
 
   it("一条都没选 —— 什么都不做，不猜", () => {
-    assert.deepEqual(answered({ [DECISION_FIELD]: "reject" }).responses, {});
+    assert.deepEqual(answered({ [DECISION_FIELD]: decisionLabel("reject", "PRD") }).responses, {});
   });
 
   it("按了 Esc —— 一条表态都不落，人的意思是「我先不决定」", () => {
@@ -289,7 +365,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
   it("人自己提的那条从 RY 出来", () => {
     const read = answered({
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
-      RY: "没说清楚失败时回滚到哪", [DECISION_FIELD]: "reject",
+      RY: "没说清楚失败时回滚到哪", [DECISION_FIELD]: decisionLabel("reject", "PRD"),
     });
     assert.equal(read.raised, "没说清楚失败时回滚到哪");
   });
@@ -302,7 +378,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     })!;
     assert.deepEqual(responsesFrom({
       question: plain,
-      answer: { action: "accept", content: { [DECISION_FIELD]: "approve" } },
+      answer: { action: "accept", content: { [DECISION_FIELD]: decisionLabel("approve", "PRD") } },
       openGaps: GAPS,
     }), { responses: {}, raised: "" });
   });
@@ -358,7 +434,7 @@ describe("L3 · turning an answer into a decision", () => {
   it("returns the action the human picked", () => {
     const question = ask(SETTLED, CLEAN)!;
     assert.equal(
-      decisionFrom(question, { action: "accept", content: { decision: "approve" } }),
+      decisionFrom(question, { action: "accept", content: { decision: decisionLabel("approve", "Spec") } }),
       "approve",
     );
   });
@@ -369,9 +445,10 @@ describe("L3 · turning an answer into a decision", () => {
    * refused before it can become a command.
    */
   it("refuses an action that was not offered", () => {
-    const question = ask(SETTLED, WITH_P0)!; // only `reject` was offered
+    // 什么都没产出 —— 那时 approve 真的没被提供（那个拒清不掉，见上面那条）。
+    const question = ask(SETTLED, EMPTY_EVIDENCE)!;
     assert.equal(
-      decisionFrom(question, { action: "accept", content: { decision: "approve" } }),
+      decisionFrom(question, { action: "accept", content: { decision: decisionLabel("approve", "Spec") } }),
       null,
     );
     assert.equal(

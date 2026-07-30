@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { GateMovedError, type Blocker } from "../domain/gate";
-import { gateDecisionQuestion, DECISION_FIELD } from "../domain/question";
+import { decisionLabel, gateDecisionQuestion, DECISION_FIELD } from "../domain/question";
 import { ChangeStore } from "./change-store";
 import { CommandStore } from "./command-store";
 import { EvidenceStore } from "./evidence-store";
@@ -59,7 +59,7 @@ describe("L3 · a question, an answer, a state change", () => {
     try {
       askAbout(commands, questions);
       questions.answer("Q-1", {
-        action: "accept", content: { [DECISION_FIELD]: "approve" },
+        action: "accept", content: { [DECISION_FIELD]: decisionLabel("approve", "PRD") },
       });
       assert.deepEqual(questions.apply("Q-1"), {
         kind: "advanced", action: "approve",
@@ -76,7 +76,7 @@ describe("L3 · a question, an answer, a state change", () => {
     try {
       askAbout(commands, questions);
       questions.answer("Q-1", {
-        action: "accept", content: { [DECISION_FIELD]: "reject" },
+        action: "accept", content: { [DECISION_FIELD]: decisionLabel("reject", "PRD") },
       });
       assert.deepEqual(questions.apply("Q-1"), {
         kind: "advanced", action: "reject",
@@ -131,7 +131,7 @@ describe("L3 · the fence holds across the time a person takes", () => {
       });
 
       questions.answer("Q-1", {
-        action: "accept", content: { [DECISION_FIELD]: "approve" },
+        action: "accept", content: { [DECISION_FIELD]: decisionLabel("approve", "PRD") },
       });
       assert.throws(() => questions.apply("Q-1"), GateMovedError);
       assert.equal(changes.read("CHG-1").state.phase, "PRD");
@@ -179,11 +179,11 @@ describe("L3 · one Change asks one question at a time", () => {
     try {
       askAbout(commands, questions);
       questions.answer("Q-1", {
-        action: "accept", content: { [DECISION_FIELD]: "approve" },
+        action: "accept", content: { [DECISION_FIELD]: decisionLabel("approve", "PRD") },
       });
       assert.throws(
         () => questions.answer("Q-1", {
-          action: "accept", content: { [DECISION_FIELD]: "reject" },
+          action: "accept", content: { [DECISION_FIELD]: decisionLabel("reject", "PRD") },
         }),
         QuestionNotOpenError,
       );

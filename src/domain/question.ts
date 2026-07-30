@@ -1,6 +1,7 @@
 import type { ChangeAction } from "./change-state";
 import type { Gap, GapResponse } from "./gap";
 import type { Gate } from "./gate";
+import { isPhase, sendsToFix } from "./phase";
 
 /**
  * A question StagePass puts to the human, and the answer it will accept.
@@ -146,16 +147,84 @@ export function gateDecisionQuestion(input: {
   // `start`, `settle` and `fail` are the system reporting what happened. Only
   // these three are ever put to a person.
   const decisions: readonly ChangeAction[] = ["approve", "reject", "retry"];
-  const offered = decisions.filter((action) => input.gate.permitted.includes(action));
+  const offered = decisions.filter((action) =>
+    input.gate.permitted.includes(action) || clearableByAnswer(action, input.gate));
   if (offered.length === 0) return null;
 
   return compose(`${input.phase}：${input.summary}`, [
     ...responseFields(input.openGaps ?? []),
     // `decision` 排在最后，因为小写 `d` 在 `R` 之后 —— 而它是选项格，所以整张表
     // 提交得动（见 `compose` 的第二条）。**这不是巧合，是挑名字时挑的。**
-    { id: DECISION_FIELD, title: "请裁决", options: offered },
+    {
+      id: DECISION_FIELD,
+      title: "请裁决",
+      options: offered.map((action) => decisionLabel(action, input.phase)),
+    },
   ]);
 }
+
+/**
+ * 这个动作现在被拒，但**人在这同一次回答里就能把拒的原因清掉**吗。
+ *
+ * 只有一种情况算：`blocking_problem_outstanding`。人可以在同一道题里驳回或接受那些
+ * 问题，于是等裁决落地时闸门已经放行了 —— 用户 2026-07-30 要的正是这一步：
+ * 「现在再跑一轮，还是就这样批准？」两个都得能选，否则他清完了问题还要再问一次。
+ *
+ * ## 这不是放宽 §5.4
+ *
+ * §5.4 挡的是**永远执行不了**的选项（老树那五个死按钮：有标签、有渲染、不在任何
+ * surface 的可执行集合里）。这一条不同：它可执行，只是要人先把挡着的东西处理掉。
+ * 而**如果他没处理，闸门照样拒**，并且把原因报出来 —— 判断权一步都没有离开闸门。
+ *
+ * 「什么都没产出」不算：驳回一条问题变不出一份产物来，那个拒是清不掉的。
+ */
+function clearableByAnswer(action: ChangeAction, gate: Gate): boolean {
+  return gate.refusals[action] === "blocking_problem_outstanding";
+}
+
+/**
+ * 裁决那一格显示的字。
+ *
+ * ## 为什么不直接显示 `reject`
+ *
+ * 用户 2026-07-30 的原话：「**reject 这个词没人猜得到它是重跑。**」而它确实是：驳回
+ * 一个设计阶段的意思是「在这儿再来一轮」，`transition` 里写着
+ * `{ ...state, status: "pending" }`，阶段一步都没动。
+ *
+ * ## 同一个动作，两个阶段两句话
+ *
+ * 驳回 Review / QA 不是重跑那个阶段，是**把活打回 Fix**（`sendsToFix`）。用同一句
+ * 「再来一轮」去说它，就是在界面上撒谎。所以文案跟着阶段走，判据用的是那个已经存在
+ * 的谓词 —— 不在这里另算一套（E3）。
+ */
+const APPROVE_LABEL = "就这样批准，进下一个阶段";
+const RETRY_LABEL = "重跑一次（上一轮跑失败了）";
+const ANOTHER_ROUND_LABEL = "再来一轮（红蓝在这个阶段重新跑）";
+const BACK_TO_FIX_LABEL = "打回去修（送到 Fix）";
+
+export function decisionLabel(action: ChangeAction, phase: string): string {
+  if (action === "approve") return APPROVE_LABEL;
+  if (action === "retry") return RETRY_LABEL;
+  return isPhase(phase) && sendsToFix(phase) ? BACK_TO_FIX_LABEL : ANOTHER_ROUND_LABEL;
+}
+
+/**
+ * 人看见的那句话 → 动作。
+ *
+ * **enum 里的值就是人看见的字**（§5.2b），所以要有一张回来的表。它是全的：四个标签
+ * 各自对应一个动作，两个 reject 的说法指向同一个动作。`decisionFrom` 之外没有第二处
+ * 解释这些字符串。
+ */
+const ACTION_BY_LABEL: Readonly<Record<string, ChangeAction>> = {
+  [APPROVE_LABEL]: "approve",
+  [RETRY_LABEL]: "retry",
+  [ANOTHER_ROUND_LABEL]: "reject",
+  [BACK_TO_FIX_LABEL]: "reject",
+};
+
+/** 这次裁决是「再来一轮」吗 —— 答完直接续跑那一步靠它判。 */
+export const isAnotherRound = (label: unknown): boolean =>
+  label === ANOTHER_ROUND_LABEL;
 
 /**
  * 「回应蓝方」那四个选项。
@@ -437,7 +506,9 @@ export function decisionFrom(
   if (!offered) return null;
   const chosen = answer.content[DECISION_FIELD];
   if (typeof chosen !== "string" || !offered.includes(chosen)) return null;
-  return chosen as ChangeAction;
+  // enum 里是**人看见的那句话**，不是动作名（见 `decisionLabel`）。认不出来的返回
+  // null，于是答案被记下但不推动任何东西 —— 失败的方向是安全的那一边。
+  return ACTION_BY_LABEL[chosen] ?? null;
 }
 
 /**
