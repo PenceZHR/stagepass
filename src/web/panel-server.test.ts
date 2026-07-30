@@ -67,6 +67,8 @@ interface Fake {
   started: { changeId: string; phase: string; argv: string[] }[];
   /** 每次启动用的 cwd。**Codex 跑在哪个仓库，靠它验。** */
   startedCwd: string[];
+  /** 让进程退出。验「死终端要被察觉」那条用的。 */
+  exit(): void;
   written: Uint8Array[];
   resized: { cols: number; rows: number }[];
   emit(bytes: Uint8Array): void;
@@ -100,9 +102,11 @@ async function withPanel(
   const written: Uint8Array[] = [];
   const resized: Fake["resized"] = [];
   const emitters: ((bytes: Uint8Array) => void)[] = [];
+  const exiters: ((exitCode: number) => void)[] = [];
   const pty: Fake = {
     started, startedCwd, written, resized,
     emit: (bytes) => { for (const listener of emitters) listener(bytes); },
+    exit: () => { for (const onExit of [...exiters]) onExit(0); },
   };
 
   const start = ((input: {
@@ -117,7 +121,7 @@ async function withPanel(
       changeId: input.changeId,
       phase: input.phase as PtySession["phase"],
       onBytes(listener) { emitters.push(listener); },
-      onExit() { /* the fake never exits */ },
+      onExit(listener) { exiters.push(listener); },
       write(bytes) { written.push(bytes); },
       resize(cols, rows) { resized.push({ cols, rows }); },
       kill() { alive = false; },
@@ -881,6 +885,84 @@ describe("panel · 新建 Project 必须给路径", () => {
       assert.ok(new RubricStore(database).current({
         projectId: created.id, changeId: null, phase: "PRD", role: "producer",
       }) !== null);
+    });
+  });
+});
+
+/**
+ * 进程死了，正在看的人要知道。
+ *
+ * 用户 2026-07-30 报的「Terminal shut down … I can't type anything」：终端确实没了，
+ * 但**没有任何一层察觉到**。响应一直开着，浏览器的 reader 永远等不到 done，xterm
+ * 停在最后一帧、光标还在 —— 死终端和在思考的终端一模一样，人于是一直等、一直打字。
+ *
+ * `request.on("close")` 管的是反方向（人走开），救不了这一边。
+ */
+describe("panel · 终端死了要告诉正在看的人", () => {
+  it("**进程退出时那条响应会结束**", async () => {
+    await withPanel(async ({ open, pty, base }) => {
+      const response = await open(`/pty/${CHANGE}/PRD`);
+      const reader = response.body!.getReader();
+      pty.emit(new Uint8Array([0x68, 0x69])); // "hi"
+      await reader.read();
+
+      // 进程没了。以前这里什么都不会发生，reader 就一直等下去。
+      pty.exit();
+
+      const after = await reader.read();
+      assert.equal(after.done, true, "响应没结束 —— 浏览器无从知道终端已经死了");
+      assert.ok(base);
+    });
+  });
+
+  it("人先走开时不会去动一个已经关掉的响应", async () => {
+    await withPanel(async ({ open, pty }) => {
+      const response = await open(`/pty/${CHANGE}/PRD`);
+      await response.body!.cancel();          // 人关掉了页面
+      await new Promise((resolve) => { setTimeout(resolve, 60); });
+      // 这一下不许抛：ender 应该已经被 request close 摘掉了。
+      assert.doesNotThrow(() => { pty.exit(); });
+    });
+  });
+});
+
+/**
+ * 荒谬的尺寸要拒掉，不能照做。
+ *
+ * 实测两次：一个尺寸为 0 的浏览器窗口会让 xterm 的 fit 算出 1 列，StagePass 老实
+ * 传给 pty，Codex 从此把每个字符单独排一行 —— 画面竖成一条，**而且是持久的**：
+ * 窗口恢复之后那一屏已经那样画出去了，字节回放重排不了，看着像终端坏了。
+ *
+ * `cols > 0` 挡不住它，因为 1 也是「> 0」。
+ */
+describe("panel · 荒谬的终端尺寸不照做", () => {
+  const sizeAfter = async (
+    open: (path: string, init?: RequestInit) => Promise<Response>,
+    query: string,
+  ) => {
+    await open(`/pty/${CHANGE}/PRD/resize?${query}`, { method: "POST" });
+  };
+
+  it("**cols=1 被拒**", async () => {
+    await withPanel(async ({ open, pty }) => {
+      await sizeAfter(open, "cols=1&rows=1");
+      assert.deepEqual(pty.resized, [], "1 列的终端里什么 TUI 都没法用");
+    });
+  });
+
+  it("正常尺寸照常生效", async () => {
+    await withPanel(async ({ open, pty }) => {
+      await sizeAfter(open, "cols=120&rows=40");
+      assert.deepEqual(pty.resized.at(-1), { cols: 120, rows: 40 });
+    });
+  });
+
+  it("负数、NaN、缺参数都拒", async () => {
+    await withPanel(async ({ open, pty }) => {
+      for (const query of ["cols=-5&rows=40", "cols=abc&rows=40", "rows=40", ""]) {
+        await sizeAfter(open, query);
+      }
+      assert.deepEqual(pty.resized, []);
     });
   });
 });

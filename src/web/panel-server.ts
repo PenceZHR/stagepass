@@ -170,6 +170,17 @@ function mintId(prefix: string, existing: readonly string[]): string {
 interface LiveSession {
   readonly session: PtySession;
   readonly listeners: Set<(bytes: Uint8Array) => void>;
+  /**
+   * 进程结束时要通知的人。
+   *
+   * **少了它，一个死掉的终端和一个在思考的终端在浏览器里完全一样**：响应一直开着，
+   * fetch 的 reader 永远等不到 done，xterm 停在最后一帧、光标还在，人于是一直等、
+   * 一直打字，什么都不发生。用户 2026-07-30 报的「shut down / can't type anything」
+   * 就是这个 —— 而当时**没有任何一层察觉到进程已经没了**。
+   *
+   * `request.on("close")` 管的是反方向（人走开），它救不了这一边。
+   */
+  readonly enders: Set<() => void>;
   readonly scrollback: Uint8Array[];
 }
 
@@ -267,7 +278,9 @@ export class PanelSessions {
       options: { ...this.options.session, cwd },
     });
 
-    const entry: LiveSession = { session, listeners: new Set(), scrollback: [] };
+    const entry: LiveSession = {
+      session, listeners: new Set(), enders: new Set(), scrollback: [],
+    };
     let buffered = 0;
     session.onBytes((bytes) => {
       entry.scrollback.push(bytes);
@@ -277,7 +290,13 @@ export class PanelSessions {
       }
       for (const listener of entry.listeners) listener(bytes);
     });
-    session.onExit(() => { this.live.delete(key); });
+    session.onExit(() => {
+      this.live.delete(key);
+      // **告诉正在看的人它没了。** 不通知的话响应一直开着，浏览器停在最后一帧，
+      // 死终端和在思考的终端一模一样。见 LiveSession.enders 那段注释。
+      for (const end of entry.enders) end();
+      entry.enders.clear();
+    });
     this.live.set(key, entry);
     return entry;
   }
@@ -1151,7 +1170,25 @@ export async function handle(
       // Forwarded, not read. See the note at the top of this file.
       const listener = (bytes: Uint8Array): void => { response.write(bytes); };
       entry.listeners.add(listener);
-      request.on("close", () => { entry.listeners.delete(listener); });
+
+      /*
+       * 进程没了就**结束这条响应**。
+       *
+       * 这是浏览器唯一能知道「终端死了」的途径：`fetch` 的 reader 拿到 done，
+       * 客户端才说得出「这个终端不再接受输入」。少了它，人对着一帧静止的画面
+       * 一直打字（2026-07-30 用户报的就是这个）。
+       *
+       * 两个方向都要清理：进程先死（enders）、或者人先走开（request close）。
+       */
+      const end = (): void => {
+        entry.listeners.delete(listener);
+        response.end();
+      };
+      entry.enders.add(end);
+      request.on("close", () => {
+        entry.listeners.delete(listener);
+        entry.enders.delete(end);
+      });
       return;
     }
     if (action === "/in" && request.method === "POST") {
@@ -1162,7 +1199,23 @@ export async function handle(
     if (action === "/resize" && request.method === "POST") {
       const cols = Number(url.searchParams.get("cols"));
       const rows = Number(url.searchParams.get("rows"));
-      if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+      /*
+       * **一个几列宽的终端不是一个合法的请求，是浏览器还没量出尺寸。**
+       *
+       * 实测两次（2026-07-29 / 07-30）：一个尺寸为 0 的窗口会让 xterm 的 fit 算出
+       * 1 列，然后 StagePass 老老实实把 `cols=1` 传给 pty —— Codex 从此把每个字符
+       * 单独排一行，画面竖成一条。**而它是持久的**：窗口恢复正常之后那一屏已经
+       * 那样画出去了，字节回放重排不了，看着像终端坏了。
+       *
+       * `cols > 0` 挡不住这个：1 是「> 0」的。所以设一个下限 —— 比这更窄的终端里
+       * 什么 TUI 都没法用，所以拒掉它一定比照做更接近人的意图。
+       */
+      const MIN_COLS = 20;
+      const MIN_ROWS = 5;
+      if (
+        Number.isFinite(cols) && Number.isFinite(rows)
+        && cols >= MIN_COLS && rows >= MIN_ROWS
+      ) {
         sessions.open(changeId, phase).session.resize(cols, rows);
       }
       response.writeHead(204).end();

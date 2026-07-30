@@ -259,6 +259,9 @@ async function dispatchThenEnter(request) {
 async function recordBrief() {
   briefButton.disabled = true;
   briefButton.textContent = "模型在读仓库…";
+  // 成功那条路自己走了 leave()（里面已经 load 过），finally 不要再 load 一次 ——
+  // 再 load 会把刚打开的弹窗内容重画，把那句结论盖掉。
+  let briefLanded = false;
   try {
     const result = await (await dispatchThenEnter(() => fetch(
       `/api/brief?change=${encodeURIComponent(changeId)}`, { method: "POST" },
@@ -272,11 +275,30 @@ async function recordBrief() {
     } else if (!result.recorded) {
       say("没记下任何需求 —— 你按了 Esc，或者有必答的没填。");
     } else {
-      say("需求记下了。现在可以跑这个阶段 —— 红方会拿着它去写，而不是自己猜。");
+      /*
+       * 录完之后**把人带回阶段环**，别留在一个已经被关掉的终端前面。
+       *
+       * 服务端在需求落库之后会关掉那个会话（它的活干完了，不关就一直挡着
+       * 「跑这个阶段」）。但从人那边看，答完选择器紧接着屏幕就死了 —— 用户
+       * 2026-07-30 报的「Terminal shut down / can't type anything」就是这个。
+       * 事情是成的，观感是崩的。
+       *
+       * 所以主动走回环上，并把那个阶段的卡片打开：结论、以及现在亮起来的
+       * 「跑这个阶段」，都在人的视线里。
+       */
+      briefLanded = true;
+      const at = phases.find((entry) => entry.current)?.phase ?? null;
+      await leave();
+      if (at) {
+        openSheet(at);
+        say("需求记下了，那个终端的活也干完了（所以它关掉了）。"
+          + "现在可以跑这个阶段 —— 红方会拿着你写的东西去做，而不是自己猜。");
+      }
+      return;   // leave() 已经 load() 过了
     }
   } finally {
     briefButton.textContent = "说清楚我要什么";
-    await load();
+    if (!briefLanded) await load();
   }
 }
 
@@ -850,6 +872,7 @@ async function leave() {
 
 async function attach(phase) {
   stream = new AbortController();
+  const mine = stream;
   await resize(phase);
 
   const response = await fetch(path(phase), { signal: stream.signal });
@@ -859,6 +882,24 @@ async function attach(phase) {
     if (done) break;
     // value is a Uint8Array. It is drawn, never inspected.
     term.write(value);
+  }
+
+  /*
+   * 流断了就说一句。
+   *
+   * **死终端和卡住的终端长得一模一样** —— xterm 停在最后一帧，光标还在，人以为
+   * 它在想事情，于是一直等、一直打字，什么都不发生。用户 2026-07-30 撞到的正是
+   * 这个（那次是 StagePass 自己在录完需求之后关掉了会话）。
+   *
+   * 只写终端**下面**那行注解，不往 xterm 里写字：终端那块画面是 Codex 的，
+   * StagePass 一个像素都不画（PRD §9.3）。
+   *
+   * `mine` 那个判断是必需的：`leave()` 会 abort 这条流，那种结束是人主动走开，
+   * 不该报「进程结束了」。
+   */
+  if (stream === mine) {
+    stageNote.textContent =
+      `${phase} 的进程已经结束了 —— 这个终端不再接受输入。返回阶段环继续。`;
   }
 }
 
