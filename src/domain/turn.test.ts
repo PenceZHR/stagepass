@@ -136,3 +136,52 @@ describe("L2 · what every turn is told", () => {
     );
   });
 });
+
+/**
+ * 没包围栏，但 JSON 明明就在那儿。
+ *
+ * 2026-07-30 实测：红方答的是
+ *
+ * ```
+ * I'm reviewing the target commit ... assigned a stable RV- ID.
+ * {"artifactIds":["index.html"],"blockers":[]}
+ * ```
+ *
+ * 契约要的是一个 ```json 块，它没给。而原来的兜底是「没围栏就把整段当 JSON」——
+ * 整段前面有一句话，于是 `JSON.parse` 失败，整轮作废。
+ *
+ * **判据不该是「有没有照仪式写」，而是「读不读得出来」。** 一个完整的 JSON 对象摆在
+ * 那儿，把它读出来不叫放宽标准 —— 后面那些形状检查（artifactIds 必须是字符串数组、
+ * blockers 必须是数组）一个都没动，读出来的东西照样要过它们。
+ */
+describe("turn · 没围栏时，认最后那个完整的 JSON 对象", () => {
+  const body = '{"artifactIds":["index.html"],"blockers":[]}';
+
+  it("**前面有一句话也读得出来**", () => {
+    const result = parseTurnResult(`我先说明一下我做了什么。\n${body}`);
+    assert.deepEqual(result.artifactIds, ["index.html"]);
+    assert.deepEqual(result.blockers, []);
+  });
+
+  it("后面还有一句话也读得出来", () => {
+    const result = parseTurnResult(`${body}\n以上。`);
+    assert.deepEqual(result.artifactIds, ["index.html"]);
+  });
+
+  it("**有围栏时仍然只认围栏里的** —— 别被正文里举的例子带偏", () => {
+    const text = '举个例子：{"artifactIds":["假的"],"blockers":[]}\n'
+      + "```json\n" + body + "\n```";
+    assert.deepEqual(parseTurnResult(text).artifactIds, ["index.html"]);
+  });
+
+  it("**形状不对照样拒** —— 这条兜底不放宽任何一项检查", () => {
+    assert.throws(
+      () => parseTurnResult('说明。\n{"artifactIds":"不是数组","blockers":[]}'),
+      TurnResultUnparsableError,
+    );
+  });
+
+  it("压根没有 JSON —— 照旧报 no_json", () => {
+    assert.throws(() => parseTurnResult("我写完了，没别的。"), TurnResultUnparsableError);
+  });
+});

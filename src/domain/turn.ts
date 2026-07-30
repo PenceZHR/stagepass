@@ -100,9 +100,48 @@ const FENCE = /```json\s*([\s\S]*?)```/g;
  * around the fence is ignored rather than refused -- the contract is about the
  * structure being StagePass's, not about the model being silent.
  */
+/**
+ * 没有 ```json 围栏时，把正文里**最后那个完整的 JSON 对象**挖出来。
+ *
+ * ## 为什么要有它
+ *
+ * 2026-07-30 实测：红方在 JSON 前面写了一句「我先说明一下我做了什么」，而原来的兜底
+ * 是「没围栏就把整段当 JSON」—— 于是 `JSON.parse` 在那句话上失败，整轮作废。
+ * 一个完整的对象明明就摆在那儿。
+ *
+ * **判据是「读不读得出来」，不是「有没有照仪式写」。** 这不放宽任何一项检查：挖出来
+ * 的东西照样要过 artifactIds / blockers 那些形状检查，坏的照样拒。
+ *
+ * ## 为什么从最后一个 `}` 往回找最早的 `{`
+ *
+ * 最早那个能配对成功的 `{` 就是最外层 —— 从里层开始试会挖出一个嵌套的子对象，
+ * 而那个子对象大概率过不了形状检查，于是变成一条难查的「形状不对」。
+ *
+ * 有围栏时这条根本不会被调用：正文里举例写的 JSON 不许盖过围栏里的答案。
+ */
+function lastJsonObject(text: string): string | null {
+  const end = text.lastIndexOf("}");
+  if (end === -1) return null;
+  for (let start = text.indexOf("{"); start !== -1 && start < end;
+    start = text.indexOf("{", start + 1)) {
+    const slice = text.slice(start, end + 1);
+    try {
+      const parsed: unknown = JSON.parse(slice);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return slice;
+      }
+    } catch {
+      // 这个 `{` 配不上最后那个 `}`，往后挪一个再试
+    }
+  }
+  return null;
+}
+
 export function parseTurnResult(text: string): TurnResult {
   const fences = [...text.matchAll(FENCE)].map((match) => match[1]!.trim());
-  const candidate = fences.length > 0 ? fences[fences.length - 1]! : text.trim();
+  const candidate = fences.length > 0
+    ? fences[fences.length - 1]!
+    : (lastJsonObject(text) ?? text.trim());
 
   let parsed: unknown;
   try {
