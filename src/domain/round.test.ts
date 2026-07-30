@@ -91,6 +91,43 @@ describe("L4 · what the judge is told", () => {
   });
 });
 
+describe("L4 · 蓝方的规矩按阶段定", () => {
+  /**
+   * 「只许基于正方产出、不要去读仓库」原来是写死的一句，五个设计阶段共用。
+   *
+   * 在设计阶段它是对的，而且是必须的：不然「攻击这份 PRD」会滑成「调查这个项目」，
+   * 蓝方翻一遍仓库报回来一堆和这份文档无关的毛病，而闸门会拿它们挡住一个本该放行
+   * 的阶段。
+   *
+   * **到 Build 它变成错的** —— 正方的产出就是仓库，那句话等于叫蓝方闭着眼睛审代码。
+   * 用户 2026-07-30 定：能读这一轮改动涉及的文件和它们的直接调用方，但不自己执行；
+   * 「跑过没有」这类标准由红方交运行证据。范围有界，才不会滑回「调查这个项目」。
+   */
+  it("设计阶段：不许读仓库", () => {
+    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan"] as const) {
+      const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
+      assert.match(prompt, /不要去读仓库/, `${phase} 放开了蓝方`);
+    }
+  });
+
+  it("**Build：能读改动涉及的代码，但有边界，而且不自己跑**", () => {
+    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    assert.doesNotMatch(prompt, /不要去读仓库/,
+      "Build 还在叫蓝方闭着眼睛审代码");
+    assert.match(prompt, /改动/, "没告诉蓝方读什么");
+    assert.match(prompt, /调用方/, "范围没说到直接调用方");
+    assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
+  });
+
+  it("Build 之外的执行阶段维持原样 —— 这一条只为 Build 开", () => {
+    // Review/QA 的形状还没谈（§六 只谈了 Build）。没谈的一律不动。
+    for (const phase of ["Review", "QA", "Fix", "Merge", "Retro"] as const) {
+      const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
+      assert.match(prompt, /不要去读仓库/, `${phase} 被顺手改了，而它没被谈过`);
+    }
+  });
+});
+
 describe("L4 · 红方看得到上一轮被挑出了什么", () => {
   /**
    * 「红方根据蓝方的判断修正」在这之前**没有载体**：open gap 只送进裁判那一区，
