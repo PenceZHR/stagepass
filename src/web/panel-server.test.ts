@@ -1249,6 +1249,86 @@ describe("panel · 接受风险也走选择器", () => {
  * 落不下去的有没有报回来。分流规则本身在 `domain/gap.ts` / `domain/question.ts`
  * 离线证过，不在这儿重证一遍。
  */
+describe("panel · 裁决前看得见这一轮的标准判定", () => {
+  /**
+   * 用户 2026-07-30：**要不要继续对抗由人决定，不做成全自动**。
+   *
+   * 那么人就得看得见这一轮判成什么样 —— 否则「再来一轮还是批准」是在没有信息的
+   * 情况下按的。这一屏存在的全部意义就是不让人猜。
+   */
+  const ask = async (
+    open: (path: string, init?: RequestInit) => Promise<Response>,
+    database: Database.Database,
+  ): Promise<string> => {
+    const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+    await new Promise((resolve) => { setTimeout(resolve, 150); });
+    const row = database.prepare(
+      "SELECT id, message, schema_json FROM questions WHERE change_id = ? ORDER BY asked_at DESC",
+    ).get(CHANGE) as { id: string; message: string; schema_json: string };
+    // **答 approve，不答 reject。** reject 会当场续跑（D 那条路），而那一轮会一直跑到
+    // 测试把库拆掉之后 —— 症状是一串和任何断言都对不上的 SQLITE_ERROR。
+    database.prepare(
+      "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
+    ).run(row.id, "accept",
+      JSON.stringify({ decision: decisionLabel("approve", "PRD") }),
+      new Date().toISOString());
+    await asking;
+    return `${row.message}\n${row.schema_json}`;
+  };
+
+  const settleAt = (database: Database.Database): void => {
+    const changes = new ChangeStore(database);
+    changes.setBrief(CHANGE, "需求");
+    new EvidenceStore(database).put(CHANGE, "PRD", {
+      artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+    });
+    changes.apply(CHANGE, "start");
+    changes.apply(CHANGE, "settle");
+  };
+
+  it("**没勾上的标准出现在题面里** —— 说清是哪一条、谁那一份", async () => {
+    await withPanel(async ({ open, database }) => {
+      const rubrics = new RubricStore(database);
+      const saved = rubrics.save(
+        { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },
+        [{ text: "每条需求都有可观察的验收标准", blocking: false }]);
+      rubrics.record(CHANGE, "PRD", "producer", 1, saved, [{
+        criterionKey: saved.criteria[0]!.key, verdict: "no", evidence: "第 2 节只写了「要快」",
+      }]);
+      settleAt(database);
+
+      const question = await ask(open, database);
+      assert.match(question, /每条需求都有可观察的验收标准/, "没说是哪一条");
+      assert.match(question, /正方/, "没说是谁那一份");
+      assert.match(question, /不满足/);
+    });
+  });
+
+  it("全勾上了也要说 —— 「都满足」和「压根没判过」不能长得一样", async () => {
+    await withPanel(async ({ open, database }) => {
+      const rubrics = new RubricStore(database);
+      const saved = rubrics.save(
+        { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },
+        [{ text: "每条需求都有可观察的验收标准", blocking: false }]);
+      rubrics.record(CHANGE, "PRD", "producer", 1, saved, [{
+        criterionKey: saved.criteria[0]!.key, verdict: "yes", evidence: "三条都写了",
+      }]);
+      settleAt(database);
+
+      assert.match(await ask(open, database), /全部满足/);
+    });
+  });
+
+  it("压根没跑过判定 —— 照实说，不许说成「都满足」", async () => {
+    await withPanel(async ({ open, database }) => {
+      settleAt(database);
+      const question = await ask(open, database);
+      assert.match(question, /没有标准判定/);
+      assert.doesNotMatch(question, /全部满足/);
+    });
+  });
+});
+
 describe("panel · 回应蓝方和裁决同一次问出来", () => {
   /** 走到一个 settled 的 PRD，手里有两条 open 的 P1 —— 也就是一轮跑完的样子。 */
   const settledWithGaps = (database: Database.Database): void => {

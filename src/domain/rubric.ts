@@ -165,3 +165,55 @@ export function retiredBy(
   );
   return previous.filter((entry) => entry.blocking && !stillBlocking.has(entry.key));
 }
+
+/**
+ * 一份标准是谁的活儿，写给人看的那几个字。
+ *
+ * **不导出。** `panel.js` 是浏览器里的纯 JS，导不进 TS，所以那边有它自己的一份 ——
+ * 导出成「大家共用」只是句空话，而护栏会当场抓住一个没人引用的导出（它抓到过）。
+ * 两份字面量一样的标签是已知的、可接受的重复；把它说成不重复才是问题。
+ */
+const ROLE_LABEL: Readonly<Record<RubricRole, string>> = {
+  producer: "正方", critic: "反方", verdict: "裁判",
+};
+
+/** 一句话里最多点几条名。再多就只报总数 —— 题面是标题，不是报告。 */
+const NAMED_AT_MOST = 2;
+
+/**
+ * 这一轮的标准判定，写成人在裁决前要读的那一句。
+ *
+ * ## 为什么它必须存在
+ *
+ * 用户 2026-07-30 拍板：**要不要继续对抗由人决定，不做成全自动**。那么人就得看得见
+ * 这一轮判成什么样 —— 否则「再来一轮还是批准」是在没有信息的情况下按的，而这一屏
+ * 存在的全部意义就是不让人猜。
+ *
+ * ## `no` 和 `not_assessed` 分开说
+ *
+ * 前者是判了不满足（东西要改），后者是模型压根没照契约作答（**这一轮的判定本身
+ * 不可信**）。混成一句「没通过」，就把「东西不好」和「判定坏了」说成了同一件事，
+ * 而人对这两件事该做的反应完全不同。
+ *
+ * ## 为什么截断，以及截断时必须先说总数
+ *
+ * 这句话会变成选择器整张表的标题，长了没人读得完。所以只点前两条的名，**但总数
+ * 写在最前面** —— 截断可以吃掉细节，不许吃掉「还差多少」。
+ */
+export function summariseAssessments(
+  byRole: Readonly<Partial<Record<RubricRole, readonly Assessment[]>>> | null,
+): string {
+  const all = byRole === null ? [] : (Object.keys(byRole) as RubricRole[])
+    .flatMap((role) => (byRole[role] ?? []).map((entry) => ({ role, entry })));
+  if (all.length === 0) return "这一轮没有标准判定。";
+
+  const missed = all.filter(({ entry }) => entry.verdict !== "yes");
+  if (missed.length === 0) return `标准 ${all.length} 条全部满足。`;
+
+  const named = missed.slice(0, NAMED_AT_MOST).map(({ role, entry }) =>
+    `${ROLE_LABEL[role]}「${entry.criterionText}」`
+    + (entry.verdict === "no" ? "不满足" : "模型漏答"));
+  const rest = missed.length - named.length;
+  return `标准 ${all.length} 条里 ${missed.length} 条没勾上：`
+    + named.join("；") + (rest > 0 ? `；另有 ${rest} 条` : "") + "。";
+}

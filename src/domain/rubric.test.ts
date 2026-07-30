@@ -8,6 +8,8 @@ import {
   InvalidCriterionError,
   type Criterion,
   type CriterionDraft,
+  summariseAssessments,
+  type Assessment,
 } from "./rubric";
 
 /**
@@ -167,5 +169,68 @@ describe("rubric · 一次编辑退休掉了什么", () => {
         .map((entry) => entry.key),
       ["K1", "K3"],
     );
+  });
+});
+
+/**
+ * 裁决前那一句：这一轮的标准判定，还差哪几条没勾上。
+ *
+ * ## 为什么它必须在题面里
+ *
+ * 用户 2026-07-30：要不要继续对抗由人决定，不做成全自动。那么人就得**看得见**
+ * 这一轮判成什么样 —— 否则「再来一轮还是批准」是在没有信息的情况下按的。
+ *
+ * `no` 和 `not_assessed` 分开说，因为人的反应不同：前者是判了不满足（去改），
+ * 后者是模型压根没照契约作答（这一轮的判定本身不可信）。把两者混成「没通过」，
+ * 就把「东西不好」和「判定坏了」说成了同一件事。
+ */
+describe("rubric · 裁决前那一句", () => {
+  const at = (
+    criterionText: string,
+    verdict: "yes" | "no" | "not_assessed",
+  ): Assessment => ({
+    criterionKey: "K1", verdict, evidence: null, criterionText, blockingThen: true,
+  });
+
+  it("还没跑过判定 —— 说没跑过，不说「都满足」", () => {
+    assert.match(summariseAssessments(null), /没有.*判定|还没/);
+    assert.doesNotMatch(summariseAssessments(null), /满足/);
+  });
+
+  it("全勾上了，说全勾上了，并说出条数", () => {
+    const line = summariseAssessments({
+      producer: [at("每条需求都有可测的验收标准", "yes")],
+      critic: [at("每条问题都指向具体位置", "yes")],
+    });
+    assert.match(line, /2 条/);
+    assert.match(line, /全部满足/);
+  });
+
+  it("有不满足的 —— 说清是哪一条、谁判的", () => {
+    const line = summariseAssessments({
+      producer: [at("每条需求都有可测的验收标准", "no"), at("范围清楚", "yes")],
+    });
+    assert.match(line, /1 条/, "没说还差几条");
+    assert.match(line, /每条需求都有可测的验收标准/, "没说是哪一条");
+    assert.match(line, /正方/, "没说是谁那一份");
+    assert.match(line, /不满足/);
+  });
+
+  it("**漏答和不满足分开说** —— 后者是判定本身不可信", () => {
+    const line = summariseAssessments({
+      producer: [at("甲", "no")],
+      critic: [at("乙", "not_assessed")],
+    });
+    assert.match(line, /甲.*不满足|不满足.*甲/);
+    assert.match(line, /漏答|没答/);
+    assert.doesNotMatch(line, /乙[^。]*不满足/, "漏答被说成了不满足");
+  });
+
+  it("条数多时截断，但总数要说对 —— 截断不许把「还有多少」也吃掉", () => {
+    const line = summariseAssessments({
+      producer: ["甲", "乙", "丙", "丁", "戊"].map((text) => at(text, "no")),
+    });
+    assert.match(line, /5 条/);
+    assert.ok(line.length < 200, `一句话不该这么长：${line.length}`);
   });
 });

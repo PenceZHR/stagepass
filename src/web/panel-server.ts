@@ -32,7 +32,8 @@ import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import {
-  RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, type RubricRole,
+  RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
+  type RubricRole,
 } from "../domain/rubric";
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { retireStandards } from "../domain/rubric-gaps";
@@ -1137,12 +1138,27 @@ export async function handle(
      * 报出来的问题记同一个号。一条 gap 都没有时是第 1 轮。
      */
     const raiseRound = Math.max(1, ...allGaps.map((gap) => gap.openedRound));
+    /*
+     * 这一轮的标准判成什么样，**写进题面**。
+     *
+     * 用户 2026-07-30：要不要继续对抗由人决定，不做成全自动。那么人就得看得见这一轮
+     * 判成什么样 —— 否则「再来一轮还是批准」是在没有信息的情况下按的。
+     *
+     * 为什么它不能只留在网页的「标准」页签里：**裁决发生在 Codex 画的选择器里**
+     * （§5.2b），人按下去的那一刻眼前只有那张表。要他判断的信息不在那张表上，
+     * 就等于要他凭记忆判断。
+     *
+     * 非阻断的 `no` 也照报：它不挡闸门，但它正是「要不要再来一轮」的原料 ——
+     * 闸门放不放行和这一轮做得好不好是两个问题。
+     */
+    const assessed = new RubricStore(database).latestRound(changeId, phase);
     const question = gateDecisionQuestion({
       phase,
       gate,
-      summary: blockers.length === 0
+      summary: (blockers.length === 0
         ? "证据已到齐，没有挡住闸门的问题。"
-        : `${blockers.length} 项问题仍然挡着闸门。先逐条说你怎么看，最后再裁决。`,
+        : `${blockers.length} 项问题仍然挡着闸门。先逐条说你怎么看，最后再裁决。`)
+        + summariseAssessments(assessed?.byRole ?? null),
       openGaps,
     });
     // No question rather than an empty one: putting a decision to someone that
