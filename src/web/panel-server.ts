@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
-import { PHASES, isPhase, type Phase } from "../domain/phase";
+import { PHASES, isPhase, producesCommit, type Phase } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
@@ -598,12 +598,13 @@ async function runRound(input: {
    *
    * 干净之后，「这一轮改了什么」才有唯一定义：commit 边界严格等于轮次边界。
    *
-   * **只有 Build 查这个**：设计阶段的产出是一份文档、一个路径就说全了，人手里有没有
-   * 没提交的东西和写文档无关，拦它只会让人没法干活。
+   * **只有产出 commit 的阶段查这个**（Build / Fix，见 `producesCommit`）：别的阶段
+   * 产出一份文档、一个路径就说全了，人手里有没有没提交的东西和写文档无关，
+   * 拦它只会让人没法干活。
    *
    * 把文件列出来，因为「树脏了」这句话本身没法让人动手 —— 他得知道是哪几个。
    */
-  if (phase === "Build") {
+  if (producesCommit(phase)) {
     const dirty = sessions.repo.dirtyPaths(sessions.workspaceFor(changeId)!);
     if (dirty.length > 0) {
       return { ran: false, phase, reason: "workspace_dirty", dirty };

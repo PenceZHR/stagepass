@@ -328,6 +328,36 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
       new EvidenceStore(context.db).read(CHANGE, "Build").artifactIds, []);
   });
 
+  it("**Fix 也记 commit** —— 它和 Build 同形状：红方写的是代码", async () => {
+    /*
+     * 用户 2026-07-30 的通则把 Fix 的形状定了：红方写代码（改的是被报出来的问题），
+     * 所以它和 Build 一样 —— 一组改动天然对应一个 commit，文件列表说不出「改了什么」。
+     */
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review"] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [`${phase}.md`], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, phase === "Review" ? "reject" : "approve");
+    }
+    assert.equal(context.changes.read(CHANGE).state.phase, "Fix");
+
+    const repo = fakeRepo("f1x0000c0mm1t");
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]),
+        () => answer(), repo),
+    });
+    await dispatchRound(loop, "J1");
+
+    assert.deepEqual(
+      new EvidenceStore(context.db).read(CHANGE, "Fix").artifactIds,
+      ["f1x0000c0mm1t"], "Fix 的产出还是红方报的路径");
+  });
+
   it("设计阶段不走这条路 —— 产出仍然是红方报的那个路径", async () => {
     const context = open();
     const repo = fakeRepo("a1b2c3d4e5f6");

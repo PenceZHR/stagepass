@@ -307,10 +307,14 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
 
   it("没谈过的阶段一律不动 —— 保守是因为没谈，不是因为想清楚了", () => {
     // Fix / Merge / Retro 的形状还没谈过。
-    for (const phase of ["Fix", "Merge", "Retro"] as const) {
+    for (const phase of ["Merge", "Retro"] as const) {
       const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
       assert.match(prompt, /不要去读仓库/, `${phase} 被顺手改了，而它没被谈过`);
     }
+    // Fix 和 Build 同形状（红方写代码），所以蓝方够得着的东西也一样。
+    assert.doesNotMatch(
+      judgePrompt({ phase: "Fix", round: 1, task: "t", openGaps: [] }),
+      /不要去读仓库/, "Fix 的蓝方还看不见它要审的代码");
   });
 });
 

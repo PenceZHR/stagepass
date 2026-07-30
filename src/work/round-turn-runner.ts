@@ -1,7 +1,7 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
-import { PHASES } from "../domain/phase";
+import { PHASES, producesCommit } from "../domain/phase";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
@@ -195,7 +195,9 @@ export class RoundTurnRunner implements TurnRunner {
    *
    * 一份文档天然对应一个路径，一个路径就说全了。
    *
-   * ## Build：一个 commit（用户 2026-07-30 拍板）
+   * ## Build / Fix：一个 commit（用户 2026-07-30 拍板）
+ *
+ * 判据是 `producesCommit` —— **红方在这一阶段写的是代码**。
    *
    * 文件列表说不出「改了什么」—— 同一个路径，改之前改之后都是它；diff 说不出
    * 「基于哪一版」，而下一轮的蓝方正需要这个。commit 两样都有，还多了稳定 id、
@@ -221,7 +223,7 @@ export class RoundTurnRunner implements TurnRunner {
     round: number,
     reported: readonly string[],
   ): readonly string[] {
-    if (phase !== "Build") return reported;
+    if (!producesCommit(phase)) return reported;
     const cwd = this.options.workspaceFor(changeId);
     if (cwd === null) return reported;
     const sha = this.options.repo.commitAll(

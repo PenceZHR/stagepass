@@ -117,3 +117,24 @@ export const FIRST_PHASE: Phase = "PRD";
 
 /** The phase a Change ends in. Nothing leaves it. */
 export const TERMINAL_PHASE: Phase = "Done";
+
+/**
+ * 这些阶段的产出是一个 **commit**，不是一份文档。
+ *
+ * 判据只有一条：**红方在这一阶段写的是代码**。一组改动天然对应一个 commit ——
+ * 文件列表说不出「改了什么」（同一个路径改前改后都是它），diff 说不出「基于哪一版」，
+ * commit 两样都有，还多了稳定 id、能 revert、能进 fence（用户 2026-07-30 拍板）。
+ *
+ *   Build  按 Plan 实现          -> 写代码，记 commit
+ *   Fix    改掉被报出来的问题     -> 写代码，记 commit
+ *   别的    写文档 / 写报告        -> 一个路径就说全了
+ *
+ * 这个名单还决定**要不要查干净树**：StagePass 提交的是工作树里所有的改动，它分不出
+ * 哪一行是红方写的、哪一行是人自己写了一半的。所以凡是要 commit 的阶段，派发之前
+ * 必须先确认树是干净的 —— 两件事同一个名单，不许分开。
+ */
+const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>(["Build", "Fix"]);
+
+export function producesCommit(phase: string): boolean {
+  return isPhase(phase) && PRODUCES_COMMIT.has(phase);
+}

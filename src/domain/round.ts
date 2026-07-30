@@ -2,7 +2,7 @@ import { jsonAnswerIn, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
-import { redReviewsOthers, type Phase } from "./phase";
+import { producesCommit, redReviewsOthers, type Phase } from "./phase";
 
 /**
  * One adversarial round: red produces, blue attacks, the judge settles.
@@ -121,7 +121,7 @@ const gapLine = (gap: Gap): string => {
  * 「调查这个项目」—— 它会翻一遍代码，报回来一堆和这份文档无关的毛病，而闸门会拿
  * 那些毛病挡住一个本该放行的阶段。这条在设计阶段是必须的，不是保守。
  *
- * ## Build：正方的产出就是仓库
+ * ## Build / Fix：正方的产出就是仓库（判据 `producesCommit`）
  *
  * 同一句话到了 Build 就变成了错的 —— 它等于叫蓝方闭着眼睛审代码，只能看着 diff 猜
  * 「这个函数还有没有别的调用方」，而那恰恰是审代码里最值钱的问题。
@@ -145,11 +145,11 @@ const gapLine = (gap: Gap): string => {
  *
  * ## 别的阶段一律不动
  *
- * Fix / Merge / Retro 的形状还没谈过。没谈过的沿用设计阶段那条 ——
+ * Merge / Retro 的形状还没谈过。没谈过的沿用设计阶段那条 ——
  * **保守是因为没谈，不是因为想清楚了**，这句话写在这里免得下次被当成结论。
  */
 const blueReach = (phase: string): string => {
-  if (phase === "Build") {
+  if (producesCommit(phase)) {
     return "   可以读这一轮改动涉及的文件，以及它们的直接调用方 —— 只读这些，"
       + "不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。";
   }
