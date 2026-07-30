@@ -951,24 +951,83 @@ for (const field of [projectName, projectPath]) {
   });
 }
 
-document.getElementById("new-change").addEventListener("click", () => {
-  const projectId = panelState?.selectedProject
+/*
+ * 新建 Change。和新建 Project 同一个形状 —— 两个入口长得一样，人不用记两套。
+ *
+ * 顶上那句写的是「建在哪个项目、哪个仓库」：Change 落在哪个项目，就决定了 Codex 会
+ * 在哪个目录里跑。不说的话，又是一次「建了但不知道建在哪」—— 用户 2026-07-30 在
+ * Project 上撞的就是这个。
+ */
+const changeSheet = document.getElementById("change-sheet");
+const changeTitle = document.getElementById("change-title");
+const changeTarget = document.getElementById("change-target");
+const changeError = document.getElementById("change-error");
+
+/** 服务端的拒绝原因，翻成人话。 */
+const CHANGE_REFUSALS = {
+  title_required: "得给一句话，否则列表里认不出它是哪个。",
+  no_such_project: "这个项目不在库里了 —— 刷新一下再试。",
+};
+
+/** 这个新 Change 会落在哪个项目上。选中的优先，否则跟着当前 Change，最后取第一个。 */
+function targetProject() {
+  const id = panelState?.selectedProject
     ?? panelState?.changes.find((change) => change.id === changeId)?.projectId
     ?? panelState?.projects[0]?.id;
-  if (!projectId) return;
+  return panelState?.projects.find((project) => project.id === id) ?? null;
+}
 
-  const title = prompt("这次改动要做什么？");
-  if (title === null || title.trim() === "") return;
-  void fetch(
-    `/api/change?project=${encodeURIComponent(projectId)}`
-    + `&title=${encodeURIComponent(title.trim())}`, { method: "POST" },
-  )
-    .then(async (response) => {
-      if (!response.ok) throw new Error(await response.text());
-      return response.json();
-    })
-    .then((created) => { location.search = `?change=${encodeURIComponent(created.id)}`; })
-    .catch((error) => { alert(`没建成：${error.message}`); });
+function openChangeSheet() {
+  const project = targetProject();
+  if (!project) return;
+
+  changeTitle.value = "";
+  changeError.hidden = true;
+  changeTarget.textContent = project.path === null
+    // 没路径的项目建了也跑不了，当场说清楚，而不是等他按「跑这个阶段」才发现。
+    ? `建在「${project.name}」里 —— 但这个项目没有路径，建完也跑不了。`
+    : `建在「${project.name}」里，Codex 会在 ${project.path} 跑。`;
+  if (!changeSheet.open) changeSheet.showModal();
+  changeTitle.focus();
+}
+
+async function createChange() {
+  const project = targetProject();
+  if (!project) return;
+  const title = changeTitle.value.trim();
+  if (title === "") {
+    changeError.textContent = CHANGE_REFUSALS.title_required;
+    changeError.hidden = false;
+    changeTitle.focus();
+    return;
+  }
+
+  const response = await fetch(
+    `/api/change?project=${encodeURIComponent(project.id)}`
+    + `&title=${encodeURIComponent(title)}`, { method: "POST" },
+  );
+  if (!response.ok) {
+    const reason = (await response.text()).trim();
+    changeError.textContent = CHANGE_REFUSALS[reason] ?? `没建成：${reason}`;
+    changeError.hidden = false;
+    return;
+  }
+  const created = await response.json();
+  changeSheet.close();
+  location.search = `?change=${encodeURIComponent(created.id)}`;
+}
+
+document.getElementById("new-change").addEventListener("click", () => {
+  openChangeSheet();
+});
+document.getElementById("change-create").addEventListener("click", () => {
+  void createChange();
+});
+document.getElementById("change-cancel").addEventListener("click", () => {
+  changeSheet.close();
+});
+changeTitle.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); void createChange(); }
 });
 
 enterButton.addEventListener("click", () => {

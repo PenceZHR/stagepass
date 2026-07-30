@@ -893,6 +893,38 @@ body::after {
       </div>
     </dialog>
 
+    <!--
+      新建 Change。和新建 Project 同一个形状 —— 两个入口长得一样，人不用记两套。
+
+      顶上那句写的是「建在哪个项目、哪个仓库」：Change 落在哪个项目，就决定了
+      Codex 会在哪个目录里跑。不说的话，又是一次「建了但不知道建在哪」。
+    -->
+    <dialog class="sheet" id="change-sheet">
+      <div class="sheet-head">
+        <div>
+          <small>New Change</small>
+          <h2>这次要改什么</h2>
+        </div>
+        <button class="sheet-close" id="change-cancel" type="button" aria-label="取消">✕</button>
+      </div>
+      <div class="sheet-body">
+        <p class="sheet-line" id="change-target"></p>
+        <label class="field">
+          <span>一句话说清这次改动</span>
+          <input id="change-title" type="text" autocomplete="off"
+                 placeholder="例如 给 PRD 页面加一个「重新生成」按钮">
+        </label>
+        <p class="rubric-note bad" id="change-error" hidden></p>
+        <p class="sheet-empty">
+          这句话只是给人认的 —— 真正的需求下一步问。建好之后它停在 PRD，
+          第一件事是按「说清楚我要什么」。
+        </p>
+      </div>
+      <div class="sheet-foot">
+        <button class="ask" id="change-create" type="button">建立</button>
+      </div>
+    </dialog>
+
     <dialog class="sheet" id="sheet">
       <div class="sheet-head">
         <div>
