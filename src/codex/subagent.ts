@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { findCompletedTurn, parseRollout } from "./rollout";
+import { findLastCompletedTurn, parseRollout } from "./rollout";
 
 /**
  * Finding what each sub-agent actually said.
@@ -94,13 +94,33 @@ export function readRoleTranscript(input: {
   agentPath: string;
   read?: (path: string) => string;
 }): string {
-  const record = input.lookup.children(input.parentThreadId)
-    .find((child) => child.agentPath === input.agentPath);
+  /*
+   * 同一个路径下有好几条时，**挑最新的那条**（`children` 按 created_at 升序）。
+   *
+   * 实测里 Codex 是跨轮复用同一条线程的，所以今天只会有一条。写成取最新是因为它和
+   * 下面那个「读最后一轮」是**同一个坑的两种形状**：哪天 Codex 改成每轮新建一条，
+   * `find` 取到的就是第一轮那条，症状一模一样 —— 悄悄读旧的，而一切看着都正常。
+   */
+  const matching = input.lookup.children(input.parentThreadId)
+    .filter((child) => child.agentPath === input.agentPath);
+  const record = matching[matching.length - 1];
   if (!record) {
     throw new SubAgentNotFoundError(input.agentPath, input.parentThreadId);
   }
   const read = input.read ?? ((path: string) => readFileSync(path, "utf-8"));
-  const outcome = findCompletedTurn(parseRollout(read(record.rolloutPath)), 0);
+  /*
+   * **最后**一轮，不是第一轮。
+   *
+   * 这里原来是 `findCompletedTurn(records, 0)`，而子 Agent 的线程**跨轮复用** ——
+   * 一条 `/root/red` 的 rollout 里躺着这个阶段每一轮的答案。从头读的后果是
+   * **第二轮起，读到的一直是第一轮说的话**：轮次照常结算、gap 看着也合理，内容却
+   * 永远停在第一轮（2026-07-30 在真 Codex 上实测到，红方第 3 轮报出的新 P0
+   * 一个字都没进库）。
+   *
+   * `findCompletedTurn` 的那个 `fromIndex` 在这里用不了：它要求调用方知道「问之前
+   * 有几条记录」，而 StagePass 不盯子 Agent 的文件，只在一轮结束后来读一次。
+   */
+  const outcome = findLastCompletedTurn(parseRollout(read(record.rolloutPath)));
   if (!outcome) throw new SubAgentUnfinishedError(input.agentPath);
   return outcome.text;
 }

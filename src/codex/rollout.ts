@@ -95,6 +95,58 @@ export function findCompletedTurn(
 }
 
 /**
+ * **最后**一个跑完的 turn。
+ *
+ * ## 和 `findCompletedTurn` 的分工
+ *
+ * 那一个给的是「我问出去之后的第一个答案」，靠调用方数出问之前有几条记录
+ * （`CodexTuiTransport` 就是这么用的）。**这一个给的是「这条线程最新说完的那句」**，
+ * 用在数不出那个数的地方。
+ *
+ * ## 数不出来的那个地方，是子 Agent
+ *
+ * 2026-07-30 在真 Codex 上撞到的：子 Agent 的线程**跨轮复用**，`/root/red` 那条
+ * rollout 里同时躺着第 2 轮和第 3 轮的答案。而 `readRoleTranscript` 一直传
+ * `fromIndex: 0` —— 于是**第二轮起，读到的一直是第一轮红蓝说的话**。
+ *
+ * 症状极隐蔽：轮次照常结算、gap 看着也合理，只是内容永远停在第一轮。实测那次红方
+ * 第 3 轮明明读完了文档、报出一条新的 P0，库里记下来的还是第 2 轮那句「文件不存在」。
+ *
+ * StagePass 不盯子 Agent 的文件（它只在一轮结束后去读一次），所以那个「问之前有几条」
+ * 根本不存在。取最后一个是这里唯一说得通的定义。
+ *
+ * 半截的最后一轮**不算** —— 交出没说完的话，等于把过程当成结论。
+ */
+export function findLastCompletedTurn(
+  records: readonly RolloutRecord[],
+): TurnOutcome | null {
+  let started = false;
+  let said: string[] = [];
+  let latest: TurnOutcome | null = null;
+
+  for (const record of records) {
+    const type = eventType(record);
+    if (type === "task_started") {
+      started = true;
+      said = [];
+      continue;
+    }
+    if (!started) continue;
+    if (type === "agent_message") {
+      const message = record.payload?.message;
+      if (typeof message === "string" && message !== "") said.push(message);
+      continue;
+    }
+    if (type === "task_complete") {
+      latest = { text: said.join("\n") };
+      started = false;
+      said = [];
+    }
+  }
+  return latest;
+}
+
+/**
  * A thread id, taken from a rollout's filename.
  *
  * `rollout-<timestamp>-<uuid>.jsonl`. Reading it from the name rather than from

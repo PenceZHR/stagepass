@@ -5,6 +5,7 @@ import {
   findCompletedTurn,
   parseRollout,
   threadIdFromRolloutName,
+  findLastCompletedTurn,
 } from "./rollout";
 
 /**
@@ -113,5 +114,67 @@ describe("L2 · finding the turn StagePass asked for", () => {
   it("completes with empty text rather than hanging when nothing was said", () => {
     const records = parseRollout([started, complete].join("\n"));
     assert.deepEqual(findCompletedTurn(records, 0), { text: "" });
+  });
+});
+
+/**
+ * 一条 rollout 里累积了好几轮时，**最后那一轮**是谁说的。
+ *
+ * ## 为什么非要有这个
+ *
+ * 2026-07-30 在真 Codex 上撞到的：子 Agent 的线程**跨轮复用**，`/root/red` 那条
+ * rollout 里同时有第 2 轮和第 3 轮的答案。而 `readRoleTranscript` 一直传
+ * `fromIndex: 0` —— 于是**第二轮起，StagePass 读到的一直是第一轮红蓝说的话**。
+ *
+ * 症状极隐蔽：轮次照常结算，gap 看着也合理，只是内容永远停在第一轮。当天实测里
+ * 红方第 3 轮明明读完文档、报了一条新的 P0（Plan 的时区闸门没关，禁止创建
+ * index.html），而库里记下来的还是第 2 轮那句「五份文件不存在」。
+ *
+ * `findCompletedTurn` 的注释早就写着这个坑（「rollout 会累积每一轮，resume 往同一个
+ * 文件追加」），护栏一直在，只是子 Agent 那一侧没用上。而那一侧**不知道**问之前有
+ * 几条记录（它不盯子 Agent 的文件），所以只能取最后一个。
+ */
+describe("rollout · 累积了好几轮时取最后一轮", () => {
+  it("**取最后一个完成的 turn，不是第一个**", () => {
+    const text = [
+      started, user("第 2 轮"), agent("第二轮的答案"), complete,
+      started, user("第 3 轮"), agent("第三轮的答案"), complete,
+    ].join("\n");
+    assert.deepEqual(
+      findLastCompletedTurn(parseRollout(text)),
+      { text: "第三轮的答案" },
+    );
+  });
+
+  it("最后一轮还没跑完 —— 给上一个跑完的，不给半截的", () => {
+    // 半截的那一轮不是「这一轮的答案」，把它交出去等于把没说完的话当成结论。
+    const text = [
+      started, agent("第二轮的答案"), complete,
+      started, agent("第三轮说到一半"),
+    ].join("\n");
+    assert.deepEqual(
+      findLastCompletedTurn(parseRollout(text)),
+      { text: "第二轮的答案" },
+    );
+  });
+
+  it("一轮都没跑完 —— null，不是空字符串", () => {
+    assert.equal(findLastCompletedTurn(parseRollout([started, agent("在说")].join("\n"))), null);
+  });
+
+  it("只有一轮时和从头读一样", () => {
+    const records = parseRollout([started, agent("只有这一轮"), complete].join("\n"));
+    assert.deepEqual(findLastCompletedTurn(records), findCompletedTurn(records, 0));
+  });
+
+  it("一轮里说了好几段 —— 合起来，和 findCompletedTurn 同一个规矩", () => {
+    const text = [
+      started, agent("旧的"), complete,
+      started, agent("第一段"), agent("第二段"), complete,
+    ].join("\n");
+    assert.deepEqual(
+      findLastCompletedTurn(parseRollout(text)),
+      { text: "第一段\n第二段" },
+    );
   });
 });
