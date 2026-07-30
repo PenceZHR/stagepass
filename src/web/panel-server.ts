@@ -238,6 +238,53 @@ export class PanelSessions {
     return entry;
   }
 
+  /**
+   * 往一个**活着的**会话的 composer 里打一段提示词，然后回车。没有活会话返回 false。
+   *
+   * ## 为什么是打字，而不是再起一个进程
+   *
+   * 一个阶段的一次交互有时要两个 turn：先让模型读仓库提问题，再让它把问题问给人。
+   * 而 `launchInto` 对一个还活着的会话是「原样返回、argv 直接丢掉」—— 那是 §6.5
+   * 规则 5 故意的行为。**于是第二段提示词根本送不进去**（2026-07-30 实测：题落库了、
+   * 状态 open、没有任何人被问到，人那边就是「点了没反应」）。
+   *
+   * 先 close 再 launchInto 也不行：**那会掐断浏览器正在读的那条流**，而浏览器不会
+   * 自动重连 —— 第二个 turn 跑起来了，却看不见、也答不了。只是把症状换成了更难查的
+   * 那一种。这条路我试过，别再试。
+   *
+   * TUI 跑完一轮不会退出，它就坐在 composer 上等输入。**把提示词打进去正是人会做的
+   * 事**，而且浏览器全程不断线：人看得见提示词出现，也看得见选择器画出来。
+   *
+   * 不违反 §9.3 —— 那条禁的是把 pty **输出**变成 string。按键一直是往里写的
+   * （`/pty/.../in` 就是干这个的）。
+   *
+   * **必须是一行。** composer 里一个换行就是提交，多行提示词会被截成半句发出去。
+   *
+   * ## 文字和回车必须分两次写，中间要等一下
+   *
+   * 实测（2026-07-30）：把 `文字 + \r` 一次写进去，**文字进了 composer，回车被吃掉**，
+   * 那段提示词就一直躺在那儿没发出去 —— 屏幕上看得见 `›` 后面跟着完整的一行，但没有
+   * 任何 turn 在跑。人那边的症状还是「点了没反应」。
+   *
+   * 原因是 TUI 把一次性灌进来的一大串当成**粘贴**，而粘贴模式下回车是插入换行、不是
+   * 提交。分两次写、中间隔一下，回车才被当成一次真的按键。
+   *
+   * 所以这个方法是 async 的。别为了「看起来干净」把它改回同步一次写 —— 那会静默地
+   * 什么都不做。
+   */
+  async type(changeId: string, phase: Phase, line: string): Promise<boolean> {
+    if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
+    const entry = this.live.get(PanelSessions.key(changeId, phase));
+    if (!entry || !entry.session.alive) return false;
+
+    entry.session.write(Buffer.from(line, "utf-8"));
+    // 让 TUI 把这一串收完、退出粘贴态，再给它一个独立的回车。
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+    if (!entry.session.alive) return false;
+    entry.session.write(Buffer.from("\r", "utf-8"));
+    return true;
+  }
+
   close(changeId: string, phase: Phase): void {
     const key = PanelSessions.key(changeId, phase);
     this.live.get(key)?.session.kill();
@@ -706,12 +753,34 @@ export async function handle(
       return;
     }
 
-    // 第一步：让模型读仓库，提问题。用一次普通的 turn，不用对抗轮 —— 提问题不需要
-    // 有人反驳它，而一轮对抗要好几分钟。
+    /*
+     * 第一步：让模型读仓库，提问题。用一次普通的 turn，不用对抗轮 —— 提问题不需要
+     * 有人反驳它，而一轮对抗要好几分钟。
+     *
+     * **插件在这里就得注册上**，虽然这一步用不到它：第二段提示词是**打进同一个
+     * 会话**的（见 `PanelSessions.type`），而 MCP 工具是启动时注册的。这时候不注册，
+     * 后面打字让它调 `stagepass_ask` 只会得到「没有这个工具」。
+     */
+    const pluginConfig = [
+      `mcp_servers.stagepass.command="npx"`,
+      `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
+      `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
+    ];
     const transport = new CodexTuiTransport({
       ...options.session,
       ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
-      launch: ({ argv }) => { sessions.launchInto(changeId, phase, argv); },
+      // argv 由这里自己配，不用 transport 给的那份 —— 它不知道要带插件。
+      launch: () => {
+        sessions.launchInto(changeId, phase, codexArgv({
+          threadId: null,
+          sandbox: options.session.sandbox,
+          approval: options.session.approval,
+          model: options.session.model,
+          reasoningEffort: options.session.reasoningEffort,
+          config: pluginConfig,
+          prompt: briefContract({ changeTitle: change.title }),
+        }));
+      },
     });
 
     let items;
@@ -746,23 +815,23 @@ export async function handle(
       question, expectedSnapshot: gate.snapshot,
     });
 
-    sessions.launchInto(changeId, phase, codexArgv({
-      threadId: null,
-      sandbox: options.session.sandbox,
-      approval: options.session.approval,
-      model: options.session.model,
-      reasoningEffort: options.session.reasoningEffort,
-      config: [
-        `mcp_servers.stagepass.command="npx"`,
-        `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
-        `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
-      ],
-      prompt: [
-        `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`,
-        "它会把「这次改动要什么」交给我来答。",
-        "不要替我回答，不要猜我想要什么，调用完就停下。",
-      ].join("\n"),
-    }));
+    /*
+     * **打进同一个会话，不另起进程。** 完整理由在 `PanelSessions.type` 那段注释里，
+     * 两句话：`launchInto` 会把活着会话的 argv 丢掉；`close` 再起会掐断浏览器正在读
+     * 的流。两条我都踩过。
+     *
+     * 一行，因为 composer 里的换行就是提交。
+     */
+    const typed = await sessions.type(changeId, phase,
+      `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`
+      + "它会把「这次改动要什么」交给我来答。不要替我回答，不要猜我想要什么，调用完就停下。");
+    if (!typed) {
+      // 会话在这中间死了。**不许假装问出去了** —— 题已经落库，人却永远看不到它，
+      // 而那正是这一整轮排查花掉的时间。
+      questions.settle(questionId);
+      json(response, { asked: false, reason: "session_died_before_asking", phase });
+      return;
+    }
 
     const deadline = Date.now() + 15 * 60_000;
     while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {

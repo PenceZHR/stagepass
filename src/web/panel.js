@@ -195,14 +195,10 @@ function say(message) {
 async function ask() {
   askButton.disabled = true;
   askButton.textContent = "已送进终端…";
-  const at = phases.find((entry) => entry.current);
-  // 关掉弹窗再进终端：答题发生在 Codex 的选择器里，弹窗盖在上面就看不见了。
-  closeSheet();
-  if (at) void enter(at.phase);
   try {
-    const result = await (await fetch(
+    const result = await (await dispatchThenEnter(() => fetch(
       `/api/ask?change=${encodeURIComponent(changeId)}`, { method: "POST" },
-    )).json();
+    ))).json();
     if (!result.asked) {
       say(result.reason === "no_decision_available"
         ? "这个闸门现在没有可做的裁决。"
@@ -234,16 +230,39 @@ async function ask() {
  * 在这之前这一步整个不存在，于是 PRD 阶段的红方收到的是一句写死的通用指令，
  * 「this change」是哪个 change 它从来不知道 —— 那份 PRD 只能是编的。
  */
+/*
+ * ── 顺序很要紧，别调回来 ──────────────────────────────
+ *
+ * 三个动作（录需求 / 问闸门 / 接受风险）都要「派一个 turn 进这个阶段的终端，然后进
+ * 去看」。**必须先发请求，再进终端。**
+ *
+ * 反过来就坏：`enter()` 会通过 `/pty/...` 开一个**浏览用**的会话（没有提示词），
+ * 而服务端那三个端点看见「这个阶段已经有活进程」就直接拒 `phase_already_running`
+ * —— 于是它被自己刚开的终端挡住了。2026-07-30 实测，症状是「点了没反应」，
+ * 而且一旦终端开过一次就永远失败。
+ *
+ * 等一下再进：服务端收到请求后毫秒级就把 pty 起来了，这时 `enter()` 里的 attach
+ * 会接上**同一个**会话（`sessions.open` 对活着的会话是原样返回），人就看得见提示词
+ * 和选择器。
+ */
+const DISPATCH_THEN_ENTER_MS = 1200;
+
+async function dispatchThenEnter(request) {
+  const at = phases.find((entry) => entry.current);
+  closeSheet();
+  const answered = request();               // 先发，别 await —— 它要等人答，几分钟
+  await wait(DISPATCH_THEN_ENTER_MS);
+  if (at) void enter(at.phase);
+  return answered;
+}
+
 async function recordBrief() {
   briefButton.disabled = true;
   briefButton.textContent = "模型在读仓库…";
-  const at = phases.find((entry) => entry.current);
-  closeSheet();
-  if (at) void enter(at.phase);
   try {
-    const result = await (await fetch(
+    const result = await (await dispatchThenEnter(() => fetch(
       `/api/brief?change=${encodeURIComponent(changeId)}`, { method: "POST" },
-    )).json();
+    ))).json();
     if (!result.asked) {
       say(result.reason === "no_items"
         ? "模型一条问题都没提出来。这不算「不需要问」—— 再试一次，或看终端里它说了什么。"
@@ -270,13 +289,10 @@ async function recordBrief() {
 async function waive() {
   waiveButton.disabled = true;
   waiveButton.textContent = "已送进终端…";
-  const at = phases.find((entry) => entry.current);
-  closeSheet();
-  if (at) void enter(at.phase);
   try {
-    const result = await (await fetch(
+    const result = await (await dispatchThenEnter(() => fetch(
       `/api/waive?change=${encodeURIComponent(changeId)}`, { method: "POST" },
-    )).json();
+    ))).json();
     if (!result.asked) {
       say(result.reason === "nothing_waivable"
         ? "这个阶段没有可以接受的风险（只有 P1 的问题可以，P0 不行）。"
