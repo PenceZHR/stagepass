@@ -222,9 +222,23 @@ const ACTION_BY_LABEL: Readonly<Record<string, ChangeAction>> = {
   [BACK_TO_FIX_LABEL]: "reject",
 };
 
-/** 这次裁决是「再来一轮」吗 —— 答完直接续跑那一步靠它判。 */
-export const isAnotherRound = (label: unknown): boolean =>
-  label === ANOTHER_ROUND_LABEL;
+/**
+ * 这次裁决是不是「活儿留在这个阶段，再跑一次」—— 答完直接续跑那一步靠它判。
+ *
+ * 两句话都算：
+ *
+ *   再来一轮      设计阶段的 reject，阶段一步没动
+ *   重跑一次      blocked 的 retry，阶段同样一步没动
+ *
+ * **`retry` 也算，不是顺手加的。** 用户要的是「把两步合成一步」，而 retry 那条路上
+ * 中间那一步和 reject 那条一样看不出来：裁决落完之后 Change 停在 `running`，界面上
+ * 没有任何东西说「还差一次派发」。同一个抱怨，两条路都得管。
+ *
+ * **「打回去修」不算**：那时 Change 已经换到 Fix 了，自动在一个刚到的阶段上开跑，
+ * 等于替人决定了 Fix 该做什么。
+ */
+export const runsAgainHere = (label: unknown): boolean =>
+  label === ANOTHER_ROUND_LABEL || label === RETRY_LABEL;
 
 /**
  * 「回应蓝方」那四个选项。

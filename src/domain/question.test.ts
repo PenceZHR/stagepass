@@ -9,7 +9,7 @@ import {
   decisionLabel,
   DECISION_FIELD,
   gateDecisionQuestion,
-  isAnotherRound,
+  runsAgainHere,
   readAnswer,
   RESPONSE_AGREE,
   RESPONSE_DISMISS,
@@ -158,13 +158,15 @@ describe("L3 · 裁决那一格说人话", () => {
     }), null);
   });
 
-  it("`isAnotherRound` 只对「再来一轮」为真", () => {
-    // 「打回去修」不许续跑：那时 Change 已经换到 Fix 了，自动在一个刚到的阶段上
-    // 开跑，等于替人决定了 Fix 该做什么。
-    assert.equal(isAnotherRound(decisionLabel("reject", "Spec")), true);
-    assert.equal(isAnotherRound(decisionLabel("reject", "Review")), false);
-    assert.equal(isAnotherRound(decisionLabel("approve", "Spec")), false);
-    assert.equal(isAnotherRound(undefined), false);
+  it("`runsAgainHere`：活儿留在这个阶段的那两句都算", () => {
+    // 「再来一轮」和「重跑一次」都是「阶段一步没动，再跑一次」，中间那一步一样
+    // 看不出来。「打回去修」不算：那时 Change 已经换到 Fix 了，自动在一个刚到的
+    // 阶段上开跑，等于替人决定了 Fix 该做什么。
+    assert.equal(runsAgainHere(decisionLabel("reject", "Spec")), true);
+    assert.equal(runsAgainHere(decisionLabel("retry", "Spec")), true);
+    assert.equal(runsAgainHere(decisionLabel("reject", "Review")), false);
+    assert.equal(runsAgainHere(decisionLabel("approve", "Spec")), false);
+    assert.equal(runsAgainHere(undefined), false);
   });
 });
 

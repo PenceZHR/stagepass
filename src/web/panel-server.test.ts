@@ -1288,6 +1288,32 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     });
   });
 
+  it("**「重跑一次」也续跑** —— 同一个抱怨，retry 那条路也不许留中间那一步", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "人自己答出来的需求");
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "fail");          // blocked：闸门只剩 retry
+      assert.deepEqual(
+        (await (await open(`/api/panel?change=${CHANGE}`)).json() as
+          { gate: { permitted: string[] } }).gate.permitted, ["retry"]);
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, { decision: decisionLabel("retry", "PRD") });
+
+      const result = await (await asking).json() as {
+        continued: { ran: boolean } | null;
+      };
+      assert.equal(result.continued?.ran, true, "retry 之后没有自动续跑");
+      assert.match(pty.started.map((each) => each.argv.join(" ")).join("\n"),
+        /\/root\/red/);
+    });
+  });
+
   it("「打回去修」不续跑 —— 那时 Change 已经在 Fix 了", async () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);

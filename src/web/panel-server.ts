@@ -14,7 +14,7 @@ import { RoundTurnRunner } from "../work/round-turn-runner";
 import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
-  responsesFrom, isAnotherRound, DECISION_FIELD,
+  responsesFrom, runsAgainHere, DECISION_FIELD,
 } from "../domain/question";
 import { briefContract, readBriefProposal, briefFrom, BriefProposalVoidError } from "../domain/brief";
 import { GateMovedError, GateRefusedError } from "../domain/gate";
@@ -1190,11 +1190,12 @@ export async function handle(
      * 中间那一步**看不出来还需要它**：裁决落完之后 Change 回到 pending，界面上没有
      * 任何东西说「还差一次派发」，人会以为下一轮已经在跑了。
      *
-     * 只有「再来一轮」续跑。**「打回去修」不续**：那时 Change 已经换到 Fix 了，
-     * 自动在一个刚到的阶段上开跑，等于替人决定了 Fix 该做什么。
+     * 「再来一轮」和「重跑一次」都续 —— 两条路上活儿都留在这个阶段，中间那一步
+     * 一样看不出来。**「打回去修」不续**：那时 Change 已经换到 Fix 了，自动在一个
+     * 刚到的阶段上开跑，等于替人决定了 Fix 该做什么。
      */
     const decided = answer.content[DECISION_FIELD];
-    const continued = isAnotherRound(decided)
+    const continued = runsAgainHere(decided)
       // 那个阶段的终端这时还活着（题就是送进去的），所以先关掉它 —— 不然
       // `runRound` 会撞上 §6.5 规则 5 直接拒。这不是绕过那条规则：那一轮的活
       // 干完了，它只是坐在 composer 上没事干。
