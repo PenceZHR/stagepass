@@ -3,7 +3,8 @@ import { describe, it } from "node:test";
 
 import type { Gap } from "./gap";
 import {
-  BLUE, judgePrompt, readAgents, readRound, readVerdicts, RED,
+  BLUE, judgePrompt, readAgents, readConclusion, readRound, readVerdicts, RED,
+  summariseRoundNotes,
   UnreadableAgentsError, UnreadableVerdictError,
 } from "./round";
 import { TurnResultUnparsableError } from "./turn";
@@ -632,5 +633,213 @@ describe("L4 · 裁判报出两个子 Agent 的线程 id", () => {
     const prompt = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
     assert.match(prompt, /"agents"/, "没告诉裁判要报 id");
     assert.match(prompt, /agent_id/, "没说清报的是什么");
+  });
+});
+
+/**
+ * 契约要有收件人，结论要有落点。
+ *
+ * 这一组打的都是 2026-07-31 在 `build-0730` 那次真实数据里查出来的症状，不是我
+ * 改了哪个函数（见 docs/DESIGN-rubric-delivery-2026-07-31.md §2）。
+ */
+describe("L4 · 契约转达给谁、结论谁来下", () => {
+  const withAddenda = (addenda: {
+    blue?: string; judge?: string;
+  }) => judgePrompt({
+    phase: "Build", round: 1, task: "写代码", openGaps: [], addenda,
+  });
+
+  it("**反方那一份带着「原样转达、不要你自己答」** —— Review 那次裁判把 8 条全答了", () => {
+    const prompt = withAddenda({ blue: "RBC-x 这是反方要判的" });
+    assert.match(prompt, /原样转达给反方/);
+    assert.match(prompt, /不是给你答的/);
+    // 契约正文照旧原样进去，一个字不改。
+    assert.match(prompt, /RBC-x 这是反方要判的/);
+  });
+
+  it("**裁判那一份带着「只答这一份」**，并点名反方那份不归它答", () => {
+    const prompt = withAddenda({ judge: "RBC-y 这是裁判要判的" });
+    assert.match(prompt, /只答这一份/);
+    assert.match(prompt, new RegExp(`${BLUE}那一份不归你答`));
+    assert.match(prompt, /RBC-y 这是裁判要判的/);
+  });
+
+  it("两份同时在时，两个抬头都在 —— 它们并排出现，必须一眼分得开", () => {
+    const prompt = withAddenda({ blue: "蓝方的", judge: "裁判的" });
+    assert.match(prompt, /原样转达给反方/);
+    assert.match(prompt, /只答这一份/);
+  });
+
+  it("没有 addenda 时一个抬头都不加 —— 行为和加这套东西之前一致", () => {
+    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    assert.doesNotMatch(prompt, /原样转达/);
+    assert.doesNotMatch(prompt, /只答这一份/);
+  });
+
+  it("裁判被要求做**两件**事，第二件是给结论并自己去读上游", () => {
+    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /两件事/);
+    assert.match(prompt, /还要不要再来一轮/);
+    assert.match(prompt, /自己读一遍/);
+    // **不许写死「上游」**：PRD 没有上游，而那一节是动态出现的。
+    assert.match(prompt, /上面任务里列出来的那些/);
+    // 闸门仍然是人推的（2026-07-30 拍板），所以要明说它不必考虑闸门。
+    assert.match(prompt, /你不需要考虑闸门/);
+    assert.match(prompt, /"conclusion"/);
+  });
+
+  it("**只有反方被要求给整体判断，正方没有** —— 让正方给自己打分是自评", () => {
+    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    const blueSection = prompt.slice(prompt.indexOf(`2. ${BLUE}`));
+    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
+    assert.match(blueSection, /overall/);
+    assert.doesNotMatch(redSection, /overall/);
+  });
+
+  it("**Build 的反方够得着上游文档** —— 判「做到要求没有」得对着要求看", () => {
+    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /已批准上游产物/);
+    // 边界没有被放开成整个仓库。
+    assert.match(prompt, /不要把整个仓库读一遍/);
+  });
+});
+
+describe("L4 · 裁判的结论", () => {
+  const judged = (body: object) => "```json\n" + JSON.stringify(body) + "\n```";
+
+  it("读得出来 —— 还要不要再来一轮，加理由", () => {
+    assert.deepEqual(
+      readConclusion(judged({ conclusion: { another_round: true, reason: "证据还不全" } })),
+      { kind: "advised", anotherRound: true, reason: "证据还不全" },
+    );
+  });
+
+  it("说可以过了，也读得出来", () => {
+    const read = readConclusion(judged({ conclusion: { another_round: false, reason: "都对上了" } }));
+    assert.deepEqual(read, { kind: "advised", anotherRound: false, reason: "都对上了" });
+  });
+
+  it("**没给结论 —— null，不作废这一轮**（沉默 = 没有建议）", () => {
+    assert.equal(readConclusion(judged({ verdicts: {} })), null);
+    assert.equal(readConclusion("我什么 json 都没写"), null);
+  });
+
+  /**
+   * 和 `verdicts` 的分工：改状态的东西读不准就拒，给人看的东西读不准就照实说读不准。
+   * 为一句读不准的建议作废一轮几分钟的对抗不成比例。
+   */
+  it("**结构坏掉 —— 不抛，带着原文说「读不出来」**", () => {
+    for (const bad of [
+      { another_round: "yes", reason: "字符串不是布尔" },
+      { another_round: true, reason: "" },
+      { another_round: true },
+      { reason: "少了 another_round" },
+    ]) {
+      const read = readConclusion(judged({ conclusion: bad }));
+      assert.equal(read?.kind, "unreadable", JSON.stringify(bad));
+      assert.ok((read as { detail: string }).detail.length > 0);
+    }
+  });
+
+  it("同一份答复里 verdicts 坏掉时仍然抛 —— 这一条没被改松", () => {
+    assert.throws(
+      () => readVerdicts(judged({
+        verdicts: { "G-1": { kind: "closed" } },
+        conclusion: { another_round: false, reason: "好" },
+      })),
+      UnreadableVerdictError,
+    );
+  });
+});
+
+describe("L4 · 反方那句整体判断", () => {
+  const blueSaid = (body: object) => "```json\n" + JSON.stringify(body) + "\n```";
+
+  it("读得出来，跟着这一轮交出去", () => {
+    const reading = readRound({
+      phase: "Spec", round: 1,
+      red: answer(["Spec.md"]),
+      blue: blueSaid({ artifactIds: [], blockers: [], overall: "整体够格，边界还差一点" }),
+      judge: "```json\n{}\n```",
+    });
+    assert.equal(reading.blueOverall, "整体够格，边界还差一点");
+  });
+
+  it("**没写就是 null，不作废这一轮** —— 它不挡任何东西", () => {
+    const reading = readRound({
+      phase: "Spec", round: 1,
+      red: answer(["Spec.md"]),
+      blue: answer([], []),
+      judge: "```json\n{}\n```",
+    });
+    assert.equal(reading.blueOverall, null);
+  });
+
+  it("空字符串当成没写", () => {
+    const reading = readRound({
+      phase: "Spec", round: 1,
+      red: answer(["Spec.md"]),
+      blue: blueSaid({ artifactIds: [], blockers: [], overall: "   " }),
+      judge: "```json\n{}\n```",
+    });
+    assert.equal(reading.blueOverall, null);
+  });
+});
+
+/**
+ * 那两句话在人裁决前看的那张表上长什么样。
+ *
+ * 裁决发生在 Codex 画的选择器里 —— 人按下去那一刻眼前只有那张表。要他判断的信息
+ * 不在那张表上，就等于要他凭记忆判断（和 `summariseAssessments` 同一个理由）。
+ */
+describe("L4 · 裁决那张表上的两句话", () => {
+  it("裁判说还要再来一轮 —— 照实说，并带上理由", () => {
+    const summary = summariseRoundNotes([
+      { source: "judge_conclusion", anotherRound: true, text: "运行证据还不完整" },
+    ]);
+    assert.match(summary, /还需要再来一轮/);
+    assert.match(summary, /运行证据还不完整/);
+  });
+
+  it("裁判说可以了 —— 也照实说", () => {
+    assert.match(
+      summariseRoundNotes([
+        { source: "judge_conclusion", anotherRound: false, text: "都对上了" },
+      ]),
+      /可以了/,
+    );
+  });
+
+  /**
+   * 早先这里的 schema 逼着「读不出来」记 0，于是这一句会被渲染成「可以了」——
+   * 替裁判说了一句它没说过的话。这一整套东西的立身之本正是不许出现这种话。
+   */
+  it("**结论读不出来 —— 绝不能说成「可以了」**", () => {
+    const summary = summariseRoundNotes([
+      { source: "judge_conclusion", anotherRound: null, text: "裁判给了结论但读不出来：…" },
+    ]);
+    assert.match(summary, /读不出来/);
+    assert.doesNotMatch(summary, /可以了/);
+    assert.doesNotMatch(summary, /还需要再来一轮/);
+  });
+
+  it("反方那句整体判断也进去", () => {
+    assert.match(
+      summariseRoundNotes([{ source: "blue_overall", anotherRound: null, text: "整体够格" }]),
+      new RegExp(`${BLUE}的整体判断：整体够格`),
+    );
+  });
+
+  it("两句都在时都写出来", () => {
+    const summary = summariseRoundNotes([
+      { source: "blue_overall", anotherRound: null, text: "整体够格" },
+      { source: "judge_conclusion", anotherRound: true, text: "还差运行证据" },
+    ]);
+    assert.match(summary, /裁判：/);
+    assert.match(summary, /整体判断/);
+  });
+
+  it("一句都没有 —— 空串，不是一段空白", () => {
+    assert.equal(summariseRoundNotes([]), "");
   });
 });

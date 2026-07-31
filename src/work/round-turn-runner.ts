@@ -1,10 +1,12 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
-import { PHASES, producesCommit } from "../domain/phase";
+import { PHASES, producesCommit, type Phase } from "../domain/phase";
+import type { RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
+import type { RoundNoteStore } from "../store/round-note-store";
 import { looksLikeSha, type RepoOps } from "./repo";
 
 /**
@@ -35,6 +37,8 @@ import { looksLikeSha, type RepoOps } from "./repo";
 export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   readonly changes: ChangeStore;
   readonly bindings: BindingStore;
+  /** 裁判的结论和反方的整体判断落在这里。两句都不动闸门。 */
+  readonly notes: RoundNoteStore;
   /** 上游阶段产出了什么 —— 任务书要把它们的路径带给红方。 */
   readonly evidence: EvidenceStore;
   /** git。Build 一轮的产出是一个 commit（见 `work/repo.ts`）。 */
@@ -179,6 +183,7 @@ export class RoundTurnRunner implements TurnRunner {
     }, { ...this.options, transport });
 
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
+    this.recordNotes(job.changeId, phase, round, settled);
 
     return {
       artifactIds: this.producedBy(job.changeId, phase, round, settled.artifactIds),
@@ -186,6 +191,47 @@ export class RoundTurnRunner implements TurnRunner {
       blockers: [],
       verdicts: {},
     };
+  }
+
+  /**
+   * 这一轮那两句只写给人看的话。
+   *
+   * ## 为什么写在这一层
+   *
+   * 它们不是 rubric 的东西（`rubric-round.ts` 只管逐条判定），也不是 `runRound` 的
+   * 东西（那一层只认 gap）。它们是「这一轮发生过，记下来」—— 而这正是这个类已经在
+   * 干的事：绑线程、记产物、推状态。
+   *
+   * ## 结论读不出来也要记
+   *
+   * 用户 2026-07-31：「每对抗一轮，我都是要知情的。」裁判给了却写坏了，人要看见的
+   * 是「它给了但读不出来」，不是一片空白 —— 那和「它没给」是两件事。
+   *
+   * 这时 `anotherRound` 记 **null**，不是 `false`：「还要不要再来一轮」这个问题
+   * 没有答案。记 `false` 会被界面渲染成「可以了」—— 那是**替裁判说了一句它没说过
+   * 的话**，而这一整套改动的立身之本正是不许出现这种话。
+   */
+  private recordNotes(
+    changeId: string,
+    phase: Phase,
+    round: number,
+    settled: { conclusion: RoundConclusion | null; blueOverall: string | null },
+  ): void {
+    const { conclusion, blueOverall } = settled;
+    if (conclusion !== null) {
+      this.options.notes.put(changeId, phase, round, {
+        source: "judge_conclusion",
+        anotherRound: conclusion.kind === "advised" ? conclusion.anotherRound : null,
+        text: conclusion.kind === "advised"
+          ? conclusion.reason
+          : `裁判给了结论但读不出来：${conclusion.detail}`,
+      });
+    }
+    if (blueOverall !== null) {
+      this.options.notes.put(changeId, phase, round, {
+        source: "blue_overall", text: blueOverall,
+      });
+    }
   }
 
   /**

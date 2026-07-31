@@ -4,6 +4,7 @@ import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
 import { GAP_STATUSES } from "../domain/gap";
 import { BLOCKER_KINDS } from "../domain/gate";
 import { RUBRIC_ROLES, RUBRIC_VERDICTS } from "../domain/rubric";
+import { ROUND_NOTE_SOURCES } from "../domain/round";
 
 /**
  * The L0 schema, with the ledger invariant enforced by the database itself.
@@ -444,6 +445,46 @@ CREATE TABLE IF NOT EXISTS rubric_assessments (
   blocking_then  INTEGER NOT NULL CHECK (blocking_then IN (0, 1)),
   created_at     TEXT NOT NULL,
   PRIMARY KEY (change_id, phase, role, round, criterion_key)
+);
+
+-- 一轮里那两句只写给人看的话：裁判的结论，和反方的整体判断。
+--
+-- ## 为什么它们不进上面那三张表
+--
+-- gaps 是问题、rubric_assessments 是逐条判定、change_evidence 是闸门看的东西。
+-- 这两句哪一样都不是：它们**不动闸门**（用户 2026-07-31 —— 裁判给结论、人按按钮），
+-- 也不对应任何一条 criterion。塞进去会让那三张表各自多一种「不算数的行」。
+--
+-- ## 按轮存，不覆盖
+--
+-- 和 rubric_assessments 同一个理由：「第几轮说了什么」要留得住。人在第 4 轮回头看
+-- 第 2 轮的裁判怎么说，是他判断「这几轮到底有没有进展」的唯一依据。
+--
+-- ## another_round 只有裁判那一句可能有
+--
+-- 反方那句整体判断没有这一位：它是印象，不是建议，硬给它编一个布尔就是发明一个
+-- 不存在的维度。这半边由 schema 挡住，不靠调用方记得 -- 和 gaps 那条 kind/severity
+-- 的配对是同一个路子。
+--
+-- **但反过来那半边不成立：裁判那一句也可能没有。** 它给了结论却写坏了的时候，
+-- 「还要不要再来一轮」这个问题是没有答案的。早先这里写的是双向配对
+-- （judge_conclusion 必须有），逼得那种情况只能记 0 -- 而 0 会被渲染成「可以了」，
+-- 也就是**替裁判说了一句它没说过的话**。这一整套改动的立身之本正是不许出现这种话。
+--
+-- ## 读不出来的结论也存在这里
+--
+-- text 记的是「读不出来」加原文，another_round 记 NULL。那不是静默跳过 -- 人照样在
+-- 裁决那张表上看见它，这正是「每一轮我都要知情」那条要求。
+CREATE TABLE IF NOT EXISTS round_notes (
+  change_id     TEXT    NOT NULL REFERENCES changes(id),
+  phase         TEXT    NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  round         INTEGER NOT NULL,
+  source        TEXT    NOT NULL CHECK (source IN (${quoted(ROUND_NOTE_SOURCES)})),
+  another_round INTEGER     NULL CHECK (another_round IN (0, 1)),
+  text          TEXT    NOT NULL CHECK (length(trim(text)) > 0),
+  created_at    TEXT    NOT NULL,
+  CHECK (source = 'judge_conclusion' OR another_round IS NULL),
+  PRIMARY KEY (change_id, phase, round, source)
 );
 `;
 

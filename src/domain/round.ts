@@ -68,6 +68,46 @@ const extra = (text: string | undefined): string[] =>
   text === undefined || text.trim() === "" ? [] : ["", text];
 
 /**
+ * 附给**子 Agent** 的那一段，带明确的收件人。
+ *
+ * ## 为什么非要这个抬头
+ *
+ * 蓝方那份 rubric 契约只能经裁判的手转达 —— StagePass 不跟子 Agent 说话。而这段
+ * 文本原来是**裸的**：一句主语中立的祈使句（「对照下面 4 条标准逐条判定正方这一轮
+ * 的产出」）夹在裁判自己的提示词里，紧跟在「2. 反方。任务：…」后面。
+ *
+ * 2026-07-31 实测的两种后果，都是照着字面办事：
+ *
+ * - Review 第 6 轮：裁判把它当成对自己说的，8 条一起答了。反方的 rollout 里
+ *   **一个 `RBC-` 都没有** —— 契约根本没送到。
+ * - Retro 第 1 轮：裁判把**两份**都转给了反方，反方挑了错的那份答，等于给自己打分。
+ *
+ * 还有一件同一次查出来的事：裁判**不是原样转达**任务的，它会改写成自己的话
+ * （实测蓝方收到的开头是「你是反方。正方产出如下…」，不是这里写的原文）。所以
+ * 「原样、一个字都不要改」不是客套，是这一段唯一的要求。
+ *
+ * **这不是靠语气治病。** 原来的文本里根本没有「收件人」这个信息，模型不是不听话，
+ * 是没得可依。这里补的是缺失的信息。它单独**不足以保证送达** ——
+ * `work/rubric-round.ts` 会机械核验到底送没送到，见
+ * docs/DESIGN-rubric-delivery-2026-07-31.md §3.1 与 §3.3。
+ */
+const relayedTo = (who: string, text: string | undefined): string[] =>
+  text === undefined || text.trim() === "" ? [] : [
+    "",
+    `   **下面这一整段原样转达给${who}，一个字都不要改。它是给${who}的，不是给你答的。**`,
+    text,
+  ];
+
+/** 裁判自己那一份。和上面成对出现，所以必须一眼看出是两回事。 */
+const addressedToJudge = (text: string | undefined): string[] =>
+  text === undefined || text.trim() === "" ? [] : [
+    "",
+    `**下面这一份标准是给你自己的，只答这一份。**`
+    + `${BLUE}那一份不归你答 —— 那是它的活儿，你替它答不算数。`,
+    text,
+  ];
+
+/**
  * What the judge is told.
  *
  * It spawns both roles itself, so the human watches one window -- and blue gets
@@ -155,7 +195,19 @@ const gapLine = (gap: Gap): string => {
  */
 const blueReach = (phase: string): string => {
   if (producesCommit(phase)) {
-    return "   可以读这一轮改动涉及的文件，以及它们的直接调用方 —— 只读这些，"
+    /*
+     * **上游文档也在够得着的范围里**（用户 2026-07-31）。
+     *
+     * 他要蓝方用 rubric 判「有没有完成 PRD/Spec 的要求」，而那个判据原来够不着：
+     * `PRD.md` / `Spec.md` 不在「这一轮改动涉及的文件」里。判不了就只能猜，而
+     * `rubric-defaults.ts` 里写着这条教训 —— **一条只能靠猜的标准比没有更糟**，
+     * 它每一轮都会得到一个没有依据的 yes。
+     *
+     * 边界没有被放开成「整个仓库」：加进来的是任务书里**已经列着的那一份有限名单**，
+     * 不是另一份。「攻击这份产出」不会因此滑成「调查这个项目」。
+     */
+    return "   可以读这一轮改动涉及的文件、它们的直接调用方，以及任务里列出的那几份"
+      + "已批准上游产物（要判它有没有做到要求，就得对着要求看）—— 只读这些，"
       + "不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。";
   }
   if (phase === "Review") {
@@ -279,22 +331,65 @@ export function judgePrompt(input: RoundInstructions): string {
       ? idRule(input.phase, "blue")
       : ["   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。"]),
     `   要求它按同样的格式作答，把问题放进 blockers。`,
-    ...extra(input.addenda?.blue),
+    /*
+     * 逐条之外再要一句整体的（用户 2026-07-31）。
+     *
+     * **只有反方有这一格，正方没有。** 让正方给自己的产出写一句整体评价就是自评，
+     * 而那是 2026-07-30 拿掉的东西 —— 实测红方自评累计 20 条全部 yes。
+     *
+     * 所以 `RESULT_CONTRACT` 本身不动（它是两边共用的），这一行只写在反方这一节。
+     * `parseTurnResult` 只读它认识的字段，多一个 key 不会拒；反过来说，正方哪天
+     * 真写了 `overall` 也不会被采信，因为没有人去读它。
+     *
+     * **它不动闸门**（用户明确选的）：不派生 gap、不进 blockers、不参与任何判定。
+     * 它和裁判的结论并排出现在人裁决时看的那张表上，仅此而已。
+     */
+    `   再要它在同一个 json 块里多给一个 \`overall\` 字段：一句话说这一轮整体够不够格、`
+    + `为什么。这一句不挡任何东西，是写给人看的。`,
+    ...relayedTo(BLUE, input.addenda?.blue),
     "",
-    "两个都做完之后，轮到你。**只做一件事**：对下面这些**已经存在**的问题逐条表态。",
+    /*
+     * 裁判从「只做一件事」改成两件（用户 2026-07-31）。
+     *
+     * 第二件是他要的那句「还要不要再来一轮」。**它是建议，不是决定** —— 闸门仍然
+     * 由人推（2026-07-30 拍板：要不要继续对抗由人决定，不做成全自动）。写明「你不需要
+     * 考虑闸门」是为了让它就事论事，而不是去猜 StagePass 会拿它的话做什么。
+     *
+     * 要它**自己去读上游**，是因为这个结论只有读过才下得了。原来的提示词从没要求过
+     * 它读任何文档，而 `rubric-defaults.ts` 里写着这条教训：一条只能靠猜的标准比没有
+     * 更糟 —— 一个只能靠猜的结论同理。
+     */
+    "两个都做完之后，轮到你。**两件事**：",
+    "",
+    "1. 对下面这些**已经存在**的问题逐条表态。",
     "",
     gaps,
     "",
-    "用一个 ```json 块回答，不要复述正方或反方说了什么：",
+    /*
+     * **说「上面任务里列出来的那些」，不说「上游产物」。**
+     *
+     * PRD 自己没有上游，而任务书里那一节是**按有没有上游动态出现**的
+     * （`round-turn-runner.ts`）。写死一句「读一遍已批准的上游产物」，PRD 那一轮就是
+     * 在叫模型去找不存在的东西 —— 护栏当场抓到过这一条。
+     *
+     * 这个说法两边都成立：有上游时它指的就是那一节，没有时它指的是需求本身。
+     */
+    "2. 自己读一遍上面任务里列出来的那些输入、正方这一轮的产出、反方这一轮的意见，"
+    + "然后给一个结论：**还要不要再来一轮，为什么。**",
+    "   这是给人看的建议 —— 按不按由他决定，**你不需要考虑闸门**。",
+    "   结论要建立在你实际读过的东西上，不是复述正方或反方说过的话。",
+    "",
+    "用一个 ```json 块回答：",
     '{"agents": {"red": "<正方的 agent_id>", "blue": "<反方的 agent_id>"},',
-    ' "verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}}}',
+    ' "verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}},',
+    ' "conclusion": {"another_round": true | false, "reason": "<为什么>"}}',
     "",
     "`agents` 里填 `spawn_agent` 返回的那两个 `agent_id`。**这两个 id 是这一轮唯一的",
     "取证入口** —— 少一个、写错一个，这一轮就作废，而正反两方说的话谁也看不到。",
     "",
     "沉默等于仍然存在 —— 你没提到的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
-    ...extra(input.addenda?.judge),
+    ...addressedToJudge(input.addenda?.judge),
   ].join("\n");
 }
 
@@ -350,6 +445,109 @@ export function readVerdicts(text: string): VerdictReport {
       : { kind: "still_open", reason: entry.reason };
   }
   return { verdicts };
+}
+
+/**
+ * 一轮里除了逐条判定之外，还有两句**只写给人看**的话。
+ *
+ * 它们哪一句都不动闸门：裁判那句是建议（人按按钮），反方那句是整体印象。逐条的
+ * 东西说不出「加起来怎么样」，而那正是人按按钮之前想知道的。
+ *
+ * 两句都按轮存着不覆盖 —— 和 `rubric_assessments` 同一个理由：「第几轮说了什么」
+ * 要留得住。
+ */
+export const ROUND_NOTE_SOURCES = ["judge_conclusion", "blue_overall"] as const;
+export type RoundNoteSource = (typeof ROUND_NOTE_SOURCES)[number];
+
+/**
+ * 这两句话在人裁决前看的那张表上长什么样。
+ *
+ * ## 为什么它必须落在那张表上
+ *
+ * 和 `summariseAssessments`（domain/rubric.ts）同一个理由，那边已经写清楚了：
+ * **裁决发生在 Codex 画的选择器里，人按下去的那一刻眼前只有那张表。** 要他判断的
+ * 信息不在那张表上，就等于要他凭记忆判断。
+ *
+ * 用户 2026-07-31：「每对抗一轮，我都是要知情的……前提是他要给我。」这是那条要求
+ * 的最后一米。
+ *
+ * ## `anotherRound` 是 null 时**不许说「可以了」**
+ *
+ * null 的意思是裁判给了结论但写坏了 —— 「还要不要再来一轮」没有答案。把它渲染成
+ * 「可以了」就是替裁判说了一句它没说过的话，而这一整套东西的立身之本正是不许
+ * 出现这种话。所以那一种照实说「读不出来」。
+ */
+export function summariseRoundNotes(
+  notes: readonly {
+    readonly source: RoundNoteSource;
+    readonly anotherRound: boolean | null;
+    readonly text: string;
+  }[],
+): string {
+  const lines: string[] = [];
+
+  const judge = notes.find((each) => each.source === "judge_conclusion");
+  if (judge) {
+    const call = judge.anotherRound === null ? "结论读不出来"
+      : judge.anotherRound ? "还需要再来一轮" : "可以了";
+    lines.push(`裁判：${call} —— ${judge.text}`);
+  }
+
+  const blue = notes.find((each) => each.source === "blue_overall");
+  if (blue) lines.push(`${BLUE}的整体判断：${blue.text}`);
+
+  return lines.length === 0 ? "" : `\n${lines.join("\n")}`;
+}
+
+/**
+ * 裁判对「还要不要再来一轮」的结论。
+ *
+ * `null` = 它没给（沉默 = 没有建议，这一轮照常）。
+ */
+export type RoundConclusion =
+  | { readonly kind: "advised"; readonly anotherRound: boolean; readonly reason: string }
+  /** 它给了，但读不出来。**原文带着走**，人要看见的是这个。 */
+  | { readonly kind: "unreadable"; readonly detail: string };
+
+/**
+ * 读裁判的结论。
+ *
+ * ## 错处理和 `verdicts` 不一样，这是有意的
+ *
+ * 一个坏掉的 `verdicts` 会抛、整轮失败 —— 因为它**决定 gap 的状态**，拿一份读不准
+ * 的东西去改状态比不改危险。
+ *
+ * `conclusion` 不决定任何状态：闸门由人推（用户 2026-07-31：裁判给结论，人按按钮）。
+ * 为一句读不准的建议作废一轮几分钟的对抗不成比例。
+ *
+ * 所以坏掉时**不抛**，返回 `unreadable` 并把原文带上 —— 那不是静默跳过：人照样在
+ * 裁决那张表上看见「裁判的结论读不出来」，这正是「每一轮我都要知情」那条要求。
+ *
+ * 一句话的判据：**改状态的东西读不准就拒，给人看的东西读不准就照实说读不准。**
+ */
+export function readConclusion(text: string): RoundConclusion | null {
+  // 和 verdicts / agents 同一个找法，理由见 `readAgents`：三处各严各的，就会出现
+  // 「这处漏了围栏能读、那处漏了读不了」这种说不出道理的差别。
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonAnswerIn(text) ?? "");
+  } catch {
+    return null;
+  }
+  const record = (parsed as { conclusion?: unknown } | null)?.conclusion;
+  if (record === undefined || record === null) return null;
+
+  const entry = record as { another_round?: unknown; reason?: unknown };
+  if (
+    typeof entry.another_round !== "boolean"
+    || typeof entry.reason !== "string"
+    || entry.reason.trim() === ""
+  ) {
+    return { kind: "unreadable", detail: JSON.stringify(record).slice(0, 200) };
+  }
+  return {
+    kind: "advised", anotherRound: entry.another_round, reason: entry.reason.trim(),
+  };
 }
 
 export class UnreadableAgentsError extends Error {
@@ -432,7 +630,35 @@ export interface RoundTranscript {
 export interface RoundReading {
   readonly artifactIds: readonly string[];
   readonly outcome: RoundOutcome;
+  /**
+   * 反方对这一轮的整体判断，一句话。没给就是 null。
+   *
+   * **不动闸门**（用户 2026-07-31）：不派生 gap、不进 blockers。它和裁判的结论并排
+   * 出现在人裁决时看的那张表上 —— 逐条的东西说不出「加起来怎么样」，而那正是他
+   * 按按钮之前想知道的。
+   */
+  readonly blueOverall: string | null;
 }
+
+/**
+ * 反方那句整体判断。
+ *
+ * 单独读，不走 `parseTurnResult` —— 那个函数只认 `artifactIds` / `blockers` 两样，
+ * 而**这一句缺席是完全合法的**（老的反方不会写它，`RESULT_CONTRACT` 里也没有它）。
+ * 把它加进那个函数的形状检查，等于让一次没写整体判断的回答整轮作废，而它不挡任何东西。
+ */
+const overallIn = (text: string): string | null => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonAnswerIn(text) ?? "");
+  } catch {
+    return null;
+  }
+  const overall = (parsed as { overall?: unknown } | null)?.overall;
+  if (typeof overall !== "string") return null;
+  const trimmed = overall.trim();
+  return trimmed === "" ? null : trimmed;
+};
 
 /**
  * Turn three transcripts into one round's effect on the gaps.
@@ -496,5 +722,6 @@ export function readRound(transcript: RoundTranscript): RoundReading {
       found,
       verdicts: readVerdicts(transcript.judge).verdicts,
     },
+    blueOverall: overallIn(transcript.blue),
   };
 }

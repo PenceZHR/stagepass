@@ -2,7 +2,8 @@ import { blockersFrom, type Gap } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
-  judgePrompt, readAgents, readRound, type RoundInstructions,
+  judgePrompt, readAgents, readConclusion, readRound,
+  type RoundAgents, type RoundConclusion, type RoundInstructions,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
@@ -77,6 +78,23 @@ export interface RoundSettled {
     readonly blue: string;
     readonly judge: string;
   };
+  /**
+   * 这一轮跑在哪两条线程上。
+   *
+   * 交出来是为了让上层能去问那两条线程**收到过什么** —— 「反方没答」和「反方压根
+   * 没收到契约」是两件必须分开的事，而后者只有拿着线程 id 才查得了
+   * （`codex/rollout.ts` 的 `allTextIn`）。
+   */
+  readonly agents: RoundAgents;
+  /**
+   * 裁判对「还要不要再来一轮」的结论。null = 它没给。
+   *
+   * **不动闸门**（用户 2026-07-31：裁判给结论，人按按钮）。这一层只负责把它读出来
+   * 交上去，怎么呈现是上层的事。
+   */
+  readonly conclusion: RoundConclusion | null;
+  /** 反方对这一轮的整体判断，一句话。同样不动闸门。 */
+  readonly blueOverall: string | null;
 }
 
 export async function runRound(
@@ -128,5 +146,13 @@ export async function runRound(
     gaps,
     blockers: blockersFrom(gaps),
     transcripts: { red, blue, judge: delivery.text },
+    agents,
+    /*
+     * 结论读不出来**不作废这一轮** —— 它不决定任何状态，为一句读不准的建议扔掉
+     * 一轮几分钟的对抗不成比例。`readConclusion` 把「读不出来」当成一个值交出来，
+     * 而不是抛，理由写在它自己那儿。
+     */
+    conclusion: readConclusion(delivery.text),
+    blueOverall: reading.blueOverall,
   };
 }

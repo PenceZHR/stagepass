@@ -29,7 +29,7 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../src/db/schema";
 import { RUBRIC_ROLES, type RubricRole } from "../src/domain/rubric";
-import { readThreadTranscript } from "../src/codex/subagent";
+import { readThreadTranscript, readThreadWholeText } from "../src/codex/subagent";
 import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
@@ -125,6 +125,7 @@ async function main(): Promise<void> {
     {
       transport, gaps, rubrics,
       readThread: (threadId) => readThreadTranscript({ threadId }),
+      readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
     },
   );
 

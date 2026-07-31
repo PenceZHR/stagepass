@@ -1,8 +1,18 @@
 import type { Assessment, RubricRole } from "../domain/rubric";
-import { readAssessments, RubricOutputVoidError, rubricContract } from "../domain/rubric-protocol";
+import {
+  answeredKeysIn, readAssessments, RubricOutputVoidError, rubricContract,
+} from "../domain/rubric-protocol";
 import { applyAssessments } from "../domain/rubric-gaps";
+import { BLUE, RED } from "../domain/round";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
 import { runRound, type RoundDependencies, type RoundRequest, type RoundSettled } from "./round-runner";
+
+type Participant = keyof RoundSettled["transcripts"];
+
+/** 写给人看的时候，三方各叫什么。 */
+const WHO: Readonly<Record<Participant, string>> = {
+  red: RED, blue: BLUE, judge: "裁判",
+};
 
 /**
  * 一轮对抗，外加每个角色对自己那份 rubric 的逐条判定。
@@ -89,6 +99,133 @@ export interface RubricRoundRequest extends RoundRequest {
 
 export interface RubricRoundDependencies extends RoundDependencies {
   readonly rubrics: RubricStore;
+  /**
+   * 一条线程**收到过**的全部文本 —— 它说的，和它被告知的。
+   *
+   * 和 `readThread`（它说了什么）并列，不是它的替代。多这一个 reader 是为了回答
+   * 一个 `readThread` 结构上答不了的问题：**契约到底送到没有。** 契约在「它被问到
+   * 的那一段」里，而 `readThread` 只收模型说过的话。
+   *
+   * 「反方没答」和「反方压根没收到」今天在库里长得一模一样（evidence 都是 NULL），
+   * 而人对这两件事该做的事完全不同。见
+   * docs/DESIGN-rubric-delivery-2026-07-31.md §3.3。
+   */
+  readonly readThreadWhole: (threadId: string) => string;
+}
+
+/**
+ * 一条标准这一轮为什么没有判定 —— **写给人看的那句话。**
+ *
+ * ## 为什么必须有它
+ *
+ * 用户 2026-07-31：「每对抗一轮，我都是要知情的……前提是他要给我。」而今天所有没
+ * 判上的都记成 `not_assessed` + `evidence` 为 `NULL`，四种完全不同的原因写成同一句
+ * 「没评估」：
+ *
+ * - 契约没送到反方（Review 实测：它的 rollout 里一个 `RBC-` 都没有）
+ * - 送到了，反方一条没答（QA 实测）
+ * - 送到了，反方答的是裁判那一份（Retro 实测，等于给自己打分）
+ * - 别人替它答了（Review 实测：裁判把 8 条全答了）
+ *
+ * 四种要做的事完全不同，混成一句就等于什么都没说。
+ *
+ * ## 拼法
+ *
+ * 「送达」一句 +「谁答的」一句，**后者只在带来新信息时才写**：契约压根没送到时
+ * 「它没有作答」是同义反复，不写；但「这一条被别人代答了」即使在没送到时也要写 ——
+ * 那是另一件独立发生的事，而且正是人要看见的那件。
+ *
+ * ## 代答的照实说，但不算数
+ *
+ * 用户同一次定的：「**蓝方一定是要勾的**。」所以裁判替反方答的那几条不采信 ——
+ * 记下来是「我要知情」，不算数是「蓝方一定要勾」，两条同时成立，不冲突。
+ */
+function whyNotAssessed(input: {
+  readonly assessor: Participant;
+  /** 契约有没有送到。`null` = 不适用：StagePass 直接写进了那个人的提示词。 */
+  readonly delivered: boolean | null;
+  /** 它答的是别人那一份。 */
+  readonly answeredAnother: boolean;
+  /** 这一条被别的参与者答了。null = 没有。 */
+  readonly answeredBy: Participant | null;
+}): string {
+  const who = WHO[input.assessor];
+  const clauses: string[] = [];
+
+  if (input.delivered === false) {
+    clauses.push(`这一轮的标准没有送到${who}手上（裁判没有转达）`);
+  } else if (input.delivered === true) {
+    clauses.push(`标准送到了${who}`);
+  }
+
+  if (input.answeredAnother) {
+    clauses.push("它答的是另一份标准，不是这一份");
+  } else if (input.delivered !== false) {
+    clauses.push("它没有作答");
+  }
+
+  if (input.answeredBy !== null) {
+    clauses.push(
+      `这一条由${WHO[input.answeredBy]}作答，而它不是这一份的判定人，不采信`,
+    );
+  }
+
+  return `${clauses.join("；")}。`;
+}
+
+/**
+ * 这几条标准被**别的**参与者答了没有，答了的话是谁。
+ *
+ * 「谁答的」这个问题 `readAssessments` 结构上答不了 —— 它只读一个人的话，对着一份
+ * 标准。而错位是跨人的：2026-07-31 实测 Review 第 6 轮，裁判把反方那 4 条也答了，
+ * 那 4 条答案确实存在、写得也像样，只是出自没有资格判它们的那张嘴。
+ *
+ * 一条被两个人答的情况按参与者顺序取第一个 —— 这里要说的是「有人代答了」，
+ * 不是清点有几个人代答。
+ */
+function answeredBy(
+  transcripts: RoundSettled["transcripts"],
+  assessor: Participant,
+  mine: ReadonlySet<string>,
+): Map<string, Participant> {
+  const found = new Map<string, Participant>();
+  for (const who of Object.keys(transcripts) as Participant[]) {
+    if (who === assessor) continue;
+    for (const key of answeredKeysIn(transcripts[who], mine)) {
+      if (!found.has(key)) found.set(key, who);
+    }
+  }
+  return found;
+}
+
+/**
+ * 给每一条没判上的补一句「为什么」。
+ *
+ * **整份作废那一种不碰** —— 它已经带着自己的原因（`整份判定作废（unknown_key）…`），
+ * 而那是一件不同的事：那时契约送到了、人也答了，只是答出来的东西不能采信。
+ * 用送达情况把它盖掉，等于把一句准确的话换成一句不相干的话。
+ */
+function withReasons(
+  read: readonly Assessment[],
+  context: {
+    readonly assessor: Participant;
+    readonly delivered: boolean | null;
+    readonly answeredAnother: boolean;
+    readonly answeredElsewhere: ReadonlyMap<string, Participant>;
+  },
+): Assessment[] {
+  return read.map((entry) => {
+    if (entry.verdict !== "not_assessed" || entry.evidence !== null) return entry;
+    return {
+      ...entry,
+      evidence: whyNotAssessed({
+        assessor: context.assessor,
+        delivered: context.delivered,
+        answeredAnother: context.answeredAnother,
+        answeredBy: context.answeredElsewhere.get(entry.criterionKey) ?? null,
+      }),
+    };
+  });
 }
 
 export interface RubricRoundSettled extends RoundSettled {
@@ -101,14 +238,18 @@ export interface RubricRoundSettled extends RoundSettled {
  *
  * 作废时不抛 —— 见文件开头。全部记 `not_assessed`，并把原因带上。
  */
-function assess(text: string, rubric: RubricVersion): Assessment[] {
+function assess(
+  text: string,
+  rubric: RubricVersion,
+  elsewhere: ReadonlySet<string>,
+): Assessment[] {
   const snapshot = (key: string) => {
     const criterion = rubric.criteria.find((entry) => entry.key === key)!;
     return { criterionText: criterion.text, blockingThen: criterion.blocking };
   };
 
   try {
-    return readAssessments(text, rubric.criteria).map((read) => ({
+    return readAssessments(text, rubric.criteria, elsewhere).map((read) => ({
       ...read, ...snapshot(read.criterionKey),
     }));
   } catch (error: unknown) {
@@ -166,13 +307,58 @@ export async function runRubricRound(
   };
   let gaps = settled.gaps;
 
+  /**
+   * 这一轮所有活着的 key。
+   *
+   * 「不属于你」和「不存在」要分开，就得先知道这一轮总共有哪些 key ——
+   * 少了这份名单，一个答错对象的 key 和一个凭空编的 key 在解析器眼里一模一样。
+   */
+  const everyKey = new Set(
+    [...active.values()].flatMap((rubric) => rubric.criteria.map((each) => each.key)),
+  );
+
+  /**
+   * 一条线程收到过这份标准没有。
+   *
+   * **裁判那份返回 null（不适用）**：它的提示词是 StagePass 自己写的，送达不是一个
+   * 会出问题的环节。只有子 Agent 那一侧要经裁判转达，也只有那一侧会丢。
+   *
+   * **读不到 rollout 也返回 null，不是 false。** 「查不出来」和「没送到」是两件事，
+   * 把前者说成后者就是编了一句 StagePass 并不知道的话 —— 而这一整套改动的立身之本
+   * 就是不许出现这种话。走到这里 `runRound` 已经成功读过这条线程了，所以真出错是
+   * 很反常的情况，但反常不等于可以撒谎。
+   */
+  const deliveredTo = (
+    assessor: Participant, keys: readonly string[],
+  ): boolean | null => {
+    if (assessor === "judge") return null;
+    try {
+      const whole = dependencies.readThreadWhole(settled.agents[assessor]);
+      return keys.some((key) => whole.includes(key));
+    } catch {
+      return null;
+    }
+  };
+
   for (const [role, rubric] of active) {
-    const read = assess(settled.transcripts[ASSESSED_BY[role]!.by], rubric);
-    assessments[role] = read;
+    const assessor = ASSESSED_BY[role]!.by;
+    const mine = rubric.criteria.map((each) => each.key);
+    const elsewhere = new Set([...everyKey].filter((key) => !mine.includes(key)));
+
+    const read = assess(settled.transcripts[assessor], rubric, elsewhere);
+    assessments[role] = withReasons(read, {
+      assessor,
+      delivered: deliveredTo(assessor, mine),
+      // 它答了别人那一份 —— Retro 实测：反方答的 4 条 key 全是裁判那份的。
+      answeredAnother:
+        answeredKeysIn(settled.transcripts[assessor], elsewhere).length > 0,
+      // 这几条被别人代答了 —— Review 实测：裁判把反方那 4 条也答了。
+      answeredElsewhere: answeredBy(settled.transcripts, assessor, new Set(mine)),
+    });
 
     rubrics.record(
       request.changeId, request.phase, role, request.round, rubric,
-      read.map((entry) => ({
+      assessments[role]!.map((entry) => ({
         criterionKey: entry.criterionKey,
         verdict: entry.verdict,
         evidence: entry.evidence,
@@ -180,7 +366,7 @@ export async function runRubricRound(
     );
 
     gaps = applyAssessments(gaps, {
-      round: request.round, role, assessments: read,
+      round: request.round, role, assessments: assessments[role]!,
     });
   }
 

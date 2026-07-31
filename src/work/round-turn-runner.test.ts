@@ -7,6 +7,7 @@ import { ScriptedCodexTransport, type CodexTransport, type TurnDispatch } from "
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
+import { RoundNoteStore } from "../store/round-note-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
@@ -63,10 +64,13 @@ function runner(
     changes: context.changes,
     bindings: context.bindings,
     evidence: new EvidenceStore(context.db),
+    notes: new RoundNoteStore(context.db),
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
     repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     readThread,
+    // 这些用例不问送达 —— 它们问的是这个 runner 有没有把各层接对。
+    readThreadWhole: readThread,
     taskFor: () => "写 PRD",
   });
 }

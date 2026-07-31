@@ -53,6 +53,65 @@ export interface ReadAssessment {
   readonly evidence: string | null;
 }
 
+interface AnswerLine {
+  readonly key: string;
+  readonly token: string;
+  readonly rest: string;
+}
+
+/**
+ * 一段文本里所有长得像判定的行，**不问 key 属于谁**。
+ *
+ * 抽出来是因为有两个问题要问同一段文本：「这一份判成什么样」（`readAssessments`）
+ * 和「别人那一份被谁答了」（`answeredKeysIn`）。两处各写一遍取围栏的规矩，迟早会
+ * 出现「一处认最后一个围栏、另一处认第一个」这种说不出道理的差别 —— 那正是
+ * `jsonAnswerIn` 当初被抽出来的理由。
+ */
+function answerLinesIn(text: string): { lines: AnswerLine[]; fenced: boolean } {
+  const fences = [...text.matchAll(FENCE)].map((match) => match[1]!);
+  const body = fences.length > 0 ? fences[fences.length - 1]! : text;
+
+  const lines: AnswerLine[] = [];
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const match = LINE.exec(line);
+    if (!match) continue; // 散文
+    const [, key, token, rest] = match as unknown as [string, string, string, string];
+    lines.push({ key, token, rest });
+  }
+  return { lines, fenced: fences.length > 0 };
+}
+
+/**
+ * 这段文本里，**名单上的哪几条被答了**（答成什么不管，只问答没答）。
+ *
+ * 用来回答一个 `readAssessments` 结构上答不了的问题：**这一份标准是不是被错的人
+ * 答了。** 2026-07-31 实测的两种真实错位：
+ *
+ * - 裁判把反方那份也一并答了（Review 第 6 轮，8 条全答）
+ * - 反方答的是裁判那份（Retro 第 1 轮，4 条 key 全是 critic 的）
+ *
+ * 两种今天在库里都写成 `not_assessed` + `evidence` 为 `NULL`，和「它什么都没说」
+ * 一模一样。分得出来，人才知道该去改哪儿（见
+ * docs/DESIGN-rubric-delivery-2026-07-31.md §3.4）。
+ *
+ * **只认得出 `yes` / `no`。** 一行写着别的东西不算「答了」—— 那是另一种坏法，不该
+ * 被算进「他答错了对象」这个结论里。
+ */
+export function answeredKeysIn(
+  text: string,
+  keys: ReadonlySet<string>,
+): string[] {
+  const found = new Set<string>();
+  for (const line of answerLinesIn(text).lines) {
+    if (!keys.has(line.key)) continue;
+    if (!ANSWERABLE.has(line.token.toLowerCase())) continue;
+    found.add(line.key);
+  }
+  return [...found];
+}
+
 /**
  * 发给模型的那份清单。
  *
@@ -99,21 +158,15 @@ export function rubricContract(
 export function readAssessments(
   text: string,
   criteria: readonly Criterion[],
+  elsewhere: ReadonlySet<string> = new Set(),
 ): ReadAssessment[] {
   if (criteria.length === 0) return [];
 
   const known = new Set(criteria.map((entry) => entry.key));
-  const fences = [...text.matchAll(FENCE)].map((match) => match[1]!);
-  const body = fences.length > 0 ? fences[fences.length - 1]! : text;
+  const { lines, fenced } = answerLinesIn(text);
 
   const answered = new Map<string, ReadAssessment>();
-  for (const raw of body.split("\n")) {
-    const line = raw.trim();
-    if (line === "") continue;
-    const match = LINE.exec(line);
-    if (!match) continue; // 散文
-
-    const [, key, token, rest] = match as unknown as [string, string, string, string];
+  for (const { key, token, rest } of lines) {
     if (!known.has(key)) {
       // 规则一句话：**fence 里面是结构化区域，外面是捡的。**
       //
@@ -123,7 +176,20 @@ export function readAssessments(
       // 没有 fence 时整段都是散文，任何三段式的句子都会撞上这个正则，所以只认识
       // 得出来的 key 才算数。这条宽容只会让某条记成 not_assessed（fail-closed），
       // 永远不会造出一个假的判定。
-      if (fences.length === 0) continue;
+      if (!fenced) continue;
+      /*
+       * **「不属于你」和「不存在」不是一回事。**
+       *
+       * `elsewhere` 是这一轮别的角色那份的 key。答了它们**不作废这一份** ——
+       * 2026-07-31 实测：Review 第 6 轮裁判把 8 条全答了（它本职 4 条 + 反方那 4 条），
+       * 而作废规则把它答对的 4 条一起扔了，其中两条是实打实的 `no`。它不是漏答，
+       * 是做得比要求的多，然后被判全废。
+       *
+       * 作废规则本身不撤：它挡的是「凭空多答一条不存在的标准」，那仍然是假证据。
+       * 改的只是判据。多答的那几条不会被静默吞掉 —— `answeredKeysIn` 会把它们捡回来
+       * 记进 evidence（L5，`work/rubric-round.ts`）。
+       */
+      if (elsewhere.has(key)) continue;
       throw new RubricOutputVoidError("unknown_key", key);
     }
 

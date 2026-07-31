@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { rubricContract, readAssessments, RubricOutputVoidError } from "./rubric-protocol";
+import {
+  rubricContract, readAssessments, answeredKeysIn, RubricOutputVoidError,
+} from "./rubric-protocol";
 import type { Criterion } from "./rubric";
 
 /**
@@ -158,5 +160,93 @@ describe("rubric 协议 · 契约由 StagePass 生成", () => {
 
   it("空 rubric 也给得出契约，不抛", () => {
     assert.equal(typeof rubricContract([], "正方这一轮的产出"), "string");
+  });
+});
+
+/**
+ * 「不属于你」和「不存在」不是一回事。
+ *
+ * 输入取自 2026-07-31 在 `.stagepass/verification/build-0730/panel.db` 和对应
+ * rollout 里读到的真实错位，不是编的：
+ *
+ * - Review 第 6 轮，裁判在一个围栏里答了 8 条 —— 它本职的 4 条 critic + 反方那
+ *   4 条 producer。作废规则把它答对的 4 条一起扔了，其中两条是实打实的 `no`。
+ * - Retro 第 1 轮，反方答的 4 条 key 全是 critic 的（等于在给自己打分），而且没包
+ *   围栏，于是走「没围栏就捡认识的」那条路，4 行全被静默跳过。
+ */
+describe("rubric 协议 · 别人那一份的 key", () => {
+  const MINE: Criterion[] = [
+    criterion("RBC-mine-1", 0, "我这份的第一条"),
+    criterion("RBC-mine-2", 1, "我这份的第二条"),
+  ];
+  const THEIRS = new Set(["RBC-theirs-1", "RBC-theirs-2"]);
+
+  it("**多答了别人那份 —— 我这份照常读出来，不再连坐作废**", () => {
+    const read = readAssessments(fenced([
+      "RBC-mine-1 no 这一条没做到",
+      "RBC-mine-2 yes 这一条做到了",
+      "RBC-theirs-1 yes 不归我判的那一条",
+      "RBC-theirs-2 no 也不归我判",
+    ].join("\n")), MINE, THEIRS);
+
+    assert.deepEqual(read.map((entry) => entry.verdict), ["no", "yes"]);
+    assert.equal(read[0]!.evidence, "这一条没做到");
+  });
+
+  it("**凭空多答一条谁都不认识的 —— 仍然作废整份**", () => {
+    // 这条规则没有被改松：一个没有标准的判定是假证据。
+    assert.throws(
+      () => readAssessments(fenced("RBC-mine-1 yes 好\nRBC-凭空 yes 编的"), MINE, THEIRS),
+      (error: unknown) =>
+        error instanceof RubricOutputVoidError && error.code === "unknown_key",
+    );
+  });
+
+  it("不给 elsewhere 时行为和以前逐字一致 —— 别人那份也照旧作废", () => {
+    assert.throws(
+      () => readAssessments(fenced("RBC-theirs-1 yes 别人那条"), MINE),
+      (error: unknown) => error instanceof RubricOutputVoidError,
+    );
+  });
+
+  it("只答了别人那份 —— 我这份全是 not_assessed，而不是作废", () => {
+    const read = readAssessments(
+      fenced("RBC-theirs-1 yes 甲\nRBC-theirs-2 no 乙"), MINE, THEIRS,
+    );
+    assert.deepEqual(read.map((entry) => entry.verdict), ["not_assessed", "not_assessed"]);
+  });
+});
+
+describe("rubric 协议 · 这一份是被谁答的", () => {
+  const KEYS = new Set(["RBC-x", "RBC-y"]);
+
+  it("**没包围栏也认得出来** —— Retro 那次就是这么被静默吞掉的", () => {
+    const text = [
+      "我先说明一下我的判断依据。",
+      "RBC-x no 两条 blocker 只有概括性标题",
+      "RBC-y yes 仅针对正方给出的内容提出",
+    ].join("\n");
+    assert.deepEqual(answeredKeysIn(text, KEYS).sort(), ["RBC-x", "RBC-y"]);
+  });
+
+  it("和 readAssessments 用同一个取围栏的规矩 —— 最后一个赢", () => {
+    const text = [
+      "```rubric", "RBC-x yes 草稿", "```",
+      "改主意了：", "```rubric", "RBC-y no 定稿", "```",
+    ].join("\n");
+    assert.deepEqual(answeredKeysIn(text, KEYS), ["RBC-y"]);
+  });
+
+  it("**只认 yes / no** —— 写了别的不算「答了」，那是另一种坏法", () => {
+    assert.deepEqual(answeredKeysIn("RBC-x 部分满足 含糊其辞", KEYS), []);
+    assert.deepEqual(answeredKeysIn("RBC-x not_assessed 跳过", KEYS), []);
+  });
+
+  it("名单外的 key 不算", () => {
+    assert.deepEqual(answeredKeysIn("RBC-别的 yes 好", KEYS), []);
+  });
+
+  it("一条都没答 —— 空数组", () => {
+    assert.deepEqual(answeredKeysIn("我什么标准都没答。", KEYS), []);
   });
 });

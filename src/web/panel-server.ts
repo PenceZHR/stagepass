@@ -8,7 +8,9 @@ import { PHASES, isPhase, producesCommit, type Phase } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
-import { createSubAgentLookup, readThreadTranscript } from "../codex/subagent";
+import {
+  createSubAgentLookup, readThreadTranscript, readThreadWholeText,
+} from "../codex/subagent";
 import {
   archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
 } from "../codex/archive";
@@ -32,6 +34,8 @@ import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
+import { RoundNoteStore } from "../store/round-note-store";
+import { summariseRoundNotes } from "../domain/round";
 import {
   RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
   type RubricRole,
@@ -254,7 +258,7 @@ export class PanelSessions {
   }
 
   private static key(changeId: string, phase: Phase): string {
-    return `${changeId} ${phase}`;
+    return `${changeId}${phase}`;
   }
 
   /**
@@ -625,9 +629,13 @@ async function runRound(input: {
       changes: new ChangeStore(database),
       bindings: new BindingStore(database),
       evidence: new EvidenceStore(database),
+      notes: new RoundNoteStore(database),
       repo: sessions.repo,
       workspaceFor: (each) => sessions.workspaceFor(each),
       readThread: (threadId) => readThreadTranscript({ threadId }),
+      // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
+      // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。
+      readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
       taskFor: (each) => MINIMAL_PHASE_INSTRUCTIONS[each as Phase],
     }),
   });
@@ -1233,13 +1241,25 @@ export async function handle(
      * 闸门放不放行和这一轮做得好不好是两个问题。
      */
     const assessed = new RubricStore(database).latestRound(changeId, phase);
+    /*
+     * 裁判的结论和反方的整体判断，也写进题面（用户 2026-07-31）。
+     *
+     * 逐条判定说得出「第 3 条没勾上」，说不出「加起来还差在哪」—— 而后者正是他
+     * 按按钮之前想知道的。裁判那句是**建议**：闸门仍然由他推（2026-07-30 拍板：
+     * 要不要继续对抗由人决定，不做成全自动）。
+     *
+     * 和 `assessed` 取自同一轮：`latestRound` 和 `latest` 都取最大的那个 round，
+     * 各取各的轮次就是把两轮的东西并排摆着当成一轮，那是在骗人。
+     */
+    const notes = new RoundNoteStore(database).latest(changeId, phase);
     const question = gateDecisionQuestion({
       phase,
       gate,
       summary: (blockers.length === 0
         ? "证据已到齐，没有挡住闸门的问题。"
         : `${blockers.length} 项问题仍然挡着闸门。先逐条说你怎么看，最后再裁决。`)
-        + summariseAssessments(assessed?.byRole ?? null),
+        + summariseAssessments(assessed?.byRole ?? null)
+        + summariseRoundNotes(notes),
       openGaps,
     });
     // No question rather than an empty one: putting a decision to someone that

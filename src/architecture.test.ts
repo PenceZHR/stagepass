@@ -68,6 +68,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/round.ts": 4,
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
+  // 一轮里那两句只写给人看的话（裁判的结论、反方的整体判断）。它只依赖
+  // `domain/round.ts` 的来源名单，所以和它同层 —— 它不是 rubric 的东西，
+  // 判定归 `rubric_assessments`，这两句谁都不判。
+  "store/round-note-store.ts": 4,
 
   "domain/rubric.ts": 5,
   "domain/rubric-protocol.ts": 5,

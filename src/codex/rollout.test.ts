@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  allTextIn,
   findCompletedTurn,
   parseRollout,
   threadIdFromRolloutName,
@@ -176,5 +177,48 @@ describe("rollout · 累积了好几轮时取最后一轮", () => {
       findLastCompletedTurn(parseRollout(text)),
       { text: "第一段\n第二段" },
     );
+  });
+});
+
+/**
+ * `allTextIn` —— 「这条线程收到过什么」。
+ *
+ * 记录形状取自 2026-07-31 真实读过的一条子 Agent rollout：转达进来的提示词同时落在
+ * `event_msg/user_message` 和 `response_item/message` 两种记录上。
+ */
+describe("L2 · 这条线程收到过什么", () => {
+  const responseItem = (role: string, text: string) => JSON.stringify({
+    timestamp: "2026-07-30T18:40:34.000Z",
+    type: "response_item",
+    payload: { type: "message", role, content: [{ type: "input_text", text }] },
+  });
+
+  it("**收到的和说过的都算** —— 它答不了的问题正是「有没有收到」", () => {
+    const text = [started, user("这是转达进来的任务"), agent("这是它自己说的"), complete].join("\n");
+    const whole = allTextIn(parseRollout(text));
+    assert.ok(whole.includes("这是转达进来的任务"));
+    assert.ok(whole.includes("这是它自己说的"));
+  });
+
+  it("response_item 的正文也算 —— 提示词同时落在这一种上", () => {
+    const whole = allTextIn(parseRollout(responseItem("user", "RBC-abc 这一条标准")));
+    assert.ok(whole.includes("RBC-abc"));
+  });
+
+  it("**没收到就是没收到** —— 这是 fail-closed 那条链的判据", () => {
+    const text = [started, user("你是反方，去挑毛病"), agent("我挑完了"), complete].join("\n");
+    assert.equal(allTextIn(parseRollout(text)).includes("RBC-"), false);
+  });
+
+  it("`findLastCompletedTurn` 看不见转达进来的话 —— 两个函数不能互相替代", () => {
+    const records = parseRollout(
+      [started, user("契约 RBC-abc 在这里"), agent("我没答"), complete].join("\n"),
+    );
+    assert.equal(findLastCompletedTurn(records)!.text.includes("RBC-abc"), false);
+    assert.ok(allTextIn(records).includes("RBC-abc"));
+  });
+
+  it("空记录给空串，不是抛", () => {
+    assert.equal(allTextIn([]), "");
   });
 });

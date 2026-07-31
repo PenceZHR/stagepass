@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
-  findLastCompletedTurn, parseRollout, threadIdFromRolloutName,
+  allTextIn, findLastCompletedTurn, parseRollout, threadIdFromRolloutName,
 } from "./rollout";
 
 /**
@@ -96,12 +96,43 @@ export function createSubAgentLookup(
  * 空字符串会被上游读成「这一方什么都没说」，而那和「找不到」是两件事 —— 后者必须
  * 大声失败。
  */
-export function readThreadTranscript(input: {
+export function readThreadTranscript(input: ThreadLookup): string {
+  const outcome = findLastCompletedTurn(rolloutOf(input));
+  if (!outcome) throw new SubAgentUnfinishedError(input.threadId);
+  return outcome.text;
+}
+
+/**
+ * 一条线程**收到过**的全部文本 —— 它说的，和它被告知的。
+ *
+ * ## 和上面那个的分工
+ *
+ * `readThreadTranscript` 给「它说了什么」，这个给「它经历了什么」。两个都要，是因为
+ * 有一个问题只有后者答得了：**契约到底送到没有。** 契约在它被问到的那一段里，
+ * 而「它说了什么」里当然找不到。
+ *
+ * 「反方没答」和「反方压根没收到」今天在库里长得一模一样，而人对这两件事该做的
+ * 完全不同 —— 前者去看反方，后者去看裁判有没有转达。见
+ * docs/DESIGN-rubric-delivery-2026-07-31.md §3.3。
+ *
+ * ## 半截的一轮也算
+ *
+ * 这里**不要求** turn 跑完（`readThreadTranscript` 要求）。问的是「收到过吗」，
+ * 而一条被问了却还没答完的线程确实收到过。
+ */
+export function readThreadWholeText(input: ThreadLookup): string {
+  return allTextIn(rolloutOf(input));
+}
+
+interface ThreadLookup {
   threadId: string;
   /** 会话目录里所有的 rollout 路径。注入是为了离线证。 */
   list?: () => readonly string[];
   read?: (path: string) => string;
-}): string {
+}
+
+/** 找到这条线程的 rollout 并解析。**找不到就抛，不返回空** —— 见上面那段。 */
+function rolloutOf(input: ThreadLookup) {
   const list = input.list ?? (() => walkRollouts(DEFAULT_SESSIONS));
   const read = input.read ?? ((path: string) => readFileSync(path, "utf-8"));
   const wanted = input.threadId.trim().toLowerCase();
@@ -111,9 +142,7 @@ export function readThreadTranscript(input: {
   if (path === undefined) {
     throw new SubAgentNotFoundError(input.threadId);
   }
-  const outcome = findLastCompletedTurn(parseRollout(read(path)));
-  if (!outcome) throw new SubAgentUnfinishedError(input.threadId);
-  return outcome.text;
+  return parseRollout(read(path));
 }
 
 const DEFAULT_SESSIONS = join(homedir(), ".codex", "sessions");

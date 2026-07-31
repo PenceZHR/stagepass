@@ -25,7 +25,12 @@
 
 export interface RolloutRecord {
   readonly type?: unknown;
-  readonly payload?: { type?: unknown; message?: unknown } | undefined;
+  readonly payload?: {
+    type?: unknown;
+    message?: unknown;
+    /** `response_item` 的正文：`[{type:"input_text", text:"…"}]`。 */
+    content?: unknown;
+  } | undefined;
   readonly timestamp?: unknown;
 }
 
@@ -144,6 +149,53 @@ export function findLastCompletedTurn(
     }
   }
   return latest;
+}
+
+/**
+ * 这条线程里出现过的全部文本 —— **它说过的，和它被告知的。**
+ *
+ * ## 和上面两个的分工
+ *
+ * `findCompletedTurn` / `findLastCompletedTurn` 只收 `agent_message`，也就是**模型
+ * 说过的话**。那是对的：一轮的产出、意见、裁决都在它说的话里，读别的只会把提示词
+ * 当成答案。
+ *
+ * 但有一个问题它们答不了：**这条线程到底有没有收到过某样东西。** 契约在「它被问到
+ * 的那一段」里，不在它说的话里。而「反方没答」和「反方压根没收到」是两件必须分开的
+ * 事 —— 前者是它的问题，后者是转达断了，人要做的事完全不同（见
+ * docs/DESIGN-rubric-delivery-2026-07-31.md §3.3）。
+ *
+ * ## 为什么可以拿它当「收到过」的判据
+ *
+ * 判据是 criterion key 出现过没有，而 key 是 `RBC-<uuid>`。散文撞上一个 uuid 的
+ * 可能性可以忽略，所以这是个**机械可查的事实**，不是推测。
+ *
+ * ## 收哪些
+ *
+ * 2026-07-31 在真 rollout 上核过，转达进来的提示词同时落在两种记录上：
+ *
+ *   event_msg / user_message      -> payload.message
+ *   response_item / message       -> payload.content[].text   （role 是 user / assistant / developer）
+ *
+ * 两种都收，重复无所谓 —— 这个函数的唯一用途是「找得到吗」，不是重建对话。
+ * 按记录类型分别取字段，而不是递归地把所有 `text` 捞一遍：后者今天也能跑通，但
+ * 它对 Codex 的记录结构不做任何假设，也就意味着结构变了它不会失败，只会安静地
+ * 少捞或多捞。
+ */
+export function allTextIn(records: readonly RolloutRecord[]): string {
+  const said: string[] = [];
+  for (const record of records) {
+    const message = record.payload?.message;
+    if (typeof message === "string" && message !== "") said.push(message);
+
+    const content = record.payload?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const text = (part as { text?: unknown } | null)?.text;
+      if (typeof text === "string" && text !== "") said.push(text);
+    }
+  }
+  return said.join("\n");
 }
 
 /**
