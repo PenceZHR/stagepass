@@ -293,6 +293,21 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
     assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
   });
 
+  it("**Merge：能读这一次的全部 commit**", () => {
+    /*
+     * 交付说明里「改了什么、对谁有影响、能不能回滚」全是对代码的断言。蓝方不读，
+     * 就只能看着红方的说法点头 —— 而一份没人核对的交付说明，正是这个阶段该防的东西
+     * （用户 2026-07-30 拍板）。
+     *
+     * 范围是「这一次的全部 commit」，不是「改动涉及的文件」：Merge 看的是整件事，
+     * 不是某一轮。
+     */
+    const prompt = judgePrompt({ phase: "Merge", round: 1, task: "t", openGaps: [] });
+    assert.doesNotMatch(prompt, /不要去读仓库/, "Merge 的蓝方还看不见代码");
+    assert.match(prompt, /这一次的全部 commit/, "没说清读的范围是整件事");
+    assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
+  });
+
   it("**QA：两边都能跑** —— 这是唯一一个活儿本身就是执行的阶段", () => {
     /*
      * Review 那条规矩里写着「跑起来验是 QA 的活儿」。到了 QA，跑就是正题 ——
@@ -307,10 +322,10 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
 
   it("没谈过的阶段一律不动 —— 保守是因为没谈，不是因为想清楚了", () => {
     // Fix / Merge / Retro 的形状还没谈过。
-    for (const phase of ["Merge", "Retro"] as const) {
-      const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
-      assert.match(prompt, /不要去读仓库/, `${phase} 被顺手改了，而它没被谈过`);
-    }
+    // Retro 写的是复盘 —— 它对着前面每个阶段的产出和账本，不需要读代码。
+    assert.match(
+      judgePrompt({ phase: "Retro", round: 1, task: "t", openGaps: [] }),
+      /不要去读仓库/, "Retro 被顺手改了");
     // Fix 和 Build 同形状（红方写代码），所以蓝方够得着的东西也一样。
     assert.doesNotMatch(
       judgePrompt({ phase: "Fix", round: 1, task: "t", openGaps: [] }),
