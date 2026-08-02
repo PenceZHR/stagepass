@@ -242,6 +242,18 @@ export function applyRound(
   for (const [gapId, verdict] of Object.entries(outcome.verdicts)) {
     const gap = byId.get(gapId);
     if (!gap || gap.status !== "open") {
+      /*
+       * **对不认识的 id 说 `still_open`，跳过；说 `closed`，才拒。**（2026-08-02 收窄）
+       *
+       * 真机实测：蓝方这一轮刚报了一条新问题（还没进库），裁判尽职地对它也表了态
+       * `still_open` —— 一句按定义就是无操作的话（下面那段注释自己写着：still_open
+       * 和沉默是同一个结果），却把整轮作废，正反两方的活儿全丢。
+       *
+       * 拒绝的理由字面上只关于 close：「a round claiming to have CLOSED something
+       * that was never there」—— 那一半原样保留：对不存在的东西宣称关闭，是要抹掉
+       * 一个从来没有过的东西，这样的轮别的话也不值钱。
+       */
+      if (verdict.kind === "still_open") continue;
       throw new InvalidVerdictError("unknown_gap");
     }
     if (verdict.reason.trim() === "") {

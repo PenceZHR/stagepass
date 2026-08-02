@@ -100,6 +100,26 @@ describe("L4 · silence keeps a gap open", () => {
       );
     }
   });
+
+  /**
+   * 2026-08-02 真机（CHG-003 Spec 第 2 轮）：蓝方这一轮刚报了一条新问题（还没进库），
+   * 裁判尽职地对它也表了态 still_open —— 一句按定义就是无操作的话（和沉默同一个
+   * 结果），却把整轮作废。收窄之后：still_open 对不认识的 id 跳过，closed 照拒。
+   */
+  it("**对不认识的 id 说 still_open —— 跳过，不作废整轮**", () => {
+    const after = applyRound([gap()], {
+      round: 2,
+      found: [{ id: "SPEC-FLOW-1", severity: "P1", title: "loading 期间 game-over 的成绩去向未定义" }],
+      verdicts: {
+        "G-1": { kind: "closed", reason: "已修" },
+        // 裁判对蓝方本轮新报的那条顺手说了 still_open —— 它还不在库里。
+        "SPEC-FLOW-1": { kind: "still_open", reason: "仍未说明" },
+      },
+    });
+    // 真裁决照常生效，新发现照常入库，谁也没被炸。
+    assert.equal(after.find((g) => g.id === "G-1")?.status, "closed");
+    assert.equal(after.find((g) => g.id === "SPEC-FLOW-1")?.status, "open");
+  });
 });
 
 describe("L4 · finding the same problem again", () => {
