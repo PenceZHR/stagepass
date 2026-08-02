@@ -4,6 +4,7 @@ import {
 } from "../domain/rubric-protocol";
 import { applyAssessments } from "../domain/rubric-gaps";
 import { BLUE, RED } from "../domain/round";
+import type { CodexTransport } from "../codex/transport";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
 import { runRound, type RoundDependencies, type RoundRequest, type RoundSettled } from "./round-runner";
 
@@ -140,6 +141,23 @@ export interface RubricRoundDependencies extends RoundDependencies {
  * 用户同一次定的：「**蓝方一定是要勾的**。」所以裁判替反方答的那几条不采信 ——
  * 记下来是「我要知情」，不算数是「蓝方一定要勾」，两条同时成立，不冲突。
  */
+/**
+ * 补问最多几次。**用户 2026-07-31 定的 3。**
+ *
+ * 他要的是「补到它答上为止」，但那不能真的无限：每一次都是一个真 turn（几十秒到
+ * 几分钟），而这一轮外面还有 30 分钟的 job 租约兜着（`TurnLoop`）。无限补的结局
+ * 不是「终于答上了」，是租约到期、整轮被判失败 —— 那比记一句「问了三遍没答上」
+ * 糟得多，因为后者至少还是句实话。
+ */
+const ASK_AGAIN_AT_MOST = 3;
+
+/** 补问的结局。`null` = 这一份没走补问那条路。 */
+type FollowUp =
+  /** 补了 n 次，它仍然没答上。 */
+  | { readonly kind: "asked"; readonly times: number }
+  /** 补问**这个动作本身**失败了。和「它不肯答」是两件事，必须分开说。 */
+  | { readonly kind: "failed"; readonly times: number; readonly detail: string };
+
 function whyNotAssessed(input: {
   readonly assessor: Participant;
   /** 契约有没有送到。`null` = 不适用：StagePass 直接写进了那个人的提示词。 */
@@ -148,6 +166,8 @@ function whyNotAssessed(input: {
   readonly answeredAnother: boolean;
   /** 这一条被别的参与者答了。null = 没有。 */
   readonly answeredBy: Participant | null;
+  /** 补问的结局。null = 没补过。 */
+  readonly followUp: FollowUp | null;
 }): string {
   const who = WHO[input.assessor];
   const clauses: string[] = [];
@@ -170,7 +190,103 @@ function whyNotAssessed(input: {
     );
   }
 
+  /*
+   * 补问的结局照实说（用户 2026-07-31：「如实汇报」）。
+   *
+   * 两种必须分得开：**它被问了 n 遍就是不答**（模型的问题，人可能要换标准或换法子），
+   * 和**补问这个动作本身失败了**（StagePass / Codex 的问题，跟反方无关）。混成一句，
+   * 人会去改一份根本没毛病的 rubric。
+   */
+  if (input.followUp?.kind === "asked") {
+    clauses.push(`又补问了 ${input.followUp.times} 次，仍然没有作答`);
+  } else if (input.followUp?.kind === "failed") {
+    clauses.push(
+      `补问没能进行下去（补问 ${input.followUp.times} 次时失败：${input.followUp.detail}）`
+      + `—— 这是补问本身出了问题，不是${who}拒绝作答`,
+    );
+  }
+
   return `${clauses.join("；")}。`;
+}
+
+/**
+ * 补问：把**还没答上的那几条**直接发给反方自己那条线程。
+ *
+ * ## 为什么这件事非做不可
+ *
+ * 用户 2026-07-31 的硬要求：「**蓝方一定是要勾的。**」而反方那份契约只能经裁判的手
+ * 转达，实测三种断法（没送到 / 送到不答 / 答错对象）里有两种是转达出的问题。
+ * 契约到不了，反方再听话也答不出。
+ *
+ * 补问把这条不可靠的链**换成直连**：StagePass 直接 resume 反方那条线程
+ * （`settled.agents.blue`），契约原样发过去。2026-07-31 在真 Codex 上验过 ——
+ * 子 Agent 的线程 resume 得动，答得出，追加落在它自己的 rollout 上。
+ *
+ * ## 只补没答上的那几条
+ *
+ * 已经答了的不再问：一份更短的清单更容易被答全，也少烧 token。但**解析时给的仍是
+ * 整份 rubric 的 key**（`assess(text, rubric, …)`）—— 它要是顺手把答过的也重答一遍，
+ * 那些 key 得是「认识的」，否则 `unknown_key` 会把这一次补问整个作废。
+ *
+ * ## 补问失败不等于反方不肯答
+ *
+ * 两者分开返回（`FollowUp`），因为人对它们该做的事完全不同：前者去看 Codex 那边
+ * 出了什么事，后者去看这份标准是不是写得答不出来。
+ */
+async function askAgain(input: {
+  readonly transport: CodexTransport;
+  readonly threadId: string;
+  readonly rubric: RubricVersion;
+  readonly subject: string;
+  readonly elsewhere: ReadonlySet<string>;
+  readonly read: readonly Assessment[];
+}): Promise<{ read: Assessment[]; followUp: FollowUp | null }> {
+  let read = [...input.read];
+  let times = 0;
+
+  while (times < ASK_AGAIN_AT_MOST) {
+    const missing = read.filter((entry) => entry.verdict === "not_assessed");
+    if (missing.length === 0) break;
+
+    const asked = input.rubric.criteria.filter((criterion) =>
+      missing.some((entry) => entry.criterionKey === criterion.key));
+    times += 1;
+
+    let text: string;
+    try {
+      const delivery = await input.transport.runTurn({
+        threadId: input.threadId,
+        prompt: rubricContract(asked, input.subject),
+        // 跑在反方自己那条线程上，所以不能挤掉阶段那个终端；面板给它单开一格，
+        // 跑完自动收（用户 2026-07-31）。
+        aside: { label: `${BLUE}·补问` },
+      });
+      text = delivery.text;
+    } catch (error: unknown) {
+      return {
+        read,
+        followUp: {
+          kind: "failed",
+          times,
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+
+    // 整份 rubric 的 key 都算认识的，理由见上面。
+    const again = assess(text, input.rubric, input.elsewhere);
+    read = read.map((entry) => {
+      if (entry.verdict !== "not_assessed") return entry;
+      const fresh = again.find((each) => each.criterionKey === entry.criterionKey);
+      return fresh && fresh.verdict !== "not_assessed" ? fresh : entry;
+    });
+  }
+
+  const stillMissing = read.some((entry) => entry.verdict === "not_assessed");
+  return {
+    read,
+    followUp: times === 0 || !stillMissing ? null : { kind: "asked", times },
+  };
 }
 
 /**
@@ -212,6 +328,7 @@ function withReasons(
     readonly delivered: boolean | null;
     readonly answeredAnother: boolean;
     readonly answeredElsewhere: ReadonlyMap<string, Participant>;
+    readonly followUp: FollowUp | null;
   },
 ): Assessment[] {
   return read.map((entry) => {
@@ -223,6 +340,7 @@ function withReasons(
         delivered: context.delivered,
         answeredAnother: context.answeredAnother,
         answeredBy: context.answeredElsewhere.get(entry.criterionKey) ?? null,
+        followUp: context.followUp,
       }),
     };
   });
@@ -345,7 +463,25 @@ export async function runRubricRound(
     const mine = rubric.criteria.map((each) => each.key);
     const elsewhere = new Set([...everyKey].filter((key) => !mine.includes(key)));
 
-    const read = assess(settled.transcripts[assessor], rubric, elsewhere);
+    const first = assess(settled.transcripts[assessor], rubric, elsewhere);
+
+    /*
+     * **没答上就直接问它，最多三次**（用户 2026-07-31）。
+     *
+     * 只对经裁判转达的那一侧补 —— 裁判自己那份的提示词是 StagePass 写的，它没答就是
+     * 它没答，再问一遍改变的是它的意愿，而不是修复一条断掉的链路。
+     */
+    const { read, followUp } = assessor === "blue"
+      ? await askAgain({
+          transport: dependencies.transport,
+          threadId: settled.agents.blue,
+          rubric,
+          subject: ASSESSED_BY[role]!.subject,
+          elsewhere,
+          read: first,
+        })
+      : { read: first, followUp: null };
+
     assessments[role] = withReasons(read, {
       assessor,
       delivered: deliveredTo(assessor, mine),
@@ -354,6 +490,7 @@ export async function runRubricRound(
         answeredKeysIn(settled.transcripts[assessor], elsewhere).length > 0,
       // 这几条被别人代答了 —— Review 实测：裁判把反方那 4 条也答了。
       answeredElsewhere: answeredBy(settled.transcripts, assessor, new Set(mine)),
+      followUp,
     });
 
     rubrics.record(

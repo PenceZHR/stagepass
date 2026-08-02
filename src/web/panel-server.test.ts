@@ -18,7 +18,9 @@ import { JobStore } from "../work/job-store";
 import {
   decisionLabel, RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE,
 } from "../domain/question";
-import { createPanelServer, type PanelOptions } from "./panel-server";
+import {
+  createPanelServer, type PanelOptions, type PanelSessions,
+} from "./panel-server";
 import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
 
@@ -93,6 +95,7 @@ async function withPanel(
     pty: Fake;
     database: Database.Database;
     open: (path: string, init?: RequestInit) => Promise<Response>;
+    sessions: PanelSessions;
   }) => Promise<void>,
   /** 额外注入的依赖。归档那一层要能在不碰 Codex 的情况下验。 */
   extra: {
@@ -145,7 +148,7 @@ async function withPanel(
     };
   }) as never;
 
-  const { server } = createPanelServer({
+  const { server, sessions } = createPanelServer({
     // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
     // 测试会陪着默认的 30 分钟一起等。
     database, session: { cwd: "/tmp" }, start, turnTimeoutMs: 200,
@@ -194,7 +197,7 @@ async function withPanel(
   };
 
   try {
-    await body({ base, pty, database, open });
+    await body({ base, pty, database, open, sessions });
   } finally {
     for (const response of streams) {
       try { await response.body?.cancel(); } catch { /* already done */ }
@@ -217,6 +220,9 @@ describe("panel · what it offers", () => {
       // Nothing has passed or failed yet, so no node carries a mark.
       assert.deepEqual(panel.phases[0], {
         phase: "PRD", threadId: null, live: false, current: true,
+        // 补问那格现在开着几个。空数组是常态 —— 它只在一次对抗里存在，跑完就收，
+        // 而这个 Change 一轮都没跑过。
+        asides: [],
         // assessed 是 null 而不是空对象：**「没跑过」和「跑了但一条都没答上」
         // 必须分得开** —— 后者在 gaps 里看不出来，因为 yes 和 not_assessed 都
         // 不留痕迹。
@@ -1955,6 +1961,88 @@ describe("panel · 荒谬的终端尺寸不照做", () => {
         await sizeAfter(open, query);
       }
       assert.deepEqual(pty.resized, []);
+    });
+  });
+});
+
+/**
+ * 补问那一格终端。
+ *
+ * 用户 2026-07-31 定的形状：补问跑在**反方自己那条线程**上（不是这个阶段的主线），
+ * 所以面板给它单开一格；跑完自动收。它必须让人看得见 —— 「一定要是在我的 web 里面
+ * 用 codex，一定是 codex 的 TUI」，headless 的 turn 是不可见的 turn。
+ */
+describe("panel · 补问那一格", () => {
+  const LABEL = "反方·补问";
+
+  it("**开出来之后进度里报得出，主线那一格不受影响**", async () => {
+    await withPanel(async ({ open, sessions }) => {
+      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        phases: { phase: string; live: boolean; asides: string[] }[];
+      };
+      const prd = panel.phases.find((each) => each.phase === "PRD")!;
+      assert.deepEqual(prd.asides, [LABEL]);
+      // **主线那一格没被这个动作点亮** —— live 是「裁判那个终端在跑」，
+      // 派发前的 phase_already_running 全靠它。
+      assert.equal(prd.live, false);
+      dispose();
+    });
+  });
+
+  it("`?label=` 接得到它的流，而且不新起进程", async () => {
+    await withPanel(async ({ open, pty, sessions }) => {
+      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
+      const before = pty.started.length;
+      const response = await open(
+        `/pty/${CHANGE}/PRD?label=${encodeURIComponent(LABEL)}`);
+      assert.equal(response.status, 200);
+      assert.equal(pty.started.length, before, "看一眼补问那格居然又起了一个进程");
+      await response.body?.cancel();
+      dispose();
+    });
+  });
+
+  it("**那一格不在时给 409，不是起一个空终端**", async () => {
+    await withPanel(async ({ open, pty }) => {
+      const before = pty.started.length;
+      const response = await open(`/pty/${CHANGE}/PRD?label=${encodeURIComponent(LABEL)}`);
+      assert.equal(response.status, 409);
+      // 起一个空的会让人以为补问还在跑，而它已经结束了。
+      assert.equal(pty.started.length, before);
+      await response.text();
+    });
+  });
+
+  it("**disposer 收掉它之后，进度里就没有了**（补完自动关）", async () => {
+    await withPanel(async ({ open, sessions }) => {
+      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
+      dispose();
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        phases: { phase: string; asides: string[] }[];
+      };
+      assert.deepEqual(panel.phases.find((each) => each.phase === "PRD")!.asides, []);
+    });
+  });
+
+  it("没有补问时，每个阶段都是空数组 —— 那是常态", async () => {
+    await withPanel(async ({ open }) => {
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        phases: { asides: string[] }[];
+      };
+      assert.ok(panel.phases.every((each) => each.asides.length === 0));
+    });
+  });
+
+  it("补问那格死了，正在看的人会被告知 —— 不留一帧静止画面", async () => {
+    await withPanel(async ({ open, pty, sessions }) => {
+      sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
+      const response = await open(`/pty/${CHANGE}/PRD?label=${encodeURIComponent(LABEL)}`);
+      const reader = response.body!.getReader();
+      pty.exit();
+      // done 是浏览器唯一能知道「这个终端不再接受输入」的途径。
+      const { done } = await reader.read();
+      assert.equal(done, true);
     });
   });
 });

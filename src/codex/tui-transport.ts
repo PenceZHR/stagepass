@@ -73,7 +73,12 @@ export interface CodexTuiTransportOptions {
     args: string[];
     script: string;
     argv: string[];
-  }) => void;
+    /**
+     * 这个 turn 在人眼里叫什么，`undefined` = 它就是这个阶段的主线。
+     * 只是原样转交 `TurnDispatch.aside` 的标签 —— 这一层不解释它。
+     */
+    label?: string;
+  }) => (() => void) | void;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -128,14 +133,30 @@ export class CodexTuiTransport implements CodexTransport {
       ? this.recordCount(before.get(dispatch.threadId))
       : 0;
 
-    this.launch(dispatch);
+    const dispose = this.launch(dispatch);
 
-    const threadId = dispatch.threadId
-      ?? await this.awaitNewThread(new Set(before.keys()), dispatch.prompt);
-    // id 一确定就说出去，别等 awaitTurn —— 那一步是整轮里最长的（见 TurnDispatch）。
-    dispatch.onThread?.(threadId);
-    const text = await this.awaitTurn(threadId, priorRecords);
-    return { threadId, text };
+    try {
+      const threadId = dispatch.threadId
+        ?? await this.awaitNewThread(new Set(before.keys()), dispatch.prompt);
+      // id 一确定就说出去，别等 awaitTurn —— 那一步是整轮里最长的（见 TurnDispatch）。
+      dispatch.onThread?.(threadId);
+      const text = await this.awaitTurn(threadId, priorRecords);
+      return { threadId, text };
+    } finally {
+      /*
+       * **只收 aside 那种，阶段的主线一个字都不动。**
+       *
+       * 阶段那个终端跑完要留着：人还要在里面看裁判说了什么、回答选择器里的问题。
+       * 而补问那种是临时开的一格，用户 2026-07-31 定了「补完自动关」。
+       *
+       * **`finally` 而不是成功路径**：补问超时、Codex 报错，那个终端同样得收掉 ——
+       * 否则失败一次就在面板上留一个再也不会更新的死格子。
+       *
+       * TUI **跑完不会自己退出**（实测：它一直等下一句），所以这一步不是保险，
+       * 是唯一会发生的关闭。
+       */
+      if (dispatch.aside) dispose?.();
+    }
   }
 
   /**
@@ -145,7 +166,7 @@ export class CodexTuiTransport implements CodexTransport {
    * mangled every non-ASCII character, and the model was asked a question full
    * of replacement bytes.
    */
-  private launch(dispatch: TurnDispatch): void {
+  private launch(dispatch: TurnDispatch): (() => void) | void {
     const directory = mkdtempSync(join(tmpdir(), "stagepass-turn-"));
     const promptFile = join(directory, "prompt.txt");
     writeFileSync(promptFile, dispatch.prompt, "utf-8");
@@ -174,7 +195,10 @@ export class CodexTuiTransport implements CodexTransport {
     ].join("\n"), { mode: 0o755 });
 
     const launcher = this.options.launch ?? defaultLaunch;
-    launcher({ command: "codex", args: invocation.slice(1), script, argv });
+    return launcher({
+      command: "codex", args: invocation.slice(1), script, argv,
+      ...(dispatch.aside === undefined ? {} : { label: dispatch.aside.label }),
+    });
   }
 
   private recordCount(path: string | undefined): number {

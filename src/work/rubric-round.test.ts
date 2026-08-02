@@ -78,6 +78,8 @@ async function run(context: ReturnType<typeof open>, input: {
   red?: string; blue?: string; judge?: string; round?: number;
   /** 反方那条线程收到过什么。默认：契约送到了。 */
   whole?: () => string;
+  /** 补问时反方依次答什么。空 = 补问会把 transport 用光并抛。 */
+  again?: (string | Error)[];
 }) {
   return runRubricRound({
     projectId: PROJECT, changeId: CHANGE, phase: "Spec",
@@ -85,6 +87,7 @@ async function run(context: ReturnType<typeof open>, input: {
   }, {
     transport: new ScriptedCodexTransport([
       asJudge(input.judge ?? '```json\n{"verdicts":{}}\n```'),
+      ...(input.again ?? []),
     ]),
     gaps: context.gaps,
     rubrics: context.rubrics,
@@ -482,5 +485,146 @@ describe("L5 · 裁判的结论与反方的整体判断", () => {
     });
     assert.equal(settled.conclusion?.kind, "unreadable");
     assert.deepEqual(settled.gaps, []);
+  });
+});
+
+/**
+ * 补问：没答上就直接问反方自己那条线程。
+ *
+ * 用户 2026-07-31 的三条：**自动接在这一轮里跑完、补到它答上为止（上限 3 次）、
+ * 补问本身失败要如实汇报。** 「蓝方一定是要勾的」是硬要求，而契约只能经裁判转达 ——
+ * 补问把那条不可靠的链换成直连（2026-07-31 在真 Codex 的 TUI 上验过）。
+ */
+describe("L5 · 补问反方", () => {
+  const seedOne = (context: ReturnType<typeof open>) =>
+    context.rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      [{ text: "每条需求都有可测的验收标准", blocking: false }]);
+
+  it("**反方没答 → 补问一次就答上了，落成真判定**", async () => {
+    const context = open();
+    seedOne(context);
+    const settled = await run(context, {
+      blue: answer(),                                   // 第一次一个字没答
+      again: [rubricBlock(["K1 no 第 2 条只写了「要快」"])],
+    });
+    assert.equal(settled.assessments.producer[0]!.verdict, "no");
+    assert.equal(settled.assessments.producer[0]!.evidence, "第 2 条只写了「要快」");
+  });
+
+  it("**补满 3 次仍然不答 —— 照实说补了几次**", async () => {
+    const context = open();
+    seedOne(context);
+    const settled = await run(context, {
+      blue: answer(),
+      again: [answer(), answer(), answer()],            // 三次都没有判定行
+    });
+    const entry = settled.assessments.producer[0]!;
+    assert.equal(entry.verdict, "not_assessed");
+    assert.match(entry.evidence ?? "", /又补问了 3 次，仍然没有作答/);
+  });
+
+  it("**不会补第 4 次** —— 上限是硬的，外面还有 30 分钟租约", async () => {
+    const context = open();
+    seedOne(context);
+    // 只给 3 个补问答复；第 4 次会让 ScriptedCodexTransport 抛。
+    // 抛了就会记成「补问失败」，而我们要的是「补了 3 次没答上」。
+    const settled = await run(context, {
+      blue: answer(), again: [answer(), answer(), answer()],
+    });
+    assert.match(settled.assessments.producer[0]!.evidence ?? "", /补问了 3 次/);
+    assert.doesNotMatch(settled.assessments.producer[0]!.evidence ?? "", /补问本身/);
+  });
+
+  it("**补问本身失败 —— 和「反方不肯答」分开说**", async () => {
+    const context = open();
+    seedOne(context);
+    const settled = await run(context, {
+      blue: answer(),
+      again: [new Error("codex_unavailable: 线程找不到")],
+    });
+    const evidence = settled.assessments.producer[0]!.evidence ?? "";
+    assert.match(evidence, /补问本身出了问题/);
+    assert.match(evidence, /不是反方拒绝作答/);
+    assert.match(evidence, /线程找不到/);
+  });
+
+  it("第一次就答全了 —— 一次都不补（不白烧一个 turn）", async () => {
+    const context = open();
+    seedOne(context);
+    const settled = await run(context, {
+      blue: answer() + "\n" + rubricBlock(["K1 yes 都有验收标准"]),
+      again: [],                                        // 一个补问答复都不给
+    });
+    assert.equal(settled.assessments.producer[0]!.verdict, "yes");
+  });
+
+  it("**补问跑在反方那条线程上，而且带着 aside 标签**（面板要单开一格）", async () => {
+    const context = open();
+    seedOne(context);
+    const transport = new ScriptedCodexTransport([
+      asJudge('```json\n{"verdicts":{}}\n```'),
+      rubricBlock(["K1 yes 补上了"]),
+    ]);
+    await runRubricRound({
+      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      round: 1, task: "写 Spec", judgeThreadId: null,
+    }, {
+      transport, gaps: context.gaps, rubrics: context.rubrics,
+      readThread: roles(answer(), answer()),
+      readThreadWhole: deliveredAll(context),
+    });
+
+    const [judgeTurn, followUp] = transport.dispatches;
+    assert.equal(judgeTurn!.aside, undefined, "裁判那一轮被当成 aside 了");
+    assert.equal(followUp!.threadId, BLUE_THREAD, "补问没发给反方自己那条线程");
+    assert.equal(followUp!.aside?.label, `${BLUE}·补问`);
+  });
+
+  it("**只补没答上的那几条**，答过的不再问", async () => {
+    const context = open();
+    context.rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      [{ text: "第一条", blocking: false }, { text: "第二条", blocking: false }]);
+
+    const transport = new ScriptedCodexTransport([
+      asJudge('```json\n{"verdicts":{}}\n```'),
+      rubricBlock(["K2 no 第二条不满足"]),
+    ]);
+    await runRubricRound({
+      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      round: 1, task: "写 Spec", judgeThreadId: null,
+    }, {
+      transport, gaps: context.gaps, rubrics: context.rubrics,
+      // 第一条答了，第二条没答。
+      readThread: roles(answer(), answer() + "\n" + rubricBlock(["K1 yes 好"])),
+      readThreadWhole: deliveredAll(context),
+    });
+
+    const asked = transport.dispatches[1]!.prompt;
+    assert.match(asked, /K2/);
+    assert.doesNotMatch(asked, /K1/, "把已经答过的那条又问了一遍");
+  });
+
+  it("**裁判那一份不补问** —— 它的提示词是 StagePass 自己写的，没答就是没答", async () => {
+    const context = open();
+    context.rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "critic" },
+      [{ text: "每条问题都指向具体位置", blocking: false }]);
+    const transport = new ScriptedCodexTransport([
+      asJudge('```json\n{"verdicts":{}}\n```'),   // 裁判一条判定都没答
+    ]);
+    const settled = await runRubricRound({
+      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      round: 1, task: "写 Spec", judgeThreadId: null,
+    }, {
+      transport, gaps: context.gaps, rubrics: context.rubrics,
+      readThread: roles(answer(), answer()),
+      readThreadWhole: deliveredAll(context),
+    });
+    // 只派了裁判那一个 turn —— 没有第二个。
+    assert.equal(transport.dispatches.length, 1);
+    assert.equal(settled.assessments.critic[0]!.verdict, "not_assessed");
+    assert.doesNotMatch(settled.assessments.critic[0]!.evidence ?? "", /补问/);
   });
 });

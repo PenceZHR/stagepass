@@ -67,6 +67,7 @@ const enterButton = document.getElementById("enter");
 const waiveButton = document.getElementById("waive");
 const briefButton = document.getElementById("brief");
 const closeTermButton = document.getElementById("close-term");
+const termTabs = document.getElementById("term-tabs");
 const nextStepLine = document.getElementById("next-step");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
@@ -119,6 +120,15 @@ let editing = null;
 
 const path = (phase, suffix = "") =>
   `/pty/${encodeURIComponent(changeId)}/${encodeURIComponent(phase)}${suffix}`;
+
+/**
+ * 现在这块屏幕上画的是哪一格：`null` = 这个阶段的主线终端（裁判），
+ * 字符串 = 补问那一格的标签。
+ *
+ * 补问跑在**另一条线程**上，所以它不是主线终端的一部分；而它跑完就被服务端收掉，
+ * 所以这个值随时可能失效 —— `attach` 拿不到就退回主线，见那边。
+ */
+let viewing = null;
 
 const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -949,6 +959,7 @@ function drawSheet(phase) {
 
   // 出口：有活进程时才出现。没有它，上面每一个 disabled 都是一个没有出路的死结。
   closeTermButton.hidden = !entry.live;
+  renderTermTabs(entry);
 
   drawNextStep(entry);
 }
@@ -1284,16 +1295,41 @@ async function leave() {
   await load();
 }
 
-async function attach(phase) {
+async function attach(phase, label = null) {
   stream = new AbortController();
   const mine = stream;
-  await resize(phase);
+  viewing = label;
+  // 补问那格是只读的旁观：它自己跑自己的，不接受这边的按键，也不该改主线的尺寸。
+  if (label === null) await resize(phase);
 
-  const response = await fetch(path(phase), { signal: stream.signal });
+  const suffix = label === null ? "" : `?label=${encodeURIComponent(label)}`;
+  const response = await fetch(path(phase, suffix), { signal: stream.signal });
+  /*
+   * 补问那格跑完就被服务端收掉，于是 409。**退回主线，别把屏幕留在一片空白上** ——
+   * 「那一格没了」和「那一格什么都没输出」在人眼里一模一样。
+   */
+  if (!response.ok) {
+    if (mine !== stream) return;
+    viewing = null;
+    term.reset();
+    await attach(phase, null);
+    return;
+  }
   const reader = response.body.getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    /*
+     * **换过一格就不许再往这块屏幕上画。**
+     *
+     * `abort()` 之后这条 `read()` 通常会抛，但那是「通常」：切走的那一刻可能已经有
+     * 一次 read 在路上，它照样会 resolve 出数据。少了这一行，实测就是**两个终端的
+     * 输出叠在同一屏上** —— 而标签页存在的全部意义就是让人分得清哪个是哪个。
+     *
+     * `mine !== stream` 是这个文件里已有的那把尺子（下面那个收尾判断用的就是它），
+     * 这里只是把它挪到写之前。
+     */
+    if (mine !== stream) return;
     // value is a Uint8Array. It is drawn, never inspected.
     term.write(value);
   }
@@ -1830,3 +1866,57 @@ async function saveRubric() {
 
 tabGaps.addEventListener("click", () => { showTab("gaps"); });
 tabRubric.addEventListener("click", () => { showTab("rubric"); });
+
+/**
+ * 补问那格的标签页。
+ *
+ * ## 为什么平时整条藏起来
+ *
+ * 补问只在一次对抗里存在（发现反方没答 → 直接问它 → 拿到答案 → 服务端收掉那一格）。
+ * 绝大多数时候一个补问格都没有，而一条永远只有「裁判」一个标签的工具栏是纯噪音。
+ *
+ * ## 标签名是服务端给的，这里不猜
+ *
+ * 名字来自 `TurnDispatch.aside.label`，一路原样传到这儿。前端**不解释**它，
+ * 也不自己拼 —— 同一个概念两处各写一份必然漂移，而漂移的那天界面会理直气壮地说错话。
+ */
+function renderTermTabs(entry) {
+  const labels = entry?.asides ?? [];
+  termTabs.hidden = labels.length === 0;
+  if (labels.length === 0) {
+    // 那一格没了而屏幕还停在它上面：退回主线。服务端那边已经 409 了，这里只是
+    // 让状态跟上，免得下一次 render 还以为在看一个不存在的东西。
+    if (viewing !== null && current) void attach(current, null);
+    termTabs.replaceChildren();
+    return;
+  }
+
+  const tab = (label, text) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = text;
+    button.setAttribute("aria-selected", String(viewing === label));
+    button.addEventListener("click", () => {
+      if (viewing === label || !current) return;
+      if (stream) { stream.abort(); stream = null; }
+      /*
+       * **选中态当场就改，别等下一次轮询。**
+       *
+       * `attach` 是异步的，而重画标签页要等下一次 `/api/panel` 回来 —— 中间那一两秒
+       * 里，人点了一下，屏幕清空了，可高亮还停在原来那一格。看起来就是「点了没反应」，
+       * 而这正是这个面板从头到尾在防的那类：**做了事，却看不出做了。**
+       */
+      for (const each of termTabs.querySelectorAll("button")) {
+        each.setAttribute("aria-selected", String(each === button));
+      }
+      term.reset();
+      void attach(current, label);
+    });
+    return button;
+  };
+
+  termTabs.replaceChildren(
+    tab(null, "裁判"),
+    ...labels.map((label) => tab(label, label)),
+  );
+}
