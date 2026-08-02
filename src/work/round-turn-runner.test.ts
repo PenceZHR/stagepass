@@ -406,3 +406,57 @@ describe("RoundTurnRunner · 线程一出现就绑上，不等整轮跑完", () 
     assert.equal(bound?.status, "bound");
   });
 });
+
+/**
+ * 补问的 turn 不去坐裁判的绑定座位。
+ *
+ * 2026-08-02 第 9 轮真机实测：补问跑在**反方**的线程上，而这里的 transport 包装
+ * 原来无条件把每个 turn 的线程往 (Change, 阶段) 上绑 —— 反方线程试图坐进裁判的
+ * 座位，绑定层正确地拒了（already bound），补问整个死掉，四条判定全记
+ * 「补问本身出了问题」。链路诚实，是包装错。
+ */
+describe("RoundTurnRunner · aside 不绑定", () => {
+  it("**蓝方没答触发补问 —— 补问跑完，绑定还是裁判的线程**", async () => {
+    const context = open();
+    // producer 那份由蓝方判 —— 种上它，蓝方第一遍不答，就会触发补问。
+    // key 要可预测，补问的答复才对得上号。
+    new RubricStore(context.db, { mintKey: () => "K1" }).save(
+      { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },
+      [{ text: "每条需求都有可测的验收标准", blocking: false }]);
+
+    const transport = new ScriptedCodexTransport([
+      judgeSays,                                     // 裁判：报两个子 Agent，没有裁决
+      "```rubric\nK1 yes 补上了\n```",               // 补问：反方这次答了
+    ]);
+    const runner = new RoundTurnRunner({
+      transport,
+      gaps: context.gaps,
+      rubrics: context.rubrics,
+      changes: context.changes,
+      bindings: context.bindings,
+      evidence: new EvidenceStore(context.db),
+      notes: new RoundNoteStore(context.db),
+      repo: { dirtyPaths: () => [], commitAll: () => null, show: () => null },
+      workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
+      readThread: () => answer(),                    // 红蓝的 rollout：都没有 rubric 行
+      readThreadWhole: () => "K1",                   // 契约送到了
+      taskFor: () => "写 PRD",
+    });
+
+    const loop = new TurnLoop({ database: context.db, runner });
+    const at = Date.now();
+    loop.queueTurn({ changeId: CHANGE, jobId: "JOB-ASIDE", deadlineAt: at + 60_000, maxAttempts: 1 });
+    await loop.runOnce({ owner: "test", token: "JOB-ASIDE", now: at, ttlMs: 60_000 });
+
+    // 补问那个 turn 带了 aside 标签、跑在蓝方线程上。
+    const followUp = transport.dispatches[1]!;
+    assert.equal(followUp.threadId, BLUE_THREAD);
+    assert.ok(followUp.aside, "补问没带 aside 标签 —— 面板不知道要单开一格");
+    // **绑定座位还是裁判的**，没有被蓝方的线程顶掉，也没有因此炸掉整轮。
+    const bound = context.bindings.find(CHANGE, "PRD");
+    assert.equal(bound?.threadId, "THREAD-1", "补问的线程坐进了裁判的绑定座位");
+    // 而补问的答案被采信了。
+    const assessed = context.rubrics.latestRound(CHANGE, "PRD");
+    assert.equal(assessed?.byRole.producer[0]?.verdict, "yes");
+  });
+});

@@ -121,7 +121,15 @@ export class RoundTurnRunner implements TurnRunner {
      */
     const inner = this.options.transport;
     const transport: typeof inner = {
-      runTurn: (dispatch) => inner.runTurn({
+      /*
+       * **绑定是裁判线程的专座，aside 的 turn 不绑。**
+       *
+       * 2026-08-02 第 9 轮真机实测：补问跑在**反方**的线程上，这个包装无条件地把
+       * 每个 turn 的线程往 (Change, 阶段) 上绑 —— 于是反方的线程试图坐进裁判的
+       * 座位，绑定层正确地拒了（`already bound`），补问整个死掉。evidence 里那句
+       * 「补问本身出了问题，不是反方拒绝作答」就是这么来的 —— 链路诚实，是包装错。
+       */
+      runTurn: (dispatch) => inner.runTurn(dispatch.aside ? dispatch : {
         ...dispatch,
         onThread: (threadId) => {
           this.options.bindings.bind(job.changeId, phase, threadId);
