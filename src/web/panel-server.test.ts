@@ -820,10 +820,19 @@ describe("panel · one live process per phase thread", () => {
     });
   });
 
-  it("refuses to dispatch into a phase someone already has open", async () => {
-    await withPanel(async ({ open, pty }) => {
-      // A fresh Change is at PRD, and someone opens PRD to look at it.
+  it("**turn 在飞时拒绝派发** —— 规则 5 保护的是 turn 边界", async () => {
+    await withPanel(async ({ open, pty, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
       await open(`/pty/${CHANGE}/PRD`);
+      // 有一轮真的没跑完：最新 job 还是 running。
+      database.prepare(
+        `INSERT INTO jobs (id, change_id, kind, status, attempt, max_attempts,
+           owner, token, expires_at,
+           deadline_at, created_at, updated_at)
+         VALUES ('JOB-INFLIGHT', ?, 'phase_turn', 'running', 1, 1,
+           'panel', 'T-INFLIGHT', 9999999999999,
+           9999999999999, '2026-08-02T00:00:00.000Z', '2026-08-02T00:00:00.000Z')`,
+      ).run(CHANGE);
 
       const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
         { ran: boolean; reason?: string; phase: string };
@@ -832,6 +841,27 @@ describe("panel · one live process per phase thread", () => {
       // then "which turn was mine" has no answer (§6.4 pit 2, §6.5 rule 5).
       assert.deepEqual(ran, { ran: false, reason: "phase_already_running", phase: "PRD" });
       assert.equal(pty.started.length, 1);
+    });
+  });
+
+  it("**闲着的终端不挡派发** —— 关掉它接着派（2026-08-02 收窄）", async () => {
+    /*
+     * 一轮结算完 TUI 不退出，留下的是个没有任何 turn 边界可交错的闲窗口。原来它也
+     * 触发拒绝，于是每次「跑这个阶段」之前都得有人手动去关（交接 §4.2 的坑）——
+     * 真机连跑时第 7 轮的派发就这么被第 6 轮的闲终端顶掉过，还看着像跑起来了。
+     */
+    await withPanel(async ({ open, pty, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
+      // 有人开着 PRD 的终端看，但没有任何 job 在跑。
+      await open(`/pty/${CHANGE}/PRD`);
+      const before = pty.started.length;
+
+      const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
+        { ran: boolean };
+
+      assert.equal(ran.ran, true, "闲终端还在挡派发 —— 人又得手动去关了");
+      // 旧的浏览窗口被关掉、新的裁判进程起来了。
+      assert.ok(pty.started.length > before);
     });
   });
 

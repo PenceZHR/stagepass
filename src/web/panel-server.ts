@@ -642,9 +642,27 @@ async function runRound(input: {
   const database = options.database;
 
   if (sessions.has(changeId, phase)) {
-    // §6.5 rule 5: one live process per phase thread. Dispatching into a
-    // terminal someone already has open would interleave two turns.
-    return { ran: false, phase, reason: "phase_already_running" };
+    /*
+     * §6.5 rule 5: one live process per phase thread. Dispatching into a
+     * terminal someone already has open would interleave two turns.
+     *
+     * **判据是「有没有 turn 在飞」，不是「窗口开没开」**（2026-08-02 收窄）。
+     * 规则 5 保护的是 turn 边界 —— 而一轮结算完 TUI 不会退出（实测），留下的是
+     * 一个**闲着的**窗口，里面没有任何边界可交错。原来闲窗口也拒，后果是每次
+     * 「跑这个阶段」之前都得有人手动去关（交接 §4.2 把它列成坑；今天真机连跑时
+     * 操作员也照样踩 —— 第 7 轮派发被第 6 轮的闲终端顶掉，还以为跑起来了）。
+     *
+     * 「turn 在飞」从 jobs 查：这个 Change 最新一个 job 还是 running，就是有轮
+     * 没跑完 —— 拒。否则窗口是闲的，关掉它接着派。close 会主动通知正在看的人
+     * （enders），不会留一帧死画面。
+     */
+    const inFlight = database.prepare(
+      "SELECT status FROM jobs WHERE change_id = ? ORDER BY created_at DESC LIMIT 1",
+    ).get(changeId) as { status: string } | undefined;
+    if (inFlight?.status === "running") {
+      return { ran: false, phase, reason: "phase_already_running" };
+    }
+    sessions.close(changeId, phase);
   }
   /*
    * **只有 `pending` 和 `running` 能派。这份名单和 `TurnLoop.queueTurn` 是同一份。**
