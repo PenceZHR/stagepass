@@ -74,8 +74,20 @@ const project = new ProjectStore(database).ensure(
 // 不是替他做那个决定（domain/rubric-defaults.ts）。
 const installed = new RubricStore(database).installDefaults(project.id);
 
+/*
+ * 演示 Change 只在两种情况下种：**明确用 `--change` 要了**，或者**库里一条 Change
+ * 都没有**（第一次打开，总得有东西可看）。
+ *
+ * 原来是「默认 id 不存在就种」—— 于是对着一个已经有 CHG-001/002/003 的真库启动，
+ * 会静默多出一条谁也没要的 `CHG-1`（2026-08-02 在用户真库里实际发生了）。账本
+ * append-only、删除路径还不存在，种错一条就删不掉 —— 所以宁可不种。
+ */
 const changes = new ChangeStore(database);
-if (!database.prepare("SELECT 1 FROM changes WHERE id = ?").get(changeId)) {
+const anyChange = database.prepare("SELECT 1 FROM changes LIMIT 1").get();
+if (
+  !database.prepare("SELECT 1 FROM changes WHERE id = ?").get(changeId)
+  && (argument("change") !== undefined || anyChange === undefined)
+) {
   changes.create(changeId, {
     projectId: project.id,
     title: argument("title") ?? changeId,

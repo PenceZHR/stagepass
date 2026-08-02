@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  CONFIRM_ID,
+  CONFIRM_OPTION,
   ESCAPE_OPTION,
   ownFieldId,
   briefContract,
@@ -70,9 +72,9 @@ describe("brief · 读模型提的问题清单", () => {
     const ids = items.map((item) => item.id);
     assert.deepEqual(ids, [...ids].sort(),
       "字段名排序必须等于要给人看的顺序，否则选择器会把题和它的自由填写格拆开");
-    // 每一题紧跟着自己那格，自由填写那格排最后。
+    // 每一题紧跟着自己那格；自由填写在倒数第二，提交格压轴。
     assert.deepEqual(ids,
-      ["B01", "B01x", "B02", "B02x", "B03", "B03x", FREE_TEXT_ID]);
+      ["B01", "B01x", "B02", "B02x", "B03", "B03x", FREE_TEXT_ID, CONFIRM_ID]);
   });
 
   it("每题那格「你自己怎么说」是 optional —— 否则「选了也可以补充」是假话", () => {
@@ -83,37 +85,54 @@ describe("brief · 读模型提的问题清单", () => {
      */
     const items = readBriefProposal(fenced(THREE));
     for (const item of items) {
-      if (item.id === FREE_TEXT_ID) continue; // 它必填，理由见下一条
       const own = item.options.length === 0;
       assert.equal(item.optional === true, own,
-        `${item.id}：有选项的必答，「你自己怎么说」可留空`);
+        `${item.id}：有选项的必答，自由文本一律可留空`);
     }
   });
 
-  it("**最后那一格必填** —— 空的自由文本格会吃掉回车，而整张表只能从最后一格提交", () => {
+  it("**最后那一格是选项格** —— 空文本格吃回车，而整张表只能从最后一格提交", () => {
     /*
-     * 这一条是纯粹的实测约束，不是产品偏好（2026-07-30）：
+     * 两条实测约束（2026-07-30）：空的自由文本格会吃掉回车（optional 不管用、
+     * 必填全答完也不管用），而提交只发生在最后一格。所以最后一格要么是选项格，
+     * 要么必填。
      *
-     *   光标停在一个空的自由文本格上按回车 → 屏幕上什么都不发生。
-     *   `optional` 不管用，必填项全答完了也不管用，底下写着 `enter to submit all`
-     *   也不管用。
-     *
-     * 而提交只发生在最后一格。所以最后一格要么是选项格（回车总有值可提交），要么
-     * 必填。它是自由文本，于是必填。**把 optional 加回去，这张表就交不上去了。**
+     * 第一版选了必填 —— 用户 2026-07-31 明确否掉：「我明明已选了，但它还是让我
+     * 输入一些我自己的话，这是不对的。」现在走另一条路：压轴一格提交格，
+     * **回车永远有值可提交，而人一格字都不用打。**
      */
     const items = readBriefProposal(fenced(THREE));
     const last = items.at(-1)!;
-    assert.equal(last.id, FREE_TEXT_ID);
-    assert.notEqual(last.optional, true,
+    assert.equal(last.id, CONFIRM_ID);
+    assert.ok(last.options.length > 0,
       "最后一格是可留空的自由文本 = 表单交不上去，而且不说为什么");
+    assert.notEqual(last.optional, true);
+  });
+
+  it("**全部用选项作答，一格字都不用打** —— 这正是那次投诉的反面", () => {
+    const items = readBriefProposal(fenced(THREE));
+    // 自由文本全部可留空；必答的全部有选项，回车能选。
+    for (const item of items) {
+      if (item.optional === true) continue;
+      assert.ok(item.options.length > 0, `${item.id} 必答却没有选项 —— 又在逼人打字`);
+    }
+    // 而这样的作答能成一份需求：
+    const brief = briefFrom(items, {
+      action: "accept",
+      content: {
+        B01: "只给我自己", B02: "只给我自己", B03: "只给我自己",
+        [CONFIRM_ID]: CONFIRM_OPTION,
+      },
+    });
+    assert.ok(brief !== null);
+    assert.doesNotMatch(brief!, /提交/, "门把手不该出现在需求正文里");
   });
 
   it("**总是多出一道自由填写，模型删不掉**", () => {
     const items = readBriefProposal(fenced(THREE));
-    const last = items.at(-1);
-    assert.equal(last?.id, FREE_TEXT_ID);
+    const free = items.find((item) => item.id === FREE_TEXT_ID);
     // 空选项 = 没有 enum = 自由文本。模型的想象力不该限定你能说什么。
-    assert.deepEqual(last?.options, []);
+    assert.deepEqual(free?.options, []);
   });
 
   it("散文忽略，最后一个 fence 赢", () => {
