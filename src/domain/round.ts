@@ -353,7 +353,19 @@ export function judgePrompt(input: RoundInstructions): string {
     ...(idRule(input.phase, "blue").length > 0
       ? idRule(input.phase, "blue")
       : ["   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。"]),
-    `   要求它按同样的格式作答，把问题放进 blockers。`,
+    /*
+     * **契约原文再给一遍，不说「同样的格式」。**
+     *
+     * 2026-08-02 CHG-003 第 4 轮实测：这里原来写「要求它按同样的格式作答」——
+     * 「同样」指的是正方那节里的 RESULT_CONTRACT，但裁判没有把那段转给反方，
+     * 反方就自己发明了一个形状（`{"id","question"}`，没有 severity），整轮作废。
+     *
+     * 和转丢需求、转丢 rubric 契约是同一个病的第三张脸：**凡是要经裁判转达的文本，
+     * 指望它「参照上文」就是指望它转述 —— 只有原文加收件人才到得了。**
+     */
+    `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
+    RESULT_CONTRACT,
+    `   它找出的每个问题都要放进 blockers。`,
     /*
      * 逐条之外再要一句整体的（用户 2026-07-31）。
      *

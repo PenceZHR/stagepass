@@ -32,8 +32,15 @@ describe("L4 · what the judge is told", () => {
     const prompt = judgePrompt({
       phase: "Spec", round: 1, task: "写出 Spec", openGaps: [],
     });
-    assert.match(prompt, /artifactIds/);
+    /*
+     * **契约原文要出现两遍 —— 红蓝各一份。** 第 4 轮实测：蓝方那节原来只写
+     * 「按同样的格式」，裁判不转，蓝方自己发明了 {"id","question"}，整轮作废。
+     * 经裁判转达的文本只有原文加收件人才到得了。
+     */
+    assert.equal(prompt.split("artifactIds").length - 1, 2,
+      "契约该出现两遍（红蓝各一份原文）—— 少一遍就是有一边又变回了「同上」");
     assert.match(prompt, /P0\|P1\|P2/);
+    assert.match(prompt, new RegExp(`原样转达给${BLUE}`));
   });
 
   it("lists the open problems the judge must rule on", () => {
@@ -698,8 +705,9 @@ describe("L4 · 契约转达给谁、结论谁来下", () => {
 
   it("没有 addenda 时 rubric 那两个抬头不出现（任务的转达抬头是无条件的，另一回事）", () => {
     const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
-    // 反方契约的抬头和裁判契约的抬头只跟着 addenda 走。
-    assert.doesNotMatch(prompt, new RegExp(`原样转达给${BLUE}`));
+    // rubric 特有的抬头只跟着 addenda 走。答复契约的转达抬头（2026-08-02 加的）
+    // 是无条件的 —— 别拿它当判据。
+    assert.doesNotMatch(prompt, /不是给你答的/);
     assert.doesNotMatch(prompt, /只答这一份/);
     // 而任务的转达抬头**始终在** —— 2026-08-02 实测裁判会把人答的需求转丢。
     assert.match(prompt, new RegExp(`原样转达给${RED}`));

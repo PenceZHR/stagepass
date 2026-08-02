@@ -1305,14 +1305,23 @@ async function leave() {
   await load();
 }
 
-async function attach(phase, label = null) {
+async function attach(phase, label = null, reattaching = false) {
   stream = new AbortController();
   const mine = stream;
   viewing = label;
   // 补问那格是只读的旁观：它自己跑自己的，不接受这边的按键，也不该改主线的尺寸。
-  if (label === null) await resize(phase);
+  if (label === null && !reattaching) await resize(phase);
 
-  const suffix = label === null ? "" : `?label=${encodeURIComponent(label)}`;
+  /*
+   * 重连（C3）带 `existing=1`：**只接活着的，不新起。**
+   *
+   * 裸的 GET 见没有会话就起一个浏览用的新进程 —— 重连走那条路，「进程死了」会被
+   * 一个空 composer 盖掉，人以为一切正常。带上这个参数，死了就是 409，注解留在
+   * 屏幕上。
+   */
+  const suffix = label === null
+    ? (reattaching ? "?existing=1" : "")
+    : `?label=${encodeURIComponent(label)}`;
   const response = await fetch(path(phase, suffix), { signal: stream.signal });
   /*
    * 补问那格跑完就被服务端收掉，于是 409。**退回主线，别把屏幕留在一片空白上** ——
@@ -1320,9 +1329,14 @@ async function attach(phase, label = null) {
    */
   if (!response.ok) {
     if (mine !== stream) return;
-    viewing = null;
-    term.reset();
-    await attach(phase, null);
+    if (label !== null) {
+      // 补问那格没了 —— 退回主线。
+      viewing = null;
+      term.reset();
+      await attach(phase, null);
+      return;
+    }
+    // 重连扑空（409）：进程真的死了。注解已经在屏幕下面，保留尸体，不再试。
     return;
   }
   const reader = response.body.getReader();
@@ -1360,6 +1374,21 @@ async function attach(phase, label = null) {
   if (stream === mine) {
     stageNote.textContent =
       `${phase} 的进程已经结束了 —— 这个终端不再接受输入。返回阶段环继续。`;
+    /*
+     * **自动重连一次**（交接 C3）。
+     *
+     * 流断掉有两种：服务端换了会话（「答完直接续跑」关旧起新 —— 接上新的就好，
+     * 原来这里没有任何重连，人对着死流干等），和进程真的死了（上面那行注解就是
+     * 给这种看的）。重连带 `existing=1`，后者会拿到 409、注解留着 —— 两种不再
+     * 长得一样。
+     *
+     * 只连一次（reattaching 不再递归），免得在一个反复断的服务上转圈。
+     */
+    if (!reattaching && label === null) {
+      await wait(800);
+      if (stream !== mine) return; // 人已经走开或换了格子
+      await attach(phase, null, true);
+    }
   }
 }
 

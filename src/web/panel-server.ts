@@ -2017,6 +2017,20 @@ export async function handle(
         streamSession(found, response, request);
         return;
       }
+      /*
+       * `?existing=1` = **只接活着的，不新起**（C3 重连用）。
+       *
+       * 浏览器那条流断掉有两种原因，必须分开对待：**服务端换了会话**（续跑关旧起新，
+       * 重连接上新的就好）和**进程真的死了**（要让人看见尸体和那行注解）。裸的 GET
+       * 分不出来 —— `open()` 见没有会话就起一个浏览用的新进程，重连就把死因盖掉了，
+       * 人对着一个空 composer 以为一切正常。
+       *
+       * 409 让前端知道「没有活的可接」，于是它保留死亡注解，而不是循环重连。
+       */
+      if (url.searchParams.get("existing") === "1" && !sessions.has(changeId, phase)) {
+        response.writeHead(409).end("no live session to reattach");
+        return;
+      }
       const entry = sessions.open(changeId, phase);
       response.writeHead(200, {
         "content-type": "application/octet-stream",
