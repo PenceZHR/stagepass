@@ -121,8 +121,62 @@ const FENCE = /```json\s*([\s\S]*?)```/g;
  */
 export function jsonAnswerIn(text: string): string | null {
   const fences = [...text.matchAll(FENCE)].map((match) => match[1]!.trim());
-  if (fences.length > 0) return fences[fences.length - 1]!;
+  if (fences.length > 0) {
+    const fence = fences[fences.length - 1]!;
+    /*
+     * **结尾没关严的 json，把缺的闭括号补上。**
+     *
+     * 2026-08-02 CHG-003 连着两轮实测：裁判的 json 一切正常，唯独结尾少一个右
+     * 花括号 —— 整轮因此作废，而红蓝的活儿全是对的。resume 的线程会抄自己上一轮
+     * 的格式，提示词里的告诫压不过它自己的历史，所以这不是提示词能修的。
+     *
+     * 这不是猜：前缀结构完整、只差闭合的 json，补几个闭括号是**唯一确定**的修复，
+     * 一个字符的内容都不会被发明出来。补完仍要过 JSON.parse 和上层的形状检查 ——
+     * 判据照旧是「读不读得出来」，不是「有没有照仪式写」。补了还是坏的，原样交回，
+     * 让上层照旧大声失败。
+     */
+    try {
+      JSON.parse(fence);
+      return fence;
+    } catch {
+      const repaired = closeUnterminated(fence);
+      if (repaired !== null) return repaired;
+      return fence;
+    }
+  }
   return lastJsonObject(text);
+}
+
+/**
+ * 只在「唯一缺的是结尾闭括号」时补，别的坏法一概不碰。
+ *
+ * 扫一遍字符流，带字符串/转义状态记开括号栈：扫完时栈非空、且不停在字符串里、
+ * 且没有多余的闭括号 —— 按栈序补齐。任何别的形状（多了闭括号、断在字符串中间）
+ * 返回 null，交回上层大声失败。
+ */
+function closeUnterminated(candidate: string): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const character of candidate) {
+    if (escaped) { escaped = false; continue; }
+    if (character === "\\") { if (inString) escaped = true; continue; }
+    if (character === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (character === "{") stack.push("}");
+    else if (character === "[") stack.push("]");
+    else if (character === "}" || character === "]") {
+      if (stack.pop() !== character) return null; // 关错了对象，不是没关
+    }
+  }
+  if (inString || stack.length === 0) return null;
+  const repaired = candidate + stack.reverse().join("");
+  try {
+    JSON.parse(repaired);
+    return repaired;
+  } catch {
+    return null;
+  }
 }
 
 function lastJsonObject(text: string): string | null {

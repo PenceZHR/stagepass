@@ -352,6 +352,7 @@ describe("panel · pass and fail per phase", () => {
   it("marks a rejected Review as a problem while the work sits in Fix", async () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "本地排行榜");
       advanceTo(changes, "Review");
       changes.apply(CHANGE, "start");
       changes.apply(CHANGE, "settle");
@@ -368,6 +369,7 @@ describe("panel · pass and fail per phase", () => {
   it("takes the green off Fix when the work comes back to it", async () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "本地排行榜");
       advanceTo(changes, "Review");
       changes.apply(CHANGE, "start");
       changes.apply(CHANGE, "settle");
@@ -1723,6 +1725,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
   it("「打回去修」不续跑 —— 那时 Change 已经在 Fix 了", async () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "本地排行榜");
       advanceTo(changes, "Review");
       new EvidenceStore(database).put(CHANGE, "Review", {
         artifactIds: ["review.md"], blockers: [], waivedBlockerIds: [],
@@ -2043,6 +2046,80 @@ describe("panel · 补问那一格", () => {
       // done 是浏览器唯一能知道「这个终端不再接受输入」的途径。
       const { done } = await reader.read();
       assert.equal(done, true);
+    });
+  });
+});
+
+/**
+ * C1：派发之前先查上游产物还在不在。
+ *
+ * 不查的后果实测过（2026-07-31 Review 那轮）：任务书把一份磁盘上不存在的上游产物
+ * 列给红方当输入，一整轮几分钟只换来一句「输入不见了」，QA 和 Merge 的四个角色
+ * 又各自发现了一遍。判据和 /api/artifact 共用 locateArtifact —— 同一条规则不许
+ * 两份拷贝。
+ */
+describe("panel · 派发前查上游产物", () => {
+  const missingPath = `/tmp/stagepass-c1-绝不存在-${process.pid}.md`;
+
+  it("**上游文档不在磁盘上 —— 拒派发，一个进程都不起**", async () => {
+    await withPanel(async ({ open, pty, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "本地排行榜");   // 没需求会被更早那道预检拦住
+      advanceTo(changes, "Spec");
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: [missingPath], blockers: [], waivedBlockerIds: [],
+      });
+      const before = pty.started.length;
+      const result = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" }))
+        .json() as { ran: boolean; reason?: string; missing?: { phase: string; id: string }[] };
+      assert.equal(result.ran, false);
+      assert.equal(result.reason, "upstream_artifact_missing");
+      // 逐条列出：「上游产物不见了」这句话本身没法让人动手。
+      assert.deepEqual(result.missing, [{ phase: "PRD", id: missingPath }]);
+      assert.equal(pty.started.length, before, "拒了还起进程 —— 白烧一轮的钱照花");
+    });
+  });
+
+  it("上游文档在 —— 照常派发", async () => {
+    const present = `/tmp/stagepass-c1-在的-${process.pid}.md`;
+    writeFileSync(present, "PRD 正文", "utf-8");
+    try {
+      await withPanel(async ({ open, pty, database }) => {
+        const changes = new ChangeStore(database);
+        changes.setBrief(CHANGE, "本地排行榜");
+        advanceTo(changes, "Spec");
+        new EvidenceStore(database).put(CHANGE, "PRD", {
+          artifactIds: [present], blockers: [], waivedBlockerIds: [],
+        });
+        const before = pty.started.length;
+        const result = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" }))
+          .json() as { ran: boolean };
+        assert.equal(result.ran, true, "产物明明在，却被拦了");
+        assert.ok(pty.started.length > before);
+      });
+    } finally {
+      rmSync(present, { force: true });
+    }
+  });
+
+  it("**Build 的产出是 sha —— 问 git，不当路径找**", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "本地排行榜");
+      advanceTo(changes, "Review");
+      new EvidenceStore(database).put(CHANGE, "Build", {
+        artifactIds: ["0123456789abcdef0123456789abcdef01234567"],
+        blockers: [], waivedBlockerIds: [],
+      });
+      const result = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" }))
+        .json() as { ran: boolean; reason?: string; missing?: { id: string }[] };
+      // 注入的 repo.show 返回 null = 仓库里没有这个 commit。
+      assert.equal(result.reason, "upstream_artifact_missing");
+      assert.equal(result.missing?.[0]?.id, "0123456789abcdef0123456789abcdef01234567");
+    }, {
+      repo: {
+        dirtyPaths: () => [], commitAll: () => null, show: () => null,
+      },
     });
   });
 });

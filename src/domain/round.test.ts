@@ -65,8 +65,10 @@ describe("L4 · what the judge is told", () => {
     const prompt = judgePrompt({
       phase: "Spec", round: 1, task: "t", openGaps: [],
     });
-    assert.match(prompt, /只许基于正方产出提出问题/);
-    assert.match(prompt, /不要去读仓库/);
+    // 2026-08-02 改的措辞：产出是个文件路径，正文在文件里 —— 蓝方要读得到那份
+    // 文件本身，但仓库的其余部分照旧不许翻。
+    assert.match(prompt, /读正方报出来的那份产出文件本身/);
+    assert.match(prompt, /不要读仓库的其他内容/);
   });
 
   it("says nothing to rule on when nothing is open", () => {
@@ -266,10 +268,16 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
    * 用户 2026-07-30 定：能读这一轮改动涉及的文件和它们的直接调用方，但不自己执行；
    * 「跑过没有」这类标准由红方交运行证据。范围有界，才不会滑回「调查这个项目」。
    */
-  it("设计阶段：不许读仓库", () => {
+  it("设计阶段：只读那份产出文件，仓库其余不许翻", () => {
+    /*
+     * 措辞 2026-08-02 改过：产出是个文件路径，正文在文件里 —— 蓝方读不到那份文件
+     * 就只能连开「无法核验正文」的 gap（CHG-003 连着两轮实测）。放开的只有**那一份
+     * 文件**，「攻击文档不许滑成调查项目」原样成立。
+     */
     for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan"] as const) {
       const prompt = judgePrompt({ phase, round: 1, task: "t", openGaps: [] });
-      assert.match(prompt, /不要去读仓库/, `${phase} 放开了蓝方`);
+      assert.match(prompt, /读正方报出来的那份产出文件本身/, `${phase} 的蓝方读不到产出`);
+      assert.match(prompt, /不要读仓库的其他内容/, `${phase} 放开了整个仓库`);
     }
   });
 
@@ -324,9 +332,10 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
   it("没谈过的阶段一律不动 —— 保守是因为没谈，不是因为想清楚了", () => {
     // Fix / Merge / Retro 的形状还没谈过。
     // Retro 写的是复盘 —— 它对着前面每个阶段的产出和账本，不需要读代码。
+    // （措辞 2026-08-02 随设计阶段一起改：产出文件本身要读得到，仓库其余不许翻。）
     assert.match(
       judgePrompt({ phase: "Retro", round: 1, task: "t", openGaps: [] }),
-      /不要去读仓库/, "Retro 被顺手改了");
+      /不要读仓库的其他内容/, "Retro 被顺手改了");
     // Fix 和 Build 同形状（红方写代码），所以蓝方够得着的东西也一样。
     assert.doesNotMatch(
       judgePrompt({ phase: "Fix", round: 1, task: "t", openGaps: [] }),
@@ -905,5 +914,51 @@ describe("L4 · conclusion 塞进 verdicts 里", () => {
     const prompt = judgePrompt({ phase: "PRD", round: 1, task: "t", openGaps: [] });
     assert.match(prompt, /并列的三个顶层字段/);
     assert.match(prompt, /完整合法/);
+  });
+});
+
+/**
+ * 结尾没关严的 json 补得回来 —— 用第 3 轮的**原样形状**打。
+ *
+ * 2026-08-02 CHG-003 连着两轮：conclusion 塞进 verdicts + 结尾少一个右花括号。
+ * resume 的线程抄自己上一轮的格式，提示词的告诫压不过历史，所以解析端必须兜。
+ */
+describe("L4 · 裁判的 json 少了右花括号", () => {
+  // 第 3 轮真实答复的骨架：两个闭括号收尾，根对象没关。
+  const ROUND3_SHAPE = [
+    "我会先派正方完成修订。",
+    "```json",
+    '{"agents":{"red":"T-R","blue":"T-B"},"verdicts":{'
+    + '"G-1":{"kind":"closed","reason":"修了"},'
+    + '"conclusion":{"another_round":true,"reason":"还要一轮"}}',
+    "```",
+  ].join("\n");
+
+  it("**agents 读得出来 —— 整轮不再作废**", () => {
+    assert.deepEqual(readAgents(ROUND3_SHAPE), { red: "T-R", blue: "T-B" });
+  });
+
+  it("verdicts 和塞错位置的 conclusion 也都读得出来", () => {
+    const { verdicts } = readVerdicts(ROUND3_SHAPE);
+    assert.deepEqual(Object.keys(verdicts), ["G-1"]);
+    assert.deepEqual(readConclusion(ROUND3_SHAPE),
+      { kind: "advised", anotherRound: true, reason: "还要一轮" });
+  });
+
+  it("**关错了的不补** —— 多一个闭括号照旧大声失败", () => {
+    const broken = '```json\n{"agents":{"red":"T-R","blue":"T-B"}}}\n```';
+    assert.throws(() => readAgents(broken), UnreadableAgentsError);
+  });
+
+  it("**断在字符串中间的不补** —— 那不是没关严，是内容缺了", () => {
+    const truncated = '```json\n{"agents":{"red":"T-R","blue":"T-B\n```';
+    assert.throws(() => readAgents(truncated), UnreadableAgentsError);
+  });
+
+  it("设计阶段的反方被告知去读那份产出文件本身", () => {
+    const prompt = judgePrompt({ phase: "PRD", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /读正方报出来的那份产出文件本身/);
+    // 边界没放开：产出之外的仓库内容照旧不许翻。
+    assert.match(prompt, /不要读仓库的其他内容/);
   });
 });
