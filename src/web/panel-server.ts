@@ -785,13 +785,30 @@ async function runRound(input: {
   const at = Date.now();
   const jobId = `JOB-${changeId}-${phase}-${at}`;
   loop.queueTurn({ changeId, jobId, deadlineAt: at + 30 * 60_000, maxAttempts: 1 });
-  return {
-    ran: true,
-    phase,
-    outcome: await loop.runOnce({
-      owner: "panel", token: jobId, now: at, ttlMs: 30 * 60_000,
-    }),
-  };
+  const outcome = await loop.runOnce({
+    owner: "panel", token: jobId, now: at, ttlMs: 30 * 60_000,
+  });
+  /*
+   * **轮失败就放开裁判线程，下一轮从干净的线程开。**
+   *
+   * 2026-08-02 CHG-003 连烧四轮实测出来的机制：一轮被作废，**库里不留痕，但裁判
+   * 线程的记忆里全在** —— resume 回去，它接着抄自己上一轮的坏格式（第 3、4 轮），
+   * 接着对自己在作废轮里发明的幽灵 gap 表态（第 5 轮 `unknown_gap`）。提示词里的
+   * 告诫压不过它自己的历史，这不是提示词能修的。
+   *
+   * 放开是安全的，因为**线程从来不是真相的载体**：开着的 gap、任务、契约每一轮都
+   * 完整写在提示词里（§6.5 —— 线程之间只能靠文档传信息）。被作废的轮丢掉的只有
+   * 毒，没有事实。
+   *
+   * 只在**失败**时放开。成功的轮继续复用线程 —— 那里的历史是真的。
+   */
+  const finished = database.prepare(
+    "SELECT status FROM jobs WHERE id = ?",
+  ).get(jobId) as { status: string } | undefined;
+  if (finished?.status === "failed") {
+    new BindingStore(database).detach(changeId, phase);
+  }
+  return { ran: true, phase, outcome };
 }
 
 /**

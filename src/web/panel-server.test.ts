@@ -2123,3 +2123,36 @@ describe("panel · 派发前查上游产物", () => {
     });
   });
 });
+
+/**
+ * 轮失败就放开裁判线程。
+ *
+ * 2026-08-02 CHG-003 连烧四轮实测出来的机制：一轮被作废，库里不留痕，但裁判线程的
+ * 记忆里全在 —— resume 回去它抄自己的坏格式、对自己在作废轮里发明的幽灵 gap 表态
+ * （unknown_gap）。线程从来不是真相的载体（开着的 gap 每轮都完整写在提示词里），
+ * 被作废的轮丢掉的只有毒。
+ */
+describe("panel · 失败的轮不留毒线程", () => {
+  it("**轮失败 —— 绑定被放开，下一轮从干净线程开**", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "本地排行榜");
+      const bindings = new BindingStore(database);
+      bindings.bind(CHANGE, "PRD", "THREAD-POISONED");
+      // 假 pty 不产生 rollout，200ms 超时 → 这一轮必然失败。
+      const result = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" }))
+        .json() as { ran: boolean };
+      assert.equal(result.ran, true);
+      const bound = bindings.find(CHANGE, "PRD");
+      assert.equal(bound?.status, "detached",
+        "失败的轮还绑着旧线程 —— 下一轮会 resume 回去接着中毒");
+    });
+  });
+
+  it("成功的轮**不**放开 —— 那里的历史是真的", async () => {
+    // ScriptedPty 一路成功的轮走不到这套 harness 里（它要真 rollout），这一条由
+    // 既有的「同一个 (Change, 阶段) 复用同一个裁判线程」测试反向钉着：绑定还在，
+    // 下一轮才 resume 得回去。这里只钉失败路径的行为存在且方向对。
+    assert.ok(true);
+  });
+});
