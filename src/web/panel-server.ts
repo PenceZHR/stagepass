@@ -635,6 +635,8 @@ async function runRound(input: {
   dirty?: readonly string[];
   /** 没被信任的那个目录。人要拿它去手动答一次 Codex 的信任提问。 */
   workspace?: string;
+  /** 上游产物缺了哪几份。人得知道是哪个阶段的哪一份，才有地方下手。 */
+  missing?: readonly { phase: Phase; id: string }[];
 }> {
   const { changeId, phase, sessions, options } = input;
   const database = options.database;
@@ -726,6 +728,28 @@ async function runRound(input: {
       return { ran: false, phase, reason: "workspace_dirty", dirty };
     }
   }
+  /*
+   * **第五道预检：这个阶段的上游产物还在不在**（交接文档 C1）。
+   *
+   * 任务书会把上游产物列给红方当输入（`round-turn-runner.ts`）。列一个磁盘上没有的
+   * 东西，红方到 rollout 里才发现「输入不见了」—— 实测烧过一整轮几分钟只换来这一句
+   * （2026-07-31 Review 那次：红方报了 `RV-index-html`，磁盘上没有，QA 和 Merge 的
+   * 四个角色各自又发现了一遍）。下游兜得住，但这几分钟可以省。
+   *
+   * 判据和 `/api/artifact` **同一个**（`locateArtifact`）：sha 问 git，路径查磁盘。
+   * 把缺的逐条列出来 —— 「上游产物不见了」这句话本身没法让人动手。
+   */
+  const missing = PHASES.slice(0, PHASES.indexOf(phase))
+    .flatMap((each) =>
+      new EvidenceStore(database).read(changeId, each).artifactIds
+        .map((id) => ({ phase: each, id })))
+    .filter(({ id }) =>
+      !locateArtifact({
+        root: sessions.workspaceFor(changeId)!, id, repo: sessions.repo,
+      }).ok);
+  if (missing.length > 0) {
+    return { ran: false, phase, reason: "upstream_artifact_missing", missing };
+  }
 
   const loop = new TurnLoop({
     database,
@@ -800,6 +824,54 @@ function streamSession(
     entry.listeners.delete(listener);
     entry.enders.delete(end);
   });
+}
+
+/**
+ * 一份产物现在还在不在，在哪。
+ *
+ * ## 为什么抽成一个函数
+ *
+ * 两处要问同一个问题：`/api/artifact` 读的时候，和**派发前预检**（C1）。判据必须是
+ * 同一份 —— 同一条规则两份拷贝必然漂移，漂移那天预检放行的东西读接口打不开，
+ * 或者反过来（`stagepass-duplicated-predicates` 那条教训）。
+ *
+ * ## 判据
+ *
+ * - 长得像 sha（`looksLikeSha`）→ 是个 commit，问 git（`repo.show`）
+ * - 否则是路径 → 按项目目录解，realpath 摊平软链和 `../`，必须落在项目目录内
+ *
+ * 「一个阶段产出什么形态是那一轮的事实」—— 按形态判，不按阶段猜。
+ */
+function locateArtifact(input: {
+  root: string;
+  id: string;
+  repo: RepoOps;
+}):
+  | { readonly ok: true; readonly kind: "commit"; readonly text: string }
+  | { readonly ok: true; readonly kind: "file"; readonly real: string; readonly bytes: number }
+  | { readonly ok: false; readonly reason: "gone" | "outside_project" | "not_a_file"; readonly kind?: "commit" } {
+  if (looksLikeSha(input.id)) {
+    const shown = input.repo.show(input.root, input.id);
+    return shown === null
+      ? { ok: false, reason: "gone", kind: "commit" }
+      : { ok: true, kind: "commit", text: shown };
+  }
+
+  let real: string;
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(input.root);
+    real = realpathSync(isAbsolute(input.id) ? input.id : join(realRoot, input.id));
+  } catch {
+    return { ok: false, reason: "gone" };
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+    return { ok: false, reason: "outside_project" };
+  }
+  if (!statSync(real).isFile()) {
+    return { ok: false, reason: "not_a_file" };
+  }
+  return { ok: true, kind: "file", real, bytes: statSync(real).size };
 }
 
 function readBody(request: IncomingMessage): Promise<Uint8Array> {
@@ -1094,50 +1166,35 @@ export async function handle(
      * 上面那道「必须在 artifactIds 里」的闸照旧管着这一条：一个不是这个阶段报出来的
      * sha，走不到这里。
      */
-    if (looksLikeSha(wanted)) {
-      const shown = sessions.repo.show(root, wanted);
-      json(response, shown === null
-        ? { path: wanted, readable: false, reason: "gone", kind: "commit" }
-        : { path: wanted, readable: true, kind: "commit", bytes: shown.length, text: shown });
-      return;
-    }
-
-    /*
-     * 相对路径按项目目录解 —— 模型两种都写得出来（L4 那次是 `spec.md`，PRD 那次是
-     * 绝对路径）。解完再查它有没有跑出项目目录，`realpathSync` 是为了让
-     * `../../..` 和软链都在同一处被摊平。
-     */
-    let real: string;
-    let realRoot: string;
-    try {
-      realRoot = realpathSync(root);
-      real = realpathSync(isAbsolute(wanted) ? wanted : join(realRoot, wanted));
-    } catch {
-      // 文件被移走或删了。**说出来** —— 一个空白的正文框和「这份产出不见了」是
+    // 判据在 `locateArtifact` 里，和派发前预检（C1）**同一份** —— 别在这儿另算。
+    const located = locateArtifact({ root, id: wanted, repo: sessions.repo });
+    if (!located.ok) {
+      // 「文件被移走了」要说出来 —— 一个空白的正文框和「这份产出不见了」是
       // 两件完全不同的事（M7）。
-      json(response, { path: wanted, readable: false, reason: "gone" });
-      return;
-    }
-    if (real !== realRoot && !real.startsWith(realRoot + sep)) {
-      json(response, { path: wanted, readable: false, reason: "outside_project" });
-      return;
-    }
-    const stat = statSync(real);
-    if (!stat.isFile()) {
-      json(response, { path: wanted, readable: false, reason: "not_a_file" });
-      return;
-    }
-    if (stat.size > ARTIFACT_MAX_BYTES) {
       json(response, {
-        path: wanted, readable: false, reason: "too_big", bytes: stat.size,
+        path: wanted, readable: false, reason: located.reason,
+        ...(located.kind === undefined ? {} : { kind: located.kind }),
+      });
+      return;
+    }
+    if (located.kind === "commit") {
+      json(response, {
+        path: wanted, readable: true, kind: "commit",
+        bytes: located.text.length, text: located.text,
+      });
+      return;
+    }
+    if (located.bytes > ARTIFACT_MAX_BYTES) {
+      json(response, {
+        path: wanted, readable: false, reason: "too_big", bytes: located.bytes,
       });
       return;
     }
     json(response, {
       path: wanted,
       readable: true,
-      bytes: stat.size,
-      text: readFileSync(real, "utf-8"),
+      bytes: located.bytes,
+      text: readFileSync(located.real, "utf-8"),
     });
     return;
   }

@@ -863,3 +863,47 @@ describe("L4 · 裁决那张表上的两句话", () => {
     assert.equal(summariseRoundNotes([]), "");
   });
 });
+
+/**
+ * conclusion 塞错位置不作废整轮。
+ *
+ * 2026-08-02 CHG-003 第 2 轮实测：裁判把 conclusion 放进了 verdicts 里（还少了个
+ * 花括号 —— 那一半救不了，只能重试）。红方第一次真拿到了需求、四条旧 gap 被逐条
+ * 表态、蓝方开了新的 —— 内容全对，毁在信封上。花括号配平的那部分，这里兜住。
+ */
+describe("L4 · conclusion 塞进 verdicts 里", () => {
+  const judged = (body: object) => "```json\n" + JSON.stringify(body) + "\n```";
+  const NESTED = judged({
+    agents: { red: "T-R", blue: "T-B" },
+    verdicts: {
+      "G-1": { kind: "closed", reason: "修了" },
+      conclusion: { another_round: true, reason: "边界还冲突" },
+    },
+  });
+
+  it("**readVerdicts 跳过它，真裁决照常读**", () => {
+    const { verdicts } = readVerdicts(NESTED);
+    assert.deepEqual(Object.keys(verdicts), ["G-1"]);
+    assert.equal(verdicts["G-1"]!.kind, "closed");
+  });
+
+  it("**readConclusion 从 verdicts 里捞得到它**", () => {
+    assert.deepEqual(readConclusion(NESTED),
+      { kind: "advised", anotherRound: true, reason: "边界还冲突" });
+  });
+
+  it("顶层的 conclusion 优先于塞进去的那个", () => {
+    const both = judged({
+      verdicts: { conclusion: { another_round: true, reason: "里面的" } },
+      conclusion: { another_round: false, reason: "外面的" },
+    });
+    assert.deepEqual(readConclusion(both),
+      { kind: "advised", anotherRound: false, reason: "外面的" });
+  });
+
+  it("提示词写明三个字段并列、json 必须完整", () => {
+    const prompt = judgePrompt({ phase: "PRD", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /并列的三个顶层字段/);
+    assert.match(prompt, /完整合法/);
+  });
+});

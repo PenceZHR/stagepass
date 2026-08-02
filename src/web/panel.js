@@ -306,6 +306,16 @@ function runRefusal(result) {
       + "这一轮的产出会记成一个 commit，而 StagePass 分不出哪一行是模型写的、"
       + "哪一行是你自己写了一半的 —— 先提交或撤掉它们。";
   }
+  if (result.reason === "upstream_artifact_missing") {
+    /*
+     * 不拦的后果实测过（2026-07-31）：任务书把一份磁盘上不存在的上游产物列给红方，
+     * 一整轮几分钟只换来一句「输入不见了」，下游四个角色还各自又发现了一遍。
+     */
+    const items = (result.missing ?? [])
+      .map((each) => `${each.phase} 的 ${each.id}`).join("、");
+    return `上游产物不在了：${items}。这一阶段的任务书要把它们当输入交给正方 ——`
+      + "先弄清它去哪了（被移走/改名/仓库回退），必要时回那个阶段重跑一轮。";
+  }
   return `没跑起来：${result.reason}`;
 }
 

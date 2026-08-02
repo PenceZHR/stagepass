@@ -395,6 +395,10 @@ export function judgePrompt(input: RoundInstructions): string {
     '{"agents": {"red": "<正方的 agent_id>", "blue": "<反方的 agent_id>"},',
     ' "verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}},',
     ' "conclusion": {"another_round": true | false, "reason": "<为什么>"}}',
+    // 2026-08-02 CHG-003 第 2 轮实测：裁判把 conclusion 塞进了 verdicts 里、还少了
+    // 一个右花括号 —— 整轮因此作废，而内容全是对的。这一句是对着那次事故写的。
+    "`agents`、`verdicts`、`conclusion` 是**并列的三个顶层字段**。发之前检查这个",
+    "json 是完整合法的 —— 它读不出来，这一轮就整个作废，正反两方的活儿全部白干。",
     "",
     "`agents` 里填 `spawn_agent` 返回的那两个 `agent_id`。**这两个 id 是这一轮唯一的",
     "取证入口** —— 少一个、写错一个，这一轮就作废，而正反两方说的话谁也看不到。",
@@ -443,6 +447,12 @@ export function readVerdicts(text: string): VerdictReport {
 
   const verdicts: Record<string, Verdict> = {};
   for (const [gapId, value] of Object.entries(record as Record<string, unknown>)) {
+    /*
+     * **`conclusion` 塞错了位置不算一条裁决**（2026-08-02 实测：裁判把它放进了
+     * `verdicts` 里）。它不是对某条 gap 的表态，按 malformed verdict 拒掉会作废
+     * 整轮 —— 而 `readConclusion` 会去两个位置找它，谁也不丢。
+     */
+    if (gapId === "conclusion") continue;
     const entry = value as { kind?: unknown; reason?: unknown };
     if (
       typeof entry?.kind !== "string"
@@ -546,7 +556,13 @@ export function readConclusion(text: string): RoundConclusion | null {
   } catch {
     return null;
   }
-  const record = (parsed as { conclusion?: unknown } | null)?.conclusion;
+  // 顶层优先；裁判塞进 verdicts 里的也认（2026-08-02 实测的走位，readVerdicts
+  // 那边会跳过它 —— 两边配对，谁也不把它读成别的东西）。
+  const shape = parsed as {
+    conclusion?: unknown;
+    verdicts?: { conclusion?: unknown } | null;
+  } | null;
+  const record = shape?.conclusion ?? shape?.verdicts?.conclusion;
   if (record === undefined || record === null) return null;
 
   const entry = record as { another_round?: unknown; reason?: unknown };
