@@ -239,21 +239,32 @@ export function applyRound(
 ): Gap[] {
   const byId = new Map(before.map((gap) => [gap.id, gap]));
 
+  const foundThisRound = new Set(outcome.found.map((each) => each.id));
   for (const [gapId, verdict] of Object.entries(outcome.verdicts)) {
     const gap = byId.get(gapId);
     if (!gap || gap.status !== "open") {
       /*
-       * **对不认识的 id 说 `still_open`，跳过；说 `closed`，才拒。**（2026-08-02 收窄）
+       * **裁判对本轮的事表态，一律无效力；凭空编的 id 才作废整轮。**（2026-08-02，
+       * 真机三连实测后定形）
        *
-       * 真机实测：蓝方这一轮刚报了一条新问题（还没进库），裁判尽职地对它也表了态
-       * `still_open` —— 一句按定义就是无操作的话（下面那段注释自己写着：still_open
-       * 和沉默是同一个结果），却把整轮作废，正反两方的活儿全丢。
+       * 三次「unknown」全是同一个系统性倾向：裁判对**蓝方这一轮刚报**的问题当场
+       * 裁决 —— 一次 still_open（Spec 第 2 轮）、一次有理有据的 closed（TechSpec
+       * 第 1 轮，它驳回了蓝方两条）。模型不共享我们的轮次边界模型，提示词拦不住。
        *
-       * 拒绝的理由字面上只关于 close：「a round claiming to have CLOSED something
-       * that was never there」—— 那一半原样保留：对不存在的东西宣称关闭，是要抹掉
-       * 一个从来没有过的东西，这样的轮别的话也不值钱。
+       * 三段处理，各有各的理由：
+       *
+       * - `still_open`（对谁都一样）→ 跳过。按定义就是无操作 —— 下面那段注释自己
+       *   写着：still_open 和沉默是同一个结果。
+       * - `closed` 且 id 在**本轮 found 名单**里 → 跳过，而发现照常落地 open。
+       *   **蓝方的发现不经裁判过滤**是这套机制的立身之本 —— 让同轮 closed 生效，
+       *   一个想省事的裁判就能在人看见之前掐掉蓝方的话。它的异议留在它的 rollout
+       *   里，下一轮这条 gap 在名单上，它自然可以正式表态。
+       * - `closed` 且**谁都不认识** → 照旧作废。对一个既不开着、也不是本轮报出来
+       *   的东西宣称关闭，是凭空抹掉一个从来没有过的东西 —— 这样的轮别的话也
+       *   不值钱（原注释的本意，原样保留）。
        */
       if (verdict.kind === "still_open") continue;
+      if (foundThisRound.has(gapId)) continue;
       throw new InvalidVerdictError("unknown_gap");
     }
     if (verdict.reason.trim() === "") {

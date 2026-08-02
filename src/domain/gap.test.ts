@@ -106,6 +106,34 @@ describe("L4 · silence keeps a gap open", () => {
    * 裁判尽职地对它也表了态 still_open —— 一句按定义就是无操作的话（和沉默同一个
    * 结果），却把整轮作废。收窄之后：still_open 对不认识的 id 跳过，closed 照拒。
    */
+  it("**裁判当场 closed 蓝方本轮的发现 —— 无效力，发现照常落地 open**", () => {
+    /*
+     * 2026-08-02 TechSpec 第 1 轮真机：裁判有理有据地驳回了蓝方本轮两条新发现
+     * （kind=closed）。让它生效 = 蓝方的话在人看见之前被裁判掐掉 ——「发现不经
+     * 裁判过滤」是立身之本。所以跳过：发现落地 open，裁判的异议下一轮正式表。
+     */
+    const after = applyRound([], {
+      round: 1,
+      found: [{ id: "SPEC-VERIFY-1", severity: "P1", title: "引入了 Spec 外行为" }],
+      verdicts: {
+        "SPEC-VERIFY-1": { kind: "closed", reason: "对照 Spec 可确认均有上游依据" },
+      },
+    });
+    assert.equal(after.find((g) => g.id === "SPEC-VERIFY-1")?.status, "open",
+      "裁判的同轮 closed 生效了 —— 蓝方的发现被过滤掉了");
+  });
+
+  it("**closed 一个谁都不认识的 id —— 仍然作废**（真幻觉的绊线保留）", () => {
+    assert.throws(
+      () => applyRound([], {
+        round: 1, found: [],
+        verdicts: { "GHOST-1": { kind: "closed", reason: "编的" } },
+      }),
+      (error: unknown) =>
+        error instanceof InvalidVerdictError && error.code === "unknown_gap",
+    );
+  });
+
   it("**对不认识的 id 说 still_open —— 跳过，不作废整轮**", () => {
     const after = applyRound([gap()], {
       round: 2,
