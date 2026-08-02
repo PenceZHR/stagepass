@@ -125,6 +125,19 @@ export async function runRound(
    * 抛 —— 那是对的，一轮读不到正反两方说了什么，就不该在闸门那边留下任何痕迹。
    */
   const agents = readAgents(delivery.text);
+  /*
+   * **红蓝都不许是裁判自己**（2026-08-02 Fix 第 2 轮真机撞出的）。
+   *
+   * 裁判把自己的线程 id 报成了某一方 —— `readThread` 于是读回它自己的开场白，
+   * `parseTurnResult` 拿着一段裁判散文找 json，报出来的错（turn_result_no_json，
+   * 详情是裁判的话）指向完全错误的方向。`readAgents` 早有「红蓝不许相同」的守卫，
+   * 漏了这一种。在这里拦是因为只有这一层同时握着两边的 id 和裁判自己的 id。
+   */
+  if (agents.red === delivery.threadId || agents.blue === delivery.threadId) {
+    throw new Error(
+      `judge_reported_itself: 裁判把自己的线程 ${delivery.threadId.slice(0, 12)}… 报成了子 Agent`,
+    );
+  }
   const red = dependencies.readThread(agents.red);
   const blue = dependencies.readThread(agents.blue);
 

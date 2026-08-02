@@ -212,3 +212,27 @@ describe("L4 · a round that half happened settles nothing", () => {
     assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
   });
 });
+
+/**
+ * 裁判把自己报成子 Agent。
+ *
+ * 2026-08-02 Fix 第 2 轮真机：裁判把自己的线程 id 报成红方，readThread 读回它
+ * 自己的开场白，parseTurnResult 拿着一段裁判散文找 json —— 报出来的错
+ * （turn_result_no_json，详情是裁判的话）指向完全错误的方向。
+ */
+describe("L4 · 裁判不许把自己报成子 Agent", () => {
+  it("**red 是裁判自己 —— 大声失败，gap 一条不写**", async () => {
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    const judgeSelf = "```json\n" + JSON.stringify({
+      agents: { red: "JUDGE-1", blue: BLUE_THREAD }, verdicts: {},
+    }) + "\n```";
+    const transport = new ScriptedCodexTransport([judgeSelf], "JUDGE-1");
+
+    await assert.rejects(() => runRound(
+      { changeId: CHANGE, phase: "Spec", round: 1, task: "写 Spec", judgeThreadId: null },
+      { transport, gaps, readThread: roles(answer({}), answer({})) },
+    ), /judge_reported_itself/);
+    assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
+  });
+});
