@@ -649,6 +649,23 @@ describe("L4 · 契约转达给谁、结论谁来下", () => {
     phase: "Build", round: 1, task: "写代码", openGaps: [], addenda,
   });
 
+  it("**红方的任务带着「原样转达」** —— CHG-003 第一轮裁判把人答的需求转丢了", () => {
+    /*
+     * 2026-08-02 实测：裁判的提示词里有「人要的是这些：…」（人自己答的需求），
+     * 红方的 rollout 里一个字都没有 —— 裁判改写任务时丢了它，红方报「缺少产品
+     * 输入」，四条 rubric 全 no，一整轮白烧。和丢 rubric 契约是同一个病。
+     */
+    const prompt = judgePrompt({
+      phase: "PRD", round: 1,
+      task: "写 PRD\n\n人要的是这些（他自己在选择器里答的，不是模型猜的）：\n本地排行榜",
+      openGaps: [],
+    });
+    assert.match(prompt, new RegExp(`原样转达给${RED}`));
+    assert.match(prompt, /一个字都不要改/);
+    // 需求正文原样在场。
+    assert.match(prompt, /本地排行榜/);
+  });
+
   it("**反方那一份带着「原样转达、不要你自己答」** —— Review 那次裁判把 8 条全答了", () => {
     const prompt = withAddenda({ blue: "RBC-x 这是反方要判的" });
     assert.match(prompt, /原样转达给反方/);
@@ -670,10 +687,13 @@ describe("L4 · 契约转达给谁、结论谁来下", () => {
     assert.match(prompt, /只答这一份/);
   });
 
-  it("没有 addenda 时一个抬头都不加 —— 行为和加这套东西之前一致", () => {
+  it("没有 addenda 时 rubric 那两个抬头不出现（任务的转达抬头是无条件的，另一回事）", () => {
     const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
-    assert.doesNotMatch(prompt, /原样转达/);
+    // 反方契约的抬头和裁判契约的抬头只跟着 addenda 走。
+    assert.doesNotMatch(prompt, new RegExp(`原样转达给${BLUE}`));
     assert.doesNotMatch(prompt, /只答这一份/);
+    // 而任务的转达抬头**始终在** —— 2026-08-02 实测裁判会把人答的需求转丢。
+    assert.match(prompt, new RegExp(`原样转达给${RED}`));
   });
 
   it("裁判被要求做**两件**事，第二件是给结论并自己去读上游", () => {
