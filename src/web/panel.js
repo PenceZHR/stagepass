@@ -132,9 +132,20 @@ let viewing = null;
 
 const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/** Keystrokes out. Text until they are sent; bytes from there on. */
+/**
+ * Keystrokes out. Text until they are sent; bytes from there on.
+ *
+ * **打给屏幕上正在画的那一格，不是永远打给主线。** `viewing` 记的就是这件事，
+ * 而它原来只用于画面 —— 于是人在补问那格里敲的键全落到裁判那条主线上。
+ * 2026-08-03 真机上一整轮死在这里：那下回车打断了裁判正在跑的 turn。
+ */
 const send = (phase, data) =>
-  fetch(path(phase, "/in"), { method: "POST", body: new TextEncoder().encode(data) });
+  fetch(
+    path(phase, viewing === null
+      ? "/in"
+      : `/in?label=${encodeURIComponent(viewing)}`),
+    { method: "POST", body: new TextEncoder().encode(data) },
+  );
 
 function resize(phase) {
   fit.fit();
@@ -1352,7 +1363,15 @@ async function attach(phase, label = null, reattaching = false) {
   stream = new AbortController();
   const mine = stream;
   viewing = label;
-  // 补问那格是只读的旁观：它自己跑自己的，不接受这边的按键，也不该改主线的尺寸。
+  /*
+   * **尺寸只跟主线走。** 补问那格是服务端按自己的需要开的，把这块屏幕的行列数
+   * 推给它，会在人切回主线时让它重排一次。
+   *
+   * 按键则相反 —— 它跟着 `viewing` 走（见 `send`）。原来这里写的是「补问那格
+   * 不接受这边的按键」，而实现把按键转给了主线；2026-08-03 真机上，人在补问格里
+   * 按的回车打断了裁判正在跑的 turn。今天也证明了人确实需要能敲进那一格：
+   * Codex 自己的 MCP 许可提示就出现在那里。
+   */
   if (label === null && !reattaching) await resize(phase);
 
   /*

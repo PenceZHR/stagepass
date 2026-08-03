@@ -422,6 +422,18 @@ export class PanelSessions {
   }
 
   /**
+   * 主线那条会话**如果它已经在跑**。没有就是 `undefined` —— 绝不起一个。
+   *
+   * `open()` 见没有就起一个，那对「往里写点东西」这种用途是错的：它会凭空造出
+   * 一个进程来接收那几个字节（而且是浏览用的那种，手上没有插件）。
+   * `aside()` 一直是这个语义，主线这边缺了对应的那一个。
+   */
+  current(changeId: string, phase: Phase): LiveSession | undefined {
+    const found = this.live.get(PanelSessions.key(changeId, phase));
+    return found !== undefined && found.session.alive ? found : undefined;
+  }
+
+  /**
    * 起一个补问用的终端，**返回收掉它的那个函数**。
    *
    * 跑在另一条线程上（反方自己那条），所以不能挤掉阶段那个终端；而它又必须让人
@@ -960,6 +972,19 @@ async function runRound(input: {
         launch: ({ argv, label }) => (label === undefined
           ? void sessions.launchInto(changeId, phase, argv)
           : sessions.launchAside(changeId, phase, label, argv)),
+        /*
+         * **提示词进了 composer 却没被提交时，补那一下回车。**
+         *
+         * 2026-08-03 真机：反方线程 resume 起来，Codex 还在 `Starting MCP server
+         * (2/4)`，argv 里的提示词被搁进 composer 没发出去，rollout 一个字节没长。
+         * 判据和守卫都在 `awaitTurn` 那边 —— 这里只负责把字节送到正确的那一格。
+         */
+        nudge: ({ label, bytes }) => {
+          const target = label === undefined
+            ? sessions.current(changeId, phase)
+            : sessions.aside(changeId, phase, label);
+          target?.session.write(bytes);
+        },
       }),
       gaps: new GapStore(database),
       rubrics: new RubricStore(database),
@@ -2441,6 +2466,31 @@ export async function handle(
       return;
     }
     if (action === "/in" && request.method === "POST") {
+      /*
+       * `?label=` = 打进补问那一格，**不是主线**。
+       *
+       * 读那一侧一直认这个参数，写那一侧原来不认 —— 于是人在补问那格里敲的键
+       * 全都落到裁判那条主线终端上。2026-08-03 真机上一整轮死在这里：反方线程被
+       * resume 起来，提示词躺在 composer 里没提交（Codex 还在 `Starting MCP
+       * server (2/4)`），人按回车想发出去，那下回车打断了**裁判**正在跑的 turn。
+       *
+       * 原来的设计说补问那格「只读」。但不接受按键该是**吞掉**它，而不是转交给
+       * 另一条线程 —— 而且今天证明了人确实需要能敲进去：Codex 自己的 MCP 许可
+       * 提示就出现在那一格里，没有键盘就没有出路。
+       *
+       * 那一格不在时给 409 而不是退回主线：退回去正是这个 bug 的形状。
+       */
+      const label = url.searchParams.get("label");
+      if (label !== null) {
+        const found = sessions.aside(changeId, phase, label);
+        if (!found) {
+          response.writeHead(409).end("aside session is not running");
+          return;
+        }
+        found.session.write(await readBody(request));
+        response.writeHead(204).end();
+        return;
+      }
       sessions.open(changeId, phase).session.write(await readBody(request));
       response.writeHead(204).end();
       return;

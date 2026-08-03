@@ -83,6 +83,14 @@ interface Fake {
   /** 只让第 n 个起来的那个退出。验「旧的 onExit 不许删掉新的」那条用的。 */
   exitOne(index: number): void;
   written: Uint8Array[];
+  /**
+   * 每一次写入**落到了哪个会话**，用它的 argv 认。
+   *
+   * `written` 只说「有字节写出去了」，而 2026-08-03 真机上坏掉的恰恰是**去向**：
+   * 人在补问那一格里敲的键，悄悄写进了裁判那条主线终端。两者在 `written` 里
+   * 一模一样，所以必须按会话分开记。
+   */
+  writtenTo: { argv: string[]; bytes: Uint8Array }[];
   resized: { cols: number; rows: number }[];
   emit(bytes: Uint8Array): void;
 }
@@ -120,11 +128,12 @@ async function withPanel(
   const started: Fake["started"] = [];
   const startedCwd: string[] = [];
   const written: Uint8Array[] = [];
+  const writtenTo: Fake["writtenTo"] = [];
   const resized: Fake["resized"] = [];
   const emitters: ((bytes: Uint8Array) => void)[] = [];
   const exiters: ((exitCode: number) => void)[] = [];
   const pty: Fake = {
-    started, startedCwd, written, resized,
+    started, startedCwd, written, writtenTo, resized,
     emit: (bytes) => { for (const listener of emitters) listener(bytes); },
     exit: () => { for (const onExit of [...exiters]) onExit(0); },
     exitOne: (index) => { exiters[index]?.(0); },
@@ -143,7 +152,7 @@ async function withPanel(
       phase: input.phase as PtySession["phase"],
       onBytes(listener) { emitters.push(listener); },
       onExit(listener) { exiters.push(listener); },
-      write(bytes) { written.push(bytes); },
+      write(bytes) { written.push(bytes); writtenTo.push({ argv: input.argv, bytes }); },
       resize(cols, rows) { resized.push({ cols, rows }); },
       kill() { alive = false; },
       get alive() { return alive; },
@@ -2283,6 +2292,54 @@ describe("panel · 补问那一格", () => {
       assert.equal(pty.started.length, before, "看一眼补问那格居然又起了一个进程");
       await response.body?.cancel();
       dispose();
+    });
+  });
+
+  it("**在这一格里敲的键要进这一格** —— 而不是悄悄进裁判那条主线", async () => {
+    /*
+     * 2026-08-03 真机上废掉一整轮的就是这个。
+     *
+     * 反方那条线程被 resume 起来，提示词躺在 composer 里没被提交（Codex 那边还在
+     * `Starting MCP server (2/4)`）。人在那一格里按回车想把它发出去 —— 而回车
+     * **进了裁判那条正在跑 turn 的主线**，被当成打断，`■ Conversation interrupted`。
+     * 反方那一格一个字节都没收到，这一轮再也走不动，也没有任何通道救得回来。
+     *
+     * 原来的注释说补问那格是「只读的旁观：不接受这边的按键」。但实现没有兑现那句话
+     * —— 它不是**吞掉**按键，而是把按键**转给了别人**。「按了没反应」和「按了，
+     * 打断了另一条线程」差得很远，而屏幕上两者一模一样。
+     */
+    await withPanel(async ({ open, sessions, pty }) => {
+      // 主线先起来：人是从阶段终端点进补问那一格的，两个都活着。
+      const main = await open(`/pty/${CHANGE}/PRD`);
+      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
+
+      const sent = await open(
+        `/pty/${CHANGE}/PRD/in?label=${encodeURIComponent(LABEL)}`,
+        { method: "POST", body: "\r" },
+      );
+      assert.equal(sent.status, 204);
+
+      assert.deepEqual(
+        pty.writtenTo.map((each) => each.argv),
+        [["resume", "T-BLUE"]],
+        "这一下按键没进补问那一格 —— 它进了主线，而主线上裁判正在跑",
+      );
+
+      await main.body?.cancel();
+      dispose();
+    });
+  });
+
+  it("**那一格已经收了就给 409，不要退回主线悄悄写进去**", async () => {
+    // 收掉之后再按键，最坏的结果是它落到裁判头上。宁可让前端看见 409。
+    await withPanel(async ({ open, pty }) => {
+      const sent = await open(
+        `/pty/${CHANGE}/PRD/in?label=${encodeURIComponent(LABEL)}`,
+        { method: "POST", body: "\r" },
+      );
+      assert.equal(sent.status, 409);
+      await sent.text();
+      assert.deepEqual(pty.writtenTo, [], "那一格不在了，这一下按键却还是写出去了");
     });
   });
 
