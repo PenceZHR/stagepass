@@ -442,6 +442,18 @@ export function judgePrompt(input: RoundInstructions): string {
 
 export interface VerdictReport {
   readonly verdicts: Readonly<Record<string, Verdict>>;
+  /**
+   * **信封本身就没读出来**（不是「它没给裁决」）。
+   *
+   * 两件事在 `verdicts` 上长得一模一样 —— 都是空的 —— 而它们要做的事完全不同：
+   * 没给裁决是一次正常的轮（沉默 = 全部保持 open），而信封坏了意味着这条线程的
+   * 历史里留下了一份坏格式，下一轮 resume 回去它会接着抄
+   * （2026-08-02 实测：同一个坏形状连抄三轮）。
+   *
+   * **判据只有 `JSON.parse` 失败。** 解析成功但没有 `verdicts` 这个键不算 ——
+   * 那时它确实什么都没说，而闸门方向是安全的。
+   */
+  readonly unreadable: boolean;
 }
 
 export class UnreadableVerdictError extends Error {
@@ -468,10 +480,10 @@ export function readVerdicts(text: string): VerdictReport {
   try {
     parsed = JSON.parse(jsonAnswerIn(text) ?? "");
   } catch {
-    return { verdicts: {} };
+    return { verdicts: {}, unreadable: true };
   }
   const record = (parsed as { verdicts?: unknown } | null)?.verdicts;
-  if (record === undefined || record === null) return { verdicts: {} };
+  if (record === undefined || record === null) return { verdicts: {}, unreadable: false };
   if (typeof record !== "object" || Array.isArray(record)) {
     throw new UnreadableVerdictError(JSON.stringify(record).slice(0, 120));
   }
@@ -497,7 +509,7 @@ export function readVerdicts(text: string): VerdictReport {
       ? { kind: "closed", reason: entry.reason }
       : { kind: "still_open", reason: entry.reason };
   }
-  return { verdicts };
+  return { verdicts, unreadable: false };
 }
 
 /**

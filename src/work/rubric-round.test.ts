@@ -265,6 +265,27 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     assert.equal(settled.blockers.length, 1, "作废之后闸门必须是关着的");
   });
 
+  it("**作废也报进 `malformed` —— 否则那份坏格式会在线程里循环**", async () => {
+    // 2026-08-02 CHG-003 实测：Build 阶段 critic 那份连续三轮全部作废，同一个
+    // 抄漏一段的 UUID 连抄三轮。这些轮都是成功的，所以「job 失败才放开线程」那条路
+    // 一次都没触发，而模型 resume 回去看见的正是自己上一轮那么写的。
+    const context = open();
+    seedProducer(context);
+    const settled = await run(context, {
+      blue: answer() + "\n" + rubricBlock(["K1 yes 行", "K-伪造 yes 也行"]),
+    });
+    assert.deepEqual(settled.malformed, ["rubric_void:unknown_key"]);
+  });
+
+  it("读得懂的一轮 `malformed` 是空的 —— 那条线程要接着用", async () => {
+    const context = open();
+    seedProducer(context);
+    const settled = await run(context, {
+      blue: answer() + "\n" + rubricBlock(["K1 yes 行"]),
+    });
+    assert.deepEqual(settled.malformed, []);
+  });
+
   it("不阻断的 criterion 判 no —— 只记录，不挡", async () => {
     const context = open();
     seedProducer(context, false);

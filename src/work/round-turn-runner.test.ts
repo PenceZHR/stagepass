@@ -481,3 +481,76 @@ describe("RoundTurnRunner · aside 不绑定", () => {
     assert.equal(assessed?.byRole.producer[0]?.verdict, "yes");
   });
 });
+
+/**
+ * 坏格式不许在裁判自己的线程里循环。
+ *
+ * 2026-08-02 CHG-003 实测：Build 阶段 critic 那份**连续三轮全部作废**（12 条
+ * `not_assessed`），同一个抄漏一段的 UUID 连抄三轮；另一处是少了右花括号的信封
+ * 连写两轮。这些轮**都是成功的**，所以 `panel-server.ts` 那条「job 失败才放开
+ * 线程」的路一次都没触发，而模型 resume 回去看见的正是自己上一轮那么写的。
+ */
+describe("RoundTurnRunner · 形状坏了就放开裁判线程", () => {
+  /** 裁判的信封没关严 —— `readVerdicts` 读不出来，但这一轮不失败。 */
+  const brokenEnvelope = '```json\n{"verdicts":{"G-1":{"kind":"closed","reason":"修了"}}}}\n```';
+
+  it("**信封读不出来 —— 轮次成功，但线程被放开**", async () => {
+    const context = open();
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([brokenEnvelope]), () => answer()),
+    });
+
+    await dispatchRound(loop, "J1");
+
+    // 轮次是成功的 —— 这正是这条路要接住的那一种。
+    assert.notEqual(context.changes.read(CHANGE).state.status, "blocked");
+    assert.equal(context.bindings.find(CHANGE, "PRD")?.status, "detached");
+  });
+
+  it("**读得懂的一轮不放线程** —— 那里的历史是真的，要接着用", async () => {
+    const context = open();
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]), () => answer()),
+    });
+
+    await dispatchRound(loop, "J1");
+
+    assert.equal(context.bindings.find(CHANGE, "PRD")?.status, "bound");
+  });
+
+  it("**下一轮真的从新线程开** —— 这才是放开它的意义", async () => {
+    const context = open();
+    const transport = new ScriptedCodexTransport([brokenEnvelope, judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+
+    await dispatchRound(loop, "J1");
+    context.changes.apply(CHANGE, "reject");
+    await dispatchRound(loop, "J2");
+
+    // 第一轮开了一条新线程（threadId 是 null），第二轮**也**必须是 null ——
+    // 不放开的话这里会是第一轮那条中毒线程的 id。
+    assert.equal(transport.dispatches[1]!.threadId, null);
+  });
+
+  it("放开这件事记进账本 —— 人不该看见一次无缘无故的换线程", async () => {
+    const context = open();
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([brokenEnvelope]), () => answer()),
+    });
+
+    await dispatchRound(loop, "J1");
+
+    const notes = new RoundNoteStore(context.db).read(CHANGE, "PRD", 1);
+    const said = notes.map((note) => note.text).join("\n");
+    assert.match(said, /verdicts_unreadable/);
+    assert.match(said, /已放开裁判线程/);
+    // 「还要不要再来一轮」在这里没有答案 —— 记 false 会被渲染成「可以了」。
+    assert.equal(notes.find((note) => /已放开裁判线程/.test(note.text))?.anotherRound, null);
+  });
+});

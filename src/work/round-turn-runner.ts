@@ -192,6 +192,7 @@ export class RoundTurnRunner implements TurnRunner {
 
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
     this.recordNotes(job.changeId, phase, round, settled);
+    this.releaseIfMalformed(job.changeId, phase, round, settled.malformed);
 
     return {
       artifactIds: this.producedBy(job.changeId, phase, round, settled.artifactIds),
@@ -219,6 +220,48 @@ export class RoundTurnRunner implements TurnRunner {
    * 没有答案。记 `false` 会被界面渲染成「可以了」—— 那是**替裁判说了一句它没说过
    * 的话**，而这一整套改动的立身之本正是不许出现这种话。
    */
+  /**
+   * 形状坏了就放开裁判线程，下一轮从干净的线程开。
+   *
+   * ## 为什么这一条不能靠「job 失败了没有」
+   *
+   * `panel-server.ts` 那条 detach 看的是 `jobs.status === 'failed'`（`e3eee6d`），
+   * 它接住的是**整轮死掉**那一种。而这里说的这些轮是**成功的** —— gap 照写、状态
+   * 照推，只是某样东西没读出来：一份 rubric 整份作废被记成 `not_assessed`，一个
+   * 少了右花括号的信封被当成「裁判没给裁决」。轮次成功，线程留着。
+   *
+   * 于是 2026-08-02 CHG-003 实测到的样子：Build 阶段 critic 那份**连续三轮全部
+   * 作废**，同一个抄漏一段的 UUID 连抄三轮。提示词里的告诫压不过模型自己的历史 ——
+   * 它 resume 回去看见的是自己上一轮那么写的。
+   *
+   * ## 放开是安全的
+   *
+   * **线程从来不是真相的载体**：开着的 gap、任务、上游产物、rubric 契约，每一轮都
+   * 完整写在提示词里（PRD §6.5 —— 线程之间只能靠文档传信息）。丢掉的只有毒。
+   *
+   * ## 人要看得见
+   *
+   * 用户 2026-07-31：「每对抗一轮，我都是要知情的。」所以放开这件事记一条
+   * round note，而不是悄悄做掉 —— 一条无缘无故换了线程的记录，比不换更让人困惑。
+   */
+  private releaseIfMalformed(
+    changeId: string,
+    phase: Phase,
+    round: number,
+    malformed: readonly string[],
+  ): void {
+    if (malformed.length === 0) return;
+    this.options.bindings.detach(changeId, phase);
+    this.options.notes.put(changeId, phase, round, {
+      source: "judge_conclusion",
+      // **不是 false。**「还要不要再来一轮」这个问题在这里没有答案 —— 记 false 会被
+      // 界面渲染成「可以了」，那是替裁判说了一句它没说过的话。
+      anotherRound: null,
+      text: `这一轮有读不出来的地方（${malformed.join("、")}），`
+        + "已放开裁判线程，下一轮从干净的线程开 —— 坏格式会留在线程自己的历史里循环。",
+    });
+  }
+
   private recordNotes(
     changeId: string,
     phase: Phase,

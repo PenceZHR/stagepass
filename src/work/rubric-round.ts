@@ -240,6 +240,8 @@ async function askAgain(input: {
   readonly subject: string;
   readonly elsewhere: ReadonlySet<string>;
   readonly read: readonly Assessment[];
+  /** 补问那一次也可能整份作废 —— 一样要让上层看见。 */
+  readonly voided: string[];
 }): Promise<{ read: Assessment[]; followUp: FollowUp | null }> {
   let read = [...input.read];
   let times = 0;
@@ -274,7 +276,7 @@ async function askAgain(input: {
     }
 
     // 整份 rubric 的 key 都算认识的，理由见上面。
-    const again = assess(text, input.rubric, input.elsewhere);
+    const again = assess(text, input.rubric, input.elsewhere, input.voided);
     read = read.map((entry) => {
       if (entry.verdict !== "not_assessed") return entry;
       const fresh = again.find((each) => each.criterionKey === entry.criterionKey);
@@ -355,11 +357,16 @@ export interface RubricRoundSettled extends RoundSettled {
  * 把一份 transcript 读成判定。
  *
  * 作废时不抛 —— 见文件开头。全部记 `not_assessed`，并把原因带上。
+ *
+ * **作废码也交出去**（`voided`）：这一轮是成功的，但那份坏格式留在了答它的那条
+ * 线程的历史里，下一轮 resume 回去它会接着抄（2026-08-02 实测：同一个抄漏一段的
+ * UUID 连抄三轮）。上层拿它去放开线程 —— 见 `RoundSettled.malformed`。
  */
 function assess(
   text: string,
   rubric: RubricVersion,
   elsewhere: ReadonlySet<string>,
+  voided: string[] = [],
 ): Assessment[] {
   const snapshot = (key: string) => {
     const criterion = rubric.criteria.find((entry) => entry.key === key)!;
@@ -372,6 +379,7 @@ function assess(
     }));
   } catch (error: unknown) {
     if (!(error instanceof RubricOutputVoidError)) throw error;
+    voided.push(error.code);
     return rubric.criteria.map((criterion) => ({
       criterionKey: criterion.key,
       verdict: "not_assessed" as const,
@@ -423,6 +431,8 @@ export async function runRubricRound(
   const assessments: Record<RubricRole, readonly Assessment[]> = {
     producer: [], critic: [], verdict: [],
   };
+  /** 这一轮有哪几份判定整份作废了 —— 汇进 `malformed` 交给上层放线程。 */
+  const voided: string[] = [];
   let gaps = settled.gaps;
 
   /**
@@ -463,7 +473,7 @@ export async function runRubricRound(
     const mine = rubric.criteria.map((each) => each.key);
     const elsewhere = new Set([...everyKey].filter((key) => !mine.includes(key)));
 
-    const first = assess(settled.transcripts[assessor], rubric, elsewhere);
+    const first = assess(settled.transcripts[assessor], rubric, elsewhere, voided);
 
     /*
      * **没答上就直接问它，最多三次**（用户 2026-07-31）。
@@ -479,6 +489,7 @@ export async function runRubricRound(
           subject: ASSESSED_BY[role]!.subject,
           elsewhere,
           read: first,
+          voided,
         })
       : { read: first, followUp: null };
 
@@ -517,5 +528,14 @@ export async function runRubricRound(
       id: gap.id, kind: gap.kind, severity: gap.severity, title: gap.title,
     }));
 
-  return { ...settled, gaps, blockers, assessments };
+  return {
+    ...settled,
+    gaps,
+    blockers,
+    assessments,
+    malformed: [
+      ...settled.malformed,
+      ...voided.map((code) => `rubric_void:${code}`),
+    ],
+  };
 }

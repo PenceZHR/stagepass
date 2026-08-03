@@ -486,6 +486,7 @@ describe("L4 · reading the judge's verdicts", () => {
         "SPEC-1": { kind: "closed", reason: "范围已收窄" },
         "SPEC-2": { kind: "still_open", reason: "仍不可测" },
       },
+      unreadable: false,
     });
   });
 
@@ -495,8 +496,26 @@ describe("L4 · reading the judge's verdicts", () => {
    */
   it("yields no verdicts when the judge said nothing readable", () => {
     for (const text of ["都挺好的", "```json\n{}\n```", '{"verdicts":null}']) {
-      assert.deepEqual(readVerdicts(text), { verdicts: {} });
+      assert.deepEqual(readVerdicts(text).verdicts, {});
     }
+  });
+
+  /**
+   * **「它没给裁决」和「信封根本没读出来」不是一回事。**
+   *
+   * 两者在 `verdicts` 上长得一模一样（都是空的），而要做的事完全不同：前者是一次
+   * 正常的轮，后者意味着一份坏格式留在了裁判线程的历史里，resume 回去它会接着抄
+   * （2026-08-02 实测：同一个坏形状连写两轮）。上层靠这个标记去放开线程。
+   */
+  it("**信封读不出来，和它没给裁决，分得开**", () => {
+    // 一个 json 都没有 —— 它把整个信封的要求忽略了。
+    assert.equal(readVerdicts("都挺好的").unreadable, true);
+    assert.equal(readVerdicts('```json\n{"verdicts":{}}}\n```').unreadable, true);
+
+    // 解析得开，只是没有裁决可说 —— 这是正常的一轮，闸门方向也是安全的。
+    assert.equal(readVerdicts("```json\n{}\n```").unreadable, false);
+    assert.equal(readVerdicts('{"verdicts":null}').unreadable, false);
+    assert.equal(readVerdicts('```json\n{"verdicts":{}}\n```').unreadable, false);
   });
 
   /**

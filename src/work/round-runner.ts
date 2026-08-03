@@ -2,7 +2,7 @@ import { blockersFrom, type Gap } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
-  judgePrompt, readConclusion, readRound,
+  judgePrompt, readConclusion, readRound, readVerdicts,
   type RoundAgents, type RoundConclusion, type RoundInstructions,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
@@ -31,7 +31,7 @@ import type { GapStore } from "../store/gap-store";
  * The transport and the rollout reader are parameters, so the whole of this runs
  * offline against `ScriptedCodexTransport` and a stub reader. What is left that
  * needs a real Codex is one thing only: whether a judge actually spawns two
- * sub-agents at the paths it was told to use.
+ * sub-agents, one after the other.
  */
 
 export interface RoundRequest {
@@ -52,9 +52,7 @@ export interface RoundDependencies {
   /**
    * 一条线程自己说的话，按线程 id 读。
    *
-   * **不再按 `agent_path` 认红蓝** —— 那一列只有原生 `spawn_agent({task_name})`
-   * 会设，而那个工具不是每个 Codex 会话都有（2026-07-30 实测）。现在由裁判把它
-   * 派生的两个 `agent_id` 报进答案。
+   * 拿到 id 的那条路见 `childThreads` —— 这里只管「拿着 id 去读它说了什么」。
    */
   readonly readThread: (threadId: string) => string;
   /**
@@ -114,6 +112,22 @@ export interface RoundSettled {
    * 照数报上去，让人在账本上看得见。
    */
   readonly spawned: number;
+  /**
+   * 这一轮里**形状坏掉**的地方。空 = 三方的答复读起来都是完整的。
+   *
+   * ## 为什么它得单独交出来
+   *
+   * 一份坏格式不只毁掉这一轮 —— 它**留在那条线程自己的历史里**。resume 回去，模型
+   * 接着抄自己上一轮的坏形状（2026-08-02 实测：同一个抄错的 UUID 连抄三轮，同一个
+   * 少了右花括号的信封连写两轮）。提示词里的告诫压不过它自己的历史。
+   *
+   * 而这些轮**是成功的** —— gap 照写、状态照推，只是某样东西没读出来。所以靠
+   * 「job 失败了没有」判断要不要放开线程的那条路看不见它们（`web/panel-server.ts`）。
+   *
+   * 上层拿它去 `BindingStore.detach`，下一轮从干净线程开。放开是安全的：线程从来
+   * 不是真相的载体 —— 开着的 gap、任务、契约每一轮都完整写在提示词里。
+   */
+  readonly malformed: readonly string[];
   /**
    * 裁判对「还要不要再来一轮」的结论。null = 它没给。
    *
@@ -180,6 +194,15 @@ export async function runRound(
   const red = dependencies.readThread(agents.red);
   const blue = dependencies.readThread(agents.blue);
 
+  /*
+   * 信封坏没坏，和「它给没给裁决」是两件事 —— 见 `VerdictReport.unreadable`。
+   * 结论读不出来同理：它不作废这一轮（那句话不动闸门），但坏格式一样会循环。
+   */
+  const conclusion = readConclusion(delivery.text);
+  const malformed: string[] = [];
+  if (readVerdicts(delivery.text).unreadable) malformed.push("verdicts_unreadable");
+  if (conclusion?.kind === "unreadable") malformed.push("conclusion_unreadable");
+
   const reading = readRound({
     phase: request.phase,
     round: request.round,
@@ -200,12 +223,16 @@ export async function runRound(
     transcripts: { red, blue, judge: delivery.text },
     agents,
     spawned: fresh.length,
+    malformed,
     /*
      * 结论读不出来**不作废这一轮** —— 它不决定任何状态，为一句读不准的建议扔掉
      * 一轮几分钟的对抗不成比例。`readConclusion` 把「读不出来」当成一个值交出来，
      * 而不是抛，理由写在它自己那儿。
+     *
+     * 但它会进 `malformed`：不作废这一轮，和「让这份坏格式在线程里循环下去」
+     * 是两件事。
      */
-    conclusion: readConclusion(delivery.text),
+    conclusion,
     blueOverall: reading.blueOverall,
   };
 }
