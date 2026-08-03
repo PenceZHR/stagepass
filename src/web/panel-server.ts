@@ -49,7 +49,7 @@ import {
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { retireStandards } from "../domain/rubric-gaps";
 import { QuestionStore } from "../store/question-store";
-import { TurnLoop } from "../work/turn-loop";
+import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
 
 /**
@@ -266,6 +266,13 @@ export interface PanelOptions {
    * 病不在那几条测试写错了，在于**它们写错的代价是 20 分钟**。
    */
   readonly askTimeoutMs?: number;
+  /**
+   * 多久扫一次过期的活。默认 30 秒。
+   *
+   * 可注入是为了测试跑得完 —— 和 `askTimeoutMs` 同一个理由（写错的代价应该是
+   * 1 秒，不是 30）。
+   */
+  readonly recoverEveryMs?: number;
 }
 
 /**
@@ -2440,6 +2447,40 @@ export function createPanelServer(options: PanelOptions): {
       response.end(JSON.stringify({ failed: true, error: detail }));
     });
   });
-  server.on("close", () => { sessions.closeAll(); });
+  /*
+   * **收尸人要一直在，不能只在启动时来一趟。**
+   *
+   * `recoverStuckTurns` 原来只有一个调用者：面板启动那一次。而租约存在的全部意义
+   * 就是「发现有人死了」—— 一个只在启动时跑的收尸人不算收尸人。
+   *
+   * 2026-08-03 实测撞到：一轮死掉，Change 卡在 `running`，按钮全灰。人做了最自然
+   * 的那件事（重启面板），**什么都没有发生** —— 因为租约还有四分钟才到期。屏幕上
+   * 没有任何东西说「再等四分钟」，所以它和「坏了」完全同形。
+   *
+   * 现在每 `recoverEveryMs` 扫一次，到期的自己就被收掉，人不必重启、也不必知道
+   * 租约这个概念。**扫到东西要说出来** —— 静默恢复和什么都没发生在屏幕上一模一样，
+   * 而它刚刚把一个 Change 从「在跑」改成了「上一轮失败了」。
+   */
+  const everyMs = options.recoverEveryMs ?? 30_000;
+  const reaper = setInterval(() => {
+    let swept;
+    try {
+      swept = recoverStuckTurns(options.database, Date.now());
+    } catch (error: unknown) {
+      // 收尸失败不该把面板带走 —— 说出来，下一次再扫。
+      console.error(`[panel] 收拾过期的活失败了：${String(error)}`);
+      return;
+    }
+    for (const each of swept.failed) {
+      console.log(`[panel] 租约到期，判为失败（可以 retry）：${each.id} —— ${each.reason}`);
+    }
+    for (const each of swept.resumed) {
+      console.log(`[panel] 租约到期，重新排队：${each}`);
+    }
+  }, everyMs);
+  // Node 不该为了这个定时器活着。
+  reaper.unref();
+
+  server.on("close", () => { clearInterval(reaper); sessions.closeAll(); });
   return { server, sessions };
 }

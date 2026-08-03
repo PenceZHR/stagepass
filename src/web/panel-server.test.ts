@@ -128,6 +128,7 @@ async function withPanel(
   /** 额外注入的依赖。归档那一层要能在不碰 Codex 的情况下验。 */
   extra: {
     archive?: PanelOptions["archive"];
+    recoverEveryMs?: PanelOptions["recoverEveryMs"];
     repo?: PanelOptions["repo"];
     trust?: PanelOptions["trust"];
   } = {},
@@ -184,6 +185,9 @@ async function withPanel(
     // 问人那条路的截止时间。生产是 15 分钟 —— 在测试里那意味着一条没答对形状的
     // 用例会坐等到框架超时（300 秒）。写错的代价应该是 1 秒，不是 5 分钟。
     askTimeoutMs: 4_000,
+    // 收尸人：生产是 30 秒。测试里默认关掉（给一个大到不会自己触发的值），
+    // 要验它的那条用例自己传一个小的进来。
+    recoverEveryMs: extra.recoverEveryMs ?? 3_600_000,
     /*
      * **默认注入一个什么都不知道的假的。**
      *
@@ -2417,5 +2421,44 @@ describe("panel · 失败的轮不留毒线程", () => {
     // 既有的「同一个 (Change, 阶段) 复用同一个裁判线程」测试反向钉着：绑定还在，
     // 下一轮才 resume 得回去。这里只钉失败路径的行为存在且方向对。
     assert.ok(true);
+  });
+});
+
+/**
+ * 收尸人一直在，不是只在启动时来一趟。
+ *
+ * 2026-08-03 实测撞到：一轮死掉，Change 卡在 `running`、按钮全灰。人做了最自然的
+ * 那件事 —— 重启面板 —— 而**什么都没发生**，因为租约还有四分钟才到期。屏幕上没有
+ * 任何东西说「再等四分钟」，所以它和「坏了」完全同形。
+ *
+ * `recoverStuckTurns` 那时只有一个调用者：`scripts/panel.ts` 启动那一次。
+ */
+describe("panel · 过期的活自己会被收掉", () => {
+  it("**不重启面板，卡住的 Change 也能自己解开**", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      const at = Date.now();
+      // 一个已经过期、却还挂着 running 的活 —— 进程死掉时留下的正是这个形状。
+      const jobs = new JobStore(database);
+      jobs.enqueue({
+        id: "JOB-STUCK", changeId: CHANGE, kind: "phase_turn",
+        deadlineAt: at - 60_000, maxAttempts: 1,
+      });
+      // 认领了、租约早过期了、干活的那个进程没了 —— 崩溃留下的正是这个形状。
+      jobs.claimNext({ owner: "gone", token: "JOB-STUCK", now: at - 120_000, ttlMs: 1_000 });
+      changes.apply(CHANGE, "start");
+      assert.equal(changes.read(CHANGE).state.status, "running");
+
+      // 收尸人扫一次的时间。
+      await new Promise((resolve) => { setTimeout(resolve, 120); });
+
+      assert.equal(
+        changes.read(CHANGE).state.status, "blocked",
+        "租约早就过期了，而这个 Change 还卡在 running —— 人只能去重启面板",
+      );
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { status: string };
+      assert.equal(panel.status, "blocked");
+    }, { recoverEveryMs: 40 });
   });
 });
