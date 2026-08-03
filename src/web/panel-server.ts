@@ -312,6 +312,14 @@ interface LiveSession {
    */
   readonly enders: Set<() => void>;
   readonly scrollback: Uint8Array[];
+  /**
+   * 这个 Change 已经被删掉了，死了也别留尸体。
+   *
+   * `close()` 只 `kill()`，而 `onExit` 是**异步**来的 —— 于是「删 Change」和
+   * 「存尸体」的顺序是删在前、存在后，光在 `forget()` 里删一遍 `corpses` 拦不住。
+   * 由这条会话自己带着这个标记，就没有顺序问题了。
+   */
+  forgotten: boolean;
 }
 
 /**
@@ -449,6 +457,7 @@ export class PanelSessions {
     });
     const entry: LiveSession = {
       session, listeners: new Set(), enders: new Set(), scrollback: [],
+      forgotten: false,
     };
     let buffered = 0;
     session.onBytes((bytes) => {
@@ -567,6 +576,7 @@ export class PanelSessions {
     const corpse = this.corpses.get(key) ?? [];
     const entry: LiveSession = {
       session, listeners: new Set(), enders: new Set(), scrollback: [...corpse],
+      forgotten: false,
     };
     let buffered = corpse.reduce((total, chunk) => total + chunk.byteLength, 0);
     session.onBytes((bytes) => {
@@ -577,7 +587,21 @@ export class PanelSessions {
       }
       for (const listener of entry.listeners) listener(bytes);
     });
-    session.onExit(() => {
+    session.onExit((exitCode) => {
+      /*
+       * **死因先说出来。**
+       *
+       * 2026-08-03 查那一屏 `Error: Operation not permitted (os error 1)` 花掉的
+       * 大半时间，都耗在「哪个进程、什么参数、死在哪一步」上 —— 而这一层手里全有，
+       * 只是原来一个字都不写。`corpses` 那段注释说的「死因不该那么贵」，指的是
+       * 人回去看得见；这一行是另一半：**事后查得出来**。
+       *
+       * 只写退出码和参数，不碰 pty 的字节（§9.3）。
+       */
+      console.log(
+        `[panel] ${changeId}/${phase} 的进程结束了，exitCode=${exitCode}`
+        + ` cwd=${cwd} argv=${JSON.stringify(argv)}`,
+      );
       /*
        * **只删自己那一条。**
        *
@@ -598,7 +622,8 @@ export class PanelSessions {
       // 尸体在身份判定**之前**留：无论这条 onExit 是不是当前会话的，死的都是
       // `entry` 自己，它的最后一屏就该由它自己留下。拷贝一份，免得留下的引用
       // 还被后续写入动到。
-      this.corpses.set(key, [...entry.scrollback]);
+      // 除非这个 Change 已经被删了 —— 见 `LiveSession.forgotten`。
+      if (!entry.forgotten) this.corpses.set(key, [...entry.scrollback]);
       if (this.live.get(key) !== entry) return;
       this.live.delete(key);
       // **告诉正在看的人它没了。** 不通知的话响应一直开着，浏览器停在最后一帧，
@@ -673,6 +698,47 @@ export class PanelSessions {
     if (entry) {
       for (const end of entry.enders) end();
       entry.enders.clear();
+    }
+  }
+
+  /**
+   * 这个 Change 没了 —— 把它在这一层留下的一切一起收掉：活会话、补问格、尸体。
+   *
+   * ## 为什么删 Change 时 `close()` 不够
+   *
+   * 2026-08-03 用户报的那一屏：新建一个 Change，第一个阶段一打开就是几十行
+   * 一模一样的 `Error: Operation not permitted (os error 1)`。那些行不是新的 ——
+   * 是历次尝试攒下来的，而**删掉 Change 甩不掉它们**：
+   *
+   *   建 CHG-001 → 进程死掉 → 尸体存在 key `CHG-001PRD`
+   *   删掉 → 再建 → `mintId` 取「已有最大号 + 1」，删光了就又发 CHG-001
+   *   新会话起来 → 把那具尸体整个垫进 scrollback → 又死 → 存回去，多一行
+   *
+   * `corpses` 存在的理由是让人回去看**这个** Change 的死因。一个已经被删掉的
+   * Change 没有「回去看」这回事，它的最后一屏只会冒充下一个同名者的 —— 而
+   * 同名一定会发生，id 是顺号发的、给人念的，不是 uuid（见 `mintId`）。
+   *
+   * ## 为什么是枚举阶段，而不是按前缀扫 key
+   *
+   * key 是 `${changeId}${phase}` 拼出来的，**中间没有分隔符**。拿 `CHG-1` 去前缀
+   * 匹配会连 `CHG-10`、`CHG-100` 的尸体一起删掉。阶段是一张定死的表，逐个算出
+   * 精确的 key 就没有这个问题 —— 和 `asides` 那段注释是同一条理由。
+   */
+  forget(changeId: string): void {
+    for (const phase of PHASES) {
+      const key = PanelSessions.key(changeId, phase);
+      // 先立标记再 kill：`onExit` 是异步的，晚于下面那句 `corpses.delete`。
+      const entry = this.live.get(key);
+      if (entry) entry.forgotten = true;
+      for (const aside of this.asides.get(key)?.values() ?? []) {
+        aside.forgotten = true;
+      }
+      this.close(changeId, phase);
+      for (const label of [...this.asides.get(key)?.keys() ?? []]) {
+        this.closeAside(key, label);
+      }
+      this.asides.delete(key);
+      this.corpses.delete(key);
     }
   }
 
@@ -1442,9 +1508,9 @@ export async function handle(
   if (url.pathname === "/api/change" && request.method === "DELETE") {
     const changeId = url.searchParams.get("change") ?? "";
     const changes = new ChangeStore(database);
-    let phase: Phase;
     try {
-      phase = changes.read(changeId).state.phase;
+      // 读它就是在问「有没有这条」—— `forget` 枚举所有阶段，不再需要当前那个。
+      changes.read(changeId);
     } catch {
       response.writeHead(404).end("no such change");
       return;
@@ -1452,7 +1518,9 @@ export async function handle(
     const busy = phaseBusy(database, changeId);
     if (busy) { json(response, { deleted: false, ...busy }); return; }
 
-    sessions.close(changeId, phase);
+    // `forget` 而不是 `close`：连尸体一起收掉，否则下一个重名的 Change 会继承
+    // 这一个的最后一屏。见 `PanelSessions.forget`。
+    sessions.forget(changeId);
     changes.delete(changeId);
     json(response, { deleted: true, changeId });
     return;
@@ -1472,7 +1540,8 @@ export async function handle(
       const busy = phaseBusy(database, each.id);
       if (busy) { json(response, { deleted: false, changeId: each.id, ...busy }); return; }
     }
-    for (const each of mine) sessions.close(each.id, each.state.phase);
+    // 同上：删项目就是把它底下每条 Change 都删掉，尸体一样要跟着走。
+    for (const each of mine) sessions.forget(each.id);
     projects.delete(projectId, changes);
     json(response, { deleted: true, projectId, changes: mine.length });
     return;

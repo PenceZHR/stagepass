@@ -795,6 +795,56 @@ describe("panel · bytes go through untouched", () => {
     });
   });
 
+  it("**删掉一个 Change，它的尸体也要跟着没** —— 否则下一个重名的会继承那一屏", async () => {
+    /*
+     * 2026-08-03 用户报的：新建一个 Change，第一个阶段一打开就是满屏
+     * `Error: Operation not permitted (os error 1)`，一模一样几十行。
+     *
+     * 那些行**不是这一次打出来的**，是历次尝试攒下来的：
+     *
+     *   建 CHG-001 → 进程死掉（+1 行）→ 尸体存在 key "CHG-001PRD"
+     *   删掉 → 再建 → `mintId` 取「已有最大号 + 1」，删光了就又发 CHG-001
+     *   新会话起来 → 把那具尸体整个垫进 scrollback → 又死 → +1 行 → 存回去
+     *
+     * 每试一次多一行，而**删掉 Change 甩不掉它**：`/api/change DELETE` 只
+     * `close()`，而 `close()` 触发的 onExit 反倒把尸体又存了一遍。
+     *
+     * 尸体是为了让人回去看**这个** Change 的死因（见 `corpses` 那段注释）。一个
+     * 已经被删掉的 Change 没有「回去看」这回事，它的最后一屏只会冒充下一个同名者的。
+     */
+    await withPanel(async ({ open, pty, database }) => {
+      const first = await open(`/pty/${CHANGE}/PRD`);
+      const lastWords = new Uint8Array(
+        Buffer.from("Error: Operation not permitted (os error 1)", "utf-8"),
+      );
+      pty.emit(lastWords);
+      await first.body!.cancel();
+      pty.exitOne(0);
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+
+      const deleted = await open(`/api/change?change=${CHANGE}`, { method: "DELETE" });
+      assert.deepEqual(await deleted.json(), { deleted: true, changeId: CHANGE });
+
+      // 重发同一个 id —— `mintId` 在删光之后就是这么发的，这里直接照着做。
+      new ChangeStore(database).create(CHANGE, { projectId: PROJECT });
+
+      const second = await open(`/pty/${CHANGE}/PRD`);
+      const reader = second.body!.getReader();
+      const { value } = await Promise.race([
+        reader.read(),
+        new Promise<{ value?: Uint8Array }>((resolve) => {
+          setTimeout(() => { resolve({}); }, 300);
+        }),
+      ]);
+      reader.releaseLock();
+      assert.equal(
+        value === undefined ? "" : Buffer.from(value).toString("utf-8"),
+        "",
+        "新 Change 的终端里出现了上一个同名 Change 的遗言 —— 那一屏不是它的",
+      );
+    });
+  });
+
   it("sends keystrokes to the pty as bytes", async () => {
     await withPanel(async ({ open, pty }) => {
       // Down arrow, then Enter: the two keys a gate decision needs.
