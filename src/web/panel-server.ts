@@ -95,6 +95,54 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * 只能由启动它的这一侧说。这不是把手抄换个地方 —— 它从头到尾没经过模型的嘴，
  * 而那正是判据。见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
  */
+/**
+ * 这个阶段的账本上还有没有没了结的活儿。
+ *
+ * `sessions.has()` 问的是「注册表里还有没有这个阶段的 pty」，那是**当下这一刻**的
+ * 事实；而这里问的是「有没有事情还没了结」，只有账本知道。
+ *
+ * 2026-08-03 真机撞出来的：一轮跑完、会话结束、注册表里没了，**而库里那个 job 还是
+ * `running`**（没人收尾）—— 于是下一次派发畅通无阻，同一个 (Change, 阶段) 上起了
+ * 第二条裁判线程。实测两条互相打断，一条烧掉近 300 万 input token，人在终端里连字
+ * 都打不进去，而 §6.5 规则 5 的全部意义就是不许出现这个。
+ *
+ * **排着队的也算忙** —— 派了还没跑起来，和正在跑一样不能再派一次。
+ */
+const phaseBusy = (
+  database: Database.Database,
+  changeId: string,
+): { reason: "phase_already_running"; busy: string; jobId: string } | null => {
+  const job = new JobStore(database).busyFor(changeId);
+  return job === null
+    ? null
+    // `reason` 是**界面在精确匹配的那个字符串**（`panel.js`），不许改。要说得更细
+    // 就往旁边加字段 —— 「在等什么」是人要看的，而把它编进 reason 会当场弄坏界面。
+    : { reason: "phase_already_running", busy: job.status, jobId: job.id };
+};
+
+/**
+ * 问人之前：账本闲着**而且**没有活进程。
+ *
+ * 比派发那条严一格，因为问人是**往一个已经存在的会话里打字**。而 2026-08-03 实测：
+ * 往正在跑 turn 的会话里塞新提示词，Codex 当成打断（`turn_aborted: interrupted`），
+ * 人面前那个选择器当场被取消，`stagepass_ask` 在 1~4 秒内返回空的 `cancel` ——
+ * 人还没看清它就没了。连着六次都是这么废的。
+ *
+ * 派发那条**不加**这一格：一轮结算完 TUI 不退出，留下的闲窗口里没有任何 turn 边界
+ * 可交错，它该被关掉接着派（2026-08-02 收窄，理由见 `runPhase`）。
+ */
+const cannotAskNow = (
+  database: Database.Database,
+  sessions: PanelSessions,
+  changeId: string,
+  phase: Phase,
+): { reason: "phase_already_running"; busy: string; jobId?: string } | null =>
+  phaseBusy(database, changeId)
+  ?? (sessions.has(changeId, phase)
+    // 同上：`reason` 保持界面认识的那个，细节走 `busy`。
+    ? { reason: "phase_already_running" as const, busy: "terminal" }
+    : null);
+
 const pluginConfigFor = (
   database: { name: string }, changeId: string,
 ): string[] => [
@@ -670,27 +718,28 @@ async function runRound(input: {
   const { changeId, phase, sessions, options } = input;
   const database = options.database;
 
+  /*
+   * §6.5 规则 5：一个阶段线程同一时刻只许有一个活进程。
+   *
+   * **判据是「这个阶段有没有活儿没了结」，不是「窗口开没开」，也不是「进程活着吗」。**
+   *
+   * 两次收窄。2026-08-02 从「窗口开着就拒」收到「有 turn 在飞才拒」—— 一轮结算完
+   * TUI 不退出，留下的是个闲窗口，里面没有任何 turn 边界可交错，而原来那条会让人
+   * 每次派发前都得手动去关。
+   *
+   * 2026-08-03 又反过来补了另一半：**只看进程会漏**。一轮跑完、会话结束、注册表里
+   * 没了，而库里那个 job 还是 `running`（没人收尾）—— 于是下一次派发畅通无阻，
+   * 同一个 (Change, 阶段) 上起了第二条裁判线程。实测两条互相打断，一条烧掉近
+   * 300 万 input token，人在终端里连字都打不进去。
+   *
+   * 所以两个都查（`phaseBusy`）：账本说有活儿，或者注册表里还有个活进程。
+   * 都不忙时，把那个闲窗口关掉再派 —— `close` 会主动通知正在看的人，不留死画面。
+   */
+  const busy = phaseBusy(database, changeId);
+  if (busy) {
+    return { ran: false, phase, ...busy };
+  }
   if (sessions.has(changeId, phase)) {
-    /*
-     * §6.5 rule 5: one live process per phase thread. Dispatching into a
-     * terminal someone already has open would interleave two turns.
-     *
-     * **判据是「有没有 turn 在飞」，不是「窗口开没开」**（2026-08-02 收窄）。
-     * 规则 5 保护的是 turn 边界 —— 而一轮结算完 TUI 不会退出（实测），留下的是
-     * 一个**闲着的**窗口，里面没有任何边界可交错。原来闲窗口也拒，后果是每次
-     * 「跑这个阶段」之前都得有人手动去关（交接 §4.2 把它列成坑；今天真机连跑时
-     * 操作员也照样踩 —— 第 7 轮派发被第 6 轮的闲终端顶掉，还以为跑起来了）。
-     *
-     * 「turn 在飞」从 jobs 查：这个 Change 最新一个 job 还是 running，就是有轮
-     * 没跑完 —— 拒。否则窗口是闲的，关掉它接着派。close 会主动通知正在看的人
-     * （enders），不会留一帧死画面。
-     */
-    const inFlight = database.prepare(
-      "SELECT status FROM jobs WHERE change_id = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(changeId) as { status: string } | undefined;
-    if (inFlight?.status === "running") {
-      return { ran: false, phase, reason: "phase_already_running" };
-    }
     sessions.close(changeId, phase);
   }
   /*
@@ -1503,8 +1552,9 @@ export async function handle(
       response.writeHead(404).end("no such change");
       return;
     }
-    if (sessions.has(changeId, phase)) {
-      json(response, { asked: false, reason: "phase_already_running", phase });
+    const busy = cannotAskNow(database, sessions, changeId, phase);
+    if (busy) {
+      json(response, { asked: false, phase, ...busy });
       return;
     }
 
@@ -1623,6 +1673,9 @@ export async function handle(
           ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
           : null,
       });
+      // 放弃了就把会话关掉 —— 理由和录需求那条一样：留着它，这个阶段的每个动作
+      // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
+      sessions.close(changeId, phase);
       return;
     }
 
@@ -1774,8 +1827,9 @@ export async function handle(
       return;
     }
     const phase = change.state.phase;
-    if (sessions.has(changeId, phase)) {
-      json(response, { asked: false, reason: "phase_already_running", phase });
+    const busy = cannotAskNow(database, sessions, changeId, phase);
+    if (busy) {
+      json(response, { asked: false, phase, ...busy });
       return;
     }
 
@@ -1895,6 +1949,18 @@ export async function handle(
             ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
             : null,
         });
+        /*
+         * **放弃了就把会话关掉。**
+         *
+         * 原来这里直接 `return` —— 于是问人超时之后进程还留着，`sessions.has()`
+         * 永远 true，这个阶段的**每一个动作**都被闸门拒掉，而界面上没有杀掉终端的
+         * 入口。2026-08-03 现场复现过这个死锁：录需求说「阶段在跑」，跑阶段说
+         * 「还没有需求」，而挡着的那个会话是 StagePass 自己 15 分钟前放弃、却忘了
+         * 关的僵尸。
+         *
+         * 关掉是安全的：这条路已经决定不等了，那个进程再没有人会去读它。
+         */
+        sessions.close(changeId, phase);
         return null;
       }
       return given;
@@ -1952,8 +2018,9 @@ export async function handle(
       response.writeHead(404).end("no such change");
       return;
     }
-    if (sessions.has(changeId, phase)) {
-      json(response, { asked: false, reason: "phase_already_running", phase });
+    const busy = cannotAskNow(database, sessions, changeId, phase);
+    if (busy) {
+      json(response, { asked: false, phase, ...busy });
       return;
     }
 
@@ -2020,6 +2087,9 @@ export async function handle(
           ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
           : null,
       });
+      // 放弃了就把会话关掉 —— 理由和录需求那条一样：留着它，这个阶段的每个动作
+      // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
+      sessions.close(changeId, phase);
       return;
     }
 

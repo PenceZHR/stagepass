@@ -836,12 +836,86 @@ describe("panel · one live process per phase thread", () => {
       ).run(CHANGE);
 
       const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
-        { ran: boolean; reason?: string; phase: string };
+        { ran: boolean; reason?: string; phase: string; busy?: string; jobId?: string };
 
       // Dispatching now would put a second turn into the same rollout, and
       // then "which turn was mine" has no answer (§6.4 pit 2, §6.5 rule 5).
-      assert.deepEqual(ran, { ran: false, reason: "phase_already_running", phase: "PRD" });
+      /*
+       * `reason` 是界面在精确匹配的那个字符串（`panel.js`），不许变。而「在等什么」
+       * 走旁边的字段 —— 2026-08-03 实测：人卡在这条拒绝上时，最想知道的正是
+       * 「到底什么东西还在跑」，而原来一个字都不说。
+       */
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "phase_already_running");
+      assert.equal(ran.phase, "PRD");
+      assert.equal(ran.busy, "running", "没说清在等的是什么");
+      assert.equal(ran.jobId, "JOB-INFLIGHT", "没说清是哪个 job");
       assert.equal(pty.started.length, 1);
+    });
+  });
+
+  /**
+   * 2026-08-03 真机撞出来的三条，全是同一个根：**闸门问的是「进程活着吗」，而不是
+   * 「这个阶段有没有活儿没了结」。**
+   */
+  it("**会话没了但账没结 —— 照样不许再派**（否则同阶段起两条裁判线程）", async () => {
+    await withPanel(async ({ open, pty, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
+      // 一轮跑完，TUI 结束、注册表里没了 —— 但库里那个 job 还是 running。
+      database.prepare(
+        `INSERT INTO jobs (id, change_id, kind, status, attempt, max_attempts,
+           owner, token, expires_at, deadline_at, created_at, updated_at)
+         VALUES ('JOB-ORPHAN', ?, 'phase_turn', 'running', 1, 1,
+           'panel', 'T-ORPHAN', 9999999999999,
+           9999999999999, '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z')`,
+      ).run(CHANGE);
+      const before = pty.started.length;
+
+      const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
+        { ran: boolean; busy?: string };
+
+      // 实测那一次：这里放行了，于是同一个 (Change, 阶段) 上跑着两条裁判线程，
+      // 互相打断，一条烧掉近 300 万 input token。
+      assert.equal(ran.ran, false, "会话没了就放行 —— 会起第二条裁判线程");
+      assert.equal(ran.busy, "running");
+      assert.equal(pty.started.length, before, "还是起了一个新进程");
+    });
+  });
+
+  it("**排着队还没跑起来的也算忙** —— 派了两次就是两轮", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
+      database.prepare(
+        `INSERT INTO jobs (id, change_id, kind, status, attempt, max_attempts,
+           deadline_at, created_at, updated_at)
+         VALUES ('JOB-QUEUED', ?, 'phase_turn', 'queued', 0, 1,
+           9999999999999, '2026-08-03T00:00:00.000Z', '2026-08-03T00:00:00.000Z')`,
+      ).run(CHANGE);
+
+      const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
+        { ran: boolean; busy?: string };
+      assert.equal(ran.ran, false);
+      assert.equal(ran.busy, "queued");
+    });
+  });
+
+  it("**问人之前，活着的终端也要挡** —— 往在飞的 turn 里打字会把选择器打掉", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
+      // 有人开着这个阶段的终端（可能正跑着一个 turn，注册表看不出来）。
+      await open(`/pty/${CHANGE}/PRD`);
+
+      const asked = await (await open(`/api/ask?change=${CHANGE}`, { method: "POST" })).json() as
+        { asked: boolean; reason?: string; busy?: string };
+
+      /*
+       * 2026-08-03 实测：这里放行的话，新提示词打进去，Codex 当成打断
+       * （`turn_aborted: interrupted`），人面前那个选择器在 1~4 秒内被取消，
+       * `stagepass_ask` 返回空的 `cancel`。连着六次都是这么废的。
+       */
+      assert.equal(asked.asked, false, "往活着的终端里打字了 —— 会打断在飞的 turn");
+      assert.equal(asked.reason, "phase_already_running");
+      assert.equal(asked.busy, "terminal");
     });
   });
 

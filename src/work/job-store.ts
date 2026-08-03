@@ -160,6 +160,31 @@ export class JobStore {
   }
 
   /**
+   * 这个 Change 现在有活儿在进行中吗 —— **排着队的也算。**
+   *
+   * ## 为什么闸门不能只看「进程活着吗」
+   *
+   * 三条问人的路和派发那条路，判据一直是 `sessions.has()`（注册表里还有没有这个
+   * 阶段的 pty）。2026-08-03 真机撞出来它挡不住什么：
+   *
+   * 一轮跑完，会话结束、注册表里没了，**而库里那个 job 还是 `running`**（没人收尾，
+   * 见下）。于是下一次派发畅通无阻，起了第二条裁判线程 —— 同一个 (Change, 阶段) 上
+   * 两条线程同时跑，正是 §6.5 规则 5 明令不许的那件事。实测那一次两条线程互相打断，
+   * 一条烧了近 300 万 input token，人在终端里连字都打不进去。
+   *
+   * 「进程活着」是**当下这一刻**的事实，而闸门要问的是**这个阶段有没有事情还没了结**。
+   * 后者只有账本知道。
+   */
+  busyFor(changeId: string): { id: string; status: JobStatus } | null {
+    const row = this.database.prepare(
+      `SELECT id, status FROM jobs
+        WHERE change_id = ? AND status IN ('queued', 'running')
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(changeId) as { id: string; status: JobStatus } | undefined;
+    return row ?? null;
+  }
+
+  /**
    * Take the oldest queued job, or nothing.
    *
    * A job whose attempts are spent is failed here rather than handed out, so a
