@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import type { Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
-  readVerdicts, RED, renderSettled,
+  readVerdicts, RED, renderSettled, summariseConvergence,
   summariseRoundNotes,
   UnreadableVerdictError,
 } from "./round";
@@ -1097,5 +1097,44 @@ describe("L4 · 已裁定的事跨阶段跟着走", () => {
   it("没有裁定过任何事就一行都不印", () => {
     const without = judgePrompt({ phase: "Spec", round: 2, task: "写 Spec", openGaps: [] });
     assert.ok(!without.includes("已经裁定过"), "没有裁定却印了那一节");
+  });
+});
+
+/**
+ * 跑满轮次预算之后，把收敛数据摊给人看。
+ *
+ * 蓝方每轮关 N 条铸 M 条，纯靠轮次永远清不了零。用户 2026-08-03 选的是**软预算**：
+ * 「再来一轮」仍然提供，只是不再让人抱着「再跑一轮就清零」的幻想 —— 阻断归人管。
+ */
+describe("L4 · 跑满预算就把收敛数据摊出来", () => {
+  it("**不到预算不出声** —— 前几轮本来就该跑", () => {
+    for (const round of [1, 2, 3, 4]) {
+      assert.equal(
+        summariseConvergence({ round, budget: 5, raised: 12, open: 7 }), "",
+        `第 ${round} 轮就开始念叨，等于劝人别对抗`,
+      );
+    }
+  });
+
+  it("**到了就说得很具体** —— 两个数直接回答「它在不在收敛」", () => {
+    const text = summariseConvergence({ round: 5, budget: 5, raised: 12, open: 7 });
+    assert.match(text, /已经跑了 5 轮/);
+    assert.match(text, /一共提出过 12 条/);
+    assert.match(text, /还开着 7 条/);
+  });
+
+  it("**它不拦人** —— 明说再来一轮仍然可以", () => {
+    const text = summariseConvergence({ round: 9, budget: 5, raised: 30, open: 11 });
+    assert.match(text, /再来一轮仍然可以/, "说成拦住了 —— 而阻断该归人管");
+    assert.match(text, /该由你判断/);
+  });
+
+  it("**这段话不进选项文案** —— 选项是按原文精确匹配回动作的", () => {
+    /*
+     * `ACTION_BY_LABEL` 拿标签原文查动作。往标签里拼「已跑 5 轮」，人选完就映射不回
+     * `reject` —— 静默失败。标签是枚举值，这段是散文，两者不能混。
+     */
+    const text = summariseConvergence({ round: 5, budget: 5, raised: 12, open: 7 });
+    assert.ok(!text.includes("再来一轮（红蓝在这个阶段重新跑）"), "把选项原文抄进散文里了");
   });
 });

@@ -82,6 +82,24 @@ const minutes = (name: string, fallbackMinutes: number): number => {
 const askTimeoutMs = minutes("ask-timeout", 15);
 const turnTimeoutMs = minutes("turn-timeout", 30);
 
+/**
+ * 跑几轮之后开始把收敛数据摊给人看。默认 5。
+ *
+ * **不是硬上限**：「再来一轮」仍然提供，只是从这一轮起，裁决那张表会告诉他这个阶段
+ * 一共提过几条问题、现在还开着几条 —— 每轮关掉几条也会新开几条，纯靠轮次清不了零，
+ * 而人在按按钮之前有权知道这件事。停不停仍然是他的决定（用户 2026-08-03）。
+ */
+const roundBudget = (() => {
+  const raw = argument("round-budget");
+  if (raw === undefined) return 5;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    console.error(`--round-budget 要一个 ≥1 的整数，收到的是「${raw}」`);
+    process.exit(1);
+  }
+  return value;
+})();
+
 const changeId = argument("change") ?? "CHG-1";
 const dbPath = argument("db")
   ?? join(mkdtempSync(join(tmpdir(), "stagepass-panel-")), "ship.db");
@@ -151,6 +169,7 @@ const { server, sessions } = createPanelServer({
   database,
   askTimeoutMs,
   turnTimeoutMs,
+  roundBudget,
   session: {
     // Where Codex runs. The repository itself, because a phase's work is about
     // this tree -- unlike the probes, which use an empty directory on purpose.
@@ -217,6 +236,7 @@ server.listen(port, () => {
   // 截止时间要说出来。到点之后 StagePass 会把会话关掉，而那在屏幕上是「终端自己
   // 没了」—— 人得先知道有这么个东西，才可能把它和自己刚才的等待对上。
   console.log(`截止   问人 ${askTimeoutMs / 60_000} 分钟 · 一轮 ${turnTimeoutMs / 60_000} 分钟`);
+  console.log(`轮次   跑满 ${roundBudget} 轮之后，裁决表会告诉你它到底在不在收敛`);
   console.log("\n每个阶段一个终端。**看一眼不会起进程** —— 要一个按「开一个终端」。");
   console.log("Ctrl-C 结束。");
 });

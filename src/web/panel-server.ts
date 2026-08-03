@@ -41,7 +41,7 @@ import { WorklistStore } from "../store/worklist-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
-import { summariseRoundNotes } from "../domain/round";
+import { summariseConvergence, summariseRoundNotes } from "../domain/round";
 import {
   RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
   type RubricRole,
@@ -273,6 +273,13 @@ export interface PanelOptions {
    * 1 秒，不是 30）。
    */
   readonly recoverEveryMs?: number;
+  /**
+   * 跑几轮之后开始把收敛数据摊给人看。默认 5。
+   *
+   * **不是硬上限**（用户 2026-08-03）：「再来一轮」仍然提供，只是从这一轮起，
+   * 裁决那张表的题面会告诉他一共提过几条、现在还开着几条。阻断归人管。
+   */
+  readonly roundBudget?: number;
 }
 
 /**
@@ -1674,7 +1681,21 @@ export async function handle(
         ? "证据已到齐，没有挡住闸门的问题。"
         : `${blockers.length} 项问题仍然挡着闸门。先逐条说你怎么看，最后再裁决。`)
         + summariseAssessments(assessed?.byRole ?? null)
-        + summariseRoundNotes(notes),
+        + summariseRoundNotes(notes)
+        /*
+         * 跑满预算之后把收敛数据摊出来。**不拦人** —— 阻断归人管。
+         *
+         * 轮次和派发那边同一个算法：账本里落进 `running` 的次数。两处各算一套迟早
+         * 会说出两个不同的「第几轮」，而人正拿着这个数做决定。
+         */
+        + summariseConvergence({
+          round: new ChangeStore(database).ledger(changeId)
+            .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
+            .length,
+          budget: options.roundBudget ?? 5,
+          raised: gaps.all(changeId, phase).length,
+          open: blockers.length,
+        }),
       openGaps,
     });
     // No question rather than an empty one: putting a decision to someone that

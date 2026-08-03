@@ -663,6 +663,42 @@ export type RoundNoteSource = (typeof ROUND_NOTE_SOURCES)[number];
  * 「可以了」就是替裁判说了一句它没说过的话，而这一整套东西的立身之本正是不许
  * 出现这种话。所以那一种照实说「读不出来」。
  */
+/**
+ * 跑到预算之后，把**收敛数据**摊给人看。
+ *
+ * ## 为什么不是硬上限
+ *
+ * 用户 2026-08-03 选的：仍然提供「再来一轮」，但不再让人抱着「再跑一轮就清零」的
+ * 幻想。这和他一贯的那条一致 —— **阻断归人管**，机器不替他做停不停的决定。
+ *
+ * 硬拦的失败模式是真问题还在时也停；只摊数据的失败模式是他看完还是选择再跑 ——
+ * 而后者是他知情之后的选择，不是被机器骗着做的。
+ *
+ * ## 为什么是这两个数
+ *
+ * 「一共提出过几条」和「现在还开着几条」直接回答「它到底在不在收敛」。而且两个数
+ * 从现有数据就能算，不用给 gap 加「哪一轮关的」那一列 —— 一个不必存的字段就是一个
+ * 会和事实漂开的字段。
+ *
+ * ## 为什么不写进选项的文案
+ *
+ * `ACTION_BY_LABEL` 是**按标签原文精确匹配**回动作的。往标签后面拼一句「已跑 5 轮」，
+ * 人选完就映射不回 `reject` 了 —— 而那是静默失败。标签是**枚举值**，这段是**散文**，
+ * 正好对应「模型和人的输出里只允许有枚举里的选择和散文」那条。
+ */
+export function summariseConvergence(input: {
+  readonly round: number;
+  readonly budget: number;
+  readonly raised: number;
+  readonly open: number;
+}): string {
+  if (input.round < input.budget) return "";
+  return `\n\n这个阶段已经跑了 ${input.round} 轮：一共提出过 ${input.raised} 条问题，`
+    + `现在还开着 ${input.open} 条。`
+    + `\n再来一轮仍然可以，但**它不一定会收敛** —— 每一轮关掉几条，也会新开几条。`
+    + `\n该由你判断剩下的还值不值得再对抗一轮，还是就这样批准、或者把它们接受下来。`;
+}
+
 export function summariseRoundNotes(
   notes: readonly {
     readonly source: RoundNoteSource;
