@@ -99,6 +99,24 @@ interface Fake {
 const resumedThread = (argv: string[]): string | null =>
   argv[0] === "resume" ? argv[1]! : null;
 
+
+/**
+ * 起一个终端，然后接上去。
+ *
+ * 2026-08-03 起**看那条路不再起进程**（用户：「我点进入终端只是想看看状态……
+ * 而不是点了就报废」）。以前 `GET /pty/...` 顺手就起一个，所以测试里写一句就够；
+ * 现在要一个进程就得明说。`/api/terminal` 是幂等的（已经活着就原样返回），
+ * 所以连着调两次仍然只有一个进程 —— 那正是「一个阶段只许一个」那条要验的。
+ */
+const withTerminal = async (
+  open: (path: string, init?: RequestInit) => Promise<Response>,
+  phase = "PRD",
+): Promise<Response> => {
+  await open(
+    `/api/terminal?change=${CHANGE}&phase=${phase}`, { method: "POST" });
+  return open(`/pty/${CHANGE}/${phase}`);
+};
+
 async function withPanel(
   body: (context: {
     base: string;
@@ -578,7 +596,7 @@ describe("panel · 一轮跑到哪了", () => {
   it("进程还在时不许报「已经死了」", async () => {
     await withPanel(async ({ open, database }) => {
       new ChangeStore(database).apply(CHANGE, "start");
-      await open(`/pty/${CHANGE}/PRD`);          // 起一个活会话
+      await withTerminal(open, "PRD");          // 起一个活会话
       await new Promise((resolve) => { setTimeout(resolve, 50); });
       const progress = await progressOf(open);
       assert.equal(progress.live, true);
@@ -654,7 +672,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
     const archive = fakeArchive({ "THREAD-OLD": true });
     await withPanel(async ({ open, database, pty }) => {
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-OLD");
-      await open(`/pty/${CHANGE}/PRD`);              // 浏览用的 resume
+      await withTerminal(open, "PRD");              // 浏览用的 resume
       await new Promise((resolve) => { setTimeout(resolve, 80); });
 
       assert.deepEqual(archive.calls, ["unarchive THREAD-OLD"]);
@@ -668,7 +686,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
     const archive = fakeArchive({ "THREAD-OK": false });
     return withPanel(async ({ open, database }) => {
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-OK");
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       await new Promise((resolve) => { setTimeout(resolve, 80); });
       assert.deepEqual(archive.calls, []);
     }, { archive });
@@ -736,7 +754,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
 describe("panel · bytes go through untouched", () => {
   it("forwards what the pty produced, byte for byte", async () => {
     await withPanel(async ({ open, pty }) => {
-      const response = await open(`/pty/${CHANGE}/PRD`);
+      const response = await withTerminal(open, "PRD");
       const reader = response.body!.getReader();
 
       // An escape sequence plus a multi-byte character -- exactly what a
@@ -756,14 +774,14 @@ describe("panel · bytes go through untouched", () => {
   it("replays what a running session already drew", async () => {
     await withPanel(async ({ open, pty }) => {
       // Someone opens the phase, Codex draws its screen, they navigate away.
-      const first = await open(`/pty/${CHANGE}/PRD`);
+      const first = await withTerminal(open, "PRD");
       const banner = new Uint8Array([0x4f, 0x4b, 0x21]); // "OK!"
       pty.emit(banner);
       await first.body!.cancel();
 
       // Coming back must not show an empty terminal: the pty forwards what
       // happens next, and at an idle composer nothing happens next.
-      const second = await open(`/pty/${CHANGE}/PRD`);
+      const second = await withTerminal(open, "PRD");
       const { value } = await second.body!.getReader().read();
 
       assert.deepEqual(Array.from(value!), Array.from(banner));
@@ -781,14 +799,14 @@ describe("panel · bytes go through untouched", () => {
      * 字节仍然是字节：留下的是原样的 Uint8Array，回放也是原样写回，不解析（§9.3）。
      */
     await withPanel(async ({ open, pty }) => {
-      const first = await open(`/pty/${CHANGE}/PRD`);
+      const first = await withTerminal(open, "PRD");
       const lastWords = new Uint8Array(Buffer.from("session is archived", "utf-8"));
       pty.emit(lastWords);
       await first.body!.cancel();   // 人走开了……
       pty.exitOne(0);               // ……然后进程自己死了
       await new Promise((resolve) => { setTimeout(resolve, 50); });
 
-      const second = await open(`/pty/${CHANGE}/PRD`);
+      const second = await withTerminal(open, "PRD");
       assert.equal(pty.started.length, 2, "死了之后再打开，该起的是一个新进程");
       const reader = second.body!.getReader();
       const { value } = await Promise.race([
@@ -821,7 +839,7 @@ describe("panel · bytes go through untouched", () => {
      * 已经被删掉的 Change 没有「回去看」这回事，它的最后一屏只会冒充下一个同名者的。
      */
     await withPanel(async ({ open, pty, database }) => {
-      const first = await open(`/pty/${CHANGE}/PRD`);
+      const first = await withTerminal(open, "PRD");
       const lastWords = new Uint8Array(
         Buffer.from("Error: Operation not permitted (os error 1)", "utf-8"),
       );
@@ -836,7 +854,7 @@ describe("panel · bytes go through untouched", () => {
       // 重发同一个 id —— `mintId` 在删光之后就是这么发的，这里直接照着做。
       new ChangeStore(database).create(CHANGE, { projectId: PROJECT });
 
-      const second = await open(`/pty/${CHANGE}/PRD`);
+      const second = await withTerminal(open, "PRD");
       const reader = second.body!.getReader();
       const { value } = await Promise.race([
         reader.read(),
@@ -856,6 +874,7 @@ describe("panel · bytes go through untouched", () => {
   it("sends keystrokes to the pty as bytes", async () => {
     await withPanel(async ({ open, pty }) => {
       // Down arrow, then Enter: the two keys a gate decision needs.
+      await withTerminal(open, "PRD");
       const keys = new Uint8Array([0x1b, 0x5b, 0x42, 0x0d]);
       const posted = await open(`/pty/${CHANGE}/PRD/in`, { method: "POST", body: keys });
       assert.equal(posted.status, 204);
@@ -865,6 +884,7 @@ describe("panel · bytes go through untouched", () => {
 
   it("passes the browser's size through to the pty", async () => {
     await withPanel(async ({ open, pty }) => {
+      await withTerminal(open, "PRD");
       await open(`/pty/${CHANGE}/PRD/resize?cols=100&rows=40`, { method: "POST" });
       assert.deepEqual(pty.resized.at(-1), { cols: 100, rows: 40 });
     });
@@ -874,8 +894,8 @@ describe("panel · bytes go through untouched", () => {
 describe("panel · one live process per phase thread", () => {
   it("does not start a second process for a phase that has one", async () => {
     await withPanel(async ({ open, pty }) => {
-      await open(`/pty/${CHANGE}/PRD`);
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
+      await withTerminal(open, "PRD");
       await open(`/pty/${CHANGE}/PRD/in`, {
         method: "POST", body: new Uint8Array([0x0d]),
       });
@@ -886,7 +906,7 @@ describe("panel · one live process per phase thread", () => {
   it("**turn 在飞时拒绝派发** —— 规则 5 保护的是 turn 边界", async () => {
     await withPanel(async ({ open, pty, database }) => {
       new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       // 有一轮真的没跑完：最新 job 还是 running。
       database.prepare(
         `INSERT INTO jobs (id, change_id, kind, status, attempt, max_attempts,
@@ -965,7 +985,7 @@ describe("panel · one live process per phase thread", () => {
     await withPanel(async ({ open, database }) => {
       new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
       // 有人开着这个阶段的终端（可能正跑着一个 turn，注册表看不出来）。
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
 
       const asked = await (await open(`/api/ask?change=${CHANGE}`, { method: "POST" })).json() as
         { asked: boolean; reason?: string; busy?: string };
@@ -990,7 +1010,7 @@ describe("panel · one live process per phase thread", () => {
     await withPanel(async ({ open, pty, database }) => {
       new ChangeStore(database).setBrief(CHANGE, "本地排行榜");
       // 有人开着 PRD 的终端看，但没有任何 job 在跑。
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       const before = pty.started.length;
 
       const ran = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json() as
@@ -1015,10 +1035,10 @@ describe("panel · one live process per phase thread", () => {
      */
     await withPanel(async ({ open, pty }) => {
       // 起一个（浏览用），关掉它，再起一个 —— 中间不让 onExit 有机会先到。
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       await new Promise((resolve) => { setTimeout(resolve, 50); });
       await open(`/api/close?change=${CHANGE}&phase=PRD`, { method: "POST" });
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       const afterRelaunch = pty.started.length;
 
       // 只让**第一个**（已经被 kill 掉的那个）把 onExit 发出来。
@@ -1026,7 +1046,7 @@ describe("panel · one live process per phase thread", () => {
       await new Promise((resolve) => { setTimeout(resolve, 50); });
 
       // 再进一次终端：注册表里还认得那一个，所以不该再起第三个。
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       assert.equal(pty.started.length, afterRelaunch,
         "旧进程的 onExit 把新会话删掉了，于是这里又起了一个 —— 同一个阶段两个进程");
     });
@@ -1034,8 +1054,8 @@ describe("panel · one live process per phase thread", () => {
 
   it("gives a different phase its own process", async () => {
     await withPanel(async ({ open, pty }) => {
-      await open(`/pty/${CHANGE}/PRD`);
-      await open(`/pty/${CHANGE}/Spec`);
+      await withTerminal(open, "PRD");
+      await withTerminal(open, "Spec");
       assert.equal(pty.started.length, 2);
       assert.deepEqual(pty.started.map((entry) => entry.phase), ["PRD", "Spec"]);
     });
@@ -1044,8 +1064,8 @@ describe("panel · one live process per phase thread", () => {
   it("resumes the phase's bound thread rather than starting a new one", async () => {
     await withPanel(async ({ open, pty, database }) => {
       new BindingStore(database).bind(CHANGE, "Spec", "THREAD-SPEC");
-      await open(`/pty/${CHANGE}/PRD`);
-      await open(`/pty/${CHANGE}/Spec`);
+      await withTerminal(open, "PRD");
+      await withTerminal(open, "Spec");
       const argvFor = (phase: string) =>
         pty.started.find((entry) => entry.phase === phase)!.argv;
       assert.equal(resumedThread(argvFor("PRD")), null);
@@ -1053,13 +1073,34 @@ describe("panel · one live process per phase thread", () => {
     });
   });
 
-  it("opens a phase for looking without dispatching a turn", async () => {
+  it("**看一眼绝不起进程** —— 起进程要人明说", async () => {
+    /*
+     * 用户 2026-08-03 连着栽了两次：`GET /pty/...` 原来见没有会话就起一个（而且
+     * 漏了插件配置），起来之后这个阶段的每个动作都被闸门拒掉。
+     * 「我点进入终端只是想看看状态或者适时介入，而不是点了就报废。」
+     */
     await withPanel(async ({ open, pty }) => {
-      await open(`/pty/${CHANGE}/PRD`);
+      const looked = await open(`/pty/${CHANGE}/PRD`);
+      assert.equal(looked.status, 409, "看一眼却起了个进程");
+      await looked.text();
+      assert.equal(pty.started.length, 0);
+    });
+  });
+
+  it("明确要一个终端才起，而且**带着插件**", async () => {
+    await withPanel(async ({ open, pty }) => {
+      const response = await withTerminal(open, "PRD");
+      assert.equal(response.status, 200);
+      await response.body?.cancel();
+      assert.equal(pty.started.length, 1);
       const argv = pty.started[0]!.argv;
-      // The invocation carries flags and nothing else. A prompt here would send
-      // a turn to the model just because somebody clicked a node to look.
-      assert.deepEqual(argv, ["-s", "read-only", "-a", "on-request"]);
+      // 没有 prompt：起一个终端不该顺手派一个 turn 给模型。
+      assert.ok(!argv.some((each) => each.includes("你是本轮的裁判")));
+      // 有插件：人要在这个终端里跟它说话，手上没工具就只会说「没有这个工具」。
+      assert.ok(
+        argv.some((each) => each.startsWith("mcp_servers.stagepass")),
+        "起出来的 Codex 手上没有 StagePass 的工具",
+      );
     });
   });
 });
@@ -2107,7 +2148,7 @@ describe("panel · Codex 跑在项目的目录里", () => {
     await withPanel(async ({ open, pty }) => {
       // withPanel 把项目的 path 设成 /tmp，而 session.cwd 是 "/tmp" 之外的值时
       // 这条才有意义 —— 所以断言的是「用了项目那个」。
-      await open(`/pty/${CHANGE}/PRD`);
+      await withTerminal(open, "PRD");
       assert.equal(pty.started.length, 1);
       assert.equal(pty.startedCwd[0], "/tmp");
     });
@@ -2134,7 +2175,10 @@ describe("panel · Codex 跑在项目的目录里", () => {
     await withPanel(async ({ open, database, pty }) => {
       database.prepare("UPDATE projects SET path = NULL WHERE id = ?").run(PROJECT);
       // 回落会让「跑在正确的仓库」和「跑在恰好启动时那个仓库」看起来一模一样。
-      assert.equal((await open(`/pty/${CHANGE}/PRD`)).status, 500);
+      const asked = await open(
+        `/api/terminal?change=${CHANGE}&phase=PRD`, { method: "POST" });
+      assert.equal(asked.status, 409);
+      await asked.text();
       assert.equal(pty.started.length, 0);
     });
   });
@@ -2190,7 +2234,7 @@ describe("panel · 新建 Project 必须给路径", () => {
 describe("panel · 终端死了要告诉正在看的人", () => {
   it("**进程退出时那条响应会结束**", async () => {
     await withPanel(async ({ open, pty, base }) => {
-      const response = await open(`/pty/${CHANGE}/PRD`);
+      const response = await withTerminal(open, "PRD");
       const reader = response.body!.getReader();
       pty.emit(new Uint8Array([0x68, 0x69])); // "hi"
       await reader.read();
@@ -2206,7 +2250,7 @@ describe("panel · 终端死了要告诉正在看的人", () => {
 
   it("人先走开时不会去动一个已经关掉的响应", async () => {
     await withPanel(async ({ open, pty }) => {
-      const response = await open(`/pty/${CHANGE}/PRD`);
+      const response = await withTerminal(open, "PRD");
       await response.body!.cancel();          // 人关掉了页面
       await new Promise((resolve) => { setTimeout(resolve, 60); });
       // 这一下不许抛：ender 应该已经被 request close 摘掉了。
@@ -2229,6 +2273,8 @@ describe("panel · 荒谬的终端尺寸不照做", () => {
     open: (path: string, init?: RequestInit) => Promise<Response>,
     query: string,
   ) => {
+    // 得先有个进程可以 resize —— 看那条路 2026-08-03 起不再顺手起一个。
+    (await withTerminal(open, "PRD")).body?.cancel();
     await open(`/pty/${CHANGE}/PRD/resize?${query}`, { method: "POST" });
   };
 

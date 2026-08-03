@@ -217,6 +217,6 @@ server.listen(port, () => {
   // 截止时间要说出来。到点之后 StagePass 会把会话关掉，而那在屏幕上是「终端自己
   // 没了」—— 人得先知道有这么个东西，才可能把它和自己刚才的等待对上。
   console.log(`截止   问人 ${askTimeoutMs / 60_000} 分钟 · 一轮 ${turnTimeoutMs / 60_000} 分钟`);
-  console.log("\n每个阶段一个终端。点开一个 tab 就在那个阶段的线程里起一个 Codex。");
+  console.log("\n每个阶段一个终端。**看一眼不会起进程** —— 要一个按「开一个终端」。");
   console.log("Ctrl-C 结束。");
 });

@@ -1029,11 +1029,21 @@ body::after {
         <div id="sheet-rubric" hidden></div>
       </div>
       <div class="sheet-foot">
-        <button class="enter" id="enter" type="button">进入终端</button>
+        <!--
+          看这个阶段的终端。**只看，绝不起进程** —— 起进程是下面那个按钮的事。
+          用户 2026-08-03：「我点进入终端只是想看看状态或者适时介入，而不是点了
+          就报废。」进程没了就给最后一屏，从没跑过就说还没有进程。
+        -->
+        <button class="enter" id="enter" type="button">看这个终端</button>
+        <!--
+          明确起一个 Codex 聊天窗口。有活进程时藏起来（一个阶段只许一个进程）。
+          名字里有「开」，人按下去就知道自己在起一个进程。
+        -->
+        <button class="enter" id="open-term" type="button" hidden>开一个终端</button>
         <!--
           结束这个终端 —— **界面上一直缺的那个出口**。每个动作在有活进程时都禁用
           （一个阶段同时只许一个进程），而 TUI 不会自己退出：没有这个按钮，人一按
-          「进入终端」，那个阶段就永远卡住，只剩「进入终端」能按。
+          「开一个终端」，那个阶段就卡住，只剩这个出口。
         -->
         <button class="enter" id="close-term" type="button" hidden>结束这个终端</button>
         <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
@@ -1051,10 +1061,6 @@ body::after {
         </div>
         <button class="back" id="back">← 返回阶段环</button>
       </div>
-      <!--
-        补问那格的标签页。平时是空的（补问只在一次对抗里存在，跑完就收），
-        所以整条默认 hidden —— 一条永远空着的工具栏只是噪音。
-      -->
       <div class="surface"><div id="term"></div></div>
       <p class="note" id="stage-note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
     </section>

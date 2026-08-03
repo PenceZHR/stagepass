@@ -67,6 +67,7 @@ const enterButton = document.getElementById("enter");
 const waiveButton = document.getElementById("waive");
 const briefButton = document.getElementById("brief");
 const closeTermButton = document.getElementById("close-term");
+const openTermButton = document.getElementById("open-term");
 const nextStepLine = document.getElementById("next-step");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
@@ -1002,6 +1003,8 @@ function drawSheet(phase) {
 
   // 出口：有活进程时才出现。没有它，上面每一个 disabled 都是一个没有出路的死结。
   closeTermButton.hidden = !entry.live;
+  // 「开一个」和「结束这个」互斥：一个阶段同时只许一个进程。
+  openTermButton.hidden = entry.live;
 
   drawNextStep(entry);
 }
@@ -1097,6 +1100,32 @@ function nextStep(entry) {
  * **这是那个缺失的出口。** 结束一个进程不是业务决策 —— 它不推动闸门，也不对任何
  * 产物下判断，所以它可以是网页上的一个按钮。
  */
+/**
+ * 明确起一个 Codex 聊天窗口。
+ *
+ * 和「看这个终端」分开的那一半 —— 看的那条路绝不起进程了（用户 2026-08-03：
+ * 「我点进入终端只是想看看状态……而不是点了就报废」）。起进程要有自己的名字，
+ * 人按下去就知道自己在做什么。
+ */
+async function openTerminal() {
+  const phase = sheetPhase;
+  if (!phase) return;
+  openTermButton.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/terminal?change=${encodeURIComponent(changeId)}`
+      + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
+    );
+    const result = response.ok ? await response.json() : { opened: false };
+    await load();
+    // 起成了就直接进去 —— 人要的是那个终端，不是「已开启」四个字。
+    if (result.opened) { closeSheet(); await enter(phase); return; }
+    if (sheetPhase) drawSheet(sheetPhase);
+  } finally {
+    openTermButton.disabled = false;
+  }
+}
+
 async function closeTerminal() {
   const phase = sheetPhase;
   if (!phase) return;
@@ -1343,16 +1372,26 @@ async function attach(phase, reattaching = false) {
   if (!reattaching) await resize(phase);
 
   /*
-   * 重连（C3）带 `existing=1`：**只接活着的，不新起。**
+   * **这条路只看，不起进程**（服务端 2026-08-03 起就是这个语义）。三种回法：
    *
-   * 裸的 GET 见没有会话就起一个浏览用的新进程 —— 重连走那条路，「进程死了」会被
-   * 一个空 composer 盖掉，人以为一切正常。带上这个参数，死了就是 409，注解留在
-   * 屏幕上。
+   *   200 + 流   进程活着，接上去
+   *   200 + 完整 进程死了，这是它的最后一屏（服务端给完就 end）
+   *   409        这个阶段从没跑过 —— 说出来，别留一片空白
    */
   const response = await fetch(
     path(phase, reattaching ? "?existing=1" : ""), { signal: stream.signal });
   if (!response.ok) {
     if (mine !== stream) return;
+    /*
+     * **空白和「没有进程」在人眼里一模一样**，所以要写出来。这正是这个面板从头
+     * 到尾在防的那类：做了事却看不出做了，或者没做事却看不出没做。
+     */
+    if (!reattaching) {
+      term.reset();
+      term.write("\r\n  这个阶段还没有进程。\r\n\r\n");
+      term.write("  要跑这个阶段，回阶段环按「跑这个阶段」；\r\n");
+      term.write("  只想在这条线程里跟 Codex 说话，按「开一个终端」。\r\n");
+    }
     // 重连扑空（409）：进程真的死了。注解已经在屏幕下面，保留尸体，不再试。
     return;
   }
@@ -1414,6 +1453,7 @@ runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
 closeTermButton.addEventListener("click", () => { void closeTerminal(); });
+openTermButton.addEventListener("click", () => { void openTerminal(); });
 waiveButton.addEventListener("click", () => { void waive(); });
 document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
 

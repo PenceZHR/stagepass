@@ -391,6 +391,16 @@ export class PanelSessions {
   }
 
   /**
+   * 这个阶段最后一屏，**进程已经没了的时候**。没有尸体就是空数组。
+   *
+   * 「死了」和「从没跑过」在屏幕上必须分得开：前者要让人看见它是怎么死的
+   * （`corpses` 存在的全部理由），后者该说「还没有进程」而不是给一片空白。
+   */
+  lastScreen(changeId: string, phase: Phase): readonly Uint8Array[] {
+    return this.corpses.get(PanelSessions.key(changeId, phase)) ?? [];
+  }
+
+  /**
    * 主线那条会话**如果它已经在跑**。没有就是 `undefined` —— 绝不起一个。
    *
    * `open()` 见没有就起一个，那对「往里写点东西」这种用途是错的：它会凭空造出
@@ -403,22 +413,39 @@ export class PanelSessions {
   }
 
   /**
-   * The session for a phase, started if it is not running.
+   * **明确地**在这个阶段的线程里开一个 Codex 聊天窗口。
    *
-   * Returning the existing one rather than starting a second is the guarantee
-   * described above; it is not an optimisation.
+   * ## 为什么这件事必须有自己的名字
+   *
+   * 这个方法原来叫 `open`，而「看一眼这个阶段的终端」走的也是它 —— 于是**只想看**
+   * 的人会凭空起一个进程。用户 2026-08-03 连着栽了两次，原话：
+   *
+   * > 「我点进入终端只是想看看状态或者适时介入，而不是点了就报废。」
+   *
+   * 起来之后 `has()` 变真，这个阶段的每一个动作都被闸门拒掉（`cannotAskNow`），
+   * 而当时界面上要先找到「结束这个终端」才出得来。**看和起是两件事，名字要分开。**
+   *
+   * ## 必须带插件
+   *
+   * 原来这条路拼 argv 时漏了 `config`，起出来的 Codex 手上没有 StagePass 的工具 ——
+   * 人在里面让它调 `stagepass_ask` 只会得到「没有这个工具」。和 `0c83eca` 修的
+   * 是同一个病（那次修的是跑一轮那条路），浏览这条路当时没一起修。
+   *
+   * 已经活着就原样返回，不起第二个（`launchInto` 的契约）。
    */
-  open(changeId: string, phase: Phase): LiveSession {
+  openForChat(
+    changeId: string, phase: Phase, config: readonly string[],
+  ): LiveSession {
     const bound = new BindingStore(this.options.database).find(changeId, phase);
-    // Browsing, not running: no prompt, so Codex opens at the composer and no
-    // turn is dispatched. Running a phase goes through `launchInto`, where the
-    // transport supplies the argv that carries the prompt.
+    // 没有 prompt：Codex 停在 composer，不派任何 turn。跑一个阶段走的是
+    // `launchInto`，那条路上的 argv 由 transport 提供，带着提示词。
     return this.launchInto(changeId, phase, codexArgv({
       threadId: bound?.status === "bound" ? bound.threadId : null,
       sandbox: this.options.session.sandbox,
       approval: this.options.session.approval,
       model: this.options.session.model,
       reasoningEffort: this.options.session.reasoningEffort,
+      config: [...config],
     }));
   }
 
@@ -2223,6 +2250,38 @@ export async function handle(
    *
    * 结束一个进程不是业务决策：它不推动闸门，也不对任何产物下判断。
    */
+  /*
+   * **明确要一个终端。** 和「看一眼」分开的那半。
+   *
+   * 看的那条路（`GET /pty/...`）绝不起进程了，所以要有一个地方能起。它是一个
+   * 显式动作、有自己的名字，人按下去就知道自己在起一个 Codex —— 这正是
+   * 用户 2026-08-03 那句话要的：「我点进入终端只是想看看状态……而不是点了就报废。」
+   *
+   * 带插件：这条路上起的 Codex 人是要跟它说话的，手上没有 StagePass 的工具就
+   * 只能得到「没有这个工具」。
+   */
+  if (url.pathname === "/api/terminal" && request.method === "POST") {
+    const changeId = url.searchParams.get("change") ?? "";
+    const phase = url.searchParams.get("phase") ?? "";
+    if (!isPhase(phase) || phase === "Done") {
+      response.writeHead(400).end("no such phase");
+      return;
+    }
+    // 账本闲着才许起：一个阶段同时只许一个进程（PRD §6.5 规则 5），而正在跑的
+    // 那一轮拥有这个座位。
+    const busy = phaseBusy(database, changeId);
+    if (busy) { json(response, { opened: false, ...busy }); return; }
+    try {
+      sessions.openForChat(changeId, phase, pluginConfigFor(database, changeId));
+    } catch (error: unknown) {
+      response.writeHead(409).end(
+        error instanceof Error ? error.message : "could not open a terminal");
+      return;
+    }
+    json(response, { opened: true, phase });
+    return;
+  }
+
   if (url.pathname === "/api/close" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
     const phase = url.searchParams.get("phase") ?? "";
@@ -2245,20 +2304,34 @@ export async function handle(
 
     if (action === undefined && request.method === "GET") {
       /*
-       * `?existing=1` = **只接活着的，不新起**（C3 重连用）。
+       * **看一眼绝不起进程。**
        *
-       * 浏览器那条流断掉有两种原因，必须分开对待：**服务端换了会话**（续跑关旧起新，
-       * 重连接上新的就好）和**进程真的死了**（要让人看见尸体和那行注解）。裸的 GET
-       * 分不出来 —— `open()` 见没有会话就起一个浏览用的新进程，重连就把死因盖掉了，
-       * 人对着一个空 composer 以为一切正常。
+       * 这里原来走 `open()`，而它见没有会话就起一个 —— 于是「我只想看看状态」
+       * 变成「这个阶段废了」：新进程一活着，`cannotAskNow` 就把这个阶段的每个动作
+       * 都拒掉。用户 2026-08-03 连着栽了两次。
        *
-       * 409 让前端知道「没有活的可接」，于是它保留死亡注解，而不是循环重连。
+       * 现在三种情况各说各的：活着就接上；死了就把最后一屏（`corpses`）给出去，
+       * 让人看得见死因；从没跑过就 409，前端说「这个阶段还没有进程」。
+       *
+       * 409 也是 C3 重连的判据（`?existing=1`）：前端据此保留死亡注解，而不是
+       * 循环重连或者对着一个空 composer 以为一切正常。
        */
-      if (url.searchParams.get("existing") === "1" && !sessions.has(changeId, phase)) {
-        response.writeHead(409).end("no live session to reattach");
+      const entry = sessions.current(changeId, phase);
+      if (!entry) {
+        const corpse = sessions.lastScreen(changeId, phase);
+        if (corpse.length === 0) {
+          response.writeHead(409).end("no session for this phase");
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "cache-control": "no-cache, no-transform",
+          "x-accel-buffering": "no",
+        });
+        for (const chunk of corpse) response.write(chunk);
+        response.end();
         return;
       }
-      const entry = sessions.open(changeId, phase);
       response.writeHead(200, {
         "content-type": "application/octet-stream",
         "cache-control": "no-cache, no-transform",
@@ -2296,7 +2369,13 @@ export async function handle(
       return;
     }
     if (action === "/in" && request.method === "POST") {
-      sessions.open(changeId, phase).session.write(await readBody(request));
+      /*
+       * **没有进程就不起一个来接这几个字节。** 原来这里也走 `open()` —— 于是一次
+       * 误触的按键就能凭空造出一个 Codex（而且是没有插件的那种）。
+       */
+      const live = sessions.current(changeId, phase);
+      if (!live) { response.writeHead(409).end("no session for this phase"); return; }
+      live.session.write(await readBody(request));
       response.writeHead(204).end();
       return;
     }
@@ -2320,7 +2399,8 @@ export async function handle(
         Number.isFinite(cols) && Number.isFinite(rows)
         && cols >= MIN_COLS && rows >= MIN_ROWS
       ) {
-        sessions.open(changeId, phase).session.resize(cols, rows);
+        // 同上：没有进程就没有可以 resize 的东西，不为此起一个。
+        sessions.current(changeId, phase)?.session.resize(cols, rows);
       }
       response.writeHead(204).end();
       return;
