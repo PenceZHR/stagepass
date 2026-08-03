@@ -76,6 +76,21 @@ import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * 把 StagePass 的插件挂给一次 Codex 启动。
+ *
+ * **每次启动都带，从不写进人的全局配置** —— 那样一个跑砸的实验会留在他机器上。
+ *
+ * 抽出来是因为这串东西现在有四个落点（问人问题、录需求、录需求的第二段、跑一轮），
+ * 而**同一条规则的四份拷贝必然漂移**：漂移的那一天，某一条路上的模型会理直气壮地
+ * 说「没有这个工具」，而那是最难查的一种毛病 —— 提示词里明明写着叫它调。
+ */
+const pluginConfigFor = (database: { name: string }): string[] => [
+  `mcp_servers.stagepass.command="npx"`,
+  `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
+  `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
+];
+
+/**
  * The phases that can hold a thread: eleven of the twelve.
  *
  * `Done` is excluded because it is terminal -- nothing is dispatched there, so
@@ -776,6 +791,15 @@ async function runRound(input: {
         ...options.session,
         ...(options.turnTimeoutMs === undefined
           ? {} : { timeoutMs: options.turnTimeoutMs }),
+        /*
+         * **对抗这条路也要挂上插件。**
+         *
+         * 面板另外两条路（问人问题、录需求）一直挂着，唯独跑一轮的这条没有 ——
+         * 于是裁判那个会话手上没有 StagePass 的工具。而落点二要把 gap 表态和 rubric
+         * 判定从「手抄标识符」改成「调工具只交内容」，第一步就是它得有这个工具。
+         * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
+         */
+        config: pluginConfigFor(database),
         /*
          * 有标签的是补问那种（L5 的 `askAgain`），它跑在**反方自己那条线程**上，
          * 所以单开一格、跑完自动收 —— disposer 交回给 transport，由它在 `finally`
@@ -1534,11 +1558,7 @@ export async function handle(
       model: options.session.model,
       reasoningEffort: options.session.reasoningEffort,
       // Registered per invocation, never written to the user's global config.
-      config: [
-        `mcp_servers.stagepass.command="npx"`,
-        `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
-        `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
-      ],
+      config: pluginConfigFor(database),
       prompt: [
         `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`,
         "它会把 StagePass 的问题交给我来选。",
@@ -1740,11 +1760,7 @@ export async function handle(
      * 会话**的（见 `PanelSessions.type`），而 MCP 工具是启动时注册的。这时候不注册，
      * 后面打字让它调 `stagepass_ask` 只会得到「没有这个工具」。
      */
-    const pluginConfig = [
-      `mcp_servers.stagepass.command="npx"`,
-      `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
-      `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
-    ];
+    const pluginConfig = pluginConfigFor(database);
     const transport = new CodexTuiTransport({
       ...options.session,
       ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
@@ -1911,11 +1927,7 @@ export async function handle(
       approval: options.session.approval,
       model: options.session.model,
       reasoningEffort: options.session.reasoningEffort,
-      config: [
-        `mcp_servers.stagepass.command="npx"`,
-        `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
-        `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
-      ],
+      config: pluginConfigFor(database),
       prompt: [
         `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`,
         "它会把「接受哪一条风险」交给我来选。",

@@ -54,6 +54,14 @@ export interface CodexTuiTransportOptions {
   readonly approval?: "untrusted" | "on-request";
   readonly model?: string;
   readonly reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  /**
+   * 每次启动都带上的 `-c` 配置。**从不写进人的全局配置。**
+   *
+   * 面板另外两条路（问人问题、录需求）一直是这么挂 `mcp_servers.stagepass` 的，
+   * 对抗那条路先前没有 —— 于是裁判那个会话手上没有 StagePass 的工具。
+   * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
+   */
+  readonly config?: readonly string[];
   /** Where Codex keeps session files. */
   readonly sessionsDir?: string;
   /** How long to wait for the turn to finish. See the note above on why. */
@@ -177,6 +185,8 @@ export class CodexTuiTransport implements CodexTransport {
       approval: this.options.approval,
       model: this.options.model,
       reasoningEffort: this.options.reasoningEffort,
+      ...(this.options.config === undefined
+        ? {} : { config: [...this.options.config] }),
     };
     const flags = codexFlags(shape);
     const invocation = dispatch.threadId === null

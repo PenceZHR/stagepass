@@ -1077,6 +1077,16 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       assert.match(prompt, /2\. 反方/, "没有让它派生反方");
       assert.doesNotMatch(prompt, /agent_id/, "又在要它手抄线程 id 了");
       assert.match(prompt, /先派正方/, "没说清派生的先后 —— 那是红蓝的判据");
+
+      /*
+       * **插件也要挂上。**
+       *
+       * 面板另外两条路（问人问题、录需求）一直挂着，对抗这条路先前没有 —— 于是
+       * 裁判那个会话手上没有 StagePass 的工具。少了它，提示词里叫它调工具只会得到
+       * 「没有这个工具」，而那是最难查的一种毛病。
+       */
+      assert.match(prompt, /mcp_servers\.stagepass\.command/, "没给这一轮挂上插件");
+      assert.match(prompt, /plugin\/server\.ts/, "插件路径没进 argv");
     });
   });
 
