@@ -46,6 +46,35 @@ if (!(EFFORTS as readonly string[]).includes(asked)) {
   process.exit(1);
 }
 const effort = asked as typeof EFFORTS[number];
+
+/**
+ * 两个截止时间，命令行说了算。单位是分钟。
+ *
+ * `--ask-timeout 45 --turn-timeout 60`。不给就是出厂值（15 / 30 分钟）。
+ *
+ * **为什么要能调大。** 出厂那 15 分钟是从「提示词打进会话」起算的，而人要答上话，
+ * 中间还隔着一道 StagePass 看不见的门：`-a on-request` 之下，每个会话第一次调
+ * stagepass 工具，Codex 会先弹自己的许可提示（`Allow the stagepass MCP server to
+ * run tool "stagepass_ask"?`）。2026-08-03 实测，一次录需求就这么废掉了 ——
+ * 人的 15 分钟被那道门吃掉一截，表单还没露面就到点了，`sessions.close()` 一执行，
+ * 终端当场消失，而现场看到的只是「点了没反应 / 自己跳没了」。
+ *
+ * 病根是「问人的预算里混进了一段不属于人的等待」，那要另外治（见交接）。这里做的
+ * 是把旋钮交出来：**验收的时候人就在键盘前，没有理由让他跟秒表赛跑。**
+ */
+const minutes = (name: string, fallback: number): number => {
+  const raw = argument(name);
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(`--${name} 要一个正数（分钟），收到的是「${raw}」`);
+    process.exit(1);
+  }
+  return value * 60_000;
+};
+const askTimeoutMs = minutes("ask-timeout", 15);
+const turnTimeoutMs = minutes("turn-timeout", 30);
+
 const changeId = argument("change") ?? "CHG-1";
 const dbPath = argument("db")
   ?? join(mkdtempSync(join(tmpdir(), "stagepass-panel-")), "ship.db");
@@ -113,6 +142,8 @@ if (
 
 const { server, sessions } = createPanelServer({
   database,
+  askTimeoutMs,
+  turnTimeoutMs,
   session: {
     // Where Codex runs. The repository itself, because a phase's work is about
     // this tree -- unlike the probes, which use an empty directory on purpose.
@@ -176,6 +207,9 @@ server.listen(port, () => {
     for (const each of recovered.failed) console.log(`       ${each.id} —— ${each.reason}`);
   }
   if (installed > 0) console.log(`出厂标准 补了 ${installed} 份（全部不阻断）`);
+  // 截止时间要说出来。到点之后 StagePass 会把会话关掉，而那在屏幕上是「终端自己
+  // 没了」—— 人得先知道有这么个东西，才可能把它和自己刚才的等待对上。
+  console.log(`截止   问人 ${askTimeoutMs / 60_000} 分钟 · 一轮 ${turnTimeoutMs / 60_000} 分钟`);
   console.log("\n每个阶段一个终端。点开一个 tab 就在那个阶段的线程里起一个 Codex。");
   console.log("Ctrl-C 结束。");
 });
