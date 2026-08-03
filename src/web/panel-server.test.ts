@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -1156,15 +1157,22 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
     });
   });
 
-  it("录了需求，它就出现在派出去的提示词里", async () => {
+  it("录了需求，它就跟着这一轮出去 —— **走文件，提示词里是路径**", async () => {
     await withPanel(async ({ open, pty, database }) => {
       new ChangeStore(database).setBrief(CHANGE, "上线前必须能一键回滚");
       void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
       await new Promise((resolve) => { setTimeout(resolve, 120); });
 
       const prompt = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
-      // 模型不再需要猜「this change」是什么。
-      assert.match(prompt, /上线前必须能一键回滚/);
+      /*
+       * 模型不再需要猜「this change」是什么 —— 但正文现在在文件里（用户 2026-08-03）。
+       * 两头都要盯：路径印出去了，而且那个文件里真是他写的需求。只盯前一半的话，
+       * 「路径对了但文件是空的」就没人接住 —— 而那正是 CHG-003 第一轮的症状
+       * （红方报「缺少产品输入」）换了一种发生方式。
+       */
+      const path = /\/[^\s：]*requirement-[^\s：]*\.md/.exec(prompt)?.[0];
+      assert.ok(path, "需求的路径没进提示词");
+      assert.match(readFileSync(path, "utf-8"), /上线前必须能一键回滚/);
     });
   });
 
@@ -1740,8 +1748,14 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const argv = pty.started.map((entry) => entry.argv.join(" ")).join("\n");
       assert.match(argv, /1\. 正方/);
       assert.match(argv, /2\. 反方/);
-      // 而且人刚写的那句话进了下一轮的提示词。
-      assert.match(argv, /按第 3 节那种写法改/);
+      /*
+       * 而且人刚写的那句话进了下一轮 —— **它现在在名单文件里，不在提示词里**
+       * （用户 2026-08-03：能文件化的就走文件）。所以两件事都要盯：路径印出去了，
+       * 而且那个文件里真有他那句话。少盯后一半，「路径对了但文件是空的」就没人接住。
+       */
+      const path = /\/[^\s：]*open-problems-[^\s：]*\.md/.exec(argv)?.[0];
+      assert.ok(path, "名单的路径没进提示词");
+      assert.match(readFileSync(path, "utf-8"), /按第 3 节那种写法改/);
     });
   });
 

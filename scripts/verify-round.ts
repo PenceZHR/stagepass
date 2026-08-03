@@ -12,7 +12,7 @@
  * spawns two sub-agents at the paths it was told to use. Everything else is
  * proved offline in `src/work/round-runner.test.ts`.
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -80,6 +80,11 @@ async function live(): Promise<void> {
       transport,
       gaps,
       childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      writeRoundFile: (name, content) => {
+        const path = join(mkdtempSync(join(tmpdir(), "stagepass-round-")), name);
+        writeFileSync(path, content, "utf-8");
+        return path;
+      },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
     },

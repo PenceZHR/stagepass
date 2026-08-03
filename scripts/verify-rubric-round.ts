@@ -22,7 +22,7 @@
  * 不能因为「没报错」就当成通过。fail-closed 的设计会让这种情况闸门关着，脚本要
  * 把这一点也打出来。
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -128,6 +128,11 @@ async function main(): Promise<void> {
     {
       transport, gaps, rubrics,
       childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      writeRoundFile: (name, content) => {
+        const path = join(mkdtempSync(join(tmpdir(), "stagepass-round-")), name);
+        writeFileSync(path, content, "utf-8");
+        return path;
+      },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
       readThreadWhole: (threadId) => readThreadWholeText({ threadId }),

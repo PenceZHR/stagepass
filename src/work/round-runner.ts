@@ -2,7 +2,7 @@ import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
-  judgePrompt, readConclusion, readRound, readVerdicts,
+  judgePrompt, readConclusion, readRound, readVerdicts, renderOpenGaps,
   type RoundAgents, type RoundConclusion, type RoundInstructions,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
@@ -85,6 +85,23 @@ export interface RoundDependencies {
    * 手边），而一份名单只能有一个游标。L5 要加的几条从 `extraWorkItems` 进来。
    */
   readonly worklist: WorklistStore;
+  /**
+   * 把这一轮要给模型读的一份文本落成文件，返回它的绝对路径。
+   *
+   * **为什么走文件**：开着的问题名单在提示词里出现两次（红方要去改、裁判要据此写
+   * 结论），占掉整份提示词的四分之一，而它天然是一份文档。用户 2026-08-03：
+   * 「能文件化的就以文件的形式传给提示词，否则提示词过于冗长。」
+   *
+   * 比省字数更值钱的一条：**路径比段落难被改写**。这份名单要经裁判转达给红方，而
+   * 实测过好几次「裁判把要转达的正文改写或省略掉了」（`domain/round.ts` 的
+   * `relayedTo`）—— 一个路径它没什么可消化的，转坏了红方会大声报读不到，而不是
+   * 安静地照一份缩水的名单干活。
+   *
+   * 注入是为了离线证。真实现写在临时目录，**不写进工作区** —— 那会把干净树弄脏，
+   * 而干净树是派轮的前置条件（`workspace_dirty`）。子 Agent 的沙箱把 `/private/tmp`
+   * 列在可写根里，实测见过。
+   */
+  readonly writeRoundFile: (name: string, content: string) => string;
 }
 
 /** 这一轮认不出正反两方跑在哪两条线程上。 */
@@ -176,6 +193,22 @@ export async function runRound(
     .filter((gap) => gap.status === "open");
 
   /*
+   * 名单落成文件，提示词里只印路径。空名单不写 —— 那时提示词里那句
+   * 「本阶段目前没有未关闭的问题」比一个空文件清楚。
+   */
+  const openGapsPath = openGaps.length === 0
+    ? undefined
+    : dependencies.writeRoundFile(
+        `open-problems-${request.phase}-r${request.round}.md`,
+        [
+          `# ${request.changeId} · ${request.phase} 第 ${request.round} 轮：还开着的问题`,
+          "",
+          renderOpenGaps(openGaps),
+          "",
+        ].join("\n"),
+      );
+
+  /*
    * **这一轮之前它已经有哪些孩子** —— 必须在 turn 之前问。
    *
    * 成功的轮复用裁判线程，所以一条裁判线程会累积多轮的子 Agent（实测见过一条挂着
@@ -216,6 +249,7 @@ export async function runRound(
       round: request.round,
       task: request.task,
       openGaps,
+      openGapsPath,
       addenda: request.addenda,
     }),
   });

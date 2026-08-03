@@ -89,6 +89,7 @@ function runner(
     repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
+    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
     worklist: new WorklistStore(context.db),
     readThread,
     // 这些用例不问送达 —— 它们问的是这个 runner 有没有把各层接对。
@@ -470,6 +471,7 @@ describe("RoundTurnRunner · aside 不绑定", () => {
       repo: { dirtyPaths: () => [], commitAll: () => null, show: () => null },
       workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
       childThreads: growingChildren(),
+    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
       worklist,
       readThread: () => answer(),
       readThreadWhole: () => "K1",

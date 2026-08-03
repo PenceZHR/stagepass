@@ -161,8 +161,24 @@ export class RoundTurnRunner implements TurnRunner {
       task: [
         this.options.taskFor(phase),
         "",
-        "人要的是这些（他自己在选择器里答的，不是模型猜的）：",
-        change.brief,
+        /*
+         * **需求正文走文件，提示词里只给路径。**
+         *
+         * 两个理由，后一个更重要：
+         *
+         * 1. 它天然是一份文档，而且能有几百字（用户 2026-08-03：能文件化的就走文件，
+         *    否则提示词过于冗长）。
+         * 2. **它要经裁判转达给红方，而路径比段落难被改写。** 2026-08-02 CHG-003
+         *    第一轮实测：裁判的提示词里明明有这几行人自己答的需求，红方的 rollout
+         *    里却一个字都没有 —— 它转述时改写丢了，红方只能报「缺少产品输入」，
+         *    四条 rubric 全判 no，一整轮白烧。一个路径它没什么可消化的，转坏了红方
+         *    会大声说读不到，而不是安静地照一份缩水的需求干活。
+         */
+        "人要的是这些（他自己在选择器里答的，不是模型猜的），全文在这个文件里，"
+        + `**先读它**：${this.options.writeRoundFile(
+          `requirement-${job.changeId}.md`,
+          `# ${job.changeId}：人自己答出来的需求\n\n${change.brief}\n`,
+        )}`,
         ...(() => {
           const upstream = PHASES
             .slice(0, PHASES.indexOf(phase))

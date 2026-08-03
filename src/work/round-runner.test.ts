@@ -77,6 +77,24 @@ function verdicts(record: Record<string, { kind: string; reason: string }> = {})
   return "```json\n" + JSON.stringify({ verdicts: record }) + "\n```";
 }
 
+/**
+ * 把「写给模型读的文件」记在内存里。
+ *
+ * 测试**绝不碰真文件系统**（和 repo 那个替身同一个理由）。记下来还有第二个用处：
+ * 断言得了「名单确实落进了文件、而且正文对」—— 提示词里现在只剩一个路径。
+ */
+function inMemoryFiles() {
+  const written = new Map<string, string>();
+  return {
+    written,
+    write(name: string, content: string): string {
+      const path = `/tmp/stagepass-test/${name}`;
+      written.set(path, content);
+      return path;
+    },
+  };
+}
+
 const RED_THREAD = "T-RED";
 const BLUE_THREAD = "T-BLUE";
 
@@ -113,6 +131,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
         transport,
         gaps,
         childThreads: spawnedBy(transport),
+        writeRoundFile: inMemoryFiles().write,
         worklist: worklistOf(db),
         readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
@@ -132,10 +151,12 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const db = database();
     const gaps = new GapStore(db, () => new Date(AT));
     const transport = new ScriptedCodexTransport([verdicts({}), verdicts({})], "JUDGE-1");
+    const files = inMemoryFiles();
     const dependencies = {
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      writeRoundFile: files.write,
       worklist: worklistOf(db),
       readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
@@ -151,7 +172,15 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
 
     // Round 1 had nothing open to judge; round 2 must carry round 1's finding.
     assert.match(transport.dispatches[0]!.prompt, /没有未关闭的问题/);
-    assert.match(transport.dispatches[1]!.prompt, /SPEC-1 \[P1\] 验收不可测/);
+    /*
+     * **名单走文件了**（用户 2026-08-03：能文件化的就走文件）。所以第 2 轮的提示词里
+     * 是一个路径，正文在文件里 —— 两处都要盯，否则「路径印出去了但文件是空的」这种
+     * 断法就没人接住。
+     */
+    const path = [...files.written.keys()].find((each) => each.includes("open-problems"))!;
+    assert.match(transport.dispatches[1]!.prompt, new RegExp(path));
+    assert.doesNotMatch(transport.dispatches[1]!.prompt, /SPEC-1 \[P1\]/, "正文还印在提示词里");
+    assert.match(files.written.get(path)!, /SPEC-1 \[P1\] 验收不可测/);
     // Red is told the shape to answer in, or its result is unreadable later.
     assert.ok(transport.dispatches[0]!.prompt.includes(RESULT_CONTRACT));
   });
@@ -168,6 +197,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       transport: judgeAnswering(transport, worklist, [["closed", "已补可测的验收标准"]]),
       gaps,
       childThreads,
+      writeRoundFile: inMemoryFiles().write,
       worklist,
       readThread: (threadId: string) => threadId.startsWith(RED_THREAD)
         ? answer({ artifactIds: ["spec.md"] })
@@ -177,6 +207,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       transport,
       gaps,
       childThreads,
+      writeRoundFile: inMemoryFiles().write,
       worklist,
       readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
@@ -209,6 +240,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       worklist: worklistOf(db),
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers })),
     });
@@ -234,6 +266,7 @@ describe("L4 · a round that half happened settles nothing", () => {
         transport,
         gaps,
         childThreads: spawnedBy(transport),
+        writeRoundFile: inMemoryFiles().write,
         worklist: worklistOf(db),
         readThread: (threadId) => {
           if (threadId.startsWith(RED_THREAD)) return answer({ artifactIds: ["spec.md"] });
@@ -257,6 +290,7 @@ describe("L4 · a round that half happened settles nothing", () => {
         transport,
         gaps,
         childThreads: spawnedBy(transport),
+        writeRoundFile: inMemoryFiles().write,
         worklist: worklistOf(db),
         readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
@@ -293,6 +327,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       worklist: worklistOf(db),
       readThread: (threadId) => {
         asked.push(threadId);
@@ -316,6 +351,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       worklist: worklistOf(db),
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     };
@@ -338,6 +374,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: () => [],
+      writeRoundFile: inMemoryFiles().write,
       worklist: worklistOf(db),
       readThread: roles(answer({}), answer({})),
     }), RoundAgentsNotFoundError);
@@ -353,6 +390,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: () => [`${RED_THREAD}-1`],
+      writeRoundFile: inMemoryFiles().write,
       worklist: worklistOf(db),
       readThread: roles(answer({}), answer({})),
     }), RoundAgentsNotFoundError);
@@ -370,6 +408,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
     const settled = await runRound(request, {
       transport,
       gaps,
+      writeRoundFile: inMemoryFiles().write,
       childThreads: () => [
         `${RED_THREAD}-dead`, `${BLUE_THREAD}-dead`,
         `${RED_THREAD}-1`, `${BLUE_THREAD}-1`,
@@ -415,6 +454,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     await runRound(request, {
       transport, gaps, worklist,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
@@ -438,6 +478,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     const settled = await runRound(request, {
       transport, gaps, worklist,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
@@ -461,6 +502,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
       },
       gaps, worklist,
       childThreads: spawnedBy(inner),
+      writeRoundFile: inMemoryFiles().write,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
@@ -479,6 +521,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     const settled = await runRound(request, {
       transport, gaps, worklist,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
@@ -503,6 +546,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
       transport: judgeAnswering(transport, worklist, [["closed", "第一个修了"]]),
       gaps, worklist,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
@@ -519,6 +563,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     const settled = await runRound(request, {
       transport, gaps, worklist,
       childThreads: spawnedBy(transport),
+      writeRoundFile: inMemoryFiles().write,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 

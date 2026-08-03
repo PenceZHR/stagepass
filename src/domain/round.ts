@@ -49,6 +49,19 @@ export interface RoundInstructions {
   readonly task: string;
   readonly openGaps: readonly Gap[];
   /**
+   * 开着的问题写成文件之后，那个文件在哪。
+   *
+   * **给了就印路径，不印正文。** 同一份名单原来在提示词里出现两次（红方要去改、
+   * 裁判要据此写结论），加起来占了整份提示词的四分之一 —— 而它天然是一份文档。
+   *
+   * 顺带比省字数更值钱的一条：**路径比段落难被改写**。这份名单要经裁判转达给红方，
+   * 而实测过好几次「裁判把要转达的正文改写或省略掉了」（见 `relayedTo`）；一个路径
+   * 它没什么可消化的，改坏了红方会大声报读不到，而不是安静地照一份缩水的名单干活。
+   *
+   * 缺席就照旧把正文印进去 —— 这一层是纯的，不知道文件是谁写的。
+   */
+  readonly openGapsPath?: string | undefined;
+  /**
    * 追加给各角色的额外要求，原样插进它们的任务里。
    *
    * **纯字符串，这一层不知道里面是什么。** L5 用它塞 rubric 契约；这里若改成
@@ -127,6 +140,29 @@ const gapLine = (gap: Gap): string => {
    */
   return gap.note === null ? head : `${head}\n  人说：${gap.note}`;
 };
+
+/**
+ * 这一阶段开着的问题，渲染成给人和给模型都读得懂的一段。
+ *
+ * 导出来是因为它现在**要写进文件**（`work/round-runner.ts`），而提示词里只印路径。
+ * 两处各写一遍渲染逻辑，迟早会漂成「文件里有人说的话、提示词里没有」这种差别。
+ *
+ * 人提的排在模型报的前面（用户 2026-07-30）：一条模型报的问题，判它不成立是裁判的
+ * 本职；一条人提的要求，不该被「我觉得这个建议可以不采纳」关掉。
+ */
+export function renderOpenGaps(openGaps: readonly Gap[]): string {
+  const human = openGaps.filter(isHumanGap);
+  const found = openGaps.filter((gap) => !isHumanGap(gap));
+  const sections: string[] = [];
+  if (human.length > 0) {
+    sections.push("**人明确要求下一轮处理的（不许当成建议）：**", ...human.map(gapLine));
+  }
+  if (found.length > 0) {
+    if (sections.length > 0) sections.push("", "之前轮次报出来的问题：");
+    sections.push(...found.map(gapLine));
+  }
+  return sections.join("\n");
+}
 
 /**
  * 上一轮报出来的问题，交给**动手的那个人**。
@@ -262,7 +298,9 @@ const idRule = (phase: string, side: "red" | "blue"): string[] => {
   ];
 };
 
-const redFixList = (openGaps: readonly Gap[]): string[] => {
+const redFixList = (
+  openGaps: readonly Gap[], path: string | undefined,
+): string[] => {
   if (openGaps.length === 0) return [];
   const indent = (gap: Gap): string =>
     gapLine(gap).split("\n").map((line) => `   ${line}`).join("\n");
@@ -270,14 +308,21 @@ const redFixList = (openGaps: readonly Gap[]): string[] => {
   // 再看建议。两边的顺序不一致，等于告诉红方和裁判两件不同的事哪个更要紧。
   const human = openGaps.filter(isHumanGap);
   const found = openGaps.filter((gap) => !isHumanGap(gap));
-  const lines: string[] = [];
-  if (human.length > 0) {
-    lines.push("   人明确要求这一轮处理的（不许当成建议）：", ...human.map(indent));
-  }
-  if (found.length > 0) {
-    if (lines.length > 0) lines.push("");
-    lines.push("   上一轮报出来的问题：", ...found.map(indent));
-  }
+  const lines: string[] = path !== undefined
+    // 名单走文件（见 `RoundInstructions.openGapsPath`）。这一句要转达给红方，
+    // 而一个路径比一整份名单难被裁判改写掉。
+    ? [`   上一轮报出来的问题全部列在这个文件里，**先读它**：${path}`]
+    : (() => {
+        const out: string[] = [];
+        if (human.length > 0) {
+          out.push("   人明确要求这一轮处理的（不许当成建议）：", ...human.map(indent));
+        }
+        if (found.length > 0) {
+          if (out.length > 0) out.push("");
+          out.push("   上一轮报出来的问题：", ...found.map(indent));
+        }
+        return out;
+      })();
   return [
     "",
     ...lines,
@@ -298,23 +343,11 @@ export function judgePrompt(input: RoundInstructions): string {
    * 先例。**它仍然可以被判 closed** —— 人的要求真被满足了就该关掉；这里管的是
    * 措辞，不是给它加一层不可关闭的特权。
    */
-  const human = input.openGaps.filter(isHumanGap);
-  const found = input.openGaps.filter((gap) => !isHumanGap(gap));
-
-  const sections: string[] = [];
-  if (human.length > 0) {
-    sections.push(
-      "**人明确要求下一轮处理的（不许当成建议）：**",
-      ...human.map(gapLine),
-    );
-  }
-  if (found.length > 0) {
-    if (sections.length > 0) sections.push("", "之前轮次报出来的问题：");
-    sections.push(...found.map(gapLine));
-  }
-  const gaps = sections.length === 0
+  const gaps = input.openGaps.length === 0
     ? "（本阶段目前没有未关闭的问题。）"
-    : sections.join("\n");
+    : input.openGapsPath === undefined
+      ? renderOpenGaps(input.openGaps)
+      : `名单在这个文件里，**先读它**：${input.openGapsPath}`;
 
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
@@ -351,7 +384,7 @@ export function judgePrompt(input: RoundInstructions): string {
     `1. ${RED}。**下面这段任务原样转达给${RED}，一个字都不要改** ——`
     + `「人要的是这些」那几行是人自己答的需求，改写或省略它，${RED}就只能凭空编。`,
     input.task,
-    ...redFixList(input.openGaps),
+    ...redFixList(input.openGaps, input.openGapsPath),
     ...idRule(input.phase, "red"),
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,

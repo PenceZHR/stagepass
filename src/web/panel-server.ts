@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
@@ -831,6 +832,17 @@ async function runRound(input: {
       repo: sessions.repo,
       workspaceFor: (each) => sessions.workspaceFor(each),
       childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      /*
+       * **写临时目录，不写工作区。** 写进工作区会把干净树弄脏，而干净树是派轮的
+       * 前置条件（上面那个 `workspace_dirty`）—— 那会变成「派轮这件事本身让下一次
+       * 派不了轮」。子 Agent 的沙箱把 `/private/tmp` 列在可写根里（实测见过）。
+       */
+      writeRoundFile: (name, content) => {
+        const directory = mkdtempSync(join(tmpdir(), "stagepass-round-"));
+        const path = join(directory, name);
+        writeFileSync(path, content, "utf-8");
+        return path;
+      },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
