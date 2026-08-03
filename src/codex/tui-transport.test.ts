@@ -202,6 +202,100 @@ describe("L2 · running a turn in the TUI", () => {
   });
 });
 
+/**
+ * 2026-08-03 真机：`codex resume <id> … "<prompt>"` 把提示词**搁进了 composer 却
+ * 没发出去**。屏幕停在 `Starting MCP server (2/4)`，提示词前面带着 `›`，rollout
+ * 一个字节没长 —— 而这一侧看见的和「在跑」一模一样，只能等满整个 timeout。
+ *
+ * 类文档里那句「sends with no keystroke」是 2026-07-28 实测的。挂上插件之后 MCP
+ * server 从 3 个变 4 个，那句话就不再总是成立了。
+ */
+describe("L2 · 提示词没被提交时补一下回车", () => {
+  it("**rollout 一条都没长就补，补完这一轮就跑起来了**", async () => {
+    const store = sessions();
+    const clock = fakeTime();
+    store.write(THREAD, turn("old", "old answer"));
+    const nudges: { label?: string; bytes: Uint8Array }[] = [];
+
+    const transport = new CodexTuiTransport({
+      cwd: "/tmp", sessionsDir: store.root,
+      timeoutMs: 60_000, pollMs: 1_000, nudgeAfterMs: 3_000,
+      ...clock,
+      launch: () => {}, // 提示词进了 composer，没发出去 —— rollout 不长
+      nudge: (input) => {
+        nudges.push(input);
+        // 那一下回车把它发出去了。
+        store.write(THREAD, `${turn("old", "old answer")}\n${turn("go", "答上了")}`);
+      },
+    });
+
+    const delivery = await transport.runTurn({
+      threadId: THREAD, prompt: "go", aside: { label: "反方·逐条判定" },
+    });
+
+    assert.equal(delivery.text, "答上了");
+    assert.equal(nudges.length, 1, "补了不止一次 —— 多出来的那些会打断已经跑起来的 turn");
+    assert.equal(nudges[0]!.label, "反方·逐条判定", "补到了主线，而这一轮跑在补问那一格");
+    assert.equal(new TextDecoder().decode(nudges[0]!.bytes), "\r");
+  });
+
+  it("**turn 已经开跑就绝不补** —— 那一下会被 Codex 当成打断", async () => {
+    /*
+     * 这条是这个功能的承重墙。2026-08-03 那个 `■ Conversation interrupted` 就是
+     * 按键打进正在跑的 turn 造成的，而我们绝不能自己制造同一件事。
+     * 判据是 rollout 长没长：真开跑了 `user_message` 立刻就落进去。
+     */
+    const store = sessions();
+    const clock = fakeTime();
+    store.write(THREAD, turn("old", "old answer"));
+    const nudges: unknown[] = [];
+    let polls = 0;
+
+    const transport = new CodexTuiTransport({
+      cwd: "/tmp", sessionsDir: store.root,
+      timeoutMs: 60_000, pollMs: 1_000, nudgeAfterMs: 3_000,
+      now: clock.now,
+      sleep: async (ms) => {
+        polls += 1;
+        // 跑得比 nudgeAfterMs 久，但它确实在跑。
+        if (polls === 8) {
+          store.write(THREAD, `${turn("old", "old answer")}\n${turn("go", "慢慢答完了")}`);
+        }
+        await clock.sleep(ms);
+      },
+      // 开跑了：turn 一起来就往 rollout 里落记录。
+      launch: () => store.write(THREAD, [
+        turn("old", "old answer"),
+        line({ type: "task_started" }),
+        line({ type: "user_message", message: "go" }),
+      ].join("\n")),
+      nudge: (input) => { nudges.push(input); },
+    });
+
+    const delivery = await transport.runTurn({ threadId: THREAD, prompt: "go" });
+    assert.equal(delivery.text, "慢慢答完了");
+    assert.deepEqual(nudges, [], "往一个正在跑的 turn 里塞了回车 —— 那正是打断它的做法");
+  });
+
+  it("**新起的会话不补** —— 它是靠提示词出现在 rollout 里认出来的", async () => {
+    const store = sessions();
+    const clock = fakeTime();
+    const nudges: unknown[] = [];
+
+    const transport = new CodexTuiTransport({
+      cwd: "/tmp", sessionsDir: store.root,
+      timeoutMs: 60_000, pollMs: 1_000, nudgeAfterMs: 3_000,
+      ...clock,
+      launch: () => store.write(THREAD, turn("go", "新线程答的")),
+      nudge: (input) => { nudges.push(input); },
+    });
+
+    const delivery = await transport.runTurn({ threadId: null, prompt: "go" });
+    assert.equal(delivery.text, "新线程答的");
+    assert.deepEqual(nudges, []);
+  });
+});
+
 describe("L2 · a TUI turn that never finishes says so", () => {
   /**
    * A TUI stays open after a turn, so nothing about the process indicates

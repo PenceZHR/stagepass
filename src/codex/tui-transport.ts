@@ -87,6 +87,26 @@ export interface CodexTuiTransportOptions {
      */
     label?: string;
   }) => (() => void) | void;
+  /**
+   * 往这个 turn 的会话里补一下按键。**只在提示词根本没被提交的时候用。**
+   *
+   * 上面那句「sends with no keystroke」是 2026-07-28 实测的，2026-08-03 被证伪：
+   * 挂上插件之后 MCP server 变成 4 个，启动更慢，Codex 把 argv 里的提示词
+   * **搁进了 composer 却没发出去**（屏幕停在 `Starting MCP server (2/4)`，
+   * 提示词前面带着 `›`）。rollout 一个字节没长，于是这一侧等满整个 timeout ——
+   * 而界面上它和「在跑」一模一样。
+   *
+   * 补一下回车就发出去了。`label` 原样转交，让上面那层知道该往哪一格写。
+   */
+  readonly nudge?: (input: { label?: string; bytes: Uint8Array }) => void;
+  /**
+   * 等多久还没动静才补那一下。默认 45 秒。
+   *
+   * 判据是 rollout **一条记录都没长**：真的开跑了，`user_message` 立刻就落进去。
+   * 所以这一下只会打在「压根没开始」上，不会打断正在跑的 turn —— 而后者正是
+   * 2026-08-03 那个 `■ Conversation interrupted` 的成因，绝不能由我们自己制造。
+   */
+  readonly nudgeAfterMs?: number;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -119,6 +139,7 @@ function rollouts(root: string): Map<string, string> {
 export class CodexTuiTransport implements CodexTransport {
   private readonly sessionsDir: string;
   private readonly timeoutMs: number;
+  private readonly nudgeAfterMs: number;
   private readonly pollMs: number;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -126,6 +147,7 @@ export class CodexTuiTransport implements CodexTransport {
   constructor(private readonly options: CodexTuiTransportOptions) {
     this.sessionsDir = options.sessionsDir ?? DEFAULT_SESSIONS;
     this.timeoutMs = options.timeoutMs ?? 30 * 60_000;
+    this.nudgeAfterMs = options.nudgeAfterMs ?? 45_000;
     this.pollMs = options.pollMs ?? 1_000;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep
@@ -148,7 +170,20 @@ export class CodexTuiTransport implements CodexTransport {
         ?? await this.awaitNewThread(new Set(before.keys()), dispatch.prompt);
       // id 一确定就说出去，别等 awaitTurn —— 那一步是整轮里最长的（见 TurnDispatch）。
       dispatch.onThread?.(threadId);
-      const text = await this.awaitTurn(threadId, priorRecords);
+      /*
+       * 补那一下只给 `resume` 那种。新起的会话由 `awaitNewThread` 认线程 ——
+       * 那一步是靠**提示词出现在 rollout 里**认出来的，所以它能走到这里就说明
+       * 提示词早已提交，没有可补的东西。
+       */
+      const nudge = this.options.nudge !== undefined && dispatch.threadId !== null
+        ? () => {
+          this.options.nudge?.({
+            ...(dispatch.aside === undefined ? {} : { label: dispatch.aside.label }),
+            bytes: new TextEncoder().encode("\r"),
+          });
+        }
+        : undefined;
+      const text = await this.awaitTurn(threadId, priorRecords, nudge);
       return { threadId, text };
     } finally {
       /*
@@ -270,8 +305,11 @@ export class CodexTuiTransport implements CodexTransport {
   private async awaitTurn(
     threadId: string,
     fromIndex: number,
+    nudge?: () => void,
   ): Promise<string> {
     const deadline = this.now() + this.timeoutMs;
+    const nudgeAt = this.now() + this.nudgeAfterMs;
+    let nudged = false;
     while (this.now() < deadline) {
       const path = rollouts(this.sessionsDir).get(threadId);
       if (path) {
@@ -285,6 +323,22 @@ export class CodexTuiTransport implements CodexTransport {
           // Being written to right now; read it again.
         }
         if (outcome) return outcome.text;
+      }
+      /*
+       * **提示词躺在 composer 里没被发出去 —— 补一下回车。**
+       *
+       * 三重闸都要过，因为这一下是往一个活着的 Codex 会话里塞按键，而塞错地方
+       * 正是 2026-08-03 那个 `■ Conversation interrupted` 的成因：
+       *
+       *   1. 等够 `nudgeAfterMs`（默认 45 秒）—— 启动慢不算病
+       *   2. rollout **一条记录都没长**。真开跑了 `user_message` 立刻就落进去，
+       *      所以这一条把「在跑」和「压根没开始」分得干干净净
+       *   3. 只补一次。补完还是不动，那就是别的毛病，让它照常超时报出来
+       */
+      if (!nudged && nudge !== undefined
+        && this.now() >= nudgeAt && this.recordCount(path) <= fromIndex) {
+        nudged = true;
+        nudge();
       }
       await this.sleep(this.pollMs);
     }
