@@ -22,6 +22,7 @@ import { childThreadsOf, readThreadTranscript } from "../src/codex/subagent";
 import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
+import { WorklistStore } from "../src/store/worklist-store";
 import { runRound } from "../src/work/round-runner";
 
 /**
@@ -79,6 +80,7 @@ async function live(): Promise<void> {
       transport,
       gaps,
       childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
     },
   );

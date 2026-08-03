@@ -169,7 +169,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       red: red([{ id: "RV-1", severity: "P0", title: "空指针没处理" }]),
       blue: answer([], [{ id: "RVB-1", severity: "P1", title: "你漏了错误路径" }]),
       judge: '```json\n{"verdicts":{}}\n```',
-    });
+    }, {});
     assert.deepEqual(
       reading.outcome.found.map((each) => each.id).sort(),
       ["RV-1", "RVB-1"],
@@ -183,7 +183,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       red: red([{ id: "SELF-1", severity: "P0", title: "我自己觉得这里不太好" }]),
       blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测" }]),
       judge: '```json\n{"verdicts":{}}\n```',
-    });
+    }, {});
     assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
   });
 
@@ -193,7 +193,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       red: red([{ id: "SELF-1", severity: "P0", title: "我知道这里有问题" }]),
       blue: answer([], []),
       judge: '```json\n{"verdicts":{}}\n```',
-    });
+    }, {});
     assert.deepEqual(reading.outcome.found, []);
   });
 
@@ -210,7 +210,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了" }]),
       blue: answer([], [{ id: "QAB-1", severity: "P1", title: "你跳过了第 5 条" }]),
       judge: '```json\n{"verdicts":{}}\n```',
-    });
+    }, {});
     assert.deepEqual(reading.outcome.found.map((e) => e.id).sort(),
       ["QA-1", "QAB-1"], "QA 红方跑出来的失败被丢了");
   });
@@ -224,7 +224,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
         red: red([{ id: "X-1", severity: "P0", title: "我自己觉得有问题" }]),
         blue: answer([], []),
         judge: '```json\n{"verdicts":{}}\n```',
-      });
+      }, {});
       assert.deepEqual(reading.outcome.found, [], `${phase} 被顺手改了`);
     }
   });
@@ -261,7 +261,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       red: red([{ id: "RV-1", severity: "P0", title: "红方这么说" }]),
       blue: answer([], [{ id: "RV-1", severity: "P1", title: "蓝方那么说" }]),
       judge: '```json\n{"verdicts":{}}\n```',
-    });
+    }, {});
     assert.equal(reading.outcome.found.filter((e) => e.id === "RV-1").length, 1);
   });
 });
@@ -468,11 +468,13 @@ describe("L4 · 人提的要求单独一区", () => {
 
   it("**仍然可以被判 closed** —— 这里管的是措辞，不是给它免疫", () => {
     // 人的要求真被满足了就该关掉。加一层「人提的不可关闭」等于让人给自己设一道
-    // 自己也打不开的闸门。
+    // 自己也打不开的闸门。它和模型报的问题走的是同一条路（stagepass_next），
+    // 而那条路只认顺序，不认这一条是谁提的。
     const prompt = judgePrompt({
       phase: "PRD", round: 2, task: "t", openGaps: [human("HUMAN-1", "我要的")],
     });
-    assert.match(prompt, /"kind": "closed" \| "still_open"/);
+    assert.match(prompt, /stagepass_next/);
+    assert.doesNotMatch(prompt, /不许关闭|不可关闭/);
   });
 });
 
@@ -542,7 +544,7 @@ describe("L4 · each role is read from its own transcript", () => {
       red: answer(["spec.md"]),
       blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突" }]),
       judge: '```json\n{"verdicts":{}}\n```',
-    });
+    }, {});
     assert.deepEqual(reading.artifactIds, ["spec.md"]);
     assert.deepEqual(reading.outcome.found, [
       { id: "SPEC-9", severity: "P0", title: "范围冲突" },
@@ -562,7 +564,7 @@ describe("L4 · each role is read from its own transcript", () => {
       red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行" }]),
       blue: answer([], []),
       judge: "",
-    });
+    }, {});
     assert.deepEqual(reading.outcome.found, []);
   });
 
@@ -576,7 +578,7 @@ describe("L4 · each role is read from its own transcript", () => {
       () => readRound({
         phase: "Spec",
         round: 1, red: answer(["spec.md"]), blue: "看起来没问题", judge: "",
-      }),
+      }, {}),
       (error: unknown) =>
         error instanceof TurnResultUnparsableError
         && error.detail.startsWith("blue:"),
@@ -585,19 +587,23 @@ describe("L4 · each role is read from its own transcript", () => {
 
   it("fails the round when red produced nothing readable", () => {
     assert.throws(
-      () => readRound({ phase: "Spec", round: 1, red: "写完了", blue: answer([]), judge: "" }),
+      () => readRound({ phase: "Spec", round: 1, red: "写完了", blue: answer([]), judge: "" }, {}),
       TurnResultUnparsableError,
     );
   });
 
-  it("carries the judge's verdicts into the round's outcome", () => {
+  it("**表态从名单里来，不从裁判写的 json 里来**", () => {
+    // 2026-08-02 起：裁判调 stagepass_answer 逐条答，`work/round-runner.ts` 把名单
+    // 翻译成这份 verdicts 交进来。它写在 json 里的东西**一个字都不算数** ——
+    // 算数就等于把那条 50 字符的手抄路重新打开了。
     const reading = readRound({
       phase: "Spec",
       round: 3,
       red: answer(["spec.md"]),
       blue: answer([]),
-      judge: '```json\n{"verdicts":{"SPEC-1":{"kind":"closed","reason":"已收窄"}}}\n```',
-    });
+      judge: '```json\n{"verdicts":{"SPEC-9":{"kind":"closed","reason":"它自己写的"}}}\n```',
+    }, { "SPEC-1": { kind: "closed", reason: "已收窄" } });
+
     assert.deepEqual(reading.outcome.verdicts, {
       "SPEC-1": { kind: "closed", reason: "已收窄" },
     });
@@ -627,8 +633,10 @@ describe("L4 · 裁判的答复里不再有任何线程 id", () => {
     assert.match(prompt(), /记到对方头上/);
   });
 
-  it("答复的形状只剩并列的两个顶层字段", () => {
-    assert.match(prompt(), /`verdicts` 和 `conclusion` 是\*\*并列的两个顶层字段\*\*/);
+  it("**json 里只剩 conclusion** —— 逐条表态搬去工具了", () => {
+    assert.match(prompt(), /里面只放这一样东西/);
+    assert.doesNotMatch(prompt(), /"verdicts":/);
+    assert.match(prompt(), /写在这里不算数/);
   });
 });
 
@@ -670,17 +678,12 @@ describe("L4 · 契约转达给谁、结论谁来下", () => {
     assert.match(prompt, /RBC-x 这是反方要判的/);
   });
 
-  it("**裁判那一份带着「只答这一份」**，并点名反方那份不归它答", () => {
-    const prompt = withAddenda({ judge: "RBC-y 这是裁判要判的" });
-    assert.match(prompt, /只答这一份/);
-    assert.match(prompt, new RegExp(`${BLUE}那一份不归你答`));
-    assert.match(prompt, /RBC-y 这是裁判要判的/);
-  });
-
-  it("两份同时在时，两个抬头都在 —— 它们并排出现，必须一眼分得开", () => {
-    const prompt = withAddenda({ blue: "蓝方的", judge: "裁判的" });
-    assert.match(prompt, /原样转达给反方/);
-    assert.match(prompt, /只答这一份/);
+  it("**裁判那一份不再走提示词** —— 它调工具逐条答", () => {
+    // 2026-08-02：裁判是 user 线程，手上有 StagePass 的工具，所以它那份标准进名单。
+    // 反方是子 Agent，拿不到工具（真机验过），所以只剩它还走转达这条路。
+    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /stagepass_next/);
+    assert.doesNotMatch(prompt, /只答这一份/);
   });
 
   it("没有 addenda 时 rubric 那两个抬头不出现（任务的转达抬头是无条件的，另一回事）", () => {
@@ -778,7 +781,7 @@ describe("L4 · 反方那句整体判断", () => {
       red: answer(["Spec.md"]),
       blue: blueSaid({ artifactIds: [], blockers: [], overall: "整体够格，边界还差一点" }),
       judge: "```json\n{}\n```",
-    });
+    }, {});
     assert.equal(reading.blueOverall, "整体够格，边界还差一点");
   });
 
@@ -788,7 +791,7 @@ describe("L4 · 反方那句整体判断", () => {
       red: answer(["Spec.md"]),
       blue: answer([], []),
       judge: "```json\n{}\n```",
-    });
+    }, {});
     assert.equal(reading.blueOverall, null);
   });
 
@@ -798,7 +801,7 @@ describe("L4 · 反方那句整体判断", () => {
       red: answer(["Spec.md"]),
       blue: blueSaid({ artifactIds: [], blockers: [], overall: "   " }),
       judge: "```json\n{}\n```",
-    });
+    }, {});
     assert.equal(reading.blueOverall, null);
   });
 });
@@ -897,10 +900,9 @@ describe("L4 · conclusion 塞进 verdicts 里", () => {
       { kind: "advised", anotherRound: false, reason: "外面的" });
   });
 
-  it("提示词写明两个字段并列、json 必须完整", () => {
+  it("提示词写明 json 里只放 conclusion", () => {
     const prompt = judgePrompt({ phase: "PRD", round: 1, task: "t", openGaps: [] });
-    assert.match(prompt, /并列的两个顶层字段/);
-    assert.match(prompt, /完整合法/);
+    assert.match(prompt, /里面只放这一样东西/);
   });
 });
 

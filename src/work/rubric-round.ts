@@ -7,6 +7,8 @@ import { BLUE, RED } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
 import { runRound, type RoundDependencies, type RoundRequest, type RoundSettled } from "./round-runner";
+import type { WorkItemDraft } from "../domain/worklist";
+import type { WorkItem } from "../store/worklist-store";
 
 type Participant = keyof RoundSettled["transcripts"];
 
@@ -390,6 +392,36 @@ function assess(
   }
 }
 
+/**
+ * 裁判那份判定，从名单里读回来。
+ *
+ * **没答的记 `not_assessed`，和它以前漏答一条时一模一样** —— 那是 fail-closed 的
+ * 方向，标了阻断的 `not_assessed` 会把闸门关着。区别只在于：以前「漏答」和「抄错了
+ * key」长得一样，现在没有 key 可抄，漏答就只能是它真没答。
+ *
+ * 这里**不会整份作废** —— 作废那条规则挡的是「凭空多答一条不存在的标准」，而名单
+ * 结构上不给它这个机会：它连自己在答哪一条都不知道。
+ */
+function fromWorklist(
+  items: readonly WorkItem[],
+  rubric: RubricVersion,
+): Assessment[] {
+  const answered = new Map(items
+    .filter((item) => item.kind === "criterion" && item.answer !== null)
+    .map((item) => [item.target, item]));
+
+  return rubric.criteria.map((criterion) => {
+    const item = answered.get(criterion.key);
+    return {
+      criterionKey: criterion.key,
+      verdict: (item?.answer ?? "not_assessed") as Assessment["verdict"],
+      evidence: item?.reason ?? null,
+      criterionText: criterion.text,
+      blockingThen: criterion.blocking,
+    };
+  });
+}
+
 export async function runRubricRound(
   request: RubricRoundRequest,
   dependencies: RubricRoundDependencies,
@@ -408,24 +440,49 @@ export async function runRubricRound(
     if (rubric && rubric.criteria.length > 0) active.set(role, rubric);
   }
 
-  /** 这一轮谁要背一份标准。由 `ASSESSED_BY` 反过来算，不另写一张表。 */
-  const contractFor = (
-    who: keyof RoundSettled["transcripts"],
-  ): string | undefined => {
+  /**
+   * 反方那份契约。**只剩它还走提示词。**
+   *
+   * 裁判那份改走名单了（见下），因为裁判是 `user` 线程、手上有 StagePass 的工具。
+   * 反方是子 Agent，而**子 Agent 不继承 `-c` 传的 MCP server**（2026-08-02 真机验的，
+   * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四）—— 它调不到工具，
+   * 所以它这一份只能照旧：契约经裁判转达，答复写进 ```rubric 围栏。
+   *
+   * 这是七个手抄面里唯一还剩的一个，出路要人先拍板（写不写全局配置）。
+   */
+  const contractForBlue = (): string | undefined => {
     for (const [role, rubric] of active) {
       const assessed = ASSESSED_BY[role];
-      if (assessed?.by === who) return rubricContract(rubric.criteria, assessed.subject);
+      if (assessed?.by === "blue") return rubricContract(rubric.criteria, assessed.subject);
     }
     return undefined;
   };
 
+  /**
+   * 裁判要判的那几条标准，**进名单，不进提示词**。
+   *
+   * `target` 是 criterion key（40 字符的 UUID），模型从头到尾看不到它 —— 它只被问
+   * 「第 N 条：<正文>，答 yes 还是 no」。这就是 #3 里裁判那一半的归零。
+   */
+  const judgeItems: WorkItemDraft[] = [];
+  for (const [role, rubric] of active) {
+    const assessed = ASSESSED_BY[role];
+    if (assessed?.by !== "judge") continue;
+    for (const criterion of rubric.criteria) {
+      judgeItems.push({
+        kind: "criterion",
+        target: criterion.key,
+        prompt: `${assessed.subject}：这一条标准满足了吗？\n${criterion.text}`,
+        choices: ["yes", "no"],
+      });
+    }
+  }
+
   const settled = await runRound({
     ...request,
-    addenda: {
-      // 红方永远是 undefined —— 它是被判的那个，不背任何标准。
-      blue: contractFor("blue"),
-      judge: contractFor("judge"),
-    },
+    // 红方永远是 undefined —— 它是被判的那个，不背任何标准。
+    addenda: { blue: contractForBlue() },
+    extraWorkItems: judgeItems,
   }, dependencies);
 
   const assessments: Record<RubricRole, readonly Assessment[]> = {
@@ -473,7 +530,15 @@ export async function runRubricRound(
     const mine = rubric.criteria.map((each) => each.key);
     const elsewhere = new Set([...everyKey].filter((key) => !mine.includes(key)));
 
-    const first = assess(settled.transcripts[assessor], rubric, elsewhere, voided);
+    /*
+     * **裁判那份从名单里读，反方那份还是从围栏里读。**
+     *
+     * 两条路的分界就是「答它的那条线程有没有 StagePass 的工具」—— 裁判是 user 线程，
+     * 有；反方是子 Agent，没有（2026-08-02 真机验的）。
+     */
+    const first = assessor === "judge"
+      ? fromWorklist(settled.workItems, rubric)
+      : assess(settled.transcripts[assessor], rubric, elsewhere, voided);
 
     /*
      * **没答上就直接问它，最多三次**（用户 2026-07-31）。

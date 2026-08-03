@@ -1,4 +1,4 @@
-import { blockersFrom, type Gap } from "../domain/gap";
+import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
@@ -7,6 +7,8 @@ import {
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
+import type { WorkItem, WorklistStore } from "../store/worklist-store";
+import type { WorkItemDraft } from "../domain/worklist";
 
 /**
  * One adversarial round, from prompt to settled gaps.
@@ -44,6 +46,16 @@ export interface RoundRequest {
   readonly judgeThreadId: string | null;
   /** 原样转给 `judgePrompt`。这一层同样不知道里面是什么。 */
   readonly addenda?: RoundInstructions["addenda"];
+  /**
+   * 除了「对已有问题表态」之外，这一轮还要裁判逐条答的东西。
+   *
+   * L5 用它塞 critic 那份 rubric 的每一条标准 —— **和 `addenda` 同一个形状的道理**：
+   * 这一层不知道 rubric 是什么，它只知道「名单上还有别人加的几条」。
+   *
+   * 必须和 gap 那些**在同一份名单里**：游标只有一个，两份名单就是两个游标，
+   * 而模型手上只有一个 `stagepass_next`。
+   */
+  readonly extraWorkItems?: readonly WorkItemDraft[];
 }
 
 export interface RoundDependencies {
@@ -66,6 +78,13 @@ export interface RoundDependencies {
    * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
    */
   readonly childThreads: (parentThreadId: string) => readonly string[];
+  /**
+   * 裁判这一轮逐条表态的名单。
+   *
+   * **这一层拥有游标，不是 L5** —— 因为 gap 那部分只有这里知道（`openGaps` 就在
+   * 手边），而一份名单只能有一个游标。L5 要加的几条从 `extraWorkItems` 进来。
+   */
+  readonly worklist: WorklistStore;
 }
 
 /** 这一轮认不出正反两方跑在哪两条线程上。 */
@@ -129,6 +148,13 @@ export interface RoundSettled {
    */
   readonly malformed: readonly string[];
   /**
+   * 这一轮裁判逐条答成什么样，**连同它看不见的那一列**（`target`）。
+   *
+   * 交出来是给 L5 用的：它塞进去的那几条标准要按 `target` 认回自己的 criterion key。
+   * gap 那部分已经在这一层翻译成 verdict 了，L5 不必再看。
+   */
+  readonly workItems: readonly WorkItem[];
+  /**
    * 裁判对「还要不要再来一轮」的结论。null = 它没给。
    *
    * **不动闸门**（用户 2026-07-31：裁判给结论，人按按钮）。这一层只负责把它读出来
@@ -161,6 +187,27 @@ export async function runRound(
   const before = request.judgeThreadId === null
     ? []
     : dependencies.childThreads(request.judgeThreadId);
+
+  /*
+   * **名单要在 turn 之前开好** —— 裁判一起来就可能调 `stagepass_next`。
+   *
+   * 顺序也是这里定的：先所有 open gap，再 L5 追加的那几条标准。裁判影响不了它，
+   * 那正是重点 —— 它连「现在答的是哪一条」都不知道。
+   */
+  const items: WorkItemDraft[] = [
+    ...openGaps.map((gap) => ({
+      kind: "gap" as const,
+      target: gap.id,
+      // **标题和人说的话进去，id 不进去。** 进去了它就会照着抄。
+      prompt: [
+        `这个问题还成不成立？`,
+        gap.note === null ? gap.title : `${gap.title}\n人说：${gap.note}`,
+      ].join("\n"),
+      choices: ["closed", "still_open"],
+    })),
+    ...(request.extraWorkItems ?? []),
+  ];
+  dependencies.worklist.open(request.changeId, request.phase, request.round, items);
 
   const delivery = await dependencies.transport.runTurn({
     threadId: request.judgeThreadId,
@@ -203,13 +250,39 @@ export async function runRound(
   if (readVerdicts(delivery.text).unreadable) malformed.push("verdicts_unreadable");
   if (conclusion?.kind === "unreadable") malformed.push("conclusion_unreadable");
 
+  /*
+   * 名单收工，读回它答成什么样。
+   *
+   * **一条都没答，而名单不是空的 —— 那是机制被绕过了**，不是它的判断。提示词明写着
+   * 逐条走工具，全不答只可能是它压根没调（工具没起来、或者它自作主张写进了 json）。
+   * 记进 `malformed`，于是线程被放开，下一轮从干净的开 —— 一条中毒的线程会把
+   * 「不用那个工具」这件事也一起抄下去。
+   *
+   * **答了一部分不算**：那是它的判断，沉默的那几条按老规矩保持 open。
+   */
+  dependencies.worklist.close(request.changeId, request.phase, request.round);
+  const answered = dependencies.worklist.read(
+    request.changeId, request.phase, request.round,
+  );
+  if (items.length > 0 && answered.every((item) => item.answer === null)) {
+    malformed.push("worklist_unanswered");
+  }
+
+  const verdicts: Record<string, Verdict> = {};
+  for (const item of answered) {
+    if (item.kind !== "gap" || item.answer === null || item.reason === null) continue;
+    verdicts[item.target] = {
+      kind: item.answer as Verdict["kind"], reason: item.reason,
+    };
+  }
+
   const reading = readRound({
     phase: request.phase,
     round: request.round,
     red,
     blue,
     judge: delivery.text,
-  });
+  }, verdicts);
 
   const gaps = dependencies.gaps.settleRound(
     request.changeId, request.phase, reading.outcome,
@@ -224,6 +297,7 @@ export async function runRound(
     agents,
     spawned: fresh.length,
     malformed,
+    workItems: answered,
     /*
      * 结论读不出来**不作废这一轮** —— 它不决定任何状态，为一句读不准的建议扔掉
      * 一轮几分钟的对抗不成比例。`readConclusion` 把「读不出来」当成一个值交出来，

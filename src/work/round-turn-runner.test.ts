@@ -8,6 +8,7 @@ import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { RoundNoteStore } from "../store/round-note-store";
+import { WorklistStore } from "../store/worklist-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
@@ -88,6 +89,7 @@ function runner(
     repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
+    worklist: new WorklistStore(context.db),
     readThread,
     // 这些用例不问送达 —— 它们问的是这个 runner 有没有把各层接对。
     readThreadWhole: readThread,
@@ -459,6 +461,7 @@ describe("RoundTurnRunner · aside 不绑定", () => {
       repo: { dirtyPaths: () => [], commitAll: () => null, show: () => null },
       workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
       childThreads: growingChildren(),
+      worklist: new WorklistStore(context.db),
       readThread: () => answer(),                    // 红蓝的 rollout：都没有 rubric 行
       readThreadWhole: () => "K1",                   // 契约送到了
       taskFor: () => "写 PRD",

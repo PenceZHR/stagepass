@@ -4,9 +4,10 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { RESULT_CONTRACT } from "../domain/turn";
-import { ScriptedCodexTransport } from "../codex/transport";
+import { ScriptedCodexTransport, type CodexTransport } from "../codex/transport";
 import { ChangeStore } from "../store/change-store";
 import { GapStore } from "../store/gap-store";
+import { WorklistStore } from "../store/worklist-store";
 import { RoundAgentsNotFoundError, runRound } from "./round-runner";
 
 /**
@@ -16,6 +17,37 @@ import { RoundAgentsNotFoundError, runRound } from "./round-runner";
 
 const CHANGE = "CHG-R";
 const AT = "2026-07-29T00:00:00.000Z";
+
+/**
+ * 名单是真的 —— 用真的 store，不做替身。
+ *
+ * 它是这一轮「裁判怎么表态」的唯一入口，替身化就等于把这条路的接线一起假掉。
+ */
+function worklistOf(db: Database.Database): WorklistStore {
+  return new WorklistStore(db, () => new Date(AT));
+}
+
+/**
+ * 一个**会调工具**的裁判：turn 一跑就把名单按顺序答掉。
+ *
+ * 真裁判是在自己的 turn 里调 `stagepass_next` / `stagepass_answer` 的，所以替身也得
+ * 在同一个位置动手 —— 在 turn 之后才答，`runRound` 早就把名单读完了。
+ *
+ * 答案按顺序给，给多少答多少：**没答的那几条是沉默，按规矩保持 open**。
+ */
+function judgeAnswering(
+  transport: ScriptedCodexTransport,
+  store: WorklistStore,
+  answers: readonly (readonly [string, string])[],
+): CodexTransport {
+  return {
+    async runTurn(dispatch) {
+      const delivery = await transport.runTurn(dispatch);
+      for (const [answer, reason] of answers) store.answer(CHANGE, answer, reason);
+      return delivery;
+    },
+  };
+}
 
 function database(): Database.Database {
   const db = new Database(":memory:");
@@ -81,6 +113,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
         transport,
         gaps,
         childThreads: spawnedBy(transport),
+        worklist: worklistOf(db),
         readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
           answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
@@ -103,6 +136,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      worklist: worklistOf(db),
       readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
         answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
@@ -125,16 +159,16 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
   it("closes a gap only when the judge says why", async () => {
     const db = database();
     const gaps = new GapStore(db, () => new Date(AT));
-    const transport = new ScriptedCodexTransport([
-      verdicts({}),
-      verdicts({ "SPEC-1": { kind: "closed", reason: "已补可测的验收标准" } }),
-    ], "JUDGE-1");
+    const worklist = worklistOf(db);
+    const transport = new ScriptedCodexTransport([verdicts({}), verdicts({})], "JUDGE-1");
+    const childThreads = spawnedBy(transport);
     // Blue stops reporting it in round 2. Silence must NOT close it -- only the
-    // judge's verdict does.
+    // judge's verdict does. 第 2 轮它调工具把那一条关掉。
     const dependencies = {
-      transport,
+      transport: judgeAnswering(transport, worklist, [["closed", "已补可测的验收标准"]]),
       gaps,
-      childThreads: spawnedBy(transport),
+      childThreads,
+      worklist,
       readThread: (threadId: string) => threadId.startsWith(RED_THREAD)
         ? answer({ artifactIds: ["spec.md"] })
         : answer({ blockers: [] }),
@@ -142,7 +176,8 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const first = {
       transport,
       gaps,
-      childThreads: spawnedBy(transport),
+      childThreads,
+      worklist,
       readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
         answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
@@ -174,6 +209,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      worklist: worklistOf(db),
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers })),
     });
 
@@ -198,6 +234,7 @@ describe("L4 · a round that half happened settles nothing", () => {
         transport,
         gaps,
         childThreads: spawnedBy(transport),
+        worklist: worklistOf(db),
         readThread: (threadId) => {
           if (threadId.startsWith(RED_THREAD)) return answer({ artifactIds: ["spec.md"] });
           throw new Error("no sub-agent at /root/blue");
@@ -220,6 +257,7 @@ describe("L4 · a round that half happened settles nothing", () => {
         transport,
         gaps,
         childThreads: spawnedBy(transport),
+        worklist: worklistOf(db),
         readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
           "蓝方觉得这份 Spec 大体没问题。",
@@ -255,6 +293,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      worklist: worklistOf(db),
       readThread: (threadId) => {
         asked.push(threadId);
         return threadId.startsWith(RED_THREAD)
@@ -277,6 +316,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: spawnedBy(transport),
+      worklist: worklistOf(db),
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     };
 
@@ -298,6 +338,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: () => [],
+      worklist: worklistOf(db),
       readThread: roles(answer({}), answer({})),
     }), RoundAgentsNotFoundError);
     assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
@@ -312,6 +353,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       transport,
       gaps,
       childThreads: () => [`${RED_THREAD}-1`],
+      worklist: worklistOf(db),
       readThread: roles(answer({}), answer({})),
     }), RoundAgentsNotFoundError);
     assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
@@ -332,10 +374,154 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
         `${RED_THREAD}-dead`, `${BLUE_THREAD}-dead`,
         `${RED_THREAD}-1`, `${BLUE_THREAD}-1`,
       ],
+      worklist: worklistOf(db),
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
     assert.deepEqual(settled.agents, { red: `${RED_THREAD}-1`, blue: `${BLUE_THREAD}-1` });
     assert.equal(settled.spawned, 4);
+  });
+});
+
+/**
+ * 裁判逐条表态那条路。
+ *
+ * 2026-08-02 之前：StagePass 把 gap id 印进提示词，裁判把它们**手抄**进一个 json 的
+ * key 位置上（`RB:critic:RBC-<uuid>` 长 50 字符），而 StagePass 拿它做精确匹配。
+ * 抄漏一段，那一条的表态就凭空消失，而人看不出是「它说还在」还是「它抄错了」。
+ */
+describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
+  const request = {
+    changeId: CHANGE, phase: "Spec" as const, round: 1,
+    task: "写 Spec", judgeThreadId: null,
+  };
+
+  const withGap = (db: Database.Database, gaps: GapStore) => {
+    gaps.settleRound(CHANGE, "Spec", {
+      round: 0,
+      found: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }],
+      verdicts: {},
+    });
+    return db;
+  };
+
+  it("**名单里有 id，念给模型的那段话里没有**", async () => {
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    withGap(db, gaps);
+    const worklist = worklistOf(db);
+    const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+
+    await runRound(request, {
+      transport, gaps, worklist,
+      childThreads: spawnedBy(transport),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+    });
+
+    const item = worklist.read(CHANGE, "Spec", 1)[0]!;
+    assert.equal(item.target, "SPEC-1", "上层要按它认回是哪一条");
+    assert.equal(item.prompt.includes("SPEC-1"), false, "模型看得到 id 就会去抄它");
+    assert.match(item.prompt, /验收不可测/);
+    assert.deepEqual(item.choices, ["closed", "still_open"]);
+  });
+
+  it("**裁判写在 json 里的表态一个字都不算数**", async () => {
+    // 算数就等于把那条 50 字符的手抄路重新打开了。
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    withGap(db, gaps);
+    const worklist = worklistOf(db);
+    const transport = new ScriptedCodexTransport([
+      verdicts({ "SPEC-1": { kind: "closed", reason: "它自己写在 json 里的" } }),
+    ], "JUDGE-1");
+
+    const settled = await runRound(request, {
+      transport, gaps, worklist,
+      childThreads: spawnedBy(transport),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+    });
+
+    assert.deepEqual(settled.blockers.map((b) => b.id), ["SPEC-1"], "它靠写 json 关掉了");
+  });
+
+  it("名单在 turn **之前**就开好 —— 裁判一起来就可能调工具", async () => {
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    withGap(db, gaps);
+    const worklist = worklistOf(db);
+    const inner = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+    let openWhenTurnRan = 0;
+
+    await runRound(request, {
+      transport: {
+        async runTurn(dispatch) {
+          openWhenTurnRan = worklist.next(CHANGE) === null ? 0 : 1;
+          return inner.runTurn(dispatch);
+        },
+      },
+      gaps, worklist,
+      childThreads: spawnedBy(inner),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+    });
+
+    assert.equal(openWhenTurnRan, 1, "turn 跑的时候名单还没开出来");
+  });
+
+  it("**一条都没答，而名单不是空的 —— 记进 malformed，线程会被放开**", async () => {
+    // 提示词明写着逐条走工具。全不答只可能是它压根没调（工具没起来，或者它自作主张
+    // 写进了 json）。一条中毒的线程会把「不用那个工具」这件事也一起抄下去。
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    withGap(db, gaps);
+    const worklist = worklistOf(db);
+    const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+
+    const settled = await runRound(request, {
+      transport, gaps, worklist,
+      childThreads: spawnedBy(transport),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+    });
+
+    assert.deepEqual(settled.malformed, ["worklist_unanswered"]);
+  });
+
+  it("**答了一部分不算** —— 那是它的判断，沉默的那几条按老规矩保持 open", async () => {
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    gaps.settleRound(CHANGE, "Spec", {
+      round: 0,
+      found: [
+        { id: "SPEC-1", severity: "P1", title: "第一个" },
+        { id: "SPEC-2", severity: "P1", title: "第二个" },
+      ],
+      verdicts: {},
+    });
+    const worklist = worklistOf(db);
+    const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+
+    const settled = await runRound(request, {
+      transport: judgeAnswering(transport, worklist, [["closed", "第一个修了"]]),
+      gaps, worklist,
+      childThreads: spawnedBy(transport),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+    });
+
+    assert.deepEqual(settled.malformed, [], "答了一部分不是格式坏了");
+    assert.deepEqual(settled.blockers.map((b) => b.id), ["SPEC-2"]);
+  });
+
+  it("名单是空的时候不报 malformed —— 没什么可表态是正常的一轮", async () => {
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    const worklist = worklistOf(db);
+    const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+
+    const settled = await runRound(request, {
+      transport, gaps, worklist,
+      childThreads: spawnedBy(transport),
+      readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+    });
+
+    assert.deepEqual(settled.malformed, []);
   });
 });

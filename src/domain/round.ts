@@ -59,8 +59,14 @@ export interface RoundInstructions {
    */
   readonly addenda?: {
     readonly red?: string | undefined;
+    /**
+     * 反方那一段。**只剩它了。**
+     *
+     * 裁判那份 rubric 契约 2026-08-02 搬去名单了（它调工具逐条答），而反方是子 Agent、
+     * 拿不到 StagePass 的工具，所以它这一份还得经裁判转达。见
+     * docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
+     */
     readonly blue?: string | undefined;
-    readonly judge?: string | undefined;
   } | undefined;
 }
 
@@ -96,15 +102,6 @@ const relayedTo = (who: string, text: string | undefined): string[] =>
   text === undefined || text.trim() === "" ? [] : [
     "",
     `   **下面这一整段原样转达给${who}，一个字都不要改。它是给${who}的，不是给你答的。**`,
-    text,
-  ];
-
-/** 裁判自己那一份。和上面成对出现，所以必须一眼看出是两回事。 */
-const addressedToJudge = (text: string | undefined): string[] =>
-  text === undefined || text.trim() === "" ? [] : [
-    "",
-    `**下面这一份标准是给你自己的，只答这一份。**`
-    + `${BLUE}那一份不归你答 —— 那是它的活儿，你替它答不算数。`,
     text,
   ];
 
@@ -408,7 +405,22 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     "两个都做完之后，轮到你。**两件事**：",
     "",
-    "1. 对下面这些**已经存在**的问题逐条表态。",
+    /*
+     * **表态改走工具，不再手抄 id**（2026-08-02）。
+     *
+     * 原来这里印一份带 id 的清单，要裁判把那些 id 抄进一个 json 的 key 位置上 ——
+     * 而 gap id 长 50 字符（`RB:critic:RBC-<uuid>`）、criterion key 长 40。抄漏一段，
+     * 那一条的表态就凭空消失，人还看不出是「它说还在」还是「它抄错了」。
+     * 实测过更糟的：同一个抄错的 UUID 连抄三轮。
+     *
+     * 清单仍然印出来，但**它现在是给人和给上下文看的**，不是给它抄的 —— 它照样需要
+     * 知道这一轮要处理哪些问题才判得动。真正算数的是工具那一路。
+     */
+    "1. 对下面这些**已经存在**的问题逐条表态 —— **走工具，不要写进 json**：",
+    "",
+    "   反复调 `stagepass_next`（不带参数）取下一条，看完用 `stagepass_answer`",
+    "   回答，直到它说没有了。**你不需要、也无法指定答的是哪一条** —— StagePass 记着。",
+    "   下面这份清单是给你看背景的，不要把它们的编号抄进任何地方。",
     "",
     gaps,
     "",
@@ -426,17 +438,18 @@ export function judgePrompt(input: RoundInstructions): string {
     "   这是给人看的建议 —— 按不按由他决定，**你不需要考虑闸门**。",
     "   结论要建立在你实际读过的东西上，不是复述正方或反方说过的话。",
     "",
-    "用一个 ```json 块回答：",
-    '{"verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}},',
-    ' "conclusion": {"another_round": true | false, "reason": "<为什么>"}}',
-    // 2026-08-02 CHG-003 第 2 轮实测：裁判把 conclusion 塞进了 verdicts 里、还少了
-    // 一个右花括号 —— 整轮因此作废，而内容全是对的。这一句是对着那次事故写的。
-    "`verdicts` 和 `conclusion` 是**并列的两个顶层字段**。发之前检查这个",
-    "json 是完整合法的 —— 它读不出来，这一轮就整个作废，正反两方的活儿全部白干。",
+    /*
+     * **json 里只剩 conclusion 了。**
+     *
+     * `verdicts` 那一段搬去工具了（见上），而 conclusion 是一句散文加一个布尔 ——
+     * 里面没有任何 StagePass 要拿去精确匹配的字符串，所以它留在这儿是安全的。
+     */
+    "最后用一个 ```json 块给出结论，**里面只放这一样东西**：",
+    '{"conclusion": {"another_round": true | false, "reason": "<为什么>"}}',
+    "不要把逐条表态写进这个块 —— 那些走上面的工具，写在这里不算数。",
     "",
-    "沉默等于仍然存在 —— 你没提到的问题会继续挡住闸门。",
+    "沉默等于仍然存在 —— 你没用工具表过态的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
-    ...addressedToJudge(input.addenda?.judge),
   ].join("\n");
 }
 
@@ -711,7 +724,21 @@ function dedupeById(
   });
 }
 
-export function readRound(transcript: RoundTranscript): RoundReading {
+export function readRound(
+  transcript: RoundTranscript,
+  /**
+   * 裁判对已有问题的表态。
+   *
+   * **从名单里来，不从它写的 json 里来**（2026-08-02）。原来是
+   * `readVerdicts(transcript.judge)` —— 那要求裁判把 50 字符的 gap id 手抄进一个
+   * json 的 key 位置上，而 StagePass 拿它做精确匹配。抄漏一段，那一条的表态就凭空
+   * 消失（而 gap 保持 open，人看不出是「它说还在」还是「它抄错了」）。
+   *
+   * 现在它调 `stagepass_next` / `stagepass_answer`，一条一条答，一个标识符都不写。
+   * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
+   */
+  verdicts: Readonly<Record<string, Verdict>>,
+): RoundReading {
   const red = parseTurnResult(transcript.red);
   let blueBlockers: RoundOutcome["found"];
   try {
@@ -741,7 +768,7 @@ export function readRound(transcript: RoundTranscript): RoundReading {
     outcome: {
       round: transcript.round,
       found,
-      verdicts: readVerdicts(transcript.judge).verdicts,
+      verdicts,
     },
     blueOverall: overallIn(transcript.blue),
   };

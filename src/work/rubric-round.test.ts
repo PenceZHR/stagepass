@@ -6,6 +6,7 @@ import { SCHEMA_SQL } from "../db/schema";
 import { BLUE, RED } from "../domain/round";
 import { standardGapId } from "../domain/rubric-gaps";
 import { ScriptedCodexTransport } from "../codex/transport";
+import { WorklistStore } from "../store/worklist-store";
 import { ChangeStore } from "../store/change-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
@@ -87,15 +88,37 @@ async function run(context: ReturnType<typeof open>, input: {
   whole?: () => string;
   /** 补问时反方依次答什么。空 = 补问会把 transport 用光并抛。 */
   again?: (string | Error)[];
+  /**
+   * 裁判在自己的 turn 里逐条答什么（`stagepass_answer`）。
+   *
+   * 它那份 rubric 2026-08-02 起走名单，不再写围栏 —— 见
+   * docs/DESIGN-no-hand-transcription-2026-08-02.md §四。按顺序给，给多少答多少。
+   */
+  judgeAnswers?: readonly (readonly [string, string])[];
 }) {
+  const worklist = new WorklistStore(context.db, () => new Date(AT));
+  const scripted = new ScriptedCodexTransport([
+    asJudge(input.judge ?? '```json\n{"conclusion":{"another_round":false,"reason":"ok"}}\n```'),
+    ...(input.again ?? []),
+  ]);
   return runRubricRound({
     projectId: PROJECT, changeId: CHANGE, phase: "Spec",
     round: input.round ?? 1, task: "写 Spec", judgeThreadId: null,
   }, {
-    transport: new ScriptedCodexTransport([
-      asJudge(input.judge ?? '```json\n{"verdicts":{}}\n```'),
-      ...(input.again ?? []),
-    ]),
+    worklist,
+    transport: {
+      async runTurn(dispatch) {
+        const delivery = await scripted.runTurn(dispatch);
+        // 裁判在自己的 turn 里调工具 —— 替身也得在同一个位置动手。
+        // 补问那一 turn 跑在反方线程上，它不碰名单。
+        if (dispatch.aside === undefined) {
+          for (const [answer, reason] of input.judgeAnswers ?? []) {
+            worklist.answer(CHANGE, answer, reason);
+          }
+        }
+        return delivery;
+      },
+    },
     gaps: context.gaps,
     rubrics: context.rubrics,
     childThreads,
@@ -156,6 +179,7 @@ describe("L5 · 没有人给自己打分", () => {
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
+    worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
@@ -170,14 +194,16 @@ describe("L5 · 没有人给自己打分", () => {
     assert.match(blueSection, /正方/, "没告诉蓝方它判的是谁");
   });
 
-  it("critic 的判定读裁判的话 —— 蓝方也不自评", async () => {
+  it("critic 的判定来自裁判 —— 蓝方也不自评", async () => {
+    // 裁判那份 2026-08-02 起走名单：它调 stagepass_answer 逐条答，围栏里写什么都不算。
     const context = open();
     seedCritic(context);
     const settled = await run(context, {
       blue: answer() + "\n" + rubricBlock(["K1 yes 我挑得很准"]),
-      judge: '```json\n{"verdicts":{}}\n```\n' + rubricBlock(["K1 no 有两条没指位置"]),
+      judgeAnswers: [["no", "有两条没指位置"]],
     });
     assert.equal(settled.assessments.critic[0]?.verdict, "no", "读的还是蓝方的自评");
+    assert.equal(settled.assessments.critic[0]?.evidence, "有两条没指位置");
   });
 
   it("**verdict 那份不进对抗** —— 谁的提示词里都没有，也不产生判定", async () => {
@@ -193,6 +219,7 @@ describe("L5 · 没有人给自己打分", () => {
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
+    worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
@@ -304,9 +331,9 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
       [{ text: "每条问题都指向正方产出里的具体位置", blocking: true }]);
 
     const settled = await run(context, {
-      // 蓝方背 producer 那份（判红方），裁判背 critic 那份（判蓝方）。
+      // 蓝方背 producer 那份（判红方，走围栏），裁判背 critic 那份（判蓝方，走名单）。
       blue: answer() + "\n" + rubricBlock(["K1 yes 都写了"]),
-      judge: '```json\n{"verdicts":{}}\n```\n' + rubricBlock(["K2 no 有两条没指位置"]),
+      judgeAnswers: [["no", "有两条没指位置"]],
     });
 
     assert.equal(settled.assessments.producer[0]?.verdict, "yes");
@@ -350,6 +377,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
+    worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
@@ -423,11 +451,13 @@ describe("L5 · 没判上的时候，说清楚是哪一种", () => {
     seedBoth(context);
     const settled = await run(context, {
       blue: answer(),                                       // 反方没答
-      judge: '```json\n{"verdicts":{}}\n```\n'
-        + rubricBlock(["K1 no 需求没有可测的验收标准", "K2 yes 问题都指了位置"]),
+      // 它本职那一条走名单；同时它在围栏里**替反方也答了**（那正是 Review 那次的样子）。
+      judgeAnswers: [["yes", "问题都指了位置"]],
+      judge: '```json\n{"conclusion":{"another_round":false,"reason":"ok"}}\n```\n'
+        + rubricBlock(["K1 no 需求没有可测的验收标准"]),
     });
 
-    // 裁判本职那一条照常读出来 —— 这就是不再连坐作废。
+    // 裁判本职那一条照常读出来 —— 现在它走名单，围栏里那条根本进不来。
     assert.equal(settled.assessments.critic[0]!.verdict, "yes");
     // 而它替反方答的那一条不算数，但人看得见是谁答的。
     const producer = settled.assessments.producer[0]!;
@@ -505,7 +535,7 @@ describe("L5 · 裁判的结论与反方的整体判断", () => {
 
   it("裁判没给结论 —— null，这一轮照常结算", async () => {
     const context = open();
-    const settled = await run(context, {});
+    const settled = await run(context, { judge: '```json\n{}\n```' });
     assert.equal(settled.conclusion, null);
     assert.equal(settled.blueOverall, null);
   });
@@ -604,6 +634,7 @@ describe("L5 · 补问反方", () => {
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
+    worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
@@ -631,6 +662,7 @@ describe("L5 · 补问反方", () => {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       // 第一条答了，第二条没答。
       childThreads,
+    worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer() + "\n" + rubricBlock(["K1 yes 好"])),
       readThreadWhole: deliveredAll(context),
     });
@@ -654,6 +686,7 @@ describe("L5 · 补问反方", () => {
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
+    worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });

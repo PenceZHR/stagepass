@@ -35,6 +35,7 @@ import {
 import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
+import { WorklistStore } from "../src/store/worklist-store";
 import { ProjectStore } from "../src/store/project-store";
 import { RubricStore } from "../src/store/rubric-store";
 import { runRubricRound } from "../src/work/rubric-round";
@@ -127,6 +128,7 @@ async function main(): Promise<void> {
     {
       transport, gaps, rubrics,
       childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
       readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
     },

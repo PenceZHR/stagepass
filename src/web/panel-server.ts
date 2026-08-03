@@ -32,6 +32,7 @@ import { ChangeStore, type LedgerEntry } from "../store/change-store";
 import { CommandStore } from "../store/command-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
+import { WorklistStore } from "../store/worklist-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
@@ -827,6 +828,7 @@ async function runRound(input: {
       repo: sessions.repo,
       workspaceFor: (each) => sessions.workspaceFor(each),
       childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
       // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。
