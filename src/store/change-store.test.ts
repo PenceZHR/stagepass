@@ -16,6 +16,13 @@ import { ChangeNotFoundError, ChangeStore } from "./change-store";
 
 const AT = "2026-07-28T00:00:00.000Z";
 
+/** 外键开着，所以引用得到的项目必须先存在。 */
+function seedProject(database: import("better-sqlite3").Database): void {
+  database.prepare(
+    "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES ('PRJ-1', 'p', ?)",
+  ).run(AT);
+}
+
 function open() {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
@@ -276,5 +283,62 @@ describe("L0 · 记下人答出来的需求", () => {
   it("往不存在的 Change 上录 —— 报 ChangeNotFoundError，不是外键报错", () => {
     const { store: changes } = open();
     assert.throws(() => changes.setBrief("CHG-nope", "x"), ChangeNotFoundError);
+  });
+});
+
+/**
+ * 删除。用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
+ */
+describe("L0 · 删掉一个 Change，连同它的全部痕迹", () => {
+  /**
+   * **一张表都不许剩。**
+   *
+   * 有十三张表引用 `changes(id)`，还有几张隔一层（`answers` -> `questions`、
+   * `rubric_criteria` -> `rubrics`）。这条测试不去逐个念名字，而是**问库自己**：
+   * 凡是有 `change_id` 这一列的表，删完都不该再有这个 id 的行。
+   *
+   * 所以将来加了一张新表却忘了往 `delete` 的名单里加一行，它会红 —— 那正是这条
+   * 测试存在的理由，而不是为了复述我刚写的那个数组。
+   */
+  it("**凡是有 change_id 的表，删完都查不到它**", () => {
+    const { database, store: changes } = open();
+    seedProject(database);
+    changes.create("CHG-DEL", { projectId: "PRJ-1", title: "要删的" });
+    changes.setBrief("CHG-DEL", "需求");
+    changes.apply("CHG-DEL", "start");
+
+    const tables = (database.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ).all() as { name: string }[])
+      .map((row) => row.name)
+      .filter((name) => (database.pragma(`table_info(${name})`) as { name: string }[])
+        .some((column) => column.name === "change_id"));
+    assert.ok(tables.length >= 10, "没找到那些引用表 —— 这条测试在空转");
+
+    changes.delete("CHG-DEL");
+
+    const left = tables.filter((table) => (database.prepare(
+      `SELECT 1 FROM ${table} WHERE change_id = ? LIMIT 1`,
+    ).get("CHG-DEL")) !== undefined);
+    assert.deepEqual(left, [], "这几张表里还留着它");
+    assert.throws(() => changes.read("CHG-DEL"));
+  });
+
+  it("**别的 Change 一根汗毛都不许动**", () => {
+    const { database, store: changes } = open();
+    seedProject(database);
+    changes.create("CHG-DEL", { projectId: "PRJ-1", title: "要删的" });
+    changes.create("CHG-KEEP", { projectId: "PRJ-1", title: "留着的" });
+    changes.setBrief("CHG-KEEP", "它的需求");
+
+    changes.delete("CHG-DEL");
+
+    assert.equal(changes.read("CHG-KEEP").brief, "它的需求");
+    assert.deepEqual(changes.list("PRJ-1").map((each) => each.id), ["CHG-KEEP"]);
+  });
+
+  it("删一个不存在的 —— 什么都不做，也不抛", () => {
+    const { store: changes } = open();
+    changes.delete("CHG-NOPE");
   });
 });

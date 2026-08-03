@@ -18,6 +18,7 @@ import { JobStore } from "../work/job-store";
 
 import {
   decisionLabel, RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE,
+  RAISE_SOMETHING, RAISE_NOTHING,
 } from "../domain/question";
 import {
   createPanelServer, type PanelOptions, type PanelSessions,
@@ -153,6 +154,9 @@ async function withPanel(
     // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
     // 测试会陪着默认的 30 分钟一起等。
     database, session: { cwd: "/tmp" }, start, turnTimeoutMs: 200,
+    // 问人那条路的截止时间。生产是 15 分钟 —— 在测试里那意味着一条没答对形状的
+    // 用例会坐等到框架超时（300 秒）。写错的代价应该是 1 秒，不是 5 分钟。
+    askTimeoutMs: 4_000,
     /*
      * **默认注入一个什么都不知道的假的。**
      *
@@ -1250,6 +1254,40 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
     });
   });
 
+  it("**change 列表跟着当前 Change 的项目走** —— 不是把全库摊开", async () => {
+    /*
+     * 用户 2026-08-03：「我点了某个 Project 只能显示这个 Project 的 change。」
+     * 而正常打开面板的地址不带 `?project=`（启动横幅印的就是那个），于是原来
+     * 服务端把全库的 change 都给了界面。
+     */
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      new ProjectStore(database).ensure("PRJ-OTHER", "别人家的", "/tmp/other");
+      changes.create("CHG-OTHER", { projectId: "PRJ-OTHER", title: "别人家的活儿" });
+
+      const shown = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { selectedProject: string | null; changes: { id: string }[] };
+
+      assert.equal(shown.selectedProject, PROJECT, "没跟着当前 Change 的项目");
+      assert.deepEqual(shown.changes.map((each) => each.id), [CHANGE],
+        "别的项目的 change 混进来了");
+    });
+  });
+
+  it("显式带了 ?project= 就听它的", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ProjectStore(database).ensure("PRJ-OTHER", "别人家的", "/tmp/other");
+      new ChangeStore(database).create("CHG-OTHER", { projectId: "PRJ-OTHER", title: "x" });
+
+      const shown = await (await open(
+        `/api/panel?change=${CHANGE}&project=PRJ-OTHER`)).json() as
+        { selectedProject: string | null; changes: { id: string }[] };
+
+      assert.equal(shown.selectedProject, "PRJ-OTHER");
+      assert.deepEqual(shown.changes.map((each) => each.id), ["CHG-OTHER"]);
+    });
+  });
+
   it("**rubric 不进提示词了** —— 两份都走名单，模型手上没有任何 key 可抄", async () => {
     await withPanel(async ({ open, database, pty }) => {
       new ChangeStore(database).setBrief(CHANGE, "我要一个重新生成按钮");
@@ -1635,10 +1673,43 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     changes.apply(CHANGE, "settle");
   };
 
+  /**
+   * 等到真有一道**还没答的**题，再替人答它。
+   *
+   * 不能用固定的 `setTimeout` 等第二趟：handler 每秒才轮询一次上一趟的答案，等它
+   * 把第二道题建出来的时刻是不定的。等不够就会把第二趟的答案插到第一道题上 ——
+   * 主键冲突，而报出来的是 `SQLITE_CONSTRAINT_PRIMARYKEY`，看不出是时序问题。
+   */
+  const answerNext = async (
+    database: Database.Database, content: Record<string, string>,
+  ): Promise<string> => {
+    for (let i = 0; i < 60; i += 1) {
+      const row = database.prepare(
+        `SELECT q.id FROM questions q
+          LEFT JOIN answers a ON a.question_id = q.id
+          WHERE q.change_id = ? AND a.question_id IS NULL
+          ORDER BY q.rowid DESC`,
+      ).get(CHANGE) as { id: string } | undefined;
+      if (row) {
+        database.prepare(
+          "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
+        ).run(row.id, "accept", JSON.stringify(content), new Date().toISOString());
+        return row.id;
+      }
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+    throw new Error("没有等到一道还没答的题");
+  };
+
   /** 替人在选择器里答一次：直接写 answers 那一行，插件写的就是这一行。 */
   const answer = (database: Database.Database, content: Record<string, string>): string => {
+    /*
+     * **按插入顺序取，不按 `asked_at`。** 裁决改成两趟之后，两道题会落在同一毫秒里，
+     * 而按时间排序时 SQLite 不保证谁在前 —— 挑中第一趟那条就是往同一个 question_id
+     * 上插第二行，主键冲突。rowid 是单调的，它说得准。
+     */
     const questionId = (database.prepare(
-      "SELECT id FROM questions WHERE change_id = ? ORDER BY asked_at DESC",
+      "SELECT id FROM questions WHERE change_id = ? ORDER BY rowid DESC",
     ).get(CHANGE) as { id: string }).id;
     database.prepare(
       "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
@@ -1646,7 +1717,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     return questionId;
   };
 
-  it("题里一条 gap 两格，最后才是裁决", async () => {
+  it("**第一趟一条 gap 一格，全是选项**，最后才是裁决", async () => {
     await withPanel(async ({ open, database }) => {
       settledWithGaps(database);
       void open(`/api/ask?change=${CHANGE}`, { method: "POST" }).catch(() => {});
@@ -1660,10 +1731,17 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         required: string[]; properties: Record<string, { title: string }>;
       };
       assert.deepEqual(Object.keys(schema.properties),
-        ["R01", "R01x", "R02", "R02x", "RY", "decision"]);
+        ["R01", "R02", "RY", "decision"]);
       // 自己写和提新问题都可以留空；四个选项和裁决必填。
-      assert.deepEqual(schema.required, ["R01", "R02", "decision"]);
+      // RY 也进 required —— 它现在是选项格（「没有了」/「有，我来提」），
+      // 而选项格必答不会挡住回车。
+      assert.deepEqual(schema.required, ["R01", "R02", "RY", "decision"]);
       assert.match(schema.properties.R01!.title, /SPEC-1/);
+      // 2026-08-03 起第一趟里一个自由文本格都没有 —— 理由挪到第二趟去问，
+      // 而且只问那几条语义上真的需要理由的（同意的那些不问）。
+      for (const [id, field] of Object.entries(schema.properties)) {
+        assert.ok((field as { enum?: unknown }).enum, `${id} 是自由文本格`);
+      }
     });
   });
 
@@ -1672,11 +1750,16 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       settledWithGaps(database);
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
+      // 第一趟：纯选项。
       answer(database, {
-        R01: RESPONSE_DISMISS, R01x: "验收标准在第 3 节，反方没读到",
-        R02: RESPONSE_AGREE, R02x: "范围要按 PRD 收窄",
-        RY: "没说清楚失败时回滚到哪",
-        decision: decisionLabel("reject", "PRD"),
+        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
+        RY: RAISE_SOMETHING, decision: decisionLabel("reject", "PRD"),
+      });
+      // 第二趟：只有需要理由的那几条 —— R01 驳回了要理由，R02 同意不用，
+      // RY 点了「有」所以要写正文。
+      await answerNext(database, {
+        R01x: "验收标准在第 3 节，反方没读到",
+        RYx: "没说清楚失败时回滚到哪",
       });
 
       const result = await (await asking).json() as {
@@ -1692,7 +1775,9 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       assert.equal(byId.get("SPEC-1")?.resolution, "验收标准在第 3 节，反方没读到");
       // 同意 = 留着，我的话落在 note 上，跟着它进下一轮。
       assert.equal(byId.get("SPEC-2")?.status, "open");
-      assert.equal(byId.get("SPEC-2")?.note, "范围要按 PRD 收窄");
+      // **同意那一条不再有 note** —— 它不进第二趟（没什么要说的），而这正是
+      // 「选了选项就不用打字」那条要买的东西。
+      assert.equal(byId.get("SPEC-2")?.note, null);
       // 我自己提的那条：HUMAN-1 / finding / P1，开着。
       assert.equal(byId.get("HUMAN-1")?.severity, "P1");
       assert.equal(byId.get("HUMAN-1")?.title, "没说清楚失败时回滚到哪");
@@ -1705,8 +1790,10 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
-        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE, decision: decisionLabel("reject", "PRD"),
+        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
+        RY: RAISE_NOTHING, decision: decisionLabel("reject", "PRD"),
       });
+      await answerNext(database, { R01x: "" });
 
       const result = await (await asking).json() as {
         refused: { id: string; code: string }[];
@@ -1734,9 +1821,10 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         status: "open", openedRound: 2, resolution: null, note: null,
       }]);
       answer(database, {
-        R01: RESPONSE_DISMISS, R01x: "不成立", R02: RESPONSE_AGREE,
-        decision: decisionLabel("reject", "PRD"),
+        R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
+        RY: RAISE_NOTHING, decision: decisionLabel("reject", "PRD"),
       });
+      await answerNext(database, { R01x: "不成立" });
 
       const result = await (await asking).json() as { reason: string };
       assert.equal(result.reason, "gate_moved");
@@ -1757,9 +1845,12 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
-        R01: RESPONSE_DISMISS, R01x: "反方没读到第 3 节",
-        R02: RESPONSE_WAIVE, R02x: "这一版先带着它走",
-        decision: decisionLabel("approve", "PRD"),
+        R01: RESPONSE_DISMISS, R02: RESPONSE_WAIVE,
+        RY: RAISE_NOTHING, decision: decisionLabel("approve", "PRD"),
+      });
+      // 驳回和接受风险都要理由 —— 那是实质内容，会落进 resolution。
+      await answerNext(database, {
+        R01x: "反方没读到第 3 节", R02x: "这一版先带着它走",
       });
 
       const result = await (await asking).json() as { outcome: { kind: string } };
@@ -1776,10 +1867,12 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
-        R01: RESPONSE_DISMISS, R01x: "不成立",
-        R02: RESPONSE_DISMISS, R02x: "也不成立",
-        RY: "但是没说清楚失败时回滚到哪",
-        decision: decisionLabel("approve", "PRD"),
+        R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+        RY: RAISE_SOMETHING, decision: decisionLabel("approve", "PRD"),
+      });
+      await answerNext(database, {
+        R01x: "不成立", R02x: "也不成立",
+        RYx: "但是没说清楚失败时回滚到哪",
       });
 
       const result = await (await asking).json() as {

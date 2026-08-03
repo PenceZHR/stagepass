@@ -12,6 +12,10 @@ import {
   runsAgainHere,
   readAnswer,
   RESPONSE_AGREE,
+  RAISE_SOMETHING,
+  RAISE_NOTHING,
+  FOLLOW_UP_CONFIRM_OPTION,
+  responseFollowUpQuestion,
   RESPONSE_DISMISS,
   RESPONSE_OWN,
   RESPONSE_WAIVE,
@@ -292,19 +296,27 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
       openGaps: gaps,
     });
 
-  it("每条 gap 两格：选项一格、自己写一格，最后才是裁决", () => {
+  it("**第一趟一条 gap 一格，全是选项** —— 一路回车就裁决得完", () => {
+    /*
+     * 客户端空的自由文本格会吃掉回车（`optional` 也不管用）。原来每条 gap 摊成两格，
+     * 于是八条 gap 就是八个空格子要挨个动手 —— 2026-08-03 真机上用户在八格里各打了
+     * 一个「1」纯粹为了过去。理由改到第二趟去问（`responseFollowUps`），而且只问
+     * 那几条**语义上真的需要理由**的。
+     */
     const fields = Object.keys(asked().requestedSchema.properties);
-    assert.deepEqual(fields,
-      ["R01", "R01x", "R02", "R02x", "RY", DECISION_FIELD]);
+    assert.deepEqual(fields, ["R01", "R02", "RY", DECISION_FIELD]);
+    for (const field of Object.values(asked().requestedSchema.properties)) {
+      assert.ok(field.enum, "第一趟里还有自由文本格");
+    }
     // 标题里带着 id 和正文 —— 只给一个 R01 去选，等于让人凭记忆决定。
     assert.match(asked().requestedSchema.properties.R01!.title, /SPEC-1.*验收标准不可测/);
     assert.deepEqual(asked().requestedSchema.properties.R01?.enum,
       [RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE, RESPONSE_OWN]);
   });
 
-  it("**只有那四个选项和裁决必填** —— 自己写和提新问题都可以留空", () => {
+  it("第一趟每一格都必答 —— 它们全是选项格，回车总有值", () => {
     assert.deepEqual(asked().requestedSchema.required,
-      ["R01", "R02", DECISION_FIELD]);
+      ["R01", "R02", "RY", DECISION_FIELD]);
   });
 
   /**
@@ -364,12 +376,49 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     }), { responses: {}, raised: "" });
   });
 
-  it("人自己提的那条从 RY 出来", () => {
+  it("人自己提的那条从 RYx 出来 —— RY 只是「有没有」", () => {
+    // 第一趟点「有，我来提」，正文在第二趟那一格里。
     const read = answered({
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
-      RY: "没说清楚失败时回滚到哪", [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      RY: RAISE_SOMETHING, RYx: "没说清楚失败时回滚到哪",
+      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
     });
     assert.equal(read.raised, "没说清楚失败时回滚到哪");
+  });
+
+  it("**全点「同意」就没有第二趟** —— 一个字都不用打", () => {
+    const first = { action: "accept" as const, content: {
+      R01: RESPONSE_AGREE, R02: RESPONSE_AGREE, RY: RAISE_NOTHING,
+      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+    } };
+    assert.equal(responseFollowUpQuestion(GAPS, first), null);
+  });
+
+  it("**只有需要理由的那几条进第二趟**，压轴是选项格", () => {
+    /*
+     * 哪几条要问由语义定：同意不用说话；不同意 / 先接受风险都会关掉一条 gap，而
+     * 一次没有理由的关闭和「这一轮忘了提」在库里长得一模一样；「我自己说」是他
+     * 自己要求的。
+     */
+    const first = { action: "accept" as const, content: {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE, RY: RAISE_SOMETHING,
+      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+    } };
+    const more = responseFollowUpQuestion(GAPS, first)!;
+    assert.ok(more);
+    const ids = Object.keys(more.requestedSchema.properties);
+    assert.deepEqual(ids, ["R01x", "RYx", "z-confirm"]);
+    // 空文本格吃回车、只有最后一格能提交 —— 所以压轴必须是选项格。
+    assert.deepEqual(more.requestedSchema.properties["z-confirm"]?.enum,
+      [FOLLOW_UP_CONFIRM_OPTION]);
+  });
+
+  it("点了「有」却没写 —— 就当没提", () => {
+    const read = answered({
+      R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
+      RY: RAISE_SOMETHING, [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+    });
+    assert.equal(read.raised, "");
   });
 
   it("**一道普通闸门裁决喂进来 —— 一条表态都读不出**", () => {

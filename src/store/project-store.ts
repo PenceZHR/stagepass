@@ -64,6 +64,35 @@ export class ProjectStore {
     return { id: row.id, name: row.name, path: row.path, createdAt: row.created_at };
   }
 
+  /**
+   * 删掉一个项目，**连同它底下的每一个 Change**。
+   *
+   * 不做「还有 Change 就拒」：用户 2026-08-03 要的是能删得掉，而让他先逐个删完
+   * 十几个 Change 再来删项目，只是把同一件事拆成十几步。级联在一个事务里，
+   * 要么全删要么全不删。
+   *
+   * 项目级的 rubric（`change_id IS NULL` 的那些）也一起走 —— 它们的作用域就是这个
+   * 项目，留着就是一堆没有归属的标准。
+   */
+  delete(projectId: string, changes: { delete(changeId: string): void }): void {
+    const ids = (this.database.prepare(
+      "SELECT id FROM changes WHERE project_id = ?",
+    ).all(projectId) as { id: string }[]).map((row) => row.id);
+
+    const wipe = this.database.transaction(() => {
+      for (const id of ids) changes.delete(id);
+      this.database.prepare(
+        `DELETE FROM rubric_criteria WHERE rubric_id IN
+           (SELECT id FROM rubrics WHERE project_id = ? AND change_id IS NULL)`,
+      ).run(projectId);
+      this.database.prepare(
+        "DELETE FROM rubrics WHERE project_id = ? AND change_id IS NULL",
+      ).run(projectId);
+      this.database.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+    });
+    wipe();
+  }
+
   list(): Project[] {
     const rows = this.database.prepare(
       "SELECT id, name, path, created_at FROM projects ORDER BY created_at",

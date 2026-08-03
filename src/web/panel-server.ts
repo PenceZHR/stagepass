@@ -22,6 +22,7 @@ import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
+  responseFollowUpQuestion,
   type ClarificationItem, type Answer,
   responsesFrom, runsAgainHere, DECISION_FIELD,
 } from "../domain/question";
@@ -143,6 +144,18 @@ const cannotAskNow = (
     ? { reason: "phase_already_running" as const, busy: "terminal" }
     : null);
 
+/**
+ * 打进 composer 那一行，叫模型去调 `stagepass_ask`。
+ *
+ * 抽出来是因为它现在有四个落点（问裁决、问裁决的第二趟、录需求两趟）。同一句话的
+ * 四份拷贝必然漂移，而漂移的那一天某条路上的模型会说「没有这个工具」。
+ *
+ * **必须是一行** —— composer 里一个换行就是提交（`PanelSessions.type`）。
+ */
+const ASK_TOOL_LINE =
+  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——"
+  + "问哪一个由 StagePass 决定。不要替我做决定、不要猜我想选什么，调用完就停下。";
+
 const pluginConfigFor = (
   database: { name: string }, changeId: string,
 ): string[] => [
@@ -243,6 +256,16 @@ export interface PanelOptions {
    * 「窗口还开着、什么也没发生」和成功长得一模一样 —— 总得有个东西替它说话。
    */
   readonly turnTimeoutMs?: number;
+  /**
+   * 问人一道题之后等多久放弃。默认 15 分钟。
+   *
+   * **可注入是为了测试跑得完。** 写死之前，一条没按预期形状作答的测试会真的坐在
+   * 那里等满 15 分钟（被测试框架 300 秒截断）—— 2026-08-03 裁决改成两趟时，四条
+   * 测试同时掉进这条路，一次 `pnpm check` 从 35 秒涨到 20 分钟以上。
+   *
+   * 病不在那几条测试写错了，在于**它们写错的代价是 20 分钟**。
+   */
+  readonly askTimeoutMs?: number;
 }
 
 /**
@@ -1069,7 +1092,26 @@ export async function handle(
     }
     // The two workspace columns. Selecting a project narrows the Change list
     // and nothing else -- it starts no turn and moves no gate.
-    const selectedProject = url.searchParams.get("project");
+    /*
+     * **没指定项目时，跟着当前这个 Change 走 —— 不是「全都给你」。**
+     *
+     * 用户 2026-08-03：「我点了某个 Project 只能显示这个 Project 的 change，不是所有
+     * Project 的 changes。」而正常打开面板的地址是 `?change=CHG-002`（启动横幅印的
+     * 就是这个，不带 project），于是这里读到 null、下面那句 `list(undefined)` 就把
+     * 全库的 change 摊开了 —— 项目多起来之后，那一栏就没法看了。
+     *
+     * 显式带了 `?project=` 就听它的（点项目那条路会带），一个 Change 都没有的新库
+     * 也仍然回退到「全都列」，否则第一次打开是一片空白。
+     */
+    const asked = url.searchParams.get("project");
+    const selectedProject = asked
+      ?? (() => {
+        try {
+          return changeStore.read(changeId).projectId;
+        } catch {
+          return null;   // 没有这个 Change —— 那就没有「它的项目」可跟
+        }
+      })();
     const projects = new ProjectStore(database).list().map((project) => ({
       ...project,
       changes: changeStore.list(project.id).length,
@@ -1388,6 +1430,54 @@ export async function handle(
     return;
   }
 
+  /*
+   * 删掉一个 Change，或者一个项目（连同它底下的全部 Change）。
+   *
+   * 用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
+   * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
+   *
+   * **有活儿在跑就拒。** 不是出于谨慎：删掉一个正在跑的 Change 会留下一个没人认领
+   * 的 codex 进程，而那个进程会继续往一个已经不存在的账本上写。先停会话再删。
+   */
+  if (url.pathname === "/api/change" && request.method === "DELETE") {
+    const changeId = url.searchParams.get("change") ?? "";
+    const changes = new ChangeStore(database);
+    let phase: Phase;
+    try {
+      phase = changes.read(changeId).state.phase;
+    } catch {
+      response.writeHead(404).end("no such change");
+      return;
+    }
+    const busy = phaseBusy(database, changeId);
+    if (busy) { json(response, { deleted: false, ...busy }); return; }
+
+    sessions.close(changeId, phase);
+    changes.delete(changeId);
+    json(response, { deleted: true, changeId });
+    return;
+  }
+
+  if (url.pathname === "/api/project" && request.method === "DELETE") {
+    const projectId = url.searchParams.get("project") ?? "";
+    const projects = new ProjectStore(database);
+    if (projects.list().every((entry) => entry.id !== projectId)) {
+      response.writeHead(404).end("no_such_project");
+      return;
+    }
+    const changes = new ChangeStore(database);
+    const mine = changes.list(projectId);
+    // 一个都不能在跑 —— 理由和上面一样，而且这里一次要停好几个。
+    for (const each of mine) {
+      const busy = phaseBusy(database, each.id);
+      if (busy) { json(response, { deleted: false, changeId: each.id, ...busy }); return; }
+    }
+    for (const each of mine) sessions.close(each.id, each.state.phase);
+    projects.delete(projectId, changes);
+    json(response, { deleted: true, projectId, changes: mine.length });
+    return;
+  }
+
   if (url.pathname === "/api/change" && request.method === "POST") {
     const projectId = url.searchParams.get("project") ?? "";
     const title = (url.searchParams.get("title") ?? "").trim();
@@ -1643,7 +1733,7 @@ export async function handle(
       ].join("\n"),
     }));
 
-    const deadline = Date.now() + 15 * 60_000;
+    const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
     let sessionDied = false;
     while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
       /*
@@ -1659,8 +1749,8 @@ export async function handle(
       if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
       await new Promise((resolve) => { setTimeout(resolve, 1_000); });
     }
-    const answer = questions.readAnswerFor(questionId);
-    if (!answer) {
+    const first = questions.readAnswerFor(questionId);
+    if (!first) {
       json(response, {
         asked: true, answered: false, phase, questionId,
         /**
@@ -1677,6 +1767,46 @@ export async function handle(
       // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
       sessions.close(changeId, phase);
       return;
+    }
+
+    /*
+     * **第二趟：只问那几条真的需要理由的。**
+     *
+     * 第一趟纯选项格（客户端空文本格吃回车，`optional` 也不管用）。2026-08-03 真机上
+     * 用户在八个格子里各打了一个「1」纯粹为了过去 —— 和录需求那张表被治好之前一模
+     * 一样。哪几条要进第二趟由语义定：同意不用说话；不同意 / 先接受风险要落进
+     * `resolution`（一次没有理由的关闭和「这一轮忘了提」在库里长得一模一样）；
+     * 「我自己说」是他自己要求的。
+     *
+     * 一条都不需要就不弹 —— 全点「同意」的人一个字都不用打。
+     */
+    let answer = first;
+    const more = responseFollowUpQuestion(openGaps, first);
+    if (more) {
+      const moreId = `${questionId}-x`;
+      questions.ask({
+        id: moreId, changeId, phase, kind: "gate_decision",
+        question: more, expectedSnapshot: gate.snapshot,
+      });
+      if (!await sessions.type(changeId, phase, ASK_TOOL_LINE)) {
+        questions.settle(moreId);
+        json(response, { asked: true, answered: false, phase, reason: "session_died_before_asking" });
+        sessions.close(changeId, phase);
+        return;
+      }
+      const until = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
+      while (Date.now() < until && !questions.readAnswerFor(moreId)) {
+        if (!sessions.has(changeId, phase)) break;
+        await new Promise((resolve) => { setTimeout(resolve, 1_000); });
+      }
+      const second = questions.readAnswerFor(moreId);
+      questions.settle(moreId);
+      if (!second) {
+        json(response, { asked: true, answered: false, phase, reason: "no_answer_in_time" });
+        sessions.close(changeId, phase);
+        return;
+      }
+      answer = { action: first.action, content: { ...first.content, ...second.content } };
     }
 
     /*
@@ -1919,7 +2049,7 @@ export async function handle(
         return null;
       }
 
-      const deadline = Date.now() + 15 * 60_000;
+      const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
       let sessionDied = false;
       while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
         /*
@@ -2057,7 +2187,7 @@ export async function handle(
       ].join("\n"),
     }));
 
-    const deadline = Date.now() + 15 * 60_000;
+    const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
     let sessionDied = false;
     while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
       /*

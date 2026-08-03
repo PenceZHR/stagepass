@@ -264,6 +264,52 @@ export class ChangeStore {
     return this.read(changeId);
   }
 
+  /**
+   * 把一个 Change 连同它的全部痕迹删掉。
+   *
+   * ## 顺序是外键定的，不是我排的
+   *
+   * 有十三张表引用 `changes(id)`，而 `answers` 引用 `questions`、`rubric_criteria`
+   * 和 `rubric_assessments` 引用 `rubrics`、`turns` 还引用 `jobs` —— **漏一张就是
+   * 外键报错或者一堆指向不存在的 Change 的孤儿行**。所以这份名单按拓扑序写死，
+   * 而不是「看着删」。
+   *
+   * 加了新表却忘了往这里加一行，会在删的时候当场 FOREIGN KEY 报错 —— 那比静默留下
+   * 孤儿行好，但仍然是要靠人记得。`change-store.test.ts` 里那条「删完一张表都不剩」
+   * 盯着这件事。
+   *
+   * ## 一个事务，要么全删要么全不删
+   *
+   * 删到一半失败留下的东西没人认得出来 —— 它既不是一个活着的 Change，也不是没有。
+   *
+   * ## 那两个触发器不挡这条路
+   *
+   * `ck_changes_ledger` / `ck_changes_seq_advances` 都是 `AFTER UPDATE`，管的是
+   * 「状态变了必须有账」。删除不是状态变化，是这条记录不再存在 —— 账本跟着一起走。
+   */
+  delete(changeId: string): void {
+    const wipe = this.database.transaction(() => {
+      // 先删「引用别人的」，再删被引用的。
+      this.database.prepare(
+        `DELETE FROM answers WHERE question_id IN
+           (SELECT id FROM questions WHERE change_id = ?)`,
+      ).run(changeId);
+      this.database.prepare(
+        `DELETE FROM rubric_criteria WHERE rubric_id IN
+           (SELECT id FROM rubrics WHERE change_id = ?)`,
+      ).run(changeId);
+      for (const table of [
+        "turns", "jobs", "rubric_assessments", "rubrics", "questions",
+        "commands", "gaps", "round_notes", "round_worklist",
+        "change_bindings", "change_briefs", "change_evidence", "change_events",
+      ]) {
+        this.database.prepare(`DELETE FROM ${table} WHERE change_id = ?`).run(changeId);
+      }
+      this.database.prepare("DELETE FROM changes WHERE id = ?").run(changeId);
+    });
+    wipe();
+  }
+
   ledger(changeId: string): LedgerEntry[] {
     const rows = this.database.prepare(
       "SELECT * FROM change_events WHERE change_id = ? ORDER BY seq",

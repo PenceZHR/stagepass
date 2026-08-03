@@ -277,29 +277,92 @@ function responseFields(openGaps: readonly Gap[]): Field[] {
   if (openGaps.length === 0) return [];
   const fields: Field[] = [];
   openGaps.forEach((gap, index) => {
-    const id = responseFieldId(index + 1);
     fields.push({
-      id,
-      title: `${gap.id}　${gap.title}`,
+      id: responseFieldId(index + 1),
+      title: `${gap.id}\u3000${gap.title}`,
       options: [RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE, RESPONSE_OWN],
     });
-    fields.push({
-      id: `${id}x`,
-      // 「不同意」和「接受风险」都要落进 resolution，而一次没有理由的关闭和「这一轮
-      // 忘了提」在库里长得一模一样（domain/gap.ts 开头）。所以这里把话说明白。
-      title: `↑ 这一条你想说什么？（选「${RESPONSE_DISMISS}」`
-        + `或「${RESPONSE_WAIVE}」必须写理由，否则这一条留着不动）`,
-      optional: true,
-    });
   });
+  /*
+   * **这一格也是选项。** 它原来是自由文本，于是每次裁决都多一个吃回车的空格子。
+   * 想提的人点「有」，第二趟给他写（`responseFollowUps`）。
+   */
   fields.push({
     id: RAISE_FIELD,
-    title: "除了上面这些，你自己还要提什么问题？"
-      + "（可留空；写了就作为你的要求进下一轮，红方不许当成建议）",
-    optional: true,
+    title: "除了上面这些，你自己还要提什么问题？",
+    options: [RAISE_NOTHING, RAISE_SOMETHING],
   });
   return fields;
 }
+
+/** 「你还要提什么」那一格的两个选项。点后面那个才进第二趟。 */
+export const RAISE_NOTHING = "没有了";
+export const RAISE_SOMETHING = "有，我来提";
+
+/**
+ * 裁决的第二趟：**只问那几条真的需要理由的。**
+ *
+ * ## 为什么第一趟不能有自由文本格
+ *
+ * 客户端**空的自由文本格会吃掉回车**（`optional` 也不管用，2026-07-30 实测）。
+ * 原来每条 gap 摊成两格（选项 + 「你想说什么」），于是八条 gap 就是八个空格子要
+ * 挨个动手 —— 2026-08-03 真机上用户在八格里各打了一个「1」纯粹为了过去，和录需求
+ * 那张表被治好之前一模一样。
+ *
+ * ## 哪几条要进第二趟，是**语义**决定的，不是排版
+ *
+ * - **同意**：红方下轮照着改就是了，没有额外的话要说 —— 不进。
+ * - **不同意 / 先接受这个风险**：两者都会关掉一条 gap，而**一次没有理由的关闭和
+ *   「这一轮忘了提」在库里长得一模一样**（`domain/gap.ts` 开头）。理由是实质内容，
+ *   不是过关费 —— 必须进。
+ * - **我自己说**：他自己要求了要说话 —— 进。
+ */
+export function responseFollowUpQuestion(
+  openGaps: readonly Gap[],
+  answer: Answer,
+): Question | null {
+  if (answer.action !== "accept") return null;
+  const read = (id: string): string => {
+    const given = answer.content[id];
+    return typeof given === "string" ? given.trim() : "";
+  };
+
+  const fields: Field[] = [];
+  openGaps.forEach((gap, index) => {
+    const id = responseFieldId(index + 1);
+    const chosen = read(id);
+    if (chosen !== RESPONSE_DISMISS && chosen !== RESPONSE_WAIVE
+      && chosen !== RESPONSE_OWN) return;
+    fields.push({
+      id: `${id}x`,
+      title: `\u2191\u3010${gap.id}\u3011${chosen} \u2014\u2014 为什么？`,
+      optional: true,
+    });
+  });
+  if (read(RAISE_FIELD) === RAISE_SOMETHING) {
+    fields.push({
+      id: `${RAISE_FIELD}x`,
+      title: "你自己要提的问题（写了就作为你的要求进下一轮，红方不许当成建议）",
+      optional: true,
+    });
+  }
+  if (fields.length === 0) return null;
+
+  /*
+   * 压轴一格提交格。空文本格吃回车、整张表只能从最后一格提交（2026-07-30 实测）——
+   * 所以最后一格必须是选项格，否则中途改主意留空的人就交不上去。
+   */
+  fields.push({
+    id: FOLLOW_UP_CONFIRM,
+    title: "确认",
+    options: [FOLLOW_UP_CONFIRM_OPTION],
+  });
+  return compose("刚才你说要给理由的那几条", fields);
+}
+
+/** 第二趟的提交格。`z` 排在 `R` 和 `RY` 之后，所以它压得住轴。 */
+const FOLLOW_UP_CONFIRM = "z-confirm";
+export const FOLLOW_UP_CONFIRM_OPTION = "都写完了，提交";
 
 /**
  * 人对每一条 open gap 说了什么。
@@ -352,7 +415,11 @@ export function responsesFrom(input: {
     if (own !== "") responses[gap.id] = { kind: "agree", note: own };
   });
 
-  return { responses, raised: read(RAISE_FIELD) };
+  /*
+   * 「你还要提什么」现在是第一趟的**选项格**，正文在第二趟那一格里
+   * （`${RAISE_FIELD}x`）。点了「有」却没写，就当没提 —— 和录需求那张表同一条规矩。
+   */
+  return { responses, raised: read(`${RAISE_FIELD}x`) };
 }
 
 /*

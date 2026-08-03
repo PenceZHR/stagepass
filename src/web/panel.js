@@ -644,7 +644,16 @@ function drawWorkspace(panel) {
       ? `${project.changes} changes · 没有路径，跑不了`
       : `${project.changes} changes · ${project.path}`;
     if (project.path === null) count.classList.add("bad");
-    row.append(name, sub, count);
+    const remove = document.createElement("span");
+    remove.className = "remove";
+    remove.textContent = "\u00d7";
+    remove.title = "删掉这个项目";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void removeThing("project", project.id,
+        `连同它底下的 ${project.changes} 个 Change 全部删掉。`);
+    });
+    row.append(name, sub, count, remove);
 
     // Clicking a project toggles the workspace open and shut. Picking a
     // DIFFERENT one selects it and opens; picking the one already selected
@@ -672,7 +681,17 @@ function drawWorkspace(panel) {
     name.textContent = change.title ?? change.id;
     const sub = document.createElement("span");
     sub.textContent = `${change.id} · ${change.phase} · ${change.status}`;
-    row.append(name, sub);
+    const remove = document.createElement("span");
+    remove.className = "remove";
+    remove.textContent = "\u00d7";
+    remove.title = "删掉这个 Change";
+    remove.addEventListener("click", (event) => {
+      // 不要顺带把这一行「选中」了 —— 点的是删除。
+      event.stopPropagation();
+      void removeThing("change", change.id,
+        `连同它的全部 gap、判定、产物记录和账本一起删掉。`);
+    });
+    row.append(name, sub, remove);
     // Switching Change reloads with a new id; it starts nothing and moves no
     // gate, which is what the design says selection must never do.
     row.addEventListener("click", () => {
@@ -713,6 +732,30 @@ function setCollapsed(collapsed) {
     if (Date.now() < until) requestAnimationFrame(settle);
   };
   requestAnimationFrame(settle);
+}
+
+/**
+ * 删掉一个 Change 或一个项目。
+ *
+ * **删除是不可逆的，所以先问一次** —— 而且把「会连带删掉什么」说出来，不是问一句
+ * 干巴巴的「确定吗」。人点删除的时候想知道的正是这个。
+ *
+ * 服务端有活儿在跑时会拒（`phase_already_running`），那时照实说是什么在跑 ——
+ * 「删不掉」和「删不掉因为那一轮还在跑」是两句话。
+ */
+async function removeThing(kind, id, what) {
+  if (!window.confirm(`删掉 ${id}？\n\n${what}\n\n这一步不可逆。`)) return;
+  const query = kind === "change" ? `change=${encodeURIComponent(id)}`
+    : `project=${encodeURIComponent(id)}`;
+  const result = await (await fetch(`/api/${kind}?${query}`, { method: "DELETE" })).json();
+  if (!result.deleted) {
+    window.alert(result.busy
+      ? `删不掉：${result.changeId ?? id} 还有活儿在跑（${result.busy}）。等它跑完或先让它失败。`
+      : `删不掉：${result.reason ?? "未知原因"}`);
+    return;
+  }
+  // 删掉的可能正是当前这一个 —— 那就没有「留在原地」这回事了。
+  location.search = "";
 }
 
 async function load() {
