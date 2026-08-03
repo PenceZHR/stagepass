@@ -29,6 +29,23 @@ function argument(name: string): string | undefined {
 }
 
 const port = Number(argument("port") ?? 4173);
+
+/**
+ * 模型和思考预算，命令行说了算。
+ *
+ * `--model gpt-5-codex --effort xhigh`。两个都不给就是「默认模型 + xhigh」。
+ *
+ * **不校验模型名**：能用哪些是 Codex 那边的事，在这里维护一张白名单，只会在它加了
+ * 新模型的那天挡住人。写错了 Codex 会自己报，而那句报错比这里能给的准。
+ */
+const model = argument("model");
+const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+const asked = argument("effort") ?? "xhigh";
+if (!(EFFORTS as readonly string[]).includes(asked)) {
+  console.error(`--effort 只能是 ${EFFORTS.join(" / ")}，收到的是「${asked}」`);
+  process.exit(1);
+}
+const effort = asked as typeof EFFORTS[number];
 const changeId = argument("change") ?? "CHG-1";
 const dbPath = argument("db")
   ?? join(mkdtempSync(join(tmpdir(), "stagepass-panel-")), "ship.db");
@@ -120,7 +137,21 @@ const { server, sessions } = createPanelServer({
     // `never` 会让 Codex 自动 decline 掉 elicitation，而那是唯一的问人通道
     // （PRD §6.6）。类型上已经不可表达，这里写出来是为了让人别去找那个值。
     approval: "on-request",
-    reasoningEffort: "low",
+    /*
+     * **默认 xhigh，可以用 `--effort` 调低。**
+     *
+     * 原来写死 `low`，而且是写死在这个脚本里 —— 面板上看不见、命令行也改不了。
+     * 用户 2026-08-03：「默认的模型是 so low，但是我要的是 so ultra high。」
+     *
+     * 默认往高了取，是因为这套东西的产出要被人当依据用：一轮对抗几分钟起步，
+     * 省那点思考预算换回一份判得更浅的结论，不划算。要省的人显式降。
+     */
+    reasoningEffort: effort,
+    /*
+     * **不给就不传 `-m`**，让 Codex 用它自己的默认 —— 在这里写死一个模型名，
+     * 等于把「哪个模型可用」这件事冻结在这个脚本里，而它变得比这个仓库快。
+     */
+    ...(model === undefined ? {} : { model }),
   },
 });
 
