@@ -351,8 +351,6 @@ export async function runRubricRound(
 
   const settled = await runRound({
     ...request,
-    // **addenda 全空了。** 红方是被判的那个不背标准；反方那份改由 StagePass
-    // 自己去问（`askBlueByWorklist`），不再夹在裁判的提示词里指望它转达。
     extraWorkItems: judgeItems,
   }, dependencies);
 

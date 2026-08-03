@@ -647,11 +647,8 @@ describe("L4 · 裁判的答复里不再有任何线程 id", () => {
  * 改了哪个函数（见 docs/DESIGN-rubric-delivery-2026-07-31.md §2）。
  */
 describe("L4 · 契约转达给谁、结论谁来下", () => {
-  const withAddenda = (addenda: {
-    blue?: string; judge?: string;
-  }) => judgePrompt({
-    phase: "Build", round: 1, task: "写代码", openGaps: [], addenda,
-  });
+  const build = (task: string) =>
+    judgePrompt({ phase: "Build", round: 1, task, openGaps: [] });
 
   it("**红方的任务带着「原样转达」** —— CHG-003 第一轮裁判把人答的需求转丢了", () => {
     /*
@@ -670,12 +667,20 @@ describe("L4 · 契约转达给谁、结论谁来下", () => {
     assert.match(prompt, /本地排行榜/);
   });
 
-  it("**反方那一份带着「原样转达、不要你自己答」** —— Review 那次裁判把 8 条全答了", () => {
-    const prompt = withAddenda({ blue: "RBC-x 这是反方要判的" });
-    assert.match(prompt, /原样转达给反方/);
-    assert.match(prompt, /不是给你答的/);
-    // 契约正文照旧原样进去，一个字不改。
-    assert.match(prompt, /RBC-x 这是反方要判的/);
+  it("**反方那一份也不再走转达** —— 2026-08-03 起 StagePass 直接问它自己那条线程", () => {
+    /*
+     * 曾经这里有一段「原样转达给反方」的抬头，因为它那份 rubric 契约只能经裁判的手
+     * 递过去 —— 而实测三种断法里有两种长在那条链上。现在 StagePass 自己 resume
+     * 反方线程逐条走工具问（`work/rubric-round.ts` 的 `askBlueByWorklist`），
+     * 那条链整个不存在了，抬头也就不该再出现。
+     */
+    const prompt = build("写代码");
+    assert.doesNotMatch(prompt, /不是给你答的/, "rubric 契约的转达抬头还在");
+    // 而**答复格式**那条转达还在，而且必须在：反方是子 Agent，格式只能经裁判递给它，
+    // 2026-08-02 实测过不递的后果 —— 它自己发明了一个形状，整轮作废。
+    assert.match(prompt, /下面这段格式要求\*\*原样转达给反方\*\*/);
+    // 而红方那一句转达是无条件的，另一回事 —— 任务本来就只能经裁判的手。
+    assert.match(prompt, new RegExp(`原样转达给${RED}`));
   });
 
   it("**裁判那一份不再走提示词** —— 它调工具逐条答", () => {

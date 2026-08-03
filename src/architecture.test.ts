@@ -66,6 +66,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/turn-runner.ts": 2,
 
   "domain/round.ts": 4,
+  // 十三个阶段各自那一节。纯文本、只 import 一个类型，所以和读它的 round.ts 同层。
+  "domain/phase-play.ts": 4,
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
   // 一轮里那两句只写给人看的话（裁判的结论、反方的整体判断）。它只依赖

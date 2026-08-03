@@ -2,7 +2,8 @@ import { jsonAnswerIn, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
-import { producesCommit, redReviewsOthers, type Phase } from "./phase";
+import { redReviewsOthers, type Phase } from "./phase";
+import { PHASE_PLAY } from "./phase-play";
 
 /**
  * One adversarial round: red produces, blue attacks, the judge settles.
@@ -61,62 +62,9 @@ export interface RoundInstructions {
    * 缺席就照旧把正文印进去 —— 这一层是纯的，不知道文件是谁写的。
    */
   readonly openGapsPath?: string | undefined;
-  /**
-   * 追加给各角色的额外要求，原样插进它们的任务里。
-   *
-   * **纯字符串，这一层不知道里面是什么。** L5 用它塞 rubric 契约；这里若改成
-   * 一个 rubric 类型，L4 就要 import L5 —— 那是向上依赖，常驻护栏会当场红，而且
-   * 分层纪律说的就是这件事。
-   *
-   * 缺席即没有额外要求，行为和加这个字段之前逐字一致。
-   */
-  readonly addenda?: {
-    readonly red?: string | undefined;
-    /**
-     * 反方那一段。**只剩它了。**
-     *
-     * 裁判那份 rubric 契约 2026-08-02 搬去名单了（它调工具逐条答），而反方是子 Agent、
-     * 拿不到 StagePass 的工具，所以它这一份还得经裁判转达。见
-     * docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
-     */
-    readonly blue?: string | undefined;
-  } | undefined;
 }
 
-/** 有内容才占一行，否则连空行都不要 —— 提示词里多一段空白也是噪音。 */
-const extra = (text: string | undefined): string[] =>
-  text === undefined || text.trim() === "" ? [] : ["", text];
 
-/**
- * 附给**子 Agent** 的那一段，带明确的收件人。
- *
- * ## 为什么非要这个抬头
- *
- * 蓝方那份 rubric 契约只能经裁判的手转达 —— StagePass 不跟子 Agent 说话。而这段
- * 文本原来是**裸的**：一句主语中立的祈使句（「对照下面 4 条标准逐条判定正方这一轮
- * 的产出」）夹在裁判自己的提示词里，紧跟在「2. 反方。任务：…」后面。
- *
- * 2026-07-31 实测的两种后果，都是照着字面办事：
- *
- * - Review 第 6 轮：裁判把它当成对自己说的，8 条一起答了。反方的 rollout 里
- *   **一个 `RBC-` 都没有** —— 契约根本没送到。
- * - Retro 第 1 轮：裁判把**两份**都转给了反方，反方挑了错的那份答，等于给自己打分。
- *
- * 还有一件同一次查出来的事：裁判**不是原样转达**任务的，它会改写成自己的话
- * （实测蓝方收到的开头是「你是反方。正方产出如下…」，不是这里写的原文）。所以
- * 「原样、一个字都不要改」不是客套，是这一段唯一的要求。
- *
- * **这不是靠语气治病。** 原来的文本里根本没有「收件人」这个信息，模型不是不听话，
- * 是没得可依。这里补的是缺失的信息。它单独**不足以保证送达** ——
- * `work/rubric-round.ts` 会机械核验到底送没送到，见
- * docs/DESIGN-rubric-delivery-2026-07-31.md §3.1 与 §3.3。
- */
-const relayedTo = (who: string, text: string | undefined): string[] =>
-  text === undefined || text.trim() === "" ? [] : [
-    "",
-    `   **下面这一整段原样转达给${who}，一个字都不要改。它是给${who}的，不是给你答的。**`,
-    text,
-  ];
 
 /**
  * What the judge is told.
@@ -186,117 +134,7 @@ export function renderOpenGaps(openGaps: readonly Gap[]): string {
  * 同一份名单两边都有，指令不同：红方是「去处理」，裁判是「逐条表态」。少了裁判那份，
  * 就没人对「这条到底还成不成立」下结论；少了红方这份，就没人去改。
  */
-/**
- * 蓝方够得着什么。**这一条按阶段定，不是一句写死的话。**
- *
- * ## 设计阶段：不许读仓库
- *
- * 蓝方的活儿是攻击**摆在面前的这份文档**。放开它去读仓库，「攻击这份 PRD」就滑成
- * 「调查这个项目」—— 它会翻一遍代码，报回来一堆和这份文档无关的毛病，而闸门会拿
- * 那些毛病挡住一个本该放行的阶段。这条在设计阶段是必须的，不是保守。
- *
- * ## Build / Fix：正方的产出就是仓库（判据 `producesCommit`）
- *
- * 同一句话到了 Build 就变成了错的 —— 它等于叫蓝方闭着眼睛审代码，只能看着 diff 猜
- * 「这个函数还有没有别的调用方」，而那恰恰是审代码里最值钱的问题。
- *
- * 所以用户 2026-07-30 单独为 Build 定了：**能读这一轮改动涉及的文件和它们的直接
- * 调用方**（范围有界，才不会滑回「调查这个项目」），**但不自己执行** —— 「跑过没有」
- * 那类标准由红方交运行证据，让蓝方去跑会把一轮的耗时和不确定性都放大一截。
- *
- * ## Review：对象就是代码，而且两边都在审它
- *
- * Review 里红方审的是 Build 的产出，蓝方的活儿是「你漏了什么、这条成不成立」——
- * 那要**自己去看**才答得出来。不给它读，它就只能看着红方的报告自说自话，而一份
- * 没人复核的 review 报告和没有 review 是一回事（用户 2026-07-30 拍板）。
- *
- * 和 Build 一样不许自己执行：那是 QA 的活儿，在这里跑等于把两个阶段揉成一个。
- *
- * ## QA：活儿本身就是执行
- *
- * 到 QA，「跑」就是正题。一个跑不了东西的反方核对不了一份「我跑了、结果是这样」的
- * 报告 —— 它只能检查报告自洽不自洽，而那不叫核对。所以这里两边都能跑。
- *
- * ## Merge：交付说明全是对代码的断言
- *
- * 「改了什么、对谁有影响、能不能回滚」没有一句是能对着文档答出来的。范围是**这一次
- * 的全部 commit**，不是某一轮改动涉及的文件 —— Merge 看的是整件事（用户 2026-07-30）。
- *
- * ## 只剩 Retro 沿用设计阶段那条
- *
- * 它写的是复盘，对着的是前面每个阶段的产出和账本，不需要读代码。
- * 这不是「还没谈过所以保守」，是这一次谈过之后的结论。
- */
-const blueReach = (phase: string): string => {
-  if (producesCommit(phase)) {
-    /*
-     * **上游文档也在够得着的范围里**（用户 2026-07-31）。
-     *
-     * 他要蓝方用 rubric 判「有没有完成 PRD/Spec 的要求」，而那个判据原来够不着：
-     * `PRD.md` / `Spec.md` 不在「这一轮改动涉及的文件」里。判不了就只能猜，而
-     * `rubric-defaults.ts` 里写着这条教训 —— **一条只能靠猜的标准比没有更糟**，
-     * 它每一轮都会得到一个没有依据的 yes。
-     *
-     * 边界没有被放开成「整个仓库」：加进来的是任务书里**已经列着的那一份有限名单**，
-     * 不是另一份。「攻击这份产出」不会因此滑成「调查这个项目」。
-     */
-    return "   可以读这一轮改动涉及的文件、它们的直接调用方，以及任务里列出的那几份"
-      + "已批准上游产物（要判它有没有做到要求，就得对着要求看）—— 只读这些，"
-      + "不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。";
-  }
-  if (phase === "Review") {
-    return "   可以读被审的那个 commit 涉及的文件，以及它们的直接调用方 —— 自己去看，"
-      + "不要只凭正方的报告下结论。不要自己执行任何东西，也不要动手修：跑起来验是 QA 的活儿。";
-  }
-  if (phase === "Merge") {
-    return "   可以读这一次的全部 commit（`git log` 里属于这个 Change 的那些）以及"
-      + "它们改到的文件 —— 交付说明里「改了什么、对谁有影响、能不能回滚」全是对代码的"
-      + "断言，不自己看就只能跟着正方点头。不要自己执行任何东西，也不要动手改。";
-  }
-  if (phase === "QA") {
-    return "   可以读代码，也**可以自己跑一遍**验证正方报的结果 —— 这是唯一一个活儿本身"
-      + "就是执行的阶段，一个跑不了东西的反方核对不了一份「我跑了、结果是这样」的报告。"
-      + "不要动手改代码：这一轮的活儿是验，不是修。";
-  }
-  /*
-   * **「正方产出」包括它报出来的那份文档文件本身**（2026-08-02 CHG-003 实测补的）。
-   *
-   * 红方交回来的是一个文件路径。这句话原来只说「基于正方产出、不要读仓库」，蓝方
-   * 照字面办事：把那个路径当成产出的全部，连着两轮开出「无法核验正文」的 gap ——
-   * 而正文明明就在那个文件里。「攻击摆在面前的这份文档」得先读得到这份文档。
-   *
-   * 边界没有放开：能读的只有**红方这一轮报出来的那（几）个文件**，仓库的其余部分
-   * 照旧不许翻 —— 那条「攻击文档不许滑成调查项目」的理由原样成立。
-   */
-  return "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），"
-    + "基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。";
-};
 
-/**
- * Review 里红蓝**都在报缺陷**，共用一个 id 空间 —— 所以给两边分前缀。
- *
- * 不分的后果不是「乱」，是**静默丢一条**：`readRound` 撞 id 时只留第一条，而两边
- * 审的是同一份代码，各自起一个 `REVIEW-1` 是完全可能的。「留哪一条」永远是个将就，
- * 分前缀让这件事结构上不会发生。
- *
- * 名单和 `redReviewsOthers` 是同一批阶段，而且必然如此：**只有红方的发现也算数的
- * 阶段，两边才会共用一个 id 空间**。这两处要一起改。
- *
- * 别的阶段只有蓝方报问题，不需要这套 —— 给红方讲一套它用不上的规矩只是噪音。
- */
-const ID_PREFIX: Readonly<Record<string, { red: string; blue: string }>> = {
-  Review: { red: "RV-", blue: "RVB-" },
-  QA: { red: "QA-", blue: "QAB-" },
-};
-
-const idRule = (phase: string, side: "red" | "blue"): string[] => {
-  const prefix = ID_PREFIX[phase]?.[side];
-  return prefix === undefined ? [] : [
-    `   每个问题一个稳定 id，**必须以 \`${prefix}\` 开头**`
-    + `（例如 \`${prefix}NULL-DEREF-1\`）—— 另一边用的是别的前缀，撞了会丢一条。`
-    + "同一个问题在后续轮次要用同一个 id。",
-  ];
-};
 
 const redFixList = (
   openGaps: readonly Gap[], path: string | undefined,
@@ -349,6 +187,16 @@ export function judgePrompt(input: RoundInstructions): string {
       ? renderOpenGaps(input.openGaps)
       : `名单在这个文件里，**先读它**：${input.openGapsPath}`;
 
+  /*
+   * **这一阶段那三方各自的那一节，从表里取。**
+   *
+   * 原来这里有两处按阶段的分叉（`blueReach` 五分支、`idRule` 只有 Review/QA 有），
+   * 而每个阶段真正的差别只能以那种形式挂在公共模板上。现在差别写在
+   * `domain/phase-play.ts` 里，一个阶段一条，改一条不会波及别的
+   * （`round-prompt.golden.txt` 逐字节钉着这件事）。
+   */
+  const play = PHASE_PLAY[input.phase as Exclude<Phase, "Done">];
+
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
     "",
@@ -381,20 +229,16 @@ export function judgePrompt(input: RoundInstructions): string {
      * 收件人的文本递到裁判手上，它就当成可以自己消化的背景。rubric 契约修了抬头，
      * 任务这段当时漏了。
      */
-    `1. ${RED}。**下面这段任务原样转达给${RED}，一个字都不要改** ——`
-    + `「人要的是这些」那几行是人自己答的需求，改写或省略它，${RED}就只能凭空编。`,
+    play.red.heading,
     input.task,
     ...redFixList(input.openGaps, input.openGapsPath),
-    ...idRule(input.phase, "red"),
+    ...play.red.idRule,
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,
-    ...extra(input.addenda?.red),
     "",
-    `2. ${BLUE}。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。`,
-    blueReach(input.phase),
-    ...(idRule(input.phase, "blue").length > 0
-      ? idRule(input.phase, "blue")
-      : ["   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。"]),
+    play.blue.task,
+    play.blue.reach,
+    ...play.blue.idRule,
     /*
      * **契约原文再给一遍，不说「同样的格式」。**
      *
@@ -407,7 +251,7 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
     RESULT_CONTRACT,
-    `   它找出的每个问题都要放进 blockers。`,
+    ...play.blue.after.slice(0, 1),
     /*
      * 逐条之外再要一句整体的（用户 2026-07-31）。
      *
@@ -423,7 +267,6 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     `   再要它在同一个 json 块里多给一个 \`overall\` 字段：一句话说这一轮整体够不够格、`
     + `为什么。这一句不挡任何东西，是写给人看的。`,
-    ...relayedTo(BLUE, input.addenda?.blue),
     "",
     /*
      * 裁判从「只做一件事」改成两件（用户 2026-07-31）。

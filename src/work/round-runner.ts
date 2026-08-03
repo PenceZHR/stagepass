@@ -3,7 +3,7 @@ import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
   judgePrompt, readConclusion, readRound, readVerdicts, renderOpenGaps,
-  type RoundAgents, type RoundConclusion, type RoundInstructions,
+  type RoundAgents, type RoundConclusion,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
@@ -44,8 +44,6 @@ export interface RoundRequest {
   readonly task: string;
   /** The judge's thread, or null to start one. */
   readonly judgeThreadId: string | null;
-  /** 原样转给 `judgePrompt`。这一层同样不知道里面是什么。 */
-  readonly addenda?: RoundInstructions["addenda"];
   /**
    * 除了「对已有问题表态」之外，这一轮还要裁判逐条答的东西。
    *
@@ -250,7 +248,6 @@ export async function runRound(
       task: request.task,
       openGaps,
       openGapsPath,
-      addenda: request.addenda,
     }),
   });
 
