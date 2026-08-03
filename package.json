@@ -14,6 +14,7 @@
     "probe:pty": "tsx scripts/probe-pty-elicitation.ts",
     "probe:elicit": "tsx scripts/probe-elicit-run.ts",
     "probe:sandbox": "tsx scripts/probe-sandbox.ts",
+    "probe:subagent": "tsx scripts/probe-subagent-input.ts",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
