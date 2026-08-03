@@ -36,18 +36,6 @@ export interface TurnDispatch {
    * 回调抛出的异常不吞 —— 记录失败就该让这一轮失败，静默丢掉等于回到没有它的样子。
    */
   readonly onThread?: (threadId: string) => void;
-  /**
-   * 这个 turn **不是这个阶段的主线**：它自己有个名字，跑完就收。
-   *
-   * 补问反方走的是这条（L5 的 `runRubricRound`）：那一 turn 跑在**另一条线程**上
-   * （反方的），所以不能挤掉阶段那个终端 —— 而它又必须让人看得见，因为
-   * 「所有 turn 都在面板里看得见」是这个产品的前提。
-   *
-   * **字符串是不透明的。** 这一层不知道「标签页」是什么东西，也不该知道；面板拿它
-   * 当标签名，别的 launcher 可以完全忽略它。缺席 = 这就是阶段的主线，行为和加这个
-   * 字段之前逐字一致。
-   */
-  readonly aside?: { readonly label: string };
 }
 
 export interface TurnDelivery {

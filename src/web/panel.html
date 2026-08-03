@@ -826,18 +826,6 @@ body::after {
 
 /* ── 阶段视图（在第三列里原地替换） ───────────────────── */
 /* 补问那格的标签页。只有真开着补问时才出现。 */
-.term-tabs { display: flex; gap: .4rem; margin: 0 0 .5rem; flex-wrap: wrap; }
-.term-tabs button {
-  font: inherit; font-size: .82rem; padding: .22rem .7rem;
-  border-radius: 999px; cursor: pointer;
-  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
-  background: color-mix(in srgb, currentColor 6%, transparent);
-  color: inherit; opacity: .72;
-}
-.term-tabs button[aria-selected="true"] {
-  opacity: 1; border-color: currentColor;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-}
 
 #stage-view {
   display: flex; flex-direction: column; gap: 12px; padding: 22px 26px 20px;
@@ -1067,7 +1055,6 @@ body::after {
         补问那格的标签页。平时是空的（补问只在一次对抗里存在，跑完就收），
         所以整条默认 hidden —— 一条永远空着的工具栏只是噪音。
       -->
-      <div class="term-tabs" id="term-tabs" hidden></div>
       <div class="surface"><div id="term"></div></div>
       <p class="note" id="stage-note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
     </section>

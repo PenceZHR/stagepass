@@ -67,7 +67,6 @@ const enterButton = document.getElementById("enter");
 const waiveButton = document.getElementById("waive");
 const briefButton = document.getElementById("brief");
 const closeTermButton = document.getElementById("close-term");
-const termTabs = document.getElementById("term-tabs");
 const nextStepLine = document.getElementById("next-step");
 const runButton = document.getElementById("run");
 const askButton = document.getElementById("ask");
@@ -121,31 +120,11 @@ let editing = null;
 const path = (phase, suffix = "") =>
   `/pty/${encodeURIComponent(changeId)}/${encodeURIComponent(phase)}${suffix}`;
 
-/**
- * 现在这块屏幕上画的是哪一格：`null` = 这个阶段的主线终端（裁判），
- * 字符串 = 补问那一格的标签。
- *
- * 补问跑在**另一条线程**上，所以它不是主线终端的一部分；而它跑完就被服务端收掉，
- * 所以这个值随时可能失效 —— `attach` 拿不到就退回主线，见那边。
- */
-let viewing = null;
-
 const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/**
- * Keystrokes out. Text until they are sent; bytes from there on.
- *
- * **打给屏幕上正在画的那一格，不是永远打给主线。** `viewing` 记的就是这件事，
- * 而它原来只用于画面 —— 于是人在补问那格里敲的键全落到裁判那条主线上。
- * 2026-08-03 真机上一整轮死在这里：那下回车打断了裁判正在跑的 turn。
- */
+/** Keystrokes out. Text until they are sent; bytes from there on. */
 const send = (phase, data) =>
-  fetch(
-    path(phase, viewing === null
-      ? "/in"
-      : `/in?label=${encodeURIComponent(viewing)}`),
-    { method: "POST", body: new TextEncoder().encode(data) },
-  );
+  fetch(path(phase, "/in"), { method: "POST", body: new TextEncoder().encode(data) });
 
 function resize(phase) {
   fit.fit();
@@ -1023,7 +1002,6 @@ function drawSheet(phase) {
 
   // 出口：有活进程时才出现。没有它，上面每一个 disabled 都是一个没有出路的死结。
   closeTermButton.hidden = !entry.live;
-  renderTermTabs(entry);
 
   drawNextStep(entry);
 }
@@ -1359,20 +1337,10 @@ async function leave() {
   await load();
 }
 
-async function attach(phase, label = null, reattaching = false) {
+async function attach(phase, reattaching = false) {
   stream = new AbortController();
   const mine = stream;
-  viewing = label;
-  /*
-   * **尺寸只跟主线走。** 补问那格是服务端按自己的需要开的，把这块屏幕的行列数
-   * 推给它，会在人切回主线时让它重排一次。
-   *
-   * 按键则相反 —— 它跟着 `viewing` 走（见 `send`）。原来这里写的是「补问那格
-   * 不接受这边的按键」，而实现把按键转给了主线；2026-08-03 真机上，人在补问格里
-   * 按的回车打断了裁判正在跑的 turn。今天也证明了人确实需要能敲进那一格：
-   * Codex 自己的 MCP 许可提示就出现在那里。
-   */
-  if (label === null && !reattaching) await resize(phase);
+  if (!reattaching) await resize(phase);
 
   /*
    * 重连（C3）带 `existing=1`：**只接活着的，不新起。**
@@ -1381,23 +1349,10 @@ async function attach(phase, label = null, reattaching = false) {
    * 一个空 composer 盖掉，人以为一切正常。带上这个参数，死了就是 409，注解留在
    * 屏幕上。
    */
-  const suffix = label === null
-    ? (reattaching ? "?existing=1" : "")
-    : `?label=${encodeURIComponent(label)}`;
-  const response = await fetch(path(phase, suffix), { signal: stream.signal });
-  /*
-   * 补问那格跑完就被服务端收掉，于是 409。**退回主线，别把屏幕留在一片空白上** ——
-   * 「那一格没了」和「那一格什么都没输出」在人眼里一模一样。
-   */
+  const response = await fetch(
+    path(phase, reattaching ? "?existing=1" : ""), { signal: stream.signal });
   if (!response.ok) {
     if (mine !== stream) return;
-    if (label !== null) {
-      // 补问那格没了 —— 退回主线。
-      viewing = null;
-      term.reset();
-      await attach(phase, null);
-      return;
-    }
     // 重连扑空（409）：进程真的死了。注解已经在屏幕下面，保留尸体，不再试。
     return;
   }
@@ -1449,7 +1404,7 @@ async function attach(phase, label = null, reattaching = false) {
     if (!reattaching && label === null) {
       await wait(800);
       if (stream !== mine) return; // 人已经走开或换了格子
-      await attach(phase, null, true);
+      await attach(phase, true);
     }
   }
 }
@@ -1968,56 +1923,3 @@ async function saveRubric() {
 tabGaps.addEventListener("click", () => { showTab("gaps"); });
 tabRubric.addEventListener("click", () => { showTab("rubric"); });
 
-/**
- * 补问那格的标签页。
- *
- * ## 为什么平时整条藏起来
- *
- * 补问只在一次对抗里存在（发现反方没答 → 直接问它 → 拿到答案 → 服务端收掉那一格）。
- * 绝大多数时候一个补问格都没有，而一条永远只有「裁判」一个标签的工具栏是纯噪音。
- *
- * ## 标签名是服务端给的，这里不猜
- *
- * 名字来自 `TurnDispatch.aside.label`，一路原样传到这儿。前端**不解释**它，
- * 也不自己拼 —— 同一个概念两处各写一份必然漂移，而漂移的那天界面会理直气壮地说错话。
- */
-function renderTermTabs(entry) {
-  const labels = entry?.asides ?? [];
-  termTabs.hidden = labels.length === 0;
-  if (labels.length === 0) {
-    // 那一格没了而屏幕还停在它上面：退回主线。服务端那边已经 409 了，这里只是
-    // 让状态跟上，免得下一次 render 还以为在看一个不存在的东西。
-    if (viewing !== null && current) void attach(current, null);
-    termTabs.replaceChildren();
-    return;
-  }
-
-  const tab = (label, text) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = text;
-    button.setAttribute("aria-selected", String(viewing === label));
-    button.addEventListener("click", () => {
-      if (viewing === label || !current) return;
-      if (stream) { stream.abort(); stream = null; }
-      /*
-       * **选中态当场就改，别等下一次轮询。**
-       *
-       * `attach` 是异步的，而重画标签页要等下一次 `/api/panel` 回来 —— 中间那一两秒
-       * 里，人点了一下，屏幕清空了，可高亮还停在原来那一格。看起来就是「点了没反应」，
-       * 而这正是这个面板从头到尾在防的那类：**做了事，却看不出做了。**
-       */
-      for (const each of termTabs.querySelectorAll("button")) {
-        each.setAttribute("aria-selected", String(each === button));
-      }
-      term.reset();
-      void attach(current, label);
-    });
-    return button;
-  };
-
-  termTabs.replaceChildren(
-    tab(null, "裁判"),
-    ...labels.map((label) => tab(label, label)),
-  );
-}

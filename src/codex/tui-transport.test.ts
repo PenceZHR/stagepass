@@ -215,7 +215,7 @@ describe("L2 · 提示词没被提交时补一下回车", () => {
     const store = sessions();
     const clock = fakeTime();
     store.write(THREAD, turn("old", "old answer"));
-    const nudges: { label?: string; bytes: Uint8Array }[] = [];
+    const nudges: { bytes: Uint8Array }[] = [];
 
     const transport = new CodexTuiTransport({
       cwd: "/tmp", sessionsDir: store.root,
@@ -229,13 +229,10 @@ describe("L2 · 提示词没被提交时补一下回车", () => {
       },
     });
 
-    const delivery = await transport.runTurn({
-      threadId: THREAD, prompt: "go", aside: { label: "反方·逐条判定" },
-    });
+    const delivery = await transport.runTurn({ threadId: THREAD, prompt: "go" });
 
     assert.equal(delivery.text, "答上了");
     assert.equal(nudges.length, 1, "补了不止一次 —— 多出来的那些会打断已经跑起来的 turn");
-    assert.equal(nudges[0]!.label, "反方·逐条判定", "补到了主线，而这一轮跑在补问那一格");
     assert.equal(new TextDecoder().decode(nudges[0]!.bytes), "\r");
   });
 

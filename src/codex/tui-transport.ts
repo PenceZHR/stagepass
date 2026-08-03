@@ -81,11 +81,6 @@ export interface CodexTuiTransportOptions {
     args: string[];
     script: string;
     argv: string[];
-    /**
-     * 这个 turn 在人眼里叫什么，`undefined` = 它就是这个阶段的主线。
-     * 只是原样转交 `TurnDispatch.aside` 的标签 —— 这一层不解释它。
-     */
-    label?: string;
   }) => (() => void) | void;
   /**
    * 往这个 turn 的会话里补一下按键。**只在提示词根本没被提交的时候用。**
@@ -96,9 +91,10 @@ export interface CodexTuiTransportOptions {
    * 提示词前面带着 `›`）。rollout 一个字节没长，于是这一侧等满整个 timeout ——
    * 而界面上它和「在跑」一模一样。
    *
-   * 补一下回车就发出去了。`label` 原样转交，让上面那层知道该往哪一格写。
+   * 补一下回车就发出去了。打给这个阶段那个终端 —— 一个阶段同时只有一个进程
+   * （PRD §6.5 规则 5），所以不需要说是哪一个。
    */
-  readonly nudge?: (input: { label?: string; bytes: Uint8Array }) => void;
+  readonly nudge?: (input: { bytes: Uint8Array }) => void;
   /**
    * 等多久还没动静才补那一下。默认 45 秒。
    *
@@ -177,28 +173,22 @@ export class CodexTuiTransport implements CodexTransport {
        */
       const nudge = this.options.nudge !== undefined && dispatch.threadId !== null
         ? () => {
-          this.options.nudge?.({
-            ...(dispatch.aside === undefined ? {} : { label: dispatch.aside.label }),
-            bytes: new TextEncoder().encode("\r"),
-          });
+          this.options.nudge?.({ bytes: new TextEncoder().encode("\r") });
         }
         : undefined;
       const text = await this.awaitTurn(threadId, priorRecords, nudge);
       return { threadId, text };
     } finally {
       /*
-       * **只收 aside 那种，阶段的主线一个字都不动。**
+       * **阶段那个终端跑完要留着**，所以这里什么都不收。
        *
-       * 阶段那个终端跑完要留着：人还要在里面看裁判说了什么、回答选择器里的问题。
-       * 而补问那种是临时开的一格，用户 2026-07-31 定了「补完自动关」。
+       * 人还要在里面看裁判说了什么、回答选择器里的问题。TUI 跑完也不会自己退出
+       * （实测：它一直等下一句），关掉它是人的动作（面板上的「结束这个终端」）。
        *
-       * **`finally` 而不是成功路径**：补问超时、Codex 报错，那个终端同样得收掉 ——
-       * 否则失败一次就在面板上留一个再也不会更新的死格子。
-       *
-       * TUI **跑完不会自己退出**（实测：它一直等下一句），所以这一步不是保险，
-       * 是唯一会发生的关闭。
+       * 这里原来还会收掉「补问那一格」——那种 turn 2026-08-03 起不存在了
+       * （Codex 禁止外部驱动子 Agent 线程，见 `work/rubric-round.ts`）。
        */
-      if (dispatch.aside) dispose?.();
+      void dispose;
     }
   }
 
@@ -240,10 +230,7 @@ export class CodexTuiTransport implements CodexTransport {
     ].join("\n"), { mode: 0o755 });
 
     const launcher = this.options.launch ?? defaultLaunch;
-    return launcher({
-      command: "codex", args: invocation.slice(1), script, argv,
-      ...(dispatch.aside === undefined ? {} : { label: dispatch.aside.label }),
-    });
+    return launcher({ command: "codex", args: invocation.slice(1), script, argv });
   }
 
   private recordCount(path: string | undefined): number {

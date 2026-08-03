@@ -236,7 +236,6 @@ describe("panel · what it offers", () => {
         phase: "PRD", threadId: null, live: false, current: true,
         // 补问那格现在开着几个。空数组是常态 —— 它只在一次对抗里存在，跑完就收，
         // 而这个 Change 一轮都没跑过。
-        asides: [],
         // assessed 是 null 而不是空对象：**「没跑过」和「跑了但一条都没答上」
         // 必须分得开** —— 后者在 gaps 里看不出来，因为 yes 和 not_assessed 都
         // 不留痕迹。
@@ -2257,135 +2256,16 @@ describe("panel · 荒谬的终端尺寸不照做", () => {
   });
 });
 
-/**
- * 补问那一格终端。
+/*
+ * 这里原来有「panel · 补问那一格」整块。
  *
- * 用户 2026-07-31 定的形状：补问跑在**反方自己那条线程**上（不是这个阶段的主线），
- * 所以面板给它单开一格；跑完自动收。它必须让人看得见 —— 「一定要是在我的 web 里面
- * 用 codex，一定是 codex 的 TUI」，headless 的 turn 是不可见的 turn。
+ * 2026-08-03：那套东西没有使用者了。补问格唯一的生产者是「StagePass 自己 resume
+ * 反方线程逐条问」，而 Codex 禁止外部驱动子 Agent 线程 —— 反方那半 rubric 改走
+ * 文件（`work/rubric-round.ts` 的 `blueRubricFiles`）。于是 `launchAside` /
+ * `closeAside` / `?label=` 两条路由 / 面板的标签页整套一起撤掉了。
+ *
+ * 一个阶段现在**只有一个终端**，这不再是「暂时只有一个」，而是真的只有一个。
  */
-describe("panel · 补问那一格", () => {
-  const LABEL = "反方·补问";
-
-  it("**开出来之后进度里报得出，主线那一格不受影响**", async () => {
-    await withPanel(async ({ open, sessions }) => {
-      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
-      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
-        phases: { phase: string; live: boolean; asides: string[] }[];
-      };
-      const prd = panel.phases.find((each) => each.phase === "PRD")!;
-      assert.deepEqual(prd.asides, [LABEL]);
-      // **主线那一格没被这个动作点亮** —— live 是「裁判那个终端在跑」，
-      // 派发前的 phase_already_running 全靠它。
-      assert.equal(prd.live, false);
-      dispose();
-    });
-  });
-
-  it("`?label=` 接得到它的流，而且不新起进程", async () => {
-    await withPanel(async ({ open, pty, sessions }) => {
-      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
-      const before = pty.started.length;
-      const response = await open(
-        `/pty/${CHANGE}/PRD?label=${encodeURIComponent(LABEL)}`);
-      assert.equal(response.status, 200);
-      assert.equal(pty.started.length, before, "看一眼补问那格居然又起了一个进程");
-      await response.body?.cancel();
-      dispose();
-    });
-  });
-
-  it("**在这一格里敲的键要进这一格** —— 而不是悄悄进裁判那条主线", async () => {
-    /*
-     * 2026-08-03 真机上废掉一整轮的就是这个。
-     *
-     * 反方那条线程被 resume 起来，提示词躺在 composer 里没被提交（Codex 那边还在
-     * `Starting MCP server (2/4)`）。人在那一格里按回车想把它发出去 —— 而回车
-     * **进了裁判那条正在跑 turn 的主线**，被当成打断，`■ Conversation interrupted`。
-     * 反方那一格一个字节都没收到，这一轮再也走不动，也没有任何通道救得回来。
-     *
-     * 原来的注释说补问那格是「只读的旁观：不接受这边的按键」。但实现没有兑现那句话
-     * —— 它不是**吞掉**按键，而是把按键**转给了别人**。「按了没反应」和「按了，
-     * 打断了另一条线程」差得很远，而屏幕上两者一模一样。
-     */
-    await withPanel(async ({ open, sessions, pty }) => {
-      // 主线先起来：人是从阶段终端点进补问那一格的，两个都活着。
-      const main = await open(`/pty/${CHANGE}/PRD`);
-      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
-
-      const sent = await open(
-        `/pty/${CHANGE}/PRD/in?label=${encodeURIComponent(LABEL)}`,
-        { method: "POST", body: "\r" },
-      );
-      assert.equal(sent.status, 204);
-
-      assert.deepEqual(
-        pty.writtenTo.map((each) => each.argv),
-        [["resume", "T-BLUE"]],
-        "这一下按键没进补问那一格 —— 它进了主线，而主线上裁判正在跑",
-      );
-
-      await main.body?.cancel();
-      dispose();
-    });
-  });
-
-  it("**那一格已经收了就给 409，不要退回主线悄悄写进去**", async () => {
-    // 收掉之后再按键，最坏的结果是它落到裁判头上。宁可让前端看见 409。
-    await withPanel(async ({ open, pty }) => {
-      const sent = await open(
-        `/pty/${CHANGE}/PRD/in?label=${encodeURIComponent(LABEL)}`,
-        { method: "POST", body: "\r" },
-      );
-      assert.equal(sent.status, 409);
-      await sent.text();
-      assert.deepEqual(pty.writtenTo, [], "那一格不在了，这一下按键却还是写出去了");
-    });
-  });
-
-  it("**那一格不在时给 409，不是起一个空终端**", async () => {
-    await withPanel(async ({ open, pty }) => {
-      const before = pty.started.length;
-      const response = await open(`/pty/${CHANGE}/PRD?label=${encodeURIComponent(LABEL)}`);
-      assert.equal(response.status, 409);
-      // 起一个空的会让人以为补问还在跑，而它已经结束了。
-      assert.equal(pty.started.length, before);
-      await response.text();
-    });
-  });
-
-  it("**disposer 收掉它之后，进度里就没有了**（补完自动关）", async () => {
-    await withPanel(async ({ open, sessions }) => {
-      const dispose = sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
-      dispose();
-      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
-        phases: { phase: string; asides: string[] }[];
-      };
-      assert.deepEqual(panel.phases.find((each) => each.phase === "PRD")!.asides, []);
-    });
-  });
-
-  it("没有补问时，每个阶段都是空数组 —— 那是常态", async () => {
-    await withPanel(async ({ open }) => {
-      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
-        phases: { asides: string[] }[];
-      };
-      assert.ok(panel.phases.every((each) => each.asides.length === 0));
-    });
-  });
-
-  it("补问那格死了，正在看的人会被告知 —— 不留一帧静止画面", async () => {
-    await withPanel(async ({ open, pty, sessions }) => {
-      sessions.launchAside(CHANGE, "PRD", LABEL, ["resume", "T-BLUE"]);
-      const response = await open(`/pty/${CHANGE}/PRD?label=${encodeURIComponent(LABEL)}`);
-      const reader = response.body!.getReader();
-      pty.exit();
-      // done 是浏览器唯一能知道「这个终端不再接受输入」的途径。
-      const { done } = await reader.read();
-      assert.equal(done, true);
-    });
-  });
-});
 
 /**
  * C1：派发之前先查上游产物还在不在。

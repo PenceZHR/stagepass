@@ -365,37 +365,6 @@ export class PanelSessions {
     this.trust = options.trust ?? createTrustOps();
   }
 
-  /**
-   * 补问那种临时终端，按 (Change, 阶段, 标签) 存 —— **和上面那张表分开。**
-   *
-   * ## 为什么不给 `live` 那把 key 加一维
-   *
-   * `has(changeId, phase)` 今天有一个确切的意思：**这个阶段的主线终端在跑**。派发前
-   * 那道 `phase_already_running` 靠它、几条问答流里的「会话死了没有」靠它、
-   * `/api/close` 也靠它 —— 十几处。给它加一维，那十几处就要各自回答「算不算补问那格」，
-   * 而其中任何一处答错都是静默的。
-   *
-   * 分开存，那十几处**一个字都不用改**，语义也不漂移。
-   *
-   * ## 不留尸体
-   *
-   * `corpses` 是为了让人回去看主线终端的死因。补问这格跑完就自动关（用户
-   * 2026-07-31），而它的结局**已经如实写进了 evidence** —— 补了几次、还是补问本身
-   * 失败了、失败原因是什么，人在裁决那张表上看得见。终端是用来看的，账本才是用来查的。
-   *
-   * ## 为什么是嵌套 Map，不是一把拼出来的复合 key
-   *
-   * 第一版拼的是 `${changeId}<分隔符>${phase}<分隔符>${label}`，然后 `asideLabels`
-   * 按前缀反查。**两处的分隔符写岔了**（一处 NUL、一处空格），前缀永远匹配不上，
-   * 而 `tsc` 一声不吭 —— 是新加的用例把它逼出来的。
-   *
-   * 而且那个 NUL 更糟：它会让 `grep` 静默跳过整个文件，那正是今天刚从这个文件里
-   * 删掉的那种字节。
-   *
-   * 嵌套之后**根本没有分隔符这个问题**：外层用已经存在的 `key(changeId, phase)`，
-   * 内层直接拿标签当 key。标签里有什么字符都不要紧，也没有第二处需要跟它保持一致。
-   */
-  private readonly asides = new Map<string, Map<string, LiveSession>>();
 
   private static key(changeId: string, phase: Phase): string {
     return `${changeId}${phase}`;
@@ -426,92 +395,11 @@ export class PanelSessions {
    *
    * `open()` 见没有就起一个，那对「往里写点东西」这种用途是错的：它会凭空造出
    * 一个进程来接收那几个字节（而且是浏览用的那种，手上没有插件）。
-   * `aside()` 一直是这个语义，主线这边缺了对应的那一个。
+   * 「已经在跑就给我，没有就是没有」—— 补按键、查状态都该用这一条。
    */
   current(changeId: string, phase: Phase): LiveSession | undefined {
     const found = this.live.get(PanelSessions.key(changeId, phase));
     return found !== undefined && found.session.alive ? found : undefined;
-  }
-
-  /**
-   * 起一个补问用的终端，**返回收掉它的那个函数**。
-   *
-   * 跑在另一条线程上（反方自己那条），所以不能挤掉阶段那个终端；而它又必须让人
-   * 看得见 —— 用户 2026-07-31：「一定要是在我的 web 里面用 codex，一定是 codex 的
-   * TUI。」headless 的 turn 是不可见的 turn。
-   *
-   * **返回 disposer 而不是让调用方自己去关**：谁开的谁负责收，而 TUI 跑完不会自己
-   * 退出（实测），所以这一步不是保险，是唯一会发生的关闭。
-   */
-  launchAside(
-    changeId: string, phase: Phase, label: string, argv: string[],
-  ): () => void {
-    const cwd = this.workspaceFor(changeId);
-    if (cwd === null) throw new ProjectPathMissingError(changeId);
-
-    // 和主线那条同一个理由：一条被归档的会话，`codex resume` 一起来就退。
-    if (argv[0] === "resume" && argv[1] !== undefined) {
-      ensureResumable(argv[1], this.archive);
-    }
-
-    const key = PanelSessions.key(changeId, phase);
-    const inPhase = this.asides.get(key) ?? new Map<string, LiveSession>();
-    this.asides.set(key, inPhase);
-    // 同一格已经开着就不再起第二个 —— 补问是串行的，出现第二个只可能是漏收了。
-    const existing = inPhase.get(label);
-    if (existing && existing.session.alive) {
-      return () => { this.closeAside(key, label); };
-    }
-
-    const start = this.options.start ?? startPtySession;
-    const session = start({
-      changeId, phase, argv, options: { ...this.options.session, cwd },
-    });
-    const entry: LiveSession = {
-      session, listeners: new Set(), enders: new Set(), scrollback: [],
-      forgotten: false,
-    };
-    let buffered = 0;
-    session.onBytes((bytes) => {
-      entry.scrollback.push(bytes);
-      buffered += bytes.byteLength;
-      while (buffered > SCROLLBACK_BYTES && entry.scrollback.length > 1) {
-        buffered -= entry.scrollback.shift()!.byteLength;
-      }
-      for (const listener of entry.listeners) listener(bytes);
-    });
-    session.onExit(() => {
-      // 只删自己那一条，理由和 `launchInto` 里那段一样。
-      if (inPhase.get(label) !== entry) return;
-      inPhase.delete(label);
-      for (const end of entry.enders) end();
-      entry.enders.clear();
-    });
-    inPhase.set(label, entry);
-    return () => { this.closeAside(key, label); };
-  }
-
-  private closeAside(key: string, label: string): void {
-    const entry = this.asides.get(key)?.get(label);
-    if (!entry) return;
-    this.asides.get(key)!.delete(label);
-    entry.session.kill();
-    // 主动告诉正在看的人，别等 onExit —— 和 `close` 那边同一个理由。
-    for (const end of entry.enders) end();
-    entry.enders.clear();
-  }
-
-  /** 补问那格的会话，**不存在就不存在** —— 这一条绝不新起进程。 */
-  aside(changeId: string, phase: Phase, label: string): LiveSession | undefined {
-    return this.asides.get(PanelSessions.key(changeId, phase))?.get(label);
-  }
-
-  /** 这个阶段现在开着哪几个补问格。前端拿它画标签页。 */
-  asideLabels(changeId: string, phase: Phase): string[] {
-    const inPhase = this.asides.get(PanelSessions.key(changeId, phase));
-    return inPhase === undefined ? [] : [...inPhase.entries()]
-      .filter(([, entry]) => entry.session.alive)
-      .map(([label]) => label);
   }
 
   /**
@@ -734,7 +622,7 @@ export class PanelSessions {
    *
    * key 是 `${changeId}${phase}` 拼出来的，**中间没有分隔符**。拿 `CHG-1` 去前缀
    * 匹配会连 `CHG-10`、`CHG-100` 的尸体一起删掉。阶段是一张定死的表，逐个算出
-   * 精确的 key 就没有这个问题 —— 和 `asides` 那段注释是同一条理由。
+   * 精确的 key 就没有这个问题。
    */
   forget(changeId: string): void {
     for (const phase of PHASES) {
@@ -742,14 +630,7 @@ export class PanelSessions {
       // 先立标记再 kill：`onExit` 是异步的，晚于下面那句 `corpses.delete`。
       const entry = this.live.get(key);
       if (entry) entry.forgotten = true;
-      for (const aside of this.asides.get(key)?.values() ?? []) {
-        aside.forgotten = true;
-      }
       this.close(changeId, phase);
-      for (const label of [...this.asides.get(key)?.keys() ?? []]) {
-        this.closeAside(key, label);
-      }
-      this.asides.delete(key);
       this.corpses.delete(key);
     }
   }
@@ -964,26 +845,17 @@ async function runRound(input: {
          * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
          */
         config: pluginConfigFor(database, changeId),
-        /*
-         * 有标签的是补问那种（L5 的 `askAgain`），它跑在**反方自己那条线程**上，
-         * 所以单开一格、跑完自动收 —— disposer 交回给 transport，由它在 `finally`
-         * 里调用。没有标签的就是这个阶段的主线，行为一个字都没变。
-         */
-        launch: ({ argv, label }) => (label === undefined
-          ? void sessions.launchInto(changeId, phase, argv)
-          : sessions.launchAside(changeId, phase, label, argv)),
+        launch: ({ argv }) => { sessions.launchInto(changeId, phase, argv); },
         /*
          * **提示词进了 composer 却没被提交时，补那一下回车。**
          *
-         * 2026-08-03 真机：反方线程 resume 起来，Codex 还在 `Starting MCP server
-         * (2/4)`，argv 里的提示词被搁进 composer 没发出去，rollout 一个字节没长。
-         * 判据和守卫都在 `awaitTurn` 那边 —— 这里只负责把字节送到正确的那一格。
+         * 2026-08-03 真机：一条 resume 起来的会话，Codex 还在
+         * `Starting MCP server (2/4)`，argv 里的提示词被搁进 composer 没发出去，
+         * rollout 一个字节没长。判据和守卫都在 `awaitTurn` 那边 —— 这里只负责
+         * 把字节送到这个阶段那个终端。**没有就不送**（`current` 不会起进程）。
          */
-        nudge: ({ label, bytes }) => {
-          const target = label === undefined
-            ? sessions.current(changeId, phase)
-            : sessions.aside(changeId, phase, label);
-          target?.session.write(bytes);
+        nudge: ({ bytes }) => {
+          sessions.current(changeId, phase)?.session.write(bytes);
         },
       }),
       gaps: new GapStore(database),
@@ -1050,37 +922,6 @@ async function runRound(input: {
   return { ran: true, phase, outcome };
 }
 
-/**
- * 把一个会话的字节接到一条 HTTP 响应上。
- *
- * 从 `/pty/…` 那一段抽出来，因为补问那格要走**完全一样**的一套：先回放 scrollback、
- * 再挂 listener、进程死了要结束响应、人走开要摘 listener。两份拷贝里只要有一处漏了
- * 「进程没了就 end」，那一格就会变成那个「死终端和在思考的终端一模一样」的老毛病。
- */
-function streamSession(
-  entry: LiveSession,
-  response: ServerResponse,
-  request: IncomingMessage,
-): void {
-  response.writeHead(200, {
-    "content-type": "application/octet-stream",
-    "cache-control": "no-cache, no-transform",
-    "x-accel-buffering": "no",
-  });
-  response.flushHeaders();
-  for (const chunk of entry.scrollback) response.write(chunk);
-  const listener = (bytes: Uint8Array): void => { response.write(bytes); };
-  entry.listeners.add(listener);
-  const end = (): void => {
-    entry.listeners.delete(listener);
-    response.end();
-  };
-  entry.enders.add(end);
-  request.on("close", () => {
-    entry.listeners.delete(listener);
-    entry.enders.delete(end);
-  });
-}
 
 /**
  * 一份产物现在还在不在，在哪。
@@ -1282,7 +1123,6 @@ export async function handle(
            *
            * 空数组是常态 —— 补问只在这一轮里存在，跑完就收。
            */
-          asides: sessions.asideLabels(changeId, phase),
           current: state?.phase === phase,
           mark: markOf(phase, ledger, state, gaps),
           gaps,
@@ -2405,23 +2245,6 @@ export async function handle(
 
     if (action === undefined && request.method === "GET") {
       /*
-       * `?label=…` = 看补问那一格，**不新起进程**。
-       *
-       * 主线那条是「打开就起一个」（人点进阶段就该有个终端）。补问那格反过来：
-       * 它只在一次补问期间存在，跑完就收。开不出来时给 409 而不是起一个空的 ——
-       * 一个空终端会让人以为补问还在跑，而它已经结束了。
-       */
-      const label = url.searchParams.get("label");
-      if (label !== null) {
-        const found = sessions.aside(changeId, phase, label);
-        if (!found) {
-          response.writeHead(409).end("aside session is not running");
-          return;
-        }
-        streamSession(found, response, request);
-        return;
-      }
-      /*
        * `?existing=1` = **只接活着的，不新起**（C3 重连用）。
        *
        * 浏览器那条流断掉有两种原因，必须分开对待：**服务端换了会话**（续跑关旧起新，
@@ -2473,31 +2296,6 @@ export async function handle(
       return;
     }
     if (action === "/in" && request.method === "POST") {
-      /*
-       * `?label=` = 打进补问那一格，**不是主线**。
-       *
-       * 读那一侧一直认这个参数，写那一侧原来不认 —— 于是人在补问那格里敲的键
-       * 全都落到裁判那条主线终端上。2026-08-03 真机上一整轮死在这里：反方线程被
-       * resume 起来，提示词躺在 composer 里没提交（Codex 还在 `Starting MCP
-       * server (2/4)`），人按回车想发出去，那下回车打断了**裁判**正在跑的 turn。
-       *
-       * 原来的设计说补问那格「只读」。但不接受按键该是**吞掉**它，而不是转交给
-       * 另一条线程 —— 而且今天证明了人确实需要能敲进去：Codex 自己的 MCP 许可
-       * 提示就出现在那一格里，没有键盘就没有出路。
-       *
-       * 那一格不在时给 409 而不是退回主线：退回去正是这个 bug 的形状。
-       */
-      const label = url.searchParams.get("label");
-      if (label !== null) {
-        const found = sessions.aside(changeId, phase, label);
-        if (!found) {
-          response.writeHead(409).end("aside session is not running");
-          return;
-        }
-        found.session.write(await readBody(request));
-        response.writeHead(204).end();
-        return;
-      }
       sessions.open(changeId, phase).session.write(await readBody(request));
       response.writeHead(204).end();
       return;
