@@ -98,6 +98,17 @@ export interface RoundInstructions {
     /** 一共几条。写进提示词，好让它自己数得出来。 */
     readonly count: number;
   } | undefined;
+  /**
+   * 这个 Change 上人已经裁定过的事，写成文件之后那个文件在哪。
+   *
+   * **跨阶段**，这是它和 `openGapsPath` 的根本区别：后者只有这一个阶段开着的问题，
+   * 而人在 Spec 里裁过的事，TechSpec 的反方结构上看不见 —— 每个阶段一条新线程、
+   * 一个新反方，从零开始怀疑。2026-08-02 实测：去重语义被重提 5 次、范围定义 3 次。
+   *
+   * 一份文件，三个读者：裁判自己读，并且要**原样转达给红方和反方**。缺席（还没有
+   * 人裁过任何事）就一行都不印。
+   */
+  readonly settledPath?: string | undefined;
 }
 
 
@@ -144,6 +155,53 @@ export function renderOpenGaps(openGaps: readonly Gap[]): string {
   if (found.length > 0) {
     if (sections.length > 0) sections.push("", "之前轮次报出来的问题：");
     sections.push(...found.map(gapLine));
+  }
+  return sections.join("\n");
+}
+
+/**
+ * 人已经裁定过的事，渲染成一段给三方都读的文字。
+ *
+ * ## 它要挡的是什么
+ *
+ * 每个阶段一条新线程、一个新反方，从零开始怀疑。2026-08-02 实测：去重语义被重提
+ * 5 次、范围定义 3 次，每次烧一轮 turn 加一次裁决 —— 而人早就裁过了，只是那句话
+ * 结构上到不了下一个阶段。
+ *
+ * ## 措辞上必须留一个口子
+ *
+ * 「不许再报」写死了就成了永久免疫，而人也会裁错。所以这段话说的是：**不要当成
+ * 新问题重报**，真有它没考虑到的证据就写进意见里，由人决定要不要重提。裁决权还在
+ * 人手上，模型只是不能自己把它推翻（`domain/gap.ts` 的 `applyRound`）。
+ *
+ * ## 两种要分开列
+ *
+ * 「这条不成立」和「问题还在，我接受这个风险」是两句不同的话。混成一段，反方会
+ * 以为被接受的那些也已经不存在了。
+ */
+export function renderSettled(
+  settled: readonly (Gap & { phase: string })[],
+): string {
+  if (settled.length === 0) return "";
+  const dismissed = settled.filter((gap) => gap.status === "closed");
+  const waived = settled.filter((gap) => gap.status === "waived");
+  const line = (gap: Gap & { phase: string }): string =>
+    `- [${gap.phase}] ${gap.id} ${gap.title}\n  人说：${gap.resolution ?? "（没有记下理由）"}`;
+
+  const sections: string[] = [
+    "以下是**人已经表过态**的事。你没有读过他当时的依据，所以：",
+    "**不要把它们当成新问题重新报出来。**",
+    "真有他没考虑到的证据，写进你的意见里说明，由他决定要不要重提。",
+  ];
+  if (dismissed.length > 0) {
+    sections.push("", "**他驳回的（这条不成立）：**", ...dismissed.map(line));
+  }
+  if (waived.length > 0) {
+    sections.push(
+      "",
+      "**他接受的风险（问题还在，这一版带着它走 —— 不要再当成待修项报）：**",
+      ...waived.map(line),
+    );
   }
   return sections.join("\n");
 }
@@ -236,6 +294,30 @@ function blueRubricLines(
   ];
 }
 
+/**
+ * 「已经裁定过的事」那一段 —— **自己读，并且转达给两边。**
+ *
+ * 抬头写明收件人，和任务、`RESULT_CONTRACT`、rubric 那两个路径同一个理由：
+ * 凡是要经裁判转达的文本，指望它「参照上文」就是指望它转述，只有原文加收件人
+ * 才到得了（2026-08-02 那三张脸）。
+ *
+ * 红方和反方都要，而且要的东西不同：**红方**别再去"修"一条人已经驳掉的；
+ * **反方**别再把它当成新问题报出来。
+ */
+function settledLines(settledPath: string | undefined): string[] {
+  if (settledPath === undefined) return [];
+  return [
+    "这个改动上**人已经裁定过一些事**，全部列在这个文件里，**先读它**：",
+    `${settledPath}`,
+    "",
+    "**下面这两行原样转达给正方和反方，一个字都不要改：**",
+    `   人已经裁定过的事在这个文件里，动手之前先读它：${settledPath}`,
+    "   里面的条目不要当成新问题重新报出来。真有它没考虑到的证据，写进你的意见里"
+    + "说明，由人决定要不要重提。",
+    "",
+  ];
+}
+
 export function judgePrompt(input: RoundInstructions): string {
   /*
    * 人提的问题**单独一区，措辞和模型报的不一样**（用户 2026-07-30）。
@@ -296,6 +378,7 @@ export function judgePrompt(input: RoundInstructions): string {
      * 收件人的文本递到裁判手上，它就当成可以自己消化的背景。rubric 契约修了抬头，
      * 任务这段当时漏了。
      */
+    ...settledLines(input.settledPath),
     play.red.heading,
     input.task,
     ...redFixList(input.openGaps, input.openGapsPath),

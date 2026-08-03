@@ -3,6 +3,7 @@ import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
   judgePrompt, readConclusion, readRound, readVerdicts, renderOpenGaps,
+  renderSettled,
   type RoundAgents, type RoundConclusion,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
@@ -229,6 +230,32 @@ export async function runRound(
       );
 
   /*
+   * 人已经裁定过的事，**跨这个 Change 的所有阶段**。
+   *
+   * 和 `openGapsPath` 对称地放在这里，理由也一样：同一份内容不能一处渲染进文件、
+   * 另一处渲染进提示词，两份迟早漂开。
+   *
+   * 跨阶段是它存在的全部理由：每个阶段一条新线程、一个新反方，从零开始怀疑，而人在
+   * Spec 里裁过的事 TechSpec 的反方结构上看不见。2026-08-02 实测：去重语义被重提
+   * 5 次、范围定义 3 次，每次烧一轮 turn 加一次裁决。
+   *
+   * 一条都没有就不写文件、提示词里也一行不印 —— 一个空文件只会让三方都去猜它
+   * 是不是该有内容。
+   */
+  const settled = dependencies.gaps.humanSettled(request.changeId);
+  const settledPath = settled.length === 0
+    ? undefined
+    : dependencies.writeRoundFile(
+        `settled-${request.changeId}.md`,
+        [
+          `# ${request.changeId}：人已经裁定过的事`,
+          "",
+          renderSettled(settled),
+          "",
+        ].join("\n"),
+      );
+
+  /*
    * **这一轮之前它已经有哪些孩子** —— 必须在 turn 之前问。
    *
    * 成功的轮复用裁判线程，所以一条裁判线程会累积多轮的子 Agent（实测见过一条挂着
@@ -271,6 +298,7 @@ export async function runRound(
       openGaps,
       openGapsPath,
       ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
+      ...(settledPath === undefined ? {} : { settledPath }),
     }),
   });
 

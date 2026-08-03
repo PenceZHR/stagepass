@@ -76,6 +76,47 @@ export class GapStore {
   }
 
   /**
+   * 这个 Change 上**人已经表过态**的所有条目，跨阶段。
+   *
+   * ## 为什么跨阶段
+   *
+   * 每个阶段一条新线程、一个新反方，从零开始怀疑 —— 而人在 Spec 里裁过的事，
+   * TechSpec 的反方结构上看不见。2026-08-02 实测：去重语义被重提 5 次、范围定义
+   * 3 次，每次烧一轮 turn 加一次裁决。
+   *
+   * ## 为什么只有人裁过的
+   *
+   * 「已裁定」的定义就是人表过态。模型自己关掉的仍然可以被重新发现、重开
+   * （见 `domain/gap.ts` 的 `applyRound`）—— 那按定义就不算裁定过，进这份清单
+   * 会让下一轮误以为它不许再提。
+   *
+   * 两种都要，因为它们说的是两句不同的话：`closed_by='human'` 是「这条不成立」，
+   * `waived` 是「问题还在，我接受这个风险」。
+   */
+  humanSettled(changeId: string): (Gap & { phase: Phase })[] {
+    const rows = this.database.prepare(
+      `SELECT id, kind, severity, title, status, opened_round, resolution, note,
+              closed_by, phase
+         FROM gaps
+        WHERE change_id = ?
+          AND (closed_by = 'human' OR status = 'waived')
+        ORDER BY phase, opened_round, id`,
+    ).all(changeId) as (GapRow & { phase: Phase })[];
+    return rows.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      severity: row.severity,
+      title: row.title,
+      status: row.status,
+      openedRound: row.opened_round,
+      resolution: row.resolution,
+      note: row.note,
+      closedBy: row.closed_by,
+      phase: row.phase,
+    }));
+  }
+
+  /**
    * Settle a round.
    *
    * Throws before writing anything if the round's verdicts are not coherent

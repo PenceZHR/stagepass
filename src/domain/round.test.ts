@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import type { Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
-  readVerdicts, RED,
+  readVerdicts, RED, renderSettled,
   summariseRoundNotes,
   UnreadableVerdictError,
 } from "./round";
@@ -1039,5 +1039,63 @@ describe("L4 · 那两个路径要经裁判转达给反方", () => {
       blueRubric: { criteriaPath: "/tmp/a", answersPath: "/tmp/b", count: 0 },
     });
     assert.equal(zero, without, "count=0 和压根没给，印出来该一模一样");
+  });
+});
+
+/**
+ * 人已经裁定过的事要跨阶段跟着走。
+ *
+ * 每个阶段一条新线程、一个新反方，从零开始怀疑。2026-08-02 实测：去重语义被重提
+ * 5 次、范围定义 3 次，每次烧一轮 turn 加一次裁决 —— 而人早就裁过了，只是那句话
+ * 结构上到不了下一个阶段。
+ */
+describe("L4 · 已裁定的事跨阶段跟着走", () => {
+  const settled = (patch: Partial<Gap> & { phase: string }) => ({
+    id: "SPEC-DEDUP-1", kind: "finding" as const, severity: "P1" as const,
+    title: "去重语义没定义", status: "closed" as const, openedRound: 1,
+    resolution: "实测过了，那个定义在第 3 节", note: null,
+    closedBy: "human" as const, ...patch,
+  });
+
+  it("**驳回的和接受风险的分开列** —— 两句话不一样", () => {
+    const text = renderSettled([
+      settled({ phase: "Spec" }),
+      settled({
+        phase: "QA", id: "QA-007", title: "兼容性回归没有唯一基线",
+        status: "waived", closedBy: null, resolution: "本期接受，人工检查覆盖",
+      }),
+    ]);
+    assert.match(text, /他驳回的（这条不成立）/);
+    assert.match(text, /\[Spec\] SPEC-DEDUP-1/);
+    assert.match(text, /他接受的风险/);
+    assert.match(text, /\[QA\] QA-007/);
+    assert.match(text, /本期接受，人工检查覆盖/);
+  });
+
+  it("**留了重提的口子** —— 人也会裁错", () => {
+    const text = renderSettled([settled({ phase: "Spec" })]);
+    assert.match(text, /不要把它们当成新问题重新报出来/);
+    assert.match(text, /真有他没考虑到的证据/, "写死成永久免疫了 —— 人裁错时没有出路");
+  });
+
+  it("一条都没有就是空的 —— 不写一个空文件让三方去猜", () => {
+    assert.equal(renderSettled([]), "");
+  });
+
+  it("**路径要转达给正方和反方两边**，不是只给裁判自己看", () => {
+    const prompt = judgePrompt({
+      phase: "Spec", round: 2, task: "写 Spec", openGaps: [],
+      settledPath: "/tmp/settled-CHG-1.md",
+    });
+    assert.match(prompt, /原样转达给正方和反方/);
+    assert.equal(
+      prompt.split("/tmp/settled-CHG-1.md").length - 1, 2,
+      "路径只出现了一次 —— 裁判自己读那一处和转达那一处要各有一份",
+    );
+  });
+
+  it("没有裁定过任何事就一行都不印", () => {
+    const without = judgePrompt({ phase: "Spec", round: 2, task: "写 Spec", openGaps: [] });
+    assert.ok(!without.includes("已经裁定过"), "没有裁定却印了那一节");
   });
 });
