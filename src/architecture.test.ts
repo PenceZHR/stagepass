@@ -105,6 +105,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "store/question-store.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
+  // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
+  // 模型听的人，而插件在 L3 —— 这两个类型再高一层，L3 就 import 不到了。
+  // 名单里装的是 gap（L1）和 criterion（L5），但装的是什么不决定它住哪层，
+  // **谁必须够得着它**才决定。
+  "domain/worklist.ts": 3,
+  "store/worklist-store.ts": 3,
 
   // The schema is the union of every layer's storage, so it imports each
   // layer's enum constants. Placing it at the top is not an exemption: nothing

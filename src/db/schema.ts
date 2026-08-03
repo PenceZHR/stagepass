@@ -486,6 +486,56 @@ CREATE TABLE IF NOT EXISTS round_notes (
   CHECK (source = 'judge_conclusion' OR another_round IS NULL),
   PRIMARY KEY (change_id, phase, round, source)
 );
+
+-- 裁判这一轮要逐条答的东西，**以及它永远看不到的那一列**。
+--
+-- ## 这张表存在的理由
+--
+-- 在它之前，裁判是这么表态的：StagePass 把 gap id 和 criterion key 印进提示词，
+-- 裁判把它们**手抄**进一个 json 块的 key 位置上。那两串东西是 50 和 40 个字符的
+-- UUID，而 StagePass 拿它们做精确相等匹配 -- 抄漏一段，一整份判定作废
+-- （2026-08-02 实测：同一个抄错的 UUID 连抄三轮）。
+--
+-- 判据是用户 2026-08-02 立的规矩：**凡是 StagePass 会拿去做精确匹配的字符串，都不许
+-- 出现在模型必须生成的文本里。** 见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
+--
+-- 所以身份挪到这里：target 是 gap id 或 criterion key，**模型从头到尾看不到它**。
+-- 它只被问「第 N 项：<正文>，答 A 还是 B」，然后交一个枚举值和一句散文。
+--
+-- ## 为什么有 status 这一列
+--
+-- 「下一项」是插件问出来的，而插件不知道自己在哪个 Change、哪个阶段、第几轮 --
+-- 它只有这个库。所以「哪一份是当前那一份」必须是库里的事实。开一份新的会把别的
+-- 全部 closed（WorklistStore.open），于是全库任何时刻至多一份开着。
+--
+-- 上一轮没答完的那些**不会漏到下一轮** -- 那正是这一列挡的：没有它，裁判这一轮
+-- 会被喂上一轮的剩饭，而那些条目对应的 gap 可能早就关掉了。
+--
+-- ## 答案存在这里，不是存在别处
+--
+-- answer 是枚举值（closed/still_open，或 yes/no），reason 是散文。
+-- 上层照旧把它们翻译成 gap 的 verdict 和 rubric 的 assessment -- 那两张表的语义
+-- 一个字都没变，变的只是这些值**从哪来**。
+CREATE TABLE IF NOT EXISTS round_worklist (
+  change_id   TEXT    NOT NULL REFERENCES changes(id),
+  phase       TEXT    NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  round       INTEGER NOT NULL,
+  ordinal     INTEGER NOT NULL,
+  kind        TEXT    NOT NULL CHECK (kind IN ('gap', 'criterion')),
+  -- gap id 或 criterion key。**从不发给模型。**
+  target      TEXT    NOT NULL,
+  -- 模型看得到的那段话。
+  prompt      TEXT    NOT NULL,
+  -- 允许的答案，JSON 数组。答别的会被当场拒掉，并把这几个值原样回给它。
+  choices     TEXT    NOT NULL,
+  status      TEXT    NOT NULL CHECK (status IN ('open', 'closed')),
+  answer      TEXT        NULL,
+  reason      TEXT        NULL,
+  answered_at TEXT        NULL,
+  PRIMARY KEY (change_id, phase, round, ordinal)
+);
+CREATE INDEX IF NOT EXISTS ix_worklist_open
+  ON round_worklist (status, change_id, phase, round, ordinal);
 `;
 
 /**

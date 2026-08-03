@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
@@ -83,11 +83,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * 抽出来是因为这串东西现在有四个落点（问人问题、录需求、录需求的第二段、跑一轮），
  * 而**同一条规则的四份拷贝必然漂移**：漂移的那一天，某一条路上的模型会理直气壮地
  * 说「没有这个工具」，而那是最难查的一种毛病 —— 提示词里明明写着叫它调。
+ *
+ * ## `changeId` 也在这里
+ *
+ * 插件那三个工具**一个入参都不收**（2026-08-02 起），所以「问的是哪个 Change 的事」
+ * 只能由启动它的这一侧说。这不是把手抄换个地方 —— 它从头到尾没经过模型的嘴，
+ * 而那正是判据。见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
  */
-const pluginConfigFor = (database: { name: string }): string[] => [
+const pluginConfigFor = (
+  database: { name: string }, changeId: string,
+): string[] => [
   `mcp_servers.stagepass.command="npx"`,
   `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
-  `mcp_servers.stagepass.env={STAGEPASS_DB="${database.name}"}`,
+  `mcp_servers.stagepass.env={STAGEPASS_DB="${resolve(database.name)}",`
+  + `STAGEPASS_CHANGE="${changeId}"}`,
 ];
 
 /**
@@ -799,7 +808,7 @@ async function runRound(input: {
          * 判定从「手抄标识符」改成「调工具只交内容」，第一步就是它得有这个工具。
          * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
          */
-        config: pluginConfigFor(database),
+        config: pluginConfigFor(database, changeId),
         /*
          * 有标签的是补问那种（L5 的 `askAgain`），它跑在**反方自己那条线程**上，
          * 所以单开一格、跑完自动收 —— disposer 交回给 transport，由它在 `finally`
@@ -1558,9 +1567,10 @@ export async function handle(
       model: options.session.model,
       reasoningEffort: options.session.reasoningEffort,
       // Registered per invocation, never written to the user's global config.
-      config: pluginConfigFor(database),
+      config: pluginConfigFor(database, changeId),
       prompt: [
-        `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`,
+        "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
+        "问哪一个由 StagePass 决定。",
         "它会把 StagePass 的问题交给我来选。",
         "不要替我做决定，不要解释我该选什么，调用完就停下。",
       ].join("\n"),
@@ -1760,7 +1770,7 @@ export async function handle(
      * 会话**的（见 `PanelSessions.type`），而 MCP 工具是启动时注册的。这时候不注册，
      * 后面打字让它调 `stagepass_ask` 只会得到「没有这个工具」。
      */
-    const pluginConfig = pluginConfigFor(database);
+    const pluginConfig = pluginConfigFor(database, changeId);
     const transport = new CodexTuiTransport({
       ...options.session,
       ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
@@ -1818,7 +1828,7 @@ export async function handle(
      * 一行，因为 composer 里的换行就是提交。
      */
     const typed = await sessions.type(changeId, phase,
-      `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`
+      "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数**。"
       + "它会把「这次改动要什么」交给我来答。不要替我回答，不要猜我想要什么，调用完就停下。");
     if (!typed) {
       // 会话在这中间死了。**不许假装问出去了** —— 题已经落库，人却永远看不到它，
@@ -1927,9 +1937,10 @@ export async function handle(
       approval: options.session.approval,
       model: options.session.model,
       reasoningEffort: options.session.reasoningEffort,
-      config: pluginConfigFor(database),
+      config: pluginConfigFor(database, changeId),
       prompt: [
-        `调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次，questionId 用 "${questionId}"。`,
+        "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
+        "问哪一个由 StagePass 决定。",
         "它会把「接受哪一条风险」交给我来选。",
         "不要替我做决定，不要评价这些风险，调用完就停下。",
       ].join("\n"),
