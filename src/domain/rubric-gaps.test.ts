@@ -33,7 +33,7 @@ const judged = (patch: Partial<Assessment> = {}): Assessment => ({
 const openStandard = (patch: Partial<Gap> = {}): Gap => ({
   id: ID, kind: "standard", severity: null,
   title: "每条需求都有可测的验收标准",
-  status: "open", openedRound: 1, resolution: null, note: null,
+  status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
   ...patch,
 });
 
@@ -110,7 +110,7 @@ describe("L5 · 什么能让一条标准不再挡", () => {
   it("不碰 finding —— 那是另一套东西", () => {
     const finding: Gap = {
       id: "G-1", kind: "finding", severity: "P0", title: "范围冲突",
-      status: "open", openedRound: 1, resolution: null, note: null,
+      status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
     };
     assert.deepEqual(apply([finding], [judged({ verdict: "yes" })], 2), [finding]);
   });

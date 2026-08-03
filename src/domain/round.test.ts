@@ -15,7 +15,7 @@ const answer = (artifacts: string[], blockers: object[] = []) =>
 
 const gap = (id: string, title: string): Gap => ({
   id, kind: "finding", severity: "P1", title, status: "open", openedRound: 1,
-  resolution: null, note: null,
+  resolution: null, note: null, closedBy: null,
 });
 
 describe("L4 · what the judge is told", () => {
@@ -97,7 +97,7 @@ describe("L4 · what the judge is told", () => {
       openGaps: [{
         id: "RB:producer:RBC-a", kind: "standard", severity: null,
         title: "每条需求都有可测的验收标准",
-        status: "open", openedRound: 1, resolution: null, note: null,
+        status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
       }],
     });
     assert.match(prompt, /RB:producer:RBC-a \[标准\]/);
@@ -382,7 +382,7 @@ describe("L4 · 红方看得到上一轮被挑出了什么", () => {
       phase: "Spec", round: 2, task: "t",
       openGaps: [{
         ...gap("SPEC-1", "验收标准不可测"),
-        note: "把那个同步接口整段删掉，不要留占位",
+        note: "把那个同步接口整段删掉，不要留占位", closedBy: null,
       }],
     });
     // 用编号锚点切，不用裸路径 —— 开头那行「路径必须精确是 …」里两个路径都出现过，

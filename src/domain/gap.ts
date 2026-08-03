@@ -52,6 +52,13 @@ export interface Gap {
    * 它」和「我要求照我说的改」就成了同一行。
    */
   readonly note: string | null;
+  /**
+   * 这一条是**谁**关掉的。`"human"` = 人驳回的，`null` = 一轮判它修好了（或者它还开着）。
+   *
+   * 两者在 `status` 上都是 `closed`，而该怎么对待它们正好相反 —— 见 `applyRound`
+   * 里那段重开的注释。用户 2026-07-30 拍的「以人为主」，2026-08-03 明确到「一直管」。
+   */
+  readonly closedBy: "human" | null;
 }
 
 export type Verdict =
@@ -138,6 +145,7 @@ export function raise(
     resolution: null,
     // 标题就是他的话，不用再抄一份到 note 里（E3：一份实现，一处存放）。
     note: null,
+    closedBy: null,
   }];
 }
 
@@ -283,9 +291,21 @@ export function applyRound(
   for (const found of outcome.found) {
     const existing = byId.get(found.id);
     if (existing) {
-      // Re-finding a gap that was closed reopens it: the round looked and it is
-      // there. Re-finding an open one changes nothing.
-      if (existing.status === "closed") {
+      /*
+       * 一轮关掉的东西被重新发现 → 重开：那一轮看了，它还在。开着的重新发现，
+       * 什么都不变。
+       *
+       * **人驳回的不在此列。** 人是带着依据裁的（`dismiss` 强制 `reason`），而模型
+       * 没读过那个依据 —— 它「又看见了」不是新信息，它本来就不知情。让它重开，等于
+       * 让一个不知情的人一遍遍推翻知情的人。2026-08-02 实测 `QA-007` 被这样重开
+       * 三次、跨两个阶段，而人第一次为什么驳它，三次之后已经查不到（重开抹掉了
+       * `resolution`）。
+       *
+       * 用户 2026-07-30 拍板「以人为主」，2026-08-03 明确到「**一直管**」——
+       * 任何阶段任何轮都不自动重开。裁判仍然看得见这一条和人的理由
+       * （`judgePrompt` 会列出来），它可以在有新证据时**建议**重提，但重提是人的动作。
+       */
+      if (existing.status === "closed" && existing.closedBy !== "human") {
         byId.set(found.id, {
           ...existing,
           status: "open",
@@ -306,6 +326,7 @@ export function applyRound(
       openedRound: outcome.round,
       resolution: null,
       note: null,
+      closedBy: null,
     });
   }
 
@@ -375,7 +396,13 @@ export function dismiss(gaps: readonly Gap[], gapId: string, reason: string): Ga
   if (gap.kind === "standard") throw new InvalidVerdictError("standard_not_waivable");
   return gaps.map((candidate) =>
     candidate.id === gapId
-      ? { ...candidate, status: "closed" as const, resolution: reason }
+      ? {
+        ...candidate,
+        status: "closed" as const,
+        resolution: reason,
+        // 这一笔是这条 gap 从此不再被模型重开的**唯一**依据。见 `applyRound`。
+        closedBy: "human" as const,
+      }
       : candidate);
 }
 

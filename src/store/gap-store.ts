@@ -37,6 +37,7 @@ interface GapRow {
   opened_round: number;
   resolution: string | null;
   note: string | null;
+  closed_by: Gap["closedBy"];
 }
 
 export class GapStore {
@@ -47,7 +48,8 @@ export class GapStore {
 
   all(changeId: string, phase: Phase): Gap[] {
     const rows = this.database.prepare(
-      `SELECT id, kind, severity, title, status, opened_round, resolution, note
+      `SELECT id, kind, severity, title, status, opened_round, resolution, note,
+              closed_by
          FROM gaps WHERE change_id = ? AND phase = ? ORDER BY opened_round, id`,
     ).all(changeId, phase) as GapRow[];
     return rows.map((row) => ({
@@ -59,6 +61,7 @@ export class GapStore {
       openedRound: row.opened_round,
       resolution: row.resolution,
       note: row.note,
+      closedBy: row.closed_by,
     }));
   }
 
@@ -165,8 +168,9 @@ export class GapStore {
     const at = this.now().toISOString();
     const upsert = this.database.prepare(
       `INSERT INTO gaps
-         (id, change_id, phase, kind, severity, title, status, opened_round, resolution, note, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, change_id, phase, kind, severity, title, status, opened_round,
+          resolution, note, closed_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (change_id, phase, id) DO UPDATE SET
          kind = excluded.kind,
          severity = excluded.severity,
@@ -175,13 +179,14 @@ export class GapStore {
          opened_round = excluded.opened_round,
          resolution = excluded.resolution,
          note = excluded.note,
+         closed_by = excluded.closed_by,
          updated_at = excluded.updated_at`,
     );
     this.database.transaction(() => {
       for (const gap of gaps) {
         upsert.run(
           gap.id, changeId, phase, gap.kind, gap.severity, gap.title,
-          gap.status, gap.openedRound, gap.resolution, gap.note, at,
+          gap.status, gap.openedRound, gap.resolution, gap.note, gap.closedBy, at,
         );
       }
     })();

@@ -37,12 +37,12 @@ const FIXTURE_GAPS: Gap[] = [
   {
     id: "HUMAN-1", kind: "finding", severity: "P1",
     title: "人明确要求的那一条", status: "open",
-    openedRound: 1, resolution: null, note: "人对这条说的话",
+    openedRound: 1, resolution: null, note: "人对这条说的话", closedBy: null,
   },
   {
     id: "SPEC-SCOPE-1", kind: "finding", severity: "P0",
     title: "模型报出来的那一条", status: "open",
-    openedRound: 1, resolution: null, note: null,
+    openedRound: 1, resolution: null, note: null, closedBy: null,
   },
 ];
 

@@ -23,6 +23,7 @@ function gap(patch: Partial<Gap> = {}): Gap {
     openedRound: 1,
     resolution: null,
     note: null,
+    closedBy: null,
     ...patch,
   };
 }
@@ -279,7 +280,7 @@ describe("L1 · standard 的出口不是 waive", () => {
   const standard: Gap = {
     id: "RB:producer:RBC-a", kind: "standard", severity: null,
     title: "每条需求都有可测的验收标准",
-    status: "open", openedRound: 1, resolution: null, note: null,
+    status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
   };
 
   it("waive 一条 standard —— 拒绝", () => {
@@ -358,11 +359,19 @@ describe("L1 · 人驳回一条发现 —— 以人为主", () => {
       });
   });
 
-  it("被驳回之后，下一轮再报出来它会重开 —— 这条**故意**不拦", () => {
+  it("**被驳回之后，下一轮再报出来也不重开**（2026-08-03 反转）", () => {
     /*
-     * 驳回是「按我现在看到的，这条不成立」，不是给这个 id 永久免疫。反方下一轮
-     * 拿着新证据再报一次，它就该回来 —— 那正是 `applyRound` 里「re-finding 一个
-     * closed 的会重开它」。
+     * 这里原来是反过来的，而且写着理由：「驳回是『按我现在看到的，这条不成立』，
+     * 不是给这个 id 永久免疫；反方下一轮拿着新证据再报一次，它就该回来。」
+     *
+     * 那个论点站不住的地方在于「拿着新证据」—— **反方压根没读过人的驳回理由**。
+     * 它下一轮又报一遍不是拿到了新证据，是它本来就不知情。让它重开，等于让一个
+     * 不知情的人一遍遍推翻知情的人。2026-08-02 实测 `QA-007` 就是这样被重开三次、
+     * 跨两个阶段，而人第一次为什么驳它，三次之后已经查不到（重开抹掉 `resolution`）。
+     *
+     * 用户 2026-08-03 明确到**一直管**。而原来那个论点要的东西没有丢：裁判仍然
+     * 看得见这一条和人的理由（`judgePrompt` 会列出来），真有新证据它可以**建议**
+     * 重提 —— 只是重提从此是人的动作，不是模型的。
      */
     const dismissed = dismiss([gap()], "G-1", "反方没读到第 3 节");
     const after = applyRound(dismissed, {
@@ -370,8 +379,10 @@ describe("L1 · 人驳回一条发现 —— 以人为主", () => {
       found: [{ id: "G-1", severity: "P1", title: "第 3 节那条也不可测" }],
       verdicts: {},
     });
-    assert.equal(after[0]?.status, "open");
-    assert.equal(after[0]?.openedRound, 2);
+    assert.equal(after[0]?.status, "closed");
+    assert.equal(after[0]?.resolution, "反方没读到第 3 节", "人的理由被抹掉了");
+    // 没被重开，所以「哪一轮开的」也该停在原处。
+    assert.equal(after[0]?.openedRound, 1);
   });
 });
 
@@ -394,6 +405,7 @@ describe("L1 · 人自己提一个问题", () => {
       openedRound: 3,
       resolution: null,
       note: null,
+      closedBy: null,
     });
     assert.equal(isHumanGap(only!), true);
     assert.equal(isHumanGap(gap()), false);
@@ -435,5 +447,48 @@ describe("L1 · 人自己提一个问题", () => {
     const raised = raise([], { title: "我要的", round: 1 });
     assert.deepEqual(blockersFrom(raised).map((each) => each.id), ["HUMAN-1"]);
     assert.equal(waive(raised, "HUMAN-1", "想清楚了，这版先不做")[0]?.status, "waived");
+  });
+});
+
+/**
+ * 人驳回过的问题，模型不许把它重开。
+ *
+ * 2026-08-02 实测：`QA-007` 被重开三次、跨两个阶段。人用实证 dismiss 掉它，下一轮
+ * 蓝方原样又报一遍，`applyRound` 见它是 `closed` 就重开 —— 而重开会把 `resolution`
+ * 抹成 `null`，所以三次之后，人第一次为什么驳它，库里已经查不到了。
+ *
+ * 用户 2026-07-30 拍板「以人为主」，2026-08-03 明确到**一直管**：任何阶段任何轮都
+ * 不自动重开。理由是模型没读过人的驳回依据 —— 它「又看见了」不是新信息。
+ */
+describe("L1 · 人驳回的不许被模型重开", () => {
+  const found = (id: string) => ({
+    round: 2,
+    found: [{ id, severity: "P1" as const, title: "又报了一遍" }],
+    verdicts: {},
+  });
+
+  it("**驳回会记下是人关的** —— 那一笔是它从此不被重开的唯一依据", () => {
+    const dismissed = dismiss([gap({ id: "QA-007" })], "QA-007", "实测过了，这条不成立");
+    assert.equal(dismissed[0]?.status, "closed");
+    assert.equal(dismissed[0]?.closedBy, "human");
+  });
+
+  it("**一轮自己关掉的，重新发现照旧重开** —— 那一轮看了，它还在", () => {
+    const closedByRound = applyRound([gap({ id: "SPEC-1" })], {
+      round: 1, found: [],
+      verdicts: { "SPEC-1": { kind: "closed", reason: "已经补上了" } },
+    });
+    assert.equal(closedByRound[0]?.status, "closed");
+    assert.equal(closedByRound[0]?.closedBy, null, "一轮关的不该被记成人关的");
+
+    const after = applyRound(closedByRound, found("SPEC-1"));
+    assert.equal(after[0]?.status, "open", "这一轮看了它还在，却没有重开");
+    assert.equal(after[0]?.openedRound, 2);
+  });
+
+  it("waive 不受影响 —— 它本来就扛得住重开", () => {
+    const accepted = waive([gap({ id: "QA-9" })], "QA-9", "这个风险我认了");
+    assert.equal(accepted[0]?.status, "waived");
+    assert.equal(applyRound(accepted, found("QA-9"))[0]?.status, "waived");
   });
 });

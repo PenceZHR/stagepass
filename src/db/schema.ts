@@ -290,6 +290,18 @@ CREATE TABLE IF NOT EXISTS gaps (
   -- note 说「它还挡着，而这是我要红方注意的」。合成一列，「我驳回了它」和「我要求
   -- 照我说的改」就成了同一行。
   note          TEXT NULL,
+  -- 这一条是谁关掉的。'human' = 人驳回的，NULL = 一轮判它已经修好了。
+  --
+  -- 两者在 status 上都是 closed，而它们该被怎么对待正好相反：一轮关掉的，下一轮
+  -- 重新发现它就该重开（那一轮看了，它还在）；人驳回的不该被重开 —— 人是带着依据
+  -- 裁的（resolution 必填），而模型没读过那个依据，它「又看见了」不是新信息。
+  --
+  -- 2026-08-02 实测：QA-007 被重开三次、跨两个阶段，而人第一次为什么驳它，三次
+  -- 之后库里已经查不到了（重开会把 resolution 抹成 NULL）。
+  --
+  -- 为什么是一列而不是第四个状态：status 的 CHECK 是建表时定死的，SQLite 改不了，
+  -- 而 migrate() 只会 ADD COLUMN —— 加状态会让所有已存在的库当场拒收新值。
+  closed_by     TEXT NULL CHECK (closed_by IS NULL OR closed_by = 'human'),
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (change_id, phase, id),
   -- A gap that has left the open state says why. Without this, "closed" and "forgotten"
@@ -561,6 +573,7 @@ export function migrate(database: {
   const added: [table: string, column: string, type: string][] = [
     ["projects", "path", "TEXT"],
     ["gaps", "note", "TEXT"],
+    ["gaps", "closed_by", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];

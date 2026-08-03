@@ -280,7 +280,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
    */
   const openGap = (id: string, title: string): Gap => ({
     id, kind: "finding", severity: "P1", title,
-    status: "open", openedRound: 1, resolution: null, note: null,
+    status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
   });
   const GAPS = [openGap("SPEC-1", "验收标准不可测"), openGap("SPEC-2", "范围与 PRD 冲突")];
 

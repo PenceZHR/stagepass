@@ -1187,7 +1187,7 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
       // 手工放一条这条 criterion 派生的 standard，模拟上一轮判了 no。
       new GapStore(database).replace(CHANGE, "Spec", [{
         id: `RB:producer:${key}`, kind: "standard", severity: null,
-        title: "挡着的", status: "open", openedRound: 1, resolution: null, note: null,
+        title: "挡着的", status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
       }]);
       assert.equal(new GapStore(database).blockers(CHANGE, "Spec").length, 1);
 
@@ -1762,11 +1762,11 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     new GapStore(database).replace(CHANGE, "PRD", [
       {
         id: "SPEC-1", kind: "finding", severity: "P1", title: "验收标准不可测",
-        status: "open", openedRound: 1, resolution: null, note: null,
+        status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
       },
       {
         id: "SPEC-2", kind: "finding", severity: "P1", title: "范围与 PRD 冲突",
-        status: "open", openedRound: 1, resolution: null, note: null,
+        status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
       },
     ]);
     new EvidenceStore(database).put(CHANGE, "PRD", {
@@ -1921,7 +1921,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       // 有别的东西在这中间又开了一条问题 —— 人没看见过它。
       new GapStore(database).replace(CHANGE, "PRD", [{
         id: "SPEC-9", kind: "finding", severity: "P0", title: "人没看见过的这一条",
-        status: "open", openedRound: 2, resolution: null, note: null,
+        status: "open", openedRound: 2, resolution: null, note: null, closedBy: null,
       }]);
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
