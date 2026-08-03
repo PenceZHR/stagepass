@@ -74,7 +74,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "store/round-note-store.ts": 4,
 
   "domain/rubric.ts": 5,
-  "domain/rubric-protocol.ts": 5,
   "domain/rubric-gaps.ts": 5,
   "domain/rubric-edit.ts": 5,
   "domain/rubric-defaults.ts": 5,

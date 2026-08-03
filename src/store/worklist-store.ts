@@ -108,6 +108,54 @@ export class WorklistStore {
     write();
   }
 
+  /**
+   * 往**同一轮**里再追加几条，序号接着往下排。
+   *
+   * ## 为什么不是再 `open` 一份
+   *
+   * 一轮里有两批要逐条表态的东西，答它们的是**两条不同的线程、两个不同的时刻**：
+   * 裁判先答（gap 表态 + critic 标准），完了之后 StagePass 再单独去问反方
+   * （producer 标准，跑在反方自己那条线程上）。
+   *
+   * 再 `open` 一份会把裁判那几行**删掉**（那句 DELETE 按 change/phase/round 走），
+   * 账就断了 —— 而「人要看得见每一轮问了什么、答了什么」是这套东西的前提。改主键
+   * 加一列 audience 又要重建表。追加是最小的那条路：序号接着排，`next` 自然轮到
+   * 新的这几条，旧的连同答案原样留着。
+   *
+   * 和 `open` 一样会把这个 Change 别处开着的关掉 —— 同一时刻只该有一批在等答，
+   * 否则 `next` 就得猜。
+   */
+  append(
+    changeId: string,
+    phase: Phase,
+    round: number,
+    items: readonly WorkItemDraft[],
+  ): void {
+    if (items.length === 0) return;
+    const write = this.database.transaction(() => {
+      this.database.prepare(
+        "UPDATE round_worklist SET status = 'closed' WHERE change_id = ? AND status = 'open'",
+      ).run(changeId);
+      const last = this.database.prepare(
+        `SELECT COALESCE(MAX(ordinal), 0) AS n FROM round_worklist
+          WHERE change_id = ? AND phase = ? AND round = ?`,
+      ).get(changeId, phase, round) as { n: number };
+      const insert = this.database.prepare(
+        `INSERT INTO round_worklist
+           (change_id, phase, round, ordinal, kind, target, prompt, choices,
+            status, answer, reason, answered_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)`,
+      );
+      items.forEach((item, index) => {
+        insert.run(
+          changeId, phase, round, last.n + index + 1,
+          item.kind, item.target, item.prompt, JSON.stringify([...item.choices]),
+        );
+      });
+    });
+    write();
+  }
+
   /** 这一份答完了，收起来。**幂等** —— 一轮失败重跑时会再调一次。 */
   close(changeId: string, phase: Phase, round: number): void {
     this.database.prepare(

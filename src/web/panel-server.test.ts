@@ -1168,7 +1168,7 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
     });
   });
 
-  it("rubric 装上了就进提示词 —— 模型答不出它没被问过的题", async () => {
+  it("**rubric 不进提示词了** —— 两份都走名单，模型手上没有任何 key 可抄", async () => {
     await withPanel(async ({ open, database, pty }) => {
       new ChangeStore(database).setBrief(CHANGE, "我要一个重新生成按钮");
       const rubrics = new RubricStore(database);
@@ -1179,9 +1179,16 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
       await new Promise((resolve) => { setTimeout(resolve, 120); });
 
+      /*
+       * 2026-08-03 起：裁判那份在它自己的 turn 里逐条走 `stagepass_next`，反方那份
+       * 由 StagePass 单独去问它的线程。**criterion key 和正文都不再经提示词。**
+       * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
+       */
       const prompt = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
-      assert.match(prompt, new RegExp(saved.criteria[0]!.key), "criterion 的编号没进去");
-      assert.match(prompt, /每条需求都有可观察的验收标准/, "criterion 的正文没进去");
+      assert.doesNotMatch(prompt, new RegExp(saved.criteria[0]!.key), "criterion key 又进提示词了");
+      assert.doesNotMatch(prompt, /```rubric/, "围栏协议又回来了");
+      // 而工具那条路是通的：提示词里告诉它去调。
+      assert.match(prompt, /stagepass_next/);
     });
   });
 });

@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { BLUE, RED } from "../domain/round";
+import { BLUE } from "../domain/round";
 import { standardGapId } from "../domain/rubric-gaps";
 import { ScriptedCodexTransport } from "../codex/transport";
 import { WorklistStore } from "../store/worklist-store";
@@ -79,8 +79,6 @@ const deliveredAll = (context: ReturnType<typeof open>) => (): string =>
     .map((each) => each.key)
     .join(" ");
 
-/** 反过来：**契约一个字都没到反方手上**（Review 那一轮的真实情形）。 */
-const deliveredNothing = () => "";
 
 async function run(context: ReturnType<typeof open>, input: {
   red?: string; blue?: string; judge?: string; round?: number;
@@ -95,11 +93,20 @@ async function run(context: ReturnType<typeof open>, input: {
    * docs/DESIGN-no-hand-transcription-2026-08-02.md §四。按顺序给，给多少答多少。
    */
   judgeAnswers?: readonly (readonly [string, string])[];
+  /**
+   * 反方在 StagePass 单独去问它的那一轮里逐条答什么。
+   *
+   * 2026-08-03 起 producer 那份也走名单了：不再经裁判转达契约、不再写围栏，
+   * StagePass 自己 resume 反方线程单起一轮（`askBlueByWorklist`）。
+   */
+  blueAnswers?: readonly (readonly [string, string])[];
 }) {
   const worklist = new WorklistStore(context.db, () => new Date(AT));
   const scripted = new ScriptedCodexTransport([
     asJudge(input.judge ?? '```json\n{"conclusion":{"another_round":false,"reason":"ok"}}\n```'),
     ...(input.again ?? []),
+    // 问反方那几轮的返回值没人读（判定从名单里读），但替身得有货可出。
+    ...Array.from({ length: 4 }, () => ""),
   ]);
   return runRubricRound({
     projectId: PROJECT, changeId: CHANGE, phase: "Spec",
@@ -113,6 +120,11 @@ async function run(context: ReturnType<typeof open>, input: {
         // 补问那一 turn 跑在反方线程上，它不碰名单。
         if (dispatch.aside === undefined) {
           for (const [answer, reason] of input.judgeAnswers ?? []) {
+            worklist.answer(CHANGE, answer, reason);
+          }
+        } else {
+          // 反方那一轮跑在它自己的线程上（aside），它也在自己的 turn 里调工具。
+          for (const [answer, reason] of input.blueAnswers ?? []) {
             worklist.answer(CHANGE, answer, reason);
           }
         }
@@ -162,14 +174,14 @@ describe("L5 · 没有人给自己打分", () => {
     // 红方给自己打满分，蓝方说不合格。听蓝方的。
     const settled = await run(context, {
       red: answer() + "\n" + rubricBlock(["K1 yes 我写得很好"]),
-      blue: answer() + "\n" + rubricBlock(["K1 no 第 2 节只写了「要快」"]),
+      blueAnswers: [["no", "第 2 节只写了「要快」"]],
     });
     assert.equal(settled.assessments.producer[0]?.verdict, "no",
       "读的还是红方的自评");
     assert.match(settled.assessments.producer[0]?.evidence ?? "", /要快/);
   });
 
-  it("**红方的提示词里一条标准都没有** —— 它是被判的那个", async () => {
+  it("**谁的提示词里都没有标准了** —— 两份都走名单，不再夹在裁判的提示词里", async () => {
     const context = open();
     seedProducer(context);
     const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
@@ -184,14 +196,12 @@ describe("L5 · 没有人给自己打分", () => {
       readThreadWhole: deliveredAll(context),
     });
 
+    // 红方是被判的那个，从来不背标准；而反方那份 2026-08-03 起也不再经裁判转达 ——
+    // StagePass 自己 resume 它的线程去问（`askBlueByWorklist`）。所以整份提示词里
+    // 一条 criterion 的正文都不该有，一个 ```rubric 围栏也不该有。
     const prompt = transport.dispatches[0]!.prompt;
-    const redSection = prompt.slice(prompt.indexOf(`1. ${RED}`), prompt.indexOf(`2. ${BLUE}`));
-    assert.doesNotMatch(redSection, /```rubric/,
-      "红方还是拿到了一份标准 —— 它会对着它给自己打分");
-    // 而蓝方拿到了，并且被告知判的是谁的活儿。
-    const blueSection = prompt.slice(prompt.indexOf(`2. ${BLUE}`));
-    assert.match(blueSection, /```rubric/);
-    assert.match(blueSection, /正方/, "没告诉蓝方它判的是谁");
+    assert.doesNotMatch(prompt, /```rubric/, "还在往提示词里塞标准");
+    assert.doesNotMatch(prompt, /RBC-/, "还在往提示词里塞 criterion key");
   });
 
   it("critic 的判定来自裁判 —— 蓝方也不自评", async () => {
@@ -199,10 +209,9 @@ describe("L5 · 没有人给自己打分", () => {
     const context = open();
     seedCritic(context);
     const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 我挑得很准"]),
       judgeAnswers: [["no", "有两条没指位置"]],
     });
-    assert.equal(settled.assessments.critic[0]?.verdict, "no", "读的还是蓝方的自评");
+    assert.equal(settled.assessments.critic[0]?.verdict, "no");
     assert.equal(settled.assessments.critic[0]?.evidence, "有两条没指位置");
   });
 
@@ -247,8 +256,8 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     seedProducer(context);
 
     const settled = await run(context, {
-      blue: answer([{ id: "S-1", severity: "P0", title: "范围冲突" }])
-        + "\n" + rubricBlock(["K1 no 第 2 条只写了「要快」"]),
+      blue: answer([{ id: "S-1", severity: "P0", title: "范围冲突" }]),
+      blueAnswers: [["no", "第 2 条只写了「要快」"]],
     });
 
     const standard = settled.gaps.find((gap) => gap.id === standardGapId("producer", "K1"));
@@ -264,7 +273,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     const context = open();
     seedProducer(context);
     const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 三条都写了"]),
+      blueAnswers: [["yes", "三条都写了"]],
     });
     assert.deepEqual(settled.gaps, []);
     assert.equal(settled.assessments.producer[0]?.verdict, "yes");
@@ -279,36 +288,13 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     assert.equal(settled.blockers.length, 1);
   });
 
-  it("**整份判定写坏了 —— fail-closed，不是当作没有 rubric**", async () => {
-    const context = open();
-    seedProducer(context);
-    // 不认识的 key 会让整份作废。若因此跳过 rubric，一份写坏的输出就比一份诚实答
-    // no 的输出更容易过闸门 —— 那是这套机制的反面。
-    const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 行", "K-伪造 yes 也行"]),
-    });
-    assert.equal(settled.assessments.producer[0]?.verdict, "not_assessed");
-    assert.match(settled.assessments.producer[0]?.evidence ?? "", /作废/);
-    assert.equal(settled.blockers.length, 1, "作废之后闸门必须是关着的");
-  });
 
-  it("**作废也报进 `malformed` —— 否则那份坏格式会在线程里循环**", async () => {
-    // 2026-08-02 CHG-003 实测：Build 阶段 critic 那份连续三轮全部作废，同一个
-    // 抄漏一段的 UUID 连抄三轮。这些轮都是成功的，所以「job 失败才放开线程」那条路
-    // 一次都没触发，而模型 resume 回去看见的正是自己上一轮那么写的。
-    const context = open();
-    seedProducer(context);
-    const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 行", "K-伪造 yes 也行"]),
-    });
-    assert.deepEqual(settled.malformed, ["rubric_void:unknown_key"]);
-  });
 
   it("读得懂的一轮 `malformed` 是空的 —— 那条线程要接着用", async () => {
     const context = open();
     seedProducer(context);
     const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 行"]),
+      blueAnswers: [["yes", "行"]],
     });
     assert.deepEqual(settled.malformed, []);
   });
@@ -317,7 +303,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     const context = open();
     seedProducer(context, false);
     const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 no 确实没写"]),
+      blueAnswers: [["no", "确实没写"]],
     });
     assert.equal(settled.assessments.producer[0]?.verdict, "no");
     assert.deepEqual(settled.gaps, []);
@@ -332,7 +318,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
 
     const settled = await run(context, {
       // 蓝方背 producer 那份（判红方，走围栏），裁判背 critic 那份（判蓝方，走名单）。
-      blue: answer() + "\n" + rubricBlock(["K1 yes 都写了"]),
+      blueAnswers: [["yes", "都写了"]],
       judgeAnswers: [["no", "有两条没指位置"]],
     });
 
@@ -344,11 +330,11 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
   it("下一轮答了 yes —— 上一轮开的 standard 关掉", async () => {
     const context = open();
     seedProducer(context);
-    await run(context, { blue: answer() + "\n" + rubricBlock(["K1 no 缺"]), round: 1 });
+    await run(context, { blueAnswers: [["no", "缺"]], round: 1 });
     assert.equal(context.gaps.blockers(CHANGE, "Spec").length, 1);
 
     const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 补上了"]), round: 2,
+      blueAnswers: [["yes", "补上了"]], round: 2,
     });
     const standard = settled.gaps.find((gap) => gap.id === standardGapId("producer", "K1"));
     assert.equal(standard?.status, "closed");
@@ -358,7 +344,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
   it("判定按轮存下来了 —— 后面读得到", async () => {
     const context = open();
     seedProducer(context);
-    await run(context, { blue: answer() + "\n" + rubricBlock(["K1 no 缺"]), round: 3 });
+    await run(context, { blueAnswers: [["no", "缺"]], round: 3 });
 
     const stored = context.rubrics.assessments(CHANGE, "Spec", "producer", 3);
     assert.equal(stored[0]?.verdict, "no");
@@ -367,25 +353,6 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     assert.equal(context.rubrics.assessments(CHANGE, "Spec", "producer", 4).length, 0);
   });
 
-  it("契约进了裁判的提示词 —— 三个角色的 key 都在里面", async () => {
-    const context = open();
-    seedProducer(context);
-    const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
-    await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
-      round: 1, task: "写 Spec", judgeThreadId: null,
-    }, {
-      transport, gaps: context.gaps, rubrics: context.rubrics,
-      childThreads,
-    worklist: new WorklistStore(context.db, () => new Date(AT)),
-    readThread: roles(answer(), answer()),
-      readThreadWhole: deliveredAll(context),
-    });
-
-    // 模型答不出它没被问过的题。契约没进提示词，整套就只是在惩罚它不知道的事。
-    assert.match(transport.dispatches[0]?.prompt ?? "", /K1/);
-    assert.match(transport.dispatches[0]?.prompt ?? "", /每条需求都有可测的验收标准/);
-  });
 });
 
 /**
@@ -408,106 +375,31 @@ describe("L5 · 没判上的时候，说清楚是哪一种", () => {
     // producer -> K1（蓝方答），critic -> K2（裁判答）
   };
 
-  it("**Review 那次：契约没送到反方** —— 不再和「它没作答」混成一句", async () => {
-    const context = open();
-    seedBoth(context);
-    const settled = await run(context, {
-      blue: answer(),                 // 反方什么标准都没答
-      whole: deliveredNothing,        // 而且它的 rollout 里一个 key 都没有
-    });
-    const evidence = settled.assessments.producer[0]!.evidence ?? "";
-    assert.equal(settled.assessments.producer[0]!.verdict, "not_assessed");
-    assert.match(evidence, /没有送到/);
-    assert.match(evidence, /裁判没有转达/);
-    // 没送到的时候不该再说「它没有作答」—— 那是同义反复。
-    assert.doesNotMatch(evidence, /它没有作答/);
-  });
 
-  it("**QA 那次：送到了，反方一条没答** —— 和上一条必须分得开", async () => {
+  it("**它没答就写「它没有作答」** —— 不再有「送没送到」那一层", async () => {
+    // 转达链撤掉之后，「契约没送到」这种原因结构上就不存在了：名单是 StagePass
+    // 自己开、自己问的。剩下的只有「它没答」和「问它这件事失败了」。
     const context = open();
     seedBoth(context);
-    const settled = await run(context, { blue: answer() });
+    const settled = await run(context, {});
     const evidence = settled.assessments.producer[0]!.evidence ?? "";
-    assert.match(evidence, /标准送到了/);
     assert.match(evidence, /它没有作答/);
-    assert.doesNotMatch(evidence, /没有送到/);
+    assert.doesNotMatch(evidence, /送到/);
   });
 
-  it("**Retro 那次：反方答的是裁判那一份**（等于给自己打分）", async () => {
-    const context = open();
-    seedBoth(context);
-    const settled = await run(context, {
-      // 反方答的 key 是 critic 那份的 K2，而且没包围栏 —— 真实那次就是这样，
-      // 于是走「没围栏就捡认识的」那条路，4 行全被静默跳过。
-      blue: answer() + "\nK2 yes 我挑的问题都指向了具体位置",
-    });
-    const evidence = settled.assessments.producer[0]!.evidence ?? "";
-    assert.match(evidence, /它答的是另一份标准/);
-    assert.doesNotMatch(evidence, /它没有作答/);
-  });
 
-  it("**Review 那次的另一半：裁判把反方那份也答了** —— 记下来，但不采信", async () => {
-    const context = open();
-    seedBoth(context);
-    const settled = await run(context, {
-      blue: answer(),                                       // 反方没答
-      // 它本职那一条走名单；同时它在围栏里**替反方也答了**（那正是 Review 那次的样子）。
-      judgeAnswers: [["yes", "问题都指了位置"]],
-      judge: '```json\n{"conclusion":{"another_round":false,"reason":"ok"}}\n```\n'
-        + rubricBlock(["K1 no 需求没有可测的验收标准"]),
-    });
-
-    // 裁判本职那一条照常读出来 —— 现在它走名单，围栏里那条根本进不来。
-    assert.equal(settled.assessments.critic[0]!.verdict, "yes");
-    // 而它替反方答的那一条不算数，但人看得见是谁答的。
-    const producer = settled.assessments.producer[0]!;
-    assert.equal(producer.verdict, "not_assessed", "裁判代答的被采信了");
-    assert.match(producer.evidence ?? "", /由裁判作答/);
-    assert.match(producer.evidence ?? "", /不采信/);
-  });
 
   it("正常答上的那些，evidence 还是模型写的依据，没被这套话盖掉", async () => {
     const context = open();
     seedBoth(context);
     const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 no 第 2 节只写了「要快」"]),
+      blueAnswers: [["no", "第 2 节只写了「要快」"]],
     });
     assert.equal(settled.assessments.producer[0]!.evidence, "第 2 节只写了「要快」");
   });
 
-  it("**整份作废那一种保留它自己的原因** —— 那是另一件事，不许被送达情况盖掉", async () => {
-    const context = open();
-    seedBoth(context);
-    const settled = await run(context, {
-      // 围栏里一个谁都不认识的 key：凭空多答，仍然作废整份。
-      blue: answer() + "\n" + rubricBlock(["K1 yes 好", "K-凭空 yes 编的"]),
-    });
-    const evidence = settled.assessments.producer[0]!.evidence ?? "";
-    assert.match(evidence, /整份判定作废/);
-    assert.doesNotMatch(evidence, /送到/);
-  });
 
-  it("**裁判那一份不查送达** —— 它的提示词是 StagePass 自己写的", async () => {
-    const context = open();
-    seedBoth(context);
-    const settled = await run(context, { whole: deliveredNothing });
-    // 反方那份说没送到；裁判那份一个字都不该提送达。
-    assert.match(settled.assessments.producer[0]!.evidence ?? "", /没有送到/);
-    assert.doesNotMatch(settled.assessments.critic[0]!.evidence ?? "", /送到/);
-  });
 
-  it("**读不到 rollout 时说「没作答」，不说「没送到」** —— 查不出来不等于没送到", async () => {
-    const context = open();
-    seedBoth(context);
-    const settled = await run(context, {
-      blue: answer(),
-      whole: () => { throw new Error("rollout 找不到"); },
-    });
-    const evidence = settled.assessments.producer[0]!.evidence ?? "";
-    assert.equal(settled.assessments.producer[0]!.verdict, "not_assessed");
-    assert.doesNotMatch(evidence, /送到/, "把「查不出来」说成了「没送到」");
-    assert.match(evidence, /它没有作答/);
-  });
 });
 
 describe("L5 · 裁判的结论与反方的整体判断", () => {
@@ -557,142 +449,136 @@ describe("L5 · 裁判的结论与反方的整体判断", () => {
  * 补问本身失败要如实汇报。** 「蓝方一定是要勾的」是硬要求，而契约只能经裁判转达 ——
  * 补问把那条不可靠的链换成直连（2026-07-31 在真 Codex 的 TUI 上验过）。
  */
-describe("L5 · 补问反方", () => {
+/**
+ * StagePass 自己去问反方那份标准。
+ *
+ * 2026-08-03 之前是：契约夹在裁判的提示词里指望它转达，反方把答案写进 ```rubric
+ * 围栏；没答上再补问。实测三种断法（没送到 / 送到不答 / 答错对象）里有两种长在
+ * 那条转达链上 —— 所以整条链撤掉了：**StagePass 直接 resume 反方那条线程，逐条走
+ * 工具问它。** 于是反方也不用手抄任何 criterion key。
+ */
+describe("L5 · StagePass 自己去问反方", () => {
   const seedOne = (context: ReturnType<typeof open>) =>
     context.rubrics.save(
       { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
       [{ text: "每条需求都有可测的验收标准", blocking: false }]);
 
-  it("**反方没答 → 补问一次就答上了，落成真判定**", async () => {
+  it("**答上了就落成真判定，evidence 是它自己写的依据**", async () => {
     const context = open();
     seedOne(context);
     const settled = await run(context, {
-      blue: answer(),                                   // 第一次一个字没答
-      again: [rubricBlock(["K1 no 第 2 条只写了「要快」"])],
+      blueAnswers: [["no", "第 2 条只写了「要快」"]],
     });
-    assert.equal(settled.assessments.producer[0]!.verdict, "no");
-    assert.equal(settled.assessments.producer[0]!.evidence, "第 2 条只写了「要快」");
+    assert.equal(settled.assessments.producer[0]?.verdict, "no");
+    assert.equal(settled.assessments.producer[0]?.evidence, "第 2 条只写了「要快」");
   });
 
-  it("**补满 3 次仍然不答 —— 照实说补了几次**", async () => {
+  it("**问了 3 次仍然不答 —— 照实说问了几次**", async () => {
     const context = open();
     seedOne(context);
-    const settled = await run(context, {
-      blue: answer(),
-      again: [answer(), answer(), answer()],            // 三次都没有判定行
-    });
-    const entry = settled.assessments.producer[0]!;
-    assert.equal(entry.verdict, "not_assessed");
-    assert.match(entry.evidence ?? "", /又补问了 3 次，仍然没有作答/);
+    const settled = await run(context, {});   // 一次都不答
+    assert.equal(settled.assessments.producer[0]?.verdict, "not_assessed");
+    assert.match(settled.assessments.producer[0]?.evidence ?? "", /又问了 3 次/);
   });
 
-  it("**不会补第 4 次** —— 上限是硬的，外面还有 30 分钟租约", async () => {
-    const context = open();
-    seedOne(context);
-    // 只给 3 个补问答复；第 4 次会让 ScriptedCodexTransport 抛。
-    // 抛了就会记成「补问失败」，而我们要的是「补了 3 次没答上」。
-    const settled = await run(context, {
-      blue: answer(), again: [answer(), answer(), answer()],
-    });
-    assert.match(settled.assessments.producer[0]!.evidence ?? "", /补问了 3 次/);
-    assert.doesNotMatch(settled.assessments.producer[0]!.evidence ?? "", /补问本身/);
-  });
-
-  it("**补问本身失败 —— 和「反方不肯答」分开说**", async () => {
-    const context = open();
-    seedOne(context);
-    const settled = await run(context, {
-      blue: answer(),
-      again: [new Error("codex_unavailable: 线程找不到")],
-    });
-    const evidence = settled.assessments.producer[0]!.evidence ?? "";
-    assert.match(evidence, /补问本身出了问题/);
-    assert.match(evidence, /不是反方拒绝作答/);
-    assert.match(evidence, /线程找不到/);
-  });
-
-  it("第一次就答全了 —— 一次都不补（不白烧一个 turn）", async () => {
-    const context = open();
-    seedOne(context);
-    const settled = await run(context, {
-      blue: answer() + "\n" + rubricBlock(["K1 yes 都有验收标准"]),
-      again: [],                                        // 一个补问答复都不给
-    });
-    assert.equal(settled.assessments.producer[0]!.verdict, "yes");
-  });
-
-  it("**补问跑在反方那条线程上，而且带着 aside 标签**（面板要单开一格）", async () => {
+  it("**不会问第 4 次** —— 上限是硬的，外面还有 30 分钟租约", async () => {
     const context = open();
     seedOne(context);
     const transport = new ScriptedCodexTransport([
       asJudge('```json\n{"verdicts":{}}\n```'),
-      rubricBlock(["K1 yes 补上了"]),
+      ...Array.from({ length: 8 }, () => ""),
     ]);
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
-      transport, gaps: context.gaps, rubrics: context.rubrics,
+      transport,
+      gaps: context.gaps,
+      rubrics: context.rubrics,
       childThreads,
-    worklist: new WorklistStore(context.db, () => new Date(AT)),
-    readThread: roles(answer(), answer()),
+      worklist: new WorklistStore(context.db, () => new Date(AT)),
+      readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
-
-    const [judgeTurn, followUp] = transport.dispatches;
-    assert.equal(judgeTurn!.aside, undefined, "裁判那一轮被当成 aside 了");
-    assert.equal(followUp!.threadId, BLUE_THREAD, "补问没发给反方自己那条线程");
-    assert.equal(followUp!.aside?.label, `${BLUE}·补问`);
+    // 裁判那一轮 + 问反方 3 次 = 4，不多不少。
+    assert.equal(transport.dispatches.length, 4);
   });
 
-  it("**只补没答上的那几条**，答过的不再问", async () => {
+  it("**答全了就不再问**（不白烧 turn）", async () => {
     const context = open();
-    context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
-      [{ text: "第一条", blocking: false }, { text: "第二条", blocking: false }]);
-
+    seedOne(context);
     const transport = new ScriptedCodexTransport([
       asJudge('```json\n{"verdicts":{}}\n```'),
-      rubricBlock(["K2 no 第二条不满足"]),
+      ...Array.from({ length: 8 }, () => ""),
+    ]);
+    const worklist = new WorklistStore(context.db, () => new Date(AT));
+    await runRubricRound({
+      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      round: 1, task: "写 Spec", judgeThreadId: null,
+    }, {
+      transport: {
+        async runTurn(dispatch) {
+          const delivery = await transport.runTurn(dispatch);
+          if (dispatch.aside !== undefined) worklist.answer(CHANGE, "yes", "都写了");
+          return delivery;
+        },
+      },
+      gaps: context.gaps,
+      rubrics: context.rubrics,
+      childThreads,
+      worklist,
+      readThread: roles(answer(), answer()),
+      readThreadWhole: deliveredAll(context),
+    });
+    assert.equal(transport.dispatches.length, 2, "裁判一轮 + 问反方一轮就够了");
+  });
+
+  it("**跑在反方那条线程上，而且带着 aside 标签**（面板要单开一格）", async () => {
+    const context = open();
+    seedOne(context);
+    const transport = new ScriptedCodexTransport([
+      asJudge('```json\n{"verdicts":{}}\n```'),
+      ...Array.from({ length: 8 }, () => ""),
     ]);
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
-      transport, gaps: context.gaps, rubrics: context.rubrics,
-      // 第一条答了，第二条没答。
+      transport,
+      gaps: context.gaps,
+      rubrics: context.rubrics,
       childThreads,
-    worklist: new WorklistStore(context.db, () => new Date(AT)),
-    readThread: roles(answer(), answer() + "\n" + rubricBlock(["K1 yes 好"])),
+      worklist: new WorklistStore(context.db, () => new Date(AT)),
+      readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
-
-    const asked = transport.dispatches[1]!.prompt;
-    assert.match(asked, /K2/);
-    assert.doesNotMatch(asked, /K1/, "把已经答过的那条又问了一遍");
+    const asked = transport.dispatches[1]!;
+    assert.equal(asked.threadId, BLUE_THREAD, "没发给反方自己那条线程");
+    assert.equal(asked.aside?.label, `${BLUE}·逐条判定`);
   });
 
-  it("**裁判那一份不补问** —— 它的提示词是 StagePass 自己写的，没答就是没答", async () => {
+  it("**提示词里一条 criterion key 都没有** —— 正文由工具给", async () => {
     const context = open();
-    context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "critic" },
-      [{ text: "每条问题都指向具体位置", blocking: false }]);
+    seedOne(context);
     const transport = new ScriptedCodexTransport([
-      asJudge('```json\n{"verdicts":{}}\n```'),   // 裁判一条判定都没答
+      asJudge('```json\n{"verdicts":{}}\n```'),
+      ...Array.from({ length: 8 }, () => ""),
     ]);
-    const settled = await runRubricRound({
+    await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
-      transport, gaps: context.gaps, rubrics: context.rubrics,
+      transport,
+      gaps: context.gaps,
+      rubrics: context.rubrics,
       childThreads,
-    worklist: new WorklistStore(context.db, () => new Date(AT)),
-    readThread: roles(answer(), answer()),
+      worklist: new WorklistStore(context.db, () => new Date(AT)),
+      readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
-    // 只派了裁判那一个 turn —— 没有第二个。
-    assert.equal(transport.dispatches.length, 1);
-    assert.equal(settled.assessments.critic[0]!.verdict, "not_assessed");
-    assert.doesNotMatch(settled.assessments.critic[0]!.evidence ?? "", /补问/);
+    const prompt = transport.dispatches[1]!.prompt;
+    assert.doesNotMatch(prompt, /K1|RBC-/, "又把 key 写进提示词了");
+    assert.match(prompt, /stagepass_next/);
+    assert.match(prompt, /stagepass_answer/);
   });
 });

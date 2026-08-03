@@ -162,6 +162,39 @@ describe("L3 · 裁判逐条表态的名单", () => {
     assert.equal(store.next(CHANGE)!.target, "G-2");
   });
 
+  /**
+   * 一轮里两批：裁判先答，完了 StagePass 再单独去问反方。两批要在同一轮的账上并存。
+   */
+  it("**追加的接着排序号，前一批连同答案原样留着**", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "裁判答的")]);
+    store.answer(CHANGE, "closed", "修了");
+    store.close(CHANGE, "PRD", 1);
+
+    store.append(CHANGE, "PRD", 1, [gap("P-1", "反方答的")]);
+
+    const all = store.read(CHANGE, "PRD", 1);
+    assert.deepEqual(all.map((i) => [i.ordinal, i.target, i.answer]), [
+      [1, "G-1", "closed"],
+      [2, "P-1", null],
+    ]);
+    assert.equal(store.next(CHANGE)!.target, "P-1", "轮到追加的这一条");
+  });
+
+  it("追加会把这个 Change 别处开着的关掉 —— 同一时刻只有一批在等答", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "还没答完")]);
+    store.append(CHANGE, "PRD", 1, [gap("P-1", "新的一批")]);
+    assert.equal(store.next(CHANGE)!.target, "P-1");
+  });
+
+  it("追加空数组什么都不做 —— 不许把开着的那一批误关掉", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "开着的")]);
+    store.append(CHANGE, "PRD", 1, []);
+    assert.equal(store.next(CHANGE)!.target, "G-1");
+  });
+
   it("close 之后 next 就空了，而且可以重复调", () => {
     const { store } = open();
     store.open(CHANGE, "PRD", 1, [gap("G-1", "a")]);

@@ -438,18 +438,27 @@ describe("RoundTurnRunner · 线程一出现就绑上，不等整轮跑完", () 
  * 「补问本身出了问题」。链路诚实，是包装错。
  */
 describe("RoundTurnRunner · aside 不绑定", () => {
-  it("**蓝方没答触发补问 —— 补问跑完，绑定还是裁判的线程**", async () => {
+  it("**问反方那一轮跑完，绑定还是裁判的线程**", async () => {
     const context = open();
-    // producer 那份由蓝方判 —— 种上它，蓝方第一遍不答，就会触发补问。
-    // key 要可预测，补问的答复才对得上号。
+    // producer 那份由反方判 —— 种上它，StagePass 就会单独去问反方。
     new RubricStore(context.db, { mintKey: () => "K1" }).save(
       { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },
       [{ text: "每条需求都有可测的验收标准", blocking: false }]);
 
-    const transport = new ScriptedCodexTransport([
-      judgeSays,                                     // 裁判：报两个子 Agent，没有裁决
-      "```rubric\nK1 yes 补上了\n```",               // 补问：反方这次答了
+    const worklist = new WorklistStore(context.db);
+    const scripted = new ScriptedCodexTransport([
+      judgeSays,                                     // 裁判那一轮
+      ...Array.from({ length: 4 }, () => ""),        // 问反方那几轮（返回值没人读）
     ]);
+    const transport = {
+      dispatches: scripted.dispatches,
+      async runTurn(dispatch: TurnDispatch) {
+        const delivery = await scripted.runTurn(dispatch);
+        // 反方在自己那一轮里调工具作答。
+        if (dispatch.aside !== undefined) worklist.answer(CHANGE, "yes", "补上了");
+        return delivery;
+      },
+    };
     const runner = new RoundTurnRunner({
       transport,
       gaps: context.gaps,
@@ -461,9 +470,9 @@ describe("RoundTurnRunner · aside 不绑定", () => {
       repo: { dirtyPaths: () => [], commitAll: () => null, show: () => null },
       workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
       childThreads: growingChildren(),
-      worklist: new WorklistStore(context.db),
-      readThread: () => answer(),                    // 红蓝的 rollout：都没有 rubric 行
-      readThreadWhole: () => "K1",                   // 契约送到了
+      worklist,
+      readThread: () => answer(),
+      readThreadWhole: () => "K1",
       taskFor: () => "写 PRD",
     });
 
@@ -472,14 +481,14 @@ describe("RoundTurnRunner · aside 不绑定", () => {
     loop.queueTurn({ changeId: CHANGE, jobId: "JOB-ASIDE", deadlineAt: at + 60_000, maxAttempts: 1 });
     await loop.runOnce({ owner: "test", token: "JOB-ASIDE", now: at, ttlMs: 60_000 });
 
-    // 补问那个 turn 带了 aside 标签、跑在蓝方线程上。
-    const followUp = transport.dispatches[1]!;
-    assert.ok(followUp.threadId!.startsWith(BLUE_THREAD));
-    assert.ok(followUp.aside, "补问没带 aside 标签 —— 面板不知道要单开一格");
-    // **绑定座位还是裁判的**，没有被蓝方的线程顶掉，也没有因此炸掉整轮。
+    // 问反方那个 turn 带了 aside 标签、跑在反方线程上。
+    const asked = transport.dispatches[1]!;
+    assert.ok(asked.threadId!.startsWith(BLUE_THREAD));
+    assert.ok(asked.aside, "没带 aside 标签 —— 面板不知道要单开一格");
+    // **绑定座位还是裁判的**，没有被反方的线程顶掉，也没有因此炸掉整轮。
     const bound = context.bindings.find(CHANGE, "PRD");
-    assert.equal(bound?.threadId, "THREAD-1", "补问的线程坐进了裁判的绑定座位");
-    // 而补问的答案被采信了。
+    assert.equal(bound?.threadId, "THREAD-1", "反方的线程坐进了裁判的绑定座位");
+    // 而它的答案被采信了。
     const assessed = context.rubrics.latestRound(CHANGE, "PRD");
     assert.equal(assessed?.byRole.producer[0]?.verdict, "yes");
   });

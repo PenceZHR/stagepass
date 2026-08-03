@@ -1,14 +1,12 @@
 import type { Assessment, RubricRole } from "../domain/rubric";
-import {
-  answeredKeysIn, readAssessments, RubricOutputVoidError, rubricContract,
-} from "../domain/rubric-protocol";
+import type { Phase } from "../domain/phase";
 import { applyAssessments } from "../domain/rubric-gaps";
 import { BLUE, RED } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
 import { runRound, type RoundDependencies, type RoundRequest, type RoundSettled } from "./round-runner";
 import type { WorkItemDraft } from "../domain/worklist";
-import type { WorkItem } from "../store/worklist-store";
+import type { WorkItem, WorklistStore } from "../store/worklist-store";
 
 type Participant = keyof RoundSettled["transcripts"];
 
@@ -119,29 +117,9 @@ export interface RubricRoundDependencies extends RoundDependencies {
 /**
  * 一条标准这一轮为什么没有判定 —— **写给人看的那句话。**
  *
- * ## 为什么必须有它
- *
- * 用户 2026-07-31：「每对抗一轮，我都是要知情的……前提是他要给我。」而今天所有没
- * 判上的都记成 `not_assessed` + `evidence` 为 `NULL`，四种完全不同的原因写成同一句
- * 「没评估」：
- *
- * - 契约没送到反方（Review 实测：它的 rollout 里一个 `RBC-` 都没有）
- * - 送到了，反方一条没答（QA 实测）
- * - 送到了，反方答的是裁判那一份（Retro 实测，等于给自己打分）
- * - 别人替它答了（Review 实测：裁判把 8 条全答了）
- *
- * 四种要做的事完全不同，混成一句就等于什么都没说。
- *
- * ## 拼法
- *
- * 「送达」一句 +「谁答的」一句，**后者只在带来新信息时才写**：契约压根没送到时
- * 「它没有作答」是同义反复，不写；但「这一条被别人代答了」即使在没送到时也要写 ——
- * 那是另一件独立发生的事，而且正是人要看见的那件。
- *
- * ## 代答的照实说，但不算数
- *
- * 用户同一次定的：「**蓝方一定是要勾的**。」所以裁判替反方答的那几条不采信 ——
- * 记下来是「我要知情」，不算数是「蓝方一定要勾」，两条同时成立，不冲突。
+ * 用户 2026-07-31：「每对抗一轮，我都是要知情的……前提是他要给我。」而所有没判上的
+ * 若都记成 `not_assessed` + `evidence` 为 `NULL`，几种完全不同的原因就写成了同一句
+ * 「没评估」—— 混成一句等于什么都没说。
  */
 /**
  * 补问最多几次。**用户 2026-07-31 定的 3。**
@@ -162,49 +140,23 @@ type FollowUp =
 
 function whyNotAssessed(input: {
   readonly assessor: Participant;
-  /** 契约有没有送到。`null` = 不适用：StagePass 直接写进了那个人的提示词。 */
-  readonly delivered: boolean | null;
-  /** 它答的是别人那一份。 */
-  readonly answeredAnother: boolean;
-  /** 这一条被别的参与者答了。null = 没有。 */
-  readonly answeredBy: Participant | null;
-  /** 补问的结局。null = 没补过。 */
+  /** 问它的结局。null = 一次都没问成，或者根本没走到问它那一步。 */
   readonly followUp: FollowUp | null;
 }): string {
   const who = WHO[input.assessor];
-  const clauses: string[] = [];
-
-  if (input.delivered === false) {
-    clauses.push(`这一轮的标准没有送到${who}手上（裁判没有转达）`);
-  } else if (input.delivered === true) {
-    clauses.push(`标准送到了${who}`);
-  }
-
-  if (input.answeredAnother) {
-    clauses.push("它答的是另一份标准，不是这一份");
-  } else if (input.delivered !== false) {
-    clauses.push("它没有作答");
-  }
-
-  if (input.answeredBy !== null) {
-    clauses.push(
-      `这一条由${WHO[input.answeredBy]}作答，而它不是这一份的判定人，不采信`,
-    );
-  }
+  const clauses = ["它没有作答"];
 
   /*
-   * 补问的结局照实说（用户 2026-07-31：「如实汇报」）。
-   *
    * 两种必须分得开：**它被问了 n 遍就是不答**（模型的问题，人可能要换标准或换法子），
-   * 和**补问这个动作本身失败了**（StagePass / Codex 的问题，跟反方无关）。混成一句，
+   * 和**问它这个动作本身失败了**（StagePass / Codex 的问题，跟它无关）。混成一句，
    * 人会去改一份根本没毛病的 rubric。
    */
   if (input.followUp?.kind === "asked") {
-    clauses.push(`又补问了 ${input.followUp.times} 次，仍然没有作答`);
+    clauses.push(`又问了 ${input.followUp.times} 次，仍然没有作答`);
   } else if (input.followUp?.kind === "failed") {
     clauses.push(
-      `补问没能进行下去（补问 ${input.followUp.times} 次时失败：${input.followUp.detail}）`
-      + `—— 这是补问本身出了问题，不是${who}拒绝作答`,
+      `问它没能进行下去（第 ${input.followUp.times} 次时失败：${input.followUp.detail}）`
+      + `—— 这是这个动作本身出了问题，不是${who}拒绝作答`,
     );
   }
 
@@ -212,126 +164,102 @@ function whyNotAssessed(input: {
 }
 
 /**
- * 补问：把**还没答上的那几条**直接发给反方自己那条线程。
+ * 反方那份标准：**StagePass 自己去问它，逐条走工具。**
  *
- * ## 为什么这件事非做不可
+ * ## 为什么不再经裁判转达
  *
- * 用户 2026-07-31 的硬要求：「**蓝方一定是要勾的。**」而反方那份契约只能经裁判的手
- * 转达，实测三种断法（没送到 / 送到不答 / 答错对象）里有两种是转达出的问题。
- * 契约到不了，反方再听话也答不出。
+ * 原来那份契约夹在裁判的提示词里，指望它原样转给反方。实测的三种断法（没送到 /
+ * 送到不答 / 答错对象）里有两种是转达出的问题 —— 而「凡经裁判转达的文本，只有
+ * 原文加收件人才到得了」那条教训本身就说明：这条链不该存在。
  *
- * 补问把这条不可靠的链**换成直连**：StagePass 直接 resume 反方那条线程
- * （`settled.agents.blue`），契约原样发过去。2026-07-31 在真 Codex 上验过 ——
- * 子 Agent 的线程 resume 得动，答得出，追加落在它自己的 rollout 上。
+ * 现在 StagePass 直接 resume 反方那条线程单起一轮。argv 是 StagePass 自己拼的，
+ * 所以插件和正确的 `STAGEPASS_CHANGE` 一并带上 —— 子 Agent 不继承 `-c` 传的 MCP
+ * server（2026-08-02 真机验的），但**这一轮不是它继承来的，是我们给它起的**。
  *
- * ## 只补没答上的那几条
+ * ## 于是反方也不用手抄任何东西
  *
- * 已经答了的不再问：一份更短的清单更容易被答全，也少烧 token。但**解析时给的仍是
- * 整份 rubric 的 key**（`assess(text, rubric, …)`）—— 它要是顺手把答过的也重答一遍，
- * 那些 key 得是「认识的」，否则 `unknown_key` 会把这一次补问整个作废。
+ * 提示词里一条 criterion key 都没有，正文由 `stagepass_next` 给。这就是七个手抄面
+ * 里最后一个的归零。
  *
- * ## 补问失败不等于反方不肯答
+ * ## 没答完就再问，最多三次
  *
- * 两者分开返回（`FollowUp`），因为人对它们该做的事完全不同：前者去看 Codex 那边
- * 出了什么事，后者去看这份标准是不是写得答不出来。
+ * 游标留在库里，所以「再问一次」就是再跑一个 turn —— 不必重新开名单，它自然接着
+ * 上次没答完的那一条。
  */
-async function askAgain(input: {
+async function askBlueByWorklist(input: {
   readonly transport: CodexTransport;
+  readonly worklist: WorklistStore;
+  readonly changeId: string;
+  readonly phase: Phase;
+  readonly round: number;
   readonly threadId: string;
   readonly rubric: RubricVersion;
   readonly subject: string;
-  readonly elsewhere: ReadonlySet<string>;
-  readonly read: readonly Assessment[];
-  /** 补问那一次也可能整份作废 —— 一样要让上层看见。 */
-  readonly voided: string[];
 }): Promise<{ read: Assessment[]; followUp: FollowUp | null }> {
-  let read = [...input.read];
+  input.worklist.append(input.changeId, input.phase, input.round,
+    input.rubric.criteria.map((criterion) => ({
+      kind: "criterion" as const,
+      target: criterion.key,
+      prompt: `${input.subject}：这一条标准满足了吗？\n${criterion.text}`,
+      choices: ["yes", "no"],
+    })));
+
   let times = 0;
-
+  let failure: FollowUp | null = null;
   while (times < ASK_AGAIN_AT_MOST) {
-    const missing = read.filter((entry) => entry.verdict === "not_assessed");
-    if (missing.length === 0) break;
-
-    const asked = input.rubric.criteria.filter((criterion) =>
-      missing.some((entry) => entry.criterionKey === criterion.key));
+    if (input.worklist.next(input.changeId) === null) break;
     times += 1;
-
-    let text: string;
     try {
-      const delivery = await input.transport.runTurn({
+      await input.transport.runTurn({
         threadId: input.threadId,
-        prompt: rubricContract(asked, input.subject),
+        prompt: [
+          `你刚才审的那份产出，还要请你**逐条判定**几条标准 —— 判的是${input.subject}。`,
+          "",
+          "反复调 `stagepass_next`（不带参数）取下一条，看完用 `stagepass_answer`",
+          "（只给 `answer` 和 `reason`）作答，直到它说没有下一条了为止。",
+          "",
+          "**你不需要、也无法指定答的是哪一条 —— StagePass 记着。**",
+          "不要在回答里写任何编号，`reason` 里写清依据就够。",
+        ].join("\n"),
         // 跑在反方自己那条线程上，所以不能挤掉阶段那个终端；面板给它单开一格，
         // 跑完自动收（用户 2026-07-31）。
-        aside: { label: `${BLUE}·补问` },
+        aside: { label: `${BLUE}·逐条判定` },
       });
-      text = delivery.text;
     } catch (error: unknown) {
-      return {
-        read,
-        followUp: {
-          kind: "failed",
-          times,
-          detail: error instanceof Error ? error.message : String(error),
-        },
+      failure = {
+        kind: "failed",
+        times,
+        detail: error instanceof Error ? error.message : String(error),
       };
+      break;
     }
-
-    // 整份 rubric 的 key 都算认识的，理由见上面。
-    const again = assess(text, input.rubric, input.elsewhere, input.voided);
-    read = read.map((entry) => {
-      if (entry.verdict !== "not_assessed") return entry;
-      const fresh = again.find((each) => each.criterionKey === entry.criterionKey);
-      return fresh && fresh.verdict !== "not_assessed" ? fresh : entry;
-    });
   }
 
+  input.worklist.close(input.changeId, input.phase, input.round);
+  const read = fromWorklist(
+    input.worklist.read(input.changeId, input.phase, input.round), input.rubric,
+  );
   const stillMissing = read.some((entry) => entry.verdict === "not_assessed");
   return {
     read,
-    followUp: times === 0 || !stillMissing ? null : { kind: "asked", times },
+    followUp: failure ?? (times === 0 || !stillMissing ? null : { kind: "asked", times }),
   };
-}
-
-/**
- * 这几条标准被**别的**参与者答了没有，答了的话是谁。
- *
- * 「谁答的」这个问题 `readAssessments` 结构上答不了 —— 它只读一个人的话，对着一份
- * 标准。而错位是跨人的：2026-07-31 实测 Review 第 6 轮，裁判把反方那 4 条也答了，
- * 那 4 条答案确实存在、写得也像样，只是出自没有资格判它们的那张嘴。
- *
- * 一条被两个人答的情况按参与者顺序取第一个 —— 这里要说的是「有人代答了」，
- * 不是清点有几个人代答。
- */
-function answeredBy(
-  transcripts: RoundSettled["transcripts"],
-  assessor: Participant,
-  mine: ReadonlySet<string>,
-): Map<string, Participant> {
-  const found = new Map<string, Participant>();
-  for (const who of Object.keys(transcripts) as Participant[]) {
-    if (who === assessor) continue;
-    for (const key of answeredKeysIn(transcripts[who], mine)) {
-      if (!found.has(key)) found.set(key, who);
-    }
-  }
-  return found;
 }
 
 /**
  * 给每一条没判上的补一句「为什么」。
  *
- * **整份作废那一种不碰** —— 它已经带着自己的原因（`整份判定作废（unknown_key）…`），
- * 而那是一件不同的事：那时契约送到了、人也答了，只是答出来的东西不能采信。
- * 用送达情况把它盖掉，等于把一句准确的话换成一句不相干的话。
+ * ## 剩下的原因只有两种了
+ *
+ * 以前有四种（契约没送到 / 送到没答 / 答错对象 / 别人代答），因为那份契约要经裁判
+ * 转达 —— 三种断法都长在那条链上。**现在没有那条链了**：两边都由 StagePass 自己
+ * 开名单、自己问，一条 criterion key 都不经模型的嘴。于是只剩「它没答」和
+ * 「问它这件事本身失败了」，而这两种人要做的事仍然完全不同。
  */
 function withReasons(
   read: readonly Assessment[],
   context: {
     readonly assessor: Participant;
-    readonly delivered: boolean | null;
-    readonly answeredAnother: boolean;
-    readonly answeredElsewhere: ReadonlyMap<string, Participant>;
     readonly followUp: FollowUp | null;
   },
 ): Assessment[] {
@@ -341,9 +269,6 @@ function withReasons(
       ...entry,
       evidence: whyNotAssessed({
         assessor: context.assessor,
-        delivered: context.delivered,
-        answeredAnother: context.answeredAnother,
-        answeredBy: context.answeredElsewhere.get(entry.criterionKey) ?? null,
         followUp: context.followUp,
       }),
     };
@@ -356,51 +281,14 @@ export interface RubricRoundSettled extends RoundSettled {
 }
 
 /**
- * 把一份 transcript 读成判定。
+ * 名单答成什么样 -> 这一份 rubric 的判定。
  *
- * 作废时不抛 —— 见文件开头。全部记 `not_assessed`，并把原因带上。
+ * **`target` 是 criterion key，而模型从头到尾没见过它。** 它只被问「这一条标准满足
+ * 了吗：<正文>」，答 yes/no 加一句依据。对不对得上号由 StagePass 记着 —— 这就是
+ * 「精确标识符绝不经由模型」那条约束在 rubric 这一侧的落点。
  *
- * **作废码也交出去**（`voided`）：这一轮是成功的，但那份坏格式留在了答它的那条
- * 线程的历史里，下一轮 resume 回去它会接着抄（2026-08-02 实测：同一个抄漏一段的
- * UUID 连抄三轮）。上层拿它去放开线程 —— 见 `RoundSettled.malformed`。
- */
-function assess(
-  text: string,
-  rubric: RubricVersion,
-  elsewhere: ReadonlySet<string>,
-  voided: string[] = [],
-): Assessment[] {
-  const snapshot = (key: string) => {
-    const criterion = rubric.criteria.find((entry) => entry.key === key)!;
-    return { criterionText: criterion.text, blockingThen: criterion.blocking };
-  };
-
-  try {
-    return readAssessments(text, rubric.criteria, elsewhere).map((read) => ({
-      ...read, ...snapshot(read.criterionKey),
-    }));
-  } catch (error: unknown) {
-    if (!(error instanceof RubricOutputVoidError)) throw error;
-    voided.push(error.code);
-    return rubric.criteria.map((criterion) => ({
-      criterionKey: criterion.key,
-      verdict: "not_assessed" as const,
-      evidence: `整份判定作废（${error.code}），本轮视为未评估`,
-      criterionText: criterion.text,
-      blockingThen: criterion.blocking,
-    }));
-  }
-}
-
-/**
- * 裁判那份判定，从名单里读回来。
- *
- * **没答的记 `not_assessed`，和它以前漏答一条时一模一样** —— 那是 fail-closed 的
- * 方向，标了阻断的 `not_assessed` 会把闸门关着。区别只在于：以前「漏答」和「抄错了
- * key」长得一样，现在没有 key 可抄，漏答就只能是它真没答。
- *
- * 这里**不会整份作废** —— 作废那条规则挡的是「凭空多答一条不存在的标准」，而名单
- * 结构上不给它这个机会：它连自己在答哪一条都不知道。
+ * 没答上的记 `not_assessed`，理由由 `withReasons` 补 —— 和以前一样，标了阻断的
+ * 漏答仍然挡门。
  */
 function fromWorklist(
   items: readonly WorkItem[],
@@ -440,23 +328,6 @@ export async function runRubricRound(
     if (rubric && rubric.criteria.length > 0) active.set(role, rubric);
   }
 
-  /**
-   * 反方那份契约。**只剩它还走提示词。**
-   *
-   * 裁判那份改走名单了（见下），因为裁判是 `user` 线程、手上有 StagePass 的工具。
-   * 反方是子 Agent，而**子 Agent 不继承 `-c` 传的 MCP server**（2026-08-02 真机验的，
-   * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四）—— 它调不到工具，
-   * 所以它这一份只能照旧：契约经裁判转达，答复写进 ```rubric 围栏。
-   *
-   * 这是七个手抄面里唯一还剩的一个，出路要人先拍板（写不写全局配置）。
-   */
-  const contractForBlue = (): string | undefined => {
-    for (const [role, rubric] of active) {
-      const assessed = ASSESSED_BY[role];
-      if (assessed?.by === "blue") return rubricContract(rubric.criteria, assessed.subject);
-    }
-    return undefined;
-  };
 
   /**
    * 裁判要判的那几条标准，**进名单，不进提示词**。
@@ -480,8 +351,8 @@ export async function runRubricRound(
 
   const settled = await runRound({
     ...request,
-    // 红方永远是 undefined —— 它是被判的那个，不背任何标准。
-    addenda: { blue: contractForBlue() },
+    // **addenda 全空了。** 红方是被判的那个不背标准；反方那份改由 StagePass
+    // 自己去问（`askBlueByWorklist`），不再夹在裁判的提示词里指望它转达。
     extraWorkItems: judgeItems,
   }, dependencies);
 
@@ -492,82 +363,31 @@ export async function runRubricRound(
   const voided: string[] = [];
   let gaps = settled.gaps;
 
-  /**
-   * 这一轮所有活着的 key。
-   *
-   * 「不属于你」和「不存在」要分开，就得先知道这一轮总共有哪些 key ——
-   * 少了这份名单，一个答错对象的 key 和一个凭空编的 key 在解析器眼里一模一样。
-   */
-  const everyKey = new Set(
-    [...active.values()].flatMap((rubric) => rubric.criteria.map((each) => each.key)),
-  );
-
-  /**
-   * 一条线程收到过这份标准没有。
-   *
-   * **裁判那份返回 null（不适用）**：它的提示词是 StagePass 自己写的，送达不是一个
-   * 会出问题的环节。只有子 Agent 那一侧要经裁判转达，也只有那一侧会丢。
-   *
-   * **读不到 rollout 也返回 null，不是 false。** 「查不出来」和「没送到」是两件事，
-   * 把前者说成后者就是编了一句 StagePass 并不知道的话 —— 而这一整套改动的立身之本
-   * 就是不许出现这种话。走到这里 `runRound` 已经成功读过这条线程了，所以真出错是
-   * 很反常的情况，但反常不等于可以撒谎。
-   */
-  const deliveredTo = (
-    assessor: Participant, keys: readonly string[],
-  ): boolean | null => {
-    if (assessor === "judge") return null;
-    try {
-      const whole = dependencies.readThreadWhole(settled.agents[assessor]);
-      return keys.some((key) => whole.includes(key));
-    } catch {
-      return null;
-    }
-  };
-
   for (const [role, rubric] of active) {
     const assessor = ASSESSED_BY[role]!.by;
-    const mine = rubric.criteria.map((each) => each.key);
-    const elsewhere = new Set([...everyKey].filter((key) => !mine.includes(key)));
 
     /*
-     * **裁判那份从名单里读，反方那份还是从围栏里读。**
+     * **两边都走名单了。**
      *
-     * 两条路的分界就是「答它的那条线程有没有 StagePass 的工具」—— 裁判是 user 线程，
-     * 有；反方是子 Agent，没有（2026-08-02 真机验的）。
-     */
-    const first = assessor === "judge"
-      ? fromWorklist(settled.workItems, rubric)
-      : assess(settled.transcripts[assessor], rubric, elsewhere, voided);
-
-    /*
-     * **没答上就直接问它，最多三次**（用户 2026-07-31）。
-     *
-     * 只对经裁判转达的那一侧补 —— 裁判自己那份的提示词是 StagePass 写的，它没答就是
-     * 它没答，再问一遍改变的是它的意愿，而不是修复一条断掉的链路。
+     * 裁判在它自己那一轮里逐条答（名单在 turn 之前就开好）；反方由 StagePass 单独
+     * 去问，跑在它自己那条线程上（`askBlueByWorklist`）。两条路都不经模型的嘴传
+     * 任何标识符 —— 那是这一整套改动的落点，见
+     * docs/DESIGN-no-hand-transcription-2026-08-02.md。
      */
     const { read, followUp } = assessor === "blue"
-      ? await askAgain({
+      ? await askBlueByWorklist({
           transport: dependencies.transport,
+          worklist: dependencies.worklist,
+          changeId: request.changeId,
+          phase: request.phase,
+          round: request.round,
           threadId: settled.agents.blue,
           rubric,
           subject: ASSESSED_BY[role]!.subject,
-          elsewhere,
-          read: first,
-          voided,
         })
-      : { read: first, followUp: null };
+      : { read: fromWorklist(settled.workItems, rubric), followUp: null };
 
-    assessments[role] = withReasons(read, {
-      assessor,
-      delivered: deliveredTo(assessor, mine),
-      // 它答了别人那一份 —— Retro 实测：反方答的 4 条 key 全是裁判那份的。
-      answeredAnother:
-        answeredKeysIn(settled.transcripts[assessor], elsewhere).length > 0,
-      // 这几条被别人代答了 —— Review 实测：裁判把反方那 4 条也答了。
-      answeredElsewhere: answeredBy(settled.transcripts, assessor, new Set(mine)),
-      followUp,
-    });
+    assessments[role] = withReasons(read, { assessor, followUp });
 
     rubrics.record(
       request.changeId, request.phase, role, request.round, rubric,
