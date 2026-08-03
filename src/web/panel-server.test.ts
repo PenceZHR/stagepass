@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { BindingStore } from "../store/binding-store";
+import { QuestionStore } from "../store/question-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
@@ -2460,5 +2461,42 @@ describe("panel · 过期的活自己会被收掉", () => {
         { status: string };
       assert.equal(panel.status, "blocked");
     }, { recoverEveryMs: 40 });
+  });
+});
+
+/**
+ * 问人超时之后，那道题也要收掉。
+ *
+ * 2026-08-03 真机撞到：验 B/C/D 那一轮的裁决表挂了 63 分钟（截止 45 分钟），会话被
+ * StagePass 收掉了，而那道题在库里还是 `open` —— 一道**没有任何人在等**的题。
+ * 人这时候开个终端让模型调 `stagepass_ask`，就会被端出这道死题；答了还会被 fence
+ * 以 `GateMovedError` 拒掉。
+ *
+ * 录需求那条路（`/api/brief`）一直是 `settle` 写在判断之前的。两条路不对称，而
+ * 不对称没有任何理由。
+ */
+describe("panel · 问人超时，题也要收掉", () => {
+  it("**超时之后那道题不再是 open** —— 没人在等的题不该看起来在等", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      new BindingStore(database).bind(CHANGE, "PRD", "THREAD-PRD");
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      // 一个字都不答，等它自己放弃（测试里的 askTimeoutMs 是 4 秒）。
+      const asked = await (await open(
+        `/api/ask?change=${CHANGE}`, { method: "POST" })).json() as
+        { answered: boolean; reason: string };
+      assert.equal(asked.answered, false);
+      assert.equal(asked.reason, "no_answer_in_time");
+
+      assert.equal(
+        new QuestionStore(database).open(CHANGE), null,
+        "超时之后还留着一道 open 的题 —— 下一个调 stagepass_ask 的会被端出这道死题",
+      );
+    });
   });
 });

@@ -1747,6 +1747,23 @@ export async function handle(
     }
     const first = questions.readAnswerFor(questionId);
     if (!first) {
+      /*
+       * **放弃了就把题也收掉。**
+       *
+       * 这里原来只关会话、不 settle，于是超时会漏下一道永远 `open` 的题 ——
+       * 录需求那条路（`/api/brief`）一直是 settle 写在判断之前的，两条路不对称，
+       * 而不对称没有任何理由。
+       *
+       * `ask()` 插新题时会把旧的 `open` 全部 superseded，所以危害有一半被兜住；
+       * 但在超时和下一次问之间，`questions.open(changeId)` 会返回一道**没有任何人
+       * 在等**的题。人这时候开个终端让模型调 `stagepass_ask`，就会被端出这道死题
+       * ——答了还会被 fence 以 `GateMovedError` 拒掉。「看起来在等你」而其实没人在等，
+       * 正是这个项目从头到尾在防的形状。
+       *
+       * 2026-08-03 真机撞到：验 B/C/D 那一轮的裁决表挂了 63 分钟（截止 45 分钟），
+       * 会话被收掉了，而那道题还是 `open`。
+       */
+      questions.settle(questionId);
       json(response, {
         asked: true, answered: false, phase, questionId,
         /**
