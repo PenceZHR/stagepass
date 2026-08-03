@@ -236,9 +236,11 @@ describe("L2 · 一条线程的血缘", () => {
   const CHILD = "019fc1c1-c6fb-7f02-84b1-25479d9365a6";
   const PARENT = "019fac13-bc4b-72e2-a20f-89ecd5fff7c4";
 
+  const spawn = { thread_spawn: { parent_thread_id: PARENT, depth: 1 } };
   const subagent = meta({
     session_id: PARENT, id: CHILD, parent_thread_id: PARENT,
     timestamp: "2026-08-02T09:15:29.915Z", thread_source: "subagent",
+    source: { subagent: spawn },
   });
 
   it("子 Agent 报得出它爹是谁", () => {
@@ -254,22 +256,40 @@ describe("L2 · 一条线程的血缘", () => {
     assert.equal(lineageOf(parseRollout(judge))!.parentThreadId, null);
   });
 
-  it("**判据是 `thread_source`，不是「有没有 parent」**", () => {
-    // 将来 Codex 给别的线程也填上这一列（比如 resume 的来源），这里也不许认它 ——
+  it("**光有 parent 不算** —— 将来 resume 之类也填这一列时不许认它", () => {
     // 认错一条，它的话会被当成红方或蓝方的发言写进 gap。
-    const resumed = meta({ id: CHILD, parent_thread_id: PARENT, thread_source: "user" });
+    const resumed = meta({
+      id: CHILD, parent_thread_id: PARENT, thread_source: "user",
+      source: { subagent: spawn },
+    });
     assert.equal(lineageOf(parseRollout(resumed))!.parentThreadId, null);
   });
 
   it("是 subagent 但没记下爹 —— 也不认", () => {
-    const orphan = meta({ id: CHILD, thread_source: "subagent" });
+    const orphan = meta({ id: CHILD, thread_source: "subagent", source: { subagent: spawn } });
     assert.equal(lineageOf(parseRollout(orphan))!.parentThreadId, null);
+  });
+
+  it("**不是被 spawn 出来的子 Agent 不算** —— guardian 就是这么一种", () => {
+    // 2026-08-02 真会话目录里的形状：Codex 自己派的一种审查子 Agent，同样是
+    // thread_source=subagent、同样带 parent。它哪天挂到裁判线程下，就会被当成
+    // 红方或蓝方 —— 而 StagePass 会把它说的话写进 gap。
+    const guardian = meta({
+      id: CHILD, parent_thread_id: PARENT, thread_source: "subagent",
+      source: { subagent: { other: "guardian" } },
+    });
+    assert.equal(lineageOf(parseRollout(guardian))!.parentThreadId, null);
+  });
+
+  it("连 source 都没有也不认 —— 三样缺一不可", () => {
+    const bare = meta({ id: CHILD, parent_thread_id: PARENT, thread_source: "subagent" });
+    assert.equal(lineageOf(parseRollout(bare))!.parentThreadId, null);
   });
 
   it("id 大小写归一 —— 文件名那条路也是这么做的", () => {
     const upper = meta({
       id: CHILD.toUpperCase(), parent_thread_id: PARENT.toUpperCase(),
-      thread_source: "subagent",
+      thread_source: "subagent", source: { subagent: spawn },
     });
     const read = lineageOf(parseRollout(upper))!;
     assert.equal(read.threadId, CHILD);
@@ -277,7 +297,10 @@ describe("L2 · 一条线程的血缘", () => {
   });
 
   it("payload 没有自己的时刻时退回记录的时刻", () => {
-    const noInner = meta({ id: CHILD, parent_thread_id: PARENT, thread_source: "subagent" });
+    const noInner = meta({
+      id: CHILD, parent_thread_id: PARENT, thread_source: "subagent",
+      source: { subagent: spawn },
+    });
     assert.equal(lineageOf(parseRollout(noInner))!.startedAt, "2026-08-02T09:15:29.993Z");
   });
 

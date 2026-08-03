@@ -34,6 +34,7 @@ export interface RolloutRecord {
     id?: unknown;
     parent_thread_id?: unknown;
     thread_source?: unknown;
+    source?: unknown;
     timestamp?: unknown;
   } | undefined;
   readonly timestamp?: unknown;
@@ -249,11 +250,20 @@ export interface ThreadLineage {
  *
  * 所以当年放弃走库那条路的理由，对这一列不成立。
  *
- * ## 判据是 `thread_source`，不是「有没有 parent」
+ * ## 判据要三样都对上
  *
- * 两个都要对上才认。只看 parent 的话，将来 Codex 给别的线程也填上这一列（比如
- * `resume` 的来源），这里就会把一条不是子 Agent 的线程认成子 Agent —— 而那条线程
- * 的话会被当成红方或蓝方的发言写进 gap。fail-closed 的方向是宁可不认。
+ * `thread_source === "subagent"`、有 parent、**而且 `source.subagent.thread_spawn`
+ * 在**。少任何一样都不认。
+ *
+ * 第三样不是多余的：**不是每个子 Agent 都是被 spawn 出来的红蓝。** 2026-08-02 在真
+ * 会话目录里见到过 `source: {"subagent": {"other": "guardian"}}` —— Codex 自己派的
+ * 一种审查子 Agent，它同样是 `thread_source: "subagent"`、同样带 parent。那一条挂在
+ * 别的项目下，但只要它哪天挂到裁判线程下，就会被当成红方或蓝方，**而 StagePass 会
+ * 把它说的话写进 gap**。
+ *
+ * 只看 parent 同理：将来 Codex 给 `resume` 之类也填上这一列，一条根本不是子 Agent
+ * 的线程就会被认下来。fail-closed 的方向是宁可不认 —— 认不出两条会大声失败，
+ * 而认错一条是静默地把别人的话记到红蓝头上。
  *
  * ## ⚠ 这些 id 是 UUIDv7，绝不能用前缀匹配
  *
@@ -269,12 +279,14 @@ export function lineageOf(records: readonly RolloutRecord[]): ThreadLineage | nu
     if (typeof threadId !== "string" || threadId === "") return null;
 
     const parent = payload?.parent_thread_id;
-    const isSubAgent = payload?.thread_source === "subagent";
+    const subagent = (payload?.source as { subagent?: unknown } | null)?.subagent;
+    const spawned = payload?.thread_source === "subagent"
+      && (subagent as { thread_spawn?: unknown } | null)?.thread_spawn !== undefined;
     const startedAt = payload?.timestamp ?? record.timestamp;
 
     return {
       threadId: threadId.toLowerCase(),
-      parentThreadId: isSubAgent && typeof parent === "string" && parent !== ""
+      parentThreadId: spawned && typeof parent === "string" && parent !== ""
         ? parent.toLowerCase()
         : null,
       startedAt: typeof startedAt === "string" && startedAt !== "" ? startedAt : null,

@@ -71,7 +71,10 @@ describe("L4 · 按血缘认这一轮的两条子线程", () => {
   const meta = (payload: object) =>
     JSON.stringify({ type: "session_meta", payload });
   const child = (id: string, parent: string, at: string) =>
-    meta({ id, parent_thread_id: parent, thread_source: "subagent", timestamp: at });
+    meta({
+      id, parent_thread_id: parent, thread_source: "subagent", timestamp: at,
+      source: { subagent: { thread_spawn: { parent_thread_id: parent, depth: 1 } } },
+    });
 
   const at = (second: string) => `2026-08-02T09:${second}:00.000Z`;
   const file = (id: string) => `/s/2026/08/02/rollout-2026-08-02T09-00-00-${id}.jsonl`;
