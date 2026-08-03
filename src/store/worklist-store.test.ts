@@ -100,17 +100,6 @@ describe("L3 · 裁判逐条表态的名单", () => {
     assert.equal(store.next(CHANGE), null, "上一轮没答完的漏过来了");
   });
 
-  it("别的 Change 开了名单也会把这一份关掉 —— 全库至多一份开着", () => {
-    const { database, store } = open();
-    new ChangeStore(database, { now: () => new Date(AT) }).create("CHG-OTHER");
-    store.open(CHANGE, "PRD", 1, [gap("G-1", "这一个 Change 的")]);
-    store.open("CHG-OTHER", "PRD", 1, [gap("G-2", "另一个 Change 的")]);
-
-    // 这一份被关掉了，所以按自己的 changeId 问也什么都没有。
-    assert.equal(store.next(CHANGE), null);
-    assert.equal(store.next("CHG-OTHER")?.prompt, "另一个 Change 的");
-  });
-
   it("空名单也照开 —— 「没什么要表态的」和「名单没开出来」是两件事", () => {
     const { store } = open();
     store.open(CHANGE, "PRD", 1, [gap("G-1", "上一轮的")]);
@@ -140,6 +129,37 @@ describe("L3 · 裁判逐条表态的名单", () => {
     const read = store.read(CHANGE, "PRD", 1);
     assert.equal(read[1]!.answer, null);
     assert.equal(read[1]!.reason, null);
+  });
+
+  /**
+   * **别的 Change 开名单，不许碰这一个的。**
+   *
+   * 2026-08-03 真机撞出来的：CHG-WL2 那一轮正等着裁判逐条表态，用户在同一个面板里
+   * 给另一个 Change 派了一轮 —— `open` 里那句 `WHERE status = 'open'` 没有带
+   * change_id，把 CHG-WL2 那份**正在用的**名单一起关了。表现是「裁判一条都没答」，
+   * 而它其实是被 StagePass 自己掐掉的。
+   *
+   * 读那一侧一直是按 change 取的（`next` 从 `STAGEPASS_CHANGE` 拿 id），所以这句
+   * 全局关是早期「猜全库唯一那一份」的遗留，现在纯粹有害。
+   */
+  it("**另一个 Change 开名单，不许关掉这一个正在用的**", () => {
+    const { database, store } = open();
+    const other = "CHG-OTHER";
+    new ChangeStore(database, { now: () => new Date(AT) }).create(other);
+
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "这条还成立吗")]);
+    store.open(other, "PRD", 1, [gap("O-1", "别人家的")]);
+
+    assert.notEqual(store.next(CHANGE), null, "被别人开名单顺手关掉了");
+    assert.equal(store.next(CHANGE)!.target, "G-1");
+    assert.equal(store.next(other)!.target, "O-1");
+  });
+
+  it("同一个 Change 再开一份，上一份要关掉 —— 免得答上一轮的剩饭", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "第一轮")]);
+    store.open(CHANGE, "PRD", 2, [gap("G-2", "第二轮")]);
+    assert.equal(store.next(CHANGE)!.target, "G-2");
   });
 
   it("close 之后 next 就空了，而且可以重复调", () => {

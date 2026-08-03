@@ -63,10 +63,21 @@ export class WorklistStore {
   }
 
   /**
-   * 开一份新的，**并把别的全部关掉**。
+   * 开一份新的，**并把这个 Change 之前那几份关掉**。
    *
    * 空名单也照开（然后立刻就是「没有下一项」）—— 「这一轮没什么要表态的」和
    * 「这一轮的名单没开出来」是两件事，而后者会让裁判去答上一轮的剩饭。
+   *
+   * ## 关的范围只到这个 Change 为止
+   *
+   * 原来这一句是 `WHERE status = 'open'`，**全库**。2026-08-03 真机撞出来的：一轮正
+   * 等着裁判逐条表态，同一个面板里给另一个 Change 派了一轮，那句话把这一份**正在用
+   * 的**名单一起关了。表现是「裁判一条都没答」（于是记 `worklist_unanswered`、放开
+   * 线程），而它其实是被 StagePass 自己掐掉的 —— 最难查的那一类。
+   *
+   * 全库关是早期设计的遗留：那时插件只能猜「全库唯一开着的那一份」，所以必须保证
+   * 唯一。现在读那一侧按 `changeId` 取（`next`，id 来自 `STAGEPASS_CHANGE`），
+   * 唯一性只在一个 Change 内部需要。
    */
   open(
     changeId: string,
@@ -76,8 +87,8 @@ export class WorklistStore {
   ): void {
     const write = this.database.transaction(() => {
       this.database.prepare(
-        "UPDATE round_worklist SET status = 'closed' WHERE status = 'open'",
-      ).run();
+        "UPDATE round_worklist SET status = 'closed' WHERE change_id = ? AND status = 'open'",
+      ).run(changeId);
       this.database.prepare(
         "DELETE FROM round_worklist WHERE change_id = ? AND phase = ? AND round = ?",
       ).run(changeId, phase, round);
