@@ -30,6 +30,11 @@ export interface RolloutRecord {
     message?: unknown;
     /** `response_item` 的正文：`[{type:"input_text", text:"…"}]`。 */
     content?: unknown;
+    /** 以下四个只有 `session_meta` 有 —— 见 `lineageOf`。 */
+    id?: unknown;
+    parent_thread_id?: unknown;
+    thread_source?: unknown;
+    timestamp?: unknown;
   } | undefined;
   readonly timestamp?: unknown;
 }
@@ -210,4 +215,70 @@ const ROLLOUT_NAME =
 
 export function threadIdFromRolloutName(name: string): string | null {
   return ROLLOUT_NAME.exec(name)?.[1]?.toLowerCase() ?? null;
+}
+
+export interface ThreadLineage {
+  readonly threadId: string;
+  /**
+   * 派生它的那条线程。**`null` 就是「不可当作某条线程的子 Agent」** ——
+   * 「它不是子 Agent」和「它是子 Agent 但没记下爹」在这里合成同一个值，是刻意的：
+   * 两者要做的事一样（不认它），分开只会让调用方多一个它无法处理的分支。
+   */
+  readonly parentThreadId: string | null;
+  /** 它自己报的出生时刻。派生顺序靠它排，读不到就是 `null`。 */
+  readonly startedAt: string | null;
+}
+
+/**
+ * 一条线程的血缘，从它 rollout 的 `session_meta` 里读。
+ *
+ * ## 为什么这条能取代「让裁判报 id」
+ *
+ * 认红蓝原来靠 `state_5.sqlite` 的 `threads.agent_path`，而**那一列只有原生
+ * `spawn_agent({task_name})` 会设** —— 那个工具不是每个会话都有（2026-07-30 实测），
+ * 没有它的会话里每个阶段的每一轮都跑不了。于是 2026-07-30 改成让裁判把两个
+ * `agent_id` 报进答案，而那把一个 36 字符的 UUID 放进了模型必须手抄的文本里：
+ * 抄错一个字符，这一轮就作废，正反两方说的话谁也看不到（`02059a8` 是实测的一次）。
+ *
+ * `parent_thread_id` 和 `agent_path` 不是一回事 —— 它说的是线程血缘，不是 Agent
+ * 起了什么名字。2026-08-02 在 CHG-003 那一趟的 100 条真线程上数过：
+ *
+ *     subagent 76 条
+ *       parent_thread_id 有值：76/76
+ *       agent_path       有值： 1/76
+ *
+ * 所以当年放弃走库那条路的理由，对这一列不成立。
+ *
+ * ## 判据是 `thread_source`，不是「有没有 parent」
+ *
+ * 两个都要对上才认。只看 parent 的话，将来 Codex 给别的线程也填上这一列（比如
+ * `resume` 的来源），这里就会把一条不是子 Agent 的线程认成子 Agent —— 而那条线程
+ * 的话会被当成红方或蓝方的发言写进 gap。fail-closed 的方向是宁可不认。
+ *
+ * ## ⚠ 这些 id 是 UUIDv7，绝不能用前缀匹配
+ *
+ * 前 8 位是时间戳而不是随机数，隔几秒生成的两条线程前缀就撞（实测：`019fc396`
+ * 派生的 7 个子 Agent 是 `019fc39f`/`019fc3a2`/`019fc3a5`/…）。`criterion_key`
+ * 那边用的是 `randomUUID()`（v4，真随机），两者不能混为一谈。
+ */
+export function lineageOf(records: readonly RolloutRecord[]): ThreadLineage | null {
+  for (const record of records) {
+    if (record.type !== "session_meta") continue;
+    const payload = record.payload;
+    const threadId = payload?.id;
+    if (typeof threadId !== "string" || threadId === "") return null;
+
+    const parent = payload?.parent_thread_id;
+    const isSubAgent = payload?.thread_source === "subagent";
+    const startedAt = payload?.timestamp ?? record.timestamp;
+
+    return {
+      threadId: threadId.toLowerCase(),
+      parentThreadId: isSubAgent && typeof parent === "string" && parent !== ""
+        ? parent.toLowerCase()
+        : null,
+      startedAt: typeof startedAt === "string" && startedAt !== "" ? startedAt : null,
+    };
+  }
+  return null;
 }

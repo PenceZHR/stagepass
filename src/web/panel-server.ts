@@ -9,7 +9,7 @@ import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
-  createSubAgentLookup, readThreadTranscript, readThreadWholeText,
+  childThreadsOf, createSubAgentLookup, readThreadTranscript, readThreadWholeText,
 } from "../codex/subagent";
 import {
   archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
@@ -793,6 +793,7 @@ async function runRound(input: {
       notes: new RoundNoteStore(database),
       repo: sessions.repo,
       workspaceFor: (each) => sessions.workspaceFor(each),
+      childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
       readThread: (threadId) => readThreadTranscript({ threadId }),
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
       // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。

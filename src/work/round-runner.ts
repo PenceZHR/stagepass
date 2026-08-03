@@ -2,7 +2,7 @@ import { blockersFrom, type Gap } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import {
-  judgePrompt, readAgents, readConclusion, readRound,
+  judgePrompt, readConclusion, readRound,
   type RoundAgents, type RoundConclusion, type RoundInstructions,
 } from "../domain/round";
 import type { CodexTransport } from "../codex/transport";
@@ -57,6 +57,25 @@ export interface RoundDependencies {
    * 派生的两个 `agent_id` 报进答案。
    */
   readonly readThread: (threadId: string) => string;
+  /**
+   * 一条线程派生的子 Agent，按出生先后排（`codex/subagent.ts` 的 `childThreadsOf`）。
+   *
+   * **这条取代了「让裁判把两个 `agent_id` 报进答案」。** 那一版把 36 字符的 UUID
+   * 放进了模型必须手抄的文本里，而抄错一个字符这一轮就作废、正反两方说的话谁也
+   * 看不到（`02059a8` 实测过一次：它把自己的线程报成了子 Agent）。
+   *
+   * 判据换成 rollout 里 `session_meta` 的 `parent_thread_id` —— 76/76 有值，
+   * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
+   */
+  readonly childThreads: (parentThreadId: string) => readonly string[];
+}
+
+/** 这一轮认不出正反两方跑在哪两条线程上。 */
+export class RoundAgentsNotFoundError extends Error {
+  constructor(readonly spawned: number) {
+    super(`round_agents_not_found: 这一轮只认出 ${spawned} 条子 Agent 线程，需要两条`);
+    this.name = "RoundAgentsNotFoundError";
+  }
 }
 
 export interface RoundSettled {
@@ -87,6 +106,15 @@ export interface RoundSettled {
    */
   readonly agents: RoundAgents;
   /**
+   * 这一轮实际派生了几条子 Agent 线程。**正常是 2。**
+   *
+   * 交出来是因为 >2 时 StagePass 取的是最后两条，而那是一个**判断**：会多出来通常
+   * 是裁判重派了一次（第一次的子 Agent 失败了），这时最后两条是对的；但它也可能是
+   * 裁判违反了「一个跑完再派下一个」。两者在这里分不出来，所以不猜也不静默 ——
+   * 照数报上去，让人在账本上看得见。
+   */
+  readonly spawned: number;
+  /**
    * 裁判对「还要不要再来一轮」的结论。null = 它没给。
    *
    * **不动闸门**（用户 2026-07-31：裁判给结论，人按按钮）。这一层只负责把它读出来
@@ -107,6 +135,19 @@ export async function runRound(
     .all(request.changeId, request.phase)
     .filter((gap) => gap.status === "open");
 
+  /*
+   * **这一轮之前它已经有哪些孩子** —— 必须在 turn 之前问。
+   *
+   * 成功的轮复用裁判线程，所以一条裁判线程会累积多轮的子 Agent（实测见过一条挂着
+   * 7 个）。差集给出的正是「这一次派生的」，而且它不依赖任何时钟 —— 拿时间戳去比
+   * 要假设 StagePass 和 Codex 的钟对得上，差集不用。
+   *
+   * 新线程时 `judgeThreadId` 是 null，此时它还不存在，孩子当然也没有。
+   */
+  const before = request.judgeThreadId === null
+    ? []
+    : dependencies.childThreads(request.judgeThreadId);
+
   const delivery = await dependencies.transport.runTurn({
     threadId: request.judgeThreadId,
     prompt: judgePrompt({
@@ -119,25 +160,23 @@ export async function runRound(
   });
 
   /*
-   * 裁判报出来的那两条线程，然后读它们自己的话。
+   * 这一轮派生的那两条线程，然后读它们自己的话。
    *
-   * **顺序不能换**（见文件开头）：两边都读到了，才允许写 gap。裁判没报 id 会在这里
+   * **顺序不能换**（见文件开头）：两边都读到了，才允许写 gap。认不出两条会在这里
    * 抛 —— 那是对的，一轮读不到正反两方说了什么，就不该在闸门那边留下任何痕迹。
-   */
-  const agents = readAgents(delivery.text);
-  /*
-   * **红蓝都不许是裁判自己**（2026-08-02 Fix 第 2 轮真机撞出的）。
    *
-   * 裁判把自己的线程 id 报成了某一方 —— `readThread` 于是读回它自己的开场白，
-   * `parseTurnResult` 拿着一段裁判散文找 json，报出来的错（turn_result_no_json，
-   * 详情是裁判的话）指向完全错误的方向。`readAgents` 早有「红蓝不许相同」的守卫，
-   * 漏了这一种。在这里拦是因为只有这一层同时握着两边的 id 和裁判自己的 id。
+   * **先出生的是红方，后出生的是蓝方**（`childThreadsOf` 那里写了依据）。多于两条时
+   * 取最后两条：多出来通常是裁判重派了一次，那时最后两条是对的。这个判断连同实际
+   * 派了几条一起交上去（`spawned`），不静默。
    */
-  if (agents.red === delivery.threadId || agents.blue === delivery.threadId) {
-    throw new Error(
-      `judge_reported_itself: 裁判把自己的线程 ${delivery.threadId.slice(0, 12)}… 报成了子 Agent`,
-    );
-  }
+  const fresh = dependencies.childThreads(delivery.threadId)
+    .filter((threadId) => !before.includes(threadId));
+  if (fresh.length < 2) throw new RoundAgentsNotFoundError(fresh.length);
+  const agents: RoundAgents = {
+    red: fresh[fresh.length - 2]!,
+    blue: fresh[fresh.length - 1]!,
+  };
+
   const red = dependencies.readThread(agents.red);
   const blue = dependencies.readThread(agents.blue);
 
@@ -160,6 +199,7 @@ export async function runRound(
     blockers: blockersFrom(gaps),
     transcripts: { red, blue, judge: delivery.text },
     agents,
+    spawned: fresh.length,
     /*
      * 结论读不出来**不作废这一轮** —— 它不决定任何状态，为一句读不准的建议扔掉
      * 一轮几分钟的对抗不成比例。`readConclusion` 把「读不出来」当成一个值交出来，

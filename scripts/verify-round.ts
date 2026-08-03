@@ -18,7 +18,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../src/db/schema";
-import { readThreadTranscript } from "../src/codex/subagent";
+import { childThreadsOf, readThreadTranscript } from "../src/codex/subagent";
 import { CodexTuiTransport } from "../src/codex/tui-transport";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
@@ -78,6 +78,7 @@ async function live(): Promise<void> {
     {
       transport,
       gaps,
+      childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
       readThread: (threadId) => readThreadTranscript({ threadId }),
     },
   );

@@ -44,10 +44,29 @@ function open() {
 
 const RED_THREAD = "T-RED";
 const BLUE_THREAD = "T-BLUE";
-/** 裁判的答复必须报出那两条子 Agent 的线程 id，正文才读得到。 */
-const judgeSays = '```json\n' + JSON.stringify({
-  agents: { red: RED_THREAD, blue: BLUE_THREAD }, verdicts: {},
-}) + '\n```';
+/**
+ * 裁判的答复。**它不再报任何线程 id**（2026-08-02）—— StagePass 按 rollout 的
+ * `parent_thread_id` 自己认，见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
+ */
+const judgeSays = '```json\n' + JSON.stringify({ verdicts: {} }) + '\n```';
+
+/**
+ * 裁判线程累积的子 Agent —— **每问一次就多两条**。
+ *
+ * 真实的裁判线程就是这样长的（2026-08-02 实测见过一条挂着 7 个子 Agent），而
+ * `runRound` 靠 turn 前后的差集挑出「这一次派生的那一对」。一个每次都返回同样两条
+ * 的替身，会让第二轮的差集变成空 —— 那正是这个替身该盯住的事。
+ *
+ * 只涨不减，所以不管 `runRound` 一轮问几次，差集永远恰好是最新的那一对。
+ */
+function growingChildren(): () => string[] {
+  const children: string[] = [];
+  return () => {
+    const pair = children.length / 2 + 1;
+    children.push(`${RED_THREAD}-${pair}`, `${BLUE_THREAD}-${pair}`);
+    return [...children];
+  };
+}
 const answer = (blockers: { id: string; severity: string; title: string }[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: ["prd.md"], blockers }) + "\n```";
 
@@ -68,6 +87,7 @@ function runner(
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
     repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
+    childThreads: growingChildren(),
     readThread,
     // 这些用例不问送达 —— 它们问的是这个 runner 有没有把各层接对。
     readThreadWhole: readThread,
@@ -102,7 +122,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
       runner: runner(
         context,
         new ScriptedCodexTransport([judgeSays, judgeSays]),
-        (threadId) => (threadId === BLUE_THREAD ? blueSays[blueRead++]! : answer()),
+        (threadId) => (threadId.startsWith(BLUE_THREAD) ? blueSays[blueRead++]! : answer()),
       ),
     });
 
@@ -126,7 +146,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
         context,
         new ScriptedCodexTransport([new Error("codex_died"), judgeSays]),
         (threadId) =>
-          threadId === BLUE_THREAD
+          threadId.startsWith(BLUE_THREAD)
             ? answer([{ id: "S-1", severity: "P1", title: "重跑那一轮发现的" }])
             : answer(),
       ),
@@ -438,6 +458,7 @@ describe("RoundTurnRunner · aside 不绑定", () => {
       notes: new RoundNoteStore(context.db),
       repo: { dirtyPaths: () => [], commitAll: () => null, show: () => null },
       workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
+      childThreads: growingChildren(),
       readThread: () => answer(),                    // 红蓝的 rollout：都没有 rubric 行
       readThreadWhole: () => "K1",                   // 契约送到了
       taskFor: () => "写 PRD",
@@ -450,7 +471,7 @@ describe("RoundTurnRunner · aside 不绑定", () => {
 
     // 补问那个 turn 带了 aside 标签、跑在蓝方线程上。
     const followUp = transport.dispatches[1]!;
-    assert.equal(followUp.threadId, BLUE_THREAD);
+    assert.ok(followUp.threadId!.startsWith(BLUE_THREAD));
     assert.ok(followUp.aside, "补问没带 aside 标签 —— 面板不知道要单开一格");
     // **绑定座位还是裁判的**，没有被蓝方的线程顶掉，也没有因此炸掉整轮。
     const bound = context.bindings.find(CHANGE, "PRD");

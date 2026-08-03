@@ -52,9 +52,16 @@ const BLUE_THREAD = "T-BLUE";
 const roles = (red: string, blue: string) =>
   (threadId: string) => (threadId === RED_THREAD ? red : threadId === BLUE_THREAD ? blue : "");
 
-/** 裁判的答复必须带上那两条线程 id，正文才读得到。 */
-const asJudge = (body: string) => body.replace(
-  '{"verdicts"', `{"agents":{"red":"${RED_THREAD}","blue":"${BLUE_THREAD}"},"verdicts"`);
+/**
+ * 这一轮派生的两条子 Agent 线程。
+ *
+ * 裁判**不再报它们的 id**（2026-08-02）—— StagePass 按 rollout 的 `parent_thread_id`
+ * 自己认，先出生的是红方。见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
+ */
+const childThreads = () => [RED_THREAD, BLUE_THREAD];
+
+/** 裁判的答复。这里不再需要给它塞两条线程 id。 */
+const asJudge = (body: string) => body;
 
 /**
  * 默认：**契约送到了。**
@@ -91,6 +98,7 @@ async function run(context: ReturnType<typeof open>, input: {
     ]),
     gaps: context.gaps,
     rubrics: context.rubrics,
+    childThreads,
     readThread: roles(input.red ?? answer(), input.blue ?? answer()),
     readThreadWhole: input.whole ?? deliveredAll(context),
   });
@@ -147,7 +155,8 @@ describe("L5 · 没有人给自己打分", () => {
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readThread: roles(answer(), answer()),
+      childThreads,
+    readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
 
@@ -183,7 +192,8 @@ describe("L5 · 没有人给自己打分", () => {
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readThread: roles(answer(), answer()),
+      childThreads,
+    readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
 
@@ -318,7 +328,8 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readThread: roles(answer(), answer()),
+      childThreads,
+    readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
 
@@ -571,7 +582,8 @@ describe("L5 · 补问反方", () => {
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readThread: roles(answer(), answer()),
+      childThreads,
+    readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
 
@@ -597,7 +609,8 @@ describe("L5 · 补问反方", () => {
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       // 第一条答了，第二条没答。
-      readThread: roles(answer(), answer() + "\n" + rubricBlock(["K1 yes 好"])),
+      childThreads,
+    readThread: roles(answer(), answer() + "\n" + rubricBlock(["K1 yes 好"])),
       readThreadWhole: deliveredAll(context),
     });
 
@@ -619,7 +632,8 @@ describe("L5 · 补问反方", () => {
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
-      readThread: roles(answer(), answer()),
+      childThreads,
+    readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
     // 只派了裁判那一个 turn —— 没有第二个。

@@ -33,9 +33,10 @@ import { producesCommit, redReviewsOthers, type Phase } from "./phase";
  * 两方在提示词里的名字。
  *
  * **原来它们是 `/root/red` / `/root/blue`，是子 Agent 的身份路径** —— StagePass 靠那个
- * 从 Codex 的库里认哪条线程是谁。那条路 2026-07-30 废掉了（`readAgents`：改由裁判把
- * 两个 `agent_id` 报进答案），于是路径这个概念在这里就成了死重：它不再指向任何东西，
- * 留着只会让下一个人以为它还有作用。
+ * 从 Codex 的库里认哪条线程是谁。那条路 2026-07-30 废掉了（改由裁判报两个
+ * `agent_id`），2026-08-02 那一版也废掉了（改由 StagePass 按 `parent_thread_id`
+ * 自己认）。两版之后，路径这个概念在这里都是死重：它不指向任何东西，留着只会让
+ * 下一个人以为它还有作用。
  *
  * 现在它们只是提示词里的区段标签，仅此而已。
  */
@@ -321,12 +322,23 @@ export function judgePrompt(input: RoundInstructions): string {
   return [
     `你是本轮的裁判。阶段：${input.phase}，第 ${input.round} 轮。`,
     "",
-    "派生两个子 Agent，一个当正方、一个当反方。**你手上哪个 spawn 工具都行** ——",
-    "StagePass 靠你在最后报出来的那两个 `agent_id` 取证，不靠工具怎么叫、也不靠",
-    "它们叫什么路径。**记下这两个 id，最后要填进 `agents`。**",
+    /*
+     * **不再要它报 `agent_id`。**
+     *
+     * 那一版（2026-07-30 到 08-02）要裁判把两个 36 字符的 UUID 抄进答案，而 StagePass
+     * 拿它们做精确匹配。抄错一个字符这一轮就作废、正反两方说的话谁也看不到 ——
+     * `02059a8` 是实测的一次（它把自己的线程报成了子 Agent）。现在 StagePass 自己按
+     * rollout 里的 `parent_thread_id` 认（`work/round-runner.ts`）。
+     *
+     * 「一个跑完再派下一个」留着，而且分量比以前更重：**它现在是红蓝的判据** ——
+     * 先出生的是正方，后出生的是反方。
+     */
+    "派生两个子 Agent，一个当正方、一个当反方。**你手上哪个 spawn 工具都行**，",
+    "叫什么名字、什么路径都不要紧。",
     "",
-    "**一个跑完再派下一个，不要并行。** 反方要拿到正方的产出才能开始审 ——",
-    "并行的话它会对着空气写意见，而那份意见没有任何价值。",
+    "**必须先派正方，等它跑完再派反方，不要并行。** 两个理由：反方要拿到正方的产出",
+    "才能开始审，并行的话它会对着空气写意见；而且 StagePass 就是按这个先后认",
+    "谁是正方、谁是反方的 —— 顺序反了，两边的话会被记到对方头上。",
     "",
     /*
      * **任务要原样转达，和 rubric 契约同一个抬头、同一个理由。**
@@ -415,16 +427,12 @@ export function judgePrompt(input: RoundInstructions): string {
     "   结论要建立在你实际读过的东西上，不是复述正方或反方说过的话。",
     "",
     "用一个 ```json 块回答：",
-    '{"agents": {"red": "<正方的 agent_id>", "blue": "<反方的 agent_id>"},',
-    ' "verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}},',
+    '{"verdicts": {"<问题 id>": {"kind": "closed" | "still_open", "reason": "<为什么>"}},',
     ' "conclusion": {"another_round": true | false, "reason": "<为什么>"}}',
     // 2026-08-02 CHG-003 第 2 轮实测：裁判把 conclusion 塞进了 verdicts 里、还少了
     // 一个右花括号 —— 整轮因此作废，而内容全是对的。这一句是对着那次事故写的。
-    "`agents`、`verdicts`、`conclusion` 是**并列的三个顶层字段**。发之前检查这个",
+    "`verdicts` 和 `conclusion` 是**并列的两个顶层字段**。发之前检查这个",
     "json 是完整合法的 —— 它读不出来，这一轮就整个作废，正反两方的活儿全部白干。",
-    "",
-    "`agents` 里填 `spawn_agent` 返回的那两个 `agent_id`。**这两个 id 是这一轮唯一的",
-    "取证入口** —— 少一个、写错一个，这一轮就作废，而正反两方说的话谁也看不到。",
     "",
     "沉默等于仍然存在 —— 你没提到的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
@@ -571,7 +579,7 @@ export type RoundConclusion =
  * 一句话的判据：**改状态的东西读不准就拒，给人看的东西读不准就照实说读不准。**
  */
 export function readConclusion(text: string): RoundConclusion | null {
-  // 和 verdicts / agents 同一个找法，理由见 `readAgents`：三处各严各的，就会出现
+  // 和 `readVerdicts` 同一个找法（`jsonAnswerIn`）：两处各严各的，就会出现
   // 「这处漏了围栏能读、那处漏了读不了」这种说不出道理的差别。
   let parsed: unknown;
   try {
@@ -601,69 +609,19 @@ export function readConclusion(text: string): RoundConclusion | null {
   };
 }
 
-export class UnreadableAgentsError extends Error {
-  constructor(readonly detail: string) {
-    super(`agents_unreadable: ${detail}`);
-    this.name = "UnreadableAgentsError";
-  }
-}
-
-export interface RoundAgents {
-  /** 正方那条子 Agent 线程。 */
-  readonly red: string;
-  /** 反方那条。 */
-  readonly blue: string;
-}
-
 /**
- * 裁判报出来的两条子 Agent 线程 id。
+ * 这一轮跑在哪两条子 Agent 线程上。
  *
- * ## 为什么由裁判报，而不是从 Codex 的库里认
- *
- * 原来靠 `threads.agent_path`（`/root/red`）认。2026-07-30 实测：**只有原生
- * `spawn_agent({task_name})` 会设那一列，而那个工具不是每个会话都有** —— 没有它的
- * 会话里，裁判只能走 `exec` 里的 `multi_agent_v1__spawn_agent`，那条路没有
- * `task_name`，于是 `agent_path` 是 NULL，StagePass 报 `no sub-agent at /root/red`，
- * **每个阶段的每一轮都跑不了**。光靠提示词修不好：工具不在，模型再听话也设不上。
- *
- * 裁判**总是**拿得到 id（两个派生入口都返回 `agent_id`），所以让它报出来。
- * 顺带把对 Codex 私有库的依赖去掉了 —— rollout 文件名里就带着 thread id。
- *
- * ## 「不经裁判转述」没有被削弱
- *
- * 它报的是**指针**，正文照旧从那两条 rollout 里读。一个想软化蓝方的裁判做不到这件
- * 事 —— 它能动的只有「去读哪一条」，而报错一条会让这一轮**大声失败**，不会变成一份
- * 被软化的意见。
- *
- * ## 三种都抛，不降级
- *
- * 少一个、一个都没有、两个一样 —— 全部抛。降级成空 transcript 等于把「读不到蓝方」
- * 和「蓝方没发现问题」变成同一件事，而那是这套机制最不能容忍的混淆。
+ * **StagePass 自己按血缘认的，不是裁判报的**（`work/round-runner.ts` 用
+ * `codex/subagent.ts` 的 `childThreadsOf`）。让裁判报那一版活到 2026-08-02 ——
+ * 它把 36 字符的 UUID 放进了模型必须手抄的文本里，抄错一个字符整轮作废。
+ * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
  */
-export function readAgents(text: string): RoundAgents {
-  // 和红蓝那边**同一个**找法（`jsonAnswerIn`）。三处各严各的，就会出现「红方漏了
-  // 围栏能读、裁判漏了围栏读不了」这种说不出道理的差别 —— 而它咬过一次。
-  const candidate = jsonAnswerIn(text);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate ?? "");
-  } catch {
-    throw new UnreadableAgentsError("答复里找不到一个完整的 json 对象");
-  }
-  const agents = (parsed as { agents?: unknown } | null)?.agents as
-    { red?: unknown; blue?: unknown } | undefined;
-  const red = agents?.red;
-  const blue = agents?.blue;
-  if (typeof red !== "string" || red.trim() === "") {
-    throw new UnreadableAgentsError("没有报出正方的线程 id");
-  }
-  if (typeof blue !== "string" || blue.trim() === "") {
-    throw new UnreadableAgentsError("没有报出反方的线程 id");
-  }
-  if (red.trim() === blue.trim()) {
-    throw new UnreadableAgentsError(`正反两方报成了同一条线程：${red}`);
-  }
-  return { red: red.trim(), blue: blue.trim() };
+export interface RoundAgents {
+  /** 正方那条子 Agent 线程 —— 先出生的那条。 */
+  readonly red: string;
+  /** 反方那条 —— 后出生的那条。 */
+  readonly blue: string;
 }
 
 export interface RoundTranscript {

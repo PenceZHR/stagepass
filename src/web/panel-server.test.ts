@@ -1070,11 +1070,13 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       const argv = pty.started.find((entry) => entry.phase === "PRD")?.argv ?? [];
       const prompt = argv.join(" ");
       assert.match(prompt, /裁判/, "没有裁判");
-      // 「/root/red」那套身份路径 2026-07-30 废掉了（取证改成裁判报 agent_id），
-      // 现在两方在提示词里就叫正方 / 反方。
+      // 「/root/red」那套身份路径 2026-07-30 废掉了，「裁判报 agent_id」那一版
+      // 2026-08-02 也废掉了 —— 现在两方在提示词里就叫正方 / 反方，而 StagePass 按
+      // rollout 的 parent_thread_id 自己认哪条线程是谁。
       assert.match(prompt, /1\. 正方/, "没有让它派生正方");
       assert.match(prompt, /2\. 反方/, "没有让它派生反方");
-      assert.match(prompt, /agent_id/, "没告诉它要把两个 id 报回来");
+      assert.doesNotMatch(prompt, /agent_id/, "又在要它手抄线程 id 了");
+      assert.match(prompt, /先派正方/, "没说清派生的先后 —— 那是红蓝的判据");
     });
   });
 

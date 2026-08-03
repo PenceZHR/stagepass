@@ -3,9 +3,9 @@ import { describe, it } from "node:test";
 
 import type { Gap } from "./gap";
 import {
-  BLUE, judgePrompt, readAgents, readConclusion, readRound, readVerdicts, RED,
+  BLUE, judgePrompt, readConclusion, readRound, readVerdicts, RED,
   summariseRoundNotes,
-  UnreadableAgentsError, UnreadableVerdictError,
+  UnreadableVerdictError,
 } from "./round";
 import { TurnResultUnparsableError } from "./turn";
 
@@ -141,7 +141,10 @@ describe("L4 · 裁判必须先跑完正方再派反方", () => {
     assert.doesNotMatch(prompt, /不要用|禁止/, "又在禁止某个 spawn 工具了");
     assert.doesNotMatch(prompt, /task_name/, "又在假设某个工具的参数了");
     assert.match(prompt, /哪个 spawn 工具都行/, "没说清工具随便挑");
-    assert.match(prompt, /agent_id/, "没说清取证靠的是 id");
+    // 取证靠 id 那一版也过去了（2026-08-02）：连 id 都不再让它报，StagePass 按
+    // rollout 的 parent_thread_id 自己认。所以工具用哪个、叫什么路径都不要紧。
+    assert.doesNotMatch(prompt, /agent_id/, "又在要它报 id 了");
+    assert.match(prompt, /什么路径都不要紧/, "没说清路径也不重要");
   });
 });
 
@@ -583,72 +586,30 @@ describe("L4 · each role is read from its own transcript", () => {
 });
 
 /**
- * 裁判必须报出它派生的那两个子 Agent 的线程 id。
+ * 裁判不再报线程 id —— 那一版把 36 字符的 UUID 放进了它必须手抄的文本里。
  *
- * ## 为什么换成这条
- *
- * 原来 StagePass 靠 Codex 私有库里的 `threads.agent_path` 认红蓝。而 2026-07-30
- * 实测发现**只有原生 `spawn_agent({task_name})` 会设那一列**，而那个工具**不是每个
- * 会话都有** —— 没有它的会话里，每个阶段的每一轮都跑不了，症状是
- * `no sub-agent at /root/red`。光靠提示词修不好：工具不在，模型再听话也设不上。
- *
- * 裁判**总是**拿得到 id（两个派生入口都返回 `agent_id`），所以让它报出来。
- *
- * ## 「不经裁判转述」那条保证没有被削弱
- *
- * 裁判提供的只是**指针**，StagePass 照旧去读那两条 rollout 的原文。一个想软化蓝方
- * 的裁判仍然做不到 —— 它能改的只有「去读哪一条」，而报错 id 会让这一轮**大声失败**，
- * 不会变成一份被软化的意见。
+ * 现在 StagePass 按 rollout 的 `parent_thread_id` 自己认（`work/round-runner.ts`），
+ * 而提示词里剩下的唯一要求是**派生的先后顺序** —— 它现在是红蓝的判据。
+ * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
  */
-describe("L4 · 裁判报出两个子 Agent 的线程 id", () => {
-  const judged = (agents: object, verdicts: object = {}) =>
-    "```json\n" + JSON.stringify({ agents, verdicts }) + "\n```";
+describe("L4 · 裁判的答复里不再有任何线程 id", () => {
+  const prompt = () =>
+    judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
 
-  it("读得出两个 id", () => {
-    assert.deepEqual(
-      readAgents(judged({ red: "019fb428-aaaa", blue: "019fb429-bbbb" })),
-      { red: "019fb428-aaaa", blue: "019fb429-bbbb" },
-    );
+  it("**不再要它报 `agent_id`**", () => {
+    assert.doesNotMatch(prompt(), /agent_id/);
+    assert.doesNotMatch(prompt(), /"agents"/);
   });
 
-  it("**少一个就是没有** —— 不许拿一个 id 去读两边", () => {
-    assert.throws(
-      () => readAgents(judged({ red: "019fb428-aaaa" })),
-      UnreadableAgentsError,
-    );
+  it("**顺序反而必须说死** —— 它是红蓝的判据", () => {
+    assert.match(prompt(), /先派正方/);
+    assert.match(prompt(), /不要并行/);
+    // 说清楚顺序反了的后果，否则这条要求读起来只是个效率建议。
+    assert.match(prompt(), /记到对方头上/);
   });
 
-  it("**压根没报 —— 大声失败，不是当成「两边都没说话」**", () => {
-    // 静默降级成空 transcript，等于把「读不到蓝方」和「蓝方没发现问题」变成同一件事，
-    // 而那是这套机制最不能容忍的一种混淆。
-    assert.throws(
-      () => readAgents('```json\n{"verdicts":{}}\n```'),
-      UnreadableAgentsError,
-    );
-  });
-
-  it("两个 id 一样 —— 也是错的", () => {
-    // 同一条线程不可能既是红方又是蓝方。放过它，两边会读到同一份文本，
-    // 而蓝方「没发现新问题」就成了必然。
-    assert.throws(
-      () => readAgents(judged({ red: "same", blue: "same" })),
-      UnreadableAgentsError,
-    );
-  });
-
-  it("verdicts 和 agents 在同一个块里，互不影响", () => {
-    const text = judged(
-      { red: "R1", blue: "B1" },
-      { "SPEC-1": { kind: "closed", reason: "第 2 节补上了" } },
-    );
-    assert.equal(readAgents(text).red, "R1");
-    assert.equal(readVerdicts(text).verdicts["SPEC-1"]?.kind, "closed");
-  });
-
-  it("**契约进了提示词** —— 模型答不出它没被问过的题", () => {
-    const prompt = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
-    assert.match(prompt, /"agents"/, "没告诉裁判要报 id");
-    assert.match(prompt, /agent_id/, "没说清报的是什么");
+  it("答复的形状只剩并列的两个顶层字段", () => {
+    assert.match(prompt(), /`verdicts` 和 `conclusion` 是\*\*并列的两个顶层字段\*\*/);
   });
 });
 
@@ -891,7 +852,6 @@ describe("L4 · 裁决那张表上的两句话", () => {
 describe("L4 · conclusion 塞进 verdicts 里", () => {
   const judged = (body: object) => "```json\n" + JSON.stringify(body) + "\n```";
   const NESTED = judged({
-    agents: { red: "T-R", blue: "T-B" },
     verdicts: {
       "G-1": { kind: "closed", reason: "修了" },
       conclusion: { another_round: true, reason: "边界还冲突" },
@@ -918,9 +878,9 @@ describe("L4 · conclusion 塞进 verdicts 里", () => {
       { kind: "advised", anotherRound: false, reason: "外面的" });
   });
 
-  it("提示词写明三个字段并列、json 必须完整", () => {
+  it("提示词写明两个字段并列、json 必须完整", () => {
     const prompt = judgePrompt({ phase: "PRD", round: 1, task: "t", openGaps: [] });
-    assert.match(prompt, /并列的三个顶层字段/);
+    assert.match(prompt, /并列的两个顶层字段/);
     assert.match(prompt, /完整合法/);
   });
 });
@@ -936,31 +896,28 @@ describe("L4 · 裁判的 json 少了右花括号", () => {
   const ROUND3_SHAPE = [
     "我会先派正方完成修订。",
     "```json",
-    '{"agents":{"red":"T-R","blue":"T-B"},"verdicts":{'
+    '{"verdicts":{'
     + '"G-1":{"kind":"closed","reason":"修了"},'
     + '"conclusion":{"another_round":true,"reason":"还要一轮"}}',
     "```",
   ].join("\n");
 
-  it("**agents 读得出来 —— 整轮不再作废**", () => {
-    assert.deepEqual(readAgents(ROUND3_SHAPE), { red: "T-R", blue: "T-B" });
-  });
-
-  it("verdicts 和塞错位置的 conclusion 也都读得出来", () => {
+  it("**verdicts 和塞错位置的 conclusion 都读得出来 —— 整轮不再作废**", () => {
     const { verdicts } = readVerdicts(ROUND3_SHAPE);
     assert.deepEqual(Object.keys(verdicts), ["G-1"]);
     assert.deepEqual(readConclusion(ROUND3_SHAPE),
       { kind: "advised", anotherRound: true, reason: "还要一轮" });
   });
 
-  it("**关错了的不补** —— 多一个闭括号照旧大声失败", () => {
-    const broken = '```json\n{"agents":{"red":"T-R","blue":"T-B"}}}\n```';
-    assert.throws(() => readAgents(broken), UnreadableAgentsError);
+  it("**关错了的不补** —— 多一个闭括号，一条裁决都不许编出来", () => {
+    const broken = '```json\n{"verdicts":{"G-1":{"kind":"closed","reason":"修了"}}}}\n```';
+    assert.deepEqual(readVerdicts(broken).verdicts, {});
+    assert.equal(readConclusion(broken), null);
   });
 
   it("**断在字符串中间的不补** —— 那不是没关严，是内容缺了", () => {
-    const truncated = '```json\n{"agents":{"red":"T-R","blue":"T-B\n```';
-    assert.throws(() => readAgents(truncated), UnreadableAgentsError);
+    const truncated = '```json\n{"verdicts":{"G-1":{"kind":"closed","reason":"修\n```';
+    assert.deepEqual(readVerdicts(truncated).verdicts, {});
   });
 
   it("设计阶段的反方被告知去读那份产出文件本身", () => {

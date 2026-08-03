@@ -1,10 +1,10 @@
 import Database from "better-sqlite3";
-import { readdirSync, readFileSync } from "node:fs";
+import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
-  allTextIn, findLastCompletedTurn, parseRollout, threadIdFromRolloutName,
+  allTextIn, findLastCompletedTurn, lineageOf, parseRollout, threadIdFromRolloutName,
 } from "./rollout";
 
 /**
@@ -19,10 +19,18 @@ import {
  * ## 取证只按线程 id，不碰 Codex 的私有库
  *
  * rollout 的**文件名里就带着 thread id**，所以读一方说了什么只要扫会话目录。
- * 而「这两条线程属于那一轮」由**裁判自己报**（`domain/round.ts` 的 `readAgents`）——
- * 原来是从 `state_5.sqlite` 的 `agent_path` 认的，而那一列只有原生
+ * 而「这两条线程属于那一轮」由 StagePass **自己按血缘认**（`childThreadsOf`）——
+ * 它读的是 rollout 里 `session_meta` 的 `parent_thread_id`。
+ *
+ * 这条路走过两版。原来从 `state_5.sqlite` 的 `agent_path` 认，而那一列只有原生
  * `spawn_agent({task_name})` 会设，**那个工具不是每个会话都有**（2026-07-30 实测），
- * 没有它的会话里每个阶段的每一轮都跑不了。
+ * 没有它的会话里每个阶段的每一轮都跑不了。于是改成**让裁判把两个 `agent_id` 报进
+ * 答案** —— 那修好了跑不了的问题，代价是把一个 36 字符的 UUID 放进了模型必须手抄
+ * 的文本里。抄错一个字符整轮作废，而正反两方说的话谁也看不到（`02059a8` 实测过）。
+ *
+ * 第三版两头都不占：`parent_thread_id` 说的是线程血缘而不是 Agent 的名字，
+ * 2026-08-02 在 100 条真线程上数过 **76/76 有值**（同一批里 `agent_path` 是 1/76）。
+ * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
  *
  * ## 还剩一处读那个库：进度那一屏
  *
@@ -123,6 +131,70 @@ export function readThreadTranscript(input: ThreadLookup): string {
 export function readThreadWholeText(input: ThreadLookup): string {
   return allTextIn(rolloutOf(input));
 }
+
+/**
+ * 这条线程派生的子 Agent，**按出生先后排**。
+ *
+ * ## 为什么顺序就是身份
+ *
+ * 裁判被明确要求「一个跑完再派下一个，不要并行」（`domain/round.ts` 的
+ * `judgePrompt`），所以先出生的是红方、后出生的是蓝方。这不是约定俗成的猜测：
+ * 出生时刻是每条线程自己 `session_meta` 里写着的事实。
+ *
+ * ## 一条线程可能有两个 rollout 文件
+ *
+ * 补问会 `resume` 蓝方那条线程，而 resume 有时会另起一个文件（2026-08-02 在真目录
+ * 里见过同一个 id 出现两次）。所以**按 thread id 去重**，取它最早的那次出生时刻 ——
+ * 认的是线程，不是文件。
+ *
+ * ## 只读文件头
+ *
+ * 要的东西全在第一行的 `session_meta` 里，而一个会话目录轻易上百个文件、每个几 MB。
+ * 实测那一行最大 19.3KB（`base_instructions` 占了大头），所以 256KB 绰绰有余。
+ */
+export function childThreadsOf(input: {
+  parentThreadId: string;
+  /** 会话目录里所有的 rollout 路径。注入是为了离线证。 */
+  list?: () => readonly string[];
+  read?: (path: string) => string;
+}): string[] {
+  const list = input.list ?? (() => walkRollouts(DEFAULT_SESSIONS));
+  const read = input.read ?? readHead;
+  const wanted = input.parentThreadId.trim().toLowerCase();
+
+  /** thread id -> 它最早的出生时刻。同一条线程两个文件时取早的那个。 */
+  const born = new Map<string, string>();
+  for (const path of list()) {
+    let lineage;
+    try {
+      lineage = lineageOf(parseRollout(read(path)));
+    } catch {
+      continue; // 文件正被写、或者刚被删 —— 扫描不该为此整个失败
+    }
+    if (!lineage || lineage.parentThreadId !== wanted) continue;
+    const at = lineage.startedAt ?? "";
+    const seen = born.get(lineage.threadId);
+    if (seen === undefined || at < seen) born.set(lineage.threadId, at);
+  }
+
+  return [...born.entries()]
+    .sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([threadId]) => threadId);
+}
+
+/** 只读前 256KB —— 理由见 `childThreadsOf`。 */
+function readHead(path: string): string {
+  const handle = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(HEAD_BYTES);
+    const read = readSync(handle, buffer, 0, HEAD_BYTES, 0);
+    return buffer.subarray(0, read).toString("utf-8");
+  } finally {
+    closeSync(handle);
+  }
+}
+
+const HEAD_BYTES = 256 * 1024;
 
 interface ThreadLookup {
   threadId: string;

@@ -7,6 +7,7 @@ import {
   parseRollout,
   threadIdFromRolloutName,
   findLastCompletedTurn,
+  lineageOf,
 } from "./rollout";
 
 /**
@@ -220,5 +221,71 @@ describe("L2 · 这条线程收到过什么", () => {
 
   it("空记录给空串，不是抛", () => {
     assert.equal(allTextIn([]), "");
+  });
+});
+
+/**
+ * 形状取自 2026-08-02 真会话目录里的 `session_meta`（0.146.0-alpha.3.1），
+ * 不是照着猜写的。
+ */
+describe("L2 · 一条线程的血缘", () => {
+  const meta = (payload: object) => JSON.stringify({
+    timestamp: "2026-08-02T09:15:29.993Z", type: "session_meta", payload,
+  });
+
+  const CHILD = "019fc1c1-c6fb-7f02-84b1-25479d9365a6";
+  const PARENT = "019fac13-bc4b-72e2-a20f-89ecd5fff7c4";
+
+  const subagent = meta({
+    session_id: PARENT, id: CHILD, parent_thread_id: PARENT,
+    timestamp: "2026-08-02T09:15:29.915Z", thread_source: "subagent",
+  });
+
+  it("子 Agent 报得出它爹是谁", () => {
+    assert.deepEqual(lineageOf(parseRollout(subagent)), {
+      threadId: CHILD,
+      parentThreadId: PARENT,
+      startedAt: "2026-08-02T09:15:29.915Z",
+    });
+  });
+
+  it("裁判自己那条线程没有爹 —— 所以结构上不可能被认成子 Agent", () => {
+    const judge = meta({ id: PARENT, thread_source: "user" });
+    assert.equal(lineageOf(parseRollout(judge))!.parentThreadId, null);
+  });
+
+  it("**判据是 `thread_source`，不是「有没有 parent」**", () => {
+    // 将来 Codex 给别的线程也填上这一列（比如 resume 的来源），这里也不许认它 ——
+    // 认错一条，它的话会被当成红方或蓝方的发言写进 gap。
+    const resumed = meta({ id: CHILD, parent_thread_id: PARENT, thread_source: "user" });
+    assert.equal(lineageOf(parseRollout(resumed))!.parentThreadId, null);
+  });
+
+  it("是 subagent 但没记下爹 —— 也不认", () => {
+    const orphan = meta({ id: CHILD, thread_source: "subagent" });
+    assert.equal(lineageOf(parseRollout(orphan))!.parentThreadId, null);
+  });
+
+  it("id 大小写归一 —— 文件名那条路也是这么做的", () => {
+    const upper = meta({
+      id: CHILD.toUpperCase(), parent_thread_id: PARENT.toUpperCase(),
+      thread_source: "subagent",
+    });
+    const read = lineageOf(parseRollout(upper))!;
+    assert.equal(read.threadId, CHILD);
+    assert.equal(read.parentThreadId, PARENT);
+  });
+
+  it("payload 没有自己的时刻时退回记录的时刻", () => {
+    const noInner = meta({ id: CHILD, parent_thread_id: PARENT, thread_source: "subagent" });
+    assert.equal(lineageOf(parseRollout(noInner))!.startedAt, "2026-08-02T09:15:29.993Z");
+  });
+
+  it("没有 session_meta 就是读不出来 —— null，不是编一个", () => {
+    assert.equal(lineageOf(parseRollout(`${started}\n${agent("hi")}`)), null);
+  });
+
+  it("session_meta 里没有 id 也读不出来", () => {
+    assert.equal(lineageOf(parseRollout(meta({ thread_source: "subagent" }))), null);
   });
 });
