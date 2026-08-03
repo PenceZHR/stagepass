@@ -186,52 +186,93 @@ export function readBriefProposal(text: string): ClarificationItem[] {
   }
 
   /*
-   * 每一题都摊成**两个字段**：选项一格，自己写一格。
+   * **第一趟只有选项格，一个自由文本格都没有。**
    *
-   * 这不是排版偏好，是 elicitation 的硬约束：一个字段有 `enum` 就是下拉选一个，
-   * 没有就是自由输入 —— **没有「选项 + 或者自己写」那种字段**。所以想让人在选项
-   * 之外还能说话，只能给他第二格。
+   * 原来每题摊成两格（选项一格 + 「你自己怎么说」一格），第二格标了 `optional`。
+   * 但客户端有条比 `optional` 更硬的规矩（2026-07-30 实测，见 `CONFIRM_ID`）：
+   * **空的自由文本格会吃掉回车**。于是标着「可以留空」的那些格，人还是得挨个动手 ——
+   * 用户 2026-08-03：「点选项过程中还是强制人类说话；选了选项就不需要说话了，
+   * 只有选择了人类说话才能人类介入。」
    *
-   * 顺带一个好处：选了某一项之后**仍然可以补充**。选项和自己写不是二选一。
-   *
-   * **那第二格必须是 `optional`。** 客户端把 `required` 当硬闸门：还有必填没答时
-   * 按回车**什么都不会发生**（2026-07-30 实测）。摊成两格却让两格都必填，等于把
-   * 一次 8 下回车的问卷变成 17 格全要动手，而其中 8 格标着「选了也可以补充」——
-   * 那句话就成了假话。
+   * `optional` 修不好这件事，因为病不在 schema 上。所以改结构：**第一趟纯选项，
+   * 回车一路按到底**；只有点了「都不对，我自己写」的那几题，才有第二趟
+   * （`followUpFields`）。全用选项答完的人，一个字都不用打。
    */
-  const asked: ClarificationItem[] = [];
-  for (const item of proposed) {
-    asked.push({
-      id: item.id,
-      question: item.question,
-      // 逃逸项排在最后，模型碰不到它。
-      options: [...item.options, ESCAPE_OPTION],
-    });
-    asked.push({
+  const asked: ClarificationItem[] = proposed.map((item) => ({
+    id: item.id,
+    question: item.question,
+    // 逃逸项排在最后，模型碰不到它。它现在还多一层意思：**点它就是在说「我要自己写」**，
+    // 而那正是第二趟的入场券。
+    options: [...item.options, ESCAPE_OPTION],
+  }));
+
+  /*
+   * 全局那一格管的是**模型压根没问到**的东西，和每题的补充不是一回事，所以留着。
+   *
+   * 但它从自由文本改成了**两个选项** —— 同一个理由：第一趟里不许有任何空文本格。
+   * 想说的人点「有，我来写」，第二趟给他一格。
+   */
+  return [...asked, {
+    id: FREE_TEXT_ID,
+    question: "上面没问到、但你想说的",
+    options: [NOTHING_MORE_OPTION, SOMETHING_MORE_OPTION],
+  }, {
+    id: CONFIRM_ID,
+    question: "确认",
+    options: [CONFIRM_OPTION],
+  }];
+}
+
+/** 全局那一格的两个选项。点后面那个才会进第二趟。 */
+export const NOTHING_MORE_OPTION = "没有了";
+export const SOMETHING_MORE_OPTION = "有，我来写";
+
+/**
+ * 第二趟：**只问那几个他自己要求写的**。
+ *
+ * 一条都不需要就返回空数组 —— 那时压根不该再弹一次表单，全用选项答完的人
+ * 「一个字都不用打」才是真的。
+ *
+ * ## 为什么第二趟可以有自由文本格
+ *
+ * 空文本格吃回车那条约束还在，但这一趟的每一格都是**他自己点着要的**，本来就要
+ * 写字。压轴仍然放一个提交格（一个选项，回车永远有值），所以中途改主意、某一格
+ * 留空了，表也交得上去 —— 那时那一题算没答，由 `briefFrom` 判（它一直是这么判的）。
+ */
+export function followUpFields(
+  asked: readonly ClarificationItem[],
+  answer: Answer,
+): ClarificationItem[] {
+  if (answer.action !== "accept") return [];
+  const read = (id: string): string => {
+    const given = answer.content[id];
+    return typeof given === "string" ? given.trim() : "";
+  };
+
+  const wanted: ClarificationItem[] = [];
+  for (const item of asked) {
+    if (item.id === CONFIRM_ID) continue;
+    if (item.id === FREE_TEXT_ID) {
+      if (read(item.id) !== SOMETHING_MORE_OPTION) continue;
+      wanted.push({
+        id: ownFieldId(item.id),
+        question: "上面没问到、但你想说的：",
+        options: [],
+        optional: true,
+      });
+      continue;
+    }
+    if (read(item.id) !== ESCAPE_OPTION) continue;
+    wanted.push({
       id: ownFieldId(item.id),
-      question: `↑ 上面这题，你自己怎么说？（选了也可以补充；选「${ESCAPE_OPTION}」就必须写）`,
+      question: `↑「${item.question}」—— 你自己怎么说？`,
       options: [],
-      // 「必须写」由 briefFrom 兑现（选了逃逸项又没写字 = 这题没答），不由客户端 ——
-      // 它只会数必填，数不出「B03 选了什么所以 B03x 才必填」这种条件。
       optional: true,
     });
   }
 
-  /*
-   * 全局那一格还留着：它管的是**模型压根没问到**的东西，和每题的补充不是一回事。
-   * **可以留空** —— 全部用选项答完的人一格字都不用打（用户 2026-07-31 拍板：
-   * 「我明明已选了，但它还是让我输入一些我自己的话，这是不对的」）。
-   *
-   * 它敢留空，是因为它**不再是最后一格**：空文本格吃回车、只有最后一格能提交那两条
-   * 实测约束（2026-07-30）现在由压轴那格提交格扛着 —— 一个只有一个选项的选项格，
-   * 回车永远有值。第一版在这里选的是「必填」，被用户否掉，见 `CONFIRM_ID` 那段。
-   */
-  return [...asked, {
-    id: FREE_TEXT_ID,
-    question: "上面没问到、但你想说的（可以留空）",
-    options: [],
-    optional: true,
-  }, {
+  if (wanted.length === 0) return [];
+  return [...wanted, {
     id: CONFIRM_ID,
     question: "确认",
     options: [CONFIRM_OPTION],
@@ -259,14 +300,15 @@ export function briefFrom(
 
   const lines: string[] = [];
   for (const item of items) {
-    // 自由文本那些格子由它们的题一起处理，自己不单独成行。
-    if (item.options.length === 0 && item.id !== FREE_TEXT_ID) continue;
     // 提交格是门把手，不是回答 —— 「都答完了，提交」写进需求里只是噪音。
     if (item.id === CONFIRM_ID) continue;
 
     if (item.id === FREE_TEXT_ID) {
-      // 补充，不是必答。留空就不出现在需求里。
-      const text = read(item.id);
+      /*
+       * 这一格第一趟只是「有没有别的要说」，正文在第二趟那一格里
+       * （`ownFieldId(FREE_TEXT_ID)`）。说了「有」却没写，就当没说 —— 补充不是必答。
+       */
+      const text = read(ownFieldId(item.id));
       if (text !== "") lines.push(`- ${item.question}\n  ${text}`);
       continue;
     }

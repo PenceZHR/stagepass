@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import type { Answer } from "./question";
 import {
   CONFIRM_ID,
+  NOTHING_MORE_OPTION,
+  SOMETHING_MORE_OPTION,
   CONFIRM_OPTION,
   ESCAPE_OPTION,
   ownFieldId,
   briefContract,
   readBriefProposal,
   briefFrom,
+  followUpFields,
   BriefProposalVoidError,
   FREE_TEXT_ID,
 } from "./brief";
@@ -44,20 +48,20 @@ const THREE = [
 ].join("\n");
 
 describe("brief · 读模型提的问题清单", () => {
-  it("每题摊成两个字段：选项一格、自己写一格", () => {
-    const items = readBriefProposal(fenced(THREE));
+  it("**第一趟一个自由文本格都没有** —— 一路回车就能答完", () => {
     /*
-     * elicitation 的硬约束：一个字段有 enum 就是下拉，没有就是自由输入 ——
-     * **没有「选项 + 或者自己写」那种字段**。所以想让人越过选项说话，只能给第二格。
+     * 空的自由文本格会吃掉回车（`optional` 也不管用，2026-07-30 实测），所以
+     * 「选了选项就不用打字」这句话只有在**第一趟里根本没有文本格**时才是真的。
+     * 用户 2026-08-03 明确要求过这件事。
      */
-    assert.deepEqual(items.slice(0, 4).map((item) => item.id),
-      ["B01", "B01x", "B02", "B02x"]);
+    const items = readBriefProposal(fenced(THREE));
+    for (const item of items) {
+      assert.notDeepEqual(item.options, [], `${item.id} 是自由文本格`);
+    }
     assert.equal(items[0]?.question, "这个改动主要给谁用？");
     // 模型没有机会决定 id，也删不掉那个逃逸项。
     assert.deepEqual(items[0]?.options,
       ["只给我自己", "团队里的人", "外部用户", ESCAPE_OPTION]);
-    // 自己写那格没有 enum，所以是自由文本。
-    assert.deepEqual(items[1]?.options, []);
   });
 
   it("**id 排序之后就是显示顺序** —— 客户端按字段名排，不按这里的书写顺序", () => {
@@ -73,21 +77,13 @@ describe("brief · 读模型提的问题清单", () => {
     assert.deepEqual(ids, [...ids].sort(),
       "字段名排序必须等于要给人看的顺序，否则选择器会把题和它的自由填写格拆开");
     // 每一题紧跟着自己那格；自由填写在倒数第二，提交格压轴。
-    assert.deepEqual(ids,
-      ["B01", "B01x", "B02", "B02x", "B03", "B03x", FREE_TEXT_ID, CONFIRM_ID]);
+    assert.deepEqual(ids, ["B01", "B02", "B03", FREE_TEXT_ID, CONFIRM_ID]);
   });
 
-  it("每题那格「你自己怎么说」是 optional —— 否则「选了也可以补充」是假话", () => {
-    /*
-     * 客户端把 `required` 当硬闸门：还有必填没答时按回车**什么都不发生**，没有
-     * 报错也没有提示（2026-07-30 实测，`Field 3/17 (17 required unanswered)`）。
-     * 所以「选了也可以补充」这句话必须落到 schema 上，不能只写在标题里。
-     */
+  it("第一趟每一格都必答 —— 它们全是选项格，回车总有值", () => {
     const items = readBriefProposal(fenced(THREE));
     for (const item of items) {
-      const own = item.options.length === 0;
-      assert.equal(item.optional === true, own,
-        `${item.id}：有选项的必答，自由文本一律可留空`);
+      assert.notEqual(item.optional, true, `${item.id} 被标成了可留空`);
     }
   });
 
@@ -128,11 +124,12 @@ describe("brief · 读模型提的问题清单", () => {
     assert.doesNotMatch(brief!, /提交/, "门把手不该出现在需求正文里");
   });
 
-  it("**总是多出一道自由填写，模型删不掉**", () => {
+  it("**总是多出「还有别的要说吗」，模型删不掉**", () => {
     const items = readBriefProposal(fenced(THREE));
     const free = items.find((item) => item.id === FREE_TEXT_ID);
-    // 空选项 = 没有 enum = 自由文本。模型的想象力不该限定你能说什么。
-    assert.deepEqual(free?.options, []);
+    // 它从自由文本改成了两个选项 —— 第一趟里不许有任何空文本格。
+    // 点「有，我来写」才进第二趟，那时才给一格让他写。
+    assert.deepEqual(free?.options, [NOTHING_MORE_OPTION, SOMETHING_MORE_OPTION]);
   });
 
   it("散文忽略，最后一个 fence 赢", () => {
@@ -210,7 +207,9 @@ describe("brief · 人答完之后那一段就是需求", () => {
       action: "accept",
       content: {
         B01: "团队里的人", B02: "有测试覆盖", B03: "不动数据库",
-        [FREE_TEXT_ID]: "上线前要能一键回滚",
+        // 第一趟点「有，我来写」，正文在第二趟那一格里。
+        [FREE_TEXT_ID]: SOMETHING_MORE_OPTION,
+        [ownFieldId(FREE_TEXT_ID)]: "上线前要能一键回滚",
       },
     });
     assert.ok(brief);
@@ -322,5 +321,82 @@ describe("brief · 发给模型的契约", () => {
 
   it("没有标题也给得出契约", () => {
     assert.equal(typeof briefContract({ changeTitle: null }), "string");
+  });
+});
+
+/**
+ * 第二趟：只问他自己点着要写的那几条。
+ *
+ * 用户 2026-08-03：「点选项过程中还是强制人类说话；选了选项就不需要说话了，只有
+ * 选择了人类说话才能人类介入。」根因不在 schema —— `optional` 已经标了，但客户端
+ * **空的自由文本格会吃掉回车**。所以治法是结构性的：第一趟纯选项，第二趟才有文本格。
+ */
+describe("brief · 第二趟只问自己要写的那几条", () => {
+  const accept = (content: Record<string, string>): Answer =>
+    ({ action: "accept", content });
+
+  it("**全用选项答完 —— 一趟就结束，第二趟压根不弹**", () => {
+    const items = readBriefProposal(fenced(THREE));
+    const more = followUpFields(items, accept({
+      B01: "只给我自己", B02: "页面上看得到结果", B03: "没有明确排除",
+      [FREE_TEXT_ID]: NOTHING_MORE_OPTION,
+    }));
+    assert.deepEqual(more, [], "一个字都不用打的人还是被弹了第二趟");
+  });
+
+  it("**只有点了「我自己写」的那几题进第二趟**", () => {
+    const items = readBriefProposal(fenced(THREE));
+    const more = followUpFields(items, accept({
+      B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: ESCAPE_OPTION,
+      [FREE_TEXT_ID]: NOTHING_MORE_OPTION,
+    }));
+    assert.deepEqual(more.map((item) => item.id), ["B01x", "B03x", CONFIRM_ID]);
+    // 问题原文带着，否则第二趟就是几个没有上下文的空格子。
+    assert.match(more[0]!.question, /这个改动主要给谁用？/);
+  });
+
+  it("「还有别的要说」点了「有」才给那一格", () => {
+    const items = readBriefProposal(fenced(THREE));
+    const more = followUpFields(items, accept({
+      B01: "只给我自己", B02: "有测试覆盖", B03: "不动数据库",
+      [FREE_TEXT_ID]: SOMETHING_MORE_OPTION,
+    }));
+    assert.deepEqual(more.map((item) => item.id), [ownFieldId(FREE_TEXT_ID), CONFIRM_ID]);
+  });
+
+  it("**第二趟压轴仍然是选项格** —— 空文本格吃回车那条约束还在", () => {
+    const items = readBriefProposal(fenced(THREE));
+    const more = followUpFields(items, accept({
+      B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: "不动数据库",
+      [FREE_TEXT_ID]: NOTHING_MORE_OPTION,
+    }));
+    assert.deepEqual(more[more.length - 1]!.options, [CONFIRM_OPTION]);
+    // 中途改主意留空也交得上去 —— 那时这一题算没答，由 briefFrom 判。
+    assert.equal(more[0]!.optional, true);
+  });
+
+  it("人取消了就没有第二趟", () => {
+    const items = readBriefProposal(fenced(THREE));
+    assert.deepEqual(followUpFields(items, { action: "decline", content: {} }), []);
+  });
+
+  it("**两趟的答案合起来才是需求**", () => {
+    const items = readBriefProposal(fenced(THREE));
+    const first = { B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: "不动数据库",
+      [FREE_TEXT_ID]: NOTHING_MORE_OPTION };
+    const second = { B01x: "给运营同事用，他们不写代码" };
+    const brief = briefFrom(items, accept({ ...first, ...second }));
+    assert.ok(brief);
+    assert.match(brief, /给运营同事用/);
+    assert.doesNotMatch(brief, /都不对，我自己写/, "逃逸项本身不该进需求正文");
+  });
+
+  it("说了「我自己写」却什么都没写 —— 这一题算没答", () => {
+    const items = readBriefProposal(fenced(THREE));
+    const brief = briefFrom(items, accept({
+      B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: "不动数据库",
+      [FREE_TEXT_ID]: NOTHING_MORE_OPTION,
+    }));
+    assert.equal(brief, null);
   });
 });

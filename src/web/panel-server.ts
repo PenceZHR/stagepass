@@ -21,9 +21,12 @@ import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
+  type ClarificationItem, type Answer,
   responsesFrom, runsAgainHere, DECISION_FIELD,
 } from "../domain/question";
-import { briefContract, readBriefProposal, briefFrom, BriefProposalVoidError } from "../domain/brief";
+import {
+  briefContract, readBriefProposal, briefFrom, followUpFields, BriefProposalVoidError,
+} from "../domain/brief";
 import { GateMovedError, GateRefusedError } from "../domain/gate";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
@@ -1809,72 +1812,99 @@ export async function handle(
       return;
     }
 
-    // 第二步：把它组成一道题，在 Codex 的选择器里问人。
+    /*
+     * 第二步：把它组成题问人。**两趟。**
+     *
+     * 第一趟纯选项格，一路回车就答得完；只有点了「都不对，我自己写」的那几题，
+     * 才有第二趟给他写字（`followUpFields`）。全用选项答完的人一个字都不用打。
+     *
+     * 为什么非分两趟不可：客户端**空的自由文本格会吃掉回车**，`optional` 不管用
+     * （2026-07-30 实测）。所以「选了就不用打字」只有在第一趟里根本没有文本格时
+     * 才是真的 —— 用户 2026-08-03 明确要求过这件事。
+     */
     const gate = new CommandStore(database).gateFor(changeId);
-    const question = clarificationQuestion({
-      title: `${changeId}：先把这次改动要什么说清楚`,
-      items,
-    })!;
-    const questionId = `BR-${changeId}-${Date.now()}`;
     const questions = new QuestionStore(database);
-    questions.ask({
-      id: questionId, changeId, phase, kind: "clarification",
-      question, expectedSnapshot: gate.snapshot,
-    });
+
+    /** 问一趟，等人答完。返回 null = 这一趟没走通，原因已经写进响应了。 */
+    const askOnce = async (
+      fields: readonly ClarificationItem[], title: string,
+    ): Promise<Answer | null> => {
+      const question = clarificationQuestion({ title, items: fields })!;
+      const questionId = `BR-${changeId}-${Date.now()}`;
+      questions.ask({
+        id: questionId, changeId, phase, kind: "clarification",
+        question, expectedSnapshot: gate.snapshot,
+      });
+
+      /*
+       * **打进同一个会话，不另起进程。** 完整理由在 `PanelSessions.type` 那段注释里，
+       * 两句话：`launchInto` 会把活着会话的 argv 丢掉；`close` 再起会掐断浏览器正在
+       * 读的流。两条我都踩过。
+       *
+       * 一行，因为 composer 里的换行就是提交。
+       */
+      const typed = await sessions.type(changeId, phase,
+        "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数**。"
+        + "它会把「这次改动要什么」交给我来答。不要替我回答，不要猜我想要什么，调用完就停下。");
+      if (!typed) {
+        // 会话在这中间死了。**不许假装问出去了** —— 题已经落库，人却永远看不到它。
+        questions.settle(questionId);
+        json(response, { asked: false, reason: "session_died_before_asking", phase });
+        return null;
+      }
+
+      const deadline = Date.now() + 15 * 60_000;
+      let sessionDied = false;
+      while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
+        /*
+         * **进程没了就别再等了。**
+         *
+         * 2026-07-30 实测：这个阶段绑的裁判线程被 Codex 归档了，`codex resume` 一起来
+         * 就退。而这里原来只盯答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上
+         * 一句话都没有 ——「在等你选」和「那边早就没了」长得一模一样。
+         *
+         * 判据是**进程状态**，不是 pty 的输出（§9.3）。
+         */
+        if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
+        await new Promise((resolve) => { setTimeout(resolve, 1_000); });
+      }
+      const given = questions.readAnswerFor(questionId);
+      questions.settle(questionId);
+      if (!given) {
+        json(response, {
+          asked: true, answered: false, phase, questionId,
+          /**
+           * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
+           * 的进程早就没了**。原来两种回来的都是同一个空结果。
+           */
+          reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
+          /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
+          threadId: sessionDied
+            ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
+            : null,
+        });
+        return null;
+      }
+      return given;
+    };
+
+    const first = await askOnce(items, `${changeId}：先把这次改动要什么说清楚`);
+    if (!first) return;
 
     /*
-     * **打进同一个会话，不另起进程。** 完整理由在 `PanelSessions.type` 那段注释里，
-     * 两句话：`launchInto` 会把活着会话的 argv 丢掉；`close` 再起会掐断浏览器正在读
-     * 的流。两条我都踩过。
-     *
-     * 一行，因为 composer 里的换行就是提交。
+     * 第二趟只在真有人要写字的时候才弹。**一条都没有就不弹** —— 「全用选项答完的人
+     * 一个字都不用打」如果还要他再点一次「提交」，那句话就打了折。
      */
-    const typed = await sessions.type(changeId, phase,
-      "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数**。"
-      + "它会把「这次改动要什么」交给我来答。不要替我回答，不要猜我想要什么，调用完就停下。");
-    if (!typed) {
-      // 会话在这中间死了。**不许假装问出去了** —— 题已经落库，人却永远看不到它，
-      // 而那正是这一整轮排查花掉的时间。
-      questions.settle(questionId);
-      json(response, { asked: false, reason: "session_died_before_asking", phase });
-      return;
+    const more = followUpFields(items, first);
+    let content = first.content;
+    if (more.length > 0) {
+      const second = await askOnce(more, `${changeId}：你说要自己写的那几条`);
+      if (!second) return;
+      content = { ...content, ...second.content };
     }
-
-    const deadline = Date.now() + 15 * 60_000;
-    let sessionDied = false;
-    while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
-      /*
-       * **进程没了就别再等了。**
-       *
-       * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
-       * `codex resume <id>` 一起来就退（`session … is archived`）。而这里原来只盯
-       * 答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
-       * 「在等你选」和「那边早就没了」长得一模一样，正是这个项目从头到尾在防的那种。
-       *
-       * 判据是**进程状态**，不是 pty 的输出（§9.3）。
-       */
-      if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
-      await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-    }
-    const answer = questions.readAnswerFor(questionId);
-    if (!answer) {
-      json(response, {
-        asked: true, answered: false, phase, questionId,
-        /**
-         * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
-         * 的进程早就没了**。原来两种回来的都是同一个空结果。
-         */
-        reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
-        /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
-        threadId: sessionDied
-          ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
-          : null,
-      });
-      return;
-    }
+    const answer: Answer = { action: first.action, content };
 
     const brief = briefFrom(items, answer);
-    questions.settle(questionId);
 
     /*
      * 办完了就把这个会话关掉。
@@ -1892,11 +1922,11 @@ export async function handle(
     if (brief === null) {
       // 按了 Esc，或者必答的没答完。**不拿一段空白往下走** —— 那等于又回到那份
       // 编出来的 PRD。
-      json(response, { asked: true, answered: true, recorded: false, phase, questionId });
+      json(response, { asked: true, answered: true, recorded: false, phase });
       return;
     }
     changes.setBrief(changeId, brief);
-    json(response, { asked: true, answered: true, recorded: true, phase, questionId, brief });
+    json(response, { asked: true, answered: true, recorded: true, phase, brief });
     return;
   }
 
