@@ -280,8 +280,48 @@ MCP 是 Codex 发布的协议。
 | **落点一** 线程血缘认亲 | ✅ 做完（`77f52ac` `402d82f`），**并已真机验过**（见下） |
 | **落点三** 坏格式不许循环 | ✅ 做完（`e65bb6b`），纯离线 |
 | **对抗路挂插件** | ✅ 做完（`0c83eca`），真机看过 argv |
-| **落点二 · 裁判那半** | 可以做，不依赖任何未定的东西 |
-| **落点二 · 反方那半** | 卡在一个**人的决定**：要不要写全局配置 |
+| **落点二 · 裁判那半**（#2 / #3-critic / #7） | ✅ 做完（`6ca3ed0` `4c25957`），**已真机验过**（见下） |
+| **落点二 · 反方那半**（#3-producer） | 卡在一个**人的决定**：要不要写全局配置 |
+
+### 落点二 · 裁判那半的真机证据（2026-08-03，CHG-001 走完两轮落 settled）
+
+**工具契约里一个标识符都没有**（`tools/list` 实测）：
+
+```
+stagepass_ask      required=[]                properties=[]
+stagepass_next     required=[]                properties=[]
+stagepass_answer   required=[answer, reason]  properties=[answer, reason]
+```
+
+`answer` 是枚举里的选择，`reason` 是散文 —— 正是 §一那条约束允许的两样东西。
+
+两轮跑下来，裁判**一个 id 都没有打出来**，而账全都落对了：
+
+- **gap 表态（#2）**：第 2 轮 4 条全经 `stagepass_answer` 落库，且**流回了 `gaps` 表** ——
+  `HUMAN-1` / `SPEC-DECOUPLING-1` / `SPEC-EXTENSION-VALIDATION-1` 判 `closed` 并带上
+  理由，`SPEC-VERIFY-BASELINE-1` 判 `still_open` 于是留着挡门。不是橡皮图章。
+- **critic rubric（#3 的一半）**：两轮各 4 条，全经工具落进 `rubric_assessments`。
+- **producer rubric**：仍走文本围栏（反方是子 Agent，用不了工具），两轮各有一条判 `no` ——
+  说明老路没被这次改动碰坏。
+
+### 落点一的真机证据（2026-08-02 / 08-03）
+
+- `childThreadsOf` 从真轮里认出**恰好 2 条**子 Agent，红方在前、蓝方在后
+- 第 2 轮**复用同一条裁判线程**（那时它已挂着第 1 轮的两个孩子），差集正确挑出了
+  新的那一对 —— 证据是 `ARTIFACT-MISSING-1` 记在 `opened_round = 2`，出自第二对的蓝方
+- **两条 spawn 入口都验过**：一趟是 exec 里的 `multi_agent_v1__spawn_agent`，
+  一趟是原生 `spawn_agent({task_name})`。判据只看 `source.subagent.thread_spawn`，
+  不看 `agent_path`，所以两条都认得出
+- 裁判会话的 argv 里确实带着三行 `-c mcp_servers.stagepass.*`
+
+### 真机才撞得出来的一个 bug（`b9a09e4`）
+
+`WorklistStore.open` 里那句关旧名单是 `WHERE status = 'open'` —— **全库，没带
+change_id**。一轮正等着裁判逐条表态时，同一个面板里给另一个 Change 派了一轮，就把
+前一份**正在用的**名单一起关了。表现是「裁判一条都没答」（于是记
+`worklist_unanswered`、放开线程），而它其实是被 StagePass 自己掐掉的。
+
+离线测试撞不出来：它要两个 Change 的名单在时间上重叠。
 
 ### 落点一的真机证据（2026-08-02，同一次探针）
 
