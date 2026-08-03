@@ -62,6 +62,42 @@ export interface RoundInstructions {
    * 缺席就照旧把正文印进去 —— 这一层是纯的，不知道文件是谁写的。
    */
   readonly openGapsPath?: string | undefined;
+  /**
+   * 反方这一轮还要逐条判定的那几条标准 —— **两个路径，正文一个字都不进提示词。**
+   *
+   * ## 为什么非得经裁判转达
+   *
+   * 2026-08-03 实测：Codex **禁止外部驱动子 Agent 线程**（`codex resume <子Agent>`
+   * 起得来、MCP server 也加载，但一提交就是 `■ This sub-agent is controlled by its
+   * parent. Direct input is disabled.`），而且和父线程活不活着无关。于是
+   * 「StagePass 自己 resume 反方线程单起一轮」那条路结构上不成立
+   * （`scripts/probe-subagent-input.ts` 是那次的探针）。
+   *
+   * 唯一还通的通道是**它的父线程**，也就是裁判。
+   *
+   * ## 那不是又回到手抄了吗 —— 不是
+   *
+   * 转达的是**两个路径**，不是标准正文、更不是 criterion key。路径不在那七个手抄面
+   * 里（设计文档 §5：路径是语义的），而且抄坏了会响亮地失败 —— 反方会说读不到文件，
+   * 不会安静地判错一条。
+   *
+   * 反方手上只有 `1..N` 的序号和散文，仍然落在「输出里只允许有枚举里的选择和散文」
+   * 这条约束里。**key 由 StagePass 按序号映射回去**，模型全程不知道它长什么样。
+   *
+   * ## 序号错位怎么防
+   *
+   * 用户 2026-08-03 定的：**数不对就整份作废**。序号的取值空间只有 `1..N`，所以
+   * 缺号、重号、越界都是可检测的 —— 这正是它和 40 字符 UUID 的本质区别，后者抄错
+   * 一位是同类不可辨的。判定在 `work/rubric-round.ts`，这一层只负责把话说清楚。
+   */
+  readonly blueRubric?: {
+    /** 那几条标准写在哪。正文只在文件里。 */
+    readonly criteriaPath: string;
+    /** 答案写到哪。StagePass 从这里读回来。 */
+    readonly answersPath: string;
+    /** 一共几条。写进提示词，好让它自己数得出来。 */
+    readonly count: number;
+  } | undefined;
 }
 
 
@@ -169,6 +205,37 @@ const redFixList = (
   ];
 };
 
+/**
+ * 叫反方顺手把那几条标准也判了 —— **两个路径，抬头写明收件人。**
+ *
+ * 抬头是「原样转达给反方」，理由和任务、和 `RESULT_CONTRACT` 那两处一模一样：
+ * **凡是要经裁判转达的文本，指望它「参照上文」就是指望它转述，只有原文加收件人
+ * 才到得了**（2026-08-02 那三张脸）。
+ *
+ * 没有 rubric 要反方判的阶段就一行都不印 —— 空着的小节会让裁判去猜要不要提。
+ */
+function blueRubricLines(
+  blueRubric: RoundInstructions["blueRubric"],
+): string[] {
+  if (blueRubric === undefined || blueRubric.count === 0) return [];
+  return [
+    `   还要它**逐条判定 ${blueRubric.count} 条标准**。`
+    + `下面这两行**原样转达给${BLUE}**，一个字都不要改：`,
+    `   要判的标准在这个文件里，先读它：${blueRubric.criteriaPath}`,
+    `   判完把答案写进这个文件：${blueRubric.answersPath}`,
+    /*
+     * 形状写死，而且写得能自己数。
+     *
+     * 序号是模型唯一要写的精确东西，取值空间只有 `1..N` —— 缺号、重号、越界全都
+     * 是可检测的，所以「数不对」这条守卫才成立（用户 2026-08-03：数不对就整份作废）。
+     */
+    `   那个文件一行一条，形如 \`3: yes —— 依据…\`（\`yes\` 或 \`no\`，破折号后面写依据）。`,
+    `   **恰好 ${blueRubric.count} 行，序号 1 到 ${blueRubric.count} 不重不缺**`
+    + `—— 数不对整份判定作废，一条也不算。`,
+    `   序号和 \`yes\`/\`no\` 之外不要写任何编号。`,
+  ];
+}
+
 export function judgePrompt(input: RoundInstructions): string {
   /*
    * 人提的问题**单独一区，措辞和模型报的不一样**（用户 2026-07-30）。
@@ -267,6 +334,7 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     `   再要它在同一个 json 块里多给一个 \`overall\` 字段：一句话说这一轮整体够不够格、`
     + `为什么。这一句不挡任何东西，是写给人看的。`,
+    ...blueRubricLines(input.blueRubric),
     "",
     /*
      * 裁判从「只做一件事」改成两件（用户 2026-07-31）。
@@ -327,6 +395,87 @@ export function judgePrompt(input: RoundInstructions): string {
     "沉默等于仍然存在 —— 你没用工具表过态的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
   ].join("\n");
+}
+
+/**
+ * 反方写回来的那份逐条判定，读成 `1..N` 的答案 —— **数不对就整份作废。**
+ *
+ * ## 为什么是全有或全无
+ *
+ * 用户 2026-08-03 定的。映射是位置性的：漏答一条，后面每一条都会错位落到别人头上，
+ * 而**错配比没答糟得多** —— 没答上人看得见「它没判」，错配则是一条言之凿凿、
+ * 却挂在错误标准上的判定，人没有任何办法察觉。
+ *
+ * 序号的取值空间只有 `1..N`，所以缺号、重号、越界全是可检测的。这正是它敢用而
+ * 40 字符 UUID 不敢用的地方：UUID 抄错一位是同类不可辨的，序号错了一定露馅。
+ *
+ * ## 认得宽一点，判得严一点
+ *
+ * 行首的序号、`yes`/`no`、后面的依据 —— 这三样之外的排版一律不计较（前后空格、
+ * 全角冒号、破折号有几个、有没有 markdown 列表符号）。**宽的是识别，严的是数数**：
+ * 少认出一行会把一份好答卷判成作废，那和判错一样糟。
+ */
+export interface BlueRubricAnswers {
+  /** 按序号排好的答案，`1` 在第 0 位。整份作废时是空的。 */
+  readonly answers: readonly { verdict: "yes" | "no"; evidence: string }[];
+  /** 作废的原因，写给人看。没作废就是 `null`。 */
+  readonly voided: string | null;
+}
+
+export function readBlueRubricAnswers(
+  text: string | null,
+  count: number,
+): BlueRubricAnswers {
+  if (count === 0) return { answers: [], voided: null };
+  if (text === null) {
+    return { answers: [], voided: "那个文件不在 —— 它没有把判定写出来" };
+  }
+
+  const seen = new Map<number, { verdict: "yes" | "no"; evidence: string }>();
+  const duplicated: number[] = [];
+  const outOfRange: number[] = [];
+  let unreadableLines = 0;
+
+  for (const raw of text.split("\n")) {
+    const line = raw.trim().replace(/^[-*]\s*/, "");
+    if (line === "") continue;
+    const matched = /^(\d+)\s*[:：]\s*(yes|no)\b\s*(.*)$/i.exec(line);
+    if (!matched) { unreadableLines += 1; continue; }
+    const ordinal = Number(matched[1]);
+    const verdict = matched[2]!.toLowerCase() === "yes" ? "yes" as const : "no" as const;
+    // 依据前面那串破折号/空格是排版，不是内容。
+    const evidence = (matched[3] ?? "").replace(/^[—–-]+\s*/, "").trim();
+    if (ordinal < 1 || ordinal > count) { outOfRange.push(ordinal); continue; }
+    if (seen.has(ordinal)) { duplicated.push(ordinal); continue; }
+    seen.set(ordinal, { verdict, evidence });
+  }
+
+  const missing = [];
+  for (let each = 1; each <= count; each += 1) if (!seen.has(each)) missing.push(each);
+
+  /*
+   * 作废的理由要说得具体到能照着修。「格式不对」这种话等于什么都没说 —— 人拿着它
+   * 既不知道是模型偷懒还是提示词写坏了。
+   */
+  const wrong: string[] = [];
+  if (missing.length > 0) wrong.push(`缺了第 ${missing.join("、")} 条`);
+  if (duplicated.length > 0) wrong.push(`第 ${duplicated.join("、")} 条答了不止一次`);
+  if (outOfRange.length > 0) wrong.push(`出现了范围外的序号 ${outOfRange.join("、")}`);
+  if (wrong.length > 0) {
+    return {
+      answers: [],
+      voided: `它写回来的判定对不上号（要 ${count} 条）：${wrong.join("；")}`
+        + `。**整份作废** —— 按序号映射错位会让一条判定挂到别的标准上，`
+        + `而那比没判糟得多。`,
+    };
+  }
+  // 数对上了，多出来的那几行看不懂就不是问题（它可能写了标题或说明）。
+  void unreadableLines;
+
+  return {
+    answers: Array.from({ length: count }, (_, index) => seen.get(index + 1)!),
+    voided: null,
+  };
 }
 
 export interface VerdictReport {

@@ -1006,6 +1006,13 @@ async function runRound(input: {
         writeFileSync(path, content, "utf-8");
         return path;
       },
+      /*
+       * 读回反方写的那份判定。**不在就是 `null`，绝不抛** —— 「它没写」是这一轮的
+       * 一个正常结局（反方可能压根没照做），不是 StagePass 出了故障。
+       */
+      readRoundFile: (path) => {
+        try { return readFileSync(path, "utf-8"); } catch { return null; }
+      },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边

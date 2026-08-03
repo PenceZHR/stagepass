@@ -1,12 +1,12 @@
 import type { Assessment, RubricRole } from "../domain/rubric";
 import type { Phase } from "../domain/phase";
 import { applyAssessments } from "../domain/rubric-gaps";
-import { BLUE, RED } from "../domain/round";
-import type { CodexTransport } from "../codex/transport";
+import type { BlueRubricAnswers } from "../domain/round";
+import { BLUE, RED, readBlueRubricAnswers } from "../domain/round";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
 import { runRound, type RoundDependencies, type RoundRequest, type RoundSettled } from "./round-runner";
 import type { WorkItemDraft } from "../domain/worklist";
-import type { WorkItem, WorklistStore } from "../store/worklist-store";
+import type { WorkItem } from "../store/worklist-store";
 
 type Participant = keyof RoundSettled["transcripts"];
 
@@ -122,21 +122,15 @@ export interface RubricRoundDependencies extends RoundDependencies {
  * 「没评估」—— 混成一句等于什么都没说。
  */
 /**
- * 补问最多几次。**用户 2026-07-31 定的 3。**
+ * 反方那份判定为什么没成。`null` = 成了，或者这一份根本不归反方判。
  *
- * 他要的是「补到它答上为止」，但那不能真的无限：每一次都是一个真 turn（几十秒到
- * 几分钟），而这一轮外面还有 30 分钟的 job 租约兜着（`TurnLoop`）。无限补的结局
- * 不是「终于答上了」，是租约到期、整轮被判失败 —— 那比记一句「问了三遍没答上」
- * 糟得多，因为后者至少还是句实话。
+ * 原来这里还有一种 `asked`（补问了 n 次它仍不答）。补问那条路是
+ * 「StagePass 自己 resume 反方线程」，2026-08-03 实测被 Codex 封了
+ * （见 `blueRubricFiles`），那种结局结构上不再可能发生，所以一并退场 ——
+ * 留着它就是留一个永远为假的分支给下一个读代码的人去猜。
  */
-const ASK_AGAIN_AT_MOST = 3;
-
-/** 补问的结局。`null` = 这一份没走补问那条路。 */
 type FollowUp =
-  /** 补了 n 次，它仍然没答上。 */
-  | { readonly kind: "asked"; readonly times: number }
-  /** 补问**这个动作本身**失败了。和「它不肯答」是两件事，必须分开说。 */
-  | { readonly kind: "failed"; readonly times: number; readonly detail: string };
+  { readonly kind: "failed"; readonly times: number; readonly detail: string };
 
 function whyNotAssessed(input: {
   readonly assessor: Participant;
@@ -147,103 +141,81 @@ function whyNotAssessed(input: {
   const clauses = ["它没有作答"];
 
   /*
-   * 两种必须分得开：**它被问了 n 遍就是不答**（模型的问题，人可能要换标准或换法子），
-   * 和**问它这个动作本身失败了**（StagePass / Codex 的问题，跟它无关）。混成一句，
-   * 人会去改一份根本没毛病的 rubric。
+   * **「它没答」和「它答了但对不上号」必须分得开。**
+   *
+   * 前者是模型的判断（人可能要换标准、或者换个问法），后者是这份判定整份作废了
+   * —— 而作废的那份里，它其实**逐条都写了**，只是数不对。混成一句，人会去改一份
+   * 根本没毛病的 rubric。
    */
-  if (input.followUp?.kind === "asked") {
-    clauses.push(`又问了 ${input.followUp.times} 次，仍然没有作答`);
-  } else if (input.followUp?.kind === "failed") {
-    clauses.push(
-      `问它没能进行下去（第 ${input.followUp.times} 次时失败：${input.followUp.detail}）`
-      + `—— 这是这个动作本身出了问题，不是${who}拒绝作答`,
-    );
+  if (input.followUp !== null) {
+    clauses.push(`${input.followUp.detail}（不是${who}拒绝作答）`);
   }
 
   return `${clauses.join("；")}。`;
 }
 
 /**
- * 反方那份标准：**StagePass 自己去问它，逐条走工具。**
+ * 反方那半 rubric：**StagePass 写文件，裁判转达路径，反方把答案写回文件。**
  *
- * ## 为什么不再经裁判转达
+ * ## 为什么不是直接去问它
  *
- * 原来那份契约夹在裁判的提示词里，指望它原样转给反方。实测的三种断法（没送到 /
- * 送到不答 / 答错对象）里有两种是转达出的问题 —— 而「凡经裁判转达的文本，只有
- * 原文加收件人才到得了」那条教训本身就说明：这条链不该存在。
+ * 原来（`3d32ea3`）是 StagePass 自己 `codex resume` 反方线程单起一轮。2026-08-03
+ * 真机实测那条路**结构上不成立**：Codex 禁止外部驱动子 Agent 线程 ——
  *
- * 现在 StagePass 直接 resume 反方那条线程单起一轮。argv 是 StagePass 自己拼的，
- * 所以插件和正确的 `STAGEPASS_CHANGE` 一并带上 —— 子 Agent 不继承 `-c` 传的 MCP
- * server（2026-08-02 真机验的），但**这一轮不是它继承来的，是我们给它起的**。
+ *     ■ This sub-agent is controlled by its parent. Direct input is disabled.
  *
- * ## 于是反方也不用手抄任何东西
+ * 而且和父线程活不活着无关（探针 `scripts/probe-subagent-input.ts`：父线程一小时前
+ * 就结束的那条照样拒）。唯一还通的通道是**它的父线程**，也就是裁判。
  *
- * 提示词里一条 criterion key 都没有，正文由 `stagepass_next` 给。这就是七个手抄面
- * 里最后一个的归零。
+ * ## 那不是又回到「经裁判转达」的老病了吗
  *
- * ## 没答完就再问，最多三次
+ * 转的是**两个路径**，不是标准正文、更不是 criterion key。2026-08-02 那三张脸
+ * （转丢需求、转丢契约、答错对象）长在「要它转述一段正文」上；一个路径它没什么可
+ * 消化的，转坏了反方会大声说读不到文件，而不是安静地判错一条。
  *
- * 游标留在库里，所以「再问一次」就是再跑一个 turn —— 不必重新开名单，它自然接着
- * 上次没答完的那一条。
+ * 反方手上只有 `1..N` 的序号和散文，**key 由 StagePass 按序号映射回去** —— 七个
+ * 手抄面仍然是零。
+ *
+ * ## 数不对就整份作废
+ *
+ * 用户 2026-08-03 定的。判定在 `domain/round.ts` 的 `readBlueRubricAnswers`。
  */
-async function askBlueByWorklist(input: {
-  readonly transport: CodexTransport;
-  readonly worklist: WorklistStore;
+function blueRubricFiles(input: {
+  readonly writeRoundFile: (name: string, content: string) => string;
   readonly changeId: string;
   readonly phase: Phase;
   readonly round: number;
-  readonly threadId: string;
   readonly rubric: RubricVersion;
   readonly subject: string;
-}): Promise<{ read: Assessment[]; followUp: FollowUp | null }> {
-  input.worklist.append(input.changeId, input.phase, input.round,
-    input.rubric.criteria.map((criterion) => ({
-      kind: "criterion" as const,
-      target: criterion.key,
-      prompt: `${input.subject}：这一条标准满足了吗？\n${criterion.text}`,
-      choices: ["yes", "no"],
-    })));
-
-  let times = 0;
-  let failure: FollowUp | null = null;
-  while (times < ASK_AGAIN_AT_MOST) {
-    if (input.worklist.next(input.changeId) === null) break;
-    times += 1;
-    try {
-      await input.transport.runTurn({
-        threadId: input.threadId,
-        prompt: [
-          `你刚才审的那份产出，还要请你**逐条判定**几条标准 —— 判的是${input.subject}。`,
-          "",
-          "反复调 `stagepass_next`（不带参数）取下一条，看完用 `stagepass_answer`",
-          "（只给 `answer` 和 `reason`）作答，直到它说没有下一条了为止。",
-          "",
-          "**你不需要、也无法指定答的是哪一条 —— StagePass 记着。**",
-          "不要在回答里写任何编号，`reason` 里写清依据就够。",
-        ].join("\n"),
-        // 跑在反方自己那条线程上，所以不能挤掉阶段那个终端；面板给它单开一格，
-        // 跑完自动收（用户 2026-07-31）。
-        aside: { label: `${BLUE}·逐条判定` },
-      });
-    } catch (error: unknown) {
-      failure = {
-        kind: "failed",
-        times,
-        detail: error instanceof Error ? error.message : String(error),
-      };
-      break;
-    }
-  }
-
-  input.worklist.close(input.changeId, input.phase, input.round);
-  const read = fromWorklist(
-    input.worklist.read(input.changeId, input.phase, input.round), input.rubric,
+}): { criteriaPath: string; answersPath: string; count: number } {
+  const stem = `${input.changeId}-${input.phase}-r${input.round}`;
+  /*
+   * **标准正文进文件，序号是它唯一的身份。** criterion key 一个字都不出现 ——
+   * 它出现在这里，就等于把它交给了模型的嘴。
+   */
+  const criteriaPath = input.writeRoundFile(
+    `rubric-${stem}.md`,
+    [
+      `# 要判的标准：${input.subject}`,
+      "",
+      `一共 ${input.rubric.criteria.length} 条。逐条判，按序号回答。`,
+      "",
+      ...input.rubric.criteria.map((criterion, index) =>
+        `${index + 1}. ${criterion.text}`),
+      "",
+    ].join("\n"),
   );
-  const stillMissing = read.some((entry) => entry.verdict === "not_assessed");
-  return {
-    read,
-    followUp: failure ?? (times === 0 || !stillMissing ? null : { kind: "asked", times }),
-  };
+  /*
+   * 答案那份**先写一个空壳**，只为了拿到路径。
+   *
+   * 不预先建它的话，这一层就得自己拼路径 —— 而拼路径意味着这一层要知道
+   * `writeRoundFile` 把文件放在哪，那是它不该知道的事（那个目录是每轮一个临时目录）。
+   */
+  const answersPath = input.writeRoundFile(
+    `rubric-answers-${stem}.md`,
+    `# ${input.subject}：逐条判定\n\n（反方把答案写在这里，一行一条，形如 \`3: yes —— 依据…\`）\n`,
+  );
+  return { criteriaPath, answersPath, count: input.rubric.criteria.length };
 }
 
 /**
@@ -310,6 +282,29 @@ function fromWorklist(
   });
 }
 
+/**
+ * 按序号把反方的答案贴回 criterion key 上。
+ *
+ * **整份作废时全部 `not_assessed`**，一条也不采信 —— 位置映射一旦错位，那条判定会
+ * 挂到别的标准上，而人没有任何办法察觉。理由那句由 `withReasons` 从 `followUp`
+ * 里接过去，所以这里只管数据。
+ */
+function byOrdinal(
+  rubric: RubricVersion,
+  answers: BlueRubricAnswers | null,
+): Assessment[] {
+  return rubric.criteria.map((criterion, index) => {
+    const given = answers?.voided === null ? answers.answers[index] : undefined;
+    return {
+      criterionKey: criterion.key,
+      verdict: (given?.verdict ?? "not_assessed") as Assessment["verdict"],
+      evidence: given?.evidence ?? null,
+      criterionText: criterion.text,
+      blockingThen: criterion.blocking,
+    };
+  });
+}
+
 export async function runRubricRound(
   request: RubricRoundRequest,
   dependencies: RubricRoundDependencies,
@@ -349,10 +344,42 @@ export async function runRubricRound(
     }
   }
 
+  /*
+   * **反方那份在 turn 之前就要写出来** —— 它的路径要进裁判的提示词。
+   *
+   * 至多一份：`ASSESSED_BY` 里 `by: "blue"` 的只有 producer 那一个角色。真多出
+   * 第二份的那天这里会安静地只带上第一份，所以宁可在这儿就报出来。
+   */
+  const blueRoles = [...active].filter(([role]) => ASSESSED_BY[role]?.by === "blue");
+  if (blueRoles.length > 1) {
+    throw new Error(
+      `这一轮有 ${blueRoles.length} 份 rubric 要反方判，而提示词只带得动一份`,
+    );
+  }
+  const blueEntry = blueRoles[0];
+  const blueFiles = blueEntry === undefined ? undefined : blueRubricFiles({
+    writeRoundFile: dependencies.writeRoundFile,
+    changeId: request.changeId,
+    phase: request.phase,
+    round: request.round,
+    rubric: blueEntry[1],
+    subject: ASSESSED_BY[blueEntry[0]]!.subject,
+  });
+
   const settled = await runRound({
     ...request,
     extraWorkItems: judgeItems,
+    ...(blueFiles === undefined ? {} : { blueRubric: blueFiles }),
   }, dependencies);
+
+  /*
+   * 反方写回来的那份，读一次就够 —— 两个角色不会同时要它判（上面那条守卫）。
+   * 文件不在就是 `null`，和「写了但对不上号」由 `readBlueRubricAnswers` 分开说。
+   */
+  const blueAnswers = blueFiles === undefined
+    ? null
+    : readBlueRubricAnswers(
+        dependencies.readRoundFile(blueFiles.answersPath), blueFiles.count);
 
   const assessments: Record<RubricRole, readonly Assessment[]> = {
     producer: [], critic: [], verdict: [],
@@ -365,25 +392,18 @@ export async function runRubricRound(
     const assessor = ASSESSED_BY[role]!.by;
 
     /*
-     * **两边都走名单了。**
+     * **两条路都不经模型的嘴传任何标识符**，只是形状不同了。
      *
-     * 裁判在它自己那一轮里逐条答（名单在 turn 之前就开好）；反方由 StagePass 单独
-     * 去问，跑在它自己那条线程上（`askBlueByWorklist`）。两条路都不经模型的嘴传
-     * 任何标识符 —— 那是这一整套改动的落点，见
-     * docs/DESIGN-no-hand-transcription-2026-08-02.md。
+     * 裁判在它自己那一轮里逐条走工具（名单在 turn 之前就开好，游标在库里）；
+     * 反方读一份按 `1..N` 编号的文件、把答案写回另一份文件，**key 由 StagePass
+     * 按序号映射回去**。见 `blueRubricFiles` 那段：直接去问它那条路被 Codex 封了。
      */
-    const { read, followUp } = assessor === "blue"
-      ? await askBlueByWorklist({
-          transport: dependencies.transport,
-          worklist: dependencies.worklist,
-          changeId: request.changeId,
-          phase: request.phase,
-          round: request.round,
-          threadId: settled.agents.blue,
-          rubric,
-          subject: ASSESSED_BY[role]!.subject,
-        })
-      : { read: fromWorklist(settled.workItems, rubric), followUp: null };
+    const read = assessor === "blue"
+      ? byOrdinal(rubric, blueAnswers)
+      : fromWorklist(settled.workItems, rubric);
+    const followUp: FollowUp | null = assessor === "blue" && blueAnswers?.voided
+      ? { kind: "failed", times: 1, detail: blueAnswers.voided }
+      : null;
 
     assessments[role] = withReasons(read, { assessor, followUp });
 

@@ -54,6 +54,21 @@ export interface RoundRequest {
    * 而模型手上只有一个 `stagepass_next`。
    */
   readonly extraWorkItems?: readonly WorkItemDraft[];
+  /**
+   * 反方这一轮还要逐条判定的那几条标准在哪、答案写到哪。
+   *
+   * **这一层不知道 rubric 是什么**，和 `extraWorkItems` 同一个道理：它只管把两个
+   * 路径原样带进裁判的提示词。写文件、读回来、按序号映射，全在 L5
+   * （`work/rubric-round.ts`）。
+   *
+   * 为什么非得经裁判转达：Codex 禁止外部驱动子 Agent 线程（2026-08-03 实测，
+   * `scripts/probe-subagent-input.ts`），反方的父线程是唯一还通的通道。
+   */
+  readonly blueRubric?: {
+    readonly criteriaPath: string;
+    readonly answersPath: string;
+    readonly count: number;
+  } | undefined;
 }
 
 export interface RoundDependencies {
@@ -100,6 +115,13 @@ export interface RoundDependencies {
    * 列在可写根里，实测见过。
    */
   readonly writeRoundFile: (name: string, content: string) => string;
+  /**
+   * 读回一份这一轮写出去的文件，**不在就是 `null`**。
+   *
+   * 「文件不在」和「写了但对不上号」要分开 —— 前者是反方压根没照做，后者是它照做了
+   * 但数不对。人对这两件事该做的事完全不同（`readBlueRubricAnswers` 各给一句话）。
+   */
+  readonly readRoundFile: (path: string) => string | null;
 }
 
 /** 这一轮认不出正反两方跑在哪两条线程上。 */
@@ -248,6 +270,7 @@ export async function runRound(
       task: request.task,
       openGaps,
       openGapsPath,
+      ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
     }),
   });
 

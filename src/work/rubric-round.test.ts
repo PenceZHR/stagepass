@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { BLUE } from "../domain/round";
 import { standardGapId } from "../domain/rubric-gaps";
 import { ScriptedCodexTransport } from "../codex/transport";
 import { WorklistStore } from "../store/worklist-store";
@@ -97,9 +96,15 @@ async function run(context: ReturnType<typeof open>, input: {
    * 反方在 StagePass 单独去问它的那一轮里逐条答什么。
    *
    * 2026-08-03 起 producer 那份也走名单了：不再经裁判转达契约、不再写围栏，
-   * StagePass 自己 resume 反方线程单起一轮（`askBlueByWorklist`）。
+   * 反方**写进答案文件**的那几条，按顺序对应第 1..N 条标准。
+   *
+   * 形状从「走工具逐条答」变成「写文件」，因为 Codex 禁止外部驱动子 Agent 线程
+   * （2026-08-03 实测）—— 见 `blueRubricFiles`。给 `blueRaw` 可以直接指定文件原文，
+   * 用来验数不对时整份作废。
    */
   blueAnswers?: readonly (readonly [string, string])[];
+  /** 反方写回来的原文。给了它就不看 `blueAnswers`。 */
+  blueRaw?: string;
 }) {
   const worklist = new WorklistStore(context.db, () => new Date(AT));
   const scripted = new ScriptedCodexTransport([
@@ -117,16 +122,8 @@ async function run(context: ReturnType<typeof open>, input: {
       async runTurn(dispatch) {
         const delivery = await scripted.runTurn(dispatch);
         // 裁判在自己的 turn 里调工具 —— 替身也得在同一个位置动手。
-        // 补问那一 turn 跑在反方线程上，它不碰名单。
-        if (dispatch.aside === undefined) {
-          for (const [answer, reason] of input.judgeAnswers ?? []) {
-            worklist.answer(CHANGE, answer, reason);
-          }
-        } else {
-          // 反方那一轮跑在它自己的线程上（aside），它也在自己的 turn 里调工具。
-          for (const [answer, reason] of input.blueAnswers ?? []) {
-            worklist.answer(CHANGE, answer, reason);
-          }
+        for (const [answer, reason] of input.judgeAnswers ?? []) {
+          worklist.answer(CHANGE, answer, reason);
         }
         return delivery;
       },
@@ -135,6 +132,17 @@ async function run(context: ReturnType<typeof open>, input: {
     rubrics: context.rubrics,
     childThreads,
     writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    /*
+     * 反方写回来的那份。**只有答案文件由测试说了算** —— 标准那份是 StagePass 自己
+     * 写的，读它没有意义（真实世界里读它的是反方，不是我们）。
+     */
+    readRoundFile: (path: string) => (path.includes("rubric-answers-")
+      ? input.blueRaw ?? (input.blueAnswers === undefined
+        ? null
+        : input.blueAnswers
+          .map(([verdict, reason], index) => `${index + 1}: ${verdict} —— ${reason}`)
+          .join("\n"))
+      : null),
     readThread: roles(input.red ?? answer(), input.blue ?? answer()),
     readThreadWhole: input.whole ?? deliveredAll(context),
   });
@@ -193,6 +201,7 @@ describe("L5 · 没有人给自己打分", () => {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
     writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    readRoundFile: () => null,
     worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
@@ -231,6 +240,7 @@ describe("L5 · 没有人给自己打分", () => {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
     writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    readRoundFile: () => null,
     worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
@@ -453,14 +463,21 @@ describe("L5 · 裁判的结论与反方的整体判断", () => {
  * 补问把那条不可靠的链换成直连（2026-07-31 在真 Codex 的 TUI 上验过）。
  */
 /**
- * StagePass 自己去问反方那份标准。
+ * 反方那份标准怎么问到它。
  *
- * 2026-08-03 之前是：契约夹在裁判的提示词里指望它转达，反方把答案写进 ```rubric
- * 围栏；没答上再补问。实测三种断法（没送到 / 送到不答 / 答错对象）里有两种长在
- * 那条转达链上 —— 所以整条链撤掉了：**StagePass 直接 resume 反方那条线程，逐条走
- * 工具问它。** 于是反方也不用手抄任何 criterion key。
+ * 三代了，每一代都是被实测推翻的：
+ *
+ *   围栏协议    契约夹在裁判提示词里指望它转达，反方写 ```rubric 围栏。
+ *               三种断法里两种长在转达链上（2026-08-02）。
+ *   直连蓝方    StagePass 自己 resume 反方线程逐条走工具。**Codex 禁止**外部驱动
+ *               子 Agent 线程（2026-08-03 实测，`scripts/probe-subagent-input.ts`）。
+ *   走文件      现在这一代：StagePass 写一份按 1..N 编号的标准文件，裁判只转达
+ *               两个路径，反方把答案写回另一份文件。
+ *
+ * 第三代保住了前两代各自要的东西：**一个 criterion key 都不经模型的嘴**（第一代的病），
+ * 而且**只用父线程这一条还通的通道**（第二代撞的墙）。
  */
-describe("L5 · StagePass 自己去问反方", () => {
+describe("L5 · 反方那份标准走文件", () => {
   const seedOne = (context: ReturnType<typeof open>) =>
     context.rubrics.save(
       { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
@@ -476,17 +493,39 @@ describe("L5 · StagePass 自己去问反方", () => {
     assert.equal(settled.assessments.producer[0]?.evidence, "第 2 条只写了「要快」");
   });
 
-  it("**问了 3 次仍然不答 —— 照实说问了几次**", async () => {
+  it("**文件不在就说文件不在** —— 和「答了但对不上号」不是一件事", async () => {
     const context = open();
     seedOne(context);
-    const settled = await run(context, {});   // 一次都不答
+    const settled = await run(context, {});   // 反方什么都没写
     assert.equal(settled.assessments.producer[0]?.verdict, "not_assessed");
-    assert.match(settled.assessments.producer[0]?.evidence ?? "", /又问了 3 次/);
+    assert.match(settled.assessments.producer[0]?.evidence ?? "", /那个文件不在/);
   });
 
-  it("**不会问第 4 次** —— 上限是硬的，外面还有 30 分钟租约", async () => {
+  it("**数不对就整份作废** —— 一条也不采信", async () => {
+    const context = open();
+    context.rubrics.save(
+      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      [
+        { text: "每条需求都有可测的验收标准", blocking: false },
+        { text: "写清楚了这次不做什么", blocking: false },
+      ]);
+    // 两条标准，它只答了第 1 条 —— 第 2 条要是按位置贴上去就挂错了标准。
+    const settled = await run(context, { blueRaw: "1: yes 有的" });
+    assert.deepEqual(
+      settled.assessments.producer.map((each) => each.verdict),
+      ["not_assessed", "not_assessed"],
+      "数不对却采信了其中一条 —— 那一条可能挂在错误的标准上",
+    );
+    assert.match(settled.assessments.producer[0]?.evidence ?? "", /缺了第 2 条/);
+  });
+
+  it("**裁判的提示词里一条 criterion key 都没有** —— 只有两个路径", async () => {
     const context = open();
     seedOne(context);
+    const key = context.rubrics
+      .current({ projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" })!
+      .criteria[0]!.key;
+
     const transport = new ScriptedCodexTransport([
       asJudge('```json\n{"verdicts":{}}\n```'),
       ...Array.from({ length: 8 }, () => ""),
@@ -499,93 +538,52 @@ describe("L5 · StagePass 自己去问反方", () => {
       gaps: context.gaps,
       rubrics: context.rubrics,
       childThreads,
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+      writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+      readRoundFile: () => null,
       worklist: new WorklistStore(context.db, () => new Date(AT)),
       readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
-    // 裁判那一轮 + 问反方 3 次 = 4，不多不少。
-    assert.equal(transport.dispatches.length, 4);
+
+    const prompt = transport.dispatches[0]!.prompt;
+    assert.ok(!prompt.includes(key), "criterion key 进了裁判的提示词");
+    assert.match(prompt, /rubric-CHG-[^\s]*\.md/, "标准文件的路径没进提示词");
+    assert.match(prompt, /rubric-answers-CHG-[^\s]*\.md/, "答案文件的路径没进提示词");
   });
 
-  it("**答全了就不再问**（不白烧 turn）", async () => {
+  it("**标准文件按 1..N 编号，key 一个字都不出现**", async () => {
     const context = open();
     seedOne(context);
-    const transport = new ScriptedCodexTransport([
-      asJudge('```json\n{"verdicts":{}}\n```'),
-      ...Array.from({ length: 8 }, () => ""),
-    ]);
-    const worklist = new WorklistStore(context.db, () => new Date(AT));
+    const key = context.rubrics
+      .current({ projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" })!
+      .criteria[0]!.key;
+
+    const written = new Map<string, string>();
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Spec",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
-      transport: {
-        async runTurn(dispatch) {
-          const delivery = await transport.runTurn(dispatch);
-          if (dispatch.aside !== undefined) worklist.answer(CHANGE, "yes", "都写了");
-          return delivery;
-        },
+      transport: new ScriptedCodexTransport([
+        asJudge('```json\n{"verdicts":{}}\n```'),
+        ...Array.from({ length: 8 }, () => ""),
+      ]),
+      gaps: context.gaps,
+      rubrics: context.rubrics,
+      childThreads,
+      writeRoundFile: (name: string, content: string) => {
+        const path = `/tmp/stagepass-test/${name}`;
+        written.set(path, content);
+        return path;
       },
-      gaps: context.gaps,
-      rubrics: context.rubrics,
-      childThreads,
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
-      worklist,
-      readThread: roles(answer(), answer()),
-      readThreadWhole: deliveredAll(context),
-    });
-    assert.equal(transport.dispatches.length, 2, "裁判一轮 + 问反方一轮就够了");
-  });
-
-  it("**跑在反方那条线程上，而且带着 aside 标签**（面板要单开一格）", async () => {
-    const context = open();
-    seedOne(context);
-    const transport = new ScriptedCodexTransport([
-      asJudge('```json\n{"verdicts":{}}\n```'),
-      ...Array.from({ length: 8 }, () => ""),
-    ]);
-    await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
-      round: 1, task: "写 Spec", judgeThreadId: null,
-    }, {
-      transport,
-      gaps: context.gaps,
-      rubrics: context.rubrics,
-      childThreads,
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+      readRoundFile: () => null,
       worklist: new WorklistStore(context.db, () => new Date(AT)),
       readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
-    const asked = transport.dispatches[1]!;
-    assert.equal(asked.threadId, BLUE_THREAD, "没发给反方自己那条线程");
-    assert.equal(asked.aside?.label, `${BLUE}·逐条判定`);
-  });
 
-  it("**提示词里一条 criterion key 都没有** —— 正文由工具给", async () => {
-    const context = open();
-    seedOne(context);
-    const transport = new ScriptedCodexTransport([
-      asJudge('```json\n{"verdicts":{}}\n```'),
-      ...Array.from({ length: 8 }, () => ""),
-    ]);
-    await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
-      round: 1, task: "写 Spec", judgeThreadId: null,
-    }, {
-      transport,
-      gaps: context.gaps,
-      rubrics: context.rubrics,
-      childThreads,
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
-      worklist: new WorklistStore(context.db, () => new Date(AT)),
-      readThread: roles(answer(), answer()),
-      readThreadWhole: deliveredAll(context),
-    });
-    const prompt = transport.dispatches[1]!.prompt;
-    assert.doesNotMatch(prompt, /K1|RBC-/, "又把 key 写进提示词了");
-    assert.match(prompt, /stagepass_next/);
-    assert.match(prompt, /stagepass_answer/);
+    const criteria = [...written.entries()]
+      .find(([path]) => path.includes("rubric-CHG"))?.[1] ?? "";
+    assert.match(criteria, /1\. 每条需求都有可测的验收标准/, "标准正文没按序号写进文件");
+    assert.ok(!criteria.includes(key), "criterion key 写进了给模型看的文件");
   });
 });

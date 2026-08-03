@@ -90,6 +90,7 @@ function runner(
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
     writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    readRoundFile: () => null,
     worklist: new WorklistStore(context.db),
     readThread,
     // 这些用例不问送达 —— 它们问的是这个 runner 有没有把各层接对。
@@ -430,71 +431,17 @@ describe("RoundTurnRunner · 线程一出现就绑上，不等整轮跑完", () 
   });
 });
 
-/**
- * 补问的 turn 不去坐裁判的绑定座位。
+/*
+ * 这里原来有一条「带 aside 的 turn 不去坐裁判的绑定座位」。
  *
- * 2026-08-02 第 9 轮真机实测：补问跑在**反方**的线程上，而这里的 transport 包装
- * 原来无条件把每个 turn 的线程往 (Change, 阶段) 上绑 —— 反方线程试图坐进裁判的
- * 座位，绑定层正确地拒了（already bound），补问整个死掉，四条判定全记
- * 「补问本身出了问题」。链路诚实，是包装错。
+ * 2026-08-03 起**生产代码里没有任何地方产生 aside 了** —— 那条路
+ * （StagePass 自己 resume 反方线程逐条问）被证实走不通：Codex 禁止外部驱动子
+ * Agent 线程。规则本身还写在 `RoundTurnRunner` 里（那个包装仍按 aside 分流），
+ * 但**没有任何输入能走到它**，所以这条测试留着就是一条永远跑不到的用例。
+ *
+ * 连带地：`launchAside` / `closeAside` / 面板的补问格标签页 / `?label=` 那两条路由，
+ * 整套 aside 机制现在都没有使用者。**要不要整个撤掉是一个单独的决定**，见交接。
  */
-describe("RoundTurnRunner · aside 不绑定", () => {
-  it("**问反方那一轮跑完，绑定还是裁判的线程**", async () => {
-    const context = open();
-    // producer 那份由反方判 —— 种上它，StagePass 就会单独去问反方。
-    new RubricStore(context.db, { mintKey: () => "K1" }).save(
-      { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" },
-      [{ text: "每条需求都有可测的验收标准", blocking: false }]);
-
-    const worklist = new WorklistStore(context.db);
-    const scripted = new ScriptedCodexTransport([
-      judgeSays,                                     // 裁判那一轮
-      ...Array.from({ length: 4 }, () => ""),        // 问反方那几轮（返回值没人读）
-    ]);
-    const transport = {
-      dispatches: scripted.dispatches,
-      async runTurn(dispatch: TurnDispatch) {
-        const delivery = await scripted.runTurn(dispatch);
-        // 反方在自己那一轮里调工具作答。
-        if (dispatch.aside !== undefined) worklist.answer(CHANGE, "yes", "补上了");
-        return delivery;
-      },
-    };
-    const runner = new RoundTurnRunner({
-      transport,
-      gaps: context.gaps,
-      rubrics: context.rubrics,
-      changes: context.changes,
-      bindings: context.bindings,
-      evidence: new EvidenceStore(context.db),
-      notes: new RoundNoteStore(context.db),
-      repo: { dirtyPaths: () => [], commitAll: () => null, show: () => null },
-      workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
-      childThreads: growingChildren(),
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
-      worklist,
-      readThread: () => answer(),
-      readThreadWhole: () => "K1",
-      taskFor: () => "写 PRD",
-    });
-
-    const loop = new TurnLoop({ database: context.db, runner });
-    const at = Date.now();
-    loop.queueTurn({ changeId: CHANGE, jobId: "JOB-ASIDE", deadlineAt: at + 60_000, maxAttempts: 1 });
-    await loop.runOnce({ owner: "test", token: "JOB-ASIDE", now: at, ttlMs: 60_000 });
-
-    // 问反方那个 turn 带了 aside 标签、跑在反方线程上。
-    const asked = transport.dispatches[1]!;
-    assert.ok(asked.threadId!.startsWith(BLUE_THREAD));
-    assert.ok(asked.aside, "没带 aside 标签 —— 面板不知道要单开一格");
-    // **绑定座位还是裁判的**，没有被反方的线程顶掉，也没有因此炸掉整轮。
-    const bound = context.bindings.find(CHANGE, "PRD");
-    assert.equal(bound?.threadId, "THREAD-1", "反方的线程坐进了裁判的绑定座位");
-    // 而它的答案被采信了。
-    const assessed = context.rubrics.latestRound(CHANGE, "PRD");
-    assert.equal(assessed?.byRole.producer[0]?.verdict, "yes");
-  });
-});
 
 /**
  * 坏格式不许在裁判自己的线程里循环。

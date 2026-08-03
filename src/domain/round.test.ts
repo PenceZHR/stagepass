@@ -3,7 +3,8 @@ import { describe, it } from "node:test";
 
 import type { Gap } from "./gap";
 import {
-  BLUE, judgePrompt, readConclusion, readRound, readVerdicts, RED,
+  BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
+  readVerdicts, RED,
   summariseRoundNotes,
   UnreadableVerdictError,
 } from "./round";
@@ -951,5 +952,92 @@ describe("L4 · 裁判的 json 少了右花括号", () => {
     assert.match(prompt, /读正方报出来的那份产出文件本身/);
     // 边界没放开：产出之外的仓库内容照旧不许翻。
     assert.match(prompt, /不要读仓库的其他内容/);
+  });
+});
+
+/**
+ * Codex 禁止外部驱动子 Agent 线程（2026-08-03 实测），所以反方那半 rubric 只能经
+ * 它的父线程转达。转的是**两个路径**，答案按 `1..N` 的序号写回文件 —— 模型手上
+ * 一个 criterion key 都没有。
+ *
+ * 位置映射的代价是错位，而错位比没答糟得多：一条言之凿凿却挂在别的标准上的判定，
+ * 人没有任何办法察觉。所以用户 2026-08-03 定的是**数不对就整份作废**。
+ */
+describe("L4 · 反方写回来的逐条判定", () => {
+  it("序号齐了就按序号排好", () => {
+    const read = readBlueRubricAnswers(
+      "1: yes —— 第一条有\n2: no —— 第二条没有\n3: yes —— 第三条有\n", 3);
+    assert.equal(read.voided, null);
+    assert.deepEqual(read.answers.map((each) => each.verdict), ["yes", "no", "yes"]);
+    assert.equal(read.answers[1]!.evidence, "第二条没有");
+  });
+
+  it("**乱序也认** —— 它按什么顺序写不重要，序号才是身份", () => {
+    const read = readBlueRubricAnswers("3: no 丙\n1: yes 甲\n2: yes 乙\n", 3);
+    assert.equal(read.voided, null);
+    assert.deepEqual(read.answers.map((each) => each.evidence), ["甲", "乙", "丙"]);
+  });
+
+  it("**缺一条就整份作废** —— 少的那条会让后面全部错位", () => {
+    const read = readBlueRubricAnswers("1: yes 甲\n3: no 丙\n", 3);
+    assert.deepEqual(read.answers, []);
+    assert.match(read.voided ?? "", /缺了第 2 条/);
+    assert.match(read.voided ?? "", /整份作废/);
+  });
+
+  it("重号、越界一样作废，而且说得出是哪一种", () => {
+    const duplicated = readBlueRubricAnswers("1: yes 甲\n1: no 又一次\n2: yes 乙\n", 2);
+    assert.deepEqual(duplicated.answers, []);
+    assert.match(duplicated.voided ?? "", /第 1 条答了不止一次/);
+
+    const beyond = readBlueRubricAnswers("1: yes 甲\n2: yes 乙\n9: yes 哪来的\n", 2);
+    assert.deepEqual(beyond.answers, []);
+    assert.match(beyond.voided ?? "", /范围外的序号 9/);
+  });
+
+  it("**文件不在和答错了要分开说** —— 人对这两件事做的事不一样", () => {
+    const missing = readBlueRubricAnswers(null, 3);
+    assert.deepEqual(missing.answers, []);
+    assert.match(missing.voided ?? "", /那个文件不在/);
+  });
+
+  it("排版一律不计较：全角冒号、列表符号、破折号有几个都行", () => {
+    const read = readBlueRubricAnswers(
+      "# 判定\n\n- 1：YES — 甲\n* 2 : no  ——  乙\n3:yes 丙\n", 3);
+    assert.equal(read.voided, null);
+    assert.deepEqual(read.answers.map((each) => each.verdict), ["yes", "no", "yes"]);
+    assert.deepEqual(read.answers.map((each) => each.evidence), ["甲", "乙", "丙"]);
+  });
+
+  it("一条都不要判的时候，空文件不算作废", () => {
+    assert.deepEqual(readBlueRubricAnswers(null, 0), { answers: [], voided: null });
+  });
+});
+
+describe("L4 · 那两个路径要经裁判转达给反方", () => {
+  const base = {
+    phase: "PRD" as const, round: 1, task: "写需求", openGaps: [],
+  };
+
+  it("**抬头写明收件人，正文一个字都不进提示词**", () => {
+    const prompt = judgePrompt({
+      ...base,
+      blueRubric: { criteriaPath: "/tmp/criteria.md", answersPath: "/tmp/answers.md", count: 4 },
+    });
+    assert.match(prompt, /原样转达给/);
+    assert.ok(prompt.includes("/tmp/criteria.md"), "标准文件的路径没进提示词");
+    assert.ok(prompt.includes("/tmp/answers.md"), "答案文件的路径没进提示词");
+    assert.match(prompt, /恰好 4 行/);
+    assert.match(prompt, /数不对整份判定作废/);
+  });
+
+  it("**没有要反方判的标准就一行都不印** —— 空小节会让裁判去猜", () => {
+    const without = judgePrompt(base);
+    assert.ok(!without.includes("逐条判定"), "没有标准却印了那一节");
+    const zero = judgePrompt({
+      ...base,
+      blueRubric: { criteriaPath: "/tmp/a", answersPath: "/tmp/b", count: 0 },
+    });
+    assert.equal(zero, without, "count=0 和压根没给，印出来该一模一样");
   });
 });

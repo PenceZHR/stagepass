@@ -12,6 +12,7 @@
  * spawns two sub-agents at the paths it was told to use. Everything else is
  * proved offline in `src/work/round-runner.test.ts`.
  */
+import { readFileSync } from "node:fs";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +85,9 @@ async function live(): Promise<void> {
         const path = join(mkdtempSync(join(tmpdir(), "stagepass-round-")), name);
         writeFileSync(path, content, "utf-8");
         return path;
+      },
+      readRoundFile: (path) => {
+        try { return readFileSync(path, "utf-8"); } catch { return null; }
       },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
