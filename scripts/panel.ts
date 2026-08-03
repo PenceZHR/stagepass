@@ -62,9 +62,16 @@ const effort = asked as typeof EFFORTS[number];
  * 病根是「问人的预算里混进了一段不属于人的等待」，那要另外治（见交接）。这里做的
  * 是把旋钮交出来：**验收的时候人就在键盘前，没有理由让他跟秒表赛跑。**
  */
-const minutes = (name: string, fallback: number): number => {
+/**
+ * **两条路都要乘 60000。** 缺席那一支原来直接把「15」当毫秒返回了 —— 于是不带
+ * 参数启动时，问人的截止时间是 15 **毫秒**，每一次问人都会瞬间超时并把会话关掉。
+ *
+ * 2026-08-03 引入、当天被启动横幅抓住（它打出 `问人 0.00025 分钟`）。那行横幅
+ * 加进来的理由是「人得先知道有这么个东西」，而它先抓住的是写它的人。
+ */
+const minutes = (name: string, fallbackMinutes: number): number => {
   const raw = argument(name);
-  if (raw === undefined) return fallback;
+  if (raw === undefined) return fallbackMinutes * 60_000;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     console.error(`--${name} 要一个正数（分钟），收到的是「${raw}」`);
