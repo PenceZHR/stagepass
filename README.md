@@ -24,7 +24,7 @@ is simply not done:
 | **L3** | Compose question → Codex's native selector → a person chooses → answer lands → state advances | ✅ A real person really chose |
 | **L4** | Red / blue / judge adversarial rounds, settled into something decidable | ✅ Real rounds: gaps stored, gate held shut, gaps closed by later rounds |
 | **L5** | Rubric scoring, gap tracking | ✅ End-to-end on a real machine 2026-08-03 (PRD, round 3) |
-| **L6** | Rolled out to the remaining phases | 🟡 Same code path for all eleven, factory rubrics installed for all eleven — **but only PRD has actually been run** |
+| **L6** | Rolled out to the remaining phases | 🟡 Two of eleven run end to end on a real machine (PRD approved 2026-08-04, then Spec). The other nine share the same code path and factory rubrics but have not been run. |
 
 **A layer that has not passed is a layer you may not build on.** That is this
 repository's construction discipline, not a suggestion — and it is also how this
@@ -131,7 +131,7 @@ buttons now:
 
 ```bash
 pnpm install
-pnpm check            # 736 tests + strict typecheck, fully offline, no Codex needed
+pnpm check            # 751 tests + strict typecheck, fully offline, no Codex needed
 ```
 
 These need a real Codex:
@@ -214,7 +214,7 @@ docs/         PRD, handoffs, design notes. **The PRD is the single authority.**
 scripts/      panel, verify:*, probe:*
 ```
 
-13,224 lines of production code across 45 modules, 12,889 lines of tests. SQLite is
+13,586 lines of production code across 45 modules, 13,125 lines of tests. SQLite is
 the authority — a trigger on `changes` makes the database **abort on the spot** any
 state update that does not come with its ledger row, rather than leaving a missing
 audit entry to be discovered later.
