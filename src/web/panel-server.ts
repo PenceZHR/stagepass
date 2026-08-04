@@ -21,7 +21,8 @@ import { createTrustOps, type TrustOps } from "../codex/trust";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
-  gateDecisionQuestion, waiveQuestion, waiveFrom, clarificationQuestion,
+  gateDecisionQuestion, waiveQuestion, waiveFrom, waiveFollowUpQuestion,
+  clarificationQuestion,
   responseFollowUpQuestion,
   type ClarificationItem, type Answer,
   responsesFrom, runsAgainHere, DECISION_FIELD,
@@ -2195,7 +2196,7 @@ export async function handle(
       prompt: [
         "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
         "问哪一个由 StagePass 决定。",
-        "它会把「接受哪一条风险」交给我来选。",
+        "它会把「哪几条风险可以带着走」交给我来选。",
         "不要替我做决定，不要评价这些风险，调用完就停下。",
       ].join("\n"),
     }));
@@ -2236,9 +2237,46 @@ export async function handle(
       return;
     }
 
-    const accepted = waiveFrom(question, answer);
-    if (!accepted) {
-      // 人按了 Esc，或者答案对不上他当时看见的那份名单。两种都不是「接受了」。
+    /*
+     * **第二趟：只问真被接受的那几条要理由。**
+     *
+     * 第一趟纯选项格（客户端空文本格吃回车），和裁决表、录需求那两张表同一个形状。
+     * 一条都没接受就不弹 —— 全点「不接受」的人一个字都不用打。
+     */
+    let full = answer;
+    const moreWaive = waiveFollowUpQuestion(waivable, answer);
+    if (moreWaive) {
+      const moreId = `${questionId}-x`;
+      questions.ask({
+        id: moreId, changeId, phase, kind: "waive",
+        question: moreWaive, expectedSnapshot: gate.snapshot,
+      });
+      if (!await sessions.type(changeId, phase, ASK_TOOL_LINE)) {
+        questions.settle(moreId);
+        json(response, {
+          asked: true, answered: false, phase, reason: "session_died_before_asking",
+        });
+        sessions.close(changeId, phase);
+        return;
+      }
+      const until = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
+      while (Date.now() < until && !questions.readAnswerFor(moreId)) {
+        if (!sessions.has(changeId, phase)) break;
+        await new Promise((resolve) => { setTimeout(resolve, 1_000); });
+      }
+      const second = questions.readAnswerFor(moreId);
+      questions.settle(moreId);
+      if (!second) {
+        json(response, { asked: true, answered: false, phase, reason: "no_answer_in_time" });
+        sessions.close(changeId, phase);
+        return;
+      }
+      full = { action: answer.action, content: { ...answer.content, ...second.content } };
+    }
+
+    const accepted = waiveFrom(waivable, full);
+    if (accepted.length === 0) {
+      // 人一条都没选、按了 Esc、或者理由留空。三种都不是「接受了」。
       questions.settle(questionId);
       json(response, { asked: true, answered: true, waived: false, phase, questionId });
       return;
@@ -2263,11 +2301,14 @@ export async function handle(
       return;
     }
 
-    gaps.waive(changeId, phase, accepted.gapId, accepted.reason);
+    // 一次能接多条 —— 用户 2026-08-04：接四条不该走四遍完整流程。
+    for (const each of accepted) {
+      gaps.waive(changeId, phase, each.gapId, each.reason);
+    }
     questions.settle(questionId);
     json(response, {
       asked: true, answered: true, waived: true, phase, questionId,
-      gapId: accepted.gapId,
+      gapIds: accepted.map((each) => each.gapId),
     });
     return;
   }

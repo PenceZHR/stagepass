@@ -539,12 +539,14 @@ async function waive() {
     } else if (result.reason === "gate_moved") {
       say("闸门在你想的这段时间里动了 —— 这个决定作废，重新看一遍再定。");
     } else if (!result.waived) {
-      say("没有接受任何风险 —— 你按了 Esc，或者名单在这期间变了。");
+      say("没有接受任何风险 —— 你一条都没选、按了 Esc，或者名单在这期间变了。");
     } else {
-      say(`已接受 ${result.gapId}。它还在，只是不再挡闸门，交付说明里会列出来。`);
+      const ids = result.gapIds ?? [];
+      say(`已接受 ${ids.length} 条：${ids.join("、")}。`
+        + "它们还在，只是不再挡闸门，交付说明里会列出来。");
     }
   } finally {
-    waiveButton.textContent = "接受一条风险";
+    waiveButton.textContent = "接受风险";
     await load();
   }
 }

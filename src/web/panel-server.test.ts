@@ -1537,11 +1537,22 @@ describe("panel · 接受风险也走选择器", () => {
 
       // 题真的落库了，而且是 waive 那一种。
       const asked = database.prepare(
-        "SELECT kind, message FROM questions WHERE change_id = ?").get(CHANGE) as
-        { kind: string; message: string } | undefined;
+        "SELECT kind, schema_json FROM questions WHERE change_id = ?").get(CHANGE) as
+        { kind: string; schema_json: string } | undefined;
       assert.equal(asked?.kind, "waive");
-      // 标题列在正文里 —— 只给一串 id 去选，等于让人凭记忆决定。
-      assert.match(asked?.message ?? "", /接口没有错误码/);
+      /*
+       * **标题要在格子上，不是只在正文里。** 正文在 TUI 里打印一次就滚上去了，
+       * 人做选择那一刻眼前只有编号。用户 2026-08-04：「我只能知道风险的编号，
+       * 我又不知道风险是啥。」
+       */
+      const titles = Object.values(
+        (JSON.parse(asked?.schema_json ?? "{}") as
+          { properties?: Record<string, { title?: string }> }).properties ?? {},
+      ).map((each) => each.title ?? "");
+      assert.ok(
+        titles.some((each) => each.includes("接口没有错误码")),
+        "格子的标题里没有这条问题的正文 —— 人只看得见编号",
+      );
 
       // 而且是送进终端，不是网页上直接办了。
       const argv = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");

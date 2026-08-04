@@ -429,8 +429,14 @@ export function responsesFrom(input: {
  * 拿到 —— 调用方给的是问题和答案，不是字段。（`DECISION_FIELD` 导出是因为插件那
  * 边真的要用它。）
  */
-const WAIVE_GAP_FIELD = "gapId";
-const WAIVE_REASON_FIELD = "reason";
+/** 一条 gap 一格，序号和裁决表那边同一个形状（`W01`、`W02`…）。 */
+const waiveFieldId = (index: number): string => `W${String(index).padStart(2, "0")}`;
+/** 第二趟里那一条的理由格。`W01` -> `W01x`。 */
+const waiveReasonId = (fieldId: string): string => `${fieldId}x`;
+/** 压轴那一格：必须是选项格，整张表才提交得动（见 `compose`）。 */
+const WAIVE_CONFIRM_FIELD = "z-confirm";
+export const WAIVE_KEEP = "不接受，继续挡着闸门";
+export const WAIVE_ACCEPT = "接受这个风险";
 
 /**
  * 接受一条已知风险：**哪一条**，以及**为什么可以带着它走**。
@@ -459,22 +465,64 @@ export function waiveQuestion(input: {
 }): Question | null {
   if (input.waivable.length === 0) return null;
 
-  return compose([
-    // 选择器里 enum 显示的是值本身，所以把标题列在正文里 —— 只让人看见一串 id
-    // 去选，等于让他凭记忆决定。
-    `${input.phase}：接受哪一条风险？`,
-    ...input.waivable.map((gap) => `- ${gap.id}　${gap.title}`),
-    "",
-    "接受它意味着**问题还在**，你决定带着它往下走。这会留在交付说明里。",
-  ].join("\n"), [
-    // `gapId` < `reason`，而最后那格是必填的自由文本 —— 两条都满足 compose。
-    {
-      id: WAIVE_GAP_FIELD,
-      title: "哪一条",
-      options: input.waivable.map((gap) => gap.id),
-    },
-    { id: WAIVE_REASON_FIELD, title: "为什么可以带着它走" },
-  ]);
+  return compose(
+    `${input.phase}：这几条风险，哪些你决定带着走？`
+    + "\n接受一条意味着**问题还在**，只是不再挡闸门 —— 它会留在交付说明里。",
+    [
+      /*
+       * **一条一格，标题就是那条问题本身。**
+       *
+       * 原来是一个单选格，enum 里是四个裸 id，标题只写在正文里。而正文在 TUI 里
+       * 打印一次就滚上去了 —— 人做选择的那一刻眼前只有 `SPEC-XREF-1` 这种编号。
+       * 用户 2026-08-04 的原话：「我点进去接受风险那个页面，那我只能知道风险的编号，
+       * 我又不知道风险是啥。」和裁决表那边同一个修法（见 `responseFields`）。
+       *
+       * 顺带解决另一半：**一次能接多条**。原来一次一条，接四条就要走四遍完整流程，
+       * 每遍起一个 Codex turn。
+       */
+      ...input.waivable.map((gap, index) => ({
+        id: waiveFieldId(index + 1),
+        title: `${gap.id}\u3000${gap.title}`,
+        options: [WAIVE_KEEP, WAIVE_ACCEPT],
+      })),
+      /*
+       * 压轴必须是选项格：客户端的空文本格会吃掉回车，而整张表只能从最后一格提交
+       * （2026-07-30 实测）。理由走第二趟，只问真被接受的那几条。
+       */
+      {
+        id: WAIVE_CONFIRM_FIELD,
+        title: "选好了吗",
+        options: ["就这些", "先不接受任何一条"],
+      },
+    ],
+  );
+}
+
+/**
+ * 接受风险的第二趟：**只问真被接受的那几条要理由。**
+ *
+ * 一条都没接受就不弹 —— 全点「不接受」的人一个字都不用打。和裁决表那边
+ * `responseFollowUpQuestion` 同一个理由和同一个形状。
+ */
+export function waiveFollowUpQuestion(
+  waivable: readonly { id: string; title: string }[],
+  first: Answer,
+): Question | null {
+  const fields: Field[] = [];
+  waivable.forEach((gap, index) => {
+    const id = waiveFieldId(index + 1);
+    if (first.content[id] !== WAIVE_ACCEPT) return;
+    fields.push({
+      id: waiveReasonId(id),
+      title: `${gap.id}　为什么可以带着它走`,
+    });
+  });
+  if (fields.length === 0) return null;
+  return compose(
+    "这几条你决定接受。**每条都要说清为什么可以带着它走** ——"
+    + "一次没有理由的接受，和「忘了处理」在库里长得一模一样。",
+    fields,
+  );
 }
 
 export interface ClarificationItem {
@@ -602,17 +650,18 @@ export function decisionFrom(
  * 理由要求非空：一个没有理由的 waive 和「忘了处理」在库里长得一模一样。
  */
 export function waiveFrom(
-  question: Question,
+  waivable: readonly { id: string; title: string }[],
   answer: Answer,
-): { gapId: string; reason: string } | null {
-  if (answer.action !== "accept") return null;
-  const offered = question.requestedSchema.properties[WAIVE_GAP_FIELD]?.enum;
-  if (!offered) return null;
-
-  const gapId = answer.content[WAIVE_GAP_FIELD];
-  const reason = answer.content[WAIVE_REASON_FIELD];
-  if (typeof gapId !== "string" || !offered.includes(gapId)) return null;
-  if (typeof reason !== "string" || reason.trim() === "") return null;
-
-  return { gapId, reason };
+): { gapId: string; reason: string }[] {
+  if (answer.action !== "accept") return [];
+  const out: { gapId: string; reason: string }[] = [];
+  waivable.forEach((gap, index) => {
+    const id = waiveFieldId(index + 1);
+    if (answer.content[id] !== WAIVE_ACCEPT) return;
+    const reason = answer.content[waiveReasonId(id)];
+    // 理由要求非空：一个没有理由的 waive 和「忘了处理」在库里长得一模一样。
+    if (typeof reason !== "string" || reason.trim() === "") return;
+    out.push({ gapId: gap.id, reason: reason.trim() });
+  });
+  return out;
 }

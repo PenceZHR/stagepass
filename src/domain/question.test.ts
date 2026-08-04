@@ -24,6 +24,9 @@ import {
   type Question,
   waiveQuestion,
   waiveFrom,
+  waiveFollowUpQuestion,
+  WAIVE_ACCEPT,
+  WAIVE_KEEP,
 } from "./question";
 import type { ChangeState } from "./change-state";
 import type { Gap } from "./gap";
@@ -532,16 +535,67 @@ describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
     { id: "SPEC-2", title: "命令行没有定义" },
   ];
 
-  it("两个字段都必填 —— 一次点击给不出这两样，老树就死在这儿", () => {
+  it("**一条 gap 一格，标题就在格子上** —— 不是让人对着一串裸 id 选", () => {
+    /*
+     * 原来是一个单选格，enum 里四个裸 id，标题只写在正文里。而正文在 TUI 里打印
+     * 一次就滚上去了 —— 人做选择那一刻眼前只有 `SPEC-1`。用户 2026-08-04：
+     * 「我点进去接受风险那个页面，那我只能知道风险的编号，我又不知道风险是啥。」
+     */
     const question = waiveQuestion({ phase: "Spec", waivable })!;
-    assert.deepEqual([...question.requestedSchema.required].sort(), ["gapId", "reason"]);
-    assert.deepEqual(question.requestedSchema.properties.gapId?.enum, ["SPEC-1", "SPEC-2"]);
+    const titles = Object.values(question.requestedSchema.properties)
+      .map((each) => each.title ?? "");
+    assert.ok(titles.some((each) => each.includes("写入不是原子的")),
+      "格子的标题里没有这条问题的正文");
+    assert.ok(titles.some((each) => each.includes("命令行没有定义")));
   });
 
-  it("标题列在正文里 —— 只给一串 id 去选，等于让人凭记忆决定", () => {
+  it("**一次能接多条** —— 接四条不该走四遍完整流程", () => {
     const question = waiveQuestion({ phase: "Spec", waivable })!;
-    assert.match(question.message, /写入不是原子的/);
-    assert.match(question.message, /命令行没有定义/);
+    const accepted = waiveFrom(waivable, {
+      action: "accept",
+      content: {
+        W01: WAIVE_ACCEPT, W01x: "这一版先接受",
+        W02: WAIVE_ACCEPT, W02x: "命令行下一版再定",
+        "z-confirm": "就这些",
+      },
+    });
+    assert.deepEqual(accepted, [
+      { gapId: "SPEC-1", reason: "这一版先接受" },
+      { gapId: "SPEC-2", reason: "命令行下一版再定" },
+    ]);
+    assert.ok(question.requestedSchema.required.includes("W01"));
+  });
+
+  it("只接一条也行 —— 没选的那条一动不动", () => {
+    assert.deepEqual(
+      waiveFrom(waivable, {
+        action: "accept",
+        content: { W01: WAIVE_KEEP, W02: WAIVE_ACCEPT, W02x: "先这样" },
+      }),
+      [{ gapId: "SPEC-2", reason: "先这样" }]);
+  });
+
+  it("**第一趟一个自由文本格都没有** —— 空文本格会吃掉回车", () => {
+    const question = waiveQuestion({ phase: "Spec", waivable })!;
+    const free = Object.entries(question.requestedSchema.properties)
+      .filter(([, each]) => each.enum === undefined);
+    assert.deepEqual(free, [], "第一趟有自由文本格 —— 那一格会吃掉回车");
+  });
+
+  it("第二趟只问真被接受的那几条", () => {
+    const more = waiveFollowUpQuestion(waivable, {
+      action: "accept", content: { W01: WAIVE_KEEP, W02: WAIVE_ACCEPT },
+    })!;
+    assert.deepEqual(Object.keys(more.requestedSchema.properties), ["W02x"]);
+    assert.match(more.requestedSchema.properties.W02x?.title ?? "", /SPEC-2/);
+  });
+
+  it("一条都没接受 —— 第二趟不弹，一个字都不用打", () => {
+    assert.equal(
+      waiveFollowUpQuestion(waivable, {
+        action: "accept", content: { W01: WAIVE_KEEP, W02: WAIVE_KEEP },
+      }),
+      null);
   });
 
   it("没有可接受的 —— 不问", () => {
@@ -549,33 +603,14 @@ describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
     assert.equal(waiveQuestion({ phase: "Spec", waivable: [] }), null);
   });
 
-  it("读回来：选了哪一条、写了什么", () => {
-    const question = waiveQuestion({ phase: "Spec", waivable })!;
-    assert.deepEqual(
-      waiveFrom(question, {
-        action: "accept",
-        content: { gapId: "SPEC-2", reason: "这一版先不做命令行" },
-      }),
-      { gapId: "SPEC-2", reason: "这一版先不做命令行" });
-  });
-
-  it("选了一条没被提供过的 —— 拒绝", () => {
-    // 对着问题自己的 enum 校验，不是对着当前还有哪些 gap —— enum 是人当时真正
-    // 看见的东西。名单在他想的时候变了，就该拒绝，而不是把他的选择套到一条他
-    // 没看见的问题上。
-    const question = waiveQuestion({ phase: "Spec", waivable })!;
-    assert.equal(
-      waiveFrom(question, { action: "accept", content: { gapId: "SPEC-9", reason: "x" } }),
-      null);
-  });
-
-  it("没写理由 —— 拒绝", () => {
+  it("没写理由的那一条不算 —— 但别的照落", () => {
     // 一个没有理由的 waive 和「忘了处理」在库里长得一模一样。
-    const question = waiveQuestion({ phase: "Spec", waivable })!;
-    assert.equal(
-      waiveFrom(question, { action: "accept", content: { gapId: "SPEC-1", reason: "  " } }),
-      null);
-    assert.equal(
-      waiveFrom(question, { action: "decline", content: {} }), null);
+    assert.deepEqual(
+      waiveFrom(waivable, {
+        action: "accept",
+        content: { W01: WAIVE_ACCEPT, W01x: "  ", W02: WAIVE_ACCEPT, W02x: "有理由" },
+      }),
+      [{ gapId: "SPEC-2", reason: "有理由" }]);
+    assert.deepEqual(waiveFrom(waivable, { action: "decline", content: {} }), []);
   });
 });
