@@ -24,7 +24,7 @@ is simply not done:
 | **L3** | Compose question → Codex's native selector → a person chooses → answer lands → state advances | ✅ A real person really chose |
 | **L4** | Red / blue / judge adversarial rounds, settled into something decidable | ✅ Real rounds: gaps stored, gate held shut, gaps closed by later rounds |
 | **L5** | Rubric scoring, gap tracking | ✅ End-to-end on a real machine 2026-08-03 (PRD, round 3) |
-| **L6** | Rolled out to the remaining phases | 🟡 Two of eleven run end to end on a real machine (PRD approved 2026-08-04, then Spec). The other nine share the same code path and factory rubrics but have not been run. |
+| **L6** | Rolled out to the remaining phases | 🟡 Three of eleven run end to end on a real machine (PRD and Spec both approved 2026-08-04, now at TechSpec). The other eight share the same code path and factory rubrics but have not been run. |
 
 **A layer that has not passed is a layer you may not build on.** That is this
 repository's construction discipline, not a suggestion — and it is also how this
