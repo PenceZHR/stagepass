@@ -129,9 +129,33 @@
 用户的 `~/.codex/config.toml` 一个字不动。弹框全发生在裁判会话上，`-c` 恰好
 够得着它（子 Agent 不继承 `-c`，但 `stagepass_*` 从来不是子 Agent 在调）。
 
-**待办只剩真机确认**：下一轮跑起来，看 rollout 里第一次 `stagepass_next` 是否
-紧跟 `custom_tool_call_output`、中间没有等人的空白。确认后 `docs/CODEX-CONTRACT.md`
-C5 的「塌了会怎样」一栏改写。
+### ⚠ 2026-08-05 晚 · 真机取证，**原诊断被推翻**
+
+判据跑了：今天 16:22 那次 elicitation，`tools.mcp__stagepass__stagepass_ask({})`
+调用之后 169.8 秒返回 —— 而那 169.8 秒是人在填 26 格的表。**判据满足了，但它
+证不出解药有没有用**：一次许可框如果被人当场按掉，在 rollout 里和「没弹过」
+长得一模一样，两者都躲在这段人类耗时里面。
+
+**真正被推翻的是「65 分钟花在等人按许可」这句话。** 把 08-04 那一夜两条裁判线程
+的空白逐段拆开（TestPlan 019fcf75、Build 019fcff6）：
+
+```
+45 分钟   task_complete → thread_settings_applied   turn 已经跑完了，在等人开下一轮
+20 分钟   task_complete → thread_settings_applied   同上
+13 / 4 / 3 分钟   stagepass_ask/answer 的 tool_call → output   人在填表
+```
+
+**没有一段空白坐落在「会话起来了、提示词发出去了、第一个工具调用之前」** ——
+而许可框只可能卡在那儿。逐条查过：`user_message → 第一个 tool_call` 全部在
+4~21 秒之间（08-04 那一夜四次全是）。
+
+**所以「无人值守」被挡住的真实成因不是许可框，是这个：turn 跑完之后，
+StagePass 在等人推下一步。** 那不是缺陷，那是「一切由我裁决」这条设计本身。
+真要无人值守，要动的是**批量裁决 / 预授权**那类设计（还没设计），不是这个配置键。
+
+**解药留着**（`default_tools_approval_mode="auto"` 无害且方向正确），但它的功劳
+账上先记零 —— 唯一能证伪的证据只有人：**下次答题前，终端里有没有弹过许可框。**
+`docs/CODEX-CONTRACT.md` C5 在拿到那个答案之前不许改写成「已验」。
 
 **「Always allow 写在哪」那条悬案顺带有了解释**：按钮按下去的持久化面没找到
 （state_5.sqlite / codex-dev.db 都没有审批表）——它可能压根不持久化到这些库，
