@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import tsc from "typescript";
+
+import {
+  closureOf as graphClosureOf, dependenciesOf, parseModuleGraph,
+} from "./graph/module-graph";
 import { describe, it } from "node:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -41,6 +45,15 @@ const FILES = sourceFiles().map((path) => ({
  */
 const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
+  /*
+   * 真依赖图的解析器（H 档第一块）。它**只 import `typescript`**，我们自己的
+   * 东西一个都不碰 —— 所以放最低层，谁都够得着。
+   *
+   * 它同时是这条护栏自己的地基：图错了，下面「谁不许 import 谁」和「闭包别吃掉
+   * 全树」两条一起变成假的。所以它的层数不是随手放的，是「它不能依赖任何会被
+   * 它审判的东西」。
+   */
+  "graph/module-graph.ts": 0,
   // 只依赖 phase 的纯路径生成（E：产物的家）。
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
@@ -137,6 +150,20 @@ const production = FILES.filter((file) =>
   && !file.path.endsWith(".d.ts"));
 
 /**
+ * 这一整棵树的**真依赖图**，用真编译器解析（`graph/module-graph.ts`）。
+ *
+ * 分层护栏和闭包护栏原来各自数一遍 `from "…"` 的正则 —— §5.10 早就写着那个
+ * 「只够量结构，不够当护栏」。2026-08-05 换过来时先做了对照：**今天这棵树上
+ * 两者逐条一致**（48 模块 152 边，0 差异、0 落空边）。
+ *
+ * 所以换它的理由不是「正则今天算错了」，是**正则明天会算错而没人知道**：树里
+ * 现在恰好没有副作用 import、没有动态 import、注释里也没有假的 `from "./x"`，
+ * 而这三样任何一样出现，正则都会静默给出错的图 —— 一条护栏建在错的图上，
+ * 比没有护栏更糟。
+ */
+const GRAPH = parseModuleGraph(production);
+
+/**
  * Entry points that live outside `src` but are production callers all the same
  * -- `pnpm verify:rebuild` is how a person runs this tree. Counted when looking
  * for orphans, so a module reachable only from a command still counts as
@@ -181,7 +208,7 @@ describe("standing · layers depend downward only", () => {
     const violations: string[] = [];
     for (const file of production) {
       const layer = LAYER[file.path]!;
-      for (const target of imports(file)) {
+      for (const target of dependenciesOf(GRAPH, file.path)) {
         const targetLayer = LAYER[target];
         if (targetLayer === undefined) continue;
         if (targetLayer > layer) {
@@ -376,23 +403,13 @@ describe("standing · 没有一个函数长成一层", () => {
 });
 
 describe("standing · 没有一个模块的依赖闭包吃掉全树", () => {
-  const graph = new Map(production.map((file) => [file.path, imports(file)
-    .filter((target) => production.some((p) => p.path === target))]));
-  const closureOf = (start: string): number => {
-    const seen = new Set<string>([start]);
-    const queue = [start];
-    while (queue.length > 0) {
-      for (const next of graph.get(queue.pop()!) ?? []) {
-        if (!seen.has(next)) { seen.add(next); queue.push(next); }
-      }
-    }
-    return seen.size - 1;
-  };
-
   it("**闭包占比超线的只有例外表里那几个，而且没涨**", () => {
     const total = production.length;
     const over = production
-      .map((file) => ({ path: file.path, share: closureOf(file.path) / total }))
+      .map((file) => ({
+        path: file.path,
+        share: (graphClosureOf(GRAPH, file.path).length - 1) / total,
+      }))
       .filter(({ path, share }) => share > (CLOSURE_RATCHET[path] ?? CLOSURE_SHARE_CAP))
       .map(({ path, share }) => `${path} = ${(share * 100).toFixed(0)}%`);
     assert.deepEqual(over, [], "它正在变成第二个 panel-server —— 拆，别喂");
@@ -402,29 +419,11 @@ describe("standing · 没有一个模块的依赖闭包吃掉全树", () => {
     const total = production.length;
     const stale = Object.keys(CLOSURE_RATCHET).filter((path) =>
       !production.some((file) => file.path === path)
-      || closureOf(path) / total <= CLOSURE_SHARE_CAP);
+      || (graphClosureOf(GRAPH, path).length - 1) / total <= CLOSURE_SHARE_CAP);
     assert.deepEqual(stale, [], "把它从 CLOSURE_RATCHET 里删掉");
   });
 });
 
-function imports(file: { path: string; text: string }): string[] {
-  const directory = file.path.includes("/")
-    ? file.path.slice(0, file.path.lastIndexOf("/"))
-    : "";
-  const found: string[] = [];
-  for (const match of file.text.matchAll(/from "(\.[^"]+)"/g)) {
-    const specifier = match[1]!;
-    const parts = (directory ? `${directory}/${specifier}` : specifier).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "." || part === "") continue;
-      if (part === "..") resolved.pop();
-      else resolved.push(part);
-    }
-    found.push(`${resolved.join("/")}.ts`);
-  }
-  return found;
-}
 
 function exportedNames(text: string): string[] {
   const names = new Set<string>();
