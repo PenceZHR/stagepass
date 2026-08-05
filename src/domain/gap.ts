@@ -81,6 +81,7 @@ export class InvalidVerdictError extends Error {
     | "reason_missing"
     | "unknown_gap"
     | "standard_not_waivable"
+    | "p0_not_waivable"
     | "title_missing") {
     super(code);
     this.name = "InvalidVerdictError";
@@ -374,6 +375,14 @@ export function waive(gaps: readonly Gap[], gapId: string, reason: string): Gap[
   const gap = gaps.find((candidate) => candidate.id === gapId);
   if (!gap || gap.status !== "open") throw new InvalidVerdictError("unknown_gap");
   if (gap.kind === "standard") throw new InvalidVerdictError("standard_not_waivable");
+  /*
+   * P0 不许豁免（gate.ts：「严重到不可接受的问题不能靠普通确认绕过」）。这道闸必须
+   * 在这里而不是只在挑候选名单的地方：`/api/waive` 筛了 P1，但裁决表「回应蓝方」
+   * 对每条 open gap 都给「先接受这个风险」—— 2026-08-05 发现对 P0 选它会一路落到
+   * 这里，P0 落成 waived 就从 blockers 里消失，闸门就开了。名单是每个入口自己挑的，
+   * 规则只有这一份。
+   */
+  if (gap.severity === "P0") throw new InvalidVerdictError("p0_not_waivable");
   return gaps.map((candidate) =>
     candidate.id === gapId
       ? { ...candidate, status: "waived" as const, resolution: reason }

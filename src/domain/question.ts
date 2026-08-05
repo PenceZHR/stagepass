@@ -1,6 +1,6 @@
 import type { ChangeAction } from "./change-state";
-import type { Gap, GapResponse } from "./gap";
-import type { Gate } from "./gate";
+import { isHumanGap, type Gap, type GapResponse } from "./gap";
+import type { BlockerKind, BlockerSeverity, Gate } from "./gate";
 import { isPhase, sendsToFix } from "./phase";
 
 /**
@@ -143,6 +143,12 @@ export function gateDecisionQuestion(input: {
    * 缺席时行为和加这个参数之前逐字一致 —— 一个 `decision` 字段，别的什么都没有。
    */
   openGaps?: readonly Gap[] | undefined;
+  /**
+   * 现在是第几轮。给了，每条 gap 的格子标题就带上「第几轮提的、几轮没动过」——
+   * waive 是主路径（四个阶段全靠它过闸门），就该帮人 waive 得**有依据**（§3.2·6）。
+   * 缺席时标题只带严重度，不编轮次。
+   */
+  round?: number | undefined;
 }): Question | null {
   // `start`, `settle` and `fail` are the system reporting what happened. Only
   // these three are ever put to a person.
@@ -151,8 +157,14 @@ export function gateDecisionQuestion(input: {
     input.gate.permitted.includes(action) || clearableByAnswer(action, input.gate));
   if (offered.length === 0) return null;
 
-  return compose(`${input.phase}：${input.summary}`, [
-    ...responseFields(input.openGaps ?? []),
+  /*
+   * 状态和后果**写进题面** —— 只在给了 `openGaps` 的那条路上：那是「回应蓝方 +
+   * 裁决」那张表，人按下去的那一刻眼前只有它。没给的那条路逐字保持原样。
+   */
+  const stakes = input.openGaps === undefined ? "" : stakesOf(input.gate, input.openGaps);
+  const head = [stakes, input.summary].filter((part) => part !== "").join("\n");
+  return compose(`${input.phase}：${head}`, [
+    ...responseFields(input.openGaps ?? [], input.round),
     // `decision` 排在最后，因为小写 `d` 在 `R` 之后 —— 而它是选项格，所以整张表
     // 提交得动（见 `compose` 的第二条）。**这不是巧合，是挑名字时挑的。**
     {
@@ -245,11 +257,18 @@ export const runsAgainHere = (label: unknown): boolean =>
  *
  * 值就是选择器里显示的字，也是回来要匹配的字 —— 中间没有第二张映射表（§5.2b：
  * 选项集合就是 schema 里的 enum）。
+ *
+ * ## 每个选项自己说出它对闸门做什么（§3.2·4）
+ *
+ * 「同意，红方下轮必须改」听起来像"我接受了"，实际含义是这条**继续挡着闸门** ——
+ * 用户两次选了它 + 「就这样批准」，闸门正确地拒了，而账本里什么都没发生。他的
+ * 原话：「接受P0P1也推不出去，不接受也推不出去。」后果写在括号里是**静态**的，
+ * 和「散文不能拼进标签」不冲突 —— 变的状态进题面，不变的语义进标签。
  */
-export const RESPONSE_AGREE = "同意，红方下轮必须改";
-export const RESPONSE_DISMISS = "不同意，这条不成立";
-export const RESPONSE_WAIVE = "先接受这个风险";
-export const RESPONSE_OWN = "我自己说";
+export const RESPONSE_AGREE = "同意，红方下轮必须改（这条继续挡着闸门）";
+export const RESPONSE_DISMISS = "不同意，这条不成立（不再挡闸门）";
+export const RESPONSE_WAIVE = "先接受这个风险（问题还在，只是不再挡闸门）";
+export const RESPONSE_OWN = "我自己说（你的话进下一轮，这条继续挡着）";
 
 /** 人自己提一个新问题那一格。排在所有 `R0n` 之后、`decision` 之前。 */
 const RAISE_FIELD = "RY";
@@ -273,14 +292,14 @@ const responseFieldId = (n: number): string => `R${String(n).padStart(2, "0")}`;
  * 输入，**没有「选项 + 或者自己写」那种字段**。所以想让人越过四个选项说话，只能
  * 给第二格。
  */
-function responseFields(openGaps: readonly Gap[]): Field[] {
+function responseFields(openGaps: readonly Gap[], round?: number): Field[] {
   if (openGaps.length === 0) return [];
   const fields: Field[] = [];
   openGaps.forEach((gap, index) => {
     fields.push({
       id: responseFieldId(index + 1),
-      title: `${gap.id}\u3000${gap.title}`,
-      options: [RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE, RESPONSE_OWN],
+      title: `${gap.id}\u3000${gap.title}${provenanceOf(gap, round)}`,
+      options: responseOptionsFor(gap),
     });
   });
   /*
@@ -298,6 +317,104 @@ function responseFields(openGaps: readonly Gap[]): Field[] {
 /** 「你还要提什么」那一格的两个选项。点后面那个才进第二趟。 */
 export const RAISE_NOTHING = "没有了";
 export const RAISE_SOMETHING = "有，我来提";
+
+/**
+ * 这一条 gap 的格子给哪几个选项。
+ *
+ * **一个必被拒的选项不许出现（§5.4）** —— 老树那五个死按钮就是这么来的。这里的
+ * 判据和落地那边（`domain/gap.ts` 的 `waive` / `dismiss`）一一对应，不另算一套：
+ *
+ *   P0        waive 必被拒（P0 不许豁免）        -> 不给「先接受这个风险」
+ *   standard  waive 和 dismiss 都必被拒          -> 只剩「同意」和「我自己说」
+ *             （它的出口是撤下那条标准，见 stakesOf 写进题面的那句）
+ */
+function responseOptionsFor(gap: Gap): string[] {
+  if (gap.kind === "standard") return [RESPONSE_AGREE, RESPONSE_OWN];
+  if (gap.severity === "P0") return [RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_OWN];
+  return [RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE, RESPONSE_OWN];
+}
+
+/**
+ * 一条 gap 的依据，缀在格子标题后面（§3.2·6）。
+ *
+ * waive 是主路径 —— 四个阶段全部靠它才过的闸门，没有一个是模型清零的。既然是常态，
+ * 就该帮人 waive 得**有依据**：严重度、第几轮提的、几轮没动过、是不是他自己提的。
+ * 原来这些只能读散文自己判断，而一次要连判 5~8 条。
+ *
+ * **进标题，不进选项。** 标题不参与答案匹配（回来靠位置对应的字段 id），所以带上
+ * 会变的状态是安全的；选项标签是按原文精确匹配的枚举值，一个字都不许拼。
+ */
+function provenanceOf(
+  gap: {
+    readonly id: string;
+    readonly kind: BlockerKind;
+    readonly severity: BlockerSeverity | null;
+    readonly openedRound?: number;
+  },
+  round: number | undefined,
+): string {
+  const parts: string[] = [];
+  parts.push(gap.kind === "standard" ? "标准" : gap.severity ?? "");
+  if (isHumanGap(gap)) parts.push("你自己提的");
+  if (round !== undefined && gap.openedRound !== undefined) {
+    const age = round - gap.openedRound;
+    parts.push(age <= 0
+      ? "这一轮新提的"
+      : `第 ${gap.openedRound} 轮提的，${age} 轮没动过`);
+  }
+  const said = parts.filter((part) => part !== "").join(" · ");
+  return said === "" ? "" : `（${said}）`;
+}
+
+/**
+ * 状态和后果，摊进题面（§3.2 的根源修法）。
+ *
+ * 人答题的那一刻眼前只有 Codex 画的那张表 —— 哪些问题挡着、每一类的出口是什么、
+ * 现在选批准会怎样，这些不写进题面就等于要他凭记忆判断。原来那句
+ * 「N 项问题仍然挡着闸门」还把不挡门的 P2 也数了进去。
+ *
+ * 判据和闸门（`gate.ts` 的 `unresolved`）一一对应，不另算一套：standard 和 P0
+ * 挡且不可 waive，P1 挡但可 waive，P2 不挡。
+ */
+function stakesOf(gate: Gate, openGaps: readonly Gap[]): string {
+  const standards = openGaps.filter((gap) => gap.kind === "standard");
+  const p0 = openGaps.filter((gap) => gap.severity === "P0");
+  const p1 = openGaps.filter((gap) => gap.severity === "P1");
+  const p2 = openGaps.filter((gap) => gap.severity === "P2");
+  const blocking = standards.length + p0.length + p1.length;
+
+  const lines: string[] = [];
+  if (gate.refusals["approve"] === "nothing_was_produced") {
+    lines.push("这个阶段还没有产出，所以没有「批准」可选 —— 驳回问题变不出产物来。");
+  }
+  if (blocking === 0) {
+    lines.push(p2.length === 0
+      ? "没有问题挡着闸门。"
+      : `没有问题挡着闸门（另有 ${p2.length} 条 P2，不挡门）。`);
+    return lines.join("\n");
+  }
+
+  lines.push(`${blocking} 项问题挡着闸门。先逐条说你怎么看，最后再裁决：`);
+  if (p1.length > 0) {
+    lines.push(`· ${p1.length} 项 P1 —— 选「先接受这个风险」就不再挡`
+      + "（接受不等于批准：问题还在，带着走进交付说明，阶段也不会自己往前走）。");
+  }
+  if (p0.length > 0) {
+    lines.push(`· ${p0.length} 项 P0 —— 接受不了：要么红方下轮改（选「同意」），`
+      + "要么你判它不成立（选「不同意」），要么用「我自己说」写清你要什么 —— "
+      + "那句话会进下一轮提示词，红方读得到。");
+  }
+  if (standards.length > 0) {
+    lines.push(`· ${standards.length} 项没满足的标准 —— 这张表上处理不了：`
+      + "出口是网页「标准」页签里撤下那条标准。");
+  }
+  if (p2.length > 0) lines.push(`（另有 ${p2.length} 条 P2，不挡闸门。）`);
+  if (gate.refusals["approve"] === "blocking_problem_outstanding") {
+    lines.push("挡着的没清完就选「就这样批准」，会被拒；"
+      + "你在上面各格的表态先落地再裁决，全清掉了这一次就放行。");
+  }
+  return lines.join("\n");
+}
 
 /**
  * 裁决的第二趟：**只问那几条真的需要理由的。**
@@ -436,7 +553,7 @@ const waiveReasonId = (fieldId: string): string => `${fieldId}x`;
 /** 压轴那一格：必须是选项格，整张表才提交得动（见 `compose`）。 */
 const WAIVE_CONFIRM_FIELD = "z-confirm";
 export const WAIVE_KEEP = "不接受，继续挡着闸门";
-export const WAIVE_ACCEPT = "接受这个风险";
+export const WAIVE_ACCEPT = "接受这个风险（不再挡闸门，进交付说明）";
 
 /**
  * 接受一条已知风险：**哪一条**，以及**为什么可以带着它走**。
@@ -461,13 +578,20 @@ export const WAIVE_ACCEPT = "接受这个风险";
  */
 export function waiveQuestion(input: {
   phase: string;
-  waivable: readonly { id: string; title: string }[];
+  waivable: readonly { id: string; title: string; openedRound?: number }[];
+  /** 现在是第几轮。给了就在每条标题上带「第几轮提的、几轮没动过」（§3.2·6）。 */
+  round?: number | undefined;
 }): Question | null {
   if (input.waivable.length === 0) return null;
 
   return compose(
     `${input.phase}：这几条风险，哪些你决定带着走？`
-    + "\n接受一条意味着**问题还在**，只是不再挡闸门 —— 它会留在交付说明里。",
+    + "\n接受一条意味着**问题还在**，只是不再挡闸门 —— 它会留在交付说明里。"
+    /*
+     * waive ≠ approve，这句必须说（§3.2 撞的）：用户接受了 4 条风险，期待阶段
+     * 往下走 —— 什么都没发生。接受只把问题从「挡着」变成「带着走」。
+     */
+    + "\n接受完阶段**不会自己往前走** —— 往前走要回到裁决那道题（「请 Codex 问我」）。",
     [
       /*
        * **一条一格，标题就是那条问题本身。**
@@ -482,7 +606,11 @@ export function waiveQuestion(input: {
        */
       ...input.waivable.map((gap, index) => ({
         id: waiveFieldId(index + 1),
-        title: `${gap.id}\u3000${gap.title}`,
+        // \u4f9d\u636e\u7f00\u5728\u6807\u9898\u4e0a\uff08\u00a73.2\u00b76\uff09\u3002\u540d\u5355\u7531\u8c03\u7528\u65b9\u7b5b\u597d\uff0c\u80fd\u5230\u8fd9\u513f\u7684\u90fd\u662f P1 finding\u3002
+        title: `${gap.id}\u3000${gap.title}${provenanceOf(
+          { id: gap.id, kind: "finding", severity: "P1", ...(gap.openedRound === undefined ? {} : { openedRound: gap.openedRound }) },
+          input.round,
+        )}`,
         options: [WAIVE_KEEP, WAIVE_ACCEPT],
       })),
       /*

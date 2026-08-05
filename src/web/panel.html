@@ -677,6 +677,21 @@ body::after {
 .rubric-note { margin-top: 12px; font: 400 11.5px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 .rubric-note.bad { color: var(--problem); }
 .sheet-line { margin: 16px 0 0; color: rgba(255,255,255,.6); font-size: 12.5px; line-height: 1.75; }
+
+/* 一轮的进度：三个里程碑一段一段亮过去。全灰 = 在跑但还看不出走到哪。 */
+.round-progress { display: flex; gap: 4px; margin: 10px 0 0; }
+/*
+ * `display: flex` 会压掉 UA 样式表给 `[hidden]` 的 `display: none` —— 于是没在跑
+ * 也摆着一条条。2026-08-05 在浏览器里当场看见的，typecheck 看不见这种。
+ */
+.round-progress[hidden] { display: none; }
+.round-progress span {
+  flex: 1; padding: 6px 0; text-align: center; border-radius: 4px;
+  font: 500 11px/1 ui-sans-serif, sans-serif;
+  color: rgba(255,255,255,.38); background: rgba(255,255,255,.05);
+  transition: background .4s, color .4s;
+}
+.round-progress span.reached { color: #1c1913; background: var(--sand-deep); }
 .sheet-empty { margin: 18px 0 4px; font: 400 12px/1.7 var(--serif); color: rgba(255,255,255,.46); }
 
 /*
@@ -688,6 +703,14 @@ body::after {
   border-left: 2px solid var(--sand-deep); border-radius: 0 10px 10px 0;
   background: rgba(225,198,160,.07);
   font: 500 12.5px/1.75 ui-sans-serif, sans-serif; color: rgba(255,255,255,.9);
+}
+
+/* 上次裁决被拒。长得像 next-step 但偏警示色 —— 它说的是「为什么没推动」。 */
+.last-outcome {
+  margin: 12px 0 0; padding: 11px 14px;
+  border-left: 2px solid rgba(255,128,112,.72); border-radius: 0 10px 10px 0;
+  background: rgba(255,128,112,.08);
+  font: 500 12.5px/1.75 ui-sans-serif, sans-serif; color: rgba(255,255,255,.88);
 }
 .next-step b {
   color: var(--sand-strong); font-weight: 800;
@@ -1015,6 +1038,16 @@ body::after {
       <div class="sheet-body">
         <p class="sheet-line" id="sheet-line"></p>
         <!--
+          这一轮走到哪一步（§2.3）。三段是三个**看得见的里程碑**（裁判起来 /
+          红方出现 / 蓝方出现），不是编出来的百分比 —— 说不出走到哪就一段都不亮：
+          「在跑但看不出位置」和「没在跑」必须长得不一样。
+        -->
+        <div class="round-progress" id="round-progress" hidden>
+          <span>裁判起来了</span>
+          <span>红方在写</span>
+          <span>蓝方在挑</span>
+        </div>
+        <!--
           **下一步该干什么，直接写出来。**
 
           在这之前，人只能靠「哪个按钮是亮的」去猜下一步 —— 而按钮全灰的时候
@@ -1025,6 +1058,12 @@ body::after {
           开发」。**说出下一步就是这条本身**，不是装饰。
         -->
         <p class="next-step" id="next-step" hidden></p>
+        <!--
+          上次裁决被闸门拒了 —— **留得住的状态，不是一句一闪而过的话**（§3.2·5）。
+          它原来写在终端底下那行注解里，而「进程已经结束了」会盖掉它 —— 那正是
+          答完之后必然发生的事。这里每次重画都从库里的 lastOutcome 来，盖不掉。
+        -->
+        <p class="last-outcome" id="last-outcome" hidden></p>
         <div id="sheet-gaps"></div>
         <div id="sheet-rubric" hidden></div>
       </div>

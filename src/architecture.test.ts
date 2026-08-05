@@ -321,7 +321,8 @@ describe("standing · pty output is never interpreted", () => {
 const FUNCTION_LINES_CAP = 300;
 const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
-  "web/panel-server.ts#handle": 1463,
+  // 2026-08-05：抽 launchAskPrompt 钉下一格（1463 → 1462）。
+  "web/panel-server.ts#handle": 1462,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

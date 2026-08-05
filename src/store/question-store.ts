@@ -191,6 +191,41 @@ export class QuestionStore {
   }
 
   /**
+   * 这次裁决的下场，落库（§3.2·5）。
+   *
+   * 「闸门拒了」原来只活在 `/api/ask` 的一次响应里，前端把它写进终端底下那行 ——
+   * 而至少两处会覆盖那一行，其中一处是「进程已经结束了」，**那正是答完之后必然
+   * 发生的事**。所以下场必须是留得住的状态。成功的下场也记：它自己就把上一次的
+   * 拒绝顶下去了，不用另写清除逻辑。
+   */
+  recordOutcome(questionId: string, outcome: unknown): void {
+    this.database.prepare(
+      "UPDATE questions SET outcome_json = ?, updated_at = ? WHERE id = ?",
+    ).run(JSON.stringify(outcome), this.now().toISOString(), questionId);
+  }
+
+  /**
+   * 这个阶段最近一次裁决的下场，带上什么时候。null = 这个阶段还没裁决落过。
+   *
+   * 形状就是当时存进去的 outcome（`{kind:"refused",action,reason}` 那种），
+   * 摊平加一个 `at` —— 界面直接讲人话用的，不是给状态机的。
+   */
+  latestOutcomeFor(changeId: string, phase: Phase): Record<string, unknown> | null {
+    const row = this.database.prepare(
+      `SELECT outcome_json, updated_at FROM questions
+       WHERE change_id = ? AND phase = ? AND outcome_json IS NOT NULL
+       ORDER BY updated_at DESC LIMIT 1`,
+    ).get(changeId, phase) as
+      | { outcome_json: string; updated_at: string }
+      | undefined;
+    if (!row) return null;
+    return {
+      ...(JSON.parse(row.outcome_json) as Record<string, unknown>),
+      at: row.updated_at,
+    };
+  }
+
+  /**
    * fence：这道题问出去时的那份证据，现在还是不是同一份。
    *
    * ## 为什么要有一个单独的方法

@@ -6,6 +6,7 @@ import {
   readThreadTranscript,
   SubAgentNotFoundError,
   SubAgentUnfinishedError,
+  threadContextUsage,
 } from "./subagent";
 
 
@@ -150,5 +151,36 @@ describe("L4 · 按血缘认这一轮的两条子线程", () => {
 
   it("一个都没有就是空 —— 是不是错由上层判", () => {
     assert.deepEqual(childThreadsOf({ parentThreadId: JUDGE, ...from({}) }), []);
+  });
+});
+
+describe("L4 · 线程离墙多远，从它的 rollout 读（§3.3·11）", () => {
+  const TID = "019fc400-aaaa-7aaa-8aaa-aaaaaaaaaaaa";
+  const path = `/s/2026/08/05/rollout-2026-08-05T09-00-00-${TID}.jsonl`;
+  const tokenLine = JSON.stringify({
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        last_token_usage: { input_tokens: 99_353, output_tokens: 200 },
+        model_context_window: 258_400,
+      },
+    },
+  });
+
+  it("找得到线程 —— 读出最近一次请求的用量", () => {
+    assert.deepEqual(
+      threadContextUsage({ threadId: TID, list: () => [path], read: () => tokenLine }),
+      { used: 99_553, window: 258_400 },
+    );
+  });
+
+  it("线程不在、或还没有 token_count —— null，不抛也不编", () => {
+    // 和 readThreadTranscript 抛错的理由相反：那边空字符串会被当成「这一方什么
+    // 都没说」进下一轮；这边 null 只是界面少显示一行 —— 「说不出」照实说。
+    assert.equal(
+      threadContextUsage({ threadId: TID, list: () => [], read: () => "" }), null);
+    assert.equal(
+      threadContextUsage({ threadId: TID, list: () => [path], read: () => "" }), null);
   });
 });

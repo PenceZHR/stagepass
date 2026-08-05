@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
-  allTextIn, findLastCompletedTurn, lineageOf, parseRollout, threadIdFromRolloutName,
+  allTextIn, contextUsageOf, findLastCompletedTurn, lineageOf, parseRollout,
+  threadIdFromRolloutName, type ContextUsage,
 } from "./rollout";
 
 /**
@@ -218,6 +219,23 @@ function rolloutOf(input: ThreadLookup) {
     throw new SubAgentNotFoundError(input.threadId);
   }
   return parseRollout(read(path));
+}
+
+/**
+ * 这条线程离上下文墙多远（§3.3·11）。
+ *
+ * 找不到线程、或 rollout 里还没有 `token_count`，都返回 null。和
+ * `readThreadTranscript` **抛错**的理由正相反：那边一个空字符串会被上游当成
+ * 「这一方什么都没说」写进下一轮提示词；这边 null 只是界面少显示一行 ——
+ * 「说不出」照实说不出，不该为此把进度端点带崩。
+ */
+export function threadContextUsage(input: ThreadLookup): ContextUsage | null {
+  try {
+    return contextUsageOf(rolloutOf(input));
+  } catch (error) {
+    if (error instanceof SubAgentNotFoundError) return null;
+    throw error;
+  }
 }
 
 const DEFAULT_SESSIONS = join(homedir(), ".codex", "sessions");

@@ -94,6 +94,8 @@ const briefButton = button("brief");
 const closeTermButton = button("close-term");
 const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
+const lastOutcomeLine = pick("last-outcome");
+const roundProgress = pick("round-progress");
 const runButton = button("run");
 const askButton = button("ask");
 
@@ -196,6 +198,9 @@ const STAGE_WORDS = {
   blue_attacking: "蓝方在挑毛病",
 };
 
+/** 里程碑的顺序 —— 和 panel.html 里 #round-progress 三段的书写顺序是同一份。 */
+const STAGE_ORDER = ["judge_starting", "red_writing", "blue_attacking"];
+
 /** 3:20 这种。毫秒对人没有意义。 */
 function spell(ms) {
   const seconds = Math.max(0, Math.round(ms / 1000));
@@ -222,6 +227,33 @@ function progressWords(progress) {
     : `${progress.phase} 在跑，已经 ${elapsed}：${STAGE_WORDS[progress.stage] ?? progress.stage}。`;
 }
 
+/**
+ * 一轮的进度条（§2.3）：三个**看得见的里程碑**，亮到走到的那一段。
+ *
+ * 不是百分比 —— 百分比只能编，而里程碑是从「裁判派生了几个子 Agent」真实数出来
+ * 的（/api/progress 的 stage）。说不出走到哪（第一轮开头）就一段都不亮：条在、
+ * 全灰 —— 「在跑但看不出位置」和「没在跑」长得不一样。挂了（processGone）就收起
+ * 来，让那句 ⚠ 单独说话，不摆一条还在走的条骗人。
+ */
+function paintRoundProgress(progress) {
+  const running = progress.status === "running" && !progress.processGone;
+  roundProgress.hidden = !running;
+  if (!running) return;
+  const reached = progress.stage === null ? -1 : STAGE_ORDER.indexOf(progress.stage);
+  [...roundProgress.children].forEach((piece, index) => {
+    piece.classList.toggle("reached", index <= reached);
+  });
+}
+
+/** 裁判线程离墙多远，一小句。说不出就空 —— 不编（§3.3·11）。 */
+function contextWords(progress) {
+  const context = progress.context;
+  if (!context || typeof context.used !== "number" || !context.window) return "";
+  const percent = Math.round((context.used / context.window) * 100);
+  return `　线程上下文已用 ${percent}%`
+    + `（${Math.round(context.used / 1000)}k / ${Math.round(context.window / 1000)}k）。`;
+}
+
 async function pollProgress() {
   let progress;
   try {
@@ -230,10 +262,11 @@ async function pollProgress() {
   } catch {
     return; // 一次没拉到不说话，下一次再说 —— 报「读不到进度」比没有进度更吵
   }
+  paintRoundProgress(progress);
   const words = progressWords(progress);
   if (words === null) return;
   // 写在弹窗那一行。人是从弹窗里按下「跑这个阶段」的，结果就该回到那儿。
-  sheetLine.textContent = words;
+  sheetLine.textContent = words + contextWords(progress);
   if (progress.status === "running" && !progress.processGone) {
     runButton.textContent = `在跑 ${spell(progress.job?.elapsedMs ?? 0)}`;
   }
@@ -246,6 +279,7 @@ function startProgress() {
 }
 
 function stopProgress() {
+  roundProgress.hidden = true;
   if (progressTimer === null) return;
   clearInterval(progressTimer);
   progressTimer = null;
@@ -391,6 +425,7 @@ const REFUSAL_WORDS = {
   reason_missing: "没写理由，所以这一条留着没动",
   unknown_gap: "这一条在你回答的时候已经不是未解决状态了",
   standard_not_waivable: "这是一条标准，出口是在「标准」页签里撤下它",
+  p0_not_waivable: "P0 不许豁免 —— 出口是红方改掉它，或者你判它不成立",
 };
 
 /**
@@ -834,6 +869,28 @@ function gateSentence() {
 
 const openGaps = (entry) => entry.gaps.filter((gap) => gap.status === "open");
 
+/** 闸门拒人的三个理由，翻成人话。和 `domain/gate.ts` 的 RefusalReason 一一对应。 */
+const GATE_REFUSAL_WORDS = {
+  blocking_problem_outstanding: "还有问题挡着闸门",
+  nothing_was_produced: "这个阶段什么都没产出",
+  not_legal_in_this_status: "现在这个状态不接受这个动作",
+};
+
+/**
+ * 上次裁决的下场，翻成一句留得住的话（§3.2·5）。
+ *
+ * 只有被拒的下场要挂出来 —— 落地成功的那些，环上的标记已经在说了；给它们也挂
+ * 一条横幅，警示色就不再意味着警示。null = 没什么要挂的。
+ */
+function lastOutcomeWords(outcome) {
+  if (!outcome || outcome.kind !== "refused") return null;
+  const reason = GATE_REFUSAL_WORDS[outcome.reason] ?? outcome.reason;
+  const at = typeof outcome.at === "string"
+    ? `（${new Date(outcome.at).toLocaleString()}）` : "";
+  return `⚠ 上次裁决被闸门拒了${at}：「${outcome.action}」没落地 —— ${reason}。`
+    + "处理掉挡着的问题，再裁一次。";
+}
+
 /** 一行「词条 / 值」。左侧面板和弹窗共用同一种写法。 */
 function factRows(rows) {
   statusFacts.replaceChildren(...rows.map(([term, value]) => {
@@ -897,6 +954,10 @@ function renderStatus(entry) {
     ["未解决的问题", String(open.length)],
     ["问题总数", String(entry.gaps.length)],
     ["当前阶段", entry.current ? "是" : "否"],
+    // 悬停这一层也要看得见「上次为什么没推动」—— 明细在弹窗那条横幅里。
+    ...(entry.lastOutcome?.kind === "refused"
+      ? [["上次裁决", `被闸门拒了：${GATE_REFUSAL_WORDS[entry.lastOutcome.reason] ?? entry.lastOutcome.reason}`]]
+      : []),
   ]);
   statusFoot.textContent = "点这个阶段的小圈，看它的问题明细。";
 }
@@ -994,6 +1055,15 @@ function drawSheet(phase) {
     ?? (entry.current && panelState?.brief === null
       ? "还没说清楚这次改动要什么。先按「说清楚我要什么」—— 没有它，红方只能自己猜。"
       : entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry))
+
+  /*
+   * 上次裁决被拒 —— **留得住**（§3.2·5）。它原来只写进 stageNote / sheetLine，
+   * 而「进程已经结束了」会盖掉它，那正是答完之后必然发生的事。这里每次重画都从
+   * 库里的 lastOutcome 来：盖不掉，刷新也还在；下一次裁决落地它自己就换掉了。
+   */
+  const refusedWords = lastOutcomeWords(entry.lastOutcome);
+  lastOutcomeLine.hidden = refusedWords === null;
+  lastOutcomeLine.textContent = refusedWords ?? "";
 
   drawGaps(entry);
   sheetGaps.prepend(drawProduced(entry));

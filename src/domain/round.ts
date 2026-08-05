@@ -747,6 +747,27 @@ export type RoundNoteSource = (typeof ROUND_NOTE_SOURCES)[number];
  * 人选完就映射不回 `reject` 了 —— 而那是静默失败。标签是**枚举值**，这段是**散文**，
  * 正好对应「模型和人的输出里只允许有枚举里的选择和散文」那条。
  */
+/**
+ * 这个阶段现在是第几轮：账本里落进 `running` 的次数。
+ *
+ * **轮次从账本数，不用 `job.attempt`** —— attempt 是「这个 job 的第几次尝试」，
+ * 而每次「跑这个阶段」都新建一个 job，于是它恒等于 1（实测：CHG-002 跑了两轮，
+ * `gaps.opened_round` 全是 1）。账本 append-only：只有 `start` 和 `retry` 落进
+ * `running`，数它就是数轮。
+ *
+ * 抽成一份是因为它已经有了两份拷贝（派发那边和裁决题面那边），2026-08-05 要加
+ * 第三个用途（waive 表带轮次依据）—— 各算一套迟早会说出两个不同的「第几轮」，
+ * 而人正拿着这个数做决定。
+ */
+export function roundFromLedger(
+  entries: readonly { readonly to: { readonly phase: string; readonly status: string } }[],
+  phase: string,
+): number {
+  return entries
+    .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
+    .length;
+}
+
 export function summariseConvergence(input: {
   readonly round: number;
   readonly budget: number;

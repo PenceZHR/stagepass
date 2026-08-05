@@ -267,6 +267,8 @@ describe("panel · what it offers", () => {
         // 空数组 = 还没产出任何东西。闸门不会放行一个什么都没产出的阶段，
         // 所以这一格是「红方主张」那一侧的原料。
         produced: [],
+        // null = 这个阶段还没有裁决落过 —— 不许编一个下场出来（§3.2·5）。
+        lastOutcome: null,
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));
@@ -2101,6 +2103,38 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         { kind: "refused", action: "approve", reason: "blocking_problem_outstanding" });
       // 阶段一步都没动。
       assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "PRD");
+    });
+  });
+
+  it("**闸门拒了那句话留得住** —— 刷新之后 /api/panel 还说得出上次裁决的下场（§3.2·5）", async () => {
+    /*
+     * 原来 {kind:"refused"} 只活在 /api/ask 的响应里，前端把它写进 stageNote ——
+     * 而至少两处会覆盖那一行，其中一处是「进程已经结束了」，**那正是答完之后必然
+     * 发生的事**。所以下场必须是库里留得住的状态，不是一句一闪而过的话。
+     */
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
+        decision: decisionLabel("approve", "PRD"),
+      });
+      await (await asking).json();
+
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        phases: {
+          phase: string;
+          lastOutcome: { kind: string; action?: string; reason?: string; at?: string } | null;
+        }[];
+      };
+      const prd = panel.phases.find((entry) => entry.phase === "PRD")!;
+      assert.equal(prd.lastOutcome?.kind, "refused");
+      assert.equal(prd.lastOutcome?.action, "approve");
+      assert.equal(prd.lastOutcome?.reason, "blocking_problem_outstanding");
+      assert.ok(prd.lastOutcome?.at, "什么时候拒的也要说得出来");
+      // 没裁决过的阶段不许编一个下场出来。
+      assert.equal(panel.phases.find((entry) => entry.phase === "Spec")!.lastOutcome, null);
     });
   });
 

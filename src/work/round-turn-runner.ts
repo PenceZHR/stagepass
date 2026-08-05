@@ -3,7 +3,7 @@ import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
 import { PHASES, producesCommit, type Phase } from "../domain/phase";
-import type { RoundConclusion } from "../domain/round";
+import { roundFromLedger, type RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
@@ -100,21 +100,11 @@ export class RoundTurnRunner implements TurnRunner {
     }
 
     /*
-     * **轮次从账本数，不用 `job.attempt`。**
-     *
-     * attempt 是「这个 job 的第几次尝试」，而每次「跑这个阶段」都新建一个 job ——
-     * 于是它恒等于 1。实测过的后果：CHG-002 跑了两轮，`gaps.opened_round` 全是 1，
-     * 「第几轮发现的」在库里是假话，而 REMAP §3.5「按轮读，不按 run 读」建在这个
-     * 数上。
-     *
-     * 账本 append-only：这个阶段第几次落到 `running`（`start` 和 `retry`，只有
-     * 这两个动作落进 running），就是第几轮。`queueTurn` 在派发之前就把这一轮的
-     * `start` 写进去了，所以这里数出来的正是**当前**这一轮。失败后的 retry 也
-     * 天然算得进去 —— 那确实是新的一轮。
+     * **轮次从账本数，不用 `job.attempt`**（理由在 `roundFromLedger` 的注释里，
+     * 一份实现三处用）。`queueTurn` 在派发之前就把这一轮的 `start` 写进去了，
+     * 所以这里数出来的正是**当前**这一轮。
      */
-    const round = this.options.changes.ledger(job.changeId)
-      .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
-      .length;
+    const round = roundFromLedger(this.options.changes.ledger(job.changeId), phase);
 
     /*
      * **轮前把脏文件拍个快照** —— 轮末的越界报告靠差集把「模型这一轮写的」和

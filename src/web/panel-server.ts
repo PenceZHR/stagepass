@@ -11,6 +11,7 @@ import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
   childThreadsOf, createSubAgentLookup, readThreadTranscript, readThreadWholeText,
+  threadContextUsage,
 } from "../codex/subagent";
 import {
   archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
@@ -42,7 +43,7 @@ import { WorklistStore } from "../store/worklist-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
-import { summariseConvergence, summariseRoundNotes } from "../domain/round";
+import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
 import {
   RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
   type RubricRole,
@@ -156,6 +157,20 @@ const cannotAskNow = (
 const ASK_TOOL_LINE =
   "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——"
   + "问哪一个由 StagePass 决定。不要替我做决定、不要猜我想选什么，调用完就停下。";
+
+/**
+ * 起会话（`launchInto`）时带的提示词：调 `stagepass_ask`、别替人答。
+ *
+ * 前两句在每个落点一字不差 —— 拷贝必然漂移，而漂移的那一天某条路上的模型会说
+ * 「没有这个工具」。后两句跟着这次问的是什么走。多行没关系：这是 argv 的 prompt，
+ * 不进 composer（composer 那条路用 `ASK_TOOL_LINE`，一行是它的硬约束）。
+ */
+const launchAskPrompt = (hands: string, dont: string): string => [
+  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
+  "问哪一个由 StagePass 决定。",
+  hands,
+  dont,
+].join("\n");
 
 const pluginConfigFor = (
   database: { name: string }, changeId: string,
@@ -1308,6 +1323,8 @@ export async function handle(
           assessed: rounds,
           /** 红方产出了什么。空数组 = 这个阶段还没产出任何东西。 */
           produced,
+          /** 上次裁决的下场（§3.2·5）。留得住的状态，不是弹窗里一闪而过的那句。 */
+          lastOutcome: new QuestionStore(database).latestOutcomeFor(changeId, phase),
         };
       }),
     });
@@ -1362,11 +1379,14 @@ export async function handle(
      */
     let spawned = 0;
     let stageKnown = false;
+    let context: { used: number; window: number } | null = null;
     try {
       const bound = new BindingStore(database).find(changeId, phase);
       if (bound?.status === "bound") {
         spawned = createSubAgentLookup().spawnCount(bound.threadId);
         stageKnown = true;
+        // 裁判线程离上下文墙多远（§3.3·11）。null = rollout 里还没有 token_count。
+        context = threadContextUsage({ threadId: bound.threadId });
       }
     } catch {
       stageKnown = false; // 查不到就是查不到，不猜
@@ -1384,6 +1404,8 @@ export async function handle(
       },
       /** 这一轮派生了几个子 Agent。原样给出去 —— 界面自己决定怎么说。 */
       spawned,
+      /** 裁判线程离墙多远：{used, window}。null = 没绑线程或还读不出，不编。 */
+      context,
       /**
        * 走到哪一步。`null` = 说不出来（第一轮，或者查不到子 Agent）。
        *
@@ -1811,29 +1833,24 @@ export async function handle(
      * 各取各的轮次就是把两轮的东西并排摆着当成一轮，那是在骗人。
      */
     const notes = new RoundNoteStore(database).latest(changeId, phase);
+    // 轮次和派发同一份算法 —— 各算一套迟早说出两个「第几轮」，而人正拿它做决定。
+    const round = roundFromLedger(changes.ledger(changeId), phase);
     const question = gateDecisionQuestion({
       phase,
       gate,
-      summary: (blockers.length === 0
-        ? "证据已到齐，没有挡住闸门的问题。"
-        : `${blockers.length} 项问题仍然挡着闸门。先逐条说你怎么看，最后再裁决。`)
-        + summariseAssessments(assessed?.byRole ?? null)
+      // 「什么挡着、出口、批准会怎样」由 gateDecisionQuestion 从 gate+openGaps 算
+      // （§3.2：判据和闸门同一份）。这里只拼「这一轮判成什么样」。
+      summary: summariseAssessments(assessed?.byRole ?? null)
         + summariseRoundNotes(notes)
-        /*
-         * 跑满预算之后把收敛数据摊出来。**不拦人** —— 阻断归人管。
-         *
-         * 轮次和派发那边同一个算法：账本里落进 `running` 的次数。两处各算一套迟早
-         * 会说出两个不同的「第几轮」，而人正拿着这个数做决定。
-         */
+        // 跑满预算之后把收敛数据摊出来。**不拦人** —— 阻断归人管。
         + summariseConvergence({
-          round: new ChangeStore(database).ledger(changeId)
-            .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
-            .length,
+          round,
           budget: options.roundBudget ?? 5,
-          raised: gaps.all(changeId, phase).length,
+          raised: allGaps.length,
           open: blockers.length,
         }),
       openGaps,
+      round,
     });
     // No question rather than an empty one: putting a decision to someone that
     // they cannot make is worse than not asking (domain/question.ts).
@@ -1858,12 +1875,8 @@ export async function handle(
       reasoningEffort: options.session.reasoningEffort,
       // Registered per invocation, never written to the user's global config.
       config: pluginConfigFor(database, changeId),
-      prompt: [
-        "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
-        "问哪一个由 StagePass 决定。",
-        "它会把 StagePass 的问题交给我来选。",
-        "不要替我做决定，不要解释我该选什么，调用完就停下。",
-      ].join("\n"),
+      prompt: launchAskPrompt("它会把 StagePass 的问题交给我来选。",
+        "不要替我做决定，不要解释我该选什么，调用完就停下。"),
     }));
 
     const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
@@ -2007,6 +2020,8 @@ export async function handle(
       questions.settle(questionId);
       outcome = { kind: "refused", action: error.action, reason: error.reason };
     }
+    // 下场落库 —— 「闸门拒了」必须留得住（§3.2·5），不能只活在这一次响应里。
+    questions.recordOutcome(questionId, outcome);
 
     /*
      * **批准了就归档这个阶段的线程。**
@@ -2307,7 +2322,10 @@ export async function handle(
     const gaps = new GapStore(database);
     const waivable = gaps.all(changeId, phase).filter((gap) =>
       gap.status === "open" && gap.kind === "finding" && gap.severity === "P1");
-    const question = waiveQuestion({ phase, waivable });
+    // round：标题上「第几轮提的」的分母 —— 和派发、裁决同一份算法。
+    const question = waiveQuestion({
+      phase, waivable, round: roundFromLedger(changes.ledger(changeId), phase),
+    });
     if (!question) {
       json(response, { asked: false, reason: "nothing_waivable", phase });
       return;
@@ -2329,12 +2347,8 @@ export async function handle(
       model: options.session.model,
       reasoningEffort: options.session.reasoningEffort,
       config: pluginConfigFor(database, changeId),
-      prompt: [
-        "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
-        "问哪一个由 StagePass 决定。",
-        "它会把「哪几条风险可以带着走」交给我来选。",
-        "不要替我做决定，不要评价这些风险，调用完就停下。",
-      ].join("\n"),
+      prompt: launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
+        "不要替我做决定，不要评价这些风险，调用完就停下。"),
     }));
 
     const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);

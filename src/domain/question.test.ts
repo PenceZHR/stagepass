@@ -29,7 +29,7 @@ import {
   WAIVE_KEEP,
 } from "./question";
 import type { ChangeState } from "./change-state";
-import type { Gap } from "./gap";
+import { blockersFrom, humanGapId, type Gap } from "./gap";
 
 const SETTLED: ChangeState = { phase: "Spec", status: "settled", returnPhase: null };
 const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnPhase: null };
@@ -270,6 +270,136 @@ describe("L3 · a batch is one form, not a conversation", () => {
       ],
     })!;
     assert.deepEqual(question.requestedSchema.required, ["B01", "BZ"]);
+  });
+});
+
+describe("L3 · 题面把状态和后果说出来 —— 人答题的那一刻要看得见（§3.2）", () => {
+  /*
+   * 根源（BACKLOG §3.2）：状态在浏览器面板，决定在 Codex 的选择器表单，中间没有
+   * 通道。而通道其实一直存在 —— 题面（`message`）。这一组测的就是题面把「什么挡着、
+   * 每类的出口是什么、现在批准会怎样」说出来，而不是只报一个数。
+   */
+  const gapWith = (patch: Partial<Gap>): Gap => ({
+    id: "G-1", kind: "finding", severity: "P1", title: "验收标准不可测",
+    status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+    where: null, why: null, ...patch,
+  });
+  const askWith = (gaps: Gap[], round?: number): Question => gateDecisionQuestion({
+    phase: "Spec",
+    gate: computeGate(SETTLED, { ...CLEAN, blockers: blockersFrom(gaps) }),
+    summary: "",
+    openGaps: gaps,
+    round,
+  })!;
+
+  it("P1：说出接受风险能清掉它，而接受不等于批准", () => {
+    const message = askWith([gapWith({})]).message;
+    assert.match(message, /1 项问题挡着闸门/);
+    assert.match(message, /1 项 P1/);
+    // waive 和 approve 是两个动作，而界面原来不说 —— 用户接受了 4 条风险，
+    // 期待阶段往下走，什么都没发生（2026-08-05 撞的）。
+    assert.match(message, /接受不等于批准/);
+  });
+
+  it("P0：直说接受不了，并指出「我自己说」是那把钥匙", () => {
+    // 死结时不说出口：Build 卡在一条 P0 上，唯一的钥匙是「我自己说」，而界面上
+    // 没有任何地方告诉人它是钥匙（2026-08-05 撞的）。
+    const message = askWith([gapWith({ severity: "P0" })]).message;
+    assert.match(message, /P0 —— 接受不了/);
+    assert.match(message, /我自己说/);
+    assert.match(message, /红方读得到/);
+  });
+
+  it("标准：说这张表上处理不了，出口在「标准」页签", () => {
+    const message = askWith(
+      [gapWith({ id: "RB:critic:x", kind: "standard", severity: null })],
+    ).message;
+    assert.match(message, /没满足的标准/);
+    assert.match(message, /「标准」页签/);
+  });
+
+  it("P2 不算进挡门数 —— 原来的题面把不挡门的也数进去", () => {
+    const message = askWith([gapWith({}), gapWith({ id: "G-2", severity: "P2" })]).message;
+    assert.match(message, /1 项问题挡着闸门/);
+    assert.match(message, /1 条 P2，不挡/);
+  });
+
+  it("挡着的没清完就选批准会被拒 —— 后果写在题面上", () => {
+    // 用户的原话：「接受P0P1也推不出去，不接受也推不出去。」他两次撞上闸门的拒，
+    // 是因为没有任何地方提前告诉他会被拒。
+    assert.match(askWith([gapWith({})]).message, /「就这样批准」，会被拒/);
+  });
+
+  it("没有东西挡着 —— 照实说，不吓唬人", () => {
+    const message = askWith([]).message;
+    assert.match(message, /没有问题挡着闸门/);
+    assert.doesNotMatch(message, /会被拒/);
+  });
+
+  it("P0 那一格不给「先接受这个风险」—— 必被拒的选项不许出现（§5.4）", () => {
+    const question = askWith([gapWith({ severity: "P0" })]);
+    assert.deepEqual(question.requestedSchema.properties.R01?.enum,
+      [RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_OWN]);
+  });
+
+  it("standard 那一格只剩「同意」和「我自己说」—— waive 和驳回都必被拒", () => {
+    const question = askWith([gapWith({ id: "RB:critic:x", kind: "standard", severity: null })]);
+    assert.deepEqual(question.requestedSchema.properties.R01?.enum,
+      [RESPONSE_AGREE, RESPONSE_OWN]);
+  });
+
+  it("每个选项自己说出它对闸门做什么（§3.2·4）", () => {
+    // 「同意，红方下轮必须改」听起来像"我接受了"，实际含义是这条继续挡着闸门 ——
+    // 用户两次选了它 + 「就这样批准」，闸门正确地拒了，而账本里什么都没发生。
+    assert.match(RESPONSE_AGREE, /继续挡/);
+    assert.match(RESPONSE_DISMISS, /不再挡/);
+    assert.match(RESPONSE_WAIVE, /不再挡/);
+    assert.match(RESPONSE_OWN, /继续挡/);
+    assert.match(WAIVE_ACCEPT, /不再挡/);
+  });
+
+  it("每条 gap 的格子标题带依据：严重度 + 第几轮提的 + 几轮没动过（§3.2·6）", () => {
+    // 四个阶段全靠 waive 才过闸门，waive 是主路径 —— 那就该帮人 waive 得有依据，
+    // 而不是让人对着一串标题读散文自己判断，一次还要连判 5~8 条。
+    const title = askWith([gapWith({ openedRound: 1 })], 4)
+      .requestedSchema.properties.R01?.title ?? "";
+    assert.match(title, /P1/);
+    assert.match(title, /第 1 轮提的/);
+    assert.match(title, /3 轮没动过/);
+  });
+
+  it("这一轮新提的就说新提的，不说 0 轮没动过", () => {
+    const title = askWith([gapWith({ openedRound: 4 })], 4)
+      .requestedSchema.properties.R01?.title ?? "";
+    assert.match(title, /这一轮新提的/);
+  });
+
+  it("人自己提的标出来 —— 「用户明确要求的」和「反方顺口提的」不该长一样", () => {
+    const title = askWith([gapWith({ id: humanGapId(1) })], 2)
+      .requestedSchema.properties.R01?.title ?? "";
+    assert.match(title, /你自己提的/);
+  });
+
+  it("不给 round —— 标题只带严重度，不编轮次", () => {
+    const title = askWith([gapWith({})]).requestedSchema.properties.R01?.title ?? "";
+    assert.match(title, /P1/);
+    assert.doesNotMatch(title, /轮/);
+  });
+
+  it("接受风险那张表同样带依据", () => {
+    const question = waiveQuestion({
+      phase: "Spec",
+      waivable: [{ id: "G-1", title: "验收标准不可测", openedRound: 1 }],
+      round: 3,
+    })!;
+    assert.match(question.requestedSchema.properties.W01?.title ?? "", /2 轮没动过/);
+  });
+
+  it("接受风险的题面说清阶段不会自己往前走", () => {
+    // 用户接受了 4 条风险，期待阶段往下走 —— 什么都没发生。waive 只把问题从
+    // 「挡着」变成「带着走」，往前走要回到裁决那道题。
+    const question = waiveQuestion({ phase: "Spec", waivable: [{ id: "G-1", title: "t" }] })!;
+    assert.match(question.message, /不会自己往前走/);
   });
 });
 

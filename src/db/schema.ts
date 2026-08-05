@@ -345,7 +345,11 @@ CREATE TABLE IF NOT EXISTS questions (
   expected_snapshot TEXT NOT NULL,
   status            TEXT NOT NULL CHECK (status IN ('open','answered','applied','superseded')),
   asked_at          TEXT NOT NULL,
-  updated_at        TEXT NOT NULL
+  updated_at        TEXT NOT NULL,
+  -- 这次裁决的下场（advanced / refused …），落地时写。NULL = 还没落地。
+  -- 「闸门拒了」原来只活在 /api/ask 的一次响应里，前端一句话就把它盖掉（§3.2·5）——
+  -- 拒绝必须是留得住的状态，人刷新之后还要看得见上次为什么没推动。
+  outcome_json      TEXT
 );
 
 -- One Change asks one question at a time. A second open question would mean two
@@ -588,6 +592,7 @@ export function migrate(database: {
     ["gaps", "closed_by", "TEXT"],
     ["gaps", "found_where", "TEXT"],
     ["gaps", "found_why", "TEXT"],
+    ["questions", "outcome_json", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];

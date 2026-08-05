@@ -9,6 +9,7 @@ import {
   InvalidVerdictError,
   isHumanGap,
   raise,
+  respond,
   waive,
   waivedFrom,
   type Gap,
@@ -220,6 +221,33 @@ describe("L4 · accepting a risk is a person's act, with a reason", () => {
       () => waive([gap({ status: "closed", resolution: "done" })], "G-1", "r"),
       InvalidVerdictError,
     );
+  });
+
+  it("waive 一条 P0 —— 拒绝，从哪条路进来都一样", () => {
+    /*
+     * `/api/waive` 那条路筛掉了 P0，但裁决表「回应蓝方」对**每条** open gap 都给
+     * 「先接受这个风险」这个选项 —— 2026-08-05 发现对一条 P0 选它会一路落到这里，
+     * 而这里原来只拒 standard。P0 一旦落成 waived 就从 blockers 里消失，闸门开了
+     * —— 「P0 不许豁免」就成了只在其中一条路上成立的规则。守在域层，两条路共用
+     * 同一道闸。
+     */
+    assert.throws(
+      () => waive([gap({ severity: "P0" })], "G-1", "想带着它走"),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidVerdictError);
+        assert.equal(error.code, "p0_not_waivable");
+        return true;
+      });
+  });
+
+  it("裁决表里对 P0 选「先接受这个风险」—— 报回去，不静默落地", () => {
+    const result = respond(
+      [gap({ severity: "P0" })],
+      { "G-1": { kind: "waive", reason: "想带着它走" } },
+    );
+    // 这一条还开着、还挡门；而**人必须被告知没落地** —— 他已经答完走了。
+    assert.equal(result.gaps[0]?.status, "open");
+    assert.deepEqual(result.refused, [{ id: "G-1", code: "p0_not_waivable" }]);
   });
 });
 
