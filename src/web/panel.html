@@ -404,6 +404,15 @@ body::after {
   fill: none; stroke: rgba(226,200,164,.9); stroke-width: 1.5; stroke-linecap: round;
 }
 .orbit-map .tick.done { stroke: rgba(150,214,168,.9); }
+/*
+ * 「还能再跑一轮」= 盘上的下一格**空刻度**：同一条弧上、虚线、会流动。
+ * 它和历史刻度用同一个半径同一个跨度，所以读起来是「这一格还没走」，
+ * 而不是环上又多了一样东西。
+ */
+.orbit-map .tick.ghost {
+  stroke: rgba(226,200,164,.55); stroke-dasharray: 1.1 1.1;
+  animation: mapFlow 1.6s linear infinite;
+}
 @keyframes mapFlow { to { stroke-dashoffset: -7.2; } }
 
 /*

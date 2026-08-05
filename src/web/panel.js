@@ -707,16 +707,16 @@ function arcSegment(at, radius, startDeg, endDeg) {
   return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${large} 1 ${b.x} ${b.y}`;
 }
 
-/** 自环画成节点外侧的一段小弧 —— 它得看起来是「回到自己」，不是一条连线。 */
-function selfLoopPath(at) {
-  const outward = 4.2;
-  const nx = (at.x - 50) / MAP_RADIUS;
-  const ny = (at.y - 50) / MAP_RADIUS;
-  const cx = at.x + nx * outward;
-  const cy = at.y + ny * outward;
-  return `M ${at.x - ny * 2.6} ${at.y + nx * 2.6} `
-    + `Q ${cx} ${cy} ${at.x + ny * 2.6} ${at.y - nx * 2.6}`;
-}
+/**
+ * 自环**不画成从节点伸出去的须**（2026-08-05 用户看了第一版：「自循环的太臭了」）。
+ *
+ * 那个比喻本来就是错的：节点已经是一个带刻度的表盘了（§5.9.4），而「再来一轮」
+ * 说的正是「这个盘上还能再走一格」—— 所以它就该是**盘上的下一格空刻度**，
+ * 虚线、会流动。不是另长一个东西出来。
+ *
+ * 顺带解掉了三个几何难题：须往环外长会撞上阶段名（底下那几个节点尤其），
+ * 往环内长会掉进中心那张卡片，而绕节点一圈又会和刻度打架。空刻度一个都不占。
+ */
 
 function drawMap(panel) {
   const map = pick("orbit-map");
@@ -750,10 +750,18 @@ function drawMap(panel) {
    * 比它在环上的位置更能说明「你在哪」。批准过的用绿色：那是「这几轮换来了一次
    * 放行」，和「跑了三轮还卡着」是两回事。
    */
+  /*
+   * 「再来一轮」那条边不画成线，画成**这个节点盘上的下一格空刻度**（见
+   * `selfLoopPath` 被删掉的地方那段注释）。所以先把它从边里挑出来。
+   */
+  const selfEdge = (panel.options ?? []).find((edge) => edge.kind === "self");
+
   phases.forEach((entry, index) => {
     const at = nodeAt(index, total);
     const rounds = Math.min(entry.rounds ?? 0, 8);   // 画得下才有意义，8 段封顶
-    for (let tick = 0; tick < rounds; tick += 1) {
+    // 这一格是「还能再跑一轮」的空刻度：只有当前阶段、而且闸门真给了那条边才有。
+    const ghost = entry.current && selfEdge !== undefined ? 1 : 0;
+    for (let tick = 0; tick < rounds + ghost; tick += 1) {
       /*
        * **一段一段的弧，不是放射状的短线。**
        *
@@ -765,12 +773,24 @@ function drawMap(panel) {
        * 画布外面（第一版实测 y 是负的）。
        */
       const span = 150;
-      const each = span / rounds;
+      const slots = rounds + ghost;
+      const each = span / slots;
       const base = (index / total) * 360 + 180 - span / 2 + tick * each;
+      const isGhost = tick >= rounds;
+      /*
+       * **段占一格的一半多一点，缝要看得见。**
+       *
+       * 第一版是 0.12~0.88（占 76%），实测 6 段连成了一道实心月牙 —— 段数数不
+       * 出来，那「跑了几轮」这件事就白标了。半径也从 6.6 推到 7.1：贴着节点边
+       * 会读成节点自己的描边，隔开一点才像一圈独立的刻度盘。
+       */
       map.append(svgNode("path", {
-        class: `tick${entry.mark === "approved" ? " done" : ""}`,
-        d: arcSegment(at, 6.6, base + each * 0.12, base + each * 0.88),
-      }, `${entry.phase} 跑了 ${entry.rounds} 轮`));
+        class: isGhost ? "tick ghost"
+          : `tick${entry.mark === "approved" ? " done" : ""}`,
+        d: arcSegment(at, 7.1, base + each * 0.22, base + each * 0.78),
+      }, isGhost
+        ? selfEdge.why
+        : `${entry.phase} 跑了 ${entry.rounds} 轮`));
     }
   });
 
@@ -781,6 +801,8 @@ function drawMap(panel) {
   if (here < 0) return;
   const from = nodeAt(here, total);
   for (const edge of panel.options ?? []) {
+    // 自环已经画成节点盘上的空刻度了，这儿不再画第二遍。
+    if (edge.kind === "self") continue;
     const to = indexOf(edge.to);
     if (to < 0) continue;
     /*
@@ -789,9 +811,9 @@ function drawMap(panel) {
      */
     map.append(svgNode("path", {
       class: `live${edge.kind === "backward" ? " back" : ""}`,
-      d: edge.kind === "self" ? selfLoopPath(from)
-        : edge.kind === "forward" ? arcAlongRing(from, nodeAt(to, total))
-          : chordPath(from, nodeAt(to, total)),
+      d: edge.kind === "forward"
+        ? arcAlongRing(from, nodeAt(to, total))
+        : chordPath(from, nodeAt(to, total)),
     }, edge.why));
   }
 }
