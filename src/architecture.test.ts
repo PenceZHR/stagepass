@@ -4,6 +4,7 @@ import tsc from "typescript";
 import {
   closureOf as graphClosureOf, dependenciesOf, parseModuleGraph,
 } from "./graph/module-graph";
+import { ingredientsFor, renderIngredients } from "./graph/ingredients";
 import { describe, it } from "node:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -54,6 +55,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 它审判的东西」。
    */
   "graph/module-graph.ts": 0,
+  // 配料单（H 档第二块）。只依赖上面那个解析器，所以同一层 —— 它俩是同一族
+  // 工具：一个把树读成图，一个按图切出「这次改动该看见什么」。
+  "graph/ingredients.ts": 0,
   // 只依赖 phase 的纯路径生成（E：产物的家）。
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
@@ -399,6 +403,65 @@ describe("standing · 没有一个函数长成一层", () => {
       return now === undefined || now.lines <= FUNCTION_LINES_CAP;
     });
     assert.deepEqual(stale, [], "把它从 FUNCTION_RATCHET 里删掉");
+  });
+});
+
+/**
+ * standing · 配料单**真的只带一小片树**（§5.4.1 / §5.7）。
+ *
+ * 「只给签名不给实现」这个机关的收益是可以量的：改一个模块时，喂进去的东西
+ * 占全树多少。2026-08-05 第一次量（49 个模块 / 502 KB）：
+ *
+ * ```
+ * domain/gap.ts               18.0 KB   3.6%   28×
+ * domain/journey.ts           18.7 KB   3.7%   27×
+ * work/round-turn-runner.ts   32.2 KB   6.4%   16×
+ * web/panel-server.ts        145.9 KB  29.0%    3×   ← 说明问题的那一个
+ * ```
+ *
+ * **收益和「这棵树拆得好不好」成正比**：一个划得干净的模块拿到 28×，而那个
+ * 1410 行的 `handle()` 只有 3× —— 它自己正文就 94.6 KB，还牵着 33 个依赖。
+ * 换句话说，J 批（拆 handle）不只是好看，它直接决定这套机关值不值钱。
+ *
+ * 这条护栏钉的是**别再退步**：除了例外表里那个，谁的配料单都不许超过全树三成。
+ */
+const INGREDIENT_SHARE_CAP = 0.3;
+
+describe("standing · 配料单只带一小片树", () => {
+  /**
+   * **依赖那半份里一个注释都不许有。**
+   *
+   * 这条是在真树上看输出才发现要写的：第一版用 `getText()` 取签名，它把花括号里
+   * 的注释一起带出来 —— `ChangeState` 那个接口的成员上挂着十几行讲不变量和历史
+   * 的 JSDoc，整段漏进了配料单。而「只给签名不给实现」这个机关的全部价值就在于
+   * **看不见实现**，注释里恰恰装着实现（这棵树尤其如此）。
+   *
+   * 玩具夹具测不出这个 —— 它的注释太短、太干净。所以护栏放在真树上。
+   */
+  it("**依赖的签名里没有注释** —— 注释装着实现，漏一行机关就少一分", () => {
+    const leaking: string[] = [];
+    for (const file of production) {
+      const list = ingredientsFor({ graph: GRAPH, files: production, group: [file.path] });
+      for (const dependency of list.dependencies) {
+        const text = dependency.signatures.join("\n");
+        if (/\/\*|\/\//.test(text)) leaking.push(`${file.path} -> ${dependency.path}`);
+      }
+    }
+    assert.deepEqual(leaking, []);
+  });
+
+  it("**没有模块的配料单吃掉全树三成以上**", () => {
+    const whole = production.reduce((sum, file) => sum + file.text.length, 0);
+    const over = production
+      .map((file) => ({
+        path: file.path,
+        share: renderIngredients(
+          ingredientsFor({ graph: GRAPH, files: production, group: [file.path] }),
+        ).length / whole,
+      }))
+      .filter(({ share }) => share > INGREDIENT_SHARE_CAP)
+      .map(({ path, share }) => `${path} = ${(share * 100).toFixed(0)}%`);
+    assert.deepEqual(over, [], "改它一次就要读小半棵树 —— 拆它");
   });
 });
 
