@@ -43,7 +43,7 @@ import { WorklistStore } from "../store/worklist-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
-import { jumpsFrom } from "../domain/journey";
+import { jumpsFrom, optionsFrom } from "../domain/journey";
 import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
 import {
   RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
@@ -210,6 +210,71 @@ async function askFollowUp(input: {
   const second = questions.readAnswerFor(questionId);
   questions.settle(questionId);
   return second ?? "no_answer_in_time";
+}
+
+/**
+ * 面板上每个阶段那一格：线程、进程、问题、判定、产出、上次裁决的下场。
+ *
+ * 从 `handle()` 里搬出来的第二块（J 批的方向）。它是一段纯读的组装 —— 十一个
+ * 阶段各查各的，没有任何写。
+ */
+function phasesFor(input: {
+  database: Database.Database;
+  sessions: PanelSessions;
+  changeId: string;
+  state: ChangeState | null;
+  ledger: readonly LedgerEntry[];
+}): unknown[] {
+  const { database, changeId, state, ledger } = input;
+  const bindings = new BindingStore(database);
+  const gapStore = new GapStore(database);
+  const evidence = new EvidenceStore(database);
+  const rubricRounds = new RubricStore(database);
+  const questions = new QuestionStore(database);
+
+  return THREADED_PHASES.map((phase) => {
+    /*
+     * 这个阶段最近一轮的 rubric 判定。
+     *
+     * 一条 `no` 会派生出 standard gap，那个在 gaps 里看得到；但 `yes` 和
+     * `not_assessed` **不会留下任何痕迹** —— 而「这一轮到底判了没有」正是人
+     * 最需要看见的：全是 not_assessed 意味着模型压根没照契约作答，而那和
+     * 「都通过了」在 gaps 里长得一模一样（两边都没有 standard）。
+     */
+    const rounds = rubricRounds.latestRound(changeId, phase);
+    /*
+     * 红方这一阶段产出了什么。
+     *
+     * 「红蓝双方主张摘要」（设计稿 §4.4）落到新树上就是这两样：**蓝方的主张
+     * 是 gaps 里那些 finding**（已经在显示了），**红方的主张是它产出的东西** ——
+     * 而后者面板从来没读过。只看得见「有人挑了三条毛病」而看不见「他挑的是
+     * 什么东西」，那个列表就悬着。
+     */
+    const produced = evidence.read(changeId, phase).artifactIds;
+    // Every phase's whole gap history, closed and waived included -- the
+    // popup has to be able to show "we fixed it, and here is the reason"
+    // rather than only what is still blocking.
+    const gaps = gapStore.all(changeId, phase);
+    return {
+      phase,
+      // 只报真的绑着的：一条 detached 的绑定仍然留着 threadId，报出去界面会
+      // 说「有线程，点开会恢复它的历史」—— 而它恢复不了。
+      threadId: (() => {
+        const bound = bindings.find(changeId, phase);
+        return bound?.status === "bound" ? bound.threadId : null;
+      })(),
+      live: input.sessions.has(changeId, phase),
+      current: state?.phase === phase,
+      mark: markOf(phase, ledger, state, gaps),
+      gaps,
+      /** 最近一轮，按角色分。没跑过就是 null。 */
+      assessed: rounds,
+      /** 红方产出了什么。空数组 = 这个阶段还没产出任何东西。 */
+      produced,
+      /** 上次裁决的下场（§3.2·5）。留得住的状态，不是弹窗里一闪而过的那句。 */
+      lastOutcome: questions.latestOutcomeFor(changeId, phase),
+    };
+  });
 }
 
 const pluginConfigFor = (
@@ -1246,10 +1311,6 @@ export async function handle(
 
   if (url.pathname === "/api/panel" && request.method === "GET") {
     const changeId = url.searchParams.get("change") ?? "";
-    const bindings = new BindingStore(database);
-    const gapStore = new GapStore(database);
-    const rubricRounds = new RubricStore(database);
-    const evidence = new EvidenceStore(database);
     const changeStore = new ChangeStore(database);
     let state: ChangeState | null = null;
     let brief: string | null = null;
@@ -1320,54 +1381,16 @@ export async function handle(
         return { permitted: verdict.permitted, refusals: verdict.refusals };
       })() : null,
       journey: jumpsFrom(ledger), // 跳转表 = 账本投影（§5.9.2），G 档只许读这一份
-      phases: THREADED_PHASES.map((phase) => {
-        /*
-         * 这个阶段最近一轮的 rubric 判定。
-         *
-         * 一条 `no` 会派生出 standard gap，那个在 gaps 里看得到；但 `yes` 和
-         * `not_assessed` **不会留下任何痕迹** —— 而「这一轮到底判了没有」正是人
-         * 最需要看见的：全是 not_assessed 意味着模型压根没照契约作答，而那和
-         * 「都通过了」在 gaps 里长得一模一样（两边都没有 standard）。
-         */
-        const rounds = rubricRounds.latestRound(changeId, phase);
-        /*
-         * 红方这一阶段产出了什么。
-         *
-         * 「红蓝双方主张摘要」（设计稿 §4.4）落到新树上就是这两样：**蓝方的主张
-         * 是 gaps 里那些 finding**（已经在显示了），**红方的主张是它产出的东西** ——
-         * 而后者面板从来没读过。只看得见「有人挑了三条毛病」而看不见「他挑的是
-         * 什么东西」，那个列表就悬着。
-         */
-        const produced = evidence.read(changeId, phase).artifactIds;
-        // Every phase's whole gap history, closed and waived included -- the
-        // popup has to be able to show "we fixed it, and here is the reason"
-        // rather than only what is still blocking.
-        const gaps = gapStore.all(changeId, phase);
-        return {
-          phase,
-          // 只报真的绑着的：一条 detached 的绑定仍然留着 threadId，报出去界面会
-          // 说「有线程，点开会恢复它的历史」—— 而它恢复不了。
-          threadId: (() => {
-            const bound = bindings.find(changeId, phase);
-            return bound?.status === "bound" ? bound.threadId : null;
-          })(),
-          live: sessions.has(changeId, phase),
-          /**
-           * 这个阶段现在还开着哪几个补问格。前端拿它画标签页。
-           *
-           * 空数组是常态 —— 补问只在这一轮里存在，跑完就收。
-           */
-          current: state?.phase === phase,
-          mark: markOf(phase, ledger, state, gaps),
-          gaps,
-          /** 最近一轮，按角色分。没跑过就是 null。 */
-          assessed: rounds,
-          /** 红方产出了什么。空数组 = 这个阶段还没产出任何东西。 */
-          produced,
-          /** 上次裁决的下场（§3.2·5）。留得住的状态，不是弹窗里一闪而过的那句。 */
-          lastOutcome: new QuestionStore(database).latestOutcomeFor(changeId, phase),
-        };
-      }),
+      /**
+       * 从当前阶段能去哪（§5.9.3 的活箭头）。**边由闸门长出来，前端不许自己推。**
+       * 空数组 = 现在没有可走的边（closed，或者没有这个 Change）。
+       */
+      options: state === null ? [] : optionsFrom(
+        state,
+        new CommandStore(database).gateFor(changeId),
+        changeStore.graphOf(changeId),
+      ),
+      phases: phasesFor({ database, sessions, changeId, state, ledger }),
     });
     return;
   }

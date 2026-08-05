@@ -1,4 +1,9 @@
-import { DEFAULT_GRAPH } from "./phase";
+import type { ChangeAction, ChangeState } from "./change-state";
+import type { Gate } from "./gate";
+import {
+  advancesTo, DEFAULT_GRAPH, sendsToFix, upstreamOf,
+  type Phase, type PhaseGraph,
+} from "./phase";
 import { roundFromLedger } from "./round";
 
 /**
@@ -73,6 +78,92 @@ function kindOf(fromPhase: string, toPhase: string): JumpKind {
   const to = ORDER_INDEX.get(toPhase);
   if (from === undefined || to === undefined) return "backward"; // 认不出，往保守判
   return to > from ? "forward" : "backward";
+}
+
+/**
+ * 从这儿能去哪 —— 环上那几条**活箭头**（§5.9.3）。
+ *
+ * 用户 2026-08-04 的原话：「环的形状还是要的，只是不能暗示用户下个阶段一定是
+ * 这个，可以用箭头指示，不管是向前还是跳转到别的阶段。」所以是**复数**，而且
+ * 每条要说出按下去会怎样 —— 光画箭头不说后果，等于把「猜下一步」从环的顺序
+ * 换成了猜箭头。
+ *
+ * ## 判据和闸门是同一份
+ *
+ * 边从 `gate.permitted` 长出来，不另算一套。前端自己推第二份的下场是画出闸门
+ * 不认的箭头 —— 那正是老树那五个死按钮的形状（§5.4）。
+ *
+ * ## 上限 4 条，护栏钉着
+ *
+ * 任一时刻实际可去的只有：批准 → 下一站、再来一轮 → 自己、打回 → 某个上游、
+ * （Review/QA）→ Fix。§5.9.3③ 要求写进护栏，否则以后加功能会悄悄涨到 8 条。
+ * 打回上游那一档**只画最近的一个**（最可能的那个），不是把整条上游铺开 ——
+ * 铺开就当场破 4，而人真要打回更远的，裁决表里那一格给的是全名单。
+ */
+export interface Edge {
+  readonly action: ChangeAction;
+  readonly to: Phase;
+  readonly kind: JumpKind;
+  /** 按下去会怎样，一句话。给人看的，不是给状态机的。 */
+  readonly why: string;
+}
+
+export function optionsFrom(
+  state: ChangeState,
+  gate: Gate,
+  graph: PhaseGraph = DEFAULT_GRAPH,
+): Edge[] {
+  const edges: Edge[] = [];
+  const owed = state.returnStack[state.returnStack.length - 1];
+
+  if (gate.permitted.includes("approve")) {
+    // 欠着回程就还债，不沿主线走 —— 和 `transition` 的 approve 同一条规则。
+    const to = owed ?? advancesTo(state.phase, graph);
+    if (to !== null) {
+      edges.push({
+        action: "approve", to, kind: kindOf(state.phase, to),
+        why: owed
+          ? `批准 → 弹回 ${owed}（它在等这份改完）`
+          : `批准 → ${to}（闸门放行，进下一个阶段）`,
+      });
+    } else {
+      edges.push({
+        action: "approve", to: state.phase, kind: "self",
+        why: "批准 → 这个 Change 就结束了",
+      });
+    }
+  }
+  if (gate.permitted.includes("reject")) {
+    const to: Phase = sendsToFix(state.phase) ? "Fix" : state.phase;
+    edges.push({
+      action: "reject", to, kind: kindOf(state.phase, to),
+      why: to === "Fix"
+        ? "打回去修 → Fix（代码有问题，修完回到这儿）"
+        : "再来一轮 → 红蓝在这个阶段重新跑",
+    });
+  }
+  if (gate.permitted.includes("retry")) {
+    edges.push({
+      action: "retry", to: state.phase, kind: "self",
+      why: "重跑一次 → 上一轮跑失败了，从这儿再来",
+    });
+  }
+  if (gate.permitted.includes("sendBack")) {
+    /*
+     * 只画**最近的那个上游**：上限 4 条是硬的，把整条上游铺开当场就破。
+     * 人真要打回更远的，裁决表那一格给的是全名单（`upstreamOf`）——
+     * 环上摆的是「最可能的那一条」，不是「所有合法的」。
+     */
+    const upstream = upstreamOf(state.phase, graph);
+    const to = upstream[upstream.length - 1];
+    if (to !== undefined) {
+      edges.push({
+        action: "sendBack", to, kind: "backward",
+        why: `打回上游 → ${to}（那份文档错了；裁决表里可以挑更远的）`,
+      });
+    }
+  }
+  return edges;
 }
 
 /**

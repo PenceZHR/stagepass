@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { jumpsFrom, pendingSendBack, type JourneyEntry } from "./journey";
+import { jumpsFrom, optionsFrom, pendingSendBack, type JourneyEntry } from "./journey";
+import { computeGate, EMPTY_EVIDENCE } from "./gate";
+import { PHASES } from "./phase";
+import type { ChangeState } from "./change-state";
 
 /**
  * L1 · 跳转表 = 事件流的投影（BACKLOG §4.3 / §5.9.2）。
@@ -157,5 +160,86 @@ describe("L1 · 这个阶段现在欠着谁的回程（反馈闭环的取数口�
     assert.equal(
       pendingSendBack(ledger, { phase: "Spec", returnStack: ["Build"] })?.reason,
       "第二次：验收口径还是对不上");
+  });
+});
+
+describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
+  /*
+   * 用户 2026-08-04：「环的形状还是要的，只是不能暗示用户下个阶段一定是这个，
+   * 可以用箭头指示，不管是向前还是跳转到别的阶段。」
+   *
+   * 所以是**复数**，每条带理由。判据必须和闸门是同一份 —— 前端自己算第二份，
+   * 就会画出闸门不认的箭头，那正是老树那五个死按钮的形状。
+   */
+  const settled = (phase: string, stack: readonly string[] = []): ChangeState =>
+    ({ phase: phase as never, status: "settled", returnStack: stack as never });
+  const optionsOf = (state: ChangeState) =>
+    optionsFrom(state, computeGate(state, { artifactIds: ["x.md"], blockers: [], waivedBlockerIds: [] }));
+
+  it("一个干净的设计阶段：批准往前、再来一轮回自己、打回上游各一条", () => {
+    const edges = optionsOf(settled("TechSpec"));
+    /*
+     * **打回那条只画最近的一个上游（Spec），不铺开 PRD。**
+     *
+     * 4 条上限是硬的（§5.9.3③）：TestPlan 铺开就是四条 sendBack 加批准加自环，
+     * 当场破限。环上摆「最可能的那一条」，全名单在裁决表那一格里 —— 环是地图，
+     * 不是选单。
+     */
+    assert.deepEqual(edges.map((edge) => [edge.action, edge.to, edge.kind]), [
+      ["approve", "Plan", "forward"],
+      ["reject", "TechSpec", "self"],
+      ["sendBack", "Spec", "backward"],
+    ]);
+    assert.match(edges[2]!.why, /裁决表里可以挑更远的/);
+    // 每条都说得出「按下去会怎样」—— 光画箭头不说后果等于又要人猜。
+    assert.ok(edges.every((edge) => edge.why.length > 0));
+  });
+
+  it("**自环必须在** —— 它是频率最高的那条边，现在完全隐形（§5.9.4）", () => {
+    assert.ok(optionsOf(settled("Spec")).some((edge) => edge.kind === "self"));
+  });
+
+  it("Review 的驳回指向 Fix，不是指向自己 —— 同一个动作两句话", () => {
+    const back = optionsOf(settled("Review")).find((edge) => edge.action === "reject")!;
+    assert.equal(back.to, "Fix");
+    assert.equal(back.kind, "backward");
+  });
+
+  it("欠着回程时，批准那条指向栈顶，不是主线的下一站", () => {
+    const forward = optionsOf(settled("Spec", ["Build"])).find((e) => e.action === "approve")!;
+    assert.equal(forward.to, "Build");
+    assert.match(forward.why, /Build/);
+  });
+
+  it("闸门拒的不画 —— 什么都没产出时没有「批准」那条箭头（§5.4）", () => {
+    const state = settled("Spec");
+    const edges = optionsFrom(state, computeGate(state, EMPTY_EVIDENCE));
+    assert.ok(!edges.some((edge) => edge.action === "approve"));
+    assert.ok(edges.some((edge) => edge.action === "reject"));
+  });
+
+  it("blocked 只剩重跑一次，closed 一条都没有", () => {
+    const blocked: ChangeState = { phase: "Build", status: "blocked", returnStack: [] };
+    assert.deepEqual(
+      optionsFrom(blocked, computeGate(blocked, EMPTY_EVIDENCE)).map((e) => e.action),
+      ["retry"]);
+    const done: ChangeState = { phase: "Done", status: "closed", returnStack: [] };
+    assert.deepEqual(optionsFrom(done, computeGate(done, EMPTY_EVIDENCE)), []);
+  });
+
+  it("**护栏：任一时刻活箭头不超过 4 条**（§5.9.3③，防它以后悄悄涨到 8）", () => {
+    let worst = 0;
+    for (const phase of PHASES) {
+      for (const status of ["pending", "running", "settled", "blocked"] as const) {
+        for (const stack of [[], ["Build"], ["QA"]]) {
+          const state = { phase, status, returnStack: stack } as ChangeState;
+          let gate;
+          try { gate = computeGate(state, { artifactIds: ["x"], blockers: [], waivedBlockerIds: [] }); }
+          catch { continue; }   // 造不出来的状态（Fix 空栈之类）跳过
+          worst = Math.max(worst, optionsFrom(state, gate).length);
+        }
+      }
+    }
+    assert.ok(worst <= 4, `活箭头涨到了 ${worst} 条`);
   });
 });
