@@ -625,6 +625,177 @@ function placeNodes() {
   });
 }
 
+/*
+ * ── 环上的地图（§5.9.3 / §5.9.4）────────────────────────────
+ *
+ * 用户 2026-08-04：「环的形状还是要的，只是不能暗示用户下个阶段一定是这个，
+ * 可以用箭头指示，不管是向前还是跳转到别的阶段。」
+ *
+ * ## 三种东西，三种画法 —— 而且**不重复画**
+ *
+ * ```
+ * 向前的历史   已经是那道进度弧了       这儿不画（画了就是同一件事说两遍）
+ * 回头的历史   穿过中心的弦，实线永久     §5.9.3④：形状本身带语义
+ * 自环的历史   节点上的刻度，一轮一格     §5.9.4：真实形状是「各自带自环的节点」
+ * 能去的边     虚线 + 流动，随状态变      §5.9.3②：和历史必须一眼分得开
+ * ```
+ *
+ * ## 边从哪来
+ *
+ * 历史来自 `panel.journey`（账本投影），能去的来自 `panel.options`（闸门长出来的）。
+ * **两样都不在这儿算** —— 前端自己推第二份判据，就会画出闸门不认的箭头，那正是
+ * 老树那五个死按钮的形状（§5.4）。
+ */
+const MAP_RADIUS = 45.5;   // 和 CSS 的 inset:4.5%、placeNodes 的 0.455 是同一个数
+
+/** 第 n 个阶段在方格里的坐标。十二点起、顺时针 —— 和节点的摆法同一套。 */
+function nodeAt(index, total) {
+  const radians = (index / total) * Math.PI * 2;
+  return {
+    x: 50 + MAP_RADIUS * Math.sin(radians),
+    y: 50 - MAP_RADIUS * Math.cos(radians),
+  };
+}
+
+function svgNode(tag, attributes, tooltip) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    element.setAttribute(name, String(value));
+  }
+  if (tooltip) {
+    // 理由挂在原生 tooltip 上：§5.0 第 4 条要的是「环那一屏不加东西」，而一条
+    // 悬停才出现的说明不占版面 —— 但「每条边都说得出后果」这条不能少。
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = tooltip;
+    element.append(title);
+  }
+  return element;
+}
+
+/**
+ * 回头的那一跳画成一条**穿过中心方向**的弦。
+ *
+ * 二次贝塞尔，控制点拉向圆心 —— 直线也能连上，但一堆直线会和轨道缠在一起；
+ * 往圆心弯一下，回边就天然落在环的内部，和沿环走的推进泾渭分明（§5.9.3④）。
+ */
+function chordPath(from, to) {
+  const bend = 0.45;   // 0 = 直线，1 = 顶到圆心
+  const cx = from.x + (50 - from.x) * bend + (to.x - from.x) / 2 * (1 - bend);
+  const cy = from.y + (50 - from.y) * bend + (to.y - from.y) / 2 * (1 - bend);
+  return `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`;
+}
+
+/**
+ * 沿着**环**走的一段弧 —— 向前推进就该长这样（§5.9.3④）。
+ *
+ * 第一版把向前的边也画成了穿心的弦，于是「沿环走 = 推进 / 穿心 = 回头」这条
+ * 语义当场失效：两种边长得一模一样。形状本身要带语义，就不能两边共用一个画法。
+ */
+function arcAlongRing(from, to) {
+  return `M ${from.x} ${from.y} A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y}`;
+}
+
+/** 圆心 `at`、半径 `radius` 上从 `startDeg` 到 `endDeg` 的一段弧（0° = 十二点）。 */
+function arcSegment(at, radius, startDeg, endDeg) {
+  const point = (degrees) => {
+    const radians = degrees * Math.PI / 180;
+    return { x: at.x + radius * Math.sin(radians), y: at.y - radius * Math.cos(radians) };
+  };
+  const a = point(startDeg);
+  const b = point(endDeg);
+  const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+  return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${large} 1 ${b.x} ${b.y}`;
+}
+
+/** 自环画成节点外侧的一段小弧 —— 它得看起来是「回到自己」，不是一条连线。 */
+function selfLoopPath(at) {
+  const outward = 4.2;
+  const nx = (at.x - 50) / MAP_RADIUS;
+  const ny = (at.y - 50) / MAP_RADIUS;
+  const cx = at.x + nx * outward;
+  const cy = at.y + ny * outward;
+  return `M ${at.x - ny * 2.6} ${at.y + nx * 2.6} `
+    + `Q ${cx} ${cy} ${at.x + ny * 2.6} ${at.y - nx * 2.6}`;
+}
+
+function drawMap(panel) {
+  const map = pick("orbit-map");
+  map.replaceChildren();
+  const total = phases.length;
+  const indexOf = (phase) => phases.findIndex((entry) => entry.phase === phase);
+
+  /*
+   * ① 走过的回头路，实线，**永久留着**。
+   *
+   * Fix 不在环上（它没有节点），所以送修那一跳画不出来 —— 那不是遗漏：Fix 的
+   * 节点确实在环上（THREADED_PHASES 含它），indexOf 找得到就画。找不到就跳过，
+   * 不去猜一个坐标。
+   */
+  for (const jump of panel.journey ?? []) {
+    if (jump.kind !== "backward") continue;
+    const from = indexOf(jump.fromPhase);
+    const to = indexOf(jump.toPhase);
+    if (from < 0 || to < 0) continue;
+    map.append(svgNode("path", {
+      class: `chord${jump.action === "sendBack" ? " hot" : ""}`,
+      d: chordPath(nodeAt(from, total), nodeAt(to, total)),
+    }, `第 ${jump.round} 轮：${jump.fromPhase} → ${jump.toPhase}`
+      + (jump.reason ? `\n理由：${jump.reason}` : "")));
+  }
+
+  /*
+   * ② 每个节点跑过几轮，画成刻度（§5.9.4）。
+   *
+   * 「真实形状不是 12 个节点的环，是 12 个各自带自环的节点」—— 节点上花的轮数
+   * 比它在环上的位置更能说明「你在哪」。批准过的用绿色：那是「这几轮换来了一次
+   * 放行」，和「跑了三轮还卡着」是两回事。
+   */
+  phases.forEach((entry, index) => {
+    const at = nodeAt(index, total);
+    const rounds = Math.min(entry.rounds ?? 0, 8);   // 画得下才有意义，8 段封顶
+    for (let tick = 0; tick < rounds; tick += 1) {
+      /*
+       * **一段一段的弧，不是放射状的短线。**
+       *
+       * 放射线那一版实测长得像爪子 —— 而这里要的是「带刻度的圆」（§5.9.4），
+       * 也就是一圈分段的表盘。分段弧还有一个好处：段数一眼数得出来，而放射线
+       * 越多越糊成一片。
+       *
+       * 摆在节点**内侧**那 150°：外侧要留给阶段名，而且顶上那个节点朝外就是
+       * 画布外面（第一版实测 y 是负的）。
+       */
+      const span = 150;
+      const each = span / rounds;
+      const base = (index / total) * 360 + 180 - span / 2 + tick * each;
+      map.append(svgNode("path", {
+        class: `tick${entry.mark === "approved" ? " done" : ""}`,
+        d: arcSegment(at, 6.6, base + each * 0.12, base + each * 0.88),
+      }, `${entry.phase} 跑了 ${entry.rounds} 轮`));
+    }
+  });
+
+  /*
+   * ③ 现在能去哪，虚线 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
+   */
+  const here = phases.findIndex((entry) => entry.current);
+  if (here < 0) return;
+  const from = nodeAt(here, total);
+  for (const edge of panel.options ?? []) {
+    const to = indexOf(edge.to);
+    if (to < 0) continue;
+    /*
+     * **形状带语义，两种边不共用一个画法**（§5.9.3④）：沿着环走 = 正常推进，
+     * 穿过中心的弦 = 回头。第一版两种都画成弦，那条语义当场失效。
+     */
+    map.append(svgNode("path", {
+      class: `live${edge.kind === "backward" ? " back" : ""}`,
+      d: edge.kind === "self" ? selfLoopPath(from)
+        : edge.kind === "forward" ? arcAlongRing(from, nodeAt(to, total))
+          : chordPath(from, nodeAt(to, total)),
+    }, edge.why));
+  }
+}
+
 function drawOrbit() {
   wrap.querySelectorAll(".stage-node").forEach((node) => { node.remove(); });
 
@@ -828,6 +999,7 @@ async function load() {
   artifactCache.clear();
   drawWorkspace(panel);
   drawOrbit();
+  drawMap(panel);
 
   drawCenter();
   renderStatus(null);

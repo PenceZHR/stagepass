@@ -374,6 +374,39 @@ body::after {
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
 /*
+ * 环上的地图层：回头的弦、能去的虚线、节点的轮次刻度（§5.9.3 / §5.9.4）。
+ *
+ * **两种画法必须一眼分得开**（§5.9.3②）：走过的是实线，永久留着 —— 那是这个
+ * Change 的病历，「被 Build 打回来过两次」应当一眼看得出；能去的是虚线，随状态
+ * 变。混成一种，历史和可能性就分不清了。
+ *
+ * 不吃鼠标事件：节点那一层的悬停和点击照旧（pointer-events 只在 <title> 需要的
+ * 那几条线上开）。
+ */
+.orbit-map { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.orbit-map .chord {
+  fill: none; stroke: rgba(226,200,164,.5); stroke-width: .5;
+  stroke-linecap: round; pointer-events: stroke;
+}
+.orbit-map .chord.hot { stroke: rgba(255,146,128,.62); stroke-width: .7; }
+.orbit-map .live {
+  fill: none; stroke: rgba(226,200,164,.85); stroke-width: .7;
+  stroke-dasharray: 2 1.6; stroke-linecap: round; pointer-events: stroke;
+  animation: mapFlow 1.6s linear infinite;
+}
+.orbit-map .live.back { stroke: rgba(255,146,128,.8); }
+/*
+ * 刻度要**一眼看得见**才有意义（§5.9.4：节点上花的轮数比它在环上的位置更能说明
+ * 「你在哪」）。第一版 stroke-width .9、长 1.8 单位，实测在真尺寸下是 4×8 像素 ——
+ * DOM 里在、几何也对，屏幕上等于没画。这一版按「能一眼数出几段」定粗细。
+ */
+.orbit-map .tick {
+  fill: none; stroke: rgba(226,200,164,.9); stroke-width: 1.5; stroke-linecap: round;
+}
+.orbit-map .tick.done { stroke: rgba(150,214,168,.9); }
+@keyframes mapFlow { to { stroke-dashoffset: -7.2; } }
+
+/*
  * `--progress` 必须注册才过渡得了。
  *
  * 自定义属性默认是「无类型的字符串」，浏览器不知道 0.3 到 0.6 中间是什么，于是
@@ -931,6 +964,16 @@ body::after {
         <div class="orbit-wrap" id="orbit-wrap">
           <div class="halo"></div>
           <div class="progress" id="progress"></div>
+          <!--
+            环上的地图层（§5.9.3）。**它不是第五个装饰圈** —— §5.0.1 那条「只留
+            一个大环」管的是同心圆，这里画的是环**内部**的关系：回头的弦、能去的
+            虚线、节点的轮次刻度。
+
+            viewBox 用 0–100 的方格，圆心 (50,50)、轨道半径 45.5 —— 那个 45.5 和
+            CSS 的 `inset: 4.5%`、panel.js 的 0.455 是同一个数。改一个就要改三个，
+            否则弦会连到轨道外面去。
+          -->
+          <svg class="orbit-map" id="orbit-map" viewBox="0 0 100 100" aria-hidden="true"></svg>
           <div class="center">
             <small id="center-kicker">Stage Orbit</small>
             <h3 id="center-title">—</h3>

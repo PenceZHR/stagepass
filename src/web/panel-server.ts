@@ -267,6 +267,14 @@ function phasesFor(input: {
       current: state?.phase === phase,
       mark: markOf(phase, ledger, state, gaps),
       gaps,
+      /**
+       * 这个阶段跑过几轮 —— 环上那个节点的刻度就是它（§5.9.4）。
+       *
+       * 和派发、题面同一个算法（`roundFromLedger`）。真实形状不是 12 个节点的环，
+       * 是 12 个各自带自环的节点：每个节点上花的轮数（3~4）比它在环上的位置
+       * （1/12）更能说明「你在哪」。
+       */
+      rounds: roundFromLedger(ledger, phase),
       /** 最近一轮，按角色分。没跑过就是 null。 */
       assessed: rounds,
       /** 红方产出了什么。空数组 = 这个阶段还没产出任何东西。 */

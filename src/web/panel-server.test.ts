@@ -269,6 +269,8 @@ describe("panel · what it offers", () => {
         produced: [],
         // null = 这个阶段还没有裁决落过 —— 不许编一个下场出来（§3.2·5）。
         lastOutcome: null,
+        // 一轮都没跑过。环上那个节点因此一个刻度都不画（§5.9.4）。
+        rounds: 0,
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));
