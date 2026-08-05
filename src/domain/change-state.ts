@@ -58,6 +58,17 @@ export const CHANGE_ACTIONS = [
    * 带目标（`TransitionOptions.to`），目标必须在严格上游。
    */
   "sendBack",
+  /**
+   * 就在这儿再来一轮 —— **只有 Review/QA 有**（2026-08-02 记的旧账 F）。
+   *
+   * 那两个阶段的 `reject` 语义是**送修**（→ Fix），于是「这一轮方法不对，
+   * 再跑一次」没有自己的动作：唯一出路是绕道 Fix，在一份根本没问题的代码上
+   * 跑一轮修理，只为了回到 Review 再审一次。
+   *
+   * **别的阶段没有这个动作**：那儿的 `reject` 已经就是这个意思，两条路一个
+   * 意思是这棵树一直在删的东西。
+   */
+  "rerun",
 ] as const;
 
 export type ChangeAction = (typeof CHANGE_ACTIONS)[number];
@@ -93,7 +104,7 @@ export interface ChangeState {
 const ACCEPTS: Readonly<Record<PhaseStatus, readonly ChangeAction[]>> = {
   pending: ["start"],
   running: ["settle", "fail"],
-  settled: ["approve", "reject", "sendBack"],
+  settled: ["approve", "reject", "sendBack", "rerun"],
   blocked: ["retry"],
   closed: [],
 };
@@ -159,6 +170,9 @@ export function isLegal(
   // 打回要有地方可回：PRD 没有上游，Fix 不在主线上。这一半是阶段的属性，
   // 不是状态的属性，所以不在 ACCEPTS 表里。
   if (action === "sendBack") return upstreamOf(state.phase, graph).length > 0;
+  // 原地再来一轮只有 Review/QA 有 —— 别处的 `reject` 已经就是这个意思。
+  // 同一个判据（`sendsToFix`）在这儿和 `reject` 的落点上各用一次，不另算一套。
+  if (action === "rerun") return sendsToFix(state.phase);
   return true;
 }
 
@@ -238,6 +252,10 @@ export function transition(
     case "start":
     case "retry":
       return { ...state, status: "running" };
+    case "rerun":
+      // 阶段不动、栈不动 —— 和设计阶段的 `reject` 落点逐字一样。被打回来的
+      // Review 原地再跑一轮，它欠着的回程照旧欠着。
+      return { ...state, status: "pending" };
     case "settle":
       return { ...state, status: "settled" };
     case "fail":

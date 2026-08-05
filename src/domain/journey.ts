@@ -142,6 +142,12 @@ export function optionsFrom(
         : "再来一轮 → 红蓝在这个阶段重新跑",
     });
   }
+  if (gate.permitted.includes("rerun")) {
+    edges.push({
+      action: "rerun", to: state.phase, kind: "self",
+      why: "再审一次 → 这个阶段重新跑（代码不动，不送 Fix）",
+    });
+  }
   if (gate.permitted.includes("retry")) {
     edges.push({
       action: "retry", to: state.phase, kind: "self",

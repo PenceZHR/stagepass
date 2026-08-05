@@ -212,7 +212,7 @@ export function computeGate(
   // `isLegal` 而不是查 ACCEPTS 表：sendBack 多一道「得有上游」的判据（PRD 没有，
   // Fix 不在主线上），那一半在状态机里，这里不另算一套。
   for (const action of [
-    "start", "settle", "fail", "retry", "approve", "reject", "sendBack",
+    "start", "settle", "fail", "retry", "approve", "reject", "sendBack", "rerun",
   ] as const) {
     if (!isLegal(state, action, graph)) {
       refusals[action] = "not_legal_in_this_status";

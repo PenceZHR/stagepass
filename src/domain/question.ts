@@ -158,7 +158,8 @@ export function gateDecisionQuestion(input: {
 }): Question | null {
   // `start`, `settle` and `fail` are the system reporting what happened. Only
   // these four are ever put to a person.
-  const decisions: readonly ChangeAction[] = ["approve", "reject", "retry", "sendBack"];
+  const decisions: readonly ChangeAction[] =
+    ["approve", "reject", "rerun", "retry", "sendBack"];
   const targets = input.sendBackTargets ?? [];
   const offered = decisions
     .filter((action) =>
@@ -238,11 +239,20 @@ const BACK_TO_FIX_LABEL = "打回去修（送到 Fix）";
  * 这个说**上游文档**错了（回那个设计阶段重跑，改完弹回这儿）。
  */
 const SEND_BACK_LABEL = "打回上游（哪一份文档错了，上面那格选）";
+/**
+ * Review/QA 的「就在这儿再来一轮」（旧账 F）。
+ *
+ * 和「打回去修」是两句不同的话：那个说**代码**有问题（送 Fix 改），这个说
+ * **这一轮审得不对**（代码先不动，重新审一次）。在这之前后者没有动作，人只能
+ * 绕道 Fix —— 在一份没问题的代码上跑一轮修理，只为了回到 Review 再审一次。
+ */
+const RERUN_LABEL = "再审一次（这个阶段重新跑，代码不动、不送 Fix）";
 
 export function decisionLabel(action: ChangeAction, phase: string): string {
   if (action === "approve") return APPROVE_LABEL;
   if (action === "retry") return RETRY_LABEL;
   if (action === "sendBack") return SEND_BACK_LABEL;
+  if (action === "rerun") return RERUN_LABEL;
   return isPhase(phase) && sendsToFix(phase) ? BACK_TO_FIX_LABEL : ANOTHER_ROUND_LABEL;
 }
 
@@ -259,6 +269,7 @@ const ACTION_BY_LABEL: Readonly<Record<string, ChangeAction>> = {
   [ANOTHER_ROUND_LABEL]: "reject",
   [BACK_TO_FIX_LABEL]: "reject",
   [SEND_BACK_LABEL]: "sendBack",
+  [RERUN_LABEL]: "rerun",
 };
 
 /** 打回目标那一格。`T` 排在 `R…` 后、小写 `decision` 前 —— 名字是挑的。 */
@@ -305,7 +316,7 @@ export function sendBackReasonFrom(answer: Answer): string {
  * 等于替人决定了 Fix 该做什么。
  */
 export const runsAgainHere = (label: unknown): boolean =>
-  label === ANOTHER_ROUND_LABEL || label === RETRY_LABEL;
+  label === ANOTHER_ROUND_LABEL || label === RETRY_LABEL || label === RERUN_LABEL;
 
 /**
  * 「回应蓝方」那四个选项。

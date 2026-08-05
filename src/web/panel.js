@@ -1024,8 +1024,15 @@ async function load() {
  * 这份名单和 domain/question.ts 里的 `gateDecisionQuestion` 是同一份。
  */
 function decidableActions() {
-  return (panelState?.gate?.permitted ?? []).filter((action) =>
-    action === "approve" || action === "reject" || action === "retry");
+  /*
+   * **读服务端算好的那份边，不在这儿再筛一遍名单。**
+   *
+   * 原来这里写死 `approve / reject / retry` 三个 —— 于是 2026-08-05 加
+   * `sendBack` 和 `rerun` 时它一个字都没跟上：一份漂开了的判据拷贝，而它决定
+   * 「请 Codex 问我」这个按钮亮不亮。`options` 是 `optionsFrom` 从闸门长出来的
+   * （panel-server），这里读它就永远不会和裁决表说两件事。
+   */
+  return (panelState?.options ?? []).map((edge) => edge.action);
 }
 
 /** 闸门此刻说了什么，一句话。只陈述，永远不提供改变它的控件。 */

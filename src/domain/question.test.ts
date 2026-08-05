@@ -822,3 +822,37 @@ describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
     assert.deepEqual(waiveFrom(waivable, { action: "decline", content: {} }), []);
   });
 });
+
+describe("L3 · Review/QA 的裁决表里有「再审一次」（旧账 F）", () => {
+  const settledAt = (phase: Phase): ChangeState =>
+    ({ phase, status: "settled", returnStack: [] });
+  const askAt = (phase: Phase): Question => gateDecisionQuestion({
+    phase, gate: computeGate(settledAt(phase), CLEAN), summary: "s",
+  })!;
+
+  for (const phase of ["Review", "QA"] as const) {
+    it(`${phase}：送修和再审是两个选项，不是一个`, () => {
+      const offered = askAt(phase).requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+      assert.ok(offered.includes(decisionLabel("reject", phase)), "少了送修");
+      assert.ok(offered.includes(decisionLabel("rerun", phase)), "少了再审");
+      // 两句话说的是两件事：代码有问题 vs 这一轮审得不对。
+      assert.match(decisionLabel("reject", phase), /送到 Fix/);
+      assert.match(decisionLabel("rerun", phase), /代码不动、不送 Fix/);
+    });
+  }
+
+  it("设计阶段没有这一项 —— 那儿的「再来一轮」已经是它（§5.4：必被拒的不许摆）", () => {
+    const offered = askAt("Spec").requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+    assert.ok(!offered.includes(decisionLabel("rerun", "Spec")));
+  });
+
+  it("那句话回来映射成 rerun，而且算「活儿留在这个阶段」—— 答完直接续跑", () => {
+    const question = askAt("Review");
+    assert.equal(decisionFrom(question, {
+      action: "accept", content: { [DECISION_FIELD]: decisionLabel("rerun", "Review") },
+    }), "rerun");
+    assert.equal(runsAgainHere(decisionLabel("rerun", "Review")), true);
+    // 「打回去修」照旧不算：那时 Change 已经换到 Fix 了。
+    assert.equal(runsAgainHere(decisionLabel("reject", "Review")), false);
+  });
+});

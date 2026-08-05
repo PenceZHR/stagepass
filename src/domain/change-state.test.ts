@@ -107,11 +107,12 @@ describe("L0 · the state machine is exhaustively decided", () => {
       PHASES.length * PHASE_STATUSES.length * CHANGE_ACTIONS.length,
     );
     // 12 phases x (start 1 + settle/fail 2 + retry 1 + approve/reject 2)
-    // + sendBack：主线上除 PRD 外的 10 个（PRD 没有上游，Fix 不在主线上）。
-    assert.equal(legal, 12 * (1 + 2 + 1 + 2) + 10);
+    // + sendBack：主线上除 PRD 外的 10 个（PRD 没有上游，Fix 不在主线上）
+    // + rerun：只有 Review 和 QA 两个（别处的 reject 已经是这个意思）。
+    assert.equal(legal, 12 * (1 + 2 + 1 + 2) + 10 + 2);
     // `closed` is representable only on Done, so 11 phases contribute no state.
     assert.equal(unrepresentable, PHASES.length - 1);
-    assert.equal(rejected, 261);
+    assert.equal(rejected, 308);
   });
 
   it("accepts nothing at all once closed", () => {
@@ -443,5 +444,46 @@ describe("L0 · the walk a real Change takes", () => {
     }
     assert.equal(state.status, "closed");
     assert.deepEqual(visited, ["PRD", "Build", "Review", "Done"]);
+  });
+});
+
+describe("L0 · Review/QA 也要能「就在这儿再来一轮」（旧账 F）", () => {
+  /*
+   * `reject` 在这两个阶段的语义是**送修**（→ Fix）。于是「这一轮方法不对，
+   * 再跑一次」没有自己的动作 —— 唯一出路是绕道 Fix：在一份根本没问题的代码上
+   * 跑一轮修理，只为了回到 Review 再审一次。2026-08-02 记下的账，一直没还。
+   */
+  const settled = (phase: Phase): ChangeState =>
+    ({ phase, status: "settled", returnStack: [] });
+
+  for (const phase of ["Review", "QA"] as const) {
+    it(`${phase} 可以原地再来一轮 —— 阶段、栈都不动`, () => {
+      assert.deepEqual(transition(settled(phase), "rerun"), {
+        phase, status: "pending", returnStack: [],
+      });
+    });
+  }
+
+  it("**设计阶段没有这个动作** —— 那儿的 reject 已经是这个意思，两条路一个意思不许并存", () => {
+    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build"] as const) {
+      assert.equal(isLegal(settled(phase), "rerun"), false, phase);
+      assert.throws(() => transition(settled(phase), "rerun"), IllegalTransitionError);
+    }
+  });
+
+  it("被打回的 Review 原地再来一轮 —— 欠着的回程还欠着", () => {
+    assert.deepEqual(
+      transition({ phase: "QA", status: "settled", returnStack: [] }, "rerun"),
+      { phase: "QA", status: "pending", returnStack: [] },
+    );
+    // Fix 自己不在此列：它的 reject 已经是原地重开（上面那条测试盯着）。
+    assert.equal(
+      isLegal({ phase: "Fix", status: "settled", returnStack: ["Review"] }, "rerun"), false);
+  });
+
+  it("只有 settled 能再来一轮 —— running / blocked 各有各的动作", () => {
+    for (const status of ["pending", "running", "blocked"] as const) {
+      assert.equal(isLegal({ phase: "Review", status, returnStack: [] }, "rerun"), false, status);
+    }
   });
 });
