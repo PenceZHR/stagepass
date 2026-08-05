@@ -452,8 +452,34 @@ runPhaseTurn            →  workspace_dirty，拒        ✗ 没有 job 被创�
 所以这两列不做任何解析、不做格式假设，换结构化时是可以逐条读出来再拆的。
 细节见 `HANDOFF-2026-08-05.md` §一·3。
 
-**10. 精确标识符七个手抄面** —— `docs/DESIGN-no-hand-transcription-2026-08-02.md`
-有完整盘点，没实施。
+**10. 精确标识符七个手抄面** —— **2026-08-05 逐面核实：BACKLOG 说的「没实施」
+是过期的，七面里只剩半面。** 盘点在
+`docs/DESIGN-no-hand-transcription-2026-08-02.md`，逐面现状：
+
+| # | 面 | 现状（核实过） |
+|---|---|---|
+| 1 | 子 Agent 线程 id | ✅ 改成血缘认亲（`childThreadsOf` 读 `parent_thread_id`），`readAgents` 及其守卫已拆 |
+| 2 | rubric 派生 gap id（50 字符） | ✅ 走 `stagepass_next` / `stagepass_answer`，模型手上零标识符 |
+| 3 | criterion key —— **critic 那半** | ✅ 同上，裁判是 `user` 线程，够得着插件 |
+| 3 | criterion key —— **producer 那半** | ❌ **只剩这半面**，见下 |
+| 4 | 模型自铸 gap id | 不在这份文档范围（是跨轮记忆问题） |
+| 5 | 产出文件路径 | 不在范围（路径是语义的，抄错会响亮失败） |
+| 6 | JSON 信封 | 已有 `domain/turn.ts` 的修复层 |
+| 7 | `stagepass_ask` 的 questionId | ✅ 无参（`inputSchema: NOTHING`） |
+
+**剩下那半面卡在一个只有人能拍的决定上**，不是工程问题：producer 那份 rubric 由
+**反方**判，而反方是子 Agent —— 2026-08-02 实测**子 Agent 只继承全局
+`~/.codex/config.toml` 里的 MCP，不继承命令行 `-c`**，所以它够不着插件。
+现在它走「序号 1..N + 文件」那条路（`blueRubricLines`），而用户 2026-08-02 对
+序号方案的原话是「不算，想办法做到真的 0」。
+
+唯一的技术出路是**把插件写进用户全局 config.toml**，而现在的代码刻意不这么做
+（`pluginConfigFor`：每次启动才带，从不写进人的全局配置）。**破不破这条例是人的
+决定。** 在拍板之前，序号那条路是有意的过渡，不是遗漏。
+
+> 顺带清掉一处过期注释（`codex/subagent.ts`）：它还写着「现在改成裁判把两个
+> `agent_id` 报进答案（`readAgents`）」—— 而 `readAgents` 早就拆了，取代它的
+> 正是那段注释所在的函数。
 
 **~~11. 没有任何地方告诉人「这条线程离墙多远」~~ —— 2026-08-05 已做** ——
 同一条裁判线程跑到第 5 轮，上下文 **99,553 / 258,400 = 38.5%**，每轮稳定涨约

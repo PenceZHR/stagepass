@@ -93,7 +93,12 @@ export function createSubAgentLookup(
  * 那一列只有原生 `spawn_agent({task_name})` 会设，而**那个工具不是每个 Codex 会话
  * 都有**（2026-07-30 实测：同一天同一台机器，几小时前有、后来没有）。没有它的会话里
  * 每个阶段的每一轮都跑不了，症状是 `no sub-agent at /root/red`。
- * 现在改成裁判把它派生的两个 `agent_id` 报进答案（`domain/round.ts` 的 `readAgents`）。
+ *
+ * 中间有过一版「让裁判把两个 `agent_id` 报进答案」（`readAgents`），而那正是
+ * 手抄面 #1：36 字符的 UUID 抄错一个字这一轮就作废，实测栽过（`02059a8` 把自己
+ * 的线程报成了子 Agent）。**现在两条都不走了** —— 血缘写在 rollout 的
+ * `session_meta.parent_thread_id` 里（CHG-003 真数据 76/76 有值），
+ * StagePass 自己认，模型手上一个标识符都没有。`readAgents` 连同它的守卫已拆。
  *
  * ## 顺带：不再碰 Codex 的私有库
  *
