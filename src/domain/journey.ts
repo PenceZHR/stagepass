@@ -75,6 +75,41 @@ function kindOf(fromPhase: string, toPhase: string): JumpKind {
   return to > from ? "forward" : "backward";
 }
 
+/**
+ * 这个阶段现在**欠着谁的回程**，以及那次打回带的理由 —— 反馈闭环的取数口。
+ *
+ * ## 判据是栈顶，不是「账本里有过打回」
+ *
+ * 账本是 append-only 的，一次打回永远留在里面。而「红方现在该不该被告知自己是
+ * 被退回来的」问的是**当下的债**：栈顶是谁，就是欠谁的。上一次打回早已还清
+ * （approve 弹过栈）的话，再把那句话塞进提示词，就是拿一件已经了结的事去改变
+ * 这一轮的性质。
+ *
+ * ## 送修（reject → Fix）不算
+ *
+ * 它也压栈、也是回头边，但它是另一句话：「代码有问题，去修」而不是「你这份
+ * 上游文档错了」。而且 `reject` 那条路上根本没有理由可带（裁决表不收），
+ * 硬算进来的结果是给 Fix 的红方念一句「Review 没有留下理由」—— 那是噪音。
+ */
+export function pendingSendBack(
+  entries: readonly JourneyEntry[],
+  state: { readonly phase: string; readonly returnStack: readonly string[] },
+): { from: string; reason: string | null; round: number } | null {
+  const owed = state.returnStack[state.returnStack.length - 1];
+  if (owed === undefined) return null;
+  const jumps = jumpsFrom(entries);
+  for (let index = jumps.length - 1; index >= 0; index--) {
+    const jump = jumps[index]!;
+    // 同一个阶段可以被打回好几次，取**最近**那一次：早先那次的理由已经处理过了
+    // （或者被人换了说法），拿旧的去指挥这一轮是在照一份过期的意见干活。
+    if (jump.action === "sendBack"
+      && jump.toPhase === state.phase && jump.fromPhase === owed) {
+      return { from: jump.fromPhase, reason: jump.reason, round: jump.round };
+    }
+  }
+  return null;
+}
+
 export function jumpsFrom(entries: readonly JourneyEntry[]): Jump[] {
   const jumps: Jump[] = [];
   entries.forEach((entry, index) => {

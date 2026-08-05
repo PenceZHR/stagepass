@@ -57,6 +57,18 @@ export interface RoundRequest {
    */
   readonly extraWorkItems?: readonly WorkItemDraft[];
   /**
+   * 这个阶段是被下游打回来的 —— 谁打的、为什么、哪一轮（§5.9.1 的回边）。
+   *
+   * 这一层不去算它（算法在 `domain/journey.ts` 的 `pendingSendBack`，判据是
+   * 栈顶欠着谁），只管把它原样带进裁判的提示词 —— 和 `blueRubric` 那两个路径
+   * 同一个分工。
+   */
+  readonly sentBack?: {
+    readonly from: string;
+    readonly reason: string | null;
+    readonly round: number;
+  };
+  /**
    * 反方这一轮还要逐条判定的那几条标准在哪、答案写到哪。
    *
    * **这一层不知道 rubric 是什么**，和 `extraWorkItems` 同一个道理：它只管把两个
@@ -325,6 +337,7 @@ export async function runRound(
       ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
       ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
       ...(settledPath === undefined ? {} : { settledPath }),
+      ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
       contractNotesPath,
     }),
   });

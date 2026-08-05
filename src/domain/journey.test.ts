@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { jumpsFrom, type JourneyEntry } from "./journey";
+import { jumpsFrom, pendingSendBack, type JourneyEntry } from "./journey";
 
 /**
  * L1 · 跳转表 = 事件流的投影（BACKLOG §4.3 / §5.9.2）。
@@ -96,5 +96,66 @@ describe("L1 · 跳转表从账本投影出来", () => {
 
   it("空账本 —— 空表，不编", () => {
     assert.deepEqual(jumpsFrom([]), []);
+  });
+});
+
+describe("L1 · 这个阶段现在欠着谁的回程（反馈闭环的取数口）", () => {
+  let seq = 0;
+  const e = (action: string, from: [string, string] | null, to: [string, string], reason: string | null = null): JourneyEntry =>
+    ({ seq: seq++, action, from: from && { phase: from[0], status: from[1] },
+       to: { phase: to[0], status: to[1] }, reason, at: `t${seq}` });
+  const walkToSpecViaSendBack = (): JourneyEntry[] => {
+    seq = 0;
+    return [
+      e("create", null, ["PRD", "pending"]),
+      e("start", ["PRD", "pending"], ["PRD", "running"]),
+      e("settle", ["PRD", "running"], ["PRD", "settled"]),
+      e("approve", ["PRD", "settled"], ["Spec", "pending"]),
+      e("start", ["Spec", "pending"], ["Spec", "running"]),
+      e("settle", ["Spec", "running"], ["Spec", "settled"]),
+      e("approve", ["Spec", "settled"], ["Build", "pending"]),
+      e("start", ["Build", "pending"], ["Build", "running"]),
+      e("settle", ["Build", "running"], ["Build", "settled"]),
+      e("sendBack", ["Build", "settled"], ["Spec", "pending"], "接口边界在 Spec 里就画错了"),
+    ];
+  };
+
+  it("被打回的阶段：说出是谁、原话、打回方当时第几轮", () => {
+    assert.deepEqual(
+      pendingSendBack(walkToSpecViaSendBack(), { phase: "Spec", returnStack: ["Build"] }),
+      { from: "Build", reason: "接口边界在 Spec 里就画错了", round: 1 },
+    );
+  });
+
+  it("欠的不是这一跳就不算 —— 栈顶说了算，不是「账本里有过打回」", () => {
+    // 同一份账本，但 Change 已经不在 Spec 欠 Build 的那个状态里了。
+    assert.equal(
+      pendingSendBack(walkToSpecViaSendBack(), { phase: "Spec", returnStack: [] }), null);
+    assert.equal(
+      pendingSendBack(walkToSpecViaSendBack(), { phase: "PRD", returnStack: ["Spec"] }), null);
+  });
+
+  it("送修（reject → Fix）不算打回上游 —— 那是另一句话，而且没有理由可带", () => {
+    seq = 0;
+    const ledger = [
+      e("create", null, ["Review", "pending"]),
+      e("reject", ["Review", "settled"], ["Fix", "pending"]),
+    ];
+    assert.equal(pendingSendBack(ledger, { phase: "Fix", returnStack: ["Review"] }), null);
+  });
+
+  it("同一个阶段被打回两次 —— 取最近那次的理由", () => {
+    const ledger = [...walkToSpecViaSendBack()];
+    ledger.push(
+      e("start", ["Spec", "pending"], ["Spec", "running"]),
+      e("settle", ["Spec", "running"], ["Spec", "settled"]),
+      e("approve", ["Spec", "settled"], ["Build", "pending"]),
+      e("start", ["Build", "pending"], ["Build", "running"]),
+      e("settle", ["Build", "running"], ["Build", "settled"]),
+      e("sendBack", ["Build", "settled"], ["Spec", "pending"], "第二次：验收口径还是对不上"),
+    );
+    assert.equal(
+      pendingSendBack(ledger, { phase: "Spec", returnStack: ["Build"] })?.reason,
+      "第二次：验收口径还是对不上");
   });
 });

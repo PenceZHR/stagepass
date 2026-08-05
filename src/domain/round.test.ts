@@ -1304,3 +1304,47 @@ describe("L4 · 「在哪儿」和「为什么」要活到下一轮的提示词�
     );
   });
 });
+
+describe("L4 · 被打回的阶段，红方必须知道是谁打回来的、为什么（§5.5 最后一米）", () => {
+  /*
+   * F 档把长回边做进了状态机，但理由只落在账本上 —— **目标阶段的红方读不到**。
+   * 于是 Build 发现 Spec 错了、人打回 Spec，Spec 的红方从零重写一份 Spec，
+   * 完全不知道下游为什么把它退回来。反馈链路（§5.5）就断在这最后一米。
+   */
+  const sentBack = (patch: Partial<{ from: string; reason: string | null; round: number }> = {}) =>
+    judgePrompt({
+      phase: "Spec", round: 3, task: "写出 Spec", openGaps: [],
+      sentBack: { from: "Build", reason: "接口边界在 Spec 里就画错了", round: 2, ...patch },
+    });
+
+  it("说清是谁打回的、什么时候、原话是什么", () => {
+    const prompt = sentBack();
+    assert.match(prompt, /被 Build 打回来的/);
+    assert.match(prompt, /第 2 轮/);
+    // **原文照抄** —— 转述必然改写，而这是人写的话。
+    assert.match(prompt, /接口边界在 Spec 里就画错了/);
+  });
+
+  it("**写明收件人**，原样转达给红蓝两方（2026-08-02 四张脸的教训）", () => {
+    const prompt = sentBack();
+    assert.match(prompt, new RegExp(`原样转达给${RED}和${BLUE}`));
+    // 那句话必须出现两次：裁判自己读一次，转达的原文一次 —— 只写一次就又变回
+    // 「参照上文」，而那正是四次转丢的成因。
+    assert.equal(prompt.split("接口边界在 Spec 里就画错了").length - 1, 2);
+  });
+
+  it("红方的活儿改了：不是重写一份，是修好被指出的地方", () => {
+    assert.match(sentBack(), /不是从零重写/);
+  });
+
+  it("人没写理由 —— 照实说「没留理由」，不编一个", () => {
+    const prompt = sentBack({ reason: null });
+    assert.match(prompt, /被 Build 打回来的/);
+    assert.match(prompt, /没有留下理由/);
+  });
+
+  it("没被打回 —— 一个字都不印（和加这个参数之前逐字一样）", () => {
+    const plain = judgePrompt({ phase: "Spec", round: 3, task: "写出 Spec", openGaps: [] });
+    assert.ok(!plain.includes("打回"), "正常进入的阶段不该看见打回那一段");
+  });
+});

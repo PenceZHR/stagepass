@@ -65,6 +65,26 @@ export interface RoundInstructions {
    */
   readonly openGapsPath?: string | undefined;
   /**
+   * 这个阶段是被下游打回来的 —— 谁打的、为什么、哪一轮打的（§5.9.1 的回边）。
+   *
+   * ## 为什么它必须进提示词
+   *
+   * F 档（2026-08-05）把长回边做进了状态机，理由落在账本的 `reason` 列上，
+   * **而目标阶段的红方读不到它**。于是 Build 发现 Spec 错了、人把活打回 Spec，
+   * Spec 的红方从零重写一份 Spec，完全不知道下游为什么退它 —— §5.5 那条反馈
+   * 链路就断在这最后一米，和「人在选择器里写的话进不了红方眼里」是同一个病。
+   *
+   * 缺席就一个字都不印：正常沿主线进来的阶段没有「被谁打回」这回事，印一段空的
+   * 会让裁判去猜要不要提。
+   */
+  readonly sentBack?: {
+    readonly from: string;
+    /** 人写的原话。null = 他没留理由（照实说，不编）。 */
+    readonly reason: string | null;
+    /** 打回发生在打回方的第几轮。 */
+    readonly round: number;
+  } | undefined;
+  /**
    * 反方这一轮的意见写到哪（相对项目根，`domain/artifact-home.ts` 生成）。
    *
    * 它一直在写 —— 每个阶段都见过 `-opposition` / `-review` 落在仓库根目录，
@@ -356,6 +376,45 @@ function blueRubricLines(
  * 红方和反方都要，而且要的东西不同：**红方**别再去"修"一条人已经驳掉的；
  * **反方**别再把它当成新问题报出来。
  */
+/**
+ * 「你是被打回来的」那一段 —— **自己读，并且原样转达给两边。**
+ *
+ * ## 为什么是原文而不是路径
+ *
+ * 别处的正文能走文件就走文件（需求、名单、契约说明），判据是「它天然是一份文档、
+ * 而且能有几百字」。打回的理由是**人随手写的一两句话**，做成文件只是多一次读盘，
+ * 而少了它红方就要先读一个路径才知道自己为什么在这儿 —— 这一句必须一眼看见。
+ *
+ * ## 抬头照旧
+ *
+ * 2026-08-02 那四张脸（任务、rubric 契约、反方格式、名单）教会的同一件事：
+ * **凡是要经裁判转达的文本，指望它「参照上文」就是指望它转述，只有原文加收件人
+ * 才到得了。** 所以这段话出现两次：裁判自己读一次，转达的原文一次。
+ *
+ * ## 红方的活儿变了，必须说出来
+ *
+ * 被打回的阶段不是「再写一份」，是「下游发现你这份有问题，修那个地方」。不说这句，
+ * 红方会照常从零重写 —— 而重写出来的那份很可能又踩同一个坑。
+ */
+function sentBackLines(sentBack: RoundInstructions["sentBack"]): string[] {
+  if (sentBack === undefined) return [];
+  const said = sentBack.reason === null
+    ? `${sentBack.from} 那边没有留下理由。`
+    : sentBack.reason;
+  return [
+    `**这个阶段是被 ${sentBack.from} 打回来的**（${sentBack.from} 的第 `
+    + `${sentBack.round} 轮），人给的理由是：`,
+    said,
+    "",
+    `**下面这三行原样转达给${RED}和${BLUE}，一个字都不要改：**`,
+    `   这个阶段是被下游的 ${sentBack.from} 打回来的，人给的理由是：${said}`,
+    `   ${RED}：你的活儿**不是从零重写一份**，是把上面这条指出来的地方改对；`
+    + "别的部分只有在跟着这条改动必须动时才动。",
+    `   ${BLUE}：先看这条有没有真的被解决 —— 它是这一轮最要紧的一条。`,
+    "",
+  ];
+}
+
 function settledLines(settledPath: string | undefined): string[] {
   if (settledPath === undefined) return [];
   return [
@@ -430,6 +489,12 @@ export function judgePrompt(input: RoundInstructions): string {
      * 收件人的文本递到裁判手上，它就当成可以自己消化的背景。rubric 契约修了抬头，
      * 任务这段当时漏了。
      */
+    /*
+     * 打回那一段排在**最前面**（比「已经裁定过的事」还靠前）：它改的是这一轮
+     * 整件事的性质 —— 从「写一份」变成「修一处」。放在后面，裁判读到它时已经
+     * 按「照常跑一轮」把活分下去了。
+     */
+    ...sentBackLines(input.sentBack),
     ...settledLines(input.settledPath),
     play.red.heading,
     input.task,

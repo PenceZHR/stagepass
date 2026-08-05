@@ -3,6 +3,7 @@ import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
 import { PHASES, producesCommit, type Phase } from "../domain/phase";
+import { pendingSendBack } from "../domain/journey";
 import { roundFromLedger, type RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
@@ -218,6 +219,18 @@ export class RoundTurnRunner implements TurnRunner {
       // 反方的那份同理，经裁判的提示词转达（共享模板，不进 PHASE_PLAY 那张
       // 十一份的表）。所有阶段都给 —— 反方在每个阶段都写意见，Build 也不例外。
       blueDocPath: blueDocPath(job.changeId, phase, round),
+      /*
+       * **被打回的阶段，红方得知道是谁退的、为什么**（§5.5 的最后一米）。
+       *
+       * 取数在 `pendingSendBack`：判据是**栈顶欠着谁**，不是「账本里有过打回」——
+       * 早就还清的那次再念一遍，是拿一件了结的事去改变这一轮的性质。
+       * 没欠债就是 `undefined`，提示词一个字都不印。
+       */
+      ...(() => {
+        const back = pendingSendBack(
+          this.options.changes.ledger(job.changeId), change.state);
+        return back === null ? {} : { sentBack: back };
+      })(),
       // 同一个 (Change, 阶段) 复用同一个裁判线程。
       //
       // **必须看 status。** 一条 detached 的绑定仍然留着 threadId —— 直接拿它去

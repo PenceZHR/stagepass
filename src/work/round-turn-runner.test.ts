@@ -202,6 +202,45 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     assert.match(prompt, /PRD/, "没说这份产物是哪个阶段的");
   });
 
+  it("**被打回的阶段，打回的理由从账本走进了提示词**（§5.5 最后一米）", async () => {
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    // PRD 批准 → Spec 批准 → Build 结算，然后人把活打回 Spec 并写下理由。
+    for (const [phase, artifact] of [["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"]] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [artifact], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    // 把 Change 从 TechSpec 一路推到 Build（中间几段不带产物，够用）。
+    for (const phase of ["TechSpec", "Plan", "TestPlan"] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, { artifactIds: ["x.md"], blockers: [], waivedBlockerIds: [] });
+      context.changes.apply(CHANGE, "approve");
+    }
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    context.changes.apply(CHANGE, "sendBack",
+      { to: "Spec", reason: "接口边界在 Spec 里就画错了，别再往下修补" });
+    assert.equal(context.changes.read(CHANGE).state.phase, "Spec");
+
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const prompt = transport.dispatches[0]?.prompt ?? "";
+    assert.match(prompt, /被 Build 打回来的/, "红方不知道是谁退的它");
+    // **原话，不是转述** —— 而且要出现两遍（裁判自己读一次、转达原文一次）。
+    assert.equal(prompt.split("接口边界在 Spec 里就画错了，别再往下修补").length - 1, 2);
+    assert.match(prompt, /不是从零重写/);
+  });
+
   it("走到 TestPlan 时，四份上游按线的顺序全在", async () => {
     const context = open();
     const evidence = new EvidenceStore(context.db);
