@@ -58,6 +58,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 配料单（H 档第二块）。只依赖上面那个解析器，所以同一层 —— 它俩是同一族
   // 工具：一个把树读成图，一个按图切出「这次改动该看见什么」。
   "graph/ingredients.ts": 0,
+  // 两张图的对账（H 档第三块）。同一族工具，同一层：它只读图，不读代码。
+  "graph/reconcile.ts": 0,
   // 只依赖 phase 的纯路径生成（E：产物的家）。
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
