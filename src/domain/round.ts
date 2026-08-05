@@ -1,4 +1,6 @@
-import { jsonAnswerIn, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
+import {
+  jsonAnswerIn, RESULT_CONTRACT, RESULT_CONTRACT_NOTES, TurnResultUnparsableError,
+} from "./turn";
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
@@ -63,6 +65,14 @@ export interface RoundInstructions {
    */
   readonly openGapsPath?: string | undefined;
   /**
+   * 反方这一轮的意见写到哪（相对项目根，`domain/artifact-home.ts` 生成）。
+   *
+   * 它一直在写 —— 每个阶段都见过 `-opposition` / `-review` 落在仓库根目录，
+   * 只是从来没人告诉它写到哪，于是它自己起名、自己挑地方，树就这么脏的（E）。
+   * 给了就渲染一行；缺席一行不印 —— 这一层是纯的，不知道产物目录归谁管。
+   */
+  readonly blueDocPath?: string | undefined;
+  /**
    * 反方这一轮还要逐条判定的那几条标准 —— **两个路径，正文一个字都不进提示词。**
    *
    * ## 为什么非得经裁判转达
@@ -109,6 +119,19 @@ export interface RoundInstructions {
    * 人裁过任何事）就一行都不印。
    */
   readonly settledPath?: string | undefined;
+  /**
+   * 结果契约里**说明那一半**（`RESULT_CONTRACT_NOTES`）写成文件之后，它在哪。
+   *
+   * 契约在提示词里出现两遍（红蓝各一份原文），2026-08-05 实测占整份的 44.3%。
+   * 走文件省下来的是两份。
+   *
+   * **只挪说明，不挪骨架** —— 判据是「缺了会怎样」：骨架没被读到，答案形状不对、
+   * 整轮无法解析；说明没被读到，只是 `where` / `why` 写得糙，而那两样 critic 的
+   * rubric 本来就在判。前者不能赌，后者可以。
+   *
+   * 缺席就照旧把说明印进去 —— 和 `openGapsPath` 同一条规矩，这一层是纯的。
+   */
+  readonly contractNotesPath?: string | undefined;
 }
 
 
@@ -128,12 +151,29 @@ export interface RoundInstructions {
  * 眼里都是 `[null]`：一个模型看不懂的分级，而它正要对这条表态。
  */
 const gapLine = (gap: Gap): string => {
-  const head = `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`;
+  const lines = [
+    `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`,
+  ];
+  /*
+   * 报的人说的「在哪儿」和「为什么」跟着进下一轮。
+   *
+   * **这是那条语义损失的出口**：以前它们只活在报告散文里，下一轮的红方读到的是一个
+   * 光秃秃的标题，得自己回去把那份报告再解析一遍才知道改哪儿 —— 而「转述必然改写」
+   * 是这棵树到处在防的事（用户 2026-08-04）。
+   *
+   * 没有就一行都不印，不印空标签：`null` 和「写了但是空的」在提示词里长成一样，
+   * 模型就会开始猜哪种是哪种。
+   */
+  if (gap.where !== null) lines.push(`  在这儿：${gap.where}`);
+  if (gap.why !== null) lines.push(`  为什么是问题：${gap.why}`);
   /*
    * 人对这一条说过的话跟着它进提示词。**这是「我的话进下一轮」那条的落点** ——
    * 不带上它，人在选择器里逐条写的东西就只存在于库里，红方下一轮照样不知道他要什么。
+   *
+   * **排在最后**：上面两行是模型自己说的，这一行是人说的，而人说的话分量不同。
    */
-  return gap.note === null ? head : `${head}\n  人说：${gap.note}`;
+  if (gap.note !== null) lines.push(`  人说：${gap.note}`);
+  return lines.join("\n");
 };
 
 /**
@@ -145,6 +185,18 @@ const gapLine = (gap: Gap): string => {
  * 人提的排在模型报的前面（用户 2026-07-30）：一条模型报的问题，判它不成立是裁判的
  * 本职；一条人提的要求，不该被「我觉得这个建议可以不采纳」关掉。
  */
+/**
+ * 契约里说明那一半：给了路径就印一行路径，没给就印正文。
+ *
+ * **路径那一行必须写收件人。** 2026-08-02 那三张脸的教训：一段没有抬头的文本递到
+ * 裁判手上，它就当成可以自己消化的背景 —— 任务、settled、rubric 那两个路径全都
+ * 写了「原样转达给谁」，这一行不能例外。
+ */
+const contractNotes = (path: string | undefined): string[] =>
+  path === undefined
+    ? [RESULT_CONTRACT_NOTES]
+    : [`   各字段什么意思在这个文件里，**原样转达这一行**，让它先读：${path}`];
+
 export function renderOpenGaps(openGaps: readonly Gap[]): string {
   const human = openGaps.filter(isHumanGap);
   const found = openGaps.filter((gap) => !isHumanGap(gap));
@@ -385,8 +437,16 @@ export function judgePrompt(input: RoundInstructions): string {
     ...play.red.idRule,
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,
+    ...contractNotes(input.contractNotesPath),
     "",
     play.blue.task,
+    /*
+     * 反方的输出路径。放在**共享模板**这儿而不是 `PHASE_PLAY` —— 那张表十一个阶段
+     * 各一份，把同一句话抄十一遍就是十一份必然漂移的拷贝（E 的设计定的）。
+     */
+    ...(input.blueDocPath === undefined ? [] : [
+      `   意见写到仓库里这个路径（相对项目根）：${input.blueDocPath} —— 不要写到别的地方，也不要自己起名。`,
+    ]),
     play.blue.reach,
     ...play.blue.idRule,
     /*
@@ -401,6 +461,7 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
     RESULT_CONTRACT,
+    ...contractNotes(input.contractNotesPath),
     ...play.blue.after.slice(0, 1),
     /*
      * 逐条之外再要一句整体的（用户 2026-07-31）。
@@ -883,11 +944,23 @@ export function readRound(
    */
   verdicts: Readonly<Record<string, Verdict>>,
 ): RoundReading {
-  const red = parseTurnResult(transcript.red);
+  /*
+   * 红方的 blockers 在自审阶段注定被丢掉（下面 `found` 那个分支）—— 那它的形状
+   * 就不许毁掉要用的那半（artifactIds）。2026-08-05 真机：Build 第 4 轮红方把
+   * blockers 交成字符串数组，解析在「要不要用」之前就抛，整轮作废，蓝方同一轮
+   * 11 条有效发现陪葬。Review / QA 里红方的发现算数，照旧全须全尾地解析。
+   */
+  const red = parseTurnResult(transcript.red, {
+    discardBlockers: !redReviewsOthers(transcript.phase),
+  });
   let blueBlockers: RoundOutcome["found"];
   try {
     blueBlockers = parseTurnResult(transcript.blue).blockers.map((blocker) => ({
       id: blocker.id, severity: blocker.severity, title: blocker.title,
+      // **这两样以前就是在这一行被丢掉的。** 红方明明知道问题在 foo.ts:42、也写清了
+      // 为什么，交出来之后只剩一个标题往下走，下一轮的红方和 Fix 得回去重新解析
+      // 那份报告散文。用户 2026-08-04：「绝对不能出现语义损失」。
+      where: blocker.where, why: blocker.why,
     }));
   } catch (error) {
     // A blue that answered in the wrong shape found nothing StagePass can act
@@ -902,6 +975,8 @@ export function readRound(
     ? dedupeById([
         ...red.blockers.map((blocker) => ({
           id: blocker.id, severity: blocker.severity, title: blocker.title,
+          // Review / QA 里红方报的问题算数，它说的「在哪儿、为什么」当然也要跟着走。
+          where: blocker.where, why: blocker.why,
         })),
         ...blueBlockers,
       ])

@@ -50,7 +50,17 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   // 「跑一遍并交出证据」是被 rubric 判的（domain/rubric-defaults.ts 的 Build 那几条），
   // 所以它必须**被要求**。判它的蓝方跑不了东西 —— 不写在这里，就是在罚模型没做一件
   // 没人让它做的事，而那正是「模型答不出它没被问过的题」。
+  //
+  // 2026-08-04 同一条规矩又用了一次：Build 的 rubric 加了四条编码规范（风格一致、
+  // 命名对齐上游、一处定义、不明显的决定写为什么），**所以这四件事也必须在这里被
+  // 要求**。只加判据不加要求，就是回到上面那句话要防的事。
   Build: "Implement the approved plan. Change nothing outside the files the plan allows."
+    + " Match the surrounding code and its direct callers: naming, error handling and file"
+    + " placement follow what is already there -- do not start a second style in the same repo."
+    + " Use the words the approved Spec and TechSpec already use; do not invent a second name"
+    + " for a concept they have named. Keep one definition per rule -- where the logic already"
+    + " exists, call it instead of copying it. Wherever a decision is not obvious, leave the"
+    + " reason in the code."
     + " Run what you changed and report the exact command and its output --"
     + " the reviewer cannot run anything, so unreported means unverified.",
   // Review 的产出是一份**报告**，而它必须写清审的是哪个 commit —— 审 A 不等于审 B，

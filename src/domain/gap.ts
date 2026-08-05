@@ -59,6 +59,15 @@ export interface Gap {
    * 里那段重开的注释。用户 2026-07-30 拍的「以人为主」，2026-08-03 明确到「一直管」。
    */
   readonly closedBy: "human" | null;
+  /**
+   * 报的人说它在哪儿、为什么是问题，原文照抄。定义和理由见 `domain/gate.ts` 的
+   * `Blocker.where` —— 用户 2026-08-04：「绝对不能出现语义损失」。
+   *
+   * `standard` 一律是 null（rubric 派生的，没有「在哪儿」），人自己提的那条也是
+   * null（他的话就是标题本身）。
+   */
+  readonly where: string | null;
+  readonly why: string | null;
 }
 
 export type Verdict =
@@ -146,6 +155,9 @@ export function raise(
     // 标题就是他的话，不用再抄一份到 note 里（E3：一份实现，一处存放）。
     note: null,
     closedBy: null,
+    // 人自己提的：他的话就是标题本身，没有「在哪儿」和「为什么」这两问。
+    where: null,
+    why: null,
   }];
 }
 
@@ -228,7 +240,14 @@ export interface RoundOutcome {
    * 一律是 `finding` 且必须带严重度 —— 这是模型在报「它发现了什么」。
    * `standard` 进不来这条路，理由见 `applyRound` 里那段注释。
    */
-  readonly found: readonly { id: string; severity: BlockerSeverity; title: string }[];
+  readonly found: readonly {
+    id: string;
+    severity: BlockerSeverity;
+    title: string;
+    /** 在哪儿、为什么。缺就是 null —— 见 `domain/gate.ts` 的 `Blocker.where`。 */
+    where: string | null;
+    why: string | null;
+  }[];
   /** What this round says about gaps that were already open. */
   readonly verdicts: Readonly<Record<string, Verdict>>;
 }
@@ -327,6 +346,8 @@ export function applyRound(
       resolution: null,
       note: null,
       closedBy: null,
+      where: found.where,
+      why: found.why,
     });
   }
 
@@ -418,6 +439,7 @@ export function blockersFrom(gaps: readonly Gap[]): Blocker[] {
     .filter((gap) => gap.status === "open")
     .map((gap) => ({
       id: gap.id, kind: gap.kind, severity: gap.severity, title: gap.title,
+      where: gap.where, why: gap.why,
     }));
 }
 

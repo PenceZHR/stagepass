@@ -30,49 +30,74 @@ const changeId = params.get("change") || "CHG-1";
 const projectParam = params.get("project");
 const startCollapsed = params.get("collapsed") === "1";
 
-const orbitView = document.getElementById("orbit-view");
-const stageView = document.getElementById("stage-view");
-const wrap = document.getElementById("orbit-wrap");
-const portal = document.getElementById("portal");
-const centerKicker = document.getElementById("center-kicker");
-const centerTitle = document.getElementById("center-title");
-const centerLine = document.getElementById("center-line");
-const centerCount = document.getElementById("center-count");
-const columns = document.getElementById("columns");
-const stageName = document.getElementById("stage-name");
-const stageThread = document.getElementById("stage-thread");
-const stageNote = document.getElementById("stage-note");
+/**
+ * 按 id 取元素，**取不到就当场炸**。
+ *
+ * 三个理由，第三个是这次（2026-08-05 给 panel.js 上类型检查）才补的：
+ *
+ * 1. `getElementById` 的返回类型是 `HTMLElement | null`，而这里每一个 id 都在
+ *    `panel.html` 里写死存在 —— 取不到就是 html 和 js 对不上，那是**开发期的
+ *    结构错误**，不该在运行时静默变成 `null.textContent` 之后再报。
+ * 2. 报的时候要说出**是哪个 id**。`Cannot read properties of null` 说不出。
+ * 3. 收窄类型。`button()` / `field()` / `dialog()` 各自返回对应的元素类型，
+ *    于是 `.disabled` / `.value` / `.showModal()` 不用在 30 个使用点各写一次
+ *    断言 —— **一处收窄，全文可用**。
+ */
+function pick(id) {
+  const found = document.getElementById(id);
+  if (found === null) throw new Error(`panel.html 里没有 #${id}`);
+  return found;
+}
+/** @returns {HTMLButtonElement} */
+function button(id) { return /** @type {HTMLButtonElement} */ (pick(id)); }
+/** @returns {HTMLInputElement} */
+function field(id) { return /** @type {HTMLInputElement} */ (pick(id)); }
+/** @returns {HTMLDialogElement} */
+function dialog(id) { return /** @type {HTMLDialogElement} */ (pick(id)); }
+
+const orbitView = pick("orbit-view");
+const stageView = pick("stage-view");
+const wrap = pick("orbit-wrap");
+const portal = pick("portal");
+const centerKicker = pick("center-kicker");
+const centerTitle = pick("center-title");
+const centerLine = pick("center-line");
+const centerCount = pick("center-count");
+const columns = pick("columns");
+const stageName = pick("stage-name");
+const stageThread = pick("stage-thread");
+const stageNote = pick("stage-note");
 /** 终端底下那行注解的原话。say() 会盖掉它，进终端时还原。 */
 const NOTE_DEFAULT = stageNote.textContent;
 
 // 左侧 40% 的常驻面板
-const statusKicker = document.getElementById("status-kicker");
-const statusTitle = document.getElementById("status-title");
-const statusMark = document.getElementById("status-mark");
-const statusLine = document.getElementById("status-line");
-const statusFacts = document.getElementById("status-facts");
-const statusFoot = document.getElementById("status-foot");
+const statusKicker = pick("status-kicker");
+const statusTitle = pick("status-title");
+const statusMark = pick("status-mark");
+const statusLine = pick("status-line");
+const statusFacts = pick("status-facts");
+const statusFoot = pick("status-foot");
 
 // 点小环打开的弹窗
-const sheet = document.getElementById("sheet");
-const sheetKicker = document.getElementById("sheet-kicker");
-const sheetTitle = document.getElementById("sheet-title");
-const sheetMark = document.getElementById("sheet-mark");
-const sheetLine = document.getElementById("sheet-line");
-const sheetGaps = document.getElementById("sheet-gaps");
-const sheetRubric = document.getElementById("sheet-rubric");
-const tabGaps = document.getElementById("tab-gaps");
-const tabRubric = document.getElementById("tab-rubric");
-const enterButton = document.getElementById("enter");
-const waiveButton = document.getElementById("waive");
-const briefButton = document.getElementById("brief");
-const closeTermButton = document.getElementById("close-term");
-const openTermButton = document.getElementById("open-term");
-const nextStepLine = document.getElementById("next-step");
-const runButton = document.getElementById("run");
-const askButton = document.getElementById("ask");
+const sheet = dialog("sheet");
+const sheetKicker = pick("sheet-kicker");
+const sheetTitle = pick("sheet-title");
+const sheetMark = pick("sheet-mark");
+const sheetLine = pick("sheet-line");
+const sheetGaps = pick("sheet-gaps");
+const sheetRubric = pick("sheet-rubric");
+const tabGaps = pick("tab-gaps");
+const tabRubric = pick("tab-rubric");
+const enterButton = button("enter");
+const waiveButton = button("waive");
+const briefButton = button("brief");
+const closeTermButton = button("close-term");
+const openTermButton = button("open-term");
+const nextStepLine = pick("next-step");
+const runButton = button("run");
+const askButton = button("ask");
 
-document.getElementById("crumb-change").textContent = changeId;
+pick("crumb-change").textContent = changeId;
 
 const term = new Terminal({
   convertEol: false,
@@ -88,7 +113,7 @@ const term = new Terminal({
 });
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
-term.open(document.getElementById("term"));
+term.open(pick("term"));
 
 /**
  * 阶段的 pass / fail，用**词**说一遍。
@@ -320,8 +345,11 @@ function runRefusal(result) {
 async function run() {
   runButton.disabled = true;
   runButton.textContent = "派发中…";
-  // 这个 fetch 要等整一轮（几分钟）。**进度靠一条独立的只读轮询**，不靠它 ——
-  // 等它回来才说话，就是现在这个「几分钟不说话」。
+  /*
+   * 这个 fetch 现在**排完队就回**（2026-08-05，BACKLOG §3.4）—— 原来它要等整一轮，
+   * 而实测一轮 60~343 分钟，浏览器和代理会先超时，那时人看到「网络错误」而轮跑得
+   * 好好的。进度一直靠下面这条独立的只读轮询，不靠这个响应。
+   */
   startProgress();
   try {
     const result = await (await fetch(
@@ -333,7 +361,9 @@ async function run() {
     } else if (result.ran === false) {
       say(runRefusal(result));
     } else {
-      say(`${result.phase} 跑完了：${JSON.stringify(result.outcome)}`);
+      // **说「派出去了」，不说「跑完了」。** 它还在跑，而说错这一句就是让人
+      // 以为可以去裁决了 —— 那正是这个面板最该防的那类。
+      say(`${result.phase} 这一轮派出去了，正在跑。进度看环上那条，跑完了这里会变。`);
     }
   } finally {
     stopProgress();
@@ -553,8 +583,9 @@ async function waive() {
 
 function placeNodes() {
   const radius = wrap.clientWidth * 0.455;
+  // querySelectorAll 给的是 Element；只有 HTMLElement 才有 style。
   wrap.querySelectorAll(".stage-node").forEach((node) => {
-    node.style.setProperty("--r", `${radius}px`);
+    if (node instanceof HTMLElement) node.style.setProperty("--r", `${radius}px`);
   });
 }
 
@@ -661,8 +692,8 @@ function drawWorkspace(panel) {
     });
     return row;
   });
-  document.getElementById("projects").replaceChildren(...projectRows);
-  document.getElementById("project-count").textContent =
+  pick("projects").replaceChildren(...projectRows);
+  pick("project-count").textContent =
     String(panel.projects.length).padStart(2, "0");
 
   const rows = panel.changes.map((change) => {
@@ -692,8 +723,8 @@ function drawWorkspace(panel) {
     });
     return row;
   });
-  document.getElementById("changes").replaceChildren(...rows);
-  document.getElementById("change-count").textContent =
+  pick("changes").replaceChildren(...rows);
+  pick("change-count").textContent =
     String(panel.changes.length).padStart(2, "0");
   // Change 的标题现在是左侧常驻面板的默认标题，由 renderStatus(null) 写 —— 环那
   // 一屏上已经没有标题栏了（§5.0 第 1 条）。
@@ -886,7 +917,7 @@ function drawCenter() {
    * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
    */
   const reached = at === undefined ? 0 : phases.indexOf(at) / phases.length;
-  document.getElementById("progress").style.setProperty("--progress", String(reached));
+  pick("progress").style.setProperty("--progress", String(reached));
   const approved = phases.filter((entry) => entry.mark === "approved").length;
 
   centerKicker.textContent = panelState?.status
@@ -1441,8 +1472,19 @@ async function attach(phase, reattaching = false) {
      * 长得一样。
      *
      * 只连一次（reattaching 不再递归），免得在一个反复断的服务上转圈。
+     *
+     * ## 这里曾经有一个 `&& label === null`，它让整个重连从来没有发生过
+     *
+     * `label` 是 aside 那套东西的变量。`7d8e53b` 把整套 aside 撤掉时删掉了它，
+     * **漏了这一处引用**。于是每次流一断，这一行就抛 `ReferenceError: label is
+     * not defined`，下面两行永远执行不到 —— 症状是「Codex 问完话、或者阶段一动，
+     * 终端就再也不动了，可底下明明在跑」。用户 2026-08-04 报的就是这个。
+     *
+     * 它躲过了 `pnpm check`：`tsconfig.src.json` 的 include 只有 `src/**\/*.ts`
+     * 和 `scripts/**\/*.ts`，**这个文件根本不在类型检查范围内**。一个裸标识符
+     * 引用在浏览器里才会炸，而没有任何一层在它炸之前看过它。
      */
-    if (!reattaching && label === null) {
+    if (!reattaching) {
       await wait(800);
       if (stream !== mine) return; // 人已经走开或换了格子
       await attach(phase, true);
@@ -1450,14 +1492,14 @@ async function attach(phase, reattaching = false) {
   }
 }
 
-document.getElementById("back").addEventListener("click", () => { void leave(); });
+button("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
 closeTermButton.addEventListener("click", () => { void closeTerminal(); });
 openTermButton.addEventListener("click", () => { void openTerminal(); });
 waiveButton.addEventListener("click", () => { void waive(); });
-document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
+button("expand").addEventListener("click", () => { setCollapsed(false); });
 
 /*
  * 新建 Project / Change。
@@ -1475,10 +1517,10 @@ document.getElementById("expand").addEventListener("click", () => { setCollapsed
  *
  * 仍然不进主屏：它是个 <dialog>，和阶段弹窗同一个位置。
  */
-const projectSheet = document.getElementById("project-sheet");
-const projectName = document.getElementById("project-name");
-const projectPath = document.getElementById("project-path");
-const projectError = document.getElementById("project-error");
+const projectSheet = dialog("project-sheet");
+const projectName = field("project-name");
+const projectPath = field("project-path");
+const projectError = pick("project-error");
 
 /** 服务端的拒绝原因，翻成人话。原样显示 `path_must_be_absolute` 等于没说。 */
 const PROJECT_REFUSALS = {
@@ -1525,13 +1567,13 @@ function showProjectError(reason) {
   projectError.hidden = false;
 }
 
-document.getElementById("new-project").addEventListener("click", () => {
+button("new-project").addEventListener("click", () => {
   openProjectSheet();
 });
-document.getElementById("project-create").addEventListener("click", () => {
+button("project-create").addEventListener("click", () => {
   void createProject();
 });
-document.getElementById("project-cancel").addEventListener("click", () => {
+button("project-cancel").addEventListener("click", () => {
   projectSheet.close();
 });
 // 在任一字段里回车就提交 —— 填完路径还要去找按钮，是没必要的一步。
@@ -1548,10 +1590,10 @@ for (const field of [projectName, projectPath]) {
  * 在哪个目录里跑。不说的话，又是一次「建了但不知道建在哪」—— 用户 2026-07-30 在
  * Project 上撞的就是这个。
  */
-const changeSheet = document.getElementById("change-sheet");
-const changeTitle = document.getElementById("change-title");
-const changeTarget = document.getElementById("change-target");
-const changeError = document.getElementById("change-error");
+const changeSheet = dialog("change-sheet");
+const changeTitle = field("change-title");
+const changeTarget = field("change-target");
+const changeError = pick("change-error");
 
 /** 服务端的拒绝原因，翻成人话。 */
 const CHANGE_REFUSALS = {
@@ -1607,13 +1649,13 @@ async function createChange() {
   location.search = `?change=${encodeURIComponent(created.id)}`;
 }
 
-document.getElementById("new-change").addEventListener("click", () => {
+button("new-change").addEventListener("click", () => {
   openChangeSheet();
 });
-document.getElementById("change-create").addEventListener("click", () => {
+button("change-create").addEventListener("click", () => {
   void createChange();
 });
-document.getElementById("change-cancel").addEventListener("click", () => {
+button("change-cancel").addEventListener("click", () => {
   changeSheet.close();
 });
 changeTitle.addEventListener("keydown", (event) => {
@@ -1625,7 +1667,7 @@ enterButton.addEventListener("click", () => {
   closeSheet();
   if (phase) void enter(phase);
 });
-document.getElementById("sheet-close").addEventListener("click", () => { closeSheet(); });
+button("sheet-close").addEventListener("click", () => { closeSheet(); });
 // 点遮罩也关。<dialog> 的遮罩不是独立元素，点在它上面时 event.target 就是 dialog
 // 自己 —— 点在内容上时 target 是里面的节点，所以这个判断足够分开两者。
 sheet.addEventListener("click", (event) => {

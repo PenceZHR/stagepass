@@ -302,6 +302,18 @@ CREATE TABLE IF NOT EXISTS gaps (
   -- 为什么是一列而不是第四个状态：status 的 CHECK 是建表时定死的，SQLite 改不了，
   -- 而 migrate() 只会 ADD COLUMN —— 加状态会让所有已存在的库当场拒收新值。
   closed_by     TEXT NULL CHECK (closed_by IS NULL OR closed_by = 'human'),
+  -- 报的人说它在哪儿、为什么是问题，原文照抄。理由见 domain/gate.ts 的 Blocker.where
+  -- （用户 2026-08-04：「绝对不能出现语义损失」）。
+  --
+  -- 列名和域里的字段名不一样，这是**被逼的**：where 是 SQL 保留字，裸着写每一条
+  -- 查询都得加引号，而这棵树的规矩是「一个概念一个名字」—— 与其让它在半数地方带
+  -- 引号、半数不带，不如在这一层显式改名并把理由写在这儿。域里、JSON 契约里一律
+  -- 还是 where / why。
+  --
+  -- 两列都可空：模型没写就是 NULL。**这不是「可有可无」** —— 有没有写是被 rubric
+  -- 判的（critic 第 1、2 条），判据归 rubric，不归建表约束。
+  found_where   TEXT NULL,
+  found_why     TEXT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (change_id, phase, id),
   -- A gap that has left the open state says why. Without this, "closed" and "forgotten"
@@ -574,6 +586,8 @@ export function migrate(database: {
     ["projects", "path", "TEXT"],
     ["gaps", "note", "TEXT"],
     ["gaps", "closed_by", "TEXT"],
+    ["gaps", "found_where", "TEXT"],
+    ["gaps", "found_why", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];

@@ -164,6 +164,27 @@ const pluginConfigFor = (
   `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
   `mcp_servers.stagepass.env={STAGEPASS_DB="${resolve(database.name)}",`
   + `STAGEPASS_CHANGE="${changeId}"}`,
+  /*
+   * **许可门的根治**（BACKLOG §2.1，2026-08-05 挖出来的）。
+   *
+   * `-a on-request` 下，Codex 对每个**会话**第一次调某 MCP 服务器的工具都弹许可框，
+   * 而每一轮对抗都是新会话 —— 没人按就静默烧满 turn 超时。2026-08-04 一夜实测
+   * 撞了七次，其中至少 65 分钟纯花在等人按（TestPlan r3 那两段静默）。
+   *
+   * 解药是**按服务器**的配置键：`default_tools_approval_mode`，枚举
+   * `auto / prompt / writes / approve`（0.146.0 实测，`codex mcp list` 挖的）。
+   * `auto` = 这个服务器的工具不再弹框。
+   *
+   * 为什么敢开：stagepass 这个服务器是**我们自己的插件**，工具只有问人/报判定
+   * 那几个 —— 给自己的工具自动放行，不涉及任何第三方。作用面也刚好：走 `-c` 只
+   * 影响 StagePass 起的会话，用户自己的 `~/.codex/config.toml` 一个字不动；
+   * 弹框全发生在裁判会话上，而 `-c` 恰好够得着它（子 Agent 不继承 `-c`，
+   * 但 stagepass_* 从来不是子 Agent 在调）。
+   *
+   * 真机确认待第一轮：判据是 rollout 里第一次 `stagepass_next` 调用**紧跟着**
+   * `custom_tool_call_output`，中间没有等人的空白。
+   */
+  `mcp_servers.stagepass.default_tools_approval_mode="auto"`,
 ];
 
 /**
@@ -520,6 +541,7 @@ export class PanelSessions {
       session, listeners: new Set(), enders: new Set(), scrollback: [...corpse],
       forgotten: false,
     };
+    const bornAt = Date.now();
     let buffered = corpse.reduce((total, chunk) => total + chunk.byteLength, 0);
     session.onBytes((bytes) => {
       entry.scrollback.push(bytes);
@@ -544,6 +566,30 @@ export class PanelSessions {
         `[panel] ${changeId}/${phase} 的进程结束了，exitCode=${exitCode}`
         + ` cwd=${cwd} argv=${JSON.stringify(argv)}`,
       );
+      /*
+       * **刚起来就死的，把它吐出来的头几百字节一并写进日志**（BACKLOG §2.2，
+       * 用户 2026-08-05 裁的：存原始字节 + exitCode、不解析、不分支、只给人看 ——
+       * 不算「解释 pty 字节」，§9.3 红线不动）。
+       *
+       * 账单是 2026-08-04 那次「查了一小时没查出根因」：codex 临死那句话只进了
+       * 浏览器，事后去 /pty 捞尸体只剩一行没有上下文。这几百字节就是死因本身
+       * （实测最常见：`session … is archived`、`Operation not permitted`）。
+       *
+       * 阈值取 5 秒而不是笔记里随口写的 1 秒：EPERM 那类「一起来就死」不一定压着
+       * 1 秒线，而一个 5 秒内就退的 codex 无论如何都不是正常收工。正常会话跑几分钟，
+       * 不会误触。
+       */
+      if (Date.now() - bornAt < 5_000 && exitCode !== 0) {
+        const head = Buffer.concat(entry.scrollback).subarray(0, 512);
+        console.log(
+          `[panel] ${changeId}/${phase} 起来 ${((Date.now() - bornAt) / 1000).toFixed(1)}s`
+          + ` 就死了（exitCode=${exitCode}），它吐出来的头 ${head.byteLength} 字节原样如下：`,
+        );
+        // **字节原样写 stdout，全程不变字符串** —— §9.3 的护栏因此一个豁免都不用开
+        // （它盯的是 toString / TextDecoder；这里从 pty 到日志始终是 Uint8Array）。
+        process.stdout.write(head);
+        process.stdout.write("\n");
+      }
       /*
        * **只删自己那一条。**
        *
@@ -731,7 +777,15 @@ async function runRound(input: {
   sessions: PanelSessions;
   options: PanelOptions;
 }): Promise<{
-  ran: boolean; phase: Phase; reason?: string; outcome?: unknown;
+  ran: boolean; phase: Phase; reason?: string;
+  /**
+   * 排出去的那一轮的 id。**只在 `ran` 为真时有** —— 拒绝的时候没有轮可指认。
+   *
+   * 这里原来是 `outcome`（整轮的结果），而派发 2026-08-05 改成不等它跑完了
+   * （BACKLOG §3.4）。**不留 `outcome` 这个字段**：留着就是留一个有时有值、
+   * 有时没有的东西，比没有更难对付；轮的结局走库和那条独立的进度轮询。
+   */
+  jobId?: string;
   /** 树脏时是哪几个文件。人得知道从哪下手。 */
   dirty?: readonly string[];
   /** 没被信任的那个目录。人要拿它去手动答一次 Codex 的信任提问。 */
@@ -786,6 +840,26 @@ async function runRound(input: {
     return { ran: false, phase, reason: `phase_cannot_queue:${status}` };
   }
   /*
+   * **拒绝派发时，状态要跟着派发结果走。**
+   *
+   * 下面 brief / path / trust / dirty / upstream 五条预检，拒的时候分两种：
+   *
+   * - `pending` 的拒绝不动状态 —— 它没说过自己在跑，没有谎要圆。下面那两段
+   *   「前置条件不满足不该把 Change 打成 blocked」说的就是这条路，仍然成立。
+   * - `running` 的拒绝必须当场回滚。retry 那条路先推状态、这里才预检
+   *   （`questions.apply` 把 blocked 推到 running）——拒了不回滚，就留下
+   *   「界面说在跑、库里什么都没有」，而 running 只允许 settle / fail，
+   *   人一个按钮都没有。2026-08-05 真机：Build/running 永久卡死，唯一出口是改库。
+   *
+   * `queueTurn` 写明的不变量 **a running Change always has work behind it** 在
+   * 拒绝的那一刻已经破了；fail 把它修回 blocked，人清完路障还能 retry。
+   * 拒绝的理由本身跟着 HTTP 响应回去（`runRefusal` 那套人话），这里只管状态不说谎。
+   */
+  const refuse = <T extends { readonly ran: false }>(refusal: T): T => {
+    if (status === "running") new ChangeStore(database).apply(changeId, "fail");
+    return refusal;
+  };
+  /*
    * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
    *
    * RoundTurnRunner 里也有同一条检查（防御在两层），但只靠那一层是不够的：
@@ -794,7 +868,7 @@ async function runRound(input: {
    * 把 Change 打成阻塞，就得再去 retry 才能恢复，白折腾一圈。
    */
   if (new ChangeStore(database).read(changeId).brief === null) {
-    return { ran: false, phase, reason: "change_has_no_brief" };
+    return refuse({ ran: false, phase, reason: "change_has_no_brief" });
   }
   /*
    * 项目没写路径也不跑。
@@ -804,7 +878,7 @@ async function runRound(input: {
    * 当成「这一轮跑失败了」。
    */
   if (sessions.workspaceFor(changeId) === null) {
-    return { ran: false, phase, reason: "project_has_no_path" };
+    return refuse({ ran: false, phase, reason: "project_has_no_path" });
   }
   /*
    * **Codex 没信任过这个目录就别派。**
@@ -822,10 +896,10 @@ async function runRound(input: {
    * 后来要清理）。所以这里只说清楚，让他自己去答。
    */
   if (sessions.trust.isTrusted(sessions.workspaceFor(changeId)!) === false) {
-    return {
+    return refuse({
       ran: false, phase, reason: "workspace_not_trusted",
       workspace: sessions.workspaceFor(changeId)!,
-    };
+    });
   }
   /*
    * **Build 要在干净的工作树上跑。**
@@ -845,7 +919,7 @@ async function runRound(input: {
   if (producesCommit(phase)) {
     const dirty = sessions.repo.dirtyPaths(sessions.workspaceFor(changeId)!);
     if (dirty.length > 0) {
-      return { ran: false, phase, reason: "workspace_dirty", dirty };
+      return refuse({ ran: false, phase, reason: "workspace_dirty", dirty });
     }
   }
   /*
@@ -868,7 +942,7 @@ async function runRound(input: {
         root: sessions.workspaceFor(changeId)!, id, repo: sessions.repo,
       }).ok);
   if (missing.length > 0) {
-    return { ran: false, phase, reason: "upstream_artifact_missing", missing };
+    return refuse({ ran: false, phase, reason: "upstream_artifact_missing", missing });
   }
 
   const loop = new TurnLoop({
@@ -937,10 +1011,69 @@ async function runRound(input: {
   });
   const at = Date.now();
   const jobId = `JOB-${changeId}-${phase}-${at}`;
-  loop.queueTurn({ changeId, jobId, deadlineAt: at + 30 * 60_000, maxAttempts: 1 });
-  const outcome = await loop.runOnce({
-    owner: "panel", token: jobId, now: at, ttlMs: 30 * 60_000,
-  });
+  /*
+   * **一轮有三个截止时间，它们必须是同一个数。**
+   *
+   *   transport   等 rollout 长出结果（`CodexTuiTransport.timeoutMs`）
+   *   job 截止    到点把 job 判 `deadline_reached`（`domain/lease.ts`）
+   *   租约 TTL    到点收尸人认为没人在管这条，把它收掉
+   *
+   * 2026-08-04 实测：前者跟着 `--turn-timeout` 走，后两个写死 30 分钟。于是
+   * `--turn-timeout 180` **一点用都没有** —— 21:25 起跑的那一轮 21:55 整死于
+   * `deadline_reached`，transport 那边还剩 150 分钟没用上。
+   *
+   * 更坏的是它换了个名字：三个都是 30 分钟时，transport 先喊，错误是
+   * `codex_unavailable ... 1800000ms`；把 transport 推上去之后，轮到 job 截止先喊，
+   * 错误变成 `deadline_reached`。**同一堵墙，两个名字**，而看错误信息的人会以为
+   * 是两个不同的毛病（我今天就先后诊断错了两次）。
+   *
+   * 租约也要跟着。它短于另外两个的话，收尸人会在一条**还在跑**的轮身上收尸 ——
+   * 那是这个坑的第三个面，而它比前两个更难看出来：库里会说这轮死了，屏幕上
+   * Codex 还在动。
+   */
+  const turnMs = options.turnTimeoutMs ?? 30 * 60_000;
+  loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1 });
+
+  /*
+   * **排完队就返回，不把一轮的时长压在一个 HTTP 请求上**（BACKLOG §3.4）。
+   *
+   * 原来这里 `await loop.runOnce`，而实测一轮 60~343 分钟。三个后果：浏览器和
+   * 代理会先超时（那时人看到「网络错误」，而轮跑得好好的）；一个挂几十分钟的
+   * HTTP 请求本身就不该有；**以及它逼着所有人绕过去** —— 2026-08-04 那一夜每一轮
+   * 都是 fire-and-forget 发的，测试里也到处是 `void open(...).catch(() => {})`。
+   *
+   * **进度不靠这个响应**：`panel.js` 有一条独立的只读轮询，`panel.status` 一变成
+   * `running` 它自己就开始转。这个响应要说的只有「派出去了没有」，外加一个 jobId
+   * 让人和测试指认得了这一轮。
+   */
+  void runToCompletion({ loop, database, changeId, phase, jobId, at, turnMs });
+  return { ran: true, phase, jobId };
+}
+
+/**
+ * 后台把这一轮跑完，然后收尾。
+ *
+ * **它不许抛。** 移到后台之后没有 HTTP 请求接着了 —— 一个未处理的 rejection 会被
+ * Node 直接杀进程，把整个面板带走。所以这里兜住一切，只留一行日志：轮本身的成败
+ * `TurnLoop` 已经在库里记全了（job + Change 两边），这里再抛没有第二个人受益。
+ */
+async function runToCompletion(input: {
+  loop: TurnLoop;
+  database: Database.Database;
+  changeId: string;
+  phase: Phase;
+  jobId: string;
+  at: number;
+  turnMs: number;
+}): Promise<void> {
+  const { loop, database, changeId, phase, jobId } = input;
+  try {
+    await loop.runOnce({
+      owner: "panel", token: jobId, now: input.at, ttlMs: input.turnMs,
+    });
+  } catch (error: unknown) {
+    console.error(`[panel] ${changeId}/${phase} 这一轮抛了：${String(error)}`);
+  }
   /*
    * **轮失败就放开裁判线程，下一轮从干净的线程开。**
    *
@@ -955,13 +1088,16 @@ async function runRound(input: {
    *
    * 只在**失败**时放开。成功的轮继续复用线程 —— 那里的历史是真的。
    */
-  const finished = database.prepare(
-    "SELECT status FROM jobs WHERE id = ?",
-  ).get(jobId) as { status: string } | undefined;
-  if (finished?.status === "failed") {
-    new BindingStore(database).detach(changeId, phase);
+  try {
+    const finished = database.prepare(
+      "SELECT status FROM jobs WHERE id = ?",
+    ).get(jobId) as { status: string } | undefined;
+    if (finished?.status === "failed") {
+      new BindingStore(database).detach(changeId, phase);
+    }
+  } catch (error: unknown) {
+    console.error(`[panel] ${changeId}/${phase} 收尾失败：${String(error)}`);
   }
-  return { ran: true, phase, outcome };
 }
 
 
@@ -2555,6 +2691,10 @@ export function createPanelServer(options: PanelOptions): {
     }
     for (const each of swept.resumed) {
       console.log(`[panel] 租约到期，重新排队：${each}`);
+    }
+    for (const each of swept.stranded) {
+      // running 而身后没有任何未完成的 job —— 不变量破了，收回 blocked（可以 retry）。
+      console.log(`[panel] running 却没有任何活儿，收回 blocked（可以 retry）：${each}`);
     }
   }, everyMs);
   // Node 不该为了这个定时器活着。

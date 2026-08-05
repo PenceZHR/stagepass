@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -135,5 +135,71 @@ describe("repo · 产出是路径还是 commit", () => {
     assert.ok(!looksLikeSha("docs/prd.md"), "路径被当成了 sha");
     assert.ok(!looksLikeSha("spec.md"));
     assert.ok(!looksLikeSha("abc"), "太短的不算");
+  });
+});
+
+describe("repo · 窄提交：只提交点名的路径", () => {
+  /**
+   * E 的执行端。设计阶段每轮把 `docs/stagepass/<change>/` 提交掉，让树保持干净 ——
+   * 而**目录外一个字节都不碰**：那里可能躺着人写了一半的活儿。
+   *
+   * `commitAll` 做不了这件事（`git add -A` 是整棵树），所以这是第二个动词，
+   * 不是第一个的参数 —— 两件事的安全前提不同：commitAll 以「树已验干净」为前提，
+   * commitPaths 以「树很可能是脏的」为前提。
+   */
+  const ops = createRepoOps();
+  const HOME = "docs/stagepass/CHG-1";
+
+  const seedHome = (cwd: string): void => {
+    mkdirSync(join(cwd, HOME), { recursive: true });
+    writeFileSync(join(cwd, HOME, "Spec-r1.md"), "# Spec\n");
+  };
+
+  it("**目录里的进 commit，目录外的原地不动**", () => {
+    const cwd = repo();
+    seedHome(cwd);
+    writeFileSync(join(cwd, "人写了一半.md"), "别动我\n");
+
+    const sha = ops.commitPaths(cwd, [HOME], "StagePass CHG-1 Spec 第 1 轮");
+    assert.ok(sha, "该有 commit 而没有");
+    assert.deepEqual(ops.dirtyPaths(cwd), ["人写了一半.md"],
+      "目录外的文件被卷走了，或者目录里的没提干净");
+    assert.match(ops.show(cwd, sha!)!, /Spec-r1\.md/);
+  });
+
+  it("**人已经 stage 了的东西不许被顺手提交**", () => {
+    /*
+     * 这是窄提交独有的一道险：`git commit -m`（不带 pathspec）提交的是**整个暂存区**。
+     * 人手里 stage 了一半的活儿，会被一轮设计文档的 commit 静默卷进历史 ——
+     * 正是「不替人 commit 他自己的活儿」要防的事，而且比脏树更隐蔽。
+     */
+    const cwd = repo();
+    seedHome(cwd);
+    writeFileSync(join(cwd, "他自己stage的.ts"), "const wip = 1;\n");
+    execFileSync("git", ["add", "他自己stage的.ts"], { cwd, stdio: "ignore" });
+
+    const sha = ops.commitPaths(cwd, [HOME], "StagePass CHG-1 Spec 第 1 轮");
+    assert.ok(sha);
+    assert.doesNotMatch(ops.show(cwd, sha!)!, /他自己stage的/,
+      "人 stage 的文件被卷进了 StagePass 的 commit");
+    // 而且它还stage着 —— 不许动人的暂存区。
+    // `-z` 是必须的：裸的 --name-only 会把非 ASCII 文件名转义成八进制
+    // （`"\344\273\226…"`），正则永远配不上 —— dirtyPaths 的注释里那课，别再挂科。
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only", "-z"],
+      { cwd, encoding: "utf-8" });
+    assert.match(staged, /他自己stage的/, "人的暂存区被清掉了");
+  });
+
+  it("目录里没有任何改动 —— null，不造空 commit", () => {
+    const cwd = repo();
+    seedHome(cwd);
+    ops.commitPaths(cwd, [HOME], "第一轮");
+    assert.equal(ops.commitPaths(cwd, [HOME], "第二轮"), null);
+  });
+
+  it("目录根本不存在 —— null，不抛", () => {
+    // 红方违规写到了别处、目录从没被建出来 —— 这一轮就是没有产物可提，
+    // 不是 StagePass 出了故障。
+    assert.equal(ops.commitPaths(repo(), [HOME], "空"), null);
   });
 });

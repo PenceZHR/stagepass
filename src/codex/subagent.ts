@@ -143,9 +143,12 @@ export function readThreadWholeText(input: ThreadLookup): string {
  *
  * ## 一条线程可能有两个 rollout 文件
  *
- * 补问会 `resume` 蓝方那条线程，而 resume 有时会另起一个文件（2026-08-02 在真目录
- * 里见过同一个 id 出现两次）。所以**按 thread id 去重**，取它最早的那次出生时刻 ——
- * 认的是线程，不是文件。
+ * `resume` 有时会另起一个文件（2026-08-02 在真目录里见过同一个 id 出现两次）。
+ * 所以**按 thread id 去重**，取它最早的那次出生时刻 —— 认的是线程，不是文件。
+ *
+ * （这段原来举的例子是「补问会 resume 蓝方那条线程」—— 那条机制 2026-08-03 被
+ * Codex 封死了：子 Agent 线程拒绝外部输入（`domain/round.ts` 那段）。机制死了，
+ * 但「一个 id 两个文件」这个现象本身与谁去 resume 无关，去重照旧要做。）
  *
  * ## 只读文件头
  *

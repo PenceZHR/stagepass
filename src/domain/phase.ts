@@ -132,6 +132,12 @@ export const TERMINAL_PHASE: Phase = "Done";
  * 这个名单还决定**要不要查干净树**：StagePass 提交的是工作树里所有的改动，它分不出
  * 哪一行是红方写的、哪一行是人自己写了一半的。所以凡是要 commit 的阶段，派发之前
  * 必须先确认树是干净的 —— 两件事同一个名单，不许分开。
+ *
+ * **名单外的阶段轮末也 commit，但那不违反上面这条**（E，2026-08-05）：它们走的是
+ * `repo.commitPaths`，只提交 `docs/stagepass/<change>/` —— 逐个点名，结构上卷不走
+ * 没点到的东西，所以不需要干净树。上面那条约束的前提是「分不出哪行是谁写的」，
+ * 而一个 StagePass 独占的目录就是那条分界。意思是「整树提交」的名单，仍然精确
+ * 等于意思是「要求干净树」的名单。
  */
 const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>(["Build", "Fix"]);
 

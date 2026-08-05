@@ -10,7 +10,7 @@ import { GapStore } from "../store/gap-store";
 import { CommandStore } from "../store/command-store";
 import { JobStore } from "./job-store";
 import {
-  recoverStuckTurns, ScriptedTurnRunner, TurnLoop, type TurnOutcome,
+  recoverStuckTurns, ScriptedTurnRunner, STRANDED_GRACE_MS, TurnLoop, type TurnOutcome,
 } from "./turn-loop";
 
 const AT = "2026-07-28T00:00:00.000Z";
@@ -19,7 +19,7 @@ const TTL = 30_000;
 const DEADLINE = T0 + 300_000;
 const WORKER = { owner: "w-a", token: "t-1", now: T0, ttlMs: TTL };
 
-const P0: Finding = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突" };
+const P0: Finding = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null };
 
 function open(script: (TurnOutcome | Error)[]) {
   const database = new Database(":memory:");
@@ -82,14 +82,15 @@ describe("L1 · 进程死了之后，那个 Change 还能动", () => {
 
   it("**租约还没过期的不许碰** —— 判据是租约，不是「跑了很久」", () => {
     const { database, changes } = stranded();
-    assert.deepEqual(recoverStuckTurns(database, T0 + 1), { resumed: [], failed: [] });
+    assert.deepEqual(recoverStuckTurns(database, T0 + 1),
+      { resumed: [], failed: [], stranded: [] });
     assert.equal(changes.read("CHG-1").state.status, "running");
   });
 
   it("没有死掉的活时什么都不做", () => {
     const { database } = open([]);
     assert.deepEqual(recoverStuckTurns(database, T0 + LEASE + 1),
-      { resumed: [], failed: [] });
+      { resumed: [], failed: [], stranded: [] });
   });
 
   it("再收拾一次是幂等的", () => {
@@ -98,6 +99,58 @@ describe("L1 · 进程死了之后，那个 Change 还能动", () => {
     const status = changes.read("CHG-1").state.status;
     recoverStuckTurns(database, T0 + LEASE + 2);
     assert.equal(changes.read("CHG-1").state.status, status);
+  });
+});
+
+describe("L1 · running 却没有任何活儿的 Change，也要被收尸", () => {
+  /**
+   * `queueTurn` 的注释写明了不变量：**a running Change always has work behind it**。
+   *
+   * 而 retry 那条路先推状态、后派发（`questions.apply` 把 blocked 推到 running，
+   * 预检才跑）—— 派发被拒（比如树脏）时曾把 Change 永远留在 running：running 只
+   * 允许 settle / fail，两个都不是人能按的按钮。2026-08-05 真机：Build/running
+   * 挂着、库里没有 job、没有进程，人一个出口都没有。
+   *
+   * 租约收尸人看不见它 —— **没有 job 就没有租约**。所以这一档单独收：
+   * 判据是「不变量已经破了」（running 而身后没有任何未完成的 job），不是「跑了很久」。
+   */
+  const NOW = Date.parse(AT);
+
+  it("**running 而身后一个未完成的 job 都没有 → blocked，而且说出来**", () => {
+    const { database, changes } = open([]);
+    changes.apply("CHG-1", "start"); // running，没有排任何 job —— 不变量已破
+    const summary = recoverStuckTurns(database, NOW + STRANDED_GRACE_MS + 1);
+    assert.equal(changes.read("CHG-1").state.status, "blocked");
+    // 静默恢复和什么都没发生在屏幕上一模一样 —— 收了谁要说出来。
+    assert.deepEqual(summary.stranded, ["CHG-1"]);
+  });
+
+  it("收完人能 retry —— 这正是收它的全部意义", () => {
+    const { database, changes } = open([]);
+    changes.apply("CHG-1", "start");
+    recoverStuckTurns(database, NOW + STRANDED_GRACE_MS + 1);
+    assert.doesNotThrow(() => changes.apply("CHG-1", "retry"));
+  });
+
+  it("**刚变成 running 的不碰** —— 正常派发就在这几百毫秒里排 job", () => {
+    // retry 先推状态、runRound 再预检再 queueTurn —— 这个窗口里「running 且没 job」
+    // 是合法的中间态。宽限期就是给它留的；过了宽限还没有 job，才是真的断了。
+    const { database, changes } = open([]);
+    changes.apply("CHG-1", "start");
+    const summary = recoverStuckTurns(database, NOW + 1_000);
+    assert.equal(changes.read("CHG-1").state.status, "running");
+    assert.deepEqual(summary.stranded, []);
+  });
+
+  it("身后有排着的 job 就不碰 —— 不变量没破", () => {
+    const { database, changes, jobs } = open([]);
+    jobs.enqueue({
+      id: "JOB-QUEUED", changeId: "CHG-1", kind: "phase_turn",
+      deadlineAt: NOW + 300_000, maxAttempts: 1,
+    });
+    changes.apply("CHG-1", "start");
+    recoverStuckTurns(database, NOW + STRANDED_GRACE_MS + 1);
+    assert.equal(changes.read("CHG-1").state.status, "running");
   });
 });
 

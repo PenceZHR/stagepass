@@ -221,7 +221,18 @@ const stop = (registry: PanelSessions): void => {
 process.on("SIGINT", () => { stop(sessions); });
 process.on("SIGTERM", () => { stop(sessions); });
 
-server.listen(port, () => {
+/*
+ * **只绑回环。**（BACKLOG §3.4「面板无鉴权 0 处」的那一半）
+ *
+ * `listen(port)` 不给 host 时 Node 绑的是**所有网卡** —— 而这个面板零鉴权，
+ * 它能派轮、能改 rubric、能删 Change、能把字节写进一个跑着 Codex 的 pty。
+ * 同一个咖啡馆 wifi 里的任何人都够得着，共用一个真库之后这件事更值钱。
+ *
+ * 鉴权本身没做（也不该急着做：用户数 1 是设计不是缺陷，§1.1）。但「不做鉴权」
+ * 和「向全世界开放」是两件事 —— 前者可以接受，后者不行。绑回环把攻击面从
+ * 「一个网段」缩到「这台机器上的进程」，而那正是这个产品的实际使用面。
+ */
+server.listen(port, "127.0.0.1", () => {
   console.log(`面板   http://localhost:${port}/?change=${encodeURIComponent(changeId)}`);
   console.log(`数据库 ${dbPath}`);
   // 恢复要说出来。静默恢复和「什么都没发生」在屏幕上一模一样，而它刚刚把一个
@@ -231,6 +242,12 @@ server.listen(port, () => {
       + `${recovered.failed.length} 个判为失败（可以 retry），`
       + `${recovered.resumed.length} 个重新排队`);
     for (const each of recovered.failed) console.log(`       ${each.id} —— ${each.reason}`);
+  }
+  // 第二档也要说出来（2026-08-05 启动收掉 CHG-001 时这里还没有这一句，账本动了
+  // 而屏幕没说 —— 正是这套东西要防的那类）。
+  if (recovered.stranded.length > 0) {
+    console.log(`恢复   running 却没有任何活儿的 Change，收回 blocked（可以 retry）：`
+      + recovered.stranded.join("、"));
   }
   if (installed > 0) console.log(`出厂标准 补了 ${installed} 份（全部不阻断）`);
   // 截止时间要说出来。到点之后 StagePass 会把会话关掉，而那在屏幕上是「终端自己

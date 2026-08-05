@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import tsc from "typescript";
 import { describe, it } from "node:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -40,6 +41,8 @@ const FILES = sourceFiles().map((path) => ({
  */
 const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
+  // 只依赖 phase 的纯路径生成（E：产物的家）。
+  "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
   "store/project-store.ts": 0,
@@ -124,7 +127,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "db/schema.ts": 5,
 };
 
-const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
+const production = FILES.filter((file) =>
+  !file.path.endsWith(".test.ts")
+  // `.d.ts` 只是声明，没有实现、没有运行时依赖 —— 分层说的是「谁可以用谁」，
+  // 而一个环境声明（xterm 挂成全局的那两个类）不参与任何依赖关系。
+  // 2026-08-05 给 panel.js 上类型检查时加的：panel-globals.d.ts 是它的伴生声明。
+  && !file.path.endsWith(".d.ts"));
 
 /**
  * Entry points that live outside `src` but are production callers all the same
@@ -289,6 +297,109 @@ describe("standing · pty output is never interpreted", () => {
     assert.match(code, /encoding:\s*null/);
     // And the type it hands out is the narrow one.
     assert.match(code, /onBytes\(listener:\s*\(bytes:\s*Uint8Array\)/);
+  });
+});
+
+/**
+ * 两条**棘轮**护栏（BACKLOG §4.1）：单函数行数、单模块依赖闭包占比。
+ *
+ * ## 为什么是棘轮，不是干净的上限
+ *
+ * `handle()` 现在 1463 行、`panel-server.ts` 的闭包够得着全树 91% —— 定一条干净的
+ * 上限它们当场就红，而「先把违例修完再装护栏」的顺序等于永远装不上。棘轮反过来：
+ * **现行违例逐个钉死在例外表里，只许缩、不许涨**；其余所有函数/模块从今天起受
+ * 干净上限管。修掉一个违例，就把它从表里删掉（有一条护栏盯着表不许留死条目，
+ * 和 `LAYER` 那张表同一个道理）。
+ *
+ * ## 为什么这两个数
+ *
+ * 上限取的是「现状第二名再留点余量」：函数第二名 279 行（`runRound`）→ 上限 300；
+ * 闭包第二名 57%（`round-turn-runner`）→ 上限 60%。**不是审美数字，是「别再长出
+ * 第二个 handle()」的机械底线** —— 分层护栏防住了「下层依赖上层」，没防住
+ * 「某一层长出一个吃掉一切的模块」，这两条补的就是那个盲区。
+ */
+const FUNCTION_LINES_CAP = 300;
+const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
+  // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
+  "web/panel-server.ts#handle": 1463,
+};
+const CLOSURE_SHARE_CAP = 0.6;
+const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
+  // 91% —— 它一个模块够得着全树。同上，拆一块钉一块。
+  "web/panel-server.ts": 0.92,
+};
+
+describe("standing · 没有一个函数长成一层", () => {
+  /** 用真编译器量，不用正则猜函数边界 —— 边界猜错一次这条护栏就静默失效。 */
+  const measured: { key: string; lines: number }[] = [];
+  for (const file of production) {
+    const source = tsc.createSourceFile(
+      file.path, file.text, tsc.ScriptTarget.ES2022, true);
+    const visit = (node: tsc.Node): void => {
+      if (
+        tsc.isFunctionDeclaration(node) || tsc.isMethodDeclaration(node)
+        || tsc.isArrowFunction(node) || tsc.isFunctionExpression(node)
+      ) {
+        const lines = source.getLineAndCharacterOfPosition(node.getEnd()).line
+          - source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        const name = (tsc.isFunctionDeclaration(node) || tsc.isMethodDeclaration(node))
+          && node.name !== undefined ? node.name.getText()
+          : tsc.isVariableDeclaration(node.parent) && tsc.isIdentifier(node.parent.name)
+            ? node.parent.name.getText() : "(anon)";
+        measured.push({ key: `${file.path}#${name}`, lines });
+      }
+      tsc.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+
+  it("**超过上限的只有例外表里那几个，而且没涨**", () => {
+    const over = measured
+      .filter(({ key, lines }) =>
+        lines > (FUNCTION_RATCHET[key] ?? FUNCTION_LINES_CAP))
+      .map(({ key, lines }) => `${key} = ${lines} 行`);
+    assert.deepEqual(over, [], "要么拆它，要么（仅当它在缩）更新例外表");
+  });
+
+  it("例外表里没有已经修好的死条目", () => {
+    // 修到上限以下还留在表里，下一个人会以为它还是雷。和 LAYER 那条同一个形状。
+    const stale = Object.keys(FUNCTION_RATCHET).filter((key) => {
+      const now = measured.find((entry) => entry.key === key);
+      return now === undefined || now.lines <= FUNCTION_LINES_CAP;
+    });
+    assert.deepEqual(stale, [], "把它从 FUNCTION_RATCHET 里删掉");
+  });
+});
+
+describe("standing · 没有一个模块的依赖闭包吃掉全树", () => {
+  const graph = new Map(production.map((file) => [file.path, imports(file)
+    .filter((target) => production.some((p) => p.path === target))]));
+  const closureOf = (start: string): number => {
+    const seen = new Set<string>([start]);
+    const queue = [start];
+    while (queue.length > 0) {
+      for (const next of graph.get(queue.pop()!) ?? []) {
+        if (!seen.has(next)) { seen.add(next); queue.push(next); }
+      }
+    }
+    return seen.size - 1;
+  };
+
+  it("**闭包占比超线的只有例外表里那几个，而且没涨**", () => {
+    const total = production.length;
+    const over = production
+      .map((file) => ({ path: file.path, share: closureOf(file.path) / total }))
+      .filter(({ path, share }) => share > (CLOSURE_RATCHET[path] ?? CLOSURE_SHARE_CAP))
+      .map(({ path, share }) => `${path} = ${(share * 100).toFixed(0)}%`);
+    assert.deepEqual(over, [], "它正在变成第二个 panel-server —— 拆，别喂");
+  });
+
+  it("例外表里没有已经修好的死条目", () => {
+    const total = production.length;
+    const stale = Object.keys(CLOSURE_RATCHET).filter((path) =>
+      !production.some((file) => file.path === path)
+      || closureOf(path) / total <= CLOSURE_SHARE_CAP);
+    assert.deepEqual(stale, [], "把它从 CLOSURE_RATCHET 里删掉");
   });
 });
 

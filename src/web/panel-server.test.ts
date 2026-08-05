@@ -210,6 +210,7 @@ async function withPanel(
     repo: extra.repo ?? {
       dirtyPaths: () => [],
       commitAll: () => { throw new Error("测试里不许真的动 git"); },
+      commitPaths: () => { throw new Error("测试里不许真的动 git"); },
       show: () => { throw new Error("测试里不许真的动 git"); },
     },
     /*
@@ -350,7 +351,7 @@ describe("panel · pass and fail per phase", () => {
     await withPanel(async ({ open, database }) => {
       new GapStore(database).settleRound(CHANGE, "PRD", {
         round: 1,
-        found: [{ id: "G1", severity: "P1", title: "验收标准不可测" }],
+        found: [{ id: "G1", severity: "P1", title: "验收标准不可测", where: null, why: null }],
         verdicts: {},
       });
       assert.equal((await marksOf(open))["PRD"], "problem");
@@ -369,7 +370,7 @@ describe("panel · pass and fail per phase", () => {
       // Green would then be claiming something that is no longer true.
       new GapStore(database).settleRound(CHANGE, "PRD", {
         round: 2,
-        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突" }],
+        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突", where: null, why: null }],
         verdicts: {},
       });
       assert.equal((await marksOf(open))["PRD"], "problem");
@@ -432,8 +433,8 @@ describe("panel · pass and fail per phase", () => {
       gaps.settleRound(CHANGE, "PRD", {
         round: 1,
         found: [
-          { id: "G1", severity: "P0", title: "没有验收标准" },
-          { id: "G2", severity: "P2", title: "术语不一致" },
+          { id: "G1", severity: "P0", title: "没有验收标准", where: null, why: null },
+          { id: "G2", severity: "P2", title: "术语不一致", where: null, why: null },
         ],
         verdicts: {},
       });
@@ -441,7 +442,7 @@ describe("panel · pass and fail per phase", () => {
         round: 2, found: [], verdicts: { G2: { kind: "closed", reason: "第二轮统一了叫法" } },
       });
       gaps.settleRound(CHANGE, "Spec", {
-        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码" }], verdicts: {},
+        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码", where: null, why: null }], verdicts: {},
       });
 
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as
@@ -1189,6 +1190,8 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
       new GapStore(database).replace(CHANGE, "Spec", [{
         id: `RB:producer:${key}`, kind: "standard", severity: null,
         title: "挡着的", status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       }]);
       assert.equal(new GapStore(database).blockers(CHANGE, "Spec").length, 1);
 
@@ -1606,6 +1609,72 @@ describe("panel · Codex 没信任过这个目录就别派", () => {
   });
 });
 
+describe("panel · 派发立刻返回，不把一轮的时长压在一个 HTTP 请求上", () => {
+  /**
+   * BACKLOG §3.4：`POST /api/run` 原来 `await loop.runOnce`，而实测一轮 60~343 分钟。
+   *
+   * 三个后果：浏览器/代理会先超时（那时人看到的是「网络错误」，而轮跑得好好的）；
+   * 一个 HTTP 请求挂几十分钟本身就不该；**以及它逼着所有人绕过去** ——
+   * 2026-08-04 那一夜每一轮我都是 fire-and-forget 发的，测试里也到处是
+   * `void open(...).catch(() => {})` + 睡 120ms，那正是这条语义的活证据。
+   *
+   * 进度不靠这个响应：`panel.js` 有一条**独立的只读轮询**，而且 `panel.status`
+   * 一变成 `running` 它自己就开始转（`drawWorkspace`）。响应要说的只有
+   * 「派出去了没有」。
+   */
+  it("**排完队就回，不等轮跑完** —— 而且回执里带得走 jobId", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+
+      const started = Date.now();
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as
+        { ran: boolean; phase: string; jobId?: string; outcome?: unknown };
+      const waited = Date.now() - started;
+
+      assert.equal(ran.ran, true);
+      // 没有真 Codex，这一轮注定要慢慢失败；响应必须在那之前就回来了。
+      assert.ok(waited < 2_000, `派发等了 ${waited}ms —— 它还在 await 整轮`);
+      assert.ok(ran.jobId, "没给 jobId —— 人和测试都没法指认这一轮");
+      // **不许再给 outcome**：那是「等它跑完」才有的东西，留着就是留一个
+      // 有时有值、有时没有的字段，比没有更难对付。
+      assert.equal("outcome" in ran, false, "还在返回轮结果");
+
+      // 而活儿是真的排出去了。
+      const job = database.prepare("SELECT id, status FROM jobs WHERE id = ?")
+        .get(ran.jobId) as { id: string; status: string } | undefined;
+      assert.ok(job, "回执里的 jobId 在库里不存在");
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "running");
+    });
+  });
+
+  it("**后台那一轮炸了也不许掀翻进程** —— 它只落成一次失败", async () => {
+    /*
+     * 移到后台之后，抛出来的东西没有 HTTP 请求接着了。不接就是
+     * unhandledRejection —— Node 默认直接杀进程，而那会把面板整个带走。
+     */
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { jobId?: string };
+
+      // 没有真 Codex，这一轮会失败。等它落地。
+      for (let i = 0; i < 100; i += 1) {
+        const row = database.prepare("SELECT status FROM jobs WHERE id = ?")
+          .get(ran.jobId) as { status: string } | undefined;
+        if (row?.status === "failed") break;
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
+
+      const row = database.prepare("SELECT status FROM jobs WHERE id = ?")
+        .get(ran.jobId) as { status: string } | undefined;
+      assert.equal(row?.status, "failed", "后台那一轮既没成也没落成失败");
+      // 两边都记上 —— 和收尸人同一条规矩，只记一边就是「绿 job 压着死 Change」。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "blocked");
+    });
+  });
+});
+
 describe("panel · Build 要在干净的工作树上跑", () => {
   /**
    * Build 的产出是 commit，而 StagePass 提交的是「工作树里所有的改动」—— 它分不出
@@ -1616,7 +1685,7 @@ describe("panel · Build 要在干净的工作树上跑", () => {
    * commit 边界严格等于轮次边界。
    */
   const dirty: PanelOptions["repo"] = {
-    dirtyPaths: () => ["半成品.md"], commitAll: () => null, show: () => null,
+    dirtyPaths: () => ["半成品.md"], commitAll: () => null, commitPaths: () => null, show: () => null,
   };
 
   const advanceToBuild = (database: Database.Database): void => {
@@ -1639,6 +1708,33 @@ describe("panel · Build 要在干净的工作树上跑", () => {
       // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
       assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
         .get() as { n: number }).n, 0);
+      // pending 的拒绝不动状态：它没说过自己在跑，没有谎要圆。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
+    }, { repo: dirty });
+  });
+
+  /**
+   * retry 先推状态、这里才预检（`questions.apply` 把 blocked 推到 running）。
+   * 拒了不回滚，就留下「界面说在跑、库里什么都没有」—— 而 running 只允许
+   * settle / fail，人一个按钮都没有。2026-08-05 真机：Build/running 永久卡死。
+   *
+   * `queueTurn` 的不变量：**a running Change always has work behind it。**
+   * 拒绝派发的那一刻它已经破了，这里就是把它当场修回来的地方。
+   */
+  it("**running 却被拒 → 当场回到 blocked，不留一个说谎的状态**", async () => {
+    await withPanel(async ({ open, database }) => {
+      advanceToBuild(database);
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start"); // 人 retry 之后的形状：running，job 还没排
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "workspace_dirty");
+      assert.equal(changes.read(CHANGE).state.status, "blocked",
+        "状态留在 running —— 界面会说它在跑，而库里什么都没有");
+      // blocked 允许 retry —— 人清完树还有路走。
+      assert.doesNotThrow(() => changes.apply(CHANGE, "retry"));
     }, { repo: dirty });
   });
 
@@ -1671,6 +1767,7 @@ describe("panel · 弹窗里读得到一个 commit", () => {
       repo: {
         dirtyPaths: () => [],
         commitAll: () => null,
+        commitPaths: () => null,
         show: () => "commit a1b2c3d\n\n    加了 x\n\n+export const x = 1;\n",
       },
     });
@@ -1775,10 +1872,14 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       {
         id: "SPEC-1", kind: "finding", severity: "P1", title: "验收标准不可测",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       },
       {
         id: "SPEC-2", kind: "finding", severity: "P1", title: "范围与 PRD 冲突",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       },
     ]);
     new EvidenceStore(database).put(CHANGE, "PRD", {
@@ -1934,6 +2035,8 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       new GapStore(database).replace(CHANGE, "PRD", [{
         id: "SPEC-9", kind: "finding", severity: "P0", title: "人没看见过的这一条",
         status: "open", openedRound: 2, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       }]);
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
@@ -2397,7 +2500,7 @@ describe("panel · 派发前查上游产物", () => {
       assert.equal(result.missing?.[0]?.id, "0123456789abcdef0123456789abcdef01234567");
     }, {
       repo: {
-        dirtyPaths: () => [], commitAll: () => null, show: () => null,
+        dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null,
       },
     });
   });
@@ -2422,6 +2525,15 @@ describe("panel · 失败的轮不留毒线程", () => {
       const result = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" }))
         .json() as { ran: boolean };
       assert.equal(result.ran, true);
+      /*
+       * **等后台跑完再看。** 2026-08-05 派发改成不等一轮跑完（BACKLOG §3.4），
+       * 放开线程这件事也跟着挪到了后台那一段 —— 行为一个字没变，只是它不再发生在
+       * 响应返回的那一刻。轮询库比睡一个定死的毫秒数可靠：这一轮多久失败取决于
+       * 那个假 transport 的超时，不该被抄成第二个魔法数。
+       */
+      for (let i = 0; i < 100 && bindings.find(CHANGE, "PRD")?.status !== "detached"; i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
       const bound = bindings.find(CHANGE, "PRD");
       assert.equal(bound?.status, "detached",
         "失败的轮还绑着旧线程 —— 下一轮会 resume 回去接着中毒");

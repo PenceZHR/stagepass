@@ -36,7 +36,7 @@ const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnPhase: nu
 const CLEAN: Evidence = { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"] };
 const WITH_P0: Evidence = {
   ...CLEAN,
-  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突" }],
+  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null }],
 };
 
 function ask(state: ChangeState, evidence: Evidence): Question | null {
@@ -284,6 +284,8 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
   const openGap = (id: string, title: string): Gap => ({
     id, kind: "finding", severity: "P1", title,
     status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+    where: null,
+    why: null,
   });
   const GAPS = [openGap("SPEC-1", "验收标准不可测"), openGap("SPEC-2", "范围与 PRD 冲突")];
 
@@ -531,8 +533,8 @@ describe("L3 · turning an answer into a decision", () => {
 
 describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
   const waivable = [
-    { id: "SPEC-1", title: "写入不是原子的" },
-    { id: "SPEC-2", title: "命令行没有定义" },
+    { id: "SPEC-1", title: "写入不是原子的", where: null, why: null },
+    { id: "SPEC-2", title: "命令行没有定义", where: null, why: null },
   ];
 
   it("**一条 gap 一格，标题就在格子上** —— 不是让人对着一串裸 id 选", () => {

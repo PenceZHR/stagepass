@@ -21,7 +21,7 @@ function open() {
 }
 
 const found = (id: string, severity: "P0" | "P1" | "P2", title: string) =>
-  ({ id, severity, title });
+  ({ id, severity, title, where: null, why: null });
 
 describe("L4 · a gap outlives the round that found it", () => {
   it("survives a round that never mentions it", () => {

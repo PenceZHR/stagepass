@@ -6,6 +6,7 @@ import {
   renderSettled,
   type RoundAgents, type RoundConclusion,
 } from "../domain/round";
+import { RESULT_CONTRACT_NOTES } from "../domain/turn";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
 import type { WorkItem, WorklistStore } from "../store/worklist-store";
@@ -70,6 +71,11 @@ export interface RoundRequest {
     readonly answersPath: string;
     readonly count: number;
   } | undefined;
+  /**
+   * 反方这一轮的意见写到哪。这一层只管原样带进裁判的提示词
+   * （`RoundInstructions.blueDocPath`），家在哪由 `domain/artifact-home.ts` 说。
+   */
+  readonly blueDocPath?: string | undefined;
 }
 
 export interface RoundDependencies {
@@ -256,6 +262,25 @@ export async function runRound(
       );
 
   /*
+   * 结果契约里说明那一半走文件（BACKLOG §3.4）。
+   *
+   * **无条件写** —— 和 settled / openGaps 那两份不一样：它们「没有内容就不写」，
+   * 因为一个空文件会让三方去猜它是不是该有内容。而这份的内容是常量，永远有。
+   *
+   * 只挪说明，骨架仍然原样印两遍 —— 判据在 `RESULT_CONTRACT` 那段注释里：
+   * 骨架缺了整轮无法解析，说明缺了只是写得糙。
+   */
+  const contractNotesPath = dependencies.writeRoundFile(
+    "result-contract-notes.md",
+    [
+      "# 交答案时，这几个字段是什么意思",
+      "",
+      RESULT_CONTRACT_NOTES,
+      "",
+    ].join("\n"),
+  );
+
+  /*
    * **这一轮之前它已经有哪些孩子** —— 必须在 turn 之前问。
    *
    * 成功的轮复用裁判线程，所以一条裁判线程会累积多轮的子 Agent（实测见过一条挂着
@@ -298,7 +323,9 @@ export async function runRound(
       openGaps,
       openGapsPath,
       ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
+      ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
       ...(settledPath === undefined ? {} : { settledPath }),
+      contractNotesPath,
     }),
   });
 

@@ -429,6 +429,7 @@ export async function runRubricRound(
     .filter((gap) => gap.status === "open")
     .map((gap) => ({
       id: gap.id, kind: gap.kind, severity: gap.severity, title: gap.title,
+      where: gap.where, why: gap.why,
     }));
 
   return {
