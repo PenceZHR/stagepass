@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { Gap } from "./gap";
+import { humanGapId, type Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
   readVerdicts, RED, renderOpenGaps, renderSettled, summariseConvergence,
@@ -1346,5 +1346,40 @@ describe("L4 · 被打回的阶段，红方必须知道是谁打回来的、为�
   it("没被打回 —— 一个字都不印（和加这个参数之前逐字一样）", () => {
     const plain = judgePrompt({ phase: "Spec", round: 3, task: "写出 Spec", openGaps: [] });
     assert.ok(!plain.includes("打回"), "正常进入的阶段不该看见打回那一段");
+  });
+});
+
+describe("L4 · 人的批注和上游文档打架时，谁说了算要写死（旧账 G）", () => {
+  /*
+   * 2026-08-02 记的账：**操作员批注和上游文档打架会制造震荡** —— 红方一边读
+   * 上游那份已批准的文档、一边读人的批注，两者冲突时它每轮各按一次，人只好
+   * 每轮再说一遍。原话给的出路是「批注要么对着上游写，要么就去改上游」。
+   *
+   * 「去改上游」这条边 2026-08-05 才有（sendBack）。所以这里把两件事都写进
+   * 那份名单：**冲突时以人的话为准**（以人为主，那条从 07-30 就定了），
+   * 而且**必须把冲突写进产出** —— 否则人根本不知道自己在跟一份文档拧着。
+   */
+  const humanGap = (title: string, note: string | null = null): Gap => ({
+    id: humanGapId(1), kind: "finding", severity: "P1", title,
+    status: "open", openedRound: 2, resolution: null, note,
+    closedBy: null, where: null, why: null,
+  });
+
+  it("有人提的问题时，名单里写明「冲突以人的话为准」", () => {
+    const text = renderOpenGaps([humanGap("排行榜要按周重置")]);
+    assert.match(text, /以人的话为准/);
+  });
+
+  it("**并且要求把冲突报出来** —— 闷头照做，人就不知道自己在跟文档拧着", () => {
+    const text = renderOpenGaps([humanGap("排行榜要按周重置")]);
+    assert.match(text, /写进产出/);
+    // 彻底的解法是去改上游，而那条边现在有了（§5.9.1 的 sendBack）。
+    assert.match(text, /打回上游/);
+  });
+
+  it("模型报的问题不带这段 —— 它们跟上游没有「谁说了算」这回事", () => {
+    const found: Gap = { ...humanGap("x"), id: "SPEC-1" };
+    const text = renderOpenGaps([found]);
+    assert.doesNotMatch(text, /以人的话为准/);
   });
 });
