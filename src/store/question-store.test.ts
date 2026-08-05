@@ -82,7 +82,7 @@ describe("L3 · a question, an answer, a state change", () => {
         kind: "advanced", action: "reject",
       });
       assert.deepEqual(changes.read("CHG-1").state, {
-        phase: "PRD", status: "pending", returnPhase: null,
+        phase: "PRD", status: "pending", returnStack: [],
       });
     } finally {
       database.close();
@@ -102,7 +102,7 @@ describe("L3 · a question, an answer, a state change", () => {
       questions.answer("Q-1", { action: "cancel" });
       assert.deepEqual(questions.apply("Q-1"), { kind: "declined" });
       assert.deepEqual(changes.read("CHG-1").state, {
-        phase: "PRD", status: "settled", returnPhase: null,
+        phase: "PRD", status: "settled", returnStack: [],
       });
       assert.equal(questions.readAnswerFor("Q-1")?.action, "cancel");
       // And it can be put again.

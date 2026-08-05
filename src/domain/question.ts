@@ -1,7 +1,7 @@
 import type { ChangeAction } from "./change-state";
 import { isHumanGap, type Gap, type GapResponse } from "./gap";
 import type { BlockerKind, BlockerSeverity, Gate } from "./gate";
-import { isPhase, sendsToFix } from "./phase";
+import { isPhase, sendsToFix, type Phase } from "./phase";
 
 /**
  * A question StagePass puts to the human, and the answer it will accept.
@@ -149,12 +149,22 @@ export function gateDecisionQuestion(input: {
    * 缺席时标题只带严重度，不编轮次。
    */
   round?: number | undefined;
+  /**
+   * 打回上游（§5.9.1）的合法目标：这个阶段的严格上游，按图算（`upstreamOf`）。
+   * 缺席或空 = 不提供「打回上游」这个选项，目标格也不出现 —— 一个必被拒的选项
+   * 不许摆出来（§5.4）。
+   */
+  sendBackTargets?: readonly Phase[] | undefined;
 }): Question | null {
   // `start`, `settle` and `fail` are the system reporting what happened. Only
-  // these three are ever put to a person.
-  const decisions: readonly ChangeAction[] = ["approve", "reject", "retry"];
-  const offered = decisions.filter((action) =>
-    input.gate.permitted.includes(action) || clearableByAnswer(action, input.gate));
+  // these four are ever put to a person.
+  const decisions: readonly ChangeAction[] = ["approve", "reject", "retry", "sendBack"];
+  const targets = input.sendBackTargets ?? [];
+  const offered = decisions
+    .filter((action) =>
+      input.gate.permitted.includes(action) || clearableByAnswer(action, input.gate))
+    // 名单都没给（或者是空的），「打回上游」按下去只能被拒 —— 不摆。
+    .filter((action) => action !== "sendBack" || targets.length > 0);
   if (offered.length === 0) return null;
 
   /*
@@ -165,8 +175,18 @@ export function gateDecisionQuestion(input: {
   const head = [stakes, input.summary].filter((part) => part !== "").join("\n");
   return compose(`${input.phase}：${head}`, [
     ...responseFields(input.openGaps ?? [], input.round),
-    // `decision` 排在最后，因为小写 `d` 在 `R` 之后 —— 而它是选项格，所以整张表
-    // 提交得动（见 `compose` 的第二条）。**这不是巧合，是挑名字时挑的。**
+    /*
+     * 打回的目标单独一格：标签是**静态枚举**（ACTION_BY_LABEL 按原文精确匹配），
+     * 名单是**动态**的 —— 拼进标签就映射不回动作了，所以各归各格。
+     * `T` 排在 `R…` 之后、`decision`（小写）之前 —— 名字是挑的，不是碰的。
+     */
+    ...(offered.includes("sendBack") ? [{
+      id: SEND_BACK_FIELD,
+      title: "打回哪一份（只有裁决选「打回上游」才生效）",
+      options: [SEND_BACK_NONE, ...targets],
+    }] : []),
+    // `decision` 排在最后，因为小写 `d` 在 `R` 和 `T` 之后 —— 而它是选项格，所以
+    // 整张表提交得动（见 `compose` 的第二条）。**这不是巧合，是挑名字时挑的。**
     {
       id: DECISION_FIELD,
       title: "请裁决",
@@ -213,10 +233,16 @@ const APPROVE_LABEL = "就这样批准，进下一个阶段";
 const RETRY_LABEL = "重跑一次（上一轮跑失败了）";
 const ANOTHER_ROUND_LABEL = "再来一轮（红蓝在这个阶段重新跑）";
 const BACK_TO_FIX_LABEL = "打回去修（送到 Fix）";
+/**
+ * 长回边（§5.9.1）。和「打回去修」是两句不同的话：那个说**代码**错了（送 Fix），
+ * 这个说**上游文档**错了（回那个设计阶段重跑，改完弹回这儿）。
+ */
+const SEND_BACK_LABEL = "打回上游（哪一份文档错了，上面那格选）";
 
 export function decisionLabel(action: ChangeAction, phase: string): string {
   if (action === "approve") return APPROVE_LABEL;
   if (action === "retry") return RETRY_LABEL;
+  if (action === "sendBack") return SEND_BACK_LABEL;
   return isPhase(phase) && sendsToFix(phase) ? BACK_TO_FIX_LABEL : ANOTHER_ROUND_LABEL;
 }
 
@@ -232,7 +258,36 @@ const ACTION_BY_LABEL: Readonly<Record<string, ChangeAction>> = {
   [RETRY_LABEL]: "retry",
   [ANOTHER_ROUND_LABEL]: "reject",
   [BACK_TO_FIX_LABEL]: "reject",
+  [SEND_BACK_LABEL]: "sendBack",
 };
+
+/** 打回目标那一格。`T` 排在 `R…` 后、小写 `decision` 前 —— 名字是挑的。 */
+const SEND_BACK_FIELD = "T";
+export const SEND_BACK_NONE = "不打回";
+
+/**
+ * 打回到哪。**对着问题自己的 enum 校验**（和 `decisionFrom` 同一个理由：enum 是
+ * 人当时真正看见的名单）。「不打回」、名单外的、读不出的 —— 都是 null，不猜。
+ * null 配上 `decision = 打回上游`，由落地那层报「没选哪一份」，不静默。
+ */
+export function sendBackTargetFrom(
+  question: Question,
+  answer: Answer,
+): Phase | null {
+  if (answer.action !== "accept") return null;
+  const offered = question.requestedSchema.properties[SEND_BACK_FIELD]?.enum;
+  if (!offered) return null;
+  const chosen = answer.content[SEND_BACK_FIELD];
+  if (typeof chosen !== "string" || chosen === SEND_BACK_NONE) return null;
+  if (!offered.includes(chosen) || !isPhase(chosen)) return null;
+  return chosen;
+}
+
+/** 打回的理由（第二趟 `Tx` 格）。没写就是空串 —— 账本那列记 null 由调用方定。 */
+export function sendBackReasonFrom(answer: Answer): string {
+  const given = answer.content[`${SEND_BACK_FIELD}x`];
+  return typeof given === "string" ? given.trim() : "";
+}
 
 /**
  * 这次裁决是不是「活儿留在这个阶段，再跑一次」—— 答完直接续跑那一步靠它判。
@@ -460,6 +515,15 @@ export function responseFollowUpQuestion(
     fields.push({
       id: `${RAISE_FIELD}x`,
       title: "你自己要提的问题（写了就作为你的要求进下一轮，红方不许当成建议）",
+      optional: true,
+    });
+  }
+  // 真选了打回（裁决 + 目标都选了）才问为什么 —— 那句话进账本，历史箭头写它。
+  if (read(DECISION_FIELD) === SEND_BACK_LABEL
+    && read(SEND_BACK_FIELD) !== "" && read(SEND_BACK_FIELD) !== SEND_BACK_NONE) {
+    fields.push({
+      id: `${SEND_BACK_FIELD}x`,
+      title: "为什么打回（这句进账本，环上的历史箭头就写它）",
       optional: true,
     });
   }

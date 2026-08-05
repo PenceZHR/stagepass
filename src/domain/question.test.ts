@@ -20,7 +20,11 @@ import {
   RESPONSE_OWN,
   RESPONSE_WAIVE,
   responsesFrom,
+  SEND_BACK_NONE,
+  sendBackReasonFrom,
+  sendBackTargetFrom,
   UnreadableAnswerError,
+  type Answer,
   type Question,
   waiveQuestion,
   waiveFrom,
@@ -30,9 +34,10 @@ import {
 } from "./question";
 import type { ChangeState } from "./change-state";
 import { blockersFrom, humanGapId, type Gap } from "./gap";
+import type { Phase } from "./phase";
 
-const SETTLED: ChangeState = { phase: "Spec", status: "settled", returnPhase: null };
-const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnPhase: null };
+const SETTLED: ChangeState = { phase: "Spec", status: "settled", returnStack: [] };
+const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnStack: [] };
 const CLEAN: Evidence = { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"] };
 const WITH_P0: Evidence = {
   ...CLEAN,
@@ -100,7 +105,7 @@ describe("L3 · the question offers exactly what the gate permits", () => {
    */
   it("asks nothing when no decision is available", () => {
     assert.equal(ask({ ...SETTLED, status: "running" }, CLEAN), null);
-    assert.equal(ask({ phase: "Done", status: "closed", returnPhase: null }, CLEAN), null);
+    assert.equal(ask({ phase: "Done", status: "closed", returnStack: [] }, CLEAN), null);
   });
 
   /**
@@ -137,7 +142,7 @@ describe("L3 · 裁决那一格说人话", () => {
     for (const phase of ["Review", "QA"] as const) {
       const offered = gateDecisionQuestion({
         phase,
-        gate: computeGate({ phase, status: "settled", returnPhase: null }, CLEAN),
+        gate: computeGate({ phase, status: "settled", returnStack: [] }, CLEAN),
         summary: "s",
       })!.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
       assert.ok(offered.some((label) => label.includes("打回去修")), `${phase}: ${offered}`);
@@ -149,7 +154,7 @@ describe("L3 · 裁决那一格说人话", () => {
     for (const phase of ["Spec", "Review"] as const) {
       const question = gateDecisionQuestion({
         phase,
-        gate: computeGate({ phase, status: "settled", returnPhase: null }, CLEAN),
+        gate: computeGate({ phase, status: "settled", returnStack: [] }, CLEAN),
         summary: "s",
       })!;
       assert.equal(decisionFrom(question, {
@@ -400,6 +405,77 @@ describe("L3 · 题面把状态和后果说出来 —— 人答题的那一刻�
     // 「挡着」变成「带着走」，往前走要回到裁决那道题。
     const question = waiveQuestion({ phase: "Spec", waivable: [{ id: "G-1", title: "t" }] })!;
     assert.match(question.message, /不会自己往前走/);
+  });
+});
+
+describe("L3 · 打回上游进裁决表（§5.9.1 长回边的人机面）", () => {
+  /*
+   * Build 发现 Spec 错了，模型里第一次有边能把工作送回去 —— 但推动闸门的仍然
+   * 只有 `decision` 那一格（§5.3）。目标单独一格（T，字段序在 R… 之后、decision
+   * 之前），标签是静态枚举，名单是动态的 —— 各归各位。
+   */
+  const BUILD_SETTLED: ChangeState = { phase: "Build", status: "settled", returnStack: [] };
+  const askWithTargets = (targets: readonly Phase[]): Question => gateDecisionQuestion({
+    phase: "Build",
+    gate: computeGate(BUILD_SETTLED, CLEAN),
+    summary: "s",
+    sendBackTargets: targets,
+  })!;
+
+  it("给了目标名单才提供「打回上游」，目标格摆在裁决那格上面", () => {
+    const question = askWithTargets(["PRD", "Spec"]);
+    const labels = question.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+    assert.ok(labels.includes(decisionLabel("sendBack", "Build")), labels.join(" / "));
+    assert.deepEqual(question.requestedSchema.properties.T?.enum,
+      [SEND_BACK_NONE, "PRD", "Spec"]);
+    const fields = Object.keys(question.requestedSchema.properties);
+    assert.ok(fields.indexOf("T") < fields.indexOf(DECISION_FIELD));
+  });
+
+  it("没给目标名单 —— 选项和目标格都不出现（§5.4：必被拒的选项不许摆出来）", () => {
+    const question = gateDecisionQuestion({
+      phase: "Build", gate: computeGate(BUILD_SETTLED, CLEAN), summary: "s",
+    })!;
+    const labels = question.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+    assert.ok(!labels.includes(decisionLabel("sendBack", "Build")));
+    assert.equal(question.requestedSchema.properties.T, undefined);
+  });
+
+  it("标签映射回动作，目标从 T 格读回来 —— 对着问题自己的 enum 校验", () => {
+    const question = askWithTargets(["PRD", "Spec"]);
+    const answer: Answer = { action: "accept", content: {
+      T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack", "Build"),
+    } };
+    assert.equal(decisionFrom(question, answer), "sendBack");
+    assert.equal(sendBackTargetFrom(question, answer), "Spec");
+  });
+
+  it("选了「不打回」或者指了名单外的地方 —— 目标是 null，不猜", () => {
+    const question = askWithTargets(["PRD", "Spec"]);
+    const pick = (target: string) => sendBackTargetFrom(question, {
+      action: "accept", content: { T: target },
+    });
+    assert.equal(pick(SEND_BACK_NONE), null);
+    assert.equal(pick("TechSpec"), null);   // 不在这道题给过的名单里
+    assert.equal(pick("随便写"), null);
+  });
+
+  it("第二趟只在真选了打回时问理由 —— 那句话进账本，历史箭头写它", () => {
+    const chose: Answer = { action: "accept", content: {
+      T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack", "Build"),
+    } };
+    const followUp = responseFollowUpQuestion([], chose)!;
+    assert.deepEqual(Object.keys(followUp.requestedSchema.properties),
+      ["Tx", "z-confirm"]);
+    assert.equal(sendBackReasonFrom({
+      action: "accept", content: { Tx: "  接口边界画错了 " },
+    }), "接口边界画错了");
+
+    // 没选打回 —— 不问。
+    assert.equal(responseFollowUpQuestion([], {
+      action: "accept",
+      content: { [DECISION_FIELD]: decisionLabel("approve", "Build") },
+    }), null);
   });
 });
 

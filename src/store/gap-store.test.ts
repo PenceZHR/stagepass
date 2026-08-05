@@ -9,7 +9,7 @@ import { ChangeStore } from "./change-store";
 import { GapStore } from "./gap-store";
 
 const AT = "2026-07-28T00:00:00.000Z";
-const SETTLED = { phase: "PRD" as const, status: "settled" as const, returnPhase: null };
+const SETTLED = { phase: "PRD" as const, status: "settled" as const, returnStack: [] };
 
 function open() {
   const database = new Database(":memory:");

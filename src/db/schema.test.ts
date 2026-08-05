@@ -66,3 +66,85 @@ describe("L0 · 旧库能补上后加的列", () => {
     database.close();
   });
 });
+
+/**
+ * `return_phase` → `return_stack`：**这棵树第一次整表重建**（migrate 注释里
+ * 预告过的「正经写迁移」那一天，2026-08-05 因为 §5.9.2 的跳转栈到了）。
+ * 加列那条路走不了：旧列绑在 CHECK 里，SQLite 改不了约束。
+ */
+describe("L0 · return_phase 旧库重建成 return_stack", () => {
+  /** 照 2026-08-05 之前的 SCHEMA_SQL 原样搭的老库，两行数据。 */
+  const oldShape = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE changes (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT     NULL REFERENCES projects(id),
+        title         TEXT     NULL,
+        phase         TEXT NOT NULL,
+        status        TEXT NOT NULL,
+        return_phase  TEXT     NULL,
+        seq           INTEGER NOT NULL,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        CHECK ((phase = 'Fix') = (return_phase IS NOT NULL)));
+      CREATE TABLE change_events (
+        change_id   TEXT NOT NULL REFERENCES changes(id),
+        seq         INTEGER NOT NULL,
+        action      TEXT NOT NULL,
+        from_phase  TEXT NULL, from_status TEXT NULL,
+        to_phase    TEXT NOT NULL, to_status TEXT NOT NULL,
+        at          TEXT NOT NULL,
+        PRIMARY KEY (change_id, seq));
+      CREATE TRIGGER ck_changes_ledger AFTER UPDATE ON changes FOR EACH ROW
+      WHEN NOT EXISTS (SELECT 1 FROM change_events WHERE change_id = NEW.id AND seq = NEW.seq)
+      BEGIN SELECT RAISE(ABORT, 'change_updated_without_ledger_entry'); END;
+    `);
+    database.prepare("INSERT INTO changes VALUES (?,?,?,?,?,?,?,?,?)")
+      .run("CHG-A", null, null, "PRD", "pending", null, 0, "t", "t");
+    database.prepare("INSERT INTO changes VALUES (?,?,?,?,?,?,?,?,?)")
+      .run("CHG-B", null, null, "Fix", "pending", "Review", 3, "t", "t");
+    return database;
+  };
+
+  it("老数据无损：NULL 变空栈，Review 变单层栈", () => {
+    const database = oldShape();
+    migrate(database);
+    assert.deepEqual(
+      database.prepare(
+        "SELECT id, return_stack FROM changes ORDER BY id").all(),
+      [
+        { id: "CHG-A", return_stack: "[]" },
+        { id: "CHG-B", return_stack: '["Review"]' },
+      ],
+    );
+    database.close();
+  });
+
+  it("重建之后账本触发器还在 —— 没账的 UPDATE 当场被拒", () => {
+    // 触发器随旧表一起消失。等下一次重启的 SCHEMA_SQL 来补，中间这段时间账本
+    // 就没人守了 —— 所以迁移必须当场重建，而这一条盯着它。
+    const database = oldShape();
+    migrate(database);
+    assert.throws(
+      () => database.prepare(
+        "UPDATE changes SET seq = 1, updated_at = 'x' WHERE id = 'CHG-A'").run(),
+      /change_updated_without_ledger_entry/,
+    );
+    database.close();
+  });
+
+  it("跑两次是空操作，外键开关也拨回来了", () => {
+    const database = oldShape();
+    migrate(database);
+    migrate(database);
+    const stacks = (database.pragma("table_info(changes)") as { name: string }[])
+      .filter((column) => column.name === "return_stack");
+    assert.equal(stacks.length, 1);
+    assert.deepEqual(database.pragma("foreign_keys"), [{ foreign_keys: 1 }]);
+    database.close();
+  });
+});

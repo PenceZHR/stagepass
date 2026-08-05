@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 
 import {
-  accepts,
   assertStateValid,
+  isLegal,
   type ChangeAction,
   type ChangeState,
 } from "./change-state";
+import type { PhaseGraph } from "./phase";
 
 /**
  * Which actions are permitted right now, and why the rest are not.
@@ -181,7 +182,8 @@ function canonical(state: ChangeState, evidence: Evidence): string {
   return JSON.stringify({
     phase: state.phase,
     status: state.status,
-    returnPhase: state.returnPhase,
+    // **不排序** —— 栈的顺序本身是事实（回程的次序），重排它就是另一份证据。
+    returnStack: state.returnStack,
     artifactIds: [...evidence.artifactIds].sort(),
     // kind 也进哈希：同一个 id 从 finding 变成 standard，出口就从「可以 waive」
     // 变成了「只能撤标准」—— 那是决策依据变了，不是换个标签。
@@ -199,15 +201,20 @@ export function snapshotOf(state: ChangeState, evidence: Evidence): string {
 export function computeGate(
   state: ChangeState,
   evidence: Evidence,
+  /** 这个 Change 走的图（§4.5）。缺省全序。sendBack 的合法性跟着它走。 */
+  graph?: PhaseGraph,
 ): Gate {
   assertStateValid(state);
-  const legal = new Set<ChangeAction>(accepts(state.status));
   const permitted: ChangeAction[] = [];
   const refusals: Record<string, RefusalReason> = {};
   const blocking = unresolved(evidence);
 
-  for (const action of ["start", "settle", "fail", "retry", "approve", "reject"] as const) {
-    if (!legal.has(action)) {
+  // `isLegal` 而不是查 ACCEPTS 表：sendBack 多一道「得有上游」的判据（PRD 没有，
+  // Fix 不在主线上），那一半在状态机里，这里不另算一套。
+  for (const action of [
+    "start", "settle", "fail", "retry", "approve", "reject", "sendBack",
+  ] as const) {
+    if (!isLegal(state, action, graph)) {
       refusals[action] = "not_legal_in_this_status";
       continue;
     }

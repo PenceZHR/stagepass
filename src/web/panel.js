@@ -441,7 +441,8 @@ function saidWhat(result) {
   if (result.raised) parts.push(`你自己提的那条记成了 ${result.raised}`);
   if (result.outcome?.kind === "refused") {
     // 他自己刚提的要求挡住了他自己的批准，这种最要说清楚。
-    parts.push(`⚠ 闸门拒了这次「${result.outcome.action}」：${result.outcome.reason}`);
+    parts.push(`⚠ 闸门拒了这次「${result.outcome.action}」：`
+      + `${GATE_REFUSAL_WORDS[result.outcome.reason] ?? result.outcome.reason}`);
   } else {
     parts.push(`裁决 → ${JSON.stringify(result.outcome)}`);
   }
@@ -869,11 +870,13 @@ function gateSentence() {
 
 const openGaps = (entry) => entry.gaps.filter((gap) => gap.status === "open");
 
-/** 闸门拒人的三个理由，翻成人话。和 `domain/gate.ts` 的 RefusalReason 一一对应。 */
+/** 闸门拒人的理由，翻成人话。前三条对应 `domain/gate.ts` 的 RefusalReason。 */
 const GATE_REFUSAL_WORDS = {
   blocking_problem_outstanding: "还有问题挡着闸门",
   nothing_was_produced: "这个阶段什么都没产出",
   not_legal_in_this_status: "现在这个状态不接受这个动作",
+  // question-store 的那半个决定：裁决选了打回上游，目标那格却是「不打回」。
+  no_target_chosen: "选了「打回上游」，但没选打回哪一份 —— 再裁一次，把那格也选上",
 };
 
 /**

@@ -69,6 +69,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/turn-runner.ts": 2,
 
   "domain/round.ts": 4,
+  // 跳转表 = 账本投影（§5.9.2）。轮次算法在 round.ts（一份实现），所以同层。
+  "domain/journey.ts": 4,
   // 十三个阶段各自那一节。纯文本、只 import 一个类型，所以和读它的 round.ts 同层。
   "domain/phase-play.ts": 4,
   "codex/subagent.ts": 4,
@@ -321,8 +323,8 @@ describe("standing · pty output is never interpreted", () => {
 const FUNCTION_LINES_CAP = 300;
 const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
-  // 2026-08-05：抽 launchAskPrompt 钉下一格（1463 → 1462）。
-  "web/panel-server.ts#handle": 1462,
+  // 2026-08-05：抽 launchAskPrompt（1463 → 1462）、抽 askFollowUp（→ 1453）。
+  "web/panel-server.ts#handle": 1453,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

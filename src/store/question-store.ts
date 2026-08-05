@@ -4,6 +4,7 @@ import type { ChangeAction } from "../domain/change-state";
 import {
   decisionFrom,
   readAnswer,
+  sendBackTargetFrom,
   type Answer,
   type Question,
   type QuestionKind,
@@ -89,7 +90,13 @@ export type ApplyOutcome =
   /** A human declined. Recorded, not treated as a failure. */
   | { readonly kind: "declined" }
   /** Answered, but it carries no gate action -- a clarification batch. */
-  | { readonly kind: "recorded" };
+  | { readonly kind: "recorded" }
+  /**
+   * 裁决选了「打回上游」，目标那格却是「不打回」（或读不出来）—— 半个决定推不动
+   * 闸门，而**人已经答完走了，必须报回去**，不许静默当成没发生（§3.2 的老病）。
+   * 形状和闸门拒的那种一致，前端一条横幅两处用。
+   */
+  | { readonly kind: "refused"; readonly action: ChangeAction; readonly reason: string };
 
 export class QuestionStore {
   private readonly commands: CommandStore;
@@ -277,6 +284,11 @@ export class QuestionStore {
      * 「我刚写完的东西还在不在」。顺序反过来就成了真的绕过 fence。
      */
     readonly rebaseFence?: boolean;
+    /**
+     * 打回的理由（第二趟 `Tx` 格）。理由在**合并后**的答案里，而这里只重读得到
+     * 第一趟落库的那份 —— 所以由掌握合并答案的调用方递进来，进账本的 reason 列。
+     */
+    readonly sendBackReason?: string;
   }): ApplyOutcome {
     const record = this.read(questionId);
     const answer = this.readAnswerFor(questionId);
@@ -299,6 +311,17 @@ export class QuestionStore {
       finish();
       return { kind: "recorded" };
     }
+    // 目标从**这道题自己的答案**读（T 是第一趟的格子，就在这份里）。
+    let to: Phase | undefined;
+    if (action === "sendBack") {
+      const target = sendBackTargetFrom(record.question, answer);
+      if (target === null) {
+        finish();
+        return { kind: "refused", action, reason: "no_target_chosen" };
+      }
+      to = target;
+    }
+    const reason = options?.sendBackReason?.trim() ?? "";
     this.commands.apply({
       changeId: record.changeId,
       action,
@@ -306,6 +329,8 @@ export class QuestionStore {
       expectedSnapshot: options?.rebaseFence === true
         ? this.commands.gateFor(record.changeId).snapshot
         : record.expectedSnapshot,
+      ...(to === undefined ? {} : { to }),
+      ...(action === "sendBack" && reason !== "" ? { reason } : {}),
     });
     finish();
     return { kind: "advanced", action };

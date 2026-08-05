@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 
 import type { ChangeAction, ChangeState } from "../domain/change-state";
+import type { Phase } from "../domain/phase";
 import {
   assertFence,
   assertPermitted,
@@ -41,6 +42,10 @@ export interface CommandRequest {
   readonly idempotencyKey: string;
   /** The gate snapshot the caller decided against. */
   readonly expectedSnapshot: string;
+  /** `sendBack` 的目标（打回哪一份上游文档）。别的动作不带。 */
+  readonly to?: Phase;
+  /** 这一步为什么发生，人的话。进账本，环上历史箭头读它。 */
+  readonly reason?: string;
 }
 
 export interface CommandResult {
@@ -65,6 +70,10 @@ function requestHash(request: CommandRequest): string {
     changeId: request.changeId,
     action: request.action,
     expectedSnapshot: request.expectedSnapshot,
+    // 目标和理由都进哈希：同一个 key 打回到不同的地方（或换了说法）不是重放，
+    // 是另一个请求 —— 必须撞出来，不能拿旧结果应付。
+    to: request.to ?? null,
+    reason: request.reason ?? null,
   })).digest("hex");
 }
 
@@ -86,6 +95,9 @@ export class CommandStore {
     return computeGate(
       record.state,
       this.evidence.read(changeId, record.state.phase),
+      // 图也进闸门：一张只走 Build->Done 的图上，Build 没有上游，sendBack 必须
+      // 在这儿就被拒 —— 而不是等 transition 抛出来变成一个 500。
+      this.changes.graphOf(changeId),
     );
   }
 
@@ -115,6 +127,7 @@ export class CommandStore {
       const gate = computeGate(
         before.state,
         this.evidence.read(request.changeId, before.state.phase),
+        this.changes.graphOf(request.changeId),
       );
       assertFence(request.expectedSnapshot, gate);
       assertPermitted(gate, request.action);
@@ -122,6 +135,10 @@ export class CommandStore {
       const after: ChangeRecord = this.changes.apply(
         request.changeId,
         request.action,
+        {
+          ...(request.to === undefined ? {} : { to: request.to }),
+          ...(request.reason === undefined ? {} : { reason: request.reason }),
+        },
       );
       this.database.prepare(
         `INSERT INTO commands

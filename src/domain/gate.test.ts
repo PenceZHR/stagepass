@@ -20,7 +20,7 @@ import {
 const SETTLED: ChangeState = {
   phase: "Spec",
   status: "settled",
-  returnPhase: null,
+  returnStack: [],
 };
 
 function evidence(patch: Partial<Evidence> = {}): Evidence {
@@ -34,7 +34,8 @@ const p2: Blocker = { id: "B-3", kind: "finding", severity: "P2", title: "措辞
 describe("L1 · the gate decides from facts, never from a summary", () => {
   it("permits approval when something was produced and nothing blocks", () => {
     const gate = computeGate(SETTLED, evidence());
-    assert.deepEqual([...gate.permitted].sort(), ["approve", "reject"]);
+    // sendBack 也在：Spec 有上游（PRD），闸门把长回边摆出来（§5.9.1）。
+    assert.deepEqual([...gate.permitted].sort(), ["approve", "reject", "sendBack"]);
     assert.equal(gate.refusals.approve, undefined);
   });
 
@@ -115,7 +116,7 @@ describe("L1 · the gate decides from facts, never from a summary", () => {
         const state: ChangeState = {
           phase,
           status,
-          returnPhase: phase === "Fix" ? "Review" : null,
+          returnStack: phase === "Fix" ? ["Review"] : [],
         };
         const gate = computeGate(state, evidence({ blockers: [p1] }));
         for (const action of CHANGE_ACTIONS) {

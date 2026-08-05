@@ -2106,6 +2106,78 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     });
   });
 
+  it("**打回上游端到端** —— 选目标 + 裁决，状态压栈、理由进账本（§5.9.1）", async () => {
+    await withPanel(async ({ open, database }) => {
+      // 走到 Spec/settled。打回不需要 gap —— 它说的是上游文档错了，不是这轮有毛病。
+      const changes = new ChangeStore(database);
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      new EvidenceStore(database).put(CHANGE, "Spec", {
+        artifactIds: ["spec.md"], blockers: [], waivedBlockerIds: [],
+      });
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, { T: "PRD", decision: decisionLabel("sendBack", "Spec") });
+      // 第二趟只有一格：为什么打回。
+      await answerNext(database, { Tx: "验收口径在 PRD 里就写反了" });
+
+      const result = await (await asking).json() as { outcome: unknown };
+      assert.deepEqual(result.outcome, { kind: "advanced", action: "sendBack" });
+
+      // 状态压栈：人在 PRD 改完批准，会弹回 Spec，不沿主线往 TechSpec 走。
+      assert.deepEqual(changes.read(CHANGE).state, {
+        phase: "PRD", status: "pending", returnStack: ["Spec"],
+      });
+      // 理由在账本那一行上 —— 历史箭头（§5.9.2）就写它。
+      const jump = changes.ledger(CHANGE).at(-1)!;
+      assert.equal(jump.action, "sendBack");
+      assert.equal(jump.reason, "验收口径在 PRD 里就写反了");
+
+      // 面板的跳转表（账本投影）说得出同一跳 —— G 档读的就是这一份。
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        journey: { action: string; fromPhase: string; toPhase: string; kind: string }[];
+      };
+      const back = panel.journey.find((each) => each.action === "sendBack")!;
+      assert.deepEqual(
+        { from: back.fromPhase, to: back.toPhase, kind: back.kind },
+        { from: "Spec", to: "PRD", kind: "backward" },
+      );
+    });
+  });
+
+  it("**选了打回却没选哪一份 —— 拒，并说出来**，不静默当成没发生", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      // 目标格留在「不打回」上 —— 半个决定。没有第二趟（没选目标就不问理由）。
+      answer(database, { T: "不打回", decision: decisionLabel("sendBack", "Spec") });
+
+      const result = await (await asking).json() as { outcome: unknown };
+      assert.deepEqual(result.outcome,
+        { kind: "refused", action: "sendBack", reason: "no_target_chosen" });
+      // 一步都没动。
+      assert.equal(changes.read(CHANGE).state.phase, "Spec");
+      assert.equal(changes.read(CHANGE).state.status, "settled");
+    });
+  });
+
   it("**闸门拒了那句话留得住** —— 刷新之后 /api/panel 还说得出上次裁决的下场（§3.2·5）", async () => {
     /*
      * 原来 {kind:"refused"} 只活在 /api/ask 的响应里，前端把它写进 stageNote ——

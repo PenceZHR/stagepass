@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
-import { PHASES, isPhase, producesCommit, type Phase } from "../domain/phase";
+import { PHASES, isPhase, producesCommit, upstreamOf, type Phase } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
@@ -25,8 +25,8 @@ import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, waiveFollowUpQuestion,
   clarificationQuestion,
   responseFollowUpQuestion,
-  type ClarificationItem, type Answer,
-  responsesFrom, runsAgainHere, DECISION_FIELD,
+  type ClarificationItem, type Answer, type Question,
+  responsesFrom, runsAgainHere, DECISION_FIELD, sendBackReasonFrom,
 } from "../domain/question";
 import {
   briefContract, readBriefProposal, briefFrom, followUpFields, BriefProposalVoidError,
@@ -43,6 +43,7 @@ import { WorklistStore } from "../store/worklist-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
+import { jumpsFrom } from "../domain/journey";
 import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
 import {
   RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
@@ -171,6 +172,45 @@ const launchAskPrompt = (hands: string, dont: string): string => [
   hands,
   dont,
 ].join("\n");
+
+/**
+ * 第二趟追问：登记、送进**同一个**会话（另起会打掉画着的选择器）、等答案。
+ * 返回答案，或一个「没答上」的原因字符串 —— 返回前题已收尾，不留永远 open 的行。
+ *
+ * 从 `handle()` 里抽出来的第一块业务逻辑 —— 是棘轮（architecture.test.ts 的
+ * FUNCTION_RATCHET）逼的，方向正是 BACKLOG §4.1·J 要的。
+ */
+async function askFollowUp(input: {
+  questions: QuestionStore;
+  sessions: {
+    type(changeId: string, phase: Phase, line: string): Promise<boolean>;
+    has(changeId: string, phase: Phase): boolean;
+  };
+  changeId: string;
+  phase: Phase;
+  question: Question;
+  questionId: string;
+  expectedSnapshot: string;
+  timeoutMs: number;
+}): Promise<Answer | "session_died_before_asking" | "no_answer_in_time"> {
+  const { questions, changeId, phase, questionId } = input;
+  questions.ask({
+    id: questionId, changeId, phase, kind: "gate_decision",
+    question: input.question, expectedSnapshot: input.expectedSnapshot,
+  });
+  if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
+    questions.settle(questionId);
+    return "session_died_before_asking";
+  }
+  const until = Date.now() + input.timeoutMs;
+  while (Date.now() < until && !questions.readAnswerFor(questionId)) {
+    if (!input.sessions.has(changeId, phase)) break;
+    await new Promise((resolve) => { setTimeout(resolve, 1_000); });
+  }
+  const second = questions.readAnswerFor(questionId);
+  questions.settle(questionId);
+  return second ?? "no_answer_in_time";
+}
 
 const pluginConfigFor = (
   database: { name: string }, changeId: string,
@@ -1279,6 +1319,7 @@ export async function handle(
         const verdict = new CommandStore(database).gateFor(changeId);
         return { permitted: verdict.permitted, refusals: verdict.refusals };
       })() : null,
+      journey: jumpsFrom(ledger), // 跳转表 = 账本投影（§5.9.2），G 档只许读这一份
       phases: THREADED_PHASES.map((phase) => {
         /*
          * 这个阶段最近一轮的 rubric 判定。
@@ -1844,13 +1885,13 @@ export async function handle(
         + summariseRoundNotes(notes)
         // 跑满预算之后把收敛数据摊出来。**不拦人** —— 阻断归人管。
         + summariseConvergence({
-          round,
-          budget: options.roundBudget ?? 5,
-          raised: allGaps.length,
-          open: blockers.length,
+          round, budget: options.roundBudget ?? 5,
+          raised: allGaps.length, open: blockers.length,
         }),
       openGaps,
       round,
+      // 打回上游（§5.9.1）的合法目标，按这个 Change 自己的图算。
+      sendBackTargets: upstreamOf(phase, changes.graphOf(changeId)),
     });
     // No question rather than an empty one: putting a decision to someone that
     // they cannot make is worse than not asking (domain/question.ts).
@@ -1946,26 +1987,13 @@ export async function handle(
     let answer = first;
     const more = responseFollowUpQuestion(openGaps, first);
     if (more) {
-      const moreId = `${questionId}-x`;
-      questions.ask({
-        id: moreId, changeId, phase, kind: "gate_decision",
-        question: more, expectedSnapshot: gate.snapshot,
+      const second = await askFollowUp({
+        questions, sessions, changeId, phase, question: more,
+        questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
+        timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
       });
-      if (!await sessions.type(changeId, phase, ASK_TOOL_LINE)) {
-        questions.settle(moreId);
-        json(response, { asked: true, answered: false, phase, reason: "session_died_before_asking" });
-        sessions.close(changeId, phase);
-        return;
-      }
-      const until = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
-      while (Date.now() < until && !questions.readAnswerFor(moreId)) {
-        if (!sessions.has(changeId, phase)) break;
-        await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-      }
-      const second = questions.readAnswerFor(moreId);
-      questions.settle(moreId);
-      if (!second) {
-        json(response, { asked: true, answered: false, phase, reason: "no_answer_in_time" });
+      if (typeof second === "string") {
+        json(response, { asked: true, answered: false, phase, reason: second });
         sessions.close(changeId, phase);
         return;
       }
@@ -2014,7 +2042,9 @@ export async function handle(
      */
     let outcome: unknown;
     try {
-      outcome = questions.apply(questionId, { rebaseFence: true });
+      // 打回的理由在合并后的答案里（Tx 在第二趟），store 重读不到 —— 递进去。
+      outcome = questions.apply(
+        questionId, { rebaseFence: true, sendBackReason: sendBackReasonFrom(answer) });
     } catch (error: unknown) {
       if (!(error instanceof GateRefusedError)) throw error;
       questions.settle(questionId);
