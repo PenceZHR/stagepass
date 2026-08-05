@@ -664,15 +664,22 @@ function nodeAt(index, total) {
  *
  * ```
  * 0 ~ 4.86    节点那个圆自己
- * 4.86 ~ 6.6  空的 —— 刻度和绕圈箭头都只能待在这条窄带里
- * 6.6 ~ 8.68  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
+ * 4.86 ~ 9.0  空的 —— 刻度和绕圈箭头住在这里（标签让开之后腾出来的）
+ * 9.0 ~ 11.1  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
  * ```
  *
- * 第一版刻度画在 7.1，对**上半圈**的节点来说正好压在字上（PRD 那一圈就是）——
- * 因为那一版按「环的内侧」摆，而内侧对上半圈就是下方。所以刻度改成按**屏幕的
- * 正上方**摆：字永远在正下方，避开它才是绝对的，跟着环转的相对方位不是。
+ * 标签原来卡在 6.25，那条缝窄得圈根本大不起来。用户 2026-08-05：「自循环的圈
+ * 可以大一点，起码包裹住 stage 的圆」—— 所以 `panel.html` 把标签从 64px 推到
+ * 80px，这条带子才够住人。**改这里就要改那边**，两个数是同一件事的两半。
+ *
+ * 刻度和箭头**共用同一条轨道**：一个节点周围只有一圈东西，读起来是「这个盘
+ * 走过几格、指针正在再走一圈」，而不是套了两三个同心圆。
+ *
+ * 第一版刻度画在 7.1 且按「环的内侧」摆，对**上半圈**的节点正好压在字上
+ * （PRD 那一圈就是）—— 内侧对上半圈就是下方。所以改成按**屏幕正上方**摆：
+ * 字永远在正下方，避开它才是绝对的，跟着环转的相对方位不是。
  */
-const RIM = 6.0;          // 刻度和绕圈箭头共用这条轨道
+const RIM = 7.5;          // 刻度和绕圈箭头共用这条轨道（节点圆半径 4.86）
 const TICK_SPAN = 150;    // 刻度占正上方这 150°，正下方那块留给阶段名
 
 function svgNode(tag, attributes, tooltip) {
@@ -738,11 +745,17 @@ function arcSegment(at, radius, startDeg, endDeg) {
  * 每帧算位置（那种一定会和 `drawMap` 的重画打架）。`rotate="auto"` 让箭头
  * 自己扭向前进方向。
  */
-function flyingArrow(pathId, seconds, className) {
+function flyingArrow(pathId, seconds, className, offset = 0) {
   const arrow = svgNode("path", {
     class: className,
-    // 朝 +x 的小三角，尺寸按「看得见但不抢戏」定（约 8px）。
-    d: "M -0.7 -0.72 L 0.78 0 L -0.7 0.72 Z",
+    /*
+     * **一个 V 字，不是实心三角。**
+     *
+     * 实心三角在这个尺寸上是一个小黑块，方向要凑近了才看得出，而且和整屏
+     * 那种细线质感打架（用户 2026-08-05：「stage 间的动画和 UI 不好看」）。
+     * 描边的 V 字轻、尖端明确，一眼就知道朝哪飞。
+     */
+    d: "M -0.85 -0.85 L 0.35 0 L -0.85 0.85",
   });
   /*
    * **说了不要动效就真的不动。**
@@ -771,6 +784,21 @@ function flyingArrow(pathId, seconds, className) {
   motion.setAttribute("dur", `${seconds}s`);
   motion.setAttribute("repeatCount", "indefinite");
   motion.setAttribute("rotate", "auto");
+  /*
+   * 一条路上前后跟着几个 V，才读得出「一股往那边流的劲」，而不是「有个小东西
+   * 在爬」。**错的是相位，不是出发时刻。**
+   *
+   * 用 `begin="1.9s"` 那一版实测出一个 bug：轮到它之前，这个 V 停在 viewBox 的
+   * 原点上 —— 也就是环左上角外面凭空多两个小勾，而页面刚打开那两秒正好看得见。
+   * 改成让它从路径的 34%／68% 处起跑、跑到头瞬回起点：所有 V 都在 t=0 就位，
+   * 没有「还没开始」这个状态。
+   */
+  if (offset > 0) {
+    const turn = (1 - offset).toFixed(4);
+    motion.setAttribute("calcMode", "linear");
+    motion.setAttribute("keyPoints", `${offset};1;0;${offset}`);
+    motion.setAttribute("keyTimes", `0;${turn};${turn};1`);
+  }
   const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
   // 两种写法都设上：`href` 是现在的规范，`xlink:href` 是老引擎唯一认的那个。
   mpath.setAttribute("href", `#${pathId}`);
@@ -869,7 +897,9 @@ function drawMap(panel) {
     if (edge.kind === "self") {
       const id = "map-self";
       map.append(svgNode("path", { id, class: "rail", d: orbitAround(from) }, edge.why));
-      map.append(flyingArrow(id, 4.2, "arrow"));
+      // 两个 V 分处半圈，读起来是「这一圈在转」而不是「有个东西在爬」。
+      map.append(flyingArrow(id, 5, "arrow"));
+      map.append(flyingArrow(id, 5, "arrow trail", 0.5));
       return;
     }
     const to = indexOf(edge.to);
@@ -886,9 +916,22 @@ function drawMap(panel) {
         ? arcAlongRing(from, nodeAt(to, total))
         : chordPath(from, nodeAt(to, total)),
     }, edge.why));
-    // 小箭头飞向目标 stage。**方向靠动，不靠虚线的流向** —— 一条流动的虚线
-    // 两头长得一样，人得盯一会儿才知道它往哪边走。
-    map.append(flyingArrow(id, 2.6, `arrow${edge.kind === "backward" ? " back" : ""}`));
+    /*
+     * **一串 V 飞向目标 stage**（用户 2026-08-05 定的画法，第二版重做）。
+     *
+     * 第一版是一条流动的虚线 + 一个实心小三角：虚线两头长得一样、看不出方向，
+     * 三角在这个尺寸上是个小黑块。现在路线退成极淡的发丝（只说「走哪条道」），
+     * 三个 V 错开出发 —— 「往那边流」这件事由队形说出来。
+     */
+    const trip = 2.8;
+    map.append(flyingArrow(id, trip, `arrow${edge.kind === "backward" ? " back" : ""}`));
+    for (const behind of [0.34, 0.68]) {
+      map.append(flyingArrow(
+        id, trip,
+        `arrow trail${edge.kind === "backward" ? " back" : ""}`,
+        behind,
+      ));
+    }
   });
 }
 

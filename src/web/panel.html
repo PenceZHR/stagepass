@@ -390,19 +390,30 @@ body::after {
 }
 .orbit-map .chord.hot { stroke: rgba(255,146,128,.62); stroke-width: .7; }
 /*
- * 能去的那条路：虚线**静止**，方向交给飞在上面的小箭头（用户 2026-08-05 定的）。
- * 虚线自己流动的那一版表达不了方向 —— 一条流动的虚线两头长得一样。
+ * 能去的那条路：**一根极淡的发丝**，只说「走哪条道」。
+ *
+ * 方向整个交给飞在上面那串 V（用户 2026-08-05 第二次看后重做）。上一版是流动的
+ * 虚线 + 实心小三角：虚线两头长得一样、看不出往哪流，而虚线本身在这一屏的细线
+ * 质感里显得又粗又碎。**减，不是加。**
  */
 .orbit-map .live {
-  fill: none; stroke: rgba(226,200,164,.5); stroke-width: .55;
-  stroke-dasharray: 1.8 1.8; stroke-linecap: round; pointer-events: stroke;
+  fill: none; stroke: rgba(226,200,164,.17); stroke-width: .35;
+  stroke-linecap: round; pointer-events: stroke;
 }
-.orbit-map .live.back { stroke: rgba(255,146,128,.5); }
-/** 自环那条轨道：只给箭头骑，本身不画（画出来就和刻度打架了）。 */
+.orbit-map .live.back { stroke: rgba(255,146,128,.2); }
+/** 自环那条轨道：只给 V 骑，本身不画（画出来就和刻度打架了）。 */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
-/** 会动的那枚箭头。它是唯一表达「方向」的东西，所以要实、要亮。 */
-.orbit-map .arrow { fill: rgba(236,214,182,.95); stroke: none; }
-.orbit-map .arrow.back { fill: rgba(255,150,132,.95); }
+/*
+ * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
+ * 才和这一屏别的东西是同一种笔触。跟在后面的两个淡下去 —— 队形本身就是箭头。
+ */
+.orbit-map .arrow {
+  fill: none; stroke: rgba(240,220,190,.95); stroke-width: .5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.orbit-map .arrow.trail { stroke: rgba(240,220,190,.42); stroke-width: .42; }
+.orbit-map .arrow.back { stroke: rgba(255,152,134,.95); }
+.orbit-map .arrow.back.trail { stroke: rgba(255,152,134,.4); }
 /*
  * 刻度要**一眼看得见**才有意义（§5.9.4：节点上花的轮数比它在环上的位置更能说明
  * 「你在哪」）。第一版 stroke-width .9、长 1.8 单位，实测在真尺寸下是 4×8 像素 ——
@@ -467,14 +478,21 @@ body::after {
   border: 1px solid rgba(255,255,255,.44); background: #575264;
   transition: background .28s, border-color .28s, box-shadow .28s;
 }
-/* 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。 */
+/*
+ * 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。
+ *
+ * **64px → 80px（2026-08-05）**：圆外面那一圈现在住着轮次刻度和绕圈的箭头
+ * （§5.9.3/§5.9.4），而它们只能待在「圆的边缘」和「标签顶」之间。原来那条缝
+ * 只有 36px，圈大不起来 —— 用户要的是「起码包裹住 stage 的圆」。
+ * 节点之间隔着约 150px，多让 16px 不会挤到邻居。
+ */
 .stage-node button span {
-  position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 80px; left: 50%; transform: translateX(-50%);
   font: 700 12px/1 ui-sans-serif, sans-serif; letter-spacing: .04em; white-space: nowrap;
   color: rgba(255,255,255,.66); transition: color .28s;
 }
 .stage-node button em {
-  position: absolute; top: 82px; left: 50%; transform: translate(-50%, 3px);
+  position: absolute; top: 98px; left: 50%; transform: translate(-50%, 3px);
   font: 500 10px/1 ui-sans-serif, sans-serif; font-style: normal; white-space: nowrap;
   color: rgba(255,255,255,.44); opacity: 0; transition: .24s;
 }
