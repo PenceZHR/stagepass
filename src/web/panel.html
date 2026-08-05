@@ -389,12 +389,20 @@ body::after {
   stroke-linecap: round; pointer-events: stroke;
 }
 .orbit-map .chord.hot { stroke: rgba(255,146,128,.62); stroke-width: .7; }
+/*
+ * 能去的那条路：虚线**静止**，方向交给飞在上面的小箭头（用户 2026-08-05 定的）。
+ * 虚线自己流动的那一版表达不了方向 —— 一条流动的虚线两头长得一样。
+ */
 .orbit-map .live {
-  fill: none; stroke: rgba(226,200,164,.85); stroke-width: .7;
-  stroke-dasharray: 2 1.6; stroke-linecap: round; pointer-events: stroke;
-  animation: mapFlow 1.6s linear infinite;
+  fill: none; stroke: rgba(226,200,164,.5); stroke-width: .55;
+  stroke-dasharray: 1.8 1.8; stroke-linecap: round; pointer-events: stroke;
 }
-.orbit-map .live.back { stroke: rgba(255,146,128,.8); }
+.orbit-map .live.back { stroke: rgba(255,146,128,.5); }
+/** 自环那条轨道：只给箭头骑，本身不画（画出来就和刻度打架了）。 */
+.orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
+/** 会动的那枚箭头。它是唯一表达「方向」的东西，所以要实、要亮。 */
+.orbit-map .arrow { fill: rgba(236,214,182,.95); stroke: none; }
+.orbit-map .arrow.back { fill: rgba(255,150,132,.95); }
 /*
  * 刻度要**一眼看得见**才有意义（§5.9.4：节点上花的轮数比它在环上的位置更能说明
  * 「你在哪」）。第一版 stroke-width .9、长 1.8 单位，实测在真尺寸下是 4×8 像素 ——
@@ -404,16 +412,6 @@ body::after {
   fill: none; stroke: rgba(226,200,164,.9); stroke-width: 1.5; stroke-linecap: round;
 }
 .orbit-map .tick.done { stroke: rgba(150,214,168,.9); }
-/*
- * 「还能再跑一轮」= 盘上的下一格**空刻度**：同一条弧上、虚线、会流动。
- * 它和历史刻度用同一个半径同一个跨度，所以读起来是「这一格还没走」，
- * 而不是环上又多了一样东西。
- */
-.orbit-map .tick.ghost {
-  stroke: rgba(226,200,164,.55); stroke-dasharray: 1.1 1.1;
-  animation: mapFlow 1.6s linear infinite;
-}
-@keyframes mapFlow { to { stroke-dashoffset: -7.2; } }
 
 /*
  * `--progress` 必须注册才过渡得了。

@@ -657,6 +657,24 @@ function nodeAt(index, total) {
   };
 }
 
+/*
+ * ── 节点周围那一圈的地盘（实测，别凭感觉改）────────────────
+ *
+ * 2026-08-05 在真尺寸上量的（1 viewBox 单位 ≈ 5.8px）：
+ *
+ * ```
+ * 0 ~ 4.86    节点那个圆自己
+ * 4.86 ~ 6.6  空的 —— 刻度和绕圈箭头都只能待在这条窄带里
+ * 6.6 ~ 8.68  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
+ * ```
+ *
+ * 第一版刻度画在 7.1，对**上半圈**的节点来说正好压在字上（PRD 那一圈就是）——
+ * 因为那一版按「环的内侧」摆，而内侧对上半圈就是下方。所以刻度改成按**屏幕的
+ * 正上方**摆：字永远在正下方，避开它才是绝对的，跟着环转的相对方位不是。
+ */
+const RIM = 6.0;          // 刻度和绕圈箭头共用这条轨道
+const TICK_SPAN = 150;    // 刻度占正上方这 150°，正下方那块留给阶段名
+
 function svgNode(tag, attributes, tooltip) {
   const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [name, value] of Object.entries(attributes)) {
@@ -708,15 +726,65 @@ function arcSegment(at, radius, startDeg, endDeg) {
 }
 
 /**
- * 自环**不画成从节点伸出去的须**（2026-08-05 用户看了第一版：「自循环的太臭了」）。
+ * 一枚会动的小箭头，沿着一条路径走 —— 用户 2026-08-05 定的画法：
+ * 「自循环的动画设置成一个绕着这个 stage 的小箭头在绕圈，stage 间的就做成
+ * 小箭头飞向目标 stage」。
  *
- * 那个比喻本来就是错的：节点已经是一个带刻度的表盘了（§5.9.4），而「再来一轮」
- * 说的正是「这个盘上还能再走一格」—— 所以它就该是**盘上的下一格空刻度**，
- * 虚线、会流动。不是另长一个东西出来。
+ * **动本身就说明了方向**，所以路径可以画得很淡：静态那条只说「能去哪」，
+ * 箭头说「往哪边走」。第一版靠虚线流动来表达方向，而一条流动的虚线两头
+ * 长得一样 —— 人得盯着看一会儿才知道它在往哪流。
  *
- * 顺带解掉了三个几何难题：须往环外长会撞上阶段名（底下那几个节点尤其），
- * 往环内长会掉进中心那张卡片，而绕节点一圈又会和刻度打架。空刻度一个都不占。
+ * 走 SVG 原生的 `animateMotion` + `mpath`：路径改了动画自动跟着改，不用 JS
+ * 每帧算位置（那种一定会和 `drawMap` 的重画打架）。`rotate="auto"` 让箭头
+ * 自己扭向前进方向。
  */
+function flyingArrow(pathId, seconds, className) {
+  const arrow = svgNode("path", {
+    class: className,
+    // 朝 +x 的小三角，尺寸按「看得见但不抢戏」定（约 8px）。
+    d: "M -0.7 -0.72 L 0.78 0 L -0.7 0.72 Z",
+  });
+  /*
+   * **说了不要动效就真的不动。**
+   *
+   * SMIL 不受 CSS 的 `animation: none` 管（那一条只关得掉 CSS 动画，见
+   * panel.html 末尾那个 media query），所以这里自己问一次。箭头照样画出来、
+   * 照样停在路径起点，方向仍然看得出 —— 只是不动。
+   */
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    const still = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+    still.setAttribute("dur", "1s");
+    still.setAttribute("repeatCount", "1");
+    still.setAttribute("fill", "freeze");
+    still.setAttribute("rotate", "auto");
+    still.setAttribute("keyPoints", "0;0");
+    still.setAttribute("keyTimes", "0;1");
+    still.setAttribute("calcMode", "linear");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
+    path.setAttribute("href", `#${pathId}`);
+    path.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
+    still.append(path);
+    arrow.append(still);
+    return arrow;
+  }
+  const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+  motion.setAttribute("dur", `${seconds}s`);
+  motion.setAttribute("repeatCount", "indefinite");
+  motion.setAttribute("rotate", "auto");
+  const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
+  // 两种写法都设上：`href` 是现在的规范，`xlink:href` 是老引擎唯一认的那个。
+  mpath.setAttribute("href", `#${pathId}`);
+  mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
+  motion.append(mpath);
+  arrow.append(motion);
+  return arrow;
+}
+
+/** 绕着一个节点转一圈的轨道。箭头骑着它，就是「再来一轮」。 */
+function orbitAround(at) {
+  return `M ${at.x} ${at.y - RIM} `
+    + `A ${RIM} ${RIM} 0 1 1 ${at.x - 0.01} ${at.y - RIM} Z`;
+}
 
 function drawMap(panel) {
   const map = pick("orbit-map");
@@ -759,9 +827,7 @@ function drawMap(panel) {
   phases.forEach((entry, index) => {
     const at = nodeAt(index, total);
     const rounds = Math.min(entry.rounds ?? 0, 8);   // 画得下才有意义，8 段封顶
-    // 这一格是「还能再跑一轮」的空刻度：只有当前阶段、而且闸门真给了那条边才有。
-    const ghost = entry.current && selfEdge !== undefined ? 1 : 0;
-    for (let tick = 0; tick < rounds + ghost; tick += 1) {
+    for (let tick = 0; tick < rounds; tick += 1) {
       /*
        * **一段一段的弧，不是放射状的短线。**
        *
@@ -772,25 +838,19 @@ function drawMap(panel) {
        * 摆在节点**内侧**那 150°：外侧要留给阶段名，而且顶上那个节点朝外就是
        * 画布外面（第一版实测 y 是负的）。
        */
-      const span = 150;
-      const slots = rounds + ghost;
-      const each = span / slots;
-      const base = (index / total) * 360 + 180 - span / 2 + tick * each;
-      const isGhost = tick >= rounds;
       /*
-       * **段占一格的一半多一点，缝要看得见。**
+       * **段占一格的一半多一点，缝要看得见。** 第一版占 76%，实测 6 段连成了
+       * 一道实心月牙 —— 数不出来，那「跑了几轮」这件事就白标了。
        *
-       * 第一版是 0.12~0.88（占 76%），实测 6 段连成了一道实心月牙 —— 段数数不
-       * 出来，那「跑了几轮」这件事就白标了。半径也从 6.6 推到 7.1：贴着节点边
-       * 会读成节点自己的描边，隔开一点才像一圈独立的刻度盘。
+       * 摆在**屏幕正上方**那 150°（不是环的内侧）：阶段名永远在正下方，
+       * 避开它的规则必须是绝对的 —— 见 RIM 上面那段实测。
        */
+      const each = TICK_SPAN / rounds;
+      const base = -TICK_SPAN / 2 + tick * each;
       map.append(svgNode("path", {
-        class: isGhost ? "tick ghost"
-          : `tick${entry.mark === "approved" ? " done" : ""}`,
-        d: arcSegment(at, 7.1, base + each * 0.22, base + each * 0.78),
-      }, isGhost
-        ? selfEdge.why
-        : `${entry.phase} 跑了 ${entry.rounds} 轮`));
+        class: `tick${entry.mark === "approved" ? " done" : ""}`,
+        d: arcSegment(at, RIM, base + each * 0.22, base + each * 0.78),
+      }, `${entry.phase} 跑了 ${entry.rounds} 轮`));
     }
   });
 
@@ -800,22 +860,36 @@ function drawMap(panel) {
   const here = phases.findIndex((entry) => entry.current);
   if (here < 0) return;
   const from = nodeAt(here, total);
-  for (const edge of panel.options ?? []) {
-    // 自环已经画成节点盘上的空刻度了，这儿不再画第二遍。
-    if (edge.kind === "self") continue;
+  panel.options?.forEach((edge, order) => {
+    /*
+     * **自环：一枚小箭头绕着这个 stage 转圈**（用户 2026-08-05 定的画法）。
+     * 轨道就是刻度那一圈 —— 于是它读起来是「指针再走一圈这个盘」，而不是
+     * 环上又多了一样东西。轨道本身不画，只有箭头在动。
+     */
+    if (edge.kind === "self") {
+      const id = "map-self";
+      map.append(svgNode("path", { id, class: "rail", d: orbitAround(from) }, edge.why));
+      map.append(flyingArrow(id, 4.2, "arrow"));
+      return;
+    }
     const to = indexOf(edge.to);
-    if (to < 0) continue;
+    if (to < 0) return;
     /*
      * **形状带语义，两种边不共用一个画法**（§5.9.3④）：沿着环走 = 正常推进，
      * 穿过中心的弦 = 回头。第一版两种都画成弦，那条语义当场失效。
      */
+    const id = `map-live-${order}`;
     map.append(svgNode("path", {
+      id,
       class: `live${edge.kind === "backward" ? " back" : ""}`,
       d: edge.kind === "forward"
         ? arcAlongRing(from, nodeAt(to, total))
         : chordPath(from, nodeAt(to, total)),
     }, edge.why));
-  }
+    // 小箭头飞向目标 stage。**方向靠动，不靠虚线的流向** —— 一条流动的虚线
+    // 两头长得一样，人得盯一会儿才知道它往哪边走。
+    map.append(flyingArrow(id, 2.6, `arrow${edge.kind === "backward" ? " back" : ""}`));
+  });
 }
 
 function drawOrbit() {
