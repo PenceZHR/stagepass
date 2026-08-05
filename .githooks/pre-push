@@ -1,0 +1,7 @@
+#!/bin/sh
+# 推之前必须绿（BACKLOG §4.6 的本地那一半）。
+#
+# CI 在 GitHub 上跑同一条 pnpm check，但它只在推完之后才说话 —— 这里把红灯
+# 挡在推之前。跳过的口子留着（--no-verify），紧急时人自己负责。
+echo "[pre-push] pnpm check（要跳过：git push --no-verify）"
+cd "$(git rev-parse --show-toplevel)" && pnpm check

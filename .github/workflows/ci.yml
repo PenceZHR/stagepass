@@ -1,0 +1,25 @@
+# CI（BACKLOG §4.6）
+#
+# 原判「没外部贡献者，零收益」；bootstrap 框架下改判为必需 —— 未来每个项目都
+# 依赖这棵树，而在此之前它靠人记得跑 pnpm check（8 天 224 次提交，全靠自觉）。
+#
+# 只跑 pnpm check：751+ 测试 + 严格 typecheck + 常驻护栏（分层/孤儿/棘轮/golden）。
+# 它就是这棵树对「绿」的全部定义 —— CI 不该有第二套定义。
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
