@@ -33,7 +33,7 @@ import { RUBRIC_ROLES, type RubricRole } from "../domain/rubric";
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { decideGate, type DecideOutcome } from "../app/decide-gate";
-import { rubricFor, saveRubric } from "../app/edit-rubric";
+import { rubricFor, saveRubric, upgradeRubrics } from "../app/edit-rubric";
 import {
   createChange, createProject, deleteChange, deleteProject,
 } from "../app/workspace";
@@ -1176,6 +1176,75 @@ function waiveBody(outcome: Exclude<WaiveOutcome, { kind: "no_such_change" }>): 
  *
  * Split out from the server so the routing can be tested without a socket.
  */
+
+/**
+ * `/api/rubric` 的 POST 转发体，以及下面那条升级。
+ *
+ * 抽出来的理由不是审美：`handle()` 背着 §4.1 的棘轮，**只许缩不许涨**
+ * （`architecture.test.ts` 的 `FUNCTION_RATCHET`）。这两段本来就是纯转发。
+ */
+async function serveRubricSave(
+  database: Database.Database,
+  url: URL,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+    const changeId = url.searchParams.get("change") ?? "";
+    const phase = url.searchParams.get("phase") ?? "";
+    const role = url.searchParams.get("role") ?? "";
+    if (!isPhase(phase) || !(RUBRIC_ROLES as readonly string[]).includes(role)) {
+      response.writeHead(400).end("bad phase or role");
+      return;
+    }
+
+    // 解码住在 domain/rubric-edit.ts，不在这里 —— 第五条常驻护栏禁止 src/web/ 把
+    // 字节变成字符串。那条规则是面板被接受的前提，不是可以绕的风格问题。
+    let edit;
+    try {
+      edit = parseRubricEdit(await readBody(request));
+    } catch (error: unknown) {
+      if (!(error instanceof UnreadableEditError)) throw error;
+      response.writeHead(400).end(error.code);
+      return;
+    }
+
+    const outcome = saveRubric({
+      database, changeId, phase, role: role as RubricRole, edit,
+    });
+    if (outcome.kind === "no_such_change") {
+      response.writeHead(404).end("no such change, or it belongs to no project");
+      return;
+    }
+    // 三种拒绝，都要说清是哪一种 —— 前端要分别提示。
+    json(response, outcome.kind === "saved"
+      ? { saved: true, version: outcome.version, retired: outcome.retired }
+      : outcome.kind === "reason_required"
+        ? { saved: false, reason: "reason_required", retired: outcome.retired }
+        : outcome.kind === "untrusted_key"
+          ? { saved: false, reason: "untrusted_key", key: outcome.key }
+          : { saved: false, reason: outcome.code });
+    return;
+  }
+
+/**
+ * `/api/rubric/upgrade`：把没被人改过的出厂标准升上来。**POST 而不是 GET** ——
+ * 它写库。和上面那条同一条线：只碰 rubric 表，碰不到 changes / commands / questions。
+ */
+function serveRubricUpgrade(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+): void {
+  const outcome = upgradeRubrics({
+    database, changeId: url.searchParams.get("change") ?? "",
+  });
+  if (outcome.kind === "no_such_change") {
+    response.writeHead(404).end("no such change, or it belongs to no project");
+    return;
+  }
+  json(response, { upgraded: outcome.upgraded, skipped: outcome.skipped });
+}
+
 export async function handle(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1405,40 +1474,12 @@ export async function handle(
   }
 
   if (url.pathname === "/api/rubric" && request.method === "POST") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phase = url.searchParams.get("phase") ?? "";
-    const role = url.searchParams.get("role") ?? "";
-    if (!isPhase(phase) || !(RUBRIC_ROLES as readonly string[]).includes(role)) {
-      response.writeHead(400).end("bad phase or role");
-      return;
-    }
+    await serveRubricSave(database, url, request, response);
+    return;
+  }
 
-    // 解码住在 domain/rubric-edit.ts，不在这里 —— 第五条常驻护栏禁止 src/web/ 把
-    // 字节变成字符串。那条规则是面板被接受的前提，不是可以绕的风格问题。
-    let edit;
-    try {
-      edit = parseRubricEdit(await readBody(request));
-    } catch (error: unknown) {
-      if (!(error instanceof UnreadableEditError)) throw error;
-      response.writeHead(400).end(error.code);
-      return;
-    }
-
-    const outcome = saveRubric({
-      database, changeId, phase, role: role as RubricRole, edit,
-    });
-    if (outcome.kind === "no_such_change") {
-      response.writeHead(404).end("no such change, or it belongs to no project");
-      return;
-    }
-    // 三种拒绝，都要说清是哪一种 —— 前端要分别提示。
-    json(response, outcome.kind === "saved"
-      ? { saved: true, version: outcome.version, retired: outcome.retired }
-      : outcome.kind === "reason_required"
-        ? { saved: false, reason: "reason_required", retired: outcome.retired }
-        : outcome.kind === "untrusted_key"
-          ? { saved: false, reason: "untrusted_key", key: outcome.key }
-          : { saved: false, reason: outcome.code });
+  if (url.pathname === "/api/rubric/upgrade" && request.method === "POST") {
+    serveRubricUpgrade(database, url, response);
     return;
   }
 

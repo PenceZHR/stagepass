@@ -77,6 +77,45 @@ export function rubricFor(input: {
   };
 }
 
+export type UpgradeRubricsOutcome =
+  | { readonly kind: "no_such_change" }
+  | {
+    readonly kind: "done";
+    /** 升上来的那几份，`阶段/角色`。 */
+    readonly upgraded: readonly string[];
+    /** 没升的那几份，连同为什么。**一定要显示出来** —— 静默跳过等于骗人。 */
+    readonly skipped: readonly { readonly scope: string; readonly why: string }[];
+  };
+
+/**
+ * 把这个项目里**从没被人改过**的出厂标准升到当前出厂版。
+ *
+ * ## 为什么这个动作必须存在
+ *
+ * `installDefaults` 只补空缺（那条语义是对的），于是改一次 `rubric-defaults.ts`
+ * 对**已经存在的项目零效果** —— 它留着建项目那天装上的那一版。2026-07-31 真机
+ * 栽过一次：Review 那条早就改掉的旧措辞还留在老项目里，裁判拿它判了个假阳性的 `no`。
+ *
+ * ## 它仍然属于「网页上唯一可以改的东西」
+ *
+ * 改的是**标准**，不是对这一次产物的裁决 —— 和 `saveRubric` 同一条线（PRD §1.1）。
+ * 只碰 rubric 表；不碰 changes / commands / questions 一个字节。
+ *
+ * ## 对同一份只有第一次有效
+ *
+ * 升完版本就是 2，再按一次会被当成「你改过它」跳过（`RubricStore.upgradeDefaults`
+ * 的判据）。这是刻意的：它是一次性的救火动作，不是一个可以反复按的同步按钮。
+ */
+export function upgradeRubrics(input: {
+  database: Database.Database;
+  changeId: string;
+}): UpgradeRubricsOutcome {
+  const projectId = projectOf(input.database, input.changeId);
+  if (projectId === null) return { kind: "no_such_change" };
+  const result = new RubricStore(input.database).upgradeDefaults(projectId);
+  return { kind: "done", upgraded: result.upgraded, skipped: result.skipped };
+}
+
 export type SaveRubricOutcome =
   | { readonly kind: "no_such_change" }
   | {

@@ -12,6 +12,44 @@ const ok = {
   reason: "改了措辞",
 };
 
+/*
+ * **section 必须能原样走完这一趟。**
+ *
+ * 它缺席时 `nextVersion` 会把这一条置成 `section: null` —— 于是人在面板上按一次
+ * 保存，整份 rubric 就和产出模板脱钩了，而「越界」那条机械判据建在这一格上。
+ * 界面上什么都看不出来，别的测试也不会因此变红，所以只能钉在这儿。
+ */
+describe("rubric-edit · 挂的模板节不许在路上丢掉", () => {
+  it("带 section 的 draft 原样读出来", () => {
+    const edit = parseRubricEdit(bytes({
+      ...ok,
+      drafts: [{ key: "K1", text: "验收标准可测", blocking: true, section: "acceptance" }],
+    }));
+    assert.equal(edit.drafts[0]?.section, "acceptance");
+  });
+
+  it("null 和缺席都读得过，而且不互相变形", () => {
+    const withNull = parseRubricEdit(bytes({
+      ...ok, drafts: [{ text: "一", blocking: false, section: null }],
+    }));
+    assert.equal(withNull.drafts[0]?.section, null);
+
+    const without = parseRubricEdit(bytes({
+      ...ok, drafts: [{ text: "一", blocking: false }],
+    }));
+    assert.equal(without.drafts[0]?.section, undefined);
+  });
+
+  it("section 不是字符串就拒整次编辑 —— 而不是当成没挂", () => {
+    assert.throws(
+      () => parseRubricEdit(bytes({
+        ...ok, drafts: [{ text: "一", blocking: false, section: 3 }],
+      })),
+      UnreadableEditError,
+    );
+  });
+});
+
 describe("rubric 编辑请求 · 读得出来的", () => {
   it("完整的一份", () => {
     assert.deepEqual(parseRubricEdit(bytes(ok)), {

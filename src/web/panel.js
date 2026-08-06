@@ -2130,6 +2130,10 @@ async function loadRubric(phase, role) {
     saved: mine?.criteria ?? [],
     drafts: (mine?.criteria ?? []).map((entry) => ({
       key: entry.key, text: entry.text, blocking: entry.blocking,
+      // **section 必须原样带回去。** 少了它，保存一次就把这一份和产出模板脱钩了
+      // （`domain/rubric.ts` 的 section 那一格 = 「越界」的机械判据），而界面上
+      // 什么都看不出来。人在这里编辑的是文字，不是这条挂接关系。
+      section: entry.section ?? null,
     })),
     note: null,
   };
@@ -2142,6 +2146,71 @@ function wouldRetire() {
   const stillBlocking = new Set(
     editing.drafts.filter((entry) => entry.blocking && entry.key).map((entry) => entry.key));
   return editing.saved.filter((entry) => entry.blocking && !stillBlocking.has(entry.key));
+}
+
+/**
+ * 「把出厂标准升上来」那一行。
+ *
+ * ## 为什么需要它
+ *
+ * 装默认只补空缺，所以改了出厂标准之后，**已经存在的项目一个字都不会变** ——
+ * 它留着建项目那天装上的那一版。2026-07-31 真机栽过一次：早就改掉的旧措辞还留在
+ * 老项目里，裁判拿它判了个假阳性的 no。
+ *
+ * ## 三句话必须都说出来
+ *
+ * 升了哪几份、**跳过了哪几份和为什么**、以及「同一份只有第一次有效」。
+ * 只报成功那一半，人会以为全升上来了 —— 而跳过的恰恰是他自己改过的那些。
+ */
+function drawUpgrade() {
+  const box = document.createElement("div");
+  box.className = "rubric-upgrade";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "把出厂标准升到最新版";
+  const note = document.createElement("p");
+  note.className = "rubric-note";
+  note.textContent = "只升从没被人改过的那些（你改过的会跳过并列出来）。同一份只有第一次有效。";
+
+  const result = document.createElement("p");
+  result.className = "rubric-note";
+  result.hidden = true;
+
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/rubric/upgrade?change=${encodeURIComponent(changeId)}`, { method: "POST" });
+        if (!response.ok) throw new Error(await response.text());
+        const read = await response.json();
+        const lines = [
+          read.upgraded.length === 0
+            ? "没有需要升的 —— 全都已经是最新版。"
+            : `升上来了 ${read.upgraded.length} 份：${read.upgraded.join("、")}`,
+        ];
+        // 跳过的**一定要显示**：静默跳过等于告诉他全升上来了。
+        if (read.skipped.length > 0) {
+          lines.push(`跳过 ${read.skipped.length} 份（你改过它们）：${
+            read.skipped.map((each) => `${each.scope}（${each.why}）`).join("、")}`);
+        }
+        result.textContent = lines.join("　");
+        result.className = "rubric-note";
+        result.hidden = false;
+        // 升完这一屏显示的还是旧的，重取一次。
+        if (editing) void loadRubric(editing.phase, editing.role).catch(() => { /* 上面报过 */ });
+      } catch (error) {
+        result.textContent = `升级失败：${error.message}`;
+        result.className = "rubric-note bad";
+        result.hidden = false;
+        button.disabled = false;
+      }
+    })();
+  });
+
+  box.append(button, note, result);
+  return box;
 }
 
 function drawRubric() {
@@ -2172,6 +2241,8 @@ function drawRubric() {
     ? "这一份只属于这个 Change，覆盖了项目级默认。"
     : "这是项目级默认，改它会影响这个项目里之后每一个 Change。";
   parts.push(scope);
+
+  parts.push(drawUpgrade());
 
   editing.drafts.forEach((entry, index) => {
     const row = document.createElement("div");

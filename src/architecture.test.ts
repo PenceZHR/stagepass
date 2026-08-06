@@ -451,10 +451,12 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 再抽 `app/edit-rubric.ts` + `web/panel-view.ts`（那两屏的读）（→ 652）、
   // `app/workspace.ts`（新建 / 删除）（→ 607）。
   //
-  // **剩下的不再是「抽一块业务逻辑」能降的了。** 607 行里，pty 那一段 113 行是
-  // 真正的 HTTP 流，十六条路由各自的转发加起来又是三百多 —— 要下到 300，得把
-  // 这条 if 链换成一张路由表，那是另一种改动，不是这一批的延长线。
-  "web/panel-server.ts#handle": 607,
+  // **剩下的不再是「抽一块业务逻辑」能降的了。** pty 那一段 113 行是真正的 HTTP 流，
+  // 十几条路由各自的转发加起来又是三百多 —— 要下到 300，得把这条 if 链换成一张
+  // 路由表，那是另一种改动，不是这一批的延长线。
+  // 2026-08-06：`serveRubricSave` / `serveRubricUpgrade` 抽出去（607 → 579）。
+  // **加一条路由必须先还等量的债**，这条棘轮就是这么用的。
+  "web/panel-server.ts#handle": 579,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
