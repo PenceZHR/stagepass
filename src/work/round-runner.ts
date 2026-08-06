@@ -1,6 +1,7 @@
 import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
+import { templateFor } from "../domain/phase-template";
 import {
   judgePrompt, readConclusion, readRound, readVerdicts, renderOpenGaps,
   renderSettled,
@@ -334,6 +335,13 @@ export async function runRound(
       task: request.task,
       openGaps,
       openGapsPath,
+      /*
+       * 有模板的阶段每一轮都带着它。**这一层不判「哪个阶段有」** —— 那归
+       * `domain/phase-template.ts`，它返回 null 就是没有，一行都不印。
+       */
+      ...(templateFor(request.phase) === null
+        ? {}
+        : { template: templateFor(request.phase)! }),
       ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
       ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
       ...(settledPath === undefined ? {} : { settledPath }),

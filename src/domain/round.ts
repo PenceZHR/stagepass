@@ -3,6 +3,7 @@ import {
 } from "./turn";
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
+import { renderTemplate, type TemplateSection } from "./phase-template";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
 import { redReviewsOthers, type Phase } from "./phase";
 import { PHASE_PLAY } from "./phase-play";
@@ -51,6 +52,22 @@ export interface RoundInstructions {
   readonly round: number;
   readonly task: string;
   readonly openGaps: readonly Gap[];
+  /**
+   * 这个阶段的产出模板 —— 红方必须照着它的节来写。
+   *
+   * ## 为什么走原文，不走路径
+   *
+   * 别处的正文能走文件就走文件（需求名单、契约说明），判据是「它天然是一份文档、
+   * 而且能有几百字」。模板不是资料，**是这一轮活儿的骨架**：少了它，红方交出来的
+   * 形状就不对，而形状不对是**整轮作废**（`assertTemplateComplete`），不是「少点
+   * 信息」。判据和 `RESULT_CONTRACT` 那一半一样 —— **缺了会怎样**，不是长不长。
+   *
+   * ## 缺席 = 这个阶段还没有模板，不是「空模板」
+   *
+   * 一份零节的模板会让红方收到一张空清单然后什么都不写。这一层是纯的，
+   * 「哪个阶段有模板」归 `domain/phase-template.ts` 说。
+   */
+  readonly template?: readonly TemplateSection[] | undefined;
   /**
    * 开着的问题写成文件之后，那个文件在哪。
    *
@@ -518,6 +535,18 @@ export function judgePrompt(input: RoundInstructions): string {
     ...settledLines(input.settledPath),
     play.red.heading,
     input.task,
+    /*
+     * 模板紧跟任务，排在问题名单和格式契约之前 —— 它**就是任务的一部分**
+     * （「写一份 PRD」和「照这六节写一份 PRD」是两个活儿）。排到后面去，
+     * 裁判读到它时已经按「照常写一份」把活分下去了，和打回那一段同一个道理。
+     */
+    ...(input.template === undefined ? [] : [
+      `   下面这份模板**原样转达给${RED}**，一个字都不要改 ——`
+      + `它必须照这个模板写，每一节都要有，标题原样用：`,
+      renderTemplate(input.template),
+      `   模板之外不要另起小节。**架构、技术栈、模块划分、接口、测试用例、实现步骤`
+      + `都不在这个阶段定** —— 需要提到就写进「留给下游决定的」那一节。`,
+    ]),
     ...redFixList(input.openGaps, input.openGapsPath),
     ...play.red.idRule,
     `   要求它按下面的格式作答：`,

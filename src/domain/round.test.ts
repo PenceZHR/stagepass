@@ -8,6 +8,7 @@ import {
   summariseRoundNotes,
   UnreadableVerdictError,
 } from "./round";
+import { templateFor } from "./phase-template";
 import { TurnResultUnparsableError } from "./turn";
 
 const answer = (artifacts: string[], blockers: object[] = []) =>
@@ -1152,6 +1153,30 @@ describe("L4 · 那两个路径要经裁判转达给反方", () => {
       blueRubric: { criteriaPath: "/tmp/a", answersPath: "/tmp/b", count: 0 },
     });
     assert.equal(zero, without, "count=0 和压根没给，印出来该一模一样");
+  });
+});
+
+describe("L4 · 产出模板", () => {
+  const base = { phase: "PRD" as const, round: 1, task: "写需求", openGaps: [] };
+
+  it("PRD 的提示词里带模板原文，抬头写明转达给正方", () => {
+    const prompt = judgePrompt({ ...base, template: templateFor("PRD")! });
+    for (const section of templateFor("PRD")!) {
+      assert.ok(prompt.includes(section.title), `缺这一节：${section.title}`);
+    }
+    // 抬头。理由和任务、契约、rubric 那几处一样：只有原文加收件人才到得了。
+    assert.match(prompt, new RegExp(`原样转达给${RED}[\\s\\S]{0,200}要解决谁的什么问题`));
+  });
+
+  it("**明说了哪些东西不在这个阶段定** —— 越界的来路就是没人说过这句话", () => {
+    const prompt = judgePrompt({ ...base, template: templateFor("PRD")! });
+    assert.match(prompt, /架构、技术栈、模块划分、接口、测试用例、实现步骤/);
+    assert.ok(prompt.includes("留给下游决定的"));
+  });
+
+  it("没有模板的阶段一个字都不印 —— 空小节会让裁判去猜", () => {
+    const without = judgePrompt({ ...base, phase: "Spec" });
+    assert.ok(!without.includes("必须照这个模板写"), "没有模板却印了那一节");
   });
 });
 

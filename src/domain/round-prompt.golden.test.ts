@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import { judgePrompt } from "./round";
 import { PHASES } from "./phase";
+import { templateFor } from "./phase-template";
 import { blueDocPath } from "./artifact-home";
 import type { Gap } from "./gap";
 
@@ -59,6 +60,9 @@ export function everyPhasePrompt(): string {
       `########## ${phase} ##########`,
       judgePrompt({
         phase, round: 2, task: "（这一阶段的任务书）", openGaps: FIXTURE_GAPS,
+        // 同一条原则：生产上有模板的阶段每一轮都带着它。夹具不传 = golden 钉了一份
+        // 生产上不存在的提示词。没有模板的十一个阶段这里是 undefined，一行都不印。
+        template: templateFor(phase) ?? undefined,
         // 真实运行时每一轮都带（E：反方的输出路径经裁判转达）——golden 要钉的是
         // 真实形状，不是最小形状。用真 builder，别在夹具里手写第二份路径格式。
         blueDocPath: blueDocPath("CHG-1", phase, 2),
