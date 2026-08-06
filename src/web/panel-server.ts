@@ -22,7 +22,7 @@ import { createTrustOps, type TrustOps } from "../codex/trust";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
-  gateDecisionQuestion, waiveQuestion, waiveFrom, waiveFollowUpQuestion,
+  gateDecisionQuestion,
   clarificationQuestion,
   responseFollowUpQuestion,
   type ClarificationItem, type Answer,
@@ -54,6 +54,7 @@ import { retireStandards } from "../domain/rubric-gaps";
 import { QuestionStore } from "../store/question-store";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { askFollowUp, launchAskPrompt, waitForAnswer } from "../app/ask-human";
+import { waive, type WaiveOutcome } from "../app/waive";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
 
 /**
@@ -1228,6 +1229,44 @@ function json(response: ServerResponse, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
+/**
+ * 接受风险那个用例的下场，翻成网页认识的那份 JSON。
+ *
+ * **翻译只发生在这里。** 用例返回的是 `WaiveOutcome`（一个说得清的下场），
+ * `asked / answered / waived` 这三个布尔是**这一层的词汇** —— 界面读它们，
+ * 用例不该知道它们存在（BACKLOG §4.1：换界面不该等于重写用例）。
+ *
+ * `no_such_change` 不在这里 —— 它是 404，不是一个 200 的 body。
+ */
+function waiveBody(outcome: Exclude<WaiveOutcome, { kind: "no_such_change" }>): unknown {
+  const phase = outcome.phase;
+  switch (outcome.kind) {
+    case "busy":
+      return { asked: false, phase, ...outcome.busy };
+    case "nothing_waivable":
+      return { asked: false, reason: "nothing_waivable", phase };
+    case "unanswered":
+      return {
+        asked: true, answered: false, phase, questionId: outcome.questionId,
+        reason: outcome.reason, threadId: outcome.threadId,
+      };
+    case "none_accepted":
+      return {
+        asked: true, answered: true, waived: false, phase,
+        questionId: outcome.questionId,
+      };
+    case "gate_moved":
+      return {
+        asked: true, answered: true, waived: false, reason: "gate_moved", phase,
+        questionId: outcome.questionId,
+      };
+    case "waived":
+      return {
+        asked: true, answered: true, waived: true, phase,
+        questionId: outcome.questionId, gapIds: outcome.gapIds,
+      };
+  }
+}
 
 /**
  * Route one request.
@@ -2251,133 +2290,29 @@ export async function handle(
 
   if (url.pathname === "/api/waive" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
-    const changes = new ChangeStore(database);
-    let phase: Phase;
-    try {
-      phase = changes.read(changeId).state.phase;
-    } catch {
+    const { outcome, closeSession } = await waive({
+      database, sessions, changeId,
+      cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
+      launch: ({ phase, prompt }) => {
+        const bound = new BindingStore(database).find(changeId, phase);
+        sessions.launchInto(changeId, phase, codexArgv({
+          threadId: bound?.status === "bound" ? bound.threadId : null,
+          sandbox: options.session.sandbox,
+          approval: options.session.approval,
+          model: options.session.model,
+          reasoningEffort: options.session.reasoningEffort,
+          config: pluginConfigFor(database, changeId),
+          prompt,
+        }));
+      },
+      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
+    });
+    if (outcome.kind === "no_such_change") {
       response.writeHead(404).end("no such change");
       return;
     }
-    const busy = cannotAskNow(database, sessions, changeId, phase);
-    if (busy) {
-      json(response, { asked: false, phase, ...busy });
-      return;
-    }
-
-    const gaps = new GapStore(database);
-    const waivable = gaps.all(changeId, phase).filter((gap) =>
-      gap.status === "open" && gap.kind === "finding" && gap.severity === "P1");
-    // round：标题上「第几轮提的」的分母 —— 和派发、裁决同一份算法。
-    const question = waiveQuestion({
-      phase, waivable, round: roundFromLedger(changes.ledger(changeId), phase),
-    });
-    if (!question) {
-      json(response, { asked: false, reason: "nothing_waivable", phase });
-      return;
-    }
-
-    const gate = new CommandStore(database).gateFor(changeId);
-    const questionId = `W-${changeId}-${phase}-${Date.now()}`;
-    const questions = new QuestionStore(database);
-    questions.ask({
-      id: questionId, changeId, phase, kind: "waive",
-      question, expectedSnapshot: gate.snapshot,
-    });
-
-    const bound = new BindingStore(database).find(changeId, phase);
-    sessions.launchInto(changeId, phase, codexArgv({
-      threadId: bound?.status === "bound" ? bound.threadId : null,
-      sandbox: options.session.sandbox,
-      approval: options.session.approval,
-      model: options.session.model,
-      reasoningEffort: options.session.reasoningEffort,
-      config: pluginConfigFor(database, changeId),
-      prompt: launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
-        "不要替我做决定，不要评价这些风险，调用完就停下。"),
-    }));
-
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
-    });
-    if (!waited.answered) {
-      /*
-       * **这条路原来漏了 `settle`。**
-       *
-       * 裁决和录需求都补过（2026-08-03 那次 63 分钟的死题），这第三份拷贝没有 ——
-       * 四份手写的同一条规则，治了三份。现在收题在 `waitForAnswer` 里，只此一份。
-       */
-      json(response, {
-        asked: true, answered: false, phase, questionId,
-        reason: waited.reason, threadId: waited.threadId,
-      });
-      // 放弃了就把会话关掉 —— 理由和录需求那条一样：留着它，这个阶段的每个动作
-      // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
-      sessions.close(changeId, phase);
-      return;
-    }
-    const answer = waited.answer;
-
-    /*
-     * **第二趟：只问真被接受的那几条要理由。**
-     *
-     * 第一趟纯选项格（客户端空文本格吃回车），和裁决表、录需求那两张表同一个形状。
-     * 一条都没接受就不弹 —— 全点「不接受」的人一个字都不用打。
-     */
-    let full = answer;
-    const moreWaive = waiveFollowUpQuestion(waivable, answer);
-    if (moreWaive) {
-      const second = await askFollowUp({
-        database, questions, sessions, changeId, phase, question: moreWaive,
-        kind: "waive",
-        questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-        timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
-      });
-      if (typeof second === "string") {
-        json(response, { asked: true, answered: false, phase, reason: second });
-        sessions.close(changeId, phase);
-        return;
-      }
-      full = { action: answer.action, content: { ...answer.content, ...second.content } };
-    }
-
-    const accepted = waiveFrom(waivable, full);
-    if (accepted.length === 0) {
-      // 人一条都没选、按了 Esc、或者理由留空。三种都不是「接受了」。
-      questions.settle(questionId);
-      json(response, { asked: true, answered: true, waived: false, phase, questionId });
-      return;
-    }
-
-    /*
-     * fence：人想了多久是他的事，但他的决定必须落在他看见过的那份证据上。
-     *
-     * `/api/ask` 那条路由 `questions.apply()` 把 fence 交给 command 层查；接受
-     * 风险不推动状态机、没有 command 可走，所以这里显式查一次。少了它，这条防线
-     * 就只覆盖一半的答案。
-     */
-    try {
-      questions.assertFenceHolds(questionId);
-    } catch (error: unknown) {
-      if (!(error instanceof GateMovedError)) throw error;
-      questions.settle(questionId);
-      json(response, {
-        asked: true, answered: true, waived: false, reason: "gate_moved",
-        phase, questionId,
-      });
-      return;
-    }
-
-    // 一次能接多条 —— 用户 2026-08-04：接四条不该走四遍完整流程。
-    for (const each of accepted) {
-      gaps.waive(changeId, phase, each.gapId, each.reason);
-    }
-    questions.settle(questionId);
-    json(response, {
-      asked: true, answered: true, waived: true, phase, questionId,
-      gapIds: accepted.map((each) => each.gapId),
-    });
+    if (closeSession) sessions.close(changeId, outcome.phase);
+    json(response, waiveBody(outcome));
     return;
   }
 

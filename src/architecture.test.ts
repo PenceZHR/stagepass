@@ -88,6 +88,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/turn-runner.ts": 2,
 
   "domain/round.ts": 4,
+  // 「接受一条已知风险」这个用例（§4.1·J 从 `handle()` 里搬出来的第一个）。
+  // 它够得着的最高一层是 `domain/round.ts`（轮次算法），所以住这儿 —— 层数是
+  // 它的依赖顶出来的，不是挑的。
+  "app/waive.ts": 4,
   // 跳转表 = 账本投影（§5.9.2）。轮次算法在 round.ts（一份实现），所以同层。
   "domain/journey.ts": 4,
   // 十三个阶段各自那一节。纯文本、只 import 一个类型，所以和读它的 round.ts 同层。
@@ -365,8 +369,9 @@ const FUNCTION_LINES_CAP = 300;
 const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
   // 2026-08-05：抽 launchAskPrompt（1463 → 1462）、askFollowUp（→ 1453）、
-  // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）。
-  "web/panel-server.ts#handle": 1329,
+  // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）、
+  // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）。
+  "web/panel-server.ts#handle": 1225,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
@@ -432,6 +437,18 @@ describe("standing · 没有一个函数长成一层", () => {
  * **收益和「这棵树拆得好不好」成正比**：一个划得干净的模块拿到 28×，而那个
  * 1410 行的 `handle()` 只有 3× —— 它自己正文就 94.6 KB，还牵着 33 个依赖。
  * 换句话说，J 批（拆 handle）不只是好看，它直接决定这套机关值不值钱。
+ *
+ * **J 批第一刀之后重量（2026-08-05 晚，52 个模块 / 512.8 KB）** —— 这不是预测，
+ * 是搬走一个用例之后量出来的：
+ *
+ * ```
+ * web/panel-server.ts        126.3 KB  24.6%    4×   ← 29.0% / 3× 搬下来的
+ * app/waive.ts                20.8 KB   4.1%   25×   ← 搬出去的那个用例
+ * app/ask-human.ts            11.7 KB   2.3%   44×
+ * ```
+ *
+ * 同一段逻辑，待在 `handle()` 里是 3×，搬进应用层就是 25×。**这是「拆它直接
+ * 提升整套机关的收益」这句话的实测值**，不是一句好听的话。
  *
  * 这条护栏钉的是**别再退步**：除了例外表里那个，谁的配料单都不许超过全树三成。
  */
