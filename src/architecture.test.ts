@@ -109,6 +109,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/rubric-defaults.ts": 5,
   "work/rubric-round.ts": 5,
   "work/round-turn-runner.ts": 5,
+  // 「把这一轮的裁决交给人」这个用例 —— 三条问人的路里最绕的一条。它够得着
+  // `domain/rubric.ts`（把这一轮判成什么样写进题面），所以住 5。
+  "app/decide-gate.ts": 5,
   // git。和 `codex/archive.ts` 同一个形状（包一个外部命令、整层可注入），所以同一层。
   // 它不 import 我们自己的任何东西，所以层数只影响「谁可以用它」——2 让 L2 起都能用。
   "work/repo.ts": 2,
@@ -373,8 +376,9 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
   // 2026-08-05：抽 launchAskPrompt（1463 → 1462）、askFollowUp（→ 1453）、
   // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）、
-  // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）、`app/record-brief.ts`（→ 1093）。
-  "web/panel-server.ts#handle": 1093,
+  // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）、`app/record-brief.ts`（→ 1093）、
+  // `app/decide-gate.ts`（→ 875）。三条问人的路现在全在应用层，`handle()` 只剩转发。
+  "web/panel-server.ts#handle": 875,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
@@ -441,16 +445,18 @@ describe("standing · 没有一个函数长成一层", () => {
  * 1410 行的 `handle()` 只有 3× —— 它自己正文就 94.6 KB，还牵着 33 个依赖。
  * 换句话说，J 批（拆 handle）不只是好看，它直接决定这套机关值不值钱。
  *
- * **J 批第一刀之后重量（2026-08-05 晚，52 个模块 / 512.8 KB）** —— 这不是预测，
- * 是搬走一个用例之后量出来的：
+ * **J 批把三条问人的路搬进应用层之后（2026-08-05 晚，54 个模块 / 520.6 KB）** ——
+ * 这不是预测，是搬完量出来的：
  *
  * ```
- * web/panel-server.ts        126.3 KB  24.6%    4×   ← 29.0% / 3× 搬下来的
- * app/waive.ts                20.8 KB   4.1%   25×   ← 搬出去的那个用例
- * app/ask-human.ts            11.7 KB   2.3%   44×
+ * web/panel-server.ts        113.2 KB  21.7%    5×   ← 29.0% / 3× 搬下来的
+ * app/decide-gate.ts          32.2 KB   6.2%   16×   ← 裁决
+ * app/waive.ts                20.8 KB   4.0%   25×   ← 接受风险
+ * app/record-brief.ts         16.6 KB   3.2%   31×   ← 录需求
+ * app/ask-human.ts            11.7 KB   2.2%   45×   ← 三条路共用的那段
  * ```
  *
- * 同一段逻辑，待在 `handle()` 里是 3×，搬进应用层就是 25×。**这是「拆它直接
+ * 同一段逻辑，待在 `handle()` 里是 3×，搬进应用层就是 16~45×。**这是「拆它直接
  * 提升整套机关的收益」这句话的实测值**，不是一句好听的话。
  *
  * 这条护栏钉的是**别再退步**：除了例外表里那个，谁的配料单都不许超过全树三成。

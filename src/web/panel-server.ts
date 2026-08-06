@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
-import { PHASES, isPhase, producesCommit, upstreamOf, type Phase } from "../domain/phase";
+import { PHASES, isPhase, producesCommit, type Phase } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
@@ -21,12 +21,6 @@ import { assessorOf } from "../work/rubric-round";
 import { createTrustOps, type TrustOps } from "../codex/trust";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
-import {
-  gateDecisionQuestion,
-  responseFollowUpQuestion,
-  responsesFrom, runsAgainHere, DECISION_FIELD, sendBackReasonFrom,
-} from "../domain/question";
-import { GateMovedError, GateRefusedError } from "../domain/gate";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { BindingStore } from "../store/binding-store";
@@ -39,16 +33,15 @@ import { ProjectStore } from "../store/project-store";
 import { RubricStore, ReasonRequiredError } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
-import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
+import { roundFromLedger } from "../domain/round";
 import {
-  RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, summariseAssessments,
-  type RubricRole,
+  RUBRIC_ROLES, UntrustedKeyError, InvalidCriterionError, type RubricRole,
 } from "../domain/rubric";
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { retireStandards } from "../domain/rubric-gaps";
 import { QuestionStore } from "../store/question-store";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
-import { askFollowUp, launchAskPrompt, waitForAnswer } from "../app/ask-human";
+import { decideGate, type DecideOutcome } from "../app/decide-gate";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
@@ -1226,6 +1219,43 @@ function json(response: ServerResponse, body: unknown): void {
 }
 
 /**
+ * 裁决那个用例的下场，翻成网页认识的那份 JSON。
+ *
+ * 三个 `*Body` 是同一个形状：**下场是用例的词汇，`asked / answered` 是界面的**。
+ * 一处翻译，用例那边一个 HTTP 概念都没有。
+ */
+function decideBody(outcome: Exclude<DecideOutcome, { kind: "no_such_change" }>): unknown {
+  const phase = outcome.phase;
+  switch (outcome.kind) {
+    case "busy":
+      return { asked: false, phase, ...outcome.busy };
+    case "no_decision":
+      return { asked: false, reason: "no_decision_available", phase };
+    case "unanswered":
+      return {
+        asked: true, answered: false, phase, questionId: outcome.questionId,
+        reason: outcome.reason, threadId: outcome.threadId,
+      };
+    case "gate_moved":
+      return {
+        asked: true, answered: true, phase, questionId: outcome.questionId,
+        answer: outcome.answer, reason: "gate_moved",
+      };
+    case "decided":
+      return {
+        asked: true, answered: true, phase, questionId: outcome.questionId,
+        answer: outcome.answer,
+        responses: outcome.responses,
+        refused: outcome.refused,
+        raised: outcome.raised,
+        outcome: outcome.outcome,
+        continued: outcome.continued,
+        state: outcome.state,
+      };
+  }
+}
+
+/**
  * 录需求那个用例的下场，翻成网页认识的那份 JSON。和 `waiveBody` 同一个道理：
  * `asked / answered / recorded` 是**界面的词汇**，用例不该知道它们存在。
  */
@@ -1847,264 +1877,46 @@ export async function handle(
    */
   if (url.pathname === "/api/ask" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
-    const changes = new ChangeStore(database);
-    let phase: Phase;
-    try {
-      phase = changes.read(changeId).state.phase;
-    } catch {
+    const { outcome, closeSession } = await decideGate({
+      database, sessions, changeId,
+      cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
+      launch: ({ phase, prompt }) => {
+        const bound = new BindingStore(database).find(changeId, phase);
+        sessions.launchInto(changeId, phase, codexArgv({
+          threadId: bound?.status === "bound" ? bound.threadId : null,
+          sandbox: options.session.sandbox,
+          approval: options.session.approval,
+          model: options.session.model,
+          reasoningEffort: options.session.reasoningEffort,
+          // Registered per invocation, never written to the user's global config.
+          config: pluginConfigFor(database, changeId),
+          prompt,
+        }));
+      },
+      rerun: async (phase) => {
+        // 那个阶段的终端这时还活着（题就是送进去的），所以先关掉它 —— 不然
+        // `runRound` 会撞上 §6.5 规则 5 直接拒。
+        sessions.close(changeId, phase);
+        return runRound({ changeId, phase, sessions, options });
+      },
+      /*
+       * 用户 2026-07-30 拍板的那一半：「Archive 只能我在 stage 跑完了之后，才能
+       * 自动地 archive。」归档从此标记的是「这个阶段结束了」，而不是「Codex 那边
+       * 有人清了一下」。
+       */
+      onApproved: ({ phase, threadId }) => {
+        const done = archiveFinished(threadId, sessions.archive);
+        console.log(`[panel] ${changeId}/${phase} 已批准，线程 ${threadId} —— ${done}`);
+      },
+      roundBudget: options.roundBudget ?? 5,
+      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
+    });
+    if (outcome.kind === "no_such_change") {
       response.writeHead(404).end("no such change");
       return;
     }
-    const busy = cannotAskNow(database, sessions, changeId, phase);
-    if (busy) {
-      json(response, { asked: false, phase, ...busy });
-      return;
-    }
-
-    const gate = new CommandStore(database).gateFor(changeId);
-    const gaps = new GapStore(database);
-    const blockers = gaps.blockers(changeId, phase);
-    /*
-     * 「回应蓝方」和裁决**同一次问出来**。
-     *
-     * 顺序是 open gap 在库里的顺序（`GapStore.all` 按 `opened_round, id` 排），而
-     * `responsesFrom` 靠位置对应回来 —— 所以这个名单必须和读答案时用的是同一个。
-     * 名单变了 snapshot 就变了，fence 会在落地之前拒掉，不会把答案套到别的问题上。
-     */
-    const allGaps = gaps.all(changeId, phase);
-    const openGaps = allGaps.filter((gap) => gap.status === "open");
-    /*
-     * 人提的那条算第几轮发现的。
-     *
-     * 取现有 gap 里最大的那个轮次 —— 他是**看着这一轮的产出**提出来的，所以和这一轮
-     * 报出来的问题记同一个号。一条 gap 都没有时是第 1 轮。
-     */
-    const raiseRound = Math.max(1, ...allGaps.map((gap) => gap.openedRound));
-    /*
-     * 这一轮的标准判成什么样，**写进题面**。
-     *
-     * 用户 2026-07-30：要不要继续对抗由人决定，不做成全自动。那么人就得看得见这一轮
-     * 判成什么样 —— 否则「再来一轮还是批准」是在没有信息的情况下按的。
-     *
-     * 为什么它不能只留在网页的「标准」页签里：**裁决发生在 Codex 画的选择器里**
-     * （§5.2b），人按下去的那一刻眼前只有那张表。要他判断的信息不在那张表上，
-     * 就等于要他凭记忆判断。
-     *
-     * 非阻断的 `no` 也照报：它不挡闸门，但它正是「要不要再来一轮」的原料 ——
-     * 闸门放不放行和这一轮做得好不好是两个问题。
-     */
-    const assessed = new RubricStore(database).latestRound(changeId, phase);
-    /*
-     * 裁判的结论和反方的整体判断，也写进题面（用户 2026-07-31）。
-     *
-     * 逐条判定说得出「第 3 条没勾上」，说不出「加起来还差在哪」—— 而后者正是他
-     * 按按钮之前想知道的。裁判那句是**建议**：闸门仍然由他推（2026-07-30 拍板：
-     * 要不要继续对抗由人决定，不做成全自动）。
-     *
-     * 和 `assessed` 取自同一轮：`latestRound` 和 `latest` 都取最大的那个 round，
-     * 各取各的轮次就是把两轮的东西并排摆着当成一轮，那是在骗人。
-     */
-    const notes = new RoundNoteStore(database).latest(changeId, phase);
-    // 轮次和派发同一份算法 —— 各算一套迟早说出两个「第几轮」，而人正拿它做决定。
-    const round = roundFromLedger(changes.ledger(changeId), phase);
-    const question = gateDecisionQuestion({
-      phase,
-      gate,
-      // 「什么挡着、出口、批准会怎样」由 gateDecisionQuestion 从 gate+openGaps 算
-      // （§3.2：判据和闸门同一份）。这里只拼「这一轮判成什么样」。
-      summary: summariseAssessments(assessed?.byRole ?? null)
-        + summariseRoundNotes(notes)
-        // 跑满预算之后把收敛数据摊出来。**不拦人** —— 阻断归人管。
-        + summariseConvergence({
-          round, budget: options.roundBudget ?? 5,
-          raised: allGaps.length, open: blockers.length,
-        }),
-      openGaps,
-      round,
-      // 打回上游（§5.9.1）的合法目标，按这个 Change 自己的图算。
-      sendBackTargets: upstreamOf(phase, changes.graphOf(changeId)),
-    });
-    // No question rather than an empty one: putting a decision to someone that
-    // they cannot make is worse than not asking (domain/question.ts).
-    if (!question) {
-      json(response, { asked: false, reason: "no_decision_available", phase });
-      return;
-    }
-
-    const questionId = `Q-${changeId}-${phase}-${Date.now()}`;
-    const questions = new QuestionStore(database);
-    questions.ask({
-      id: questionId, changeId, phase, kind: "gate_decision",
-      question, expectedSnapshot: gate.snapshot,
-    });
-
-    const bound = new BindingStore(database).find(changeId, phase);
-    sessions.launchInto(changeId, phase, codexArgv({
-      threadId: bound?.status === "bound" ? bound.threadId : null,
-      sandbox: options.session.sandbox,
-      approval: options.session.approval,
-      model: options.session.model,
-      reasoningEffort: options.session.reasoningEffort,
-      // Registered per invocation, never written to the user's global config.
-      config: pluginConfigFor(database, changeId),
-      prompt: launchAskPrompt("它会把 StagePass 的问题交给我来选。",
-        "不要替我做决定，不要解释我该选什么，调用完就停下。"),
-    }));
-
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
-    });
-    if (!waited.answered) {
-      // 题已经被 waitForAnswer 收掉了（那条规则只此一份）。这里只管响应和会话。
-      json(response, {
-        asked: true, answered: false, phase, questionId,
-        reason: waited.reason, threadId: waited.threadId,
-      });
-      // 放弃了就把会话关掉 —— 理由和录需求那条一样：留着它，这个阶段的每个动作
-      // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
-      sessions.close(changeId, phase);
-      return;
-    }
-    const first = waited.answer;
-
-    /*
-     * **第二趟：只问那几条真的需要理由的。**
-     *
-     * 第一趟纯选项格（客户端空文本格吃回车，`optional` 也不管用）。2026-08-03 真机上
-     * 用户在八个格子里各打了一个「1」纯粹为了过去 —— 和录需求那张表被治好之前一模
-     * 一样。哪几条要进第二趟由语义定：同意不用说话；不同意 / 先接受风险要落进
-     * `resolution`（一次没有理由的关闭和「这一轮忘了提」在库里长得一模一样）；
-     * 「我自己说」是他自己要求的。
-     *
-     * 一条都不需要就不弹 —— 全点「同意」的人一个字都不用打。
-     */
-    let answer = first;
-    const more = responseFollowUpQuestion(openGaps, first);
-    if (more) {
-      const second = await askFollowUp({
-        database, questions, sessions, changeId, phase, question: more,
-        kind: "gate_decision",
-        questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-        timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
-      });
-      if (typeof second === "string") {
-        json(response, { asked: true, answered: false, phase, reason: second });
-        sessions.close(changeId, phase);
-        return;
-      }
-      answer = { action: first.action, content: { ...first.content, ...second.content } };
-    }
-
-    /*
-     * ── 三步，顺序是承重的 ────────────────────────────────
-     *
-     * 1. **先查 fence。** 问的是「人回答的这段时间里，别人动过这份证据吗」。这一步
-     *    必须在自己动手之前，否则查的就只是「我刚写完的东西还在不在」。
-     * 2. **落人对每一条问题的表态。** 一次驳回或接受会把一条 blocker 从名单里拿掉，
-     *    而闸门算的正是那个名单 —— 先裁决就是拿着旧名单裁决，人刚说的话对这一次没有
-     *    任何影响。
-     * 3. **再走闸门**，对着表态之后的新快照（`rebaseFence`）。存下来的那份 fence
-     *    必然对不上，而对不上的原因是**人自己刚说的话** —— 那不是 fence 要防的东西。
-     *
-     * 表态本身**不推动闸门**：它只改 gaps。推动闸门的仍然只有 `decision` 那一格，
-     * 走 `questions.apply` 这一条路（§5.3：没有第二条能推动闸门的路）。
-     */
-    try {
-      questions.assertFenceHolds(questionId);
-    } catch (error: unknown) {
-      if (!(error instanceof GateMovedError)) throw error;
-      questions.settle(questionId);
-      json(response, {
-        asked: true, answered: true, phase, questionId, answer,
-        reason: "gate_moved",
-      });
-      return;
-    }
-
-    const responded = responsesFrom({ question, answer, openGaps });
-    const applied = Object.keys(responded.responses).length === 0
-      ? { refused: [] as { id: string; code: string }[] }
-      : gaps.respond(changeId, phase, responded.responses);
-    // 人自己提的那一条 —— 它挡闸门，所以要在裁决之前落进去。
-    const raised = responded.raised === ""
-      ? null
-      : gaps.raise(changeId, phase, responded.raised, raiseRound);
-
-    /*
-     * 裁决可能在人自己的表态之后就不合法了 —— 最典型的是他刚提了一条新要求，
-     * 又选了「批准」。**那时闸门该拒，而且要说出来**：默默当成没发生，人会以为
-     * 批准了。
-     */
-    let outcome: unknown;
-    try {
-      // 打回的理由在合并后的答案里（Tx 在第二趟），store 重读不到 —— 递进去。
-      outcome = questions.apply(
-        questionId, { rebaseFence: true, sendBackReason: sendBackReasonFrom(answer) });
-    } catch (error: unknown) {
-      if (!(error instanceof GateRefusedError)) throw error;
-      questions.settle(questionId);
-      outcome = { kind: "refused", action: error.action, reason: error.reason };
-    }
-    // 下场落库 —— 「闸门拒了」必须留得住（§3.2·5），不能只活在这一次响应里。
-    questions.recordOutcome(questionId, outcome);
-
-    /*
-     * **批准了就归档这个阶段的线程。**
-     *
-     * 用户 2026-07-30 拍板的那一半：「Archive 只能我在 stage 跑完了之后，才能自动地
-     * archive。」归档从此标记的是「这个阶段结束了」，而不是「Codex 那边有人清了一下」。
-     *
-     * 只由批准触发，别的地方一概不许调 —— 一个**还没批准**的阶段的线程被归档，
-     * 下一次 resume 就会一起来就死，那正是这条路要收拾的事。
-     *
-     * `phase` 是转移**之前**的那个，也就是刚被批准的那个，正好是要归档的那一条。
-     * Fix 会被反复进入（§6.5 规则 2），但它被批准时活儿也确实完了；下次再进 Fix，
-     * `launchInto` 那边会自动把它解开。
-     */
-    if (
-      typeof outcome === "object" && outcome !== null
-      && (outcome as { kind?: unknown }).kind === "advanced"
-      && (outcome as { action?: unknown }).action === "approve"
-    ) {
-      const bound = new BindingStore(database).find(changeId, phase);
-      if (bound?.status === "bound") {
-        const done = archiveFinished(bound.threadId, sessions.archive);
-        console.log(`[panel] ${changeId}/${phase} 已批准，线程 ${bound.threadId} —— ${done}`);
-      }
-    }
-
-    /*
-     * 选了「再来一轮」就**直接续跑**，不用人再回面板按一次「跑这个阶段」。
-     *
-     * 用户 2026-07-30：「把现在的两步合成一步。」两步之所以是坑，不只是多点一下 ——
-     * 中间那一步**看不出来还需要它**：裁决落完之后 Change 回到 pending，界面上没有
-     * 任何东西说「还差一次派发」，人会以为下一轮已经在跑了。
-     *
-     * 「再来一轮」和「重跑一次」都续 —— 两条路上活儿都留在这个阶段，中间那一步
-     * 一样看不出来。**「打回去修」不续**：那时 Change 已经换到 Fix 了，自动在一个
-     * 刚到的阶段上开跑，等于替人决定了 Fix 该做什么。
-     */
-    const decided = answer.content[DECISION_FIELD];
-    const continued = runsAgainHere(decided)
-      // 那个阶段的终端这时还活着（题就是送进去的），所以先关掉它 —— 不然
-      // `runRound` 会撞上 §6.5 规则 5 直接拒。这不是绕过那条规则：那一轮的活
-      // 干完了，它只是坐在 composer 上没事干。
-      ? (sessions.close(changeId, phase),
-        await runRound({ changeId, phase, sessions, options }))
-      : null;
-
-    json(response, {
-      asked: true, answered: true, phase, questionId, answer,
-      /** 每一条表态落地了没有，没落地的说清是为什么 —— 人已经走了，不许静默丢掉。 */
-      responses: responded.responses,
-      refused: applied.refused,
-      raised: raised?.id ?? null,
-      outcome,
-      /** 续跑了没有，以及那一轮的结果。null = 这次裁决不是「再来一轮」。 */
-      continued,
-      state: changes.read(changeId).state,
-    });
+    if (closeSession) sessions.close(changeId, outcome.phase);
+    json(response, decideBody(outcome));
     return;
   }
 
