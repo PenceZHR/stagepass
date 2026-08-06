@@ -96,6 +96,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/journey.ts": 4,
   // 十三个阶段各自那一节。纯文本、只 import 一个类型，所以和读它的 round.ts 同层。
   "domain/phase-play.ts": 4,
+  // 一个阶段的产出模板。和 `phase-play.ts` 逐字同一个形状（每阶段一份文本、
+  // 只 import `Phase` 类型、读它的是 round.ts），所以同层。
+  "domain/phase-template.ts": 4,
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
   // 一轮里那两句只写给人看的话（裁判的结论、反方的整体判断）。它只依赖
