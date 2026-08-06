@@ -25,7 +25,7 @@ import {
   gateDecisionQuestion, waiveQuestion, waiveFrom, waiveFollowUpQuestion,
   clarificationQuestion,
   responseFollowUpQuestion,
-  type ClarificationItem, type Answer, type Question,
+  type ClarificationItem, type Answer,
   responsesFrom, runsAgainHere, DECISION_FIELD, sendBackReasonFrom,
 } from "../domain/question";
 import {
@@ -53,6 +53,7 @@ import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { retireStandards } from "../domain/rubric-gaps";
 import { QuestionStore } from "../store/question-store";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
+import { askFollowUp, launchAskPrompt, waitForAnswer } from "../app/ask-human";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
 
 /**
@@ -147,70 +148,6 @@ const cannotAskNow = (
     ? { reason: "phase_already_running" as const, busy: "terminal" }
     : null);
 
-/**
- * 打进 composer 那一行，叫模型去调 `stagepass_ask`。
- *
- * 抽出来是因为它现在有四个落点（问裁决、问裁决的第二趟、录需求两趟）。同一句话的
- * 四份拷贝必然漂移，而漂移的那一天某条路上的模型会说「没有这个工具」。
- *
- * **必须是一行** —— composer 里一个换行就是提交（`PanelSessions.type`）。
- */
-const ASK_TOOL_LINE =
-  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——"
-  + "问哪一个由 StagePass 决定。不要替我做决定、不要猜我想选什么，调用完就停下。";
-
-/**
- * 起会话（`launchInto`）时带的提示词：调 `stagepass_ask`、别替人答。
- *
- * 前两句在每个落点一字不差 —— 拷贝必然漂移，而漂移的那一天某条路上的模型会说
- * 「没有这个工具」。后两句跟着这次问的是什么走。多行没关系：这是 argv 的 prompt，
- * 不进 composer（composer 那条路用 `ASK_TOOL_LINE`，一行是它的硬约束）。
- */
-const launchAskPrompt = (hands: string, dont: string): string => [
-  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
-  "问哪一个由 StagePass 决定。",
-  hands,
-  dont,
-].join("\n");
-
-/**
- * 第二趟追问：登记、送进**同一个**会话（另起会打掉画着的选择器）、等答案。
- * 返回答案，或一个「没答上」的原因字符串 —— 返回前题已收尾，不留永远 open 的行。
- *
- * 从 `handle()` 里抽出来的第一块业务逻辑 —— 是棘轮（architecture.test.ts 的
- * FUNCTION_RATCHET）逼的，方向正是 BACKLOG §4.1·J 要的。
- */
-async function askFollowUp(input: {
-  questions: QuestionStore;
-  sessions: {
-    type(changeId: string, phase: Phase, line: string): Promise<boolean>;
-    has(changeId: string, phase: Phase): boolean;
-  };
-  changeId: string;
-  phase: Phase;
-  question: Question;
-  questionId: string;
-  expectedSnapshot: string;
-  timeoutMs: number;
-}): Promise<Answer | "session_died_before_asking" | "no_answer_in_time"> {
-  const { questions, changeId, phase, questionId } = input;
-  questions.ask({
-    id: questionId, changeId, phase, kind: "gate_decision",
-    question: input.question, expectedSnapshot: input.expectedSnapshot,
-  });
-  if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
-    questions.settle(questionId);
-    return "session_died_before_asking";
-  }
-  const until = Date.now() + input.timeoutMs;
-  while (Date.now() < until && !questions.readAnswerFor(questionId)) {
-    if (!input.sessions.has(changeId, phase)) break;
-    await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-  }
-  const second = questions.readAnswerFor(questionId);
-  questions.settle(questionId);
-  return second ?? "no_answer_in_time";
-}
 
 /**
  * 面板上每个阶段那一格：线程、进程、问题、判定、产出、上次裁决的下场。
@@ -1291,6 +1228,7 @@ function json(response: ServerResponse, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
+
 /**
  * Route one request.
  *
@@ -1951,58 +1889,22 @@ export async function handle(
         "不要替我做决定，不要解释我该选什么，调用完就停下。"),
     }));
 
-    const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
-    let sessionDied = false;
-    while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
-      /*
-       * **进程没了就别再等了。**
-       *
-       * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
-       * `codex resume <id>` 一起来就退（`session … is archived`）。而这里原来只盯
-       * 答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
-       * 「在等你选」和「那边早就没了」长得一模一样，正是这个项目从头到尾在防的那种。
-       *
-       * 判据是**进程状态**，不是 pty 的输出（§9.3）。
-       */
-      if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
-      await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-    }
-    const first = questions.readAnswerFor(questionId);
-    if (!first) {
-      /*
-       * **放弃了就把题也收掉。**
-       *
-       * 这里原来只关会话、不 settle，于是超时会漏下一道永远 `open` 的题 ——
-       * 录需求那条路（`/api/brief`）一直是 settle 写在判断之前的，两条路不对称，
-       * 而不对称没有任何理由。
-       *
-       * `ask()` 插新题时会把旧的 `open` 全部 superseded，所以危害有一半被兜住；
-       * 但在超时和下一次问之间，`questions.open(changeId)` 会返回一道**没有任何人
-       * 在等**的题。人这时候开个终端让模型调 `stagepass_ask`，就会被端出这道死题
-       * ——答了还会被 fence 以 `GateMovedError` 拒掉。「看起来在等你」而其实没人在等，
-       * 正是这个项目从头到尾在防的形状。
-       *
-       * 2026-08-03 真机撞到：验 B/C/D 那一轮的裁决表挂了 63 分钟（截止 45 分钟），
-       * 会话被收掉了，而那道题还是 `open`。
-       */
-      questions.settle(questionId);
+    const waited = await waitForAnswer({
+      database, questions, sessions, changeId, phase, questionId,
+      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
+    });
+    if (!waited.answered) {
+      // 题已经被 waitForAnswer 收掉了（那条规则只此一份）。这里只管响应和会话。
       json(response, {
         asked: true, answered: false, phase, questionId,
-        /**
-         * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
-         * 的进程早就没了**。原来两种回来的都是同一个空结果。
-         */
-        reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
-        /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
-        threadId: sessionDied
-          ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
-          : null,
+        reason: waited.reason, threadId: waited.threadId,
       });
       // 放弃了就把会话关掉 —— 理由和录需求那条一样：留着它，这个阶段的每个动作
       // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
       sessions.close(changeId, phase);
       return;
     }
+    const first = waited.answer;
 
     /*
      * **第二趟：只问那几条真的需要理由的。**
@@ -2019,7 +1921,8 @@ export async function handle(
     const more = responseFollowUpQuestion(openGaps, first);
     if (more) {
       const second = await askFollowUp({
-        questions, sessions, changeId, phase, question: more,
+        database, questions, sessions, changeId, phase, question: more,
+        kind: "gate_decision",
         questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
         timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
       });
@@ -2275,35 +2178,15 @@ export async function handle(
         return null;
       }
 
-      const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
-      let sessionDied = false;
-      while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
-        /*
-         * **进程没了就别再等了。**
-         *
-         * 2026-07-30 实测：这个阶段绑的裁判线程被 Codex 归档了，`codex resume` 一起来
-         * 就退。而这里原来只盯答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上
-         * 一句话都没有 ——「在等你选」和「那边早就没了」长得一模一样。
-         *
-         * 判据是**进程状态**，不是 pty 的输出（§9.3）。
-         */
-        if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
-        await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-      }
-      const given = questions.readAnswerFor(questionId);
-      questions.settle(questionId);
-      if (!given) {
+      const waited = await waitForAnswer({
+        database, questions, sessions, changeId, phase, questionId,
+        timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
+      });
+      if (!waited.answered) {
+        // 题已经被 waitForAnswer 收掉了。
         json(response, {
           asked: true, answered: false, phase, questionId,
-          /**
-           * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
-           * 的进程早就没了**。原来两种回来的都是同一个空结果。
-           */
-          reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
-          /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
-          threadId: sessionDied
-            ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
-            : null,
+          reason: waited.reason, threadId: waited.threadId,
         });
         /*
          * **放弃了就把会话关掉。**
@@ -2319,7 +2202,9 @@ export async function handle(
         sessions.close(changeId, phase);
         return null;
       }
-      return given;
+      // 录需求拿到答案就用完了，没有下一步要拿着这道题走 —— 收掉。
+      questions.settle(questionId);
+      return waited.answer;
     };
 
     const first = await askOnce(items, `${changeId}：先把这次改动要什么说清楚`);
@@ -2412,41 +2297,27 @@ export async function handle(
         "不要替我做决定，不要评价这些风险，调用完就停下。"),
     }));
 
-    const deadline = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
-    let sessionDied = false;
-    while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
+    const waited = await waitForAnswer({
+      database, questions, sessions, changeId, phase, questionId,
+      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
+    });
+    if (!waited.answered) {
       /*
-       * **进程没了就别再等了。**
+       * **这条路原来漏了 `settle`。**
        *
-       * 2026-07-30 实测到的那一次：这个阶段绑的裁判线程被 Codex **归档**了，于是
-       * `codex resume <id>` 一起来就退（`session … is archived`）。而这里原来只盯
-       * 答案，于是它对着一个已经死掉的终端等满 15 分钟，界面上一句话都没有 ——
-       * 「在等你选」和「那边早就没了」长得一模一样，正是这个项目从头到尾在防的那种。
-       *
-       * 判据是**进程状态**，不是 pty 的输出（§9.3）。
+       * 裁决和录需求都补过（2026-08-03 那次 63 分钟的死题），这第三份拷贝没有 ——
+       * 四份手写的同一条规则，治了三份。现在收题在 `waitForAnswer` 里，只此一份。
        */
-      if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
-      await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-    }
-    const answer = questions.readAnswerFor(questionId);
-    if (!answer) {
       json(response, {
         asked: true, answered: false, phase, questionId,
-        /**
-         * 没答上有两种，而它们要做的事完全不同：一种是人还没去答，另一种是**那边
-         * 的进程早就没了**。原来两种回来的都是同一个空结果。
-         */
-        reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
-        /** 死了的时候把线程 id 给出去 —— 最常见的原因是它被归档了，而解药要这个 id。 */
-        threadId: sessionDied
-          ? new BindingStore(database).find(changeId, phase)?.threadId ?? null
-          : null,
+        reason: waited.reason, threadId: waited.threadId,
       });
       // 放弃了就把会话关掉 —— 理由和录需求那条一样：留着它，这个阶段的每个动作
       // 都会被闸门拒掉，而界面上没有杀掉终端的入口。
       sessions.close(changeId, phase);
       return;
     }
+    const answer = waited.answer;
 
     /*
      * **第二趟：只问真被接受的那几条要理由。**
@@ -2457,28 +2328,14 @@ export async function handle(
     let full = answer;
     const moreWaive = waiveFollowUpQuestion(waivable, answer);
     if (moreWaive) {
-      const moreId = `${questionId}-x`;
-      questions.ask({
-        id: moreId, changeId, phase, kind: "waive",
-        question: moreWaive, expectedSnapshot: gate.snapshot,
+      const second = await askFollowUp({
+        database, questions, sessions, changeId, phase, question: moreWaive,
+        kind: "waive",
+        questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
+        timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
       });
-      if (!await sessions.type(changeId, phase, ASK_TOOL_LINE)) {
-        questions.settle(moreId);
-        json(response, {
-          asked: true, answered: false, phase, reason: "session_died_before_asking",
-        });
-        sessions.close(changeId, phase);
-        return;
-      }
-      const until = Date.now() + (options.askTimeoutMs ?? 15 * 60_000);
-      while (Date.now() < until && !questions.readAnswerFor(moreId)) {
-        if (!sessions.has(changeId, phase)) break;
-        await new Promise((resolve) => { setTimeout(resolve, 1_000); });
-      }
-      const second = questions.readAnswerFor(moreId);
-      questions.settle(moreId);
-      if (!second) {
-        json(response, { asked: true, answered: false, phase, reason: "no_answer_in_time" });
+      if (typeof second === "string") {
+        json(response, { asked: true, answered: false, phase, reason: second });
         sessions.close(changeId, phase);
         return;
       }

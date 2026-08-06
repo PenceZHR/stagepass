@@ -2730,4 +2730,31 @@ describe("panel · 问人超时，题也要收掉", () => {
       );
     });
   });
+
+  /**
+   * **同一条规则的第二份拷贝，而它漏了。**
+   *
+   * 上面那条治的是 `/api/ask`。接受风险（`/api/waive`）第一趟等答案超时之后
+   * 只关会话、**没有 settle** —— 同一道死题、同一个后果，只是还没人在那条路上
+   * 撞到过。三条问人的路（ask / brief / waive）各写了一份等答案的循环，治了两份。
+   */
+  it("**接受风险那条路超时，题一样要收掉** —— 第二份拷贝漏了 settle", async () => {
+    await withPanel(async ({ open, database }) => {
+      new GapStore(database).replace(CHANGE, "PRD", [{
+        id: "G-1", kind: "finding", severity: "P1", title: "接口没有错误码",
+        status: "open", openedRound: 1, resolution: null,
+      } as never]);
+
+      const asked = await (await open(
+        `/api/waive?change=${CHANGE}`, { method: "POST" })).json() as
+        { answered: boolean; reason: string };
+      assert.equal(asked.answered, false);
+      assert.equal(asked.reason, "no_answer_in_time");
+
+      assert.equal(
+        new QuestionStore(database).open(CHANGE), null,
+        "超时之后还留着一道 open 的题 —— 下一个调 stagepass_ask 的会被端出这道死题",
+      );
+    });
+  });
 });

@@ -128,6 +128,14 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/question.ts": 3,
   "domain/brief.ts": 3,
   "store/question-store.ts": 3,
+  /*
+   * **应用层的第一块**（BACKLOG §4.1·J）：把一道题交给人、等他答。
+   *
+   * 和 `question` 同层，理由也一样 —— 它就是「问人」这件事本身，够得着的东西
+   * 不超过 question / question-store / binding-store。它**不认识 HTTP**，所以
+   * `web/`（L5）在它上面，而不是它的一部分。
+   */
+  "app/ask-human.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
   // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
@@ -357,8 +365,8 @@ const FUNCTION_LINES_CAP = 300;
 const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
   // 2026-08-05：抽 launchAskPrompt（1463 → 1462）、askFollowUp（→ 1453）、
-  // phasesFor（→ 1410）。
-  "web/panel-server.ts#handle": 1410,
+  // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）。
+  "web/panel-server.ts#handle": 1329,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
