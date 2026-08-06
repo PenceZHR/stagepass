@@ -119,6 +119,15 @@ export interface RubricStoreOptions {
   mintKey?: () => string;
 }
 
+/**
+ * 升级动作写在 `rubrics.reason` 上的标记。
+ *
+ * **它是「这一版是机器写的」的唯一判据** —— 人自己保存时理由是他写的话或者 null，
+ * 两种都对不上。别改这句话的措辞：改了之后，所有已经升过的那些会在下一次升级里
+ * 被当成「人改过的」跳过。
+ */
+export const FACTORY_UPGRADE_REASON = "出厂标准升级（这一份从未被人改过）";
+
 export class RubricStore {
   private readonly now: () => Date;
   private readonly mintKey: () => string;
@@ -167,22 +176,22 @@ export class RubricStore {
    * 2026-07-31 真机栽过一次：Review 那条早就改掉的旧措辞还留在老项目里，裁判拿它
    * 判了个假阳性的 `no`。
    *
-   * ## 判据只有一条：版本还是 1
+   * ## 判据：这一版是谁写的
    *
-   * **它是个近似，这里如实写明。** 真正想判的是「这一份和它装上那天逐字相同」，
-   * 但历史出厂版没存下来，比不了。退而求其次用版本号 —— 编辑一次就产生新版本行
-   * （`nextVersion`），所以 `version === 1` 等价于「从来没人在面板上按过保存」。
+   * 两种算「没被人碰过」：
    *
-   * 漏判的情况：人改了一版又改回来（v3 的正文恰好等于出厂版）。那时它是 v3，会被
-   * 跳过 —— **宁可漏升也不要覆盖**，而跳过的会报出来让人自己决定。
+   * - `version === 1` —— 从来没人按过保存，还是装上那天那份
+   * - 当前版本的 `reason` 是 `FACTORY_UPGRADE_REASON` —— **上一次升级自己写的**
    *
-   * 2026-08-06 实测真库：PRJ-001 全部 33 份 v1，PRJ-002 只有 Build 那三份是 v2。
+   * 第二条 2026-08-06 加的，起因是第一条把自己锁死了：升一次版本就变 2，
+   * 下一次出厂标准再改，同一份**永远升不上去了** —— 而它从头到尾没有人碰过。
+   * 一个只能用一次的同步动作不是同步动作。
    *
-   * ## 跳过的要报出来
+   * 人自己保存的那一版，`reason` 要么是他写的理由、要么是 null，两种都对不上这个
+   * 标记 —— 所以**人改过的照旧一个字都不碰**。
    *
-   * 不能静默 —— 人得知道他那份为什么没跟着变。**升级只对同一份有效一次**：
-   * `save` 把版本推到 2，第二次调用时它就被当成「你改过它」跳过了。这是刻意的，
-   * 升级是一次性的救火动作，不是一个可以反复按的同步按钮。
+   * 漏判的情况：人保存时恰好把理由写成了那句一模一样的话。可以接受 —— 那句话是
+   * 括号带说明的完整句子，不是人会随手打出来的。
    */
   upgradeDefaults(projectId: string): {
     upgraded: string[];
@@ -197,8 +206,10 @@ export class RubricStore {
         const drafts = defaultCriteria(phase, role);
         if (current === null || drafts.length === 0) continue;
         const name = `${phase}/${role}`;
-        if (current.version !== 1) {
-          skipped.push({ scope: name, why: "你改过它（版本不是 1）" });
+        const untouched = current.version === 1
+          || current.reason === FACTORY_UPGRADE_REASON;
+        if (!untouched) {
+          skipped.push({ scope: name, why: "你改过它" });
           continue;
         }
         // 已经和出厂版逐字相同就不动 —— 白升一版会让「v1 = 没人碰过」这条判据失效。
@@ -213,7 +224,7 @@ export class RubricStore {
          * 而 `save` 对那件事要一句话（`ReasonRequiredError`）。理由写清是**谁**
          * 换的：人回头看版本历史时，「出厂标准升级」和「我那天改的」得分得开。
          */
-        this.save(scope, drafts, "出厂标准升级（这一份从未被人改过）");
+        this.save(scope, drafts, FACTORY_UPGRADE_REASON);
         upgraded.push(name);
       }
     }

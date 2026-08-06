@@ -33,7 +33,7 @@ import { RUBRIC_ROLES, type RubricRole } from "../domain/rubric";
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { decideGate, type DecideOutcome } from "../app/decide-gate";
-import { rubricFor, saveRubric, upgradeRubrics } from "../app/edit-rubric";
+import { rubricFor, saveRubric } from "../app/edit-rubric";
 import {
   createChange, createProject, deleteChange, deleteProject,
 } from "../app/workspace";
@@ -1226,25 +1226,6 @@ async function serveRubricSave(
     return;
   }
 
-/**
- * `/api/rubric/upgrade`：把没被人改过的出厂标准升上来。**POST 而不是 GET** ——
- * 它写库。和上面那条同一条线：只碰 rubric 表，碰不到 changes / commands / questions。
- */
-function serveRubricUpgrade(
-  database: Database.Database,
-  url: URL,
-  response: ServerResponse,
-): void {
-  const outcome = upgradeRubrics({
-    database, changeId: url.searchParams.get("change") ?? "",
-  });
-  if (outcome.kind === "no_such_change") {
-    response.writeHead(404).end("no such change, or it belongs to no project");
-    return;
-  }
-  json(response, { upgraded: outcome.upgraded, skipped: outcome.skipped });
-}
-
 export async function handle(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1475,11 +1456,6 @@ export async function handle(
 
   if (url.pathname === "/api/rubric" && request.method === "POST") {
     await serveRubricSave(database, url, request, response);
-    return;
-  }
-
-  if (url.pathname === "/api/rubric/upgrade" && request.method === "POST") {
-    serveRubricUpgrade(database, url, response);
     return;
   }
 

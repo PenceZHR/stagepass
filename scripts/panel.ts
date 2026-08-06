@@ -140,10 +140,37 @@ const project = new ProjectStore(database).ensure(
   argument("project-path") ?? process.cwd(),
 );
 
-// 出厂标准：只补空缺，人改过的一个字都不碰，所以每次启动都调是安全的。
-// 全部不阻断 —— 它们是给人一个起点去读、去改、去决定哪几条值得挡，
-// 不是替他做那个决定（domain/rubric-defaults.ts）。
-const installed = new RubricStore(database).installDefaults(project.id);
+/*
+ * 出厂标准：**起面板时补空缺 + 把机器写的那些升到最新版**。
+ *
+ * ## 为什么升级在这儿，而不是界面上一个按钮
+ *
+ * 原来是「标准」页签里一个「把出厂标准升到最新版」的按钮。用户 2026-08-06：
+ * 「页面不要带升级到最新版，就直接后台升级就行了。」—— 判据也站得住：升级不是
+ * 一个决定，它只是把**没有人碰过的那些**跟上代码，人在界面上没有可选的东西。
+ *
+ * ## 它碰不到人改过的
+ *
+ * 判据是 `rubrics.reason` 上那个标记（`FACTORY_UPGRADE_REASON`）加上「还是第 1 版」。
+ * 人自己保存的那一版，理由要么是他写的话、要么是 null，两种都对不上。
+ *
+ * ## 跳过的照样要说出来
+ *
+ * 后台做不等于闷声做。跳过的逐条打到面板的 stdout —— 人得知道他那份为什么没跟着变，
+ * 而这是他唯一会看到它的地方。
+ */
+const rubrics = new RubricStore(database);
+for (const each of new ProjectStore(database).list()) {
+  rubrics.installDefaults(each.id);
+  const upgraded = rubrics.upgradeDefaults(each.id);
+  if (upgraded.upgraded.length > 0) {
+    console.log(`[rubric] ${each.id} 升了 ${upgraded.upgraded.length} 份：${
+      upgraded.upgraded.join("、")}`);
+  }
+  for (const skip of upgraded.skipped) {
+    console.log(`[rubric] ${each.id} ${skip.scope} 没升 —— ${skip.why}`);
+  }
+}
 
 /*
  * 演示 Change 只在两种情况下种：**明确用 `--change` 要了**，或者**库里一条 Change
@@ -249,7 +276,7 @@ server.listen(port, "127.0.0.1", () => {
     console.log(`恢复   running 却没有任何活儿的 Change，收回 blocked（可以 retry）：`
       + recovered.stranded.join("、"));
   }
-  if (installed > 0) console.log(`出厂标准 补了 ${installed} 份（全部不阻断）`);
+  // 出厂标准的补/升在建库那一段就做完了，逐条打过 —— 这里不再复述一遍。
   // 截止时间要说出来。到点之后 StagePass 会把会话关掉，而那在屏幕上是「终端自己
   // 没了」—— 人得先知道有这么个东西，才可能把它和自己刚才的等待对上。
   console.log(`截止   问人 ${askTimeoutMs / 60_000} 分钟 · 一轮 ${turnTimeoutMs / 60_000} 分钟`);
