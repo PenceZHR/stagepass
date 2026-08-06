@@ -278,6 +278,8 @@ function fromWorklist(
       evidence: item?.reason ?? null,
       criterionText: criterion.text,
       blockingThen: criterion.blocking,
+      // 判它的是模板的哪一节。和上面两样一样是**判定当时**的快照。
+      section: criterion.section,
     };
   });
 }
@@ -301,6 +303,8 @@ function byOrdinal(
       evidence: given?.evidence ?? null,
       criterionText: criterion.text,
       blockingThen: criterion.blocking,
+      // 判它的是模板的哪一节。和上面两样一样是**判定当时**的快照。
+      section: criterion.section,
     };
   });
 }

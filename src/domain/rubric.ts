@@ -84,6 +84,14 @@ export interface Assessment {
   readonly criterionText: string;
   /** 判定当时它是否标着阻断。 */
   readonly blockingThen: boolean;
+  /**
+   * 它判的是模板的哪一节。`null` = 这条标准没挂节。
+   *
+   * **不新增列**：从 `rubric_criteria` 按 `(rubric_id, criterion_key)` join 出来 ——
+   * `rubric_id` 记的就是判定当时那一版，所以 join 出来的天然是快照，和
+   * `criterionText` / `blockingThen` 同一个语义，只是不用再存一遍。
+   */
+  readonly section: string | null;
 }
 
 export class UntrustedKeyError extends Error {
@@ -229,6 +237,17 @@ export function summariseAssessments(
     `${ROLE_LABEL[role]}「${entry.criterionText}」`
     + (entry.verdict === "no" ? "不满足" : "模型漏答"));
   const rest = missed.length - named.length;
-  return `标准 ${all.length} 条里 ${missed.length} 条没勾上：`
+  /*
+   * **卡在哪一节**（用户 2026-08-06：「人的耐心也是要有依据的」）。
+   *
+   * 点名两条之后就截断了，而「还差多少、差在哪个方向」不该跟着被截掉 —— 节的数量
+   * 是个位数，摆全了也就一行。人按「再来一轮还是批准」时，这一行才是他真正在读的：
+   * 三条全卡在验收标准上，和三条散在三节里，是完全不同的两种局面。
+   */
+  const sections = [...new Set(missed
+    .map(({ entry }) => entry.section)
+    .filter((each): each is string => each !== null))];
+  const where = sections.length === 0 ? "" : `（卡在 ${sections.join("、")}）`;
+  return `标准 ${all.length} 条里 ${missed.length} 条没勾上${where}：`
     + named.join("；") + (rest > 0 ? `；另有 ${rest} 条` : "") + "。";
 }

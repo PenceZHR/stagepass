@@ -110,6 +110,7 @@ interface AssessmentRow {
   evidence: string | null;
   criterion_text: string;
   blocking_then: number;
+  section: string | null;
 }
 
 export interface RubricStoreOptions {
@@ -395,10 +396,21 @@ export class RubricStore {
     changeId: string, phase: Phase, role: RubricRole, round: number,
   ): StoredAssessment[] {
     const rows = this.database.prepare(
-      `SELECT round, rubric_id, criterion_key, verdict, evidence, criterion_text, blocking_then
-         FROM rubric_assessments
-        WHERE change_id = ? AND phase = ? AND role = ? AND round = ?
-        ORDER BY criterion_key`,
+      /*
+       * `section` **join 出来，不另存一列** —— `rubric_id` 记的就是判定当时那一版，
+       * 所以 join 到的 section 天然是快照，和 `criterion_text` 同一个语义。
+       * 存第二份只会多一个会漂的地方。
+       *
+       * LEFT JOIN：那一版被删掉的极端情况下读出 NULL，而不是整行消失 ——
+       * 少一行判定，人看到的「几条没勾上」就是错的。
+       */
+      `SELECT a.round, a.rubric_id, a.criterion_key, a.verdict, a.evidence,
+              a.criterion_text, a.blocking_then, c.section
+         FROM rubric_assessments a
+         LEFT JOIN rubric_criteria c
+           ON c.rubric_id = a.rubric_id AND c.criterion_key = a.criterion_key
+        WHERE a.change_id = ? AND a.phase = ? AND a.role = ? AND a.round = ?
+        ORDER BY a.criterion_key`,
     ).all(changeId, phase, role, round) as AssessmentRow[];
 
     return rows.map((row) => ({
@@ -409,6 +421,7 @@ export class RubricStore {
       evidence: row.evidence,
       criterionText: row.criterion_text,
       blockingThen: row.blocking_then === 1,
+      section: row.section ?? null,
     }));
   }
 
