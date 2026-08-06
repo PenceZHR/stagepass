@@ -156,6 +156,69 @@ export class RubricStore {
     return installed;
   }
 
+  /**
+   * 把**没被人碰过**的出厂标准升到当前出厂版。
+   *
+   * ## 为什么需要它
+   *
+   * `installDefaults` 只补空缺（那条语义是对的，别动它）—— 于是改一次
+   * `rubric-defaults.ts` 对**已经存在的项目零效果**，它留着建项目那天装上的那一版。
+   * 2026-07-31 真机栽过一次：Review 那条早就改掉的旧措辞还留在老项目里，裁判拿它
+   * 判了个假阳性的 `no`。
+   *
+   * ## 判据只有一条：版本还是 1
+   *
+   * **它是个近似，这里如实写明。** 真正想判的是「这一份和它装上那天逐字相同」，
+   * 但历史出厂版没存下来，比不了。退而求其次用版本号 —— 编辑一次就产生新版本行
+   * （`nextVersion`），所以 `version === 1` 等价于「从来没人在面板上按过保存」。
+   *
+   * 漏判的情况：人改了一版又改回来（v3 的正文恰好等于出厂版）。那时它是 v3，会被
+   * 跳过 —— **宁可漏升也不要覆盖**，而跳过的会报出来让人自己决定。
+   *
+   * 2026-08-06 实测真库：PRJ-001 全部 33 份 v1，PRJ-002 只有 Build 那三份是 v2。
+   *
+   * ## 跳过的要报出来
+   *
+   * 不能静默 —— 人得知道他那份为什么没跟着变。**升级只对同一份有效一次**：
+   * `save` 把版本推到 2，第二次调用时它就被当成「你改过它」跳过了。这是刻意的，
+   * 升级是一次性的救火动作，不是一个可以反复按的同步按钮。
+   */
+  upgradeDefaults(projectId: string): {
+    upgraded: string[];
+    skipped: { scope: string; why: string }[];
+  } {
+    const upgraded: string[] = [];
+    const skipped: { scope: string; why: string }[] = [];
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        const scope = { projectId, changeId: null, phase, role };
+        const current = this.current(scope);
+        const drafts = defaultCriteria(phase, role);
+        if (current === null || drafts.length === 0) continue;
+        const name = `${phase}/${role}`;
+        if (current.version !== 1) {
+          skipped.push({ scope: name, why: "你改过它（版本不是 1）" });
+          continue;
+        }
+        // 已经和出厂版逐字相同就不动 —— 白升一版会让「v1 = 没人碰过」这条判据失效。
+        const same = current.criteria.length === drafts.length
+          && current.criteria.every((each, index) =>
+            each.text === drafts[index]!.text
+            && each.blocking === drafts[index]!.blocking
+            && each.section === (drafts[index]!.section ?? null));
+        if (same) continue;
+        /*
+         * **必须带理由** —— 升级会把旧条目整批换掉，其中标着阻断的那些会退休，
+         * 而 `save` 对那件事要一句话（`ReasonRequiredError`）。理由写清是**谁**
+         * 换的：人回头看版本历史时，「出厂标准升级」和「我那天改的」得分得开。
+         */
+        this.save(scope, drafts, "出厂标准升级（这一份从未被人改过）");
+        upgraded.push(name);
+      }
+    }
+    return { upgraded, skipped };
+  }
+
   /** 这个 scope 当前生效的版本，没有就 null。 */
   current(scope: RubricScope): RubricVersion | null {
     const row = (scope.changeId === null

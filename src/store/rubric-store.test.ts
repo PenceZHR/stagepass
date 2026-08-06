@@ -30,6 +30,52 @@ function open(): { database: Database.Database; rubrics: RubricStore } {
 const projectScope = { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" } as const;
 const changeScope = { projectId: PROJECT, changeId: CHANGE, phase: "Spec", role: "producer" } as const;
 
+describe("rubric store · 把没被人碰过的出厂标准升上来", () => {
+  it("**v1 且和出厂版不同的，升到新出厂版**", () => {
+    const { rubrics, database } = open();
+    rubrics.installDefaults(PROJECT);
+    // 装一个「旧出厂版」：直接改库，模拟一个更早的默认装在这里
+    database.prepare("UPDATE rubric_criteria SET text = ?, section = NULL WHERE rubric_id IN (SELECT id FROM rubrics WHERE phase = ? AND role = ?)")
+      .run("老措辞", "PRD", "producer");
+
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.ok(result.upgraded.includes("PRD/producer"), `没升：${JSON.stringify(result)}`);
+
+    const after = rubrics.current({ projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" })!;
+    assert.equal(after.version, 2);
+    assert.ok(after.criteria.every((each) => each.section !== null), "升上来的还是没挂节");
+    assert.ok(after.criteria.every((each) => each.blocking), "升上来的还是不阻断");
+  });
+
+  it("**人改过的一个字都不碰**，而且说得出为什么", () => {
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+    const scope = { projectId: PROJECT, changeId: null, phase: "PRD" as const, role: "producer" as const };
+    // 换掉出厂那 11 条 = 退休一批阻断项，`save` 要一句理由。
+    rubrics.save(scope, [{ text: "我自己写的一条", blocking: false }], "我不要那些");
+
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.ok(!result.upgraded.includes("PRD/producer"));
+    assert.ok(
+      result.skipped.some((each) => each.scope === "PRD/producer" && each.why.includes("改过")),
+      `跳过的没被报出来：${JSON.stringify(result.skipped)}`,
+    );
+    assert.equal(rubrics.current(scope)!.criteria[0]!.text, "我自己写的一条");
+  });
+
+  it("已经是最新的就不动 —— 白升一版会让「v1 = 没人碰过」这条判据失效", () => {
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.deepEqual(result.upgraded, [], "什么都没变却升了版");
+    assert.deepEqual(result.skipped, []);
+    assert.equal(
+      rubrics.current({ projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" })!.version,
+      1,
+    );
+  });
+});
+
 describe("rubric store · criterion 挂的模板节", () => {
   it("**真的过一遍 SQLite 存得住、读得回**", () => {
     const { rubrics } = open();
