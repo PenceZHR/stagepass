@@ -2,7 +2,7 @@ import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
-import { PHASES, producesCommit, type Phase } from "../domain/phase";
+import { producesCommit, upstreamOf, type Phase } from "../domain/phase";
 import { pendingSendBack } from "../domain/journey";
 import { roundFromLedger, type RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
@@ -161,10 +161,17 @@ export class RoundTurnRunner implements TurnRunner {
        * 注释里写明的代价：「every phase's opening prompt has to carry its upstream
        * documents itself」。
        *
-       * 规则是阶段无关的：当前阶段之前、有产出的阶段，按线的顺序逐条列。不建
-       * 每阶段的映射表 —— 那是 PHASES 这条线的第二份拷贝，两份必然漂移。
-       * 能走到阶段 N 就意味着 N 之前的都被批准过（approve 是离开一个阶段的唯一
+       * 列的是**真正的上游**（`upstreamOf` → `CONSUMES`），有产出的逐条列。
+       * 能走到阶段 N 就意味着它的上游都被批准过（approve 是离开一个阶段的唯一
        * 前进路），所以「有产出的上游」就是「已批准的上游」。
+       *
+       * > 这里原来写着「不建每阶段的映射表 —— 那是 PHASES 这条线的第二份拷贝，
+       * > 两份必然漂移」，规则是「当前阶段之前、有产出的都列」。
+       *
+       * **那个顾虑是对的，而当时的答案是错的**：不建表并没有换来一份实现 ——
+       * 顺序前缀在这儿和 `upstreamOf` 里各写了一遍，正好是它想躲的那两份拷贝。
+       * 而且前缀本身就不对：TestPlan 从来没消费过 Plan（§8.6·①）。
+       * 现在是一张表（`CONSUMES`），两处都读它。
        */
       task: [
         this.options.taskFor(phase),
@@ -188,8 +195,18 @@ export class RoundTurnRunner implements TurnRunner {
           `# ${job.changeId}：人自己答出来的需求\n\n${change.brief}\n`,
         )}`,
         ...(() => {
-          const upstream = PHASES
-            .slice(0, PHASES.indexOf(phase))
+          /*
+           * **喂给红方的上游产物 = 真正的上游**（`upstreamOf`，§8.6·①）。
+           *
+           * 这里原来自己取主线顺序的前缀，于是 TestPlan 的红方会收到一份 Plan
+           * 的文档当输入 —— 而 TestPlan 从来没消费过 Plan 的任何东西。同一个错
+           * 想法在 `upstreamOf` 里有第一份拷贝，两处现在读同一张 `CONSUMES` 表。
+           *
+           * 顺带修掉一件更小的：原来数的是 `PHASES`（全序，还含 Fix），不是这个
+           * Change 自己的图。
+           */
+          const upstream = upstreamOf(
+            phase, this.options.changes.graphOf(job.changeId))
             .map((each) => ({
               phase: each,
               artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,

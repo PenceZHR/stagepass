@@ -69,6 +69,51 @@ export const DEFAULT_GRAPH: PhaseGraph = {
   order: PHASES.filter((phase) => phase !== "Fix"),
 };
 
+/**
+ * **每个阶段真正消费谁的产物。**「上游」按这张表算，不按顺序上谁在前面（§8.6·①）。
+ *
+ * ## 为什么顺序前缀是错的
+ *
+ * `upstreamOf` 原来取的是主线顺序的前缀，于是 `upstreamOf("TestPlan")` 里有
+ * `Plan` —— 面板今天就摆着「从 TestPlan 打回 Plan」这个选项，而 **TestPlan 从来
+ * 没消费过 Plan 的任何东西**。一个必然说不通的打回摆在人眼前，和一个假选项没有
+ * 区别（§5.4：选项里不许出现选不动的东西）。
+ *
+ * 同一个错误有第二份拷贝：任务书里「已批准的上游产物」也是按顺序前缀取的
+ * （`work/round-turn-runner.ts`），于是 TestPlan 的红方还会收到一份 Plan 的文档
+ * 当输入。**两处现在读同一张表。**
+ *
+ * ## 顺序没有变松
+ *
+ * 这张表只改「谁是谁的上游」，**不改执行顺序** —— 主线仍然是全序，一个 Change
+ * 仍然一次只在一个阶段上。让 Plan 和 TestPlan 真正并行是 §8.6·③，那要动
+ * `ChangeState.phase` 是单数这件事，是另一回事。
+ *
+ * ## 只有 TestPlan 那一行改变了行为
+ *
+ * 其余逐条和顺序前缀一致：Build 消费 Plan 和 TestPlan，传递下去仍然够得着
+ * TechSpec / Spec / PRD；Review 之后的每一个都通过 Build 够得着全部。
+ *
+ * `Fix` 是空的，**不是漏了**：它不在主线上，`sendBack` 对它从来就不合法（它的
+ * 出口是弹栈还债）。给它填上游会让打回从 Fix 变得合法，而那要求 Fix 进
+ * `returnStack` —— 正是 `assertStateValid` 明令禁止的。
+ */
+const CONSUMES: Readonly<Record<Phase, readonly Phase[]>> = {
+  PRD: [],
+  Spec: ["PRD"],
+  TechSpec: ["Spec"],
+  Plan: ["TechSpec"],
+  // **不含 Plan**：两者都只消费 TechSpec，互不消费（BACKLOG §8.6·①/③）。
+  TestPlan: ["TechSpec"],
+  Build: ["Plan", "TestPlan"],
+  Review: ["Build"],
+  Fix: [],
+  QA: ["Review"],
+  Merge: ["QA"],
+  Retro: ["Merge"],
+  Done: ["Retro"],
+};
+
 export class InvalidPhaseGraphError extends Error {
   constructor(readonly code:
     | "must_end_with_done"
@@ -133,7 +178,12 @@ export function advancesTo(
 }
 
 /**
- * `phase` 的严格上游，按主线顺序 —— sendBack（长回边，§5.9.1）的合法目标名单。
+ * `phase` 真正的上游 —— **它消费的，以及它消费的东西所消费的**（`CONSUMES` 的
+ * 传递闭包）。sendBack（长回边，§5.9.1）的合法目标名单就是它。
+ *
+ * 出去的按**主线顺序**排 —— 调用方靠这个取「最近的那个上游」（`journey.ts` 画环
+ * 时用 `.at(-1)`）。跳过的阶段不出现在名单里，但它的上游照样传递得过来：把
+ * TechSpec 跳掉，Plan 的上游仍然是 Spec / PRD。
  *
  * 第一个阶段和 Fix 都是空名单：前者没有上游，后者不在主线上。空名单的含义由
  * 调用方判 —— 一道没有选项的题不该问出去（domain/question.ts 那条规矩）。
@@ -142,9 +192,23 @@ export function upstreamOf(
   phase: Phase,
   graph: PhaseGraph = DEFAULT_GRAPH,
 ): Phase[] {
-  const index = graph.order.indexOf(phase);
-  if (index <= 0) return [];
-  return graph.order.slice(0, index);
+  const seen = new Set<Phase>();
+  const walk = (each: Phase): void => {
+    for (const source of CONSUMES[each]) {
+      if (seen.has(source)) continue;
+      seen.add(source);
+      walk(source);   // 传递：消费的东西所消费的，也是上游
+    }
+  };
+  walk(phase);
+  /*
+   * **按这个 Change 自己的图过滤并排序。**
+   *
+   * 过滤：跳过的阶段没有产出，打回到它没有含义。
+   * 排序：名单的顺序是有语义的（`.at(-1)` = 最近的那个上游），而闭包的遍历顺序
+   * 不是 —— 靠遍历顺序等于靠巧合。
+   */
+  return graph.order.filter((each) => seen.has(each));
 }
 
 /**

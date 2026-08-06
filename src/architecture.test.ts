@@ -258,6 +258,37 @@ describe("standing · layers depend downward only", () => {
   });
 });
 
+/**
+ * **「谁是谁的上游」只有一份实现。**
+ *
+ * 这条是被咬过才写的：`upstreamOf` 用主线顺序的前缀算上游，而
+ * `round-turn-runner` 又自己写了一遍同样的前缀去挑「已批准的上游产物」——
+ * 两份拷贝，而且**两份都是错的**（TestPlan 从来没消费过 Plan，§8.6·①）。
+ *
+ * 判法：production 里除 `domain/phase.ts` 之外，谁都不许自己按顺序切前缀去当
+ * 「上游」。要上游就调 `upstreamOf`。
+ */
+describe("standing · 上游只有一份算法", () => {
+  it("没有第二处自己切主线前缀当上游", () => {
+    const sliced: string[] = [];
+    for (const file of production) {
+      if (file.path === "domain/phase.ts") continue;   // 它就是那一份实现
+      const code = withoutComments(file.text);
+      // `PHASES.slice(0, …indexOf(phase))` / `order.slice(0, …)` 这一族。
+      if (/\b(PHASES|\w*[Oo]rder)\s*\.\s*slice\(\s*0\s*,/.test(code)) {
+        sliced.push(file.path);
+      }
+    }
+    assert.deepEqual(sliced, [], "要上游就调 upstreamOf，别再自己切一遍");
+  });
+
+  it("这条护栏不是空转的 —— `upstreamOf` 真的有人在用", () => {
+    const callers = production.filter((file) =>
+      file.path !== "domain/phase.ts" && file.text.includes("upstreamOf("));
+    assert.ok(callers.length >= 2, `只有 ${callers.length} 个调用方`);
+  });
+});
+
 describe("standing · nothing exists without a caller", () => {
   /**
    * The rule the old tree lacked. `mcp/` had zero production callers and lived

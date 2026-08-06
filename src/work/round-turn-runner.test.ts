@@ -241,7 +241,14 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     assert.match(prompt, /不是从零重写/);
   });
 
-  it("走到 TestPlan 时，四份上游按线的顺序全在", async () => {
+  /**
+   * §8.6·①：任务书里列的是**真正的上游**，不是主线顺序的前缀。
+   *
+   * TestPlan 从来没消费过 Plan 的任何东西（两者都只消费 TechSpec，互不消费），
+   * 所以 Plan 的文档不该出现在 TestPlan 红方的输入里 —— 多喂一份它用不上的文档，
+   * 既占上下文又暗示「你该照着它做」。
+   */
+  it("走到 TestPlan 时，**真正的**上游按线的顺序全在，Plan 不在", async () => {
     const context = open();
     const evidence = new EvidenceStore(context.db);
     const line: [string, string][] = [
@@ -266,11 +273,17 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     await dispatchRound(loop, "J1");
 
     const prompt = transport.dispatches[0]?.prompt ?? "";
-    const positions = line.map(([, artifact]) => prompt.indexOf(artifact));
+    const real = line.filter(([phase]) => phase !== "Plan");
+    const positions = real.map(([, artifact]) => prompt.indexOf(artifact));
     assert.ok(positions.every((at) => at >= 0),
       `有上游没进任务书：${JSON.stringify(positions)}`);
     // 顺序就是线的顺序 —— 读的人按它从头到尾走一遍。
     assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
+    // **Plan 不在。** 它产出过、也被批准过，就是不属于 TestPlan 的上游。
+    assert.equal(
+      prompt.includes("docs/plan.md"), false,
+      "TestPlan 收到了 Plan 的文档 —— 它从来没消费过 Plan 的任何东西",
+    );
   });
 
   it("**上游是一个 commit 时，说它是 commit** —— 别让红方拿 sha 去找文件", async () => {

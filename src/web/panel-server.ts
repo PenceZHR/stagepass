@@ -5,7 +5,9 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
-import { PHASES, isPhase, producesCommit, type Phase } from "../domain/phase";
+import {
+  PHASES, isPhase, producesCommit, upstreamOf, type Phase,
+} from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
@@ -831,8 +833,12 @@ async function runRound(input: {
    *
    * 判据和 `/api/artifact` **同一个**（`locateArtifact`）：sha 问 git，路径查磁盘。
    * 把缺的逐条列出来 —— 「上游产物不见了」这句话本身没法让人动手。
+   *
+   * **查的名单必须和任务书列的那一份是同一个**（`upstreamOf`，§8.6·①）。这里
+   * 原来自己切主线前缀 —— 同一个错想法的第三份拷贝，而它的后果最直接：派发
+   * TestPlan 会因为 **Plan** 的产物不见了而拒跑，一份 TestPlan 根本不消费的文档。
    */
-  const missing = PHASES.slice(0, PHASES.indexOf(phase))
+  const missing = upstreamOf(phase, new ChangeStore(database).graphOf(changeId))
     .flatMap((each) =>
       new EvidenceStore(database).read(changeId, each).artifactIds
         .map((id) => ({ phase: each, id })))

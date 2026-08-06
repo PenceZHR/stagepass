@@ -1299,8 +1299,8 @@ verify.mjs:145   S01 未验证 locked install
 
 | # | 问题 | 难度 |
 |---|---|---|
-| ① | **`upstreamOf` 在产出错答案**。`upstreamOf("TestPlan")` 含 `Plan`，`app/decide-gate.ts:179` 把它当 `sendBackTargets` —— **面板今天就提供「从 TestPlan 打回 Plan」这个没有含义的选项**。TestPlan 没消费过 Plan 的任何东西 | 小 |
-| ② | **`ORDER_INDEX` 用的是 `DEFAULT_GRAPH` 而不是这个 Change 自己的 graph**（`domain/change-state.ts:181`）。**自定义图（跳过阶段）上，returnStack 那条「严格下游」不变量算的是错的** | 小，独立 bug |
+| ① | ~~**`upstreamOf` 在产出错答案**~~ —— **2026-08-06 已修，见下** | 小 |
+| ② | ~~**`ORDER_INDEX` 用的是 `DEFAULT_GRAPH`**~~ —— **虚惊，不是 bug，见 §8.11** | 小，独立 bug |
 | ③ | **全序挡住 Plan ∥ TestPlan**。`phase.ts:52` 禁的是**重排**，而**并行不是重排** —— 两者都只消费 TechSpec，互不消费。DAG 的 `upstreamOf` = 传递祖先，兄弟互相不是上游，**比今天更准不是更松** | 大：`ChangeState.phase` 是单数、upstreamOf 换 DAG 祖先、returnStack 换后代判定、一个 Change 两个活会话两次许可点击 |
 
 **③ 的墙钟收益要泼冷水**：CHG-001 上 Plan 完成 1 轮、TestPlan 完成 5 轮，串行 6 → 并行 5，
@@ -1532,6 +1532,45 @@ Fix 挂上 diff 闸门（不许碰测试）之后，**测试的问题只能 send
   那个阶段从 `phase_order` 里去掉了，`approvalTargets` 会返回空清单、而推荐仍然
   指着它 —— 批准当场被拒，而批准是还债的唯一出口。**一个没有出口的格子**，恰恰是
   那两条硬校验存在的理由。现在图里找不到栈顶时，清单就是「还债」那一条。
+
+#### §8.6·① 已修（2026-08-06）：上游按「真正消费谁」算
+
+`upstreamOf` 原来取主线顺序的前缀，于是 `upstreamOf("TestPlan")` 含 `Plan` ——
+而 **TestPlan 从来没消费过 Plan 的任何东西**。
+
+改法：`domain/phase.ts` 加一张 `CONSUMES` 表（每个阶段真正消费谁），`upstreamOf`
+= 它的**传递闭包**，按主线顺序排（顺序有语义：`journey.ts` 取 `.at(-1)` 当「最近
+的那个上游」）。**只有 TestPlan 那一行改变了行为**，其余十一个逐条和前缀一致 ——
+Build 消费 Plan 和 TestPlan，传递下去仍然够得着 TechSpec / Spec / PRD。
+
+**同一个错想法一共有三份拷贝**，全部收进这一张表：
+
+| 在哪 | 后果 |
+|---|---|
+| `upstreamOf` | 面板摆着「从 TestPlan 打回 Plan」这个没有含义的选项 |
+| `round-turn-runner` | TestPlan 的红方收到一份 Plan 的文档当输入 |
+| `panel-server` 派发前预检 | **派发 TestPlan 会因为 Plan 的产物不见了而拒跑** |
+
+第三份是查的时候才发现的，后果最直接。加了一条常驻护栏钉住别出第四份：production
+里除 `domain/phase.ts` 外，谁都不许自己切主线前缀当上游。
+
+> **一段注释当时反对过这张表**（`round-turn-runner`：「不建每阶段的映射表 —— 那是
+> PHASES 这条线的第二份拷贝，两份必然漂移」）。**顾虑是对的，答案是错的**：不建表
+> 并没有换来一份实现，反而正好长出了它想躲的那三份拷贝。已改。
+
+**执行顺序没有变松。** 这张表只改「谁是谁的上游」，主线仍然是全序，一个 Change
+仍然一次只在一个阶段上。让 Plan 和 TestPlan 真正并行是 §8.6·③。
+
+#### §8.6·② 是虚惊，别去「修」它
+
+`phaseGraphOf` 拒绝一切非子序列（`not_a_subsequence`，实测过），而子序列保持相对
+顺序 —— 全序下标算出来的「谁在谁下游」和自定义图上逐条一致。那条不变量只比较先后，
+从不比较距离或相邻。代码里那句注释本来就是这么写的。
+
+#### §8.6·③ 没做
+
+账本身写着「省 1 轮，并行本身不值这个改动」。而且它要动 `ChangeState.phase` 是单数
+这件事 —— 地基级，不是这一批的延长线。
 
 #### reject 去哪：不是缺口
 
