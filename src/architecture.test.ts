@@ -112,6 +112,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 「把这一轮的裁决交给人」这个用例 —— 三条问人的路里最绕的一条。它够得着
   // `domain/rubric.ts`（把这一轮判成什么样写进题面），所以住 5。
   "app/decide-gate.ts": 5,
+  // 看和改评分标准（PRD §1.1 那个唯一的例外）。rubric 整族在 5，它也在 5。
+  "app/edit-rubric.ts": 5,
   // git。和 `codex/archive.ts` 同一个形状（包一个外部命令、整层可注入），所以同一层。
   // 它不 import 我们自己的任何东西，所以层数只影响「谁可以用它」——2 让 L2 起都能用。
   "work/repo.ts": 2,
@@ -127,6 +129,15 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // caught the drift the moment the question path was wired in, which is
   // exactly what this rule is for.
   "web/pty-session.ts": 2,
+  /*
+   * 面板那两屏读出来的东西（`/api/panel`、`/api/progress`）。
+   *
+   * **它在 `web/` 而不在 `app/` 是有判据的**：三条问人的路是用例（有下场，换个
+   * 界面那些下场一个字都不用改），这两屏出去的东西按「界面要画什么」组织
+   * （`workspace`、`currentPhase`、`mark`）—— 换个界面就是另一份形状。塞进
+   * `app/` 会把界面的词汇拖进那一层。层数和 `panel-server` 一样，理由也一样。
+   */
+  "web/panel-view.ts": 5,
   // 又提了一层，理由和当初 2 -> 3 一样：它开始承载 rubric 编辑（PRD §1.1 那个
   // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
   // 在接口写进去的那一刻就会红。
@@ -378,12 +389,15 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）、
   // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）、`app/record-brief.ts`（→ 1093）、
   // `app/decide-gate.ts`（→ 875）。三条问人的路现在全在应用层，`handle()` 只剩转发。
-  "web/panel-server.ts#handle": 875,
+  // 再抽 `app/edit-rubric.ts` + `web/panel-view.ts`（那两屏的读）（→ 652）。
+  "web/panel-server.ts#handle": 652,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
   // 91% —— 它一个模块够得着全树。同上，拆一块钉一块。
-  "web/panel-server.ts": 0.92,
+  // 2026-08-05 J 批：搬走五块之后 89%。**它掉得比配料单慢，而这是对的** ——
+  // 搬出去的模块仍然在它下游，闭包照样够得着；真正变小的是「改它一次要读多少」。
+  "web/panel-server.ts": 0.89,
 };
 
 describe("standing · 没有一个函数长成一层", () => {
@@ -445,18 +459,20 @@ describe("standing · 没有一个函数长成一层", () => {
  * 1410 行的 `handle()` 只有 3× —— 它自己正文就 94.6 KB，还牵着 33 个依赖。
  * 换句话说，J 批（拆 handle）不只是好看，它直接决定这套机关值不值钱。
  *
- * **J 批把三条问人的路搬进应用层之后（2026-08-05 晚，54 个模块 / 520.6 KB）** ——
- * 这不是预测，是搬完量出来的：
+ * **J 批之后（2026-08-05 晚，56 个模块 / 524.6 KB）** —— 这不是预测，是搬完
+ * 量出来的：
  *
  * ```
- * web/panel-server.ts        113.2 KB  21.7%    5×   ← 29.0% / 3× 搬下来的
- * app/decide-gate.ts          32.2 KB   6.2%   16×   ← 裁决
+ * web/panel-server.ts         91.1 KB  17.4%    6×   ← 29.0% / 3× 搬下来的
+ * app/decide-gate.ts          32.2 KB   6.1%   16×   ← 裁决
+ * web/panel-view.ts           31.7 KB   6.0%   17×   ← 那两屏的读
  * app/waive.ts                20.8 KB   4.0%   25×   ← 接受风险
  * app/record-brief.ts         16.6 KB   3.2%   31×   ← 录需求
- * app/ask-human.ts            11.7 KB   2.2%   45×   ← 三条路共用的那段
+ * app/edit-rubric.ts          15.8 KB   3.0%   33×   ← 改标准
+ * app/ask-human.ts            11.7 KB   2.2%   45×   ← 三条问人的路共用的那段
  * ```
  *
- * 同一段逻辑，待在 `handle()` 里是 3×，搬进应用层就是 16~45×。**这是「拆它直接
+ * 同一段逻辑，待在 `handle()` 里是 3×，搬出去就是 16~45×。**这是「拆它直接
  * 提升整套机关的收益」这句话的实测值**，不是一句好听的话。
  *
  * 这条护栏钉的是**别再退步**：除了例外表里那个，谁的配料单都不许超过全树三成。
