@@ -49,7 +49,7 @@ Report every problem you found as a blocker. An empty list means you found none.
    读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"overall": "<one sentence on whether this round is good enough, and why>"}
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
    **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
@@ -130,7 +130,7 @@ Report every problem you found as a blocker. An empty list means you found none.
    读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"overall": "<one sentence on whether this round is good enough, and why>"}
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
    **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
@@ -214,7 +214,7 @@ Report every problem you found as a blocker. An empty list means you found none.
    读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"overall": "<one sentence on whether this round is good enough, and why>"}
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
    **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
@@ -295,7 +295,7 @@ Report every problem you found as a blocker. An empty list means you found none.
    读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"overall": "<one sentence on whether this round is good enough, and why>"}
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
    **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
@@ -376,7 +376,7 @@ Report every problem you found as a blocker. An empty list means you found none.
    读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"overall": "<one sentence on whether this round is good enough, and why>"}
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
    **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
@@ -841,7 +841,7 @@ Report every problem you found as a blocker. An empty list means you found none.
    读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"overall": "<one sentence on whether this round is good enough, and why>"}
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
    **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
