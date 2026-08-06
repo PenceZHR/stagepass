@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import {
+import { blastRadiusOf, dependentsOf,
   closureOf,
   dependenciesOf,
   parseModuleGraph,
@@ -134,5 +134,67 @@ describe("L0 · 闭包 —— 「改这个模块，波及多远」", () => {
       file("b.ts", 'import { a } from "./a";\nexport const b = a;\n'),
     ]);
     assert.deepEqual(closureOf(cyclic, "a.ts").sort(), ["a.ts", "b.ts"]);
+  });
+});
+
+/**
+ * **爆炸半径和依赖闭包是两个方向，而它们在真树上几乎是反的。**
+ *
+ * `closureOf` 的注释原来写着「改这个模块，最多波及多远」—— 而它走的是
+ * `dependenciesOf`（我依赖谁），答的其实是「要动它我得读多少」。
+ * 2026-08-06 在真树上量出来：
+ *
+ * ```
+ *                       closureOf   blastRadiusOf
+ * domain/phase.ts             1          39
+ * web/panel-server.ts        51           0
+ * ```
+ *
+ * 一个量错方向的指标比没有指标更贵：`panel-server` 会显得「碰不得」，而真正
+ * 碰不得的 `domain/phase.ts` 看着人畜无害。
+ */
+describe("爆炸半径：改它会砸到谁（反方向）", () => {
+  /** 一条链加一个旁支：`leaf` 谁都不依赖，却是所有人的地基。 */
+  const graph = parseModuleGraph([
+    { path: "leaf.ts", text: "export const a = 1;" },
+    { path: "mid.ts", text: `import { a } from "./leaf";\nexport const b = a;` },
+    { path: "top.ts", text: `import { b } from "./mid";\nexport const c = b;` },
+    { path: "side.ts", text: `import { a } from "./leaf";\nexport const d = a;` },
+    {
+      path: "app.ts",
+      text: `import { c } from "./top";\nimport { d } from "./side";\nexport const e = c + d;`,
+    },
+  ]);
+
+  it("**直接依赖我的** —— 改签名当场编译不过的那些人", () => {
+    assert.deepEqual(dependentsOf(graph, "leaf.ts"), ["mid.ts", "side.ts"]);
+    assert.deepEqual(dependentsOf(graph, "app.ts"), []);
+  });
+
+  it("**传递波及的** —— 不含自己", () => {
+    assert.deepEqual(
+      blastRadiusOf(graph, "leaf.ts"), ["app.ts", "mid.ts", "side.ts", "top.ts"]);
+    assert.deepEqual(blastRadiusOf(graph, "app.ts"), []);
+  });
+
+  /**
+   * 这一条是那个 bug 的回归测试：**同一个模块，两个方向的数必须能差得很远**。
+   * 谁要是把 `blastRadiusOf` 又写成正向，这里当场红。
+   */
+  it("**两个方向不是同一件事** —— 叶子的闭包最小、爆炸半径最大", () => {
+    // leaf 谁都不依赖（闭包只有自己），却波及全部四个。
+    assert.deepEqual(closureOf(graph, "leaf.ts"), ["leaf.ts"]);
+    assert.equal(blastRadiusOf(graph, "leaf.ts").length, 4);
+    // app 读遍全树，却一个人都砸不到。
+    assert.equal(closureOf(graph, "app.ts").length, 5);
+    assert.equal(blastRadiusOf(graph, "app.ts").length, 0);
+  });
+
+  it("有环也不死 —— 环是真实可能存在的，另有护栏盯它", () => {
+    const cyclic = parseModuleGraph([
+      { path: "x.ts", text: `import { y } from "./y";\nexport const x = y;` },
+      { path: "y.ts", text: `import { x } from "./x";\nexport const y = x;` },
+    ]);
+    assert.deepEqual(blastRadiusOf(cyclic, "x.ts"), ["y.ts"]);
   });
 });

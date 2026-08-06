@@ -1,6 +1,6 @@
 import tsc from "typescript";
 
-import { dependenciesOf, type ModuleFile, type ModuleGraph } from "./module-graph";
+import { dependentsOf, dependenciesOf, type ModuleFile, type ModuleGraph } from "./module-graph";
 
 /**
  * 配料单：派轮给一个模块组时，喂进去的东西**由图确定性地算出来**（§5.4.1）。
@@ -173,11 +173,16 @@ export function ingredientsFor(input: {
     signatures: signaturesOf(byPath.get(path)!),
   }));
 
-  const dependents = input.graph.modules
-    .filter((module) => !inGroup.has(module.path)
-      && module.imports.some((edge) => inGroup.has(edge.to)))
-    .map((module) => module.path)
-    .sort();
+  /*
+   * 「谁依赖你」= **直接**依赖（`dependentsOf`，一份实现）。
+   *
+   * 这里要的就是直接那一层：这句话是说给「别乱改签名」听的，而改签名当场编译
+   * 不过的正是直接 import 它的人。传递的那一圈是 `blastRadiusOf`，它答的是另一个
+   * 问题（改它一共会疼多少人），不该混进这份名单里让模型以为都要顾。
+   */
+  const dependents = [...new Set(
+    [...inGroup].flatMap((path) => dependentsOf(input.graph, path)),
+  )].filter((path) => !inGroup.has(path)).sort();
 
   return { own, dependencies, dependents };
 }
