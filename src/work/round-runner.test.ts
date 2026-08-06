@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
+/*
+ * **夹具阶段是 Build，不是 Spec**（2026-08-06 改的）。
+ *
+ * 这里验的是「一轮怎么变成 gap」那条机械链路，用哪个阶段无所谓 —— 但反方的
+ * 自由 blockers 只在**够得着代码**的阶段还算数（`blue.investigates`）。
+ * Spec 那半边现在走逐条判定，拿它当夹具，测的就不是这条链路了。
+ */
+
 import { SCHEMA_SQL } from "../db/schema";
 import { RESULT_CONTRACT } from "../domain/turn";
 import { ScriptedCodexTransport, type CodexTransport } from "../codex/transport";
@@ -141,7 +149,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
 
     const settled = await runRound(
-      { changeId: CHANGE, phase: "Spec", round: 1, task: "写 Spec", judgeThreadId: null },
+      { changeId: CHANGE, phase: "Build", round: 1, task: "写 Spec", judgeThreadId: null },
       {
         transport,
         gaps,
@@ -159,7 +167,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     assert.deepEqual(settled.artifactIds, ["spec.md"]);
     assert.deepEqual(settled.blockers.map((b) => b.id), ["SPEC-1"]);
     // and it is state, not just a return value
-    assert.deepEqual(gaps.blockers(CHANGE, "Spec").map((b) => b.id), ["SPEC-1"]);
+    assert.deepEqual(gaps.blockers(CHANGE, "Build").map((b) => b.id), ["SPEC-1"]);
   });
 
   it("puts the open gaps to the judge, and asks red for the contract shape", async () => {
@@ -180,7 +188,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       ),
     };
     const request = {
-      changeId: CHANGE, phase: "Spec" as const, task: "写 Spec", judgeThreadId: null,
+      changeId: CHANGE, phase: "Build" as const, task: "写 Spec", judgeThreadId: null,
     };
 
     await runRound({ ...request, round: 1 }, dependencies);
@@ -231,15 +239,15 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       ),
     };
     const request = {
-      changeId: CHANGE, phase: "Spec" as const, task: "写 Spec", judgeThreadId: null,
+      changeId: CHANGE, phase: "Build" as const, task: "写 Spec", judgeThreadId: null,
     };
 
     await runRound({ ...request, round: 1 }, first);
-    assert.deepEqual(gaps.blockers(CHANGE, "Spec").map((b) => b.id), ["SPEC-1"]);
+    assert.deepEqual(gaps.blockers(CHANGE, "Build").map((b) => b.id), ["SPEC-1"]);
 
     const settled = await runRound({ ...request, round: 2, judgeThreadId: "JUDGE-1" }, dependencies);
     assert.deepEqual(settled.blockers, []);
-    assert.equal(gaps.all(CHANGE, "Spec")[0]!.resolution, "已补可测的验收标准");
+    assert.equal(gaps.all(CHANGE, "Build")[0]!.resolution, "已补可测的验收标准");
   });
 
   it("keeps a gap the judge said nothing about", async () => {
@@ -250,7 +258,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       verdicts({}), // judge says nothing in round 2
     ], "JUDGE-1");
     const request = {
-      changeId: CHANGE, phase: "Spec" as const, task: "写 Spec", judgeThreadId: null,
+      changeId: CHANGE, phase: "Build" as const, task: "写 Spec", judgeThreadId: null,
     };
     const withBlue = (blockers: {
       id: string; severity: string; title: string;
@@ -280,7 +288,7 @@ describe("L4 · a round that half happened settles nothing", () => {
     const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
 
     await assert.rejects(() => runRound(
-      { changeId: CHANGE, phase: "Spec", round: 1, task: "写 Spec", judgeThreadId: null },
+      { changeId: CHANGE, phase: "Build", round: 1, task: "写 Spec", judgeThreadId: null },
       {
         transport,
         gaps,
@@ -295,7 +303,7 @@ describe("L4 · a round that half happened settles nothing", () => {
     ), /no sub-agent/);
 
     // The gate must still read the state from before the round.
-    assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
+    assert.deepEqual(gaps.all(CHANGE, "Build"), []);
   });
 
   it("refuses a blue that answered in the wrong shape", async () => {
@@ -304,7 +312,7 @@ describe("L4 · a round that half happened settles nothing", () => {
     const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
 
     await assert.rejects(() => runRound(
-      { changeId: CHANGE, phase: "Spec", round: 1, task: "写 Spec", judgeThreadId: null },
+      { changeId: CHANGE, phase: "Build", round: 1, task: "写 Spec", judgeThreadId: null },
       {
         transport,
         gaps,
@@ -318,7 +326,7 @@ describe("L4 · a round that half happened settles nothing", () => {
       },
     ), /blue:/);
 
-    assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
+    assert.deepEqual(gaps.all(CHANGE, "Build"), []);
   });
 });
 
@@ -332,7 +340,7 @@ describe("L4 · a round that half happened settles nothing", () => {
  */
 describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", () => {
   const request = {
-    changeId: CHANGE, phase: "Spec" as const, round: 1,
+    changeId: CHANGE, phase: "Build" as const, round: 1,
     task: "写 Spec", judgeThreadId: null,
   };
 
@@ -397,7 +405,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       worklist: worklistOf(db),
       readThread: roles(answer({}), answer({})),
     }), RoundAgentsNotFoundError);
-    assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
+    assert.deepEqual(gaps.all(CHANGE, "Build"), []);
   });
 
   it("只派生了一条也失败 —— 读不到蓝方就不许动闸门", async () => {
@@ -413,7 +421,7 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
       worklist: worklistOf(db),
       readThread: roles(answer({}), answer({})),
     }), RoundAgentsNotFoundError);
-    assert.deepEqual(gaps.all(CHANGE, "Spec"), []);
+    assert.deepEqual(gaps.all(CHANGE, "Build"), []);
   });
 
   it("**派多了取最后两条，而实际派了几条照数报上去**", async () => {
@@ -450,12 +458,12 @@ describe("L4 · 这一轮跑在哪两条线程上，由 StagePass 自己认", ()
  */
 describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
   const request = {
-    changeId: CHANGE, phase: "Spec" as const, round: 1,
+    changeId: CHANGE, phase: "Build" as const, round: 1,
     task: "写 Spec", judgeThreadId: null,
   };
 
   const withGap = (db: Database.Database, gaps: GapStore) => {
-    gaps.settleRound(CHANGE, "Spec", {
+    gaps.settleRound(CHANGE, "Build", {
       round: 0,
       found: [{ id: "SPEC-1", severity: "P1", title: "验收不可测", where: null, why: null }],
       verdicts: {},
@@ -477,7 +485,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
-    const item = worklist.read(CHANGE, "Spec", 1)[0]!;
+    const item = worklist.read(CHANGE, "Build", 1)[0]!;
     assert.equal(item.target, "SPEC-1", "上层要按它认回是哪一条");
     assert.equal(item.prompt.includes("SPEC-1"), false, "模型看得到 id 就会去抄它");
     assert.match(item.prompt, /验收不可测/);
@@ -550,7 +558,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
   it("**答了一部分不算** —— 那是它的判断，沉默的那几条按老规矩保持 open", async () => {
     const db = database();
     const gaps = new GapStore(db, () => new Date(AT));
-    gaps.settleRound(CHANGE, "Spec", {
+    gaps.settleRound(CHANGE, "Build", {
       round: 0,
       found: [
         { id: "SPEC-1", severity: "P1", title: "第一个", where: null, why: null },

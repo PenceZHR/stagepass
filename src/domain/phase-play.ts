@@ -40,6 +40,20 @@ export interface PhasePlay {
     readonly task: string;
     /** 它够得着什么 —— 这是阶段之间差得最多的一项。 */
     readonly reach: string;
+    /**
+     * 反方在这一阶段是**去调查**，还是**对着标准评一份文档**。
+     *
+     * 判据紧跟着上面那行 `reach`，因为它就是 `reach` 的直接后果 —— 放在这儿而不是
+     * 另建一张名单，是为了让「够得着代码」和「发现是无界的」永远是同一处的两行。
+     *
+     * - `true`（够得着代码：Build / Fix / Review / QA / Merge）——
+     *   它自己去看，报出来的是**真缺陷**。那个空间无界是本质的，不是病：
+     *   Review 砍掉它，就只剩红方一个人看代码，对抗价值当场归零。
+     * - `false`（只读那份产出：PRD / Spec / TechSpec / Plan / TestPlan / Retro）——
+     *   它的判断全部走逐条判定，**每轮上限 = criterion 条数，收敛 = 全 yes**。
+     *   真库 CHG-001 那 139 条无界发现，全是从这半边来的。
+     */
+    readonly investigates: boolean;
     /** id 怎么起。红蓝共用 id 空间的阶段要分前缀，否则会静默丢一条。 */
     readonly idRule: readonly string[];
     /** 格式契约之后还要交代的话。 */
@@ -69,6 +83,7 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
     blue: {
       task: "2. 反方。任务：读正方产出，**照着那份逐条判定的标准**，看它每一节写得够不够格。这个阶段你只判那些标准，不另外提问题。",
       reach: "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。",
+      investigates: false,
       idRule: [],
       after: [
         "   它不要另外列问题清单：这个阶段的判断全部走逐条判定。",
@@ -82,13 +97,12 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       idRule: [],
     },
     blue: {
-      task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
+      task: "2. 反方。任务：读正方产出，**照着那份逐条判定的标准**，看它每一节写得够不够格。这个阶段你只判那些标准，不另外提问题。",
       reach: "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。",
-      idRule: [
-        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
-      ],
+      investigates: false,
+      idRule: [],
       after: [
-        "   它找出的每个问题都要放进 blockers。",
+        "   它不要另外列问题清单：这个阶段的判断全部走逐条判定。",
         "   再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。",
       ],
     },
@@ -99,13 +113,12 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       idRule: [],
     },
     blue: {
-      task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
+      task: "2. 反方。任务：读正方产出，**照着那份逐条判定的标准**，看它每一节写得够不够格。这个阶段你只判那些标准，不另外提问题。",
       reach: "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。",
-      idRule: [
-        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
-      ],
+      investigates: false,
+      idRule: [],
       after: [
-        "   它找出的每个问题都要放进 blockers。",
+        "   它不要另外列问题清单：这个阶段的判断全部走逐条判定。",
         "   再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。",
       ],
     },
@@ -116,13 +129,12 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       idRule: [],
     },
     blue: {
-      task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
+      task: "2. 反方。任务：读正方产出，**照着那份逐条判定的标准**，看它每一节写得够不够格。这个阶段你只判那些标准，不另外提问题。",
       reach: "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。",
-      idRule: [
-        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
-      ],
+      investigates: false,
+      idRule: [],
       after: [
-        "   它找出的每个问题都要放进 blockers。",
+        "   它不要另外列问题清单：这个阶段的判断全部走逐条判定。",
         "   再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。",
       ],
     },
@@ -133,13 +145,12 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       idRule: [],
     },
     blue: {
-      task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
+      task: "2. 反方。任务：读正方产出，**照着那份逐条判定的标准**，看它每一节写得够不够格。这个阶段你只判那些标准，不另外提问题。",
       reach: "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。",
-      idRule: [
-        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
-      ],
+      investigates: false,
+      idRule: [],
       after: [
-        "   它找出的每个问题都要放进 blockers。",
+        "   它不要另外列问题清单：这个阶段的判断全部走逐条判定。",
         "   再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。",
       ],
     },
@@ -155,6 +166,7 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       // 反方不会去挑一件没人让它挑的事，判据就会落空。要求和判据必须是同一件事。
       task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处，**以及编码上的毛病** —— 风格和周围的代码对不上、命名和上游文档对不上、同一条规则被抄成了两份、不明显的决定没写为什么。",
       reach: "   可以读这一轮改动涉及的文件、它们的直接调用方，以及任务里列出的那几份已批准上游产物（要判它有没有做到要求，就得对着要求看）—— 只读这些，不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。",
+      investigates: true,
       idRule: [
         "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
       ],
@@ -174,6 +186,7 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
     blue: {
       task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
       reach: "   可以读被审的那个 commit 涉及的文件，以及它们的直接调用方 —— 自己去看，不要只凭正方的报告下结论。不要自己执行任何东西，也不要动手修：跑起来验是 QA 的活儿。",
+      investigates: true,
       idRule: [
         "   每个问题一个稳定 id，**必须以 `RVB-` 开头**（例如 `RVB-NULL-DEREF-1`）—— 另一边用的是别的前缀，撞了会丢一条。同一个问题在后续轮次要用同一个 id。",
       ],
@@ -191,6 +204,7 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
     blue: {
       task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
       reach: "   可以读这一轮改动涉及的文件、它们的直接调用方，以及任务里列出的那几份已批准上游产物（要判它有没有做到要求，就得对着要求看）—— 只读这些，不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。",
+      investigates: true,
       idRule: [
         "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
       ],
@@ -210,6 +224,7 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
     blue: {
       task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
       reach: "   可以读代码，也**可以自己跑一遍**验证正方报的结果 —— 这是唯一一个活儿本身就是执行的阶段，一个跑不了东西的反方核对不了一份「我跑了、结果是这样」的报告。不要动手改代码：这一轮的活儿是验，不是修。",
+      investigates: true,
       idRule: [
         "   每个问题一个稳定 id，**必须以 `QAB-` 开头**（例如 `QAB-NULL-DEREF-1`）—— 另一边用的是别的前缀，撞了会丢一条。同一个问题在后续轮次要用同一个 id。",
       ],
@@ -222,14 +237,15 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
   Merge: {
     red: {
       heading: "1. 正方。**下面这段任务原样转达给正方，一个字都不要改** ——「人要的是这些」那几行是人自己答的需求，改写或省略它，正方就只能凭空编。",
-      idRule: [],
+      idRule: [
+        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
+      ],
     },
     blue: {
       task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
       reach: "   可以读这一次的全部 commit（`git log` 里属于这个 Change 的那些）以及它们改到的文件 —— 交付说明里「改了什么、对谁有影响、能不能回滚」全是对代码的断言，不自己看就只能跟着正方点头。不要自己执行任何东西，也不要动手改。",
-      idRule: [
-        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
-      ],
+      investigates: true,
+      idRule: [],
       after: [
         "   它找出的每个问题都要放进 blockers。",
         "   再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。",
@@ -242,15 +258,26 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       idRule: [],
     },
     blue: {
-      task: "2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处。",
+      task: "2. 反方。任务：读正方产出，**照着那份逐条判定的标准**，看它每一节写得够不够格。这个阶段你只判那些标准，不另外提问题。",
       reach: "   读正方报出来的那份产出文件本身（它交的是路径，正文在文件里），基于它提出问题。除那份产出之外不要读仓库的其他内容、不要自己动手修。",
-      idRule: [
-        "   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。",
-      ],
+      investigates: false,
+      idRule: [],
       after: [
-        "   它找出的每个问题都要放进 blockers。",
+        "   它不要另外列问题清单：这个阶段的判断全部走逐条判定。",
         "   再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。",
       ],
     },
   },
 };
+
+/**
+ * 这个阶段的反方还交不交**自由 blockers**（一份没有上限、没有边界的问题清单）。
+ *
+ * 判据只有一条 —— `PHASE_PLAY[phase].blue.investigates`，也就是**它够不够得着代码**。
+ * 定义和理由都在上面那张表的 `investigates` 那一格，这儿只是把它读出来。
+ *
+ * `Done` 什么都不派，问到它一律返回 `false`：没有轮次，也就没有 blockers。
+ */
+export function reportsFreeFormBlockers(phase: string): boolean {
+  return PHASE_PLAY[phase as Exclude<Phase, "Done">]?.blue.investigates ?? false;
+}

@@ -123,28 +123,40 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   Spec: [
-    "每条需求都能对应回 PRD 里的某一条，没有凭空多出来的",
-    "每条行为都写了它的边界情况和出错时的表现",
-    "用词和上游文档一致，没有为同一个概念发明第二个名字",
-    "标明了哪些地方是有意留待 TechSpec 决定的",
+    { section: "scope", text: "每条需求都能对应回 PRD 里的某一条，没有凭空多出来的" },
+    { section: "scope", text: "PRD 的每条验收标准都说明了由这里的哪几段行为满足，没有漏掉的" },
+    { section: "behaviour", text: "每条行为都写清了给什么、做什么、出什么" },
+    { section: "edge", text: "每条行为都写了它的边界情况和出错时的表现" },
+    { section: "edge", text: "没有用「其余情况未定义」这类写法把边界推给下游" },
+    { section: "terms", text: "用词和上游文档一致，没有为同一个概念发明第二个名字" },
+    { section: "deferred", text: "数据怎么存、模块怎么划分、用什么技术都没有在这一份里定" },
+    { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   TechSpec: [
-    "写清楚了数据怎么存、状态怎么迁移，而不只是模块怎么划分",
-    "每一个技术选择都写了它的代价，不只是好处",
-    "指出了这个设计里最可能出错的一处，以及为什么",
-    "没有引入 Spec 里不存在的行为",
+    { section: "data", text: "写清楚了数据怎么存、状态怎么迁移，而不只是模块怎么划分" },
+    { section: "data", text: "说清了哪些是权威、哪些是镜像" },
+    { section: "interfaces", text: "模块之间谁调谁、传什么、返回什么都写了，出错时返回什么也写了" },
+    { section: "tradeoffs", text: "每一个技术选择都写了它的代价，不只是好处" },
+    { section: "riskiest", text: "指名了最可能出错的一处，而不是并列罗列多项风险" },
+    { section: "traceability", text: "没有引入 Spec 里不存在的行为" },
+    { section: "traceability", text: "每条设计都对得回 Spec 的某一条" },
+    { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   Plan: [
-    "每一步都能独立验证，不需要等到最后才知道对不对",
-    "步骤之间的依赖是明确的，没有两步在改同一处却没定顺序",
-    "写了出问题时怎么退回去",
-    "标出了哪一步风险最高，以及为什么先做或后做",
+    { section: "steps", text: "每一步都有一个能独立交付的东西，不是一句「做 X 相关的工作」" },
+    { section: "order", text: "步骤之间的依赖是明确的，没有两步在改同一处却没定顺序" },
+    { section: "verification", text: "每一步都能独立验证，不需要等到最后才知道对不对" },
+    { section: "rollback", text: "写了实施到一半失败时怎么退回去，而不只是停止条件" },
+    { section: "riskiest", text: "指名了哪一步风险最高，以及为什么先做或后做" },
   ],
   TestPlan: [
-    "每条验收标准都至少有一个用例对着它",
-    "写了失败长什么样，而不只是成功长什么样",
-    "区分了「必须通过」和「知道会失败但先记着」",
-    "没有把「跑一遍看看」当成一条用例",
+    { section: "coverage", text: "上游每条验收标准都至少有一个用例对着它，逐条列出来了" },
+    { section: "cases", text: "每个用例都写了输入、前置状态和期望输出" },
+    { section: "failure", text: "写了失败长什么样，而不只是成功长什么样" },
+    { section: "failure", text: "写了怎么把「功能没实现」的失败和「测试自己写错」的失败区分开" },
+    { section: "gating", text: "区分了「必须通过」和「知道会失败但先记着」，后者写了为什么" },
+    { section: "how", text: "命令、环境、前置条件都写了，别人照着能重现" },
+    { section: "how", text: "没有把「跑一遍看看」当成一条用例" },
   ],
   /*
    * Build 这几条是照着**蓝方够得着什么**写的（2026-07-30 定）：它能读这一轮改动
@@ -194,11 +206,12 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
    * 和下一个阶段当成事实引用。少了它，一份意见挂在空气里。
    */
   Review: [
-    "写清楚审的是哪一个 commit，而不是笼统地说「当前代码」",
-    "逐条对照了 Spec 和 TechSpec，而不是通读一遍谈感受",
-    "每条意见都指明了文件和位置，看的人能直接翻到那儿",
-    "区分了「必须改」和「可以这样也可以那样」",
-    "检查了错误路径和边界，而不只是主流程",
+    { section: "subject", text: "写清楚审的是哪一个 commit，而不是笼统地说「当前代码」" },
+    { section: "against", text: "逐条对照了 Spec 和 TechSpec，而不是通读一遍谈感受" },
+    { section: "findings", text: "每条意见都指明了文件和位置，看的人能直接翻到那儿" },
+    { section: "findings", text: "没有发现问题时明写了没有，而不是留空" },
+    { section: "severity", text: "区分了「必须改」和「可以这样也可以那样」" },
+    { section: "paths", text: "检查了错误路径和边界，而不只是主流程" },
   ],
   Fix: [
     "每一条修的都对应一条具体的问题，没有夹带",
@@ -212,11 +225,11 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
    * 东西的人核对得了。在 Build 那边同样的话就只能靠猜，所以那边写的是「交出运行证据」。
    */
   QA: [
-    "写清楚测的是哪一个 commit，而不是笼统地说「当前代码」",
-    "按 TestPlan 逐条执行了，没有跳过，跳过的写明了为什么",
-    "失败的用例记下了实际输出和它来自哪一条用例，而不只是「没过」",
-    "确认过这一轮的改动没有让别处退化",
-    "跑的命令和环境写下来了，别人照着能重现",
+    { section: "subject", text: "写清楚测的是哪一个 commit，而不是笼统地说「当前代码」" },
+    { section: "executed", text: "按 TestPlan 逐条执行了，没有跳过，跳过的写明了为什么" },
+    { section: "failures", text: "失败的用例记下了实际输出和它来自哪一条用例，而不只是「没过」" },
+    { section: "regression", text: "确认过这一轮的改动没有让别处退化，并写了是怎么确认的" },
+    { section: "repro", text: "跑的命令和环境写下来了，别人照着能重现" },
   ],
   /*
    * 原来第一条是「没有未解决的阻断项」—— **那是闸门在管的事**（`domain/gate.ts` 会拿
@@ -228,16 +241,16 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
    * commit，所以它们判得了。
    */
   Merge: [
-    "每一条被接受的风险都写了理由和影响范围，而不是默默放行",
-    "变更说明写清楚了这次改了什么、对谁有影响，而不是复述阶段名",
-    "写明了怎么回滚，而不只是说「可以回滚」",
-    "说明和实际改动对得上，没有漏掉某个 commit 里的东西",
+    { section: "what", text: "写清楚了这次改了什么、对谁有影响，而不是复述阶段名" },
+    { section: "risks", text: "每一条被接受的风险都写了理由和影响范围；一条都没有时明写了没有" },
+    { section: "rollback", text: "写明了怎么回滚，而不只是说「可以回滚」" },
+    { section: "coverage", text: "说明和实际改动对得上，没有漏掉某个 commit 里的东西" },
   ],
   Retro: [
-    "写的是这一次真实发生的事，不是应该发生的事",
-    "至少有一条是关于流程本身的，而不全是关于代码",
-    "每条结论都能落到一个具体的下次会不一样的做法",
-    "记下了这次做对的事，不只是做错的",
+    { section: "happened", text: "写的是这一次真实发生的事，不是应该发生的事" },
+    { section: "process", text: "至少有一条是关于流程本身的，而不全是关于代码" },
+    { section: "next", text: "每条结论都能落到一个具体的下次会不一样的做法" },
+    { section: "kept", text: "记下了这次做对的事，不只是做错的" },
   ],
   // 终局阶段：没有 turn 在这里跑，所以没有人可以被摆一张清单。
   // 硬凑一份出来，就是给一个后端答不出的栏目 —— 那是反着方向的静默失效。

@@ -33,8 +33,10 @@ describe("L4 · what the judge is told", () => {
   });
 
   it("carries the result contract to both roles", () => {
+    // Build：反方在这一阶段够得着代码、照旧交 blockers，所以两边共用同一份契约。
+    // 有模板的阶段反方拿的是只剩 overall 的那份（见「反方的自由 blockers 丢在解析层」）。
     const prompt = judgePrompt({
-      phase: "Spec", round: 1, task: "写出 Spec", openGaps: [],
+      phase: "Build", round: 1, task: "写代码", openGaps: [],
     });
     /*
      * **契约原文要出现两遍 —— 红蓝各一份。** 第 4 轮实测：蓝方那节原来只写
@@ -152,9 +154,10 @@ describe("L4 · 结果契约：形状留在提示词里，说明走文件", () =
   });
 
   it("**省下来的是真的** —— 文件化之后提示词短一大截", () => {
-    const inline = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
+    // 说明出现两遍是「红蓝各一份契约」的阶段才有的事 —— 取 Build。
+    const inline = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
     const withFile = judgePrompt({
-      phase: "Spec", round: 1, task: "t", openGaps: [],
+      phase: "Build", round: 1, task: "t", openGaps: [],
       contractNotesPath: "/tmp/round/contract-notes.md",
     });
     /*
@@ -262,7 +265,9 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
-    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
+    // 红方的自审一概不算（老规矩）；2026-08-06 起反方在这儿也不交自由 blockers 了
+    // （它有模板，判断走逐条判定）—— 所以这一轮这条通道**两边都是空的**。
+    assert.deepEqual(reading.outcome.found, []);
   });
 
   it("**Build 也照旧** —— 红方写的代码是它自己的作品", () => {
@@ -654,7 +659,8 @@ describe("L4 · reading the judge's verdicts", () => {
 describe("L4 · each role is read from its own transcript", () => {
   it("takes artifacts from red and problems from blue", () => {
     const reading = readRound({
-      phase: "Spec",
+      // Build：反方够得着代码，它报的东西照旧算数。
+      phase: "Build",
       round: 2,
       red: answer(["spec.md"]),
       blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null }]),
@@ -1202,12 +1208,20 @@ describe("L4 · 有模板的阶段，反方的自由 blockers 丢在解析层", 
     assert.deepEqual(reading.outcome.found.map((each) => each.id), ["B-1"]);
   });
 
-  it("Spec 照旧收 —— 它还没有模板，砍掉等于让反方无处可说", () => {
+  it("Fix 照旧收 —— 它交的是 commit，没有文档可套模板", () => {
+    const reading = readRound({
+      phase: "Fix", round: 1, red, blue: blueWith("F-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["F-1"]);
+  });
+
+  it("Spec 现在也不收了 —— 它有模板了", () => {
     const reading = readRound({
       phase: "Spec", round: 1, red, blue: blueWith("S-1"),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
-    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
+    assert.deepEqual(reading.outcome.found, []);
   });
 });
 
@@ -1306,7 +1320,8 @@ describe("L4 · 产出模板", () => {
   });
 
   it("没有模板的阶段一个字都不印 —— 空小节会让裁判去猜", () => {
-    const without = judgePrompt({ ...base, phase: "Spec" });
+    // Build 交的是 commit 不是文档，所以它没有模板（见 phase-template.ts）。
+    const without = judgePrompt({ ...base, phase: "Build" });
     assert.ok(!without.includes("必须照这个模板写"), "没有模板却印了那一节");
   });
 });

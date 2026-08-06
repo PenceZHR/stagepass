@@ -55,7 +55,7 @@ describe("出厂标准 · 要求的东西必须先被要求", () => {
   });
 
   it("没有模板的阶段，出厂仍然一条都不阻断 —— 那条拍板没被翻", () => {
-    for (const phase of ["Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review"] as const) {
+    for (const phase of ["Build", "Fix"] as const) {
       for (const role of RUBRIC_ROLES) {
         for (const entry of defaultCriteria(phase, role)) {
           assert.equal(entry.blocking, false, `${phase}/${role}：${entry.text}`);
@@ -64,18 +64,46 @@ describe("出厂标准 · 要求的东西必须先被要求", () => {
     }
   });
 
-  it("PRD 的 producer：每条都挂在一个真实存在的模板节上", () => {
-    const keys = new Set(templateFor("PRD")!.map((each) => each.key));
-    for (const entry of defaultCriteria("PRD", "producer")) {
-      assert.ok(entry.section != null, `没挂节：${entry.text}`);
-      assert.ok(keys.has(entry.section!), `挂到了不存在的节 ${entry.section}`);
+  it("**critic / verdict 那两份永远不挂节** —— 它们讲的是方法，和产物无关", () => {
+    for (const phase of PHASES) {
+      for (const role of ["critic", "verdict"] as const) {
+        for (const entry of defaultCriteria(phase, role)) {
+          assert.equal(entry.section, null, `${phase}/${role}：${entry.text}`);
+          assert.equal(entry.blocking, false, `${phase}/${role}：${entry.text}`);
+        }
+      }
     }
   });
 
-  it("**六节每一节都至少有一条标准** —— 没人判的节等于没有那一节", () => {
-    const covered = new Set(defaultCriteria("PRD", "producer").map((each) => each.section));
-    for (const section of templateFor("PRD")!) {
-      assert.ok(covered.has(section.key), `没人判这一节：${section.key}`);
+  it("有模板的阶段：producer 每条都挂在一个真实存在的节上", () => {
+    for (const phase of PHASES) {
+      const sections = templateFor(phase);
+      if (sections === null) continue;
+      const keys = new Set(sections.map((each) => each.key));
+      for (const entry of defaultCriteria(phase, "producer")) {
+        assert.ok(entry.section != null, `${phase} 没挂节：${entry.text}`);
+        assert.ok(keys.has(entry.section!), `${phase} 挂到了不存在的节 ${entry.section}`);
+      }
+    }
+  });
+
+  it("**每一节都至少有一条标准** —— 没人判的节等于没有那一节", () => {
+    for (const phase of PHASES) {
+      const sections = templateFor(phase);
+      if (sections === null) continue;
+      const covered = new Set(defaultCriteria(phase, "producer").map((each) => each.section));
+      for (const section of sections) {
+        assert.ok(covered.has(section.key), `${phase} 没人判这一节：${section.key}`);
+      }
+    }
+  });
+
+  it("没有模板的阶段，producer 一条都不许挂节 —— 挂了就是悬空", () => {
+    for (const phase of PHASES) {
+      if (templateFor(phase) !== null) continue;
+      for (const entry of defaultCriteria(phase, "producer")) {
+        assert.equal(entry.section, null, `${phase} 挂到了不存在的模板：${entry.text}`);
+      }
     }
   });
 });

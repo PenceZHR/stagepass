@@ -5,11 +5,11 @@ import {
 import { parseTurnResult } from "./turn";
 import { isHumanGap, templateGapId } from "./gap";
 import {
-  missingSections, renderTemplate, reportsFreeFormBlockers, type TemplateSection,
+  missingSections, renderTemplate, type TemplateSection,
 } from "./phase-template";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
 import { redReviewsOthers, type Phase } from "./phase";
-import { PHASE_PLAY } from "./phase-play";
+import { PHASE_PLAY, reportsFreeFormBlockers } from "./phase-play";
 
 /**
  * One adversarial round: red produces, blue attacks, the judge settles.

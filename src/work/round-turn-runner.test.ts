@@ -44,21 +44,25 @@ function open() {
 }
 
 /**
- * 把 Change 摆到 Spec（离线手段，L1 的假答案纪律）。
+ * 把 Change 一路推到 Build（离线手段，L1 的假答案纪律）。
  *
- * **2026-08-06 起「轮次号」这两条测试必须在 Spec 上跑**：它们靠反方的自由 blockers
- * 当载体，而 PRD 有模板之后那条通道被有意关掉了（`reportsFreeFormBlockers`）。
- * 它们要证的是「轮次从账本数、不用 job.attempt」，和哪个阶段无关 —— 换一个还开着
- * 那条通道的阶段，测的还是同一件事。
+ * **2026-08-06 起「轮次号」那两条测试必须在 Build 上跑**：它们靠反方的自由 blockers
+ * 当载体，而那条通道只在**反方够得着代码**的阶段还留着（`blue.investigates`）——
+ * 前五个阶段现在走逐条判定。它们要证的是「轮次从账本数、不用 job.attempt」，
+ * 和哪个阶段无关。
  */
-function toSpec(context: ReturnType<typeof open>): void {
-  context.changes.apply(CHANGE, "start");
-  context.changes.apply(CHANGE, "settle");
-  new EvidenceStore(context.db).put(CHANGE, "PRD", {
-    artifactIds: ["docs/stagepass/CHG-RT/PRD-r1.md"], blockers: [], waivedBlockerIds: [],
-  });
-  context.changes.apply(CHANGE, "approve");
-  assert.equal(context.changes.read(CHANGE).state.phase, "Spec");
+function toBuild(context: ReturnType<typeof open>): void {
+  const evidence = new EvidenceStore(context.db);
+  while (context.changes.read(CHANGE).state.phase !== "Build") {
+    const phase = context.changes.read(CHANGE).state.phase;
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    evidence.put(CHANGE, phase, {
+      artifactIds: [`docs/stagepass/${CHANGE}/${phase}-r1.md`],
+      blockers: [], waivedBlockerIds: [],
+    });
+    context.changes.apply(CHANGE, "approve");
+  }
 }
 
 const RED_THREAD = "T-RED";
@@ -136,7 +140,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
    */
   it("驳回之后再跑 —— 第二轮发现的问题记在第 2 轮", async () => {
     const context = open();
-    toSpec(context);
+    toBuild(context);
     const blueSays = [
       answer([{ id: "S-1", severity: "P1", title: "第一轮发现的" }]),
       answer([{ id: "S-2", severity: "P1", title: "第二轮发现的" }]),
@@ -157,7 +161,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
     await dispatchRound(loop, "J2");
 
     const opened = Object.fromEntries(
-      context.gaps.all(CHANGE, "Spec").map((gap) => [gap.id, gap.openedRound]),
+      context.gaps.all(CHANGE, "Build").map((gap) => [gap.id, gap.openedRound]),
     );
     assert.equal(opened["S-1"], 1);
     assert.equal(opened["S-2"], 2, "第二轮发现的问题被记成了第 1 轮");
@@ -165,7 +169,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
 
   it("失败重跑也算得进去 —— retry 之后那一轮是第 2 轮", async () => {
     const context = open();
-    toSpec(context);
+    toBuild(context);
     const loop = new TurnLoop({
       database: context.db,
       runner: runner(
@@ -184,7 +188,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
     await dispatchRound(loop, "J2");
 
     assert.equal(
-      context.gaps.all(CHANGE, "Spec").find((gap) => gap.id === "S-1")?.openedRound,
+      context.gaps.all(CHANGE, "Build").find((gap) => gap.id === "S-1")?.openedRound,
       2,
       "失败后的重跑没算进轮次",
     );
