@@ -1,6 +1,9 @@
 import type Database from "better-sqlite3";
 
 import { upstreamOf, type Phase } from "../domain/phase";
+import {
+  approvalTargets, recommendedApproval, type ChangeState,
+} from "../domain/change-state";
 import { GateMovedError, GateRefusedError } from "../domain/gate";
 import type { GapResponse } from "../domain/gap";
 import {
@@ -111,12 +114,15 @@ export async function decideGate(input: {
 }): Promise<DecideResult> {
   const { database, sessions, changeId } = input;
   const changes = new ChangeStore(database);
-  let phase: Phase;
+  let state: ChangeState;
   try {
-    phase = changes.read(changeId).state.phase;
+    state = changes.read(changeId).state;
   } catch {
     return { outcome: { kind: "no_such_change" }, closeSession: false };
   }
+  const phase = state.phase;
+  // 这个 Change 自己的图 —— 打回的合法目标和批准的去处都按它算，不按全序。
+  const graph = changes.graphOf(changeId);
 
   const busy = input.cannotAskNow(phase);
   if (busy) return { outcome: { kind: "busy", phase, busy }, closeSession: false };
@@ -176,7 +182,18 @@ export async function decideGate(input: {
     openGaps,
     round,
     // 打回上游（§5.9.1）的合法目标，按这个 Change 自己的图算。
-    sendBackTargets: upstreamOf(phase, changes.graphOf(changeId)),
+    sendBackTargets: upstreamOf(phase, graph),
+    /*
+     * 批准之后**除推荐之外**还能去哪（§8.10）。
+     *
+     * 递「推荐以外的那些」而不是全名单 —— 题目那一层因此不用知道哪个是推荐，
+     * 也就不可能和状态机说的推荐对不上。两者都从同一个 `state` 算。
+     *
+     * 环上只画推荐那一条，全名单在这张表里 —— 和打回目标逐字同一条分工
+     * （`domain/journey.ts`：环上摆的是「最可能的那一条」，不是「所有合法的」）。
+     */
+    approveAlternatives: approvalTargets(state, graph)
+      .filter((target) => target !== recommendedApproval(state, graph)),
   });
   // No question rather than an empty one: putting a decision to someone that
   // they cannot make is worse than not asking (domain/question.ts).

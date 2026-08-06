@@ -1993,12 +1993,17 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const schema = JSON.parse(asked?.schema_json ?? "{}") as {
         required: string[]; properties: Record<string, { title: string }>;
       };
+      /*
+       * `U` 是 §8.10 加的「批准之后进哪」—— 它也是选项格，默认「按推荐走」，
+       * 一路回车的人一个字都不用打。**`decision` 仍然排最后**，那是硬要求：
+       * 最后一格必须是选项格，整张表才提交得动（客户端的坑，见 `compose`）。
+       */
       assert.deepEqual(Object.keys(schema.properties),
-        ["R01", "R02", "RY", "decision"]);
-      // 自己写和提新问题都可以留空；四个选项和裁决必填。
+        ["R01", "R02", "RY", "U", "decision"]);
+      // 自己写和提新问题都可以留空；选项格和裁决必填。
       // RY 也进 required —— 它现在是选项格（「没有了」/「有，我来提」），
       // 而选项格必答不会挡住回车。
-      assert.deepEqual(schema.required, ["R01", "R02", "RY", "decision"]);
+      assert.deepEqual(schema.required, ["R01", "R02", "RY", "U", "decision"]);
       assert.match(schema.properties.R01!.title, /SPEC-1/);
       // 2026-08-03 起第一趟里一个自由文本格都没有 —— 理由挪到第二趟去问，
       // 而且只问那几条语义上真的需要理由的（同意的那些不问）。

@@ -155,12 +155,21 @@ export function gateDecisionQuestion(input: {
    * 不许摆出来（§5.4）。
    */
   sendBackTargets?: readonly Phase[] | undefined;
+  /**
+   * 批准之后**除推荐之外**还能去哪（§8.10：箭头是推荐，不是强制）。
+   *
+   * 传进来的是「推荐以外的那些」，不是全名单 —— 于是这一层不用知道哪个是推荐，
+   * 也就不可能和状态机说的推荐对不上。空或缺席 = 没有第二条路可选，那一格不出现
+   * （一道没有选项的题比不问更糟）。
+   */
+  approveAlternatives?: readonly Phase[] | undefined;
 }): Question | null {
   // `start`, `settle` and `fail` are the system reporting what happened. Only
   // these four are ever put to a person.
   const decisions: readonly ChangeAction[] =
     ["approve", "reject", "rerun", "retry", "sendBack"];
   const targets = input.sendBackTargets ?? [];
+  const alternatives = input.approveAlternatives ?? [];
   const offered = decisions
     .filter((action) =>
       input.gate.permitted.includes(action) || clearableByAnswer(action, input.gate))
@@ -185,6 +194,17 @@ export function gateDecisionQuestion(input: {
       id: SEND_BACK_FIELD,
       title: "打回哪一份（只有裁决选「打回上游」才生效）",
       options: [SEND_BACK_NONE, ...targets],
+    }] : []),
+    /*
+     * 批准之后进哪（§8.10）。和上面那格同一个形状、同一条理由：**默认排第一**，
+     * 一路回车的人一个字都不用打，而想走别的路的人看得见有别的路。
+     *
+     * `U` 排在 `T` 之后、`decision`（小写）之前 —— 名字是挑的，不是碰的。
+     */
+    ...(offered.includes("approve") && alternatives.length > 0 ? [{
+      id: APPROVE_FIELD,
+      title: "批准之后进哪个阶段（只有裁决选「批准」才生效）",
+      options: [APPROVE_AS_RECOMMENDED, ...alternatives],
     }] : []),
     // `decision` 排在最后，因为小写 `d` 在 `R` 和 `T` 之后 —— 而它是选项格，所以
     // 整张表提交得动（见 `compose` 的第二条）。**这不是巧合，是挑名字时挑的。**
@@ -290,6 +310,31 @@ export function sendBackTargetFrom(
   if (!offered) return null;
   const chosen = answer.content[SEND_BACK_FIELD];
   if (typeof chosen !== "string" || chosen === SEND_BACK_NONE) return null;
+  if (!offered.includes(chosen) || !isPhase(chosen)) return null;
+  return chosen;
+}
+
+const APPROVE_FIELD = "U";
+/** 「就走系统推荐的那条」。选它 = 这个参数出现之前的行为。 */
+export const APPROVE_AS_RECOMMENDED = "按推荐走";
+
+/**
+ * 批准之后去哪（§8.10）。**对着问题自己的 enum 校验** —— 和 `sendBackTargetFrom`
+ * 逐字同一条理由：enum 是人当时真正看见的名单。
+ *
+ * 「按推荐走」、名单外的、读不出的 —— 都是 `null`，而 `null` 在落地那层的意思是
+ * **走推荐那条**，不是「没选」。这和打回不一样：打回没选目标是一次废掉的裁决，
+ * 批准没选目标是最常见的那一次批准。
+ */
+export function approveTargetFrom(
+  question: Question,
+  answer: Answer,
+): Phase | null {
+  if (answer.action !== "accept") return null;
+  const offered = question.requestedSchema.properties[APPROVE_FIELD]?.enum;
+  if (!offered) return null;
+  const chosen = answer.content[APPROVE_FIELD];
+  if (typeof chosen !== "string" || chosen === APPROVE_AS_RECOMMENDED) return null;
   if (!offered.includes(chosen) || !isPhase(chosen)) return null;
   return chosen;
 }

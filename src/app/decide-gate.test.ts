@@ -4,7 +4,8 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import {
-  decisionLabel, DECISION_FIELD, RESPONSE_AGREE, RESPONSE_DISMISS,
+  APPROVE_AS_RECOMMENDED, decisionLabel, DECISION_FIELD,
+  RESPONSE_AGREE, RESPONSE_DISMISS,
 } from "../domain/question";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
@@ -202,6 +203,50 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     // 下场必须留得住（§3.2·5），不能只活在这一次响应里。
     assert.ok(new QuestionStore(database).latestOutcomeFor(CHANGE, "PRD") !== null);
     database.close();
+  });
+
+  /**
+   * §8.10 的端到端：**人选了一条系统没推荐的路，Change 真的去了那儿。**
+   *
+   * 这一条穿过整条链子 —— 题面那一格、答案、`approveTargetFrom`、
+   * `questions.apply`、command 层、状态机。链子上任何一环没接上，它都会红。
+   */
+  it("**批准时选一条非推荐的路** —— 中间的阶段真的被跳过了", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    // 推荐是 Spec（主线下一步）。人选 TestPlan —— 这次改动不需要重写技术方案。
+    const { sessions, answerOpen } = answerer(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      U: "TestPlan",
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+    });
+    const result = await decideGate({
+      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    });
+
+    assert.equal(result.outcome.kind, "decided");
+    assert.equal(
+      new ChangeStore(database).read(CHANGE).state.phase, "TestPlan",
+      "人选的是 TestPlan，不是推荐的 Spec",
+    );
+  });
+
+  it("不选就走推荐那条 —— 这一格的存在不该改变默认", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    const { sessions, answerOpen } = answerer(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      U: APPROVE_AS_RECOMMENDED,
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+    });
+    await decideGate({
+      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    });
+    assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "Spec");
   });
 
   /**
