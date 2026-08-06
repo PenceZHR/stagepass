@@ -252,22 +252,52 @@ export function approvalTargets(
 }
 
 /**
- * 批准时**推荐**走哪一条：欠着回程就还债（栈顶），否则沿主线走一步。
+ * 批准时**推荐**走哪一条：**沿主线走一步**，走到发起方就还债。
  * `null` = 主线走到头了、也没人在等 —— 那时批准就是关掉这个 Change。
  *
  * **这是「批准默认去哪」的唯一一份实现。** 在它之前 `transition` 和
  * `optionsFrom` 各写了一遍（后者的注释还写着「和 transition 的 approve 同一条
  * 规则」—— 一句只能靠人记得的话）。
  *
- * §8.9 想改的正是这一条。它想要的那条路（沿主线重走回去）已经在
- * `approvalTargets` 里了，人选得到，只是还不是推荐。
+ * ## §8.9：回程是**重走**，不是跳回（2026-08-06 反转）
+ *
+ * 这里原来的规则是「欠着回程就先还债」—— 栈非空直接弹到栈顶。理由写着
+ * 「沿主线前进会把等的人晾在原地」。**那个理由是错的**，代价是：
+ *
+ * ```
+ * Review --sendBack--> TestPlan --approve--> Review        ← Build 被跳过
+ * ```
+ *
+ * 测试改了，而 **Build 从来没对着新测试重跑过**，Review 接着审的就是那个用旧
+ * 测试建出来的 commit。不止 TestPlan 这一处：主线本身是一条依赖链，打回到任何
+ * 阶段，中间被跳过的阶段**没有任何「你的产物过期了」的标记**。
+ *
+ * 用户 2026-08-06 的原话定的这一条：
+ *
+ * > **我现在不能默认当前 stage 之前的每个 stage 都是绝对正确的。**
+ *
+ * 跳回正是那个「默认它们是对的」。所以改成沿主线重走 —— 走到栈顶时 `advancesTo`
+ * 自然就等于栈顶，那一步同时也是还债，不用特判。
+ *
+ * **Fix 因此重新变成特例，而这个特例有理由**：`advancesTo("Fix")` 是 null ——
+ * 它不在主线上，没有「重走」可言，唯一的出口就是还债。
+ *
+ * **代价是越早打回越贵**：打回到 Spec 就要重走 TechSpec / Plan / TestPlan / Build
+ * 再回 Review。缓解不在这一层，在**提示词**：重走那一轮的题面该说「按这条改动
+ * **更新**你已有的产物」，而不是「重写一份」（BACKLOG §8.9）。
  */
 export function recommendedApproval(
   state: ChangeState,
   graph: PhaseGraph = DEFAULT_GRAPH,
 ): Phase | null {
-  return state.returnStack[state.returnStack.length - 1]
-    ?? advancesTo(state.phase, graph);
+  const top = state.returnStack[state.returnStack.length - 1];
+  /*
+   * 在等的那个已经不在这个 Change 的图上了（`phase_order` 在打回之后被改过）——
+   * 那时只剩还债一条路。判断和 `approvalTargets` 里那处是同一条，两边必须一致：
+   * 推荐要是不在清单里，`transition` 会当场拒，而批准是还债的唯一出口。
+   */
+  if (top !== undefined && graph.order.indexOf(top) === -1) return top;
+  return advancesTo(state.phase, graph) ?? top ?? null;
 }
 
 export function isLegal(

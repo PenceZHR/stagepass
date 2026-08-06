@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { IllegalTransitionError } from "../domain/change-state";
+import { IllegalTransitionError, type ChangeState } from "../domain/change-state";
 import { ChangeNotFoundError, ChangeStore } from "./change-store";
 
 /**
@@ -96,15 +96,32 @@ describe("L0 · 打回上游落库：栈、理由、账本一次到位（§5.9.1
     }
   });
 
-  it("被打回的阶段批准后弹栈回去 —— 不沿主线前进", () => {
+  /**
+   * §8.9（2026-08-06 反转）：被打回的阶段批准之后**沿主线重走**，栈原样带着，
+   * 走到发起方才还清。原来是直接弹回发起方，于是中间那几个阶段的产物（全是照
+   * 旧上游建的）一个都没重跑。
+   */
+  it("被打回的阶段批准后沿主线重走 —— 栈带着，走到发起方才还清", () => {
     const { database, store } = open();
     try {
       toBuildSettled(store, "CHG-1");
       store.apply("CHG-1", "sendBack", { to: "Spec", reason: "r" });
       store.apply("CHG-1", "start");
       store.apply("CHG-1", "settle");
-      const back = store.apply("CHG-1", "approve");
-      assert.deepEqual(back.state, {
+      const next = store.apply("CHG-1", "approve");
+      assert.deepEqual(next.state, {
+        phase: "TechSpec", status: "pending", returnStack: ["Build"],
+      });
+
+      // 一路走回 Build，债才还清 —— 每一步都真的落进账本。
+      // 显式标类型：上面那句 `assert.deepEqual` 是 assertion 签名，会收窄 `next.state`。
+      let state: ChangeState = next.state;
+      while (state.returnStack.length > 0) {
+        store.apply("CHG-1", "start");
+        store.apply("CHG-1", "settle");
+        state = store.apply("CHG-1", "approve").state;
+      }
+      assert.deepEqual(state, {
         phase: "Build", status: "pending", returnStack: [],
       });
     } finally {

@@ -251,20 +251,36 @@ describe("L0 · 打回上游：长回边压栈，approve 弹栈（§5.9.1 / §5.
   const settled = (phase: Phase, stack: readonly Phase[] = []): ChangeState =>
     ({ phase, status: "settled", returnStack: stack });
 
-  it("Build 发现 Spec 错了 —— 打回去，修完弹回 Build", () => {
+  /**
+   * §8.9（2026-08-06 反转）：**回程是重走，不是跳回。**
+   *
+   * 这条测试原来钉的是相反的规则（「不沿主线去 TechSpec，弹栈回 Build」）。
+   * 那条规则的代价：Spec 改了，而 TechSpec / Plan / TestPlan 全是照旧 Spec 建的，
+   * 一个都没重跑，Build 却已经拿着它们接着干了。用户的原话定的这一反转：
+   *
+   * > 我不能默认当前 stage 之前的每个 stage 都是绝对正确的。
+   */
+  it("Build 发现 Spec 错了 —— 打回去，**修完沿主线一路重走回来**", () => {
     const atSpec = transition(settled("Build"), "sendBack", { to: "Spec" });
     assert.deepEqual(atSpec, {
       phase: "Spec", status: "pending", returnStack: ["Build"],
     });
 
-    // Spec 重新跑完、批准 —— 不沿主线去 TechSpec，弹栈回 Build。
-    const back = transition(
-      transition(transition(atSpec, "start"), "settle"),
-      "approve",
+    // 一路批准，每一步都走主线的下一站，栈原样带着。
+    const walked: Phase[] = [];
+    // 显式标类型：上面那句 `assert.deepEqual` 是 assertion 签名，会把 `atSpec`
+    // 收窄成一个交叉类型，再赋一个普通 `ChangeState` 就不过检查了。
+    let state: ChangeState = atSpec;
+    while (state.returnStack.length > 0) {
+      state = transition(transition(transition(state, "start"), "settle"), "approve");
+      assertStateValid(state);
+      walked.push(state.phase);
+    }
+    assert.deepEqual(
+      walked, ["TechSpec", "Plan", "TestPlan", "Build"],
+      "中间三个阶段的产物都是照旧 Spec 建的，一个都不许跳过",
     );
-    assert.deepEqual(back, {
-      phase: "Build", status: "pending", returnStack: [],
-    });
+    assert.deepEqual(state.returnStack, [], "走到发起方，债还清");
   });
 
   it("嵌套回跳 —— §5.9.2 的那个例子，单字段存不下的正是它", () => {
@@ -278,17 +294,24 @@ describe("L0 · 打回上游：长回边压栈，approve 弹栈（§5.9.1 / §5.
     assert.deepEqual(state, {
       phase: "PRD", status: "pending", returnStack: ["Build", "Spec"],
     });
-    // PRD 批准 → 弹回 Spec（不是 Build，也不是主线的下一个）。
+    // PRD 批准 → Spec。它同时是主线的下一站**和**栈顶，所以这一步顺带还了一笔债。
     state = transition(
       transition(transition(state, "start"), "settle"), "approve",
     );
     assert.deepEqual(state, {
       phase: "Spec", status: "pending", returnStack: ["Build"],
     });
-    // Spec 批准 → 弹回 Build。栈空了，Build 从此照常走主线。
+    // Spec 批准 → TechSpec（§8.9：沿主线重走，不跳回 Build），栈原样带着。
     state = transition(
       transition(transition(state, "start"), "settle"), "approve",
     );
+    assert.deepEqual(state, {
+      phase: "TechSpec", status: "pending", returnStack: ["Build"],
+    });
+    // 一路走到 Build，债才还清。
+    while (state.returnStack.length > 0) {
+      state = transition(transition(transition(state, "start"), "settle"), "approve");
+    }
     assert.deepEqual(state, {
       phase: "Build", status: "pending", returnStack: [],
     });
@@ -559,8 +582,10 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
       approvalTargets(settled("Spec", ["Build"])),
       ["TechSpec", "Plan", "TestPlan", "Build"],
     );
-    // 推荐仍然是还债那一条 —— §8.10 只补了能力，没反转默认（那是 §8.9）。
-    assert.equal(recommendedApproval(settled("TestPlan", ["Review"])), "Review");
+    // 推荐是主线的下一站（§8.9 反转之后），不是直接跳回在等的那个。
+    assert.equal(recommendedApproval(settled("TestPlan", ["Review"])), "Build");
+    // 走到发起方那一步，推荐才是他 —— 那一步既是前进也是还债。
+    assert.equal(recommendedApproval(settled("Build", ["Review"])), "Review");
   });
 
   it("没人在等的时候，主线后面的都能挑 —— 跳过阶段是允许的", () => {
