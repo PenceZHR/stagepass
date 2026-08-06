@@ -8,8 +8,10 @@ import {
   summariseRoundNotes, templateGaps,
   UnreadableVerdictError,
 } from "./round";
+import { PHASES } from "./phase";
+import { reportsFreeFormBlockers } from "./phase-play";
 import { templateFor } from "./phase-template";
-import { TurnResultUnparsableError } from "./turn";
+import { BLUE_VERDICT_ONLY_CONTRACT, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
 
 const answer = (artifacts: string[], blockers: object[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: artifacts, blockers }) + "\n```";
@@ -1172,6 +1174,61 @@ const filled = (titles: readonly string[]): string =>
   titles.map((title) => `## ${title}\n有内容\n`).join("\n");
 
 const allTitles = templateFor("PRD")!.map((each) => each.title);
+
+/*
+ * **整条路照契约原文走一遍**，而不是照夹具走。
+ *
+ * 2026-08-06 真机：反方按 `BLUE_VERDICT_ONLY_CONTRACT` 原样答，`readRound` 当场抛
+ * `turn_result_artifacts_invalid` —— 而当时 1037 条测试一条都没红，因为夹具里的
+ * 反方答复全是**手写的**，每次都恰好带着 `artifactIds`。
+ *
+ * 所以这一组不手写答复：**它把契约正文里那个示例当成模型的回答**，走完整条
+ * `readRound`。测的是「照我们发出去的那份契约答，我们自己接不接得住」。
+ */
+describe("L4 · 反方照契约原文答，整条路走得通", () => {
+  /** 契约里那个 `{...}`，占位符换成合法的值 —— 模型照抄的就是它。 */
+  const asAnswered = (contract: string): string => {
+    const shape = /\{[\s\S]*\}/.exec(contract)![0];
+    return "```json\n" + shape
+      .replaceAll(/"<[^"]*>"/g, '"填了点什么"')
+      .replaceAll(/"P0\|P1\|P2"/g, '"P1"')
+      .replaceAll(/"\.\.\."/g, '"填了点什么"') + "\n```";
+  };
+
+  const red = "```json\n" + JSON.stringify({ artifactIds: ["PRD-r1.md"], blockers: [] }) + "\n```";
+
+  it("**PRD：不抛，产物读得到，overall 读得到，问题清单是空的**", () => {
+    const reading = readRound({
+      phase: "PRD", round: 1, red,
+      blue: asAnswered(BLUE_VERDICT_ONLY_CONTRACT),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.artifactIds, ["PRD-r1.md"]);
+    assert.deepEqual(reading.outcome.found, []);
+    assert.equal(reading.blueOverall, "填了点什么", "overall 没读出来 —— 那是人唯一能看到的整体判断");
+  });
+
+  it("Build：照 RESULT_CONTRACT 答，问题清单进得来", () => {
+    const reading = readRound({
+      phase: "Build", round: 1, red,
+      blue: asAnswered(RESULT_CONTRACT),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.equal(reading.outcome.found.length, 1);
+  });
+
+  it("**每个阶段都要接得住它自己那份契约** —— 一个阶段都不许漏", () => {
+    for (const phase of PHASES) {
+      if (phase === "Done") continue;
+      const contract = reportsFreeFormBlockers(phase)
+        ? RESULT_CONTRACT : BLUE_VERDICT_ONLY_CONTRACT;
+      assert.doesNotThrow(() => readRound({
+        phase, round: 1, red, blue: asAnswered(contract),
+        judge: '```json\n{"verdicts":{}}\n```',
+      }, {}), `${phase} 接不住自己那份契约`);
+    }
+  });
+});
 
 describe("L4 · 有模板的阶段，反方的自由 blockers 丢在解析层", () => {
   const red = "```json\n" + JSON.stringify({ artifactIds: ["prd.md"], blockers: [] }) + "\n```";
