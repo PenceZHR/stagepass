@@ -114,6 +114,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "app/decide-gate.ts": 5,
   // 看和改评分标准（PRD §1.1 那个唯一的例外）。rubric 整族在 5，它也在 5。
   "app/edit-rubric.ts": 5,
+  // 新建 / 删除 Project 和 Change。它只够得着 change-store（0）和 project-store（0），
+  // 唯一把它顶上来的是新项目要装出厂标准（`RubricStore.installDefaults`，5）。
+  "app/workspace.ts": 5,
   // git。和 `codex/archive.ts` 同一个形状（包一个外部命令、整层可注入），所以同一层。
   // 它不 import 我们自己的任何东西，所以层数只影响「谁可以用它」——2 让 L2 起都能用。
   "work/repo.ts": 2,
@@ -389,8 +392,13 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）、
   // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）、`app/record-brief.ts`（→ 1093）、
   // `app/decide-gate.ts`（→ 875）。三条问人的路现在全在应用层，`handle()` 只剩转发。
-  // 再抽 `app/edit-rubric.ts` + `web/panel-view.ts`（那两屏的读）（→ 652）。
-  "web/panel-server.ts#handle": 652,
+  // 再抽 `app/edit-rubric.ts` + `web/panel-view.ts`（那两屏的读）（→ 652）、
+  // `app/workspace.ts`（新建 / 删除）（→ 607）。
+  //
+  // **剩下的不再是「抽一块业务逻辑」能降的了。** 607 行里，pty 那一段 113 行是
+  // 真正的 HTTP 流，十六条路由各自的转发加起来又是三百多 —— 要下到 300，得把
+  // 这条 if 链换成一张路由表，那是另一种改动，不是这一批的延长线。
+  "web/panel-server.ts#handle": 607,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

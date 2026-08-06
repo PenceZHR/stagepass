@@ -32,6 +32,9 @@ import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { decideGate, type DecideOutcome } from "../app/decide-gate";
 import { rubricFor, saveRubric } from "../app/edit-rubric";
+import {
+  createChange, createProject, deleteChange, deleteProject,
+} from "../app/workspace";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
@@ -228,23 +231,6 @@ export interface PanelOptions {
  * slice can land inside an escape sequence or a multi-byte character.
  */
 const SCROLLBACK_BYTES = 512 * 1024;
-
-/**
- * 下一个 `PRJ-007` / `CHG-042`。
- *
- * 顺号而不是 uuid，因为这两个 id **人要念**：它们印在界面上、在交接文档里被引用、
- * 在终端标题里出现。`CHG-3f2a9c81-…` 没人记得住上一句说的是哪一个。
- *
- * 取「已有的最大号 + 1」，不是「个数 + 1」—— 后者在删过东西之后会撞号。
- */
-function mintId(prefix: string, existing: readonly string[]): string {
-  const used = existing
-    .map((id) => /^[A-Z]+-(\d+)$/.exec(id)?.[1])
-    .filter((digits): digits is string => digits !== undefined)
-    .map((digits) => Number(digits));
-  const next = (used.length === 0 ? 0 : Math.max(...used)) + 1;
-  return `${prefix}-${String(next).padStart(3, "0")}`;
-}
 
 interface LiveSession {
   readonly session: PtySession;
@@ -1320,45 +1306,14 @@ export async function handle(
    * 出现 TextDecoder / JSON.parse（第五条常驻护栏），能不引进来就不引。
    */
   if (url.pathname === "/api/project" && request.method === "POST") {
-    const name = (url.searchParams.get("name") ?? "").trim();
-    if (name === "") { response.writeHead(400).end("name_required"); return; }
-
-    /*
-     * **路径必填，而且当场校验。**
-     *
-     * 一个 Project 就是一个仓库（用户 2026-07-30 拍板），Codex 就跑在这个目录里。
-     * 建一个没有路径的项目，等于建一个「不知道在哪」的项目 —— 那正是用户撞上的洞。
-     *
-     * 三条都查，因为错在这里发现比在 pty 里发现便宜得多：必须是绝对路径（相对路径
-     * 相对谁？服务端的 cwd 吗 —— 那就又回到那个洞了）、必须存在、必须是目录。
-     */
-    const rawPath = (url.searchParams.get("path") ?? "").trim();
-    if (rawPath === "") { response.writeHead(400).end("path_required"); return; }
-    if (!isAbsolute(rawPath)) { response.writeHead(400).end("path_must_be_absolute"); return; }
-    let path: string;
-    try {
-      // realpath：macOS 上 /var 是 /private/var 的软链，而 Codex 按真实路径记目录
-      // 信任（今天实测过）。存两个不同的字符串指同一个目录，只会埋下一个坑。
-      path = realpathSync(rawPath);
-      if (!statSync(path).isDirectory()) {
-        response.writeHead(400).end("path_is_not_a_directory");
-        return;
-      }
-    } catch {
-      response.writeHead(400).end("path_does_not_exist");
-      return;
-    }
-
-    const projects = new ProjectStore(database);
-    const id = mintId("PRJ", projects.list().map((entry) => entry.id));
-    const created = projects.ensure(id, name, path);
-    // 新项目一建出来就带上出厂标准 —— 全部不阻断，见 domain/rubric-defaults.ts。
-    // 不装的话，这个项目的每个阶段都是空 rubric，人得逐个手写才能开始用。
-    new RubricStore(database).installDefaults(created.id);
+    const outcome = createProject({
+      database,
+      name: url.searchParams.get("name") ?? "",
+      path: url.searchParams.get("path") ?? "",
+    });
+    if (outcome.kind !== "created") { response.writeHead(400).end(outcome.kind); return; }
     json(response, {
-      created: true, id: created.id, name: created.name,
-      // 把路径回给界面：人得看得见「它建在哪」—— 那正是用户撞上的洞。
-      path: created.path,
+      created: true, id: outcome.id, name: outcome.name, path: outcome.path,
     });
     return;
   }
@@ -1368,67 +1323,53 @@ export async function handle(
    *
    * 用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
    * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
-   *
-   * **有活儿在跑就拒。** 不是出于谨慎：删掉一个正在跑的 Change 会留下一个没人认领
-   * 的 codex 进程，而那个进程会继续往一个已经不存在的账本上写。先停会话再删。
    */
   if (url.pathname === "/api/change" && request.method === "DELETE") {
     const changeId = url.searchParams.get("change") ?? "";
-    const changes = new ChangeStore(database);
-    try {
-      // 读它就是在问「有没有这条」—— `forget` 枚举所有阶段，不再需要当前那个。
-      changes.read(changeId);
-    } catch {
+    const outcome = deleteChange({
+      database, changeId,
+      isBusy: (id) => phaseBusy(database, id),
+      forget: (id) => { sessions.forget(id); },
+    });
+    if (outcome.kind === "no_such_change") {
       response.writeHead(404).end("no such change");
       return;
     }
-    const busy = phaseBusy(database, changeId);
-    if (busy) { json(response, { deleted: false, ...busy }); return; }
-
-    // `forget` 而不是 `close`：连尸体一起收掉，否则下一个重名的 Change 会继承
-    // 这一个的最后一屏。见 `PanelSessions.forget`。
-    sessions.forget(changeId);
-    changes.delete(changeId);
-    json(response, { deleted: true, changeId });
+    json(response, outcome.kind === "busy"
+      ? { deleted: false, ...outcome.busy }
+      : { deleted: true, changeId: outcome.changeId });
     return;
   }
 
   if (url.pathname === "/api/project" && request.method === "DELETE") {
-    const projectId = url.searchParams.get("project") ?? "";
-    const projects = new ProjectStore(database);
-    if (projects.list().every((entry) => entry.id !== projectId)) {
+    const outcome = deleteProject({
+      database, projectId: url.searchParams.get("project") ?? "",
+      isBusy: (id) => phaseBusy(database, id),
+      forget: (id) => { sessions.forget(id); },
+    });
+    if (outcome.kind === "no_such_project") {
       response.writeHead(404).end("no_such_project");
       return;
     }
-    const changes = new ChangeStore(database);
-    const mine = changes.list(projectId);
-    // 一个都不能在跑 —— 理由和上面一样，而且这里一次要停好几个。
-    for (const each of mine) {
-      const busy = phaseBusy(database, each.id);
-      if (busy) { json(response, { deleted: false, changeId: each.id, ...busy }); return; }
-    }
-    // 同上：删项目就是把它底下每条 Change 都删掉，尸体一样要跟着走。
-    for (const each of mine) sessions.forget(each.id);
-    projects.delete(projectId, changes);
-    json(response, { deleted: true, projectId, changes: mine.length });
+    json(response, outcome.kind === "busy"
+      ? { deleted: false, changeId: outcome.changeId, ...outcome.busy }
+      : { deleted: true, projectId: outcome.projectId, changes: outcome.changes });
     return;
   }
 
   if (url.pathname === "/api/change" && request.method === "POST") {
-    const projectId = url.searchParams.get("project") ?? "";
-    const title = (url.searchParams.get("title") ?? "").trim();
-    if (title === "") { response.writeHead(400).end("title_required"); return; }
-
-    const projects = new ProjectStore(database);
-    if (projects.list().every((entry) => entry.id !== projectId)) {
-      response.writeHead(404).end("no_such_project");
-      return;
+    const outcome = createChange({
+      database,
+      projectId: url.searchParams.get("project") ?? "",
+      title: url.searchParams.get("title") ?? "",
+    });
+    if (outcome.kind === "title_required") {
+      response.writeHead(400).end("title_required"); return;
     }
-    const changes = new ChangeStore(database);
-    const id = mintId("CHG", changes.list().map((entry) => entry.id));
-    const created = changes.create(id, { projectId, title });
-    // 新的 Change 停在第一个阶段、pending —— 状态机的起点，这里不替它走一步。
-    json(response, { created: true, id: created.id, phase: created.state.phase });
+    if (outcome.kind === "no_such_project") {
+      response.writeHead(404).end("no_such_project"); return;
+    }
+    json(response, { created: true, id: outcome.id, phase: outcome.phase });
     return;
   }
 
