@@ -30,6 +30,33 @@ function open(): { database: Database.Database; rubrics: RubricStore } {
 const projectScope = { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" } as const;
 const changeScope = { projectId: PROJECT, changeId: CHANGE, phase: "Spec", role: "producer" } as const;
 
+describe("rubric store · criterion 挂的模板节", () => {
+  it("**真的过一遍 SQLite 存得住、读得回**", () => {
+    const { rubrics } = open();
+    rubrics.save(projectScope, [
+      { text: "验收标准可测", blocking: true, section: "acceptance" },
+      { text: "不挂节的那种", blocking: false },
+    ]);
+
+    const current = rubrics.current(projectScope)!;
+    assert.equal(current.criteria[0]!.section, "acceptance");
+    assert.equal(current.criteria[1]!.section, null, "没给就是 null，不是 undefined");
+  });
+
+  it("改一版之后 section 跟着新的走，key 不动", () => {
+    const { rubrics } = open();
+    rubrics.save(projectScope, [{ text: "验收标准可测", blocking: true }]);
+    const key = rubrics.current(projectScope)!.criteria[0]!.key;
+
+    rubrics.save(projectScope, [
+      { key, text: "验收标准可测", blocking: true, section: "acceptance" },
+    ]);
+    const after = rubrics.current(projectScope)!;
+    assert.equal(after.criteria[0]!.key, key, "key 动了，派生的 gap id 就断了");
+    assert.equal(after.criteria[0]!.section, "acceptance");
+  });
+});
+
 describe("rubric store · 版本化写入", () => {
   it("存一版，读回来", () => {
     const { rubrics } = open();

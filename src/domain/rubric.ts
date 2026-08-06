@@ -41,6 +41,15 @@ export interface Criterion {
   readonly text: string;
   /** 判定为 `no` 时是否生成一条挡闸门的 gap。 */
   readonly blocking: boolean;
+  /**
+   * 它判的是产出模板的哪一节（`domain/phase-template.ts` 的 `TemplateSection.key`）。
+   *
+   * `null` = 不挂节 —— 老数据、以及还没有模板的那十一个阶段。
+   *
+   * **这一格是「越界」的机械判据。** 用户 2026-08-06：「PRD 阶段只能留 PRD 的，
+   * 就算漏了也不能留。」一条标准说不清自己管哪一节，就没有任何东西能判它越没越界。
+   */
+  readonly section: string | null;
 }
 
 /**
@@ -54,6 +63,8 @@ export interface CriterionDraft {
   readonly key?: string | null;
   readonly text: string;
   readonly blocking: boolean;
+  /** 挂哪一节。缺席和 `null` 一样，都是「不挂」。 */
+  readonly section?: string | null;
 }
 
 /**
@@ -137,7 +148,11 @@ export function nextVersion(
     if (taken.has(key)) throw new InvalidCriterionError("key_reused");
     taken.add(key);
 
-    return { key, ordinal: index, text: entry.text, blocking: entry.blocking };
+    return {
+      key, ordinal: index, text: entry.text, blocking: entry.blocking,
+      // 缺席和 null 统一成 null —— 两种「没挂」在库里长成一样，在类型里也该一样。
+      section: entry.section ?? null,
+    };
   });
 }
 

@@ -99,6 +99,7 @@ interface CriterionRow {
   ordinal: number;
   text: string;
   blocking: number;
+  section: string | null;
 }
 
 interface AssessmentRow {
@@ -230,11 +231,14 @@ export class RubricStore {
         version, reason ?? null, at,
       );
       const insert = this.database.prepare(
-        `INSERT INTO rubric_criteria (rubric_id, criterion_key, ordinal, text, blocking)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO rubric_criteria
+           (rubric_id, criterion_key, ordinal, text, blocking, section)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       );
       for (const entry of criteria) {
-        insert.run(id, entry.key, entry.ordinal, entry.text, entry.blocking ? 1 : 0);
+        insert.run(
+          id, entry.key, entry.ordinal, entry.text, entry.blocking ? 1 : 0,
+          entry.section);
       }
     })();
 
@@ -347,7 +351,7 @@ export class RubricStore {
 
   private hydrate(row: RubricRow): RubricVersion {
     const criteria = this.database.prepare(
-      `SELECT criterion_key, ordinal, text, blocking
+      `SELECT criterion_key, ordinal, text, blocking, section
          FROM rubric_criteria WHERE rubric_id = ? ORDER BY ordinal`,
     ).all(row.id) as CriterionRow[];
 
@@ -367,6 +371,8 @@ export class RubricStore {
         ordinal: entry.ordinal,
         text: entry.text,
         blocking: entry.blocking === 1,
+        // 老行读回来可能是 undefined（列是后加的），统一成 null。
+        section: entry.section ?? null,
       })),
     };
   }

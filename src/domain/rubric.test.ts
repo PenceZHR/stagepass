@@ -31,7 +31,7 @@ const mint = (index: number): string => `MINTED-${index}`;
 
 const criterion = (
   key: string, ordinal: number, text: string, blocking: boolean,
-): Criterion => ({ key, ordinal, text, blocking });
+): Criterion => ({ key, ordinal, text, blocking, section: null });
 
 const draft = (
   text: string, blocking: boolean, key?: string | null,
@@ -45,6 +45,15 @@ describe("rubric · criterion_key 跨版本稳定", () => {
     // key 不动，所以 RB:<key> 派生的 gap id 不动，snapshot 不动，
     // 已经在等人回答的 question 不会被 fence 拒掉。
     assert.deepEqual(next, [criterion("K1", 0, "验收标准必须可以测量", true)]);
+  });
+
+  it("挂的节跟着 draft 走；缺席和 null 一样都是「不挂」", () => {
+    const next = nextVersion([], [
+      { text: "验收标准可测", blocking: true, section: "acceptance" },
+      { text: "老式的那种", blocking: false },
+      { text: "明写不挂", blocking: false, section: null },
+    ], mint);
+    assert.deepEqual(next.map((entry) => entry.section), ["acceptance", null, null]);
   });
 
   it("没有回传 key 时按正文原样匹配，作为后备", () => {

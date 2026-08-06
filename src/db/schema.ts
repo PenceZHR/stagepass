@@ -461,6 +461,14 @@ CREATE TABLE IF NOT EXISTS rubric_criteria (
   ordinal        INTEGER NOT NULL,
   text           TEXT NOT NULL CHECK (length(trim(text)) > 0),
   blocking       INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+  -- 它判的是产出模板的哪一节（domain/phase-template.ts 的 key）。
+  --
+  -- NULL = 不挂节，那是老数据和还没有模板的十一个阶段。挂节是「越界」唯一的机械
+  -- 判据：一条标准说得清自己管哪一节，才谈得上「这个问题不归这个阶段管」。
+  --
+  -- 不加外键：模板住在代码里（和 phase-play 同一条纪律，每阶段独自变），库里没有
+  -- 可引用的表。悬空由 store 在存的时候拦（人改 rubric 时挂一个不存在的节）。
+  section        TEXT NULL,
   PRIMARY KEY (rubric_id, criterion_key)
 );
 
@@ -623,6 +631,7 @@ export function migrate(database: {
     ["gaps", "found_why", "TEXT"],
     ["questions", "outcome_json", "TEXT"],
     ["change_events", "reason", "TEXT"],
+    ["rubric_criteria", "section", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];

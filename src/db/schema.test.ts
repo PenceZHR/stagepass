@@ -14,6 +14,42 @@ import { SCHEMA_SQL, migrate } from "./schema";
  * 2026-07-30 我自己撞上这个（`projects.path`），当时手跑了一次 ALTER 就过去了，
  * 差点让真实的旧库带着这个坑上线。
  */
+describe("L0 · rubric_criteria 的 section 列补得进老库", () => {
+  /** 一个 section 列出现之前建的库，里面已经有真数据。 */
+  const oldShape = (): Database.Database => {
+    const database = new Database(":memory:");
+    database.exec(`CREATE TABLE rubric_criteria (
+      rubric_id TEXT NOT NULL, criterion_key TEXT NOT NULL, ordinal INTEGER NOT NULL,
+      text TEXT NOT NULL, blocking INTEGER NOT NULL,
+      PRIMARY KEY (rubric_id, criterion_key))`);
+    database.prepare("INSERT INTO rubric_criteria VALUES (?,?,?,?,?)")
+      .run("R1", "K1", 0, "老标准", 0);
+    return database;
+  };
+
+  it("**没有 migrate，读 section 就抛**", () => {
+    assert.throws(
+      () => oldShape().prepare("SELECT section FROM rubric_criteria").all(),
+      /no such column/,
+    );
+  });
+
+  it("migrate 之后列在了，老行是 NULL —— 不是凭空挂到某一节上", () => {
+    const database = oldShape();
+    migrate(database);
+    const row = database
+      .prepare("SELECT section FROM rubric_criteria WHERE criterion_key = ?")
+      .get("K1") as { section: string | null };
+    assert.equal(row.section, null);
+  });
+
+  it("跑两次是幂等的", () => {
+    const database = oldShape();
+    migrate(database);
+    assert.doesNotThrow(() => { migrate(database); });
+  });
+});
+
 describe("L0 · 旧库能补上后加的列", () => {
   /** 一个 path 列出现之前建的库。 */
   const oldShape = () => {
