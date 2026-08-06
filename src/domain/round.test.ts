@@ -1147,7 +1147,13 @@ describe("L4 · 那两个路径要经裁判转达给反方", () => {
 
   it("**没有要反方判的标准就一行都不印** —— 空小节会让裁判去猜", () => {
     const without = judgePrompt(base);
-    assert.ok(!without.includes("逐条判定"), "没有标准却印了那一节");
+    /*
+     * 判据取 rubric 那一节**独有**的东西（要判几条 + 那句作废警告），不取「逐条
+     * 判定」四个字 —— 2026-08-06 起有模板的阶段在别处也提到它（「你的判断走逐条
+     * 判定那一份」），拿一个会在两处出现的词做判据，测的就不是它本来要测的事了。
+     */
+    assert.doesNotMatch(without, /要它\*\*逐条判定 \d+ 条标准\*\*/, "没有标准却印了那一节");
+    assert.doesNotMatch(without, /数不对整份判定作废/, "没有标准却印了那一节");
     const zero = judgePrompt({
       ...base,
       blueRubric: { criteriaPath: "/tmp/a", answersPath: "/tmp/b", count: 0 },
@@ -1160,6 +1166,50 @@ const filled = (titles: readonly string[]): string =>
   titles.map((title) => `## ${title}\n有内容\n`).join("\n");
 
 const allTitles = templateFor("PRD")!.map((each) => each.title);
+
+describe("L4 · 有模板的阶段，反方的自由 blockers 丢在解析层", () => {
+  const red = "```json\n" + JSON.stringify({ artifactIds: ["prd.md"], blockers: [] }) + "\n```";
+  const blueWith = (id: string) => "```json\n" + JSON.stringify({
+    artifactIds: [],
+    blockers: [{ id, severity: "P1", title: "我偏要报", where: "a", why: "b" }],
+    overall: "还行",
+  }) + "\n```";
+
+  it("**PRD：反方硬报也不算数** —— 它的判断全部走逐条判定", () => {
+    const reading = readRound({
+      phase: "PRD", round: 1, red, blue: blueWith("X-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found, []);
+    assert.equal(reading.blueOverall, "还行", "overall 还要 —— 它是写给人看的");
+  });
+
+  it("**丢在解析层，不靠提示词叮嘱** —— 光在提示词里要求是抓不到的", () => {
+    // 这一条和上面那条的区别：上面证「结果是空的」，这一条证**它不是靠模型听话**
+    // 才空的。提示词里根本没让它报，而它照报了 —— 结果仍然是空的。
+    const reading = readRound({
+      phase: "PRD", round: 1, red, blue: blueWith("X-2"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.equal(reading.outcome.found.length, 0);
+  });
+
+  it("Build 照旧收 —— 它的病是自审，不是这一刀", () => {
+    const reading = readRound({
+      phase: "Build", round: 1, red, blue: blueWith("B-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["B-1"]);
+  });
+
+  it("Spec 照旧收 —— 它还没有模板，砍掉等于让反方无处可说", () => {
+    const reading = readRound({
+      phase: "Spec", round: 1, red, blue: blueWith("S-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
+  });
+});
 
 describe("L4 · 缺模板节 = 挡闸门，但不丢这一轮", () => {
   const base = { sections: templateFor("PRD")!, round: 2, docPath: "docs/x/PRD-r2.md" };

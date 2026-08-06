@@ -104,6 +104,20 @@ export const RESULT_CONTRACT = `Reply with one \`\`\`json block and nothing that
 Report every problem you found as a blocker. An empty list means you found none.`;
 
 /**
+ * 有模板的阶段，反方的契约：**只剩一句整体判断，没有问题清单。**
+ *
+ * 它这一阶段的判断全部走 rubric 逐条判定（写进另一个文件，见 `blueRubricLines`）。
+ * 这里之所以还留着一个围栏，是因为 `overall` 在里面 —— 而 `parseTurnResult` 读不到
+ * 围栏就是整轮作废。
+ *
+ * 和 `RESULT_CONTRACT` 一样**不许走文件**：判据是「缺了会怎样」——
+ * 形状没被读到，它答出来的东西解析不了。
+ */
+export const BLUE_VERDICT_ONLY_CONTRACT =
+  `Reply with one \`\`\`json block and nothing that contradicts it:
+{"overall": "<one sentence on whether this round is good enough, and why>"}`;
+
+/**
  * 各字段是什么意思。**这一半走文件**（`judgePrompt` 的 `contractNotesPath`）。
  *
  * 缺了它，模型照样答得出合法形状 —— 只是 `where` / `why` 会写得糙，而那两样

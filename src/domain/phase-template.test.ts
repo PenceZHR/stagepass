@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { missingSections, renderTemplate, templateFor } from "./phase-template";
+import {
+  missingSections, renderTemplate, reportsFreeFormBlockers, templateFor,
+} from "./phase-template";
 
 test("PRD 有模板，别的阶段暂时没有", () => {
   assert.equal(templateFor("PRD")?.length, 6);
@@ -62,4 +64,25 @@ test("标题必须逐字相等，只是包含不算", () => {
       : `## ${each.title}\n有内容\n`)
     .join("\n");
   assert.deepEqual(missingSections(filled, sections), [sections[0]!.key]);
+});
+
+/*
+ * 反方交不交自由 blockers，判据**只有一个**：这个阶段有没有模板。
+ *
+ * 不是一张手维护的名单 —— 名单要人记着「加了模板回来改第二处」，而这棵树刚为
+ * 「同一个想法的第二份拷贝」吃过亏（§8.6·① 三份）。
+ */
+test("有模板的阶段不收自由 blockers，没模板的照收", () => {
+  assert.equal(reportsFreeFormBlockers("PRD"), false, "PRD 有模板，判断走逐条判定");
+  for (const phase of
+    ["Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review", "Fix", "QA", "Merge", "Retro"] as const) {
+    assert.equal(reportsFreeFormBlockers(phase), true, phase);
+  }
+});
+
+test("**判据就是 templateFor，不是第二张名单**", () => {
+  for (const phase of
+    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review", "Fix", "QA", "Merge", "Retro", "Done"] as const) {
+    assert.equal(reportsFreeFormBlockers(phase), templateFor(phase) === null, phase);
+  }
 });

@@ -92,6 +92,37 @@ export function templateFor(phase: Phase): readonly TemplateSection[] | null {
   return TEMPLATES[phase] ?? null;
 }
 
+/**
+ * 这个阶段的反方还交不交**自由 blockers**（一份没有上限、没有边界的问题清单）。
+ *
+ * ## 判据只有一个：有没有模板
+ *
+ * 有模板 = 产出是离散的 = 反方的判断全部走逐条判定，**每轮上限 = criterion 条数，
+ * 收敛 = 全 yes**。真库取证（CHG-001，21 轮）：自由那条路产出 139 条、全部挡门，
+ * 而有边界那条路答了 192 条判定、**一条 gap 都没派生**。
+ * 准的那条路只说不算，野的那条路说了算 —— 这个函数是把它掉过来的那一刀。
+ *
+ * ## 为什么不是一张名单
+ *
+ * 名单要人记着「哪天给 Spec 加了模板，回来改第二处」。这棵树刚为「同一个想法的
+ * 第二份拷贝」吃过亏（`upstreamOf` 那个错想法有过三份，其中一份让派发 TestPlan
+ * 直接拒跑）。绑在 `templateFor` 上，加模板的那一刻收口自动跟上。
+ *
+ * ## 没有模板的阶段必须留着它
+ *
+ * 砍掉一个没有模板的阶段的 blockers，等于让反方只剩几条薄标准、真发现无处可说 ——
+ * 严格更糟。Build / Review / QA 更是如此：它们的病是自审（BACKLOG §8.3），
+ * 解法是测试归属 + 轮末 diff 闸门，不是这一刀。
+ */
+export function reportsFreeFormBlockers(phase: string): boolean {
+  /*
+   * 收 `string` 而不是 `Phase`，和 `redReviewsOthers` 一样 —— `RoundTranscript.phase`
+   * 就是 string。**认不出来的阶段一律返回 true**：安全的方向是保留发现，不是
+   * 悄悄丢掉一整份意见。
+   */
+  return TEMPLATES[phase as Phase] === undefined;
+}
+
 /** 印给红方看的那份。 */
 export function renderTemplate(sections: readonly TemplateSection[]): string {
   return sections.map((each) => `## ${each.title}\n${each.asks}`).join("\n\n");

@@ -1,10 +1,11 @@
 import {
-  jsonAnswerIn, RESULT_CONTRACT, RESULT_CONTRACT_NOTES, TurnResultUnparsableError,
+  BLUE_VERDICT_ONLY_CONTRACT, jsonAnswerIn, RESULT_CONTRACT, RESULT_CONTRACT_NOTES,
+  TurnResultUnparsableError,
 } from "./turn";
 import { parseTurnResult } from "./turn";
 import { isHumanGap, templateGapId } from "./gap";
 import {
-  missingSections, renderTemplate, type TemplateSection,
+  missingSections, renderTemplate, reportsFreeFormBlockers, type TemplateSection,
 } from "./phase-template";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
 import { redReviewsOthers, type Phase } from "./phase";
@@ -664,9 +665,21 @@ export function judgePrompt(input: RoundInstructions): string {
      * 指望它「参照上文」就是指望它转述 —— 只有原文加收件人才到得了。**
      */
     `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
-    RESULT_CONTRACT,
-    ...contractNotes(input.contractNotesPath),
-    ...play.blue.after.slice(0, 1),
+    ...(reportsFreeFormBlockers(input.phase)
+      ? [RESULT_CONTRACT, ...contractNotes(input.contractNotesPath)]
+      /*
+       * 有模板的阶段不要问题清单了 —— **但仍然要那个 json 围栏**：`overall` 在
+       * 里面，而 `parseTurnResult` 读不到围栏是整轮作废。所以给一份只剩 overall
+       * 的契约，而不是把这一段整个删掉。
+       *
+       * 契约照旧走原文、照旧写抬头：判据是「缺了会怎样」—— 形状没被读到，
+       * 它答出来的东西解析不了。2026-08-02 实测过一次，那次整轮作废。
+       */
+      : [BLUE_VERDICT_ONLY_CONTRACT]),
+    ...(reportsFreeFormBlockers(input.phase) ? play.blue.after.slice(0, 1) : [
+      `   **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。`
+      + `模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。`,
+    ]),
     /*
      * 逐条之外再要一句整体的（用户 2026-07-31）。
      *
@@ -1180,7 +1193,18 @@ export function readRound(
   });
   let blueBlockers: RoundOutcome["found"];
   try {
-    blueBlockers = parseTurnResult(transcript.blue).blockers.map((blocker) => ({
+    blueBlockers = parseTurnResult(transcript.blue, {
+      /*
+       * **有模板的阶段，反方的自由 blockers 丢在解析层**（2026-08-06）。
+       *
+       * 丢在这儿而不是靠提示词叮嘱，理由和红方那次一模一样：光在提示词里要求是
+       * 抓不到的 —— 模型违反了没人发现。它这一阶段的判断全部走逐条判定，
+       * 每轮上限 = criterion 条数，收敛 = 全 yes。
+       *
+       * `overall` 不受影响（`overallIn` 单独读），裁判的结论也不受影响。
+       */
+      discardBlockers: !reportsFreeFormBlockers(transcript.phase),
+    }).blockers.map((blocker) => ({
       id: blocker.id, severity: blocker.severity, title: blocker.title,
       // **这两样以前就是在这一行被丢掉的。** 红方明明知道问题在 foo.ts:42、也写清了
       // 为什么，交出来之后只剩一个标题往下走，下一轮的红方和 Fix 得回去重新解析
