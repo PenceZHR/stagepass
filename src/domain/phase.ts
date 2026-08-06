@@ -106,6 +106,22 @@ const CONSUMES: Readonly<Record<Phase, readonly Phase[]>> = {
   // **不含 Plan**：两者都只消费 TechSpec，互不消费（BACKLOG §8.6·①/③）。
   TestPlan: ["TechSpec"],
   Build: ["Plan", "TestPlan"],
+
+  /*
+   * ── 下面这四行**没有验证过**（2026-08-06 用户拍：等真走到那儿再填）─────────
+   *
+   * 填的是线性链，理由是**它让行为和改这张表之前逐字一致**，不是因为我知道它对。
+   * CHG-001 到今天只走到 Build —— Review / QA / Merge / Retro 从来没产出过任何
+   * 东西，所以一条经验依据都没有。
+   *
+   * **承重的那个问题：从 QA 能不能打回 Review。** 现在能（`QA ← Review`）。而
+   * 审查阶段产出的是 findings 不是文档，「打回 Review 说它错了」可能根本没有
+   * 含义 —— 重审的出口是 `rerun`，代码错的出口是 `reject`→Fix。真是那样的话，
+   * 这几行该改成 `QA ← Build + TestPlan`、`Merge ← Build`，Review / QA 就掉出
+   * 各自下游的上游名单。
+   *
+   * **走到那儿的那一轮，回来把这四行定了。** 在那之前它们是有意的过渡，不是遗漏。
+   */
   Review: ["Build"],
   Fix: [],
   QA: ["Review"],
