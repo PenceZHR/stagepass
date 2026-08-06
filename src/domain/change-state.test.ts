@@ -17,6 +17,9 @@ import {
   IllegalTransitionError,
   INITIAL_STATE,
   InvalidStateError,
+  approvalTargets,
+  ApprovalTargetError,
+  recommendedApproval,
   isLegal,
   PHASE_STATUSES,
   SendBackTargetError,
@@ -485,5 +488,197 @@ describe("L0 · Review/QA 也要能「就在这儿再来一轮」（旧账 F）"
     for (const status of ["pending", "running", "blocked"] as const) {
       assert.equal(isLegal({ phase: "Review", status, returnStack: [] }, "rerun"), false, status);
     }
+  });
+});
+
+/**
+ * §8.10：**箭头是推荐，不是强制。**
+ *
+ * > 系统做出来的箭头是给用户一个大概的指示，具体怎么做用户可以自己调整进哪一个
+ * > 阶段 —— 我给一个 recommendation，但具体怎么做还是用户自己 decide。
+ * > （用户 2026-08-05）
+ *
+ * 用户 2026-08-06 拍板的落法：**只补能力，不碰那两条硬校验**。所以这一组测试
+ * 钉的不只是「人能选别的」，更是「**清单里每一条走过去，状态都还成立**」——
+ * 后者才是那两条校验不用动的理由。
+ */
+describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
+  const settled = (phase: Phase, stack: readonly Phase[] = []): ChangeState =>
+    ({ phase, status: "settled", returnStack: stack });
+
+  it("**推荐永远在清单里** —— 一个选不了的推荐比没有推荐更糟", () => {
+    for (const state of [
+      settled("PRD"), settled("Build"), settled("TestPlan", ["Review"]),
+      settled("Spec", ["Build"]), settled("Fix", ["QA"]),
+    ]) {
+      const recommended = recommendedApproval(state);
+      assert.ok(recommended !== null);
+      assert.ok(
+        approvalTargets(state).includes(recommended),
+        `${state.phase}/${state.returnStack.join(">") || "-"}：推荐的 ${recommended} 不在清单里`,
+      );
+    }
+    // 走到头了：没有推荐，清单也是空的 —— 批准就是关掉这个 Change。
+    assert.equal(recommendedApproval(settled(TERMINAL_PHASE)), null);
+    assert.deepEqual(approvalTargets(settled(TERMINAL_PHASE)), []);
+  });
+
+  it("栈空时推荐就是主线的下一步 —— 不许和 `advancesTo` 各算一套", () => {
+    for (const phase of PHASES) {
+      if (phase === "Fix") continue;   // 不在主线上，没有「下一步」
+      assert.equal(recommendedApproval(settled(phase)), advancesTo(phase), phase);
+    }
+  });
+
+  it("不给目标 = 走推荐那条 —— 老调用点一个字都不用改", () => {
+    for (const state of [
+      settled("Spec"), settled("TestPlan", ["Review"]), settled("Fix", ["QA"]),
+    ]) {
+      assert.equal(
+        transition(state, "approve").phase, recommendedApproval(state),
+        `${state.phase}/${state.returnStack.join(">") || "-"}`,
+      );
+    }
+  });
+
+  /**
+   * **上界是栈顶，而这正是那两条硬校验不用动的原因。**
+   *
+   * 栈顶在等这份改完；跳到它后面去，回程栈就不再严格下游 —— 那正是
+   * `assertStateValid` 挡的「一个没有出口的格子」。清单里根本不放这种选项，
+   * 于是人怎么选都不会撞上它。
+   */
+  it("有人在等的时候，最远只能走到他那儿", () => {
+    // 按主线顺序：中间能顺路重走的，加上在等的那个（清单到他为止）。
+    assert.deepEqual(
+      approvalTargets(settled("TestPlan", ["Review"])),
+      ["Build", "Review"],
+      "Review 在等 —— 中间只剩 Build 可以顺路重走，再往后就不给了",
+    );
+    assert.deepEqual(
+      approvalTargets(settled("Spec", ["Build"])),
+      ["TechSpec", "Plan", "TestPlan", "Build"],
+    );
+    // 推荐仍然是还债那一条 —— §8.10 只补了能力，没反转默认（那是 §8.9）。
+    assert.equal(recommendedApproval(settled("TestPlan", ["Review"])), "Review");
+  });
+
+  it("没人在等的时候，主线后面的都能挑 —— 跳过阶段是允许的", () => {
+    assert.deepEqual(
+      approvalTargets(settled("Build")),
+      ["Review", "QA", "Merge", "Retro", "Done"],
+    );
+    // 走到头了：没有下一个阶段，也没人在等。
+    assert.deepEqual(approvalTargets(settled(TERMINAL_PHASE)), []);
+  });
+
+  it("Fix 只有还债那一条 —— 它不在主线上，没有「下一个阶段」可言", () => {
+    assert.deepEqual(approvalTargets(settled("Fix", ["QA"])), ["QA"]);
+  });
+
+  /**
+   * **§8.9 想要的那条路，现在是人可以选的一条。**
+   *
+   * `Review --sendBack--> TestPlan`，批准 TestPlan 时选 Build 而不是 Review ——
+   * 于是 Build 会对着改过的测试重跑一次，再回 Review。默认还是今天的行为
+   * （直接弹回 Review），反转不反转是另一个决定。
+   */
+  it("选「顺路重走」而不是「直接弹回」—— 栈原样带着，走到发起方才还", () => {
+    const atTestPlan = transition(settled("Review"), "sendBack", { to: "TestPlan" });
+    assert.deepEqual(atTestPlan.returnStack, ["Review"]);
+
+    // 批准 TestPlan，但选 Build（清单里的第二条）—— 栈不动，Review 还欠着。
+    const atBuild = transition(
+      { ...atTestPlan, status: "settled" }, "approve", { to: "Build" });
+    assert.deepEqual(atBuild, {
+      phase: "Build", status: "pending", returnStack: ["Review"],
+    });
+    // 走过来的状态必须还是合法的 —— 那两条硬校验一个字没动，这里就是它们在验。
+    assertStateValid(atBuild);
+
+    // Build 批准（不给目标）：清单只剩 Review，还债。
+    assert.deepEqual(approvalTargets({ ...atBuild, status: "settled" }), ["Review"]);
+    assert.deepEqual(
+      transition({ ...atBuild, status: "settled" }, "approve"),
+      { phase: "Review", status: "pending", returnStack: [] },
+    );
+  });
+
+  it("嵌套打回也能一路重走回来，每一步的状态都合法", () => {
+    // Build 发现 Spec 错 → 回 Spec；Spec 发现 PRD 错 → 再回 PRD。
+    let state = transition(settled("Build"), "sendBack", { to: "Spec" });
+    state = transition({ ...state, status: "settled" }, "sendBack", { to: "PRD" });
+    assert.deepEqual(state.returnStack, ["Build", "Spec"]);
+
+    // 一路选「顺路重走」，直到栈空回到 Build。
+    const walked: Phase[] = [];
+    for (let step = 0; step < 8 && state.returnStack.length > 0; step += 1) {
+      // 清单按主线顺序排，所以第一条就是「往主线再走一步」= 顺路重走。
+      // 还债那一条是 `recommendedApproval`（栈非空时 = 栈顶 = 清单最后一条）。
+      const to = approvalTargets({ ...state, status: "settled" })[0]!;
+      state = transition({ ...state, status: "settled" }, "approve", { to });
+      assertStateValid(state);
+      walked.push(state.phase);
+    }
+    assert.deepEqual(
+      walked, ["Spec", "TechSpec", "Plan", "TestPlan", "Build"],
+      "中间的阶段一个都没被跳过，而栈也一路还干净了",
+    );
+    assert.deepEqual(state.returnStack, []);
+  });
+
+  it("**清单外的一律拒，而且把清单一起报出去**", () => {
+    for (const [state, to] of [
+      [settled("Spec"), "PRD"],                       // 往回走不是批准
+      [settled("Spec"), "Spec"],                      // 原地不是批准
+      [settled("TestPlan", ["Review"]), "QA"],        // 越过在等的那个
+      [settled("Fix", ["QA"]), "Merge"],              // Fix 只有还债一条
+    ] as const) {
+      assert.throws(
+        () => transition(state, "approve", { to }),
+        (error: unknown) => {
+          assert.ok(error instanceof ApprovalTargetError, `${state.phase} -> ${to}`);
+          // 人接下来必然要问「那能选哪些」—— 少了后半句，界面只能说一句「不行」。
+          assert.deepEqual([...error.targets], approvalTargets(state));
+          return true;
+        },
+      );
+    }
+  });
+});
+
+/**
+ * 报错要报**真正挡住它的那一条**。
+ *
+ * 原来一律打印 `ACCEPTS[status]`，于是 Fix 上 sendBack 报出来是「不合法（accepts:
+ * … sendBack …）」—— 自己列着它，又说它不行，而真实原因（Fix 不在主线上）整句话
+ * 都没出现。一条自相矛盾的报错比没有报错更贵：读的人会去查状态表，而错不在那儿。
+ */
+describe("L0 · 拒绝一个动作时，说的是真正挡住它的那条", () => {
+  it("Fix 上 sendBack —— 说的是「没有上游可回」，不是甩一张状态表", () => {
+    assert.throws(
+      () => transition({ phase: "Fix", status: "settled", returnStack: ["Review"] },
+        "sendBack", { to: "Spec" }),
+      (error: unknown) => {
+        assert.ok(error instanceof IllegalTransitionError);
+        assert.match(error.message, /not on the line/);
+        assert.doesNotMatch(
+          error.message, /accepts: .*sendBack/,
+          "不许一边说它不行、一边把它列在允许的动作里",
+        );
+        return true;
+      },
+    );
+  });
+
+  it("状态本身就不接受的，照旧报状态表 —— 那时它说的才是真的", () => {
+    assert.throws(
+      () => transition({ phase: "Spec", status: "pending", returnStack: [] }, "approve"),
+      (error: unknown) => {
+        assert.ok(error instanceof IllegalTransitionError);
+        assert.match(error.message, /accepts: start/);
+        return true;
+      },
+    );
   });
 });

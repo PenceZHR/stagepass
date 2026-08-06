@@ -1,7 +1,7 @@
-import type { ChangeAction, ChangeState } from "./change-state";
+import { recommendedApproval, type ChangeAction, type ChangeState } from "./change-state";
 import type { Gate } from "./gate";
 import {
-  advancesTo, DEFAULT_GRAPH, sendsToFix, upstreamOf,
+  DEFAULT_GRAPH, sendsToFix, upstreamOf,
   type Phase, type PhaseGraph,
 } from "./phase";
 import { roundFromLedger } from "./round";
@@ -117,8 +117,14 @@ export function optionsFrom(
   const owed = state.returnStack[state.returnStack.length - 1];
 
   if (gate.permitted.includes("approve")) {
-    // 欠着回程就还债，不沿主线走 —— 和 `transition` 的 approve 同一条规则。
-    const to = owed ?? advancesTo(state.phase, graph);
+    /*
+     * 欠着回程就还债，不沿主线走。
+     *
+     * 这里原来自己写了一遍 `owed ?? advancesTo(...)`，注释写着「和 `transition`
+     * 的 approve 同一条规则」—— 一句只能靠人记得的话。现在两边读**同一个**
+     * `recommendedApproval`，那句话变成了机械的（§8.10 顺手清的）。
+     */
+    const to = recommendedApproval(state, graph);
     if (to !== null) {
       edges.push({
         action: "approve", to, kind: kindOf(state.phase, to),
