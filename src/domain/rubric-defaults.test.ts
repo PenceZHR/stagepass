@@ -21,7 +21,9 @@ import { defaultCriteria } from "./rubric-defaults";
 describe("出厂标准 · 要求的东西必须先被要求", () => {
   it("**Build 要「运行证据」，任务书里就得让红方交**", () => {
     const wantsEvidence = defaultCriteria("Build", "producer")
-      .some((entry) => entry.text.includes("运行证据"));
+      // 2026-08-06 措辞变了：Build 的报告有了 `tests` 那一节，标准跟着改成
+      // 「跑的是 TestPlan 交的用例，贴了命令和输出」—— 要的还是同一样东西。
+      .some((entry) => entry.text.includes("贴了命令和输出"));
     assert.ok(wantsEvidence, "Build 的标准里没有运行证据这条了 —— 这条测试该跟着改");
     assert.match(
       MINIMAL_PHASE_INSTRUCTIONS.Build, /output/,
@@ -56,7 +58,7 @@ describe("出厂标准 · 要求的东西必须先被要求", () => {
   });
 
   it("没有模板的阶段，出厂仍然一条都不阻断 —— 那条拍板没被翻", () => {
-    for (const phase of ["Build", "Fix"] as const) {
+    for (const phase of ["Fix"] as const) {
       for (const role of RUBRIC_ROLES) {
         for (const entry of defaultCriteria(phase, role)) {
           assert.equal(entry.blocking, false, `${phase}/${role}：${entry.text}`);
@@ -150,7 +152,7 @@ describe("出厂标准 · critic 那份不许要一个这阶段没有的能力",
   });
 
   it("交问题清单的阶段照旧要判那几条 —— 别把它们一起删了", () => {
-    for (const phase of ["Build", "Fix", "Review", "QA", "Merge"] as const) {
+    for (const phase of ["Fix", "Review", "QA", "Merge"] as const) {
       const texts = defaultCriteria(phase, "critic").map((each) => each.text);
       assert.ok(texts.some((t) => t.includes("同一个 id")), `${phase} 少了 id 那条`);
       assert.ok(texts.some((t) => t.includes("每条问题都指向")), `${phase} 少了位置那条`);

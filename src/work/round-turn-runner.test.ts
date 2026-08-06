@@ -44,7 +44,7 @@ function open() {
 }
 
 /**
- * 把 Change 一路推到 Build（离线手段，L1 的假答案纪律）。
+ * 把 Change 一路推到 Review（离线手段，L1 的假答案纪律）。
  *
  * **2026-08-06 起「轮次号」那两条测试必须在 Build 上跑**：它们靠反方的自由 blockers
  * 当载体，而那条通道只在**反方够得着代码**的阶段还留着（`blue.investigates`）——
@@ -53,7 +53,10 @@ function open() {
  */
 function toBuild(context: ReturnType<typeof open>): void {
   const evidence = new EvidenceStore(context.db);
-  while (context.changes.read(CHANGE).state.phase !== "Build") {
+  // 2026-08-06 二改：推到 **Review**。Build 那天也收口了（它有了施工报告模板），
+  // 而这两条测试拿反方的自由 blockers 当载体 —— Review 是主线上还留着那条通道的
+  // 第一个阶段。测的事情没变：轮次从账本数，和哪个阶段无关。
+  while (context.changes.read(CHANGE).state.phase !== "Review") {
     const phase = context.changes.read(CHANGE).state.phase;
     context.changes.apply(CHANGE, "start");
     context.changes.apply(CHANGE, "settle");
@@ -156,12 +159,16 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
     });
 
     await dispatchRound(loop, "J1");
-    // 人裁决「再来一轮」：settled -> pending，下一次派发会再记一条 start。
-    context.changes.apply(CHANGE, "reject");
+    /*
+     * 「再来一轮」在 Review 上是 `rerun`，不是 `reject` —— 后者在 Review/QA 是
+     * **送修**（→ Fix，`SENDS_TO_FIX`）。2026-08-06 夹具从 Build 挪到 Review 时
+     * 撞上这条：照抄 reject 的话 Change 会跑去 Fix，第二轮根本不在 Review 上。
+     */
+    context.changes.apply(CHANGE, "rerun");
     await dispatchRound(loop, "J2");
 
     const opened = Object.fromEntries(
-      context.gaps.all(CHANGE, "Build").map((gap) => [gap.id, gap.openedRound]),
+      context.gaps.all(CHANGE, "Review").map((gap) => [gap.id, gap.openedRound]),
     );
     assert.equal(opened["S-1"], 1);
     assert.equal(opened["S-2"], 2, "第二轮发现的问题被记成了第 1 轮");
@@ -188,7 +195,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
     await dispatchRound(loop, "J2");
 
     assert.equal(
-      context.gaps.all(CHANGE, "Build").find((gap) => gap.id === "S-1")?.openedRound,
+      context.gaps.all(CHANGE, "Review").find((gap) => gap.id === "S-1")?.openedRound,
       2,
       "失败后的重跑没算进轮次",
     );

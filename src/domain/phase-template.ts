@@ -21,10 +21,16 @@ import type { Phase } from "./phase";
  * 每个阶段各写各的，**不许提取公因子**。提取出来就是把模板悄悄请了回来，而下一次
  * 「只想改 PRD 那一节」又会变成往公共件上挂分支。
  *
- * ## 九个阶段有，Build / Fix 没有
+ * ## 十个阶段有，只有 Fix 和 Done 没有
  *
- * 用户 2026-08-06：「覆盖到所有 stage。」覆盖面止于**产出文档的阶段** ——
- * Build 和 Fix 交的是 commit，见 `TEMPLATES` 上面那段。
+ * 用户 2026-08-06：「覆盖到所有 stage。」原来止于「产出文档的阶段」，把 Build
+ * 挡在外面 —— **而那个判据是错的**：Build 拿不到文档路径不是因为它交 commit，
+ * 是因为 `round-turn-runner` 拿 `producesCommit` 顺手决定了「给不给路径」，
+ * 把两件事绑成了互斥。解开之后 Build 交两样：代码进 commit，施工报告进模板。
+ *
+ * Fix 暂时不给：它是「改掉被报出来的那几条」，一次可能只动两行，套一份报告
+ * 负担大于收益。**等 Build 这一份真跑过再决定要不要复制** —— 和当初
+ * 「先只做 PRD 一个」同一条纪律。
  *
  * 没有模板的阶段返回 `null`，调用方按「照旧」走，**不是按「空模板」走**：
  * 空模板会让红方收到一份零节的清单然后什么都不写。
@@ -205,10 +211,14 @@ const PLAN_SECTIONS: readonly TemplateSection[] = [
 /**
  * TestPlan 的五节。消费 TechSpec。
  *
- * ⚠ **不含「实际跑出来的结果」那一节。** 用户 2026-08-06 拍了「TestPlan 可以出测试
- * 方案和执行」，但今天 `PRODUCES_COMMIT` 只有 Build / Fix —— TestPlan 就算写了测试
- * 代码也会被静默丢掉（BACKLOG §8.4）。在那一刀落之前放这一节进来，就是造一条
- * 永远满足不了的硬要求，而那正是这套机制要防的事。
+ * ## `ran` 那一节 2026-08-06 才补上，而它等了一刀
+ *
+ * 用户当天拍了「TestPlan 可以出测试方案**和执行**」，但那时 `PRODUCES_COMMIT` 只有
+ * Build / Fix —— TestPlan 写了测试代码也会被静默丢掉（BACKLOG §8.4）。放这一节进来
+ * 就是造一条**永远满足不了**的硬要求，而那正是这套机制要防的事。
+ *
+ * TestPlan 进名单之后它才第一次有地方落。**注意它要的是「跑过、输出是什么」，
+ * 不是「必须红」** —— 「交的测试要不要求当场红」是 §8.7·1，用户还没拍。
  */
 const TESTPLAN_SECTIONS: readonly TemplateSection[] = [
   {
@@ -235,6 +245,12 @@ const TESTPLAN_SECTIONS: readonly TemplateSection[] = [
     key: "how",
     title: "怎么跑",
     asks: "命令、环境、前置条件。别人照着能重现。没有「跑一遍看看」这种写法。",
+  },
+  {
+    key: "ran",
+    title: "实际跑出来的结果",
+    asks: "把上面那些用例真跑一遍，贴命令和输出。**功能还没实现，所以预期是失败的** ——"
+      + "要说清每条是「功能没实现」失败的，还是「测试自己写错」失败的。",
   },
 ];
 
@@ -320,6 +336,58 @@ const MERGE_SECTIONS: readonly TemplateSection[] = [
   },
 ];
 
+/**
+ * Build 的六节 —— **施工报告**，不是代码本身。
+ *
+ * ## 它凭什么有模板
+ *
+ * 这个模块原来写着「Build 交的是 commit，套模板等于造一份永远缺齐所有节的产出」。
+ * **那句话当时是对的，因为 `round-turn-runner` 不给它文档路径** —— 而那是把
+ * 「交 commit」和「交文档」绑成互斥的一处混淆，2026-08-06 解开了。
+ *
+ * 现在 Build 交两样：代码进 commit，**一份说清「改了什么、跑过没有」的报告进模板**。
+ * 报告才是它的可离散化表面，模板挂在报告上，代码那半归 diff 闸门和 rubric 管。
+ *
+ * ## `tests` 那一节是承重的
+ *
+ * 用户拍板「Build 不许自己写测试」（BACKLOG §8.4）。这一节让那件事**在报告里就
+ * 看得见** —— 它跑的是 TestPlan 交的哪几个用例、结果是什么。它自己写了测试的话，
+ * 这一节要么空、要么露馅，而轮末的 diff 闸门是第二道（机械的那道）。
+ */
+const BUILD_SECTIONS: readonly TemplateSection[] = [
+  {
+    key: "did",
+    title: "这一轮改了什么",
+    asks: "按 Plan 的哪几步做的，实际动了哪些文件。不要复述 Plan。",
+  },
+  {
+    key: "tests",
+    title: "跑了哪些测试，结果是什么",
+    asks: "跑的是 TestPlan 交的哪几个用例、命令是什么、输出是什么。"
+      + "**这一阶段不写测试** —— 需要新用例就说明缺哪一条，留给 TestPlan。",
+  },
+  {
+    key: "deviation",
+    title: "和 Plan 不一样的地方",
+    asks: "多做的、少做的、换了做法的，逐条写为什么。一条都没有就明写「没有」。",
+  },
+  {
+    key: "decisions",
+    title: "不明显的决定",
+    asks: "代码里看不出为什么的那几处，在这儿说清。",
+  },
+  {
+    key: "risk",
+    title: "这一轮最可能出问题的一处",
+    asks: "指名一处，写为什么是它。并列罗列多项不算回答了这一节。",
+  },
+  {
+    key: "leftover",
+    title: "没做完的",
+    asks: "知道还差什么、留给谁。没有就明写「没有」。",
+  },
+];
+
 /** Retro 的四节。 */
 const RETRO_SECTIONS: readonly TemplateSection[] = [
   {
@@ -347,15 +415,16 @@ const RETRO_SECTIONS: readonly TemplateSection[] = [
 /**
  * 哪些阶段有模板。
  *
- * ## Build 和 Fix 不在里面，而且这不是「还没做」
+ * ## Build 有了，Fix 还没有
  *
- * `producesCommit = {Build, Fix}` —— 它们轮末交的是**一个 commit，不是一份文档**
- * （`work/round-turn-runner.ts` 明确不给它们文档路径）。给它们套模板等于造一份
- * 永远缺齐所有节的产出，每一节永远挡着闸门 —— 那是 `rubric-defaults.ts` 里那句
- * 「一条只能靠猜的标准比没有更糟」换个形状复发。
+ * 这里原来写着「Build / Fix 交的是 commit，套模板等于造一份永远缺齐所有节的产出」。
+ * **那句话当时是对的，但原因不是「交 commit」** —— 是 `round-turn-runner` 拿
+ * `producesCommit` 决定给不给文档路径，把两件事绑成了互斥的。2026-08-06 解开之后
+ * Build 交两样：代码进 commit，施工报告进模板。
  *
- * 它们两个的不收敛是**自审**（BACKLOG §8.3：Build 自己写验证器、自己判），
- * 解法是测试归属 + 轮末 diff 闸门（§8.4），不是这一刀。
+ * Fix 暂时不给：它是「改掉被报出来的那几条」，一次可能只动两行，套六节报告是负担
+ * 大于收益。**等 Build 这一份真跑过再决定要不要复制** —— 和当初「先只做 PRD 一个」
+ * 同一条纪律。
  *
  * `Done` 是终点，什么都不派。
  */
@@ -368,6 +437,7 @@ const TEMPLATES: Partial<Readonly<Record<Phase, readonly TemplateSection[]>>> = 
   Review: REVIEW_SECTIONS,
   QA: QA_SECTIONS,
   Merge: MERGE_SECTIONS,
+  Build: BUILD_SECTIONS,
   Retro: RETRO_SECTIONS,
 };
 

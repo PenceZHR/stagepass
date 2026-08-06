@@ -298,7 +298,24 @@ export const TERMINAL_PHASE: Phase = "Done";
  * 而一个 StagePass 独占的目录就是那条分界。意思是「整树提交」的名单，仍然精确
  * 等于意思是「要求干净树」的名单。
  */
-const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>(["Build", "Fix"]);
+/*
+ * ## 2026-08-06：TestPlan 进来了，而它带来一条更正
+ *
+ * 用户拍板「Build 不许自己写测试，测试都是前面阶段写好的」（BACKLOG §8.4）。
+ * 而在这之前 **TestPlan 结构上交不出测试** —— 它不在这个名单里，轮末走
+ * `commitPaths` 只提交 `docs/stagepass/<change>/`，写了测试代码也会被静默丢掉。
+ *
+ * 它进来是语义自洽的：TestPlan 从此写代码，那它**正好也该查干净树** ——
+ * 上面那条「两件事同一个名单不许分开」原样成立。
+ *
+ * **顺带更正了一处混淆**：`work/round-turn-runner.ts` 原来拿这个名单决定
+ * 「给不给文档路径」，于是名单里的阶段一份文档都交不出来。那是第三件事，
+ * 不在这条约束里 —— 现在每个阶段都给路径。Build 交 commit **和**施工报告，
+ * TestPlan 交测试代码**和**测试方案。
+ */
+const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>([
+  "Build", "Fix", "TestPlan",
+]);
 
 export function producesCommit(phase: string): boolean {
   return isPhase(phase) && PRODUCES_COMMIT.has(phase);

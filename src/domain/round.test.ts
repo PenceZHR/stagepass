@@ -38,7 +38,7 @@ describe("L4 · what the judge is told", () => {
     // Build：反方在这一阶段够得着代码、照旧交 blockers，所以两边共用同一份契约。
     // 有模板的阶段反方拿的是只剩 overall 的那份（见「反方的自由 blockers 丢在解析层」）。
     const prompt = judgePrompt({
-      phase: "Build", round: 1, task: "写代码", openGaps: [],
+      phase: "Fix", round: 1, task: "写代码", openGaps: [],
     });
     /*
      * **契约原文要出现两遍 —— 红蓝各一份。** 第 4 轮实测：蓝方那节原来只写
@@ -157,9 +157,9 @@ describe("L4 · 结果契约：形状留在提示词里，说明走文件", () =
 
   it("**省下来的是真的** —— 文件化之后提示词短一大截", () => {
     // 说明出现两遍是「红蓝各一份契约」的阶段才有的事 —— 取 Build。
-    const inline = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
+    const inline = judgePrompt({ phase: "Fix", round: 1, task: "t", openGaps: [] });
     const withFile = judgePrompt({
-      phase: "Build", round: 1, task: "t", openGaps: [],
+      phase: "Fix", round: 1, task: "t", openGaps: [],
       contractNotesPath: "/tmp/round/contract-notes.md",
     });
     /*
@@ -321,9 +321,14 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
    * 「要不要用」之前就抛了。整轮作废、蓝方 11 条有效发现陪葬、58 分钟白烧 ——
    * 为一份没人要用的数据。
    */
-  it("**Build：红方 blockers 形状烂掉 → 轮照常成立，产物和蓝方的发现都保住**", () => {
+  /*
+   * **夹具 2026-08-06 从 Build 换成 Fix。** 那次事故发生在 Build，但 Build 的反方
+   * 当天起走逐条判定、不再交 blockers（`investigates: false`）—— 拿它测「蓝方的
+   * 发现有没有被陪葬」已经测不到东西了。Fix 是同一个形状里还留着那条通道的那个。
+   */
+  it("**红方 blockers 形状烂掉 → 轮照常成立，产物和蓝方的发现都保住**", () => {
     const reading = readRound({
-      phase: "Build", round: 4,
+      phase: "Fix", round: 4,
       // 真机那次的原样形状：数组套字符串。
       red: "```json\n" + JSON.stringify({
         artifactIds: ["x.ts"],
@@ -661,8 +666,8 @@ describe("L4 · reading the judge's verdicts", () => {
 describe("L4 · each role is read from its own transcript", () => {
   it("takes artifacts from red and problems from blue", () => {
     const reading = readRound({
-      // Build：反方够得着代码，它报的东西照旧算数。
-      phase: "Build",
+      // Fix：反方够得着代码，它报的东西照旧算数。
+      phase: "Fix",
       round: 2,
       red: answer(["spec.md"]),
       blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null }]),
@@ -1208,9 +1213,9 @@ describe("L4 · 反方照契约原文答，整条路走得通", () => {
     assert.equal(reading.blueOverall, "填了点什么", "overall 没读出来 —— 那是人唯一能看到的整体判断");
   });
 
-  it("Build：照 RESULT_CONTRACT 答，问题清单进得来", () => {
+  it("Fix：照 RESULT_CONTRACT 答，问题清单进得来", () => {
     const reading = readRound({
-      phase: "Build", round: 1, red,
+      phase: "Fix", round: 1, red,
       blue: asAnswered(RESULT_CONTRACT),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
@@ -1257,9 +1262,9 @@ describe("L4 · 有模板的阶段，反方的自由 blockers 丢在解析层", 
     assert.equal(reading.outcome.found.length, 0);
   });
 
-  it("Build 照旧收 —— 它的病是自审，不是这一刀", () => {
+  it("Fix 照旧收 —— 它交的是 commit，没有报告可套模板", () => {
     const reading = readRound({
-      phase: "Build", round: 1, red, blue: blueWith("B-1"),
+      phase: "Fix", round: 1, red, blue: blueWith("B-1"),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.outcome.found.map((each) => each.id), ["B-1"]);

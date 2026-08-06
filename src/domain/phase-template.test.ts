@@ -9,17 +9,17 @@ import { missingSections, renderTemplate, templateFor } from "./phase-template";
  */
 test("九个产出文档的阶段有模板，Build / Fix / Done 没有", () => {
   for (const phase of
-    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Review", "QA", "Merge", "Retro"] as const) {
+    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review", "QA", "Merge", "Retro"] as const) {
     assert.ok((templateFor(phase)?.length ?? 0) >= 4, `${phase} 没有模板`);
   }
-  for (const phase of ["Build", "Fix", "Done"] as const) {
+  for (const phase of ["Fix", "Done"] as const) {
     assert.equal(templateFor(phase), null, `${phase} 不该有模板`);
   }
 });
 
 test("每份模板的节 key 在自己那份里不重复，标题也不重复", () => {
   for (const phase of
-    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Review", "QA", "Merge", "Retro"] as const) {
+    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review", "QA", "Merge", "Retro"] as const) {
     const sections = templateFor(phase)!;
     assert.equal(new Set(sections.map((each) => each.key)).size, sections.length, `${phase} key 重复`);
     // 标题重复更要命：`missingSections` 按标题认节，两节同名会互相认领。

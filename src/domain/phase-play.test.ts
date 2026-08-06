@@ -12,14 +12,14 @@ import { PHASE_PLAY, reportsFreeFormBlockers } from "./phase-play";
  * 逐条判定，每轮上限 = criterion 条数。
  */
 describe("L4 · 反方够不够得着代码，决定它交不交自由 blockers", () => {
-  it("够得着代码的五个照交", () => {
-    for (const phase of ["Build", "Fix", "Review", "QA", "Merge"] as const) {
+  it("够得着代码的四个照交", () => {
+    for (const phase of ["Fix", "Review", "QA", "Merge"] as const) {
       assert.equal(reportsFreeFormBlockers(phase), true, `${phase} 的 blockers 被砍了`);
     }
   });
 
-  it("只读那份产出的六个不交 —— 判断走逐条判定", () => {
-    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Retro"] as const) {
+  it("只判自己那份产出的七个不交 —— 判断走逐条判定", () => {
+    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Retro"] as const) {
       assert.equal(reportsFreeFormBlockers(phase), false, `${phase} 还在收自由 blockers`);
     }
   });

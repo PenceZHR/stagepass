@@ -358,6 +358,9 @@ Reply with one ```json block and nothing that contradicts it:
 
 ## 怎么跑
 命令、环境、前置条件。别人照着能重现。没有「跑一遍看看」这种写法。
+
+## 实际跑出来的结果
+把上面那些用例真跑一遍，贴命令和输出。**功能还没实现，所以预期是失败的** ——要说清每条是「功能没实现」失败的，还是「测试自己写错」失败的。
    模板之外不要另起小节。**架构、技术栈、模块划分、接口、测试用例、实现步骤都不在这个阶段定** —— 需要提到就写进「留给下游决定的」那一节。
 
    人明确要求这一轮处理的（不许当成建议）：
@@ -424,6 +427,25 @@ Reply with one ```json block and nothing that contradicts it:
 
 1. 正方。**下面这段任务原样转达给正方，一个字都不要改** ——「人要的是这些」那几行是人自己答的需求，改写或省略它，正方就只能凭空编。
 （这一阶段的任务书）
+   下面这份模板**原样转达给正方**，一个字都不要改 ——它必须照这个模板写，每一节都要有，标题原样用：
+## 这一轮改了什么
+按 Plan 的哪几步做的，实际动了哪些文件。不要复述 Plan。
+
+## 跑了哪些测试，结果是什么
+跑的是 TestPlan 交的哪几个用例、命令是什么、输出是什么。**这一阶段不写测试** —— 需要新用例就说明缺哪一条，留给 TestPlan。
+
+## 和 Plan 不一样的地方
+多做的、少做的、换了做法的，逐条写为什么。一条都没有就明写「没有」。
+
+## 不明显的决定
+代码里看不出为什么的那几处，在这儿说清。
+
+## 这一轮最可能出问题的一处
+指名一处，写为什么是它。并列罗列多项不算回答了这一节。
+
+## 没做完的
+知道还差什么、留给谁。没有就明写「没有」。
+   模板之外不要另起小节。**架构、技术栈、模块划分、接口、测试用例、实现步骤都不在这个阶段定** —— 需要提到就写进「留给下游决定的」那一节。
 
    人明确要求这一轮处理的（不许当成建议）：
    - HUMAN-1 [P1] 人明确要求的那一条
@@ -439,16 +461,13 @@ Reply with one ```json block and nothing that contradicts it:
 Report every problem you found as a blocker. An empty list means you found none.
    各字段什么意思在这个文件里，**原样转达这一行**，让它先读：/tmp/stagepass-round/result-contract-notes.md
 
-2. 反方。任务：读正方产出，找出其中的遗漏、冲突与不可验证之处，**以及编码上的毛病** —— 风格和周围的代码对不上、命名和上游文档对不上、同一条规则被抄成了两份、不明显的决定没写为什么。
+2. 反方。任务：读正方这一轮的施工报告和它改的代码，**照着那份逐条判定的标准**，看报告每一节写得够不够格、代码对不对得上它说的。这个阶段你只判那些标准，不另外提问题。
    意见写到仓库里这个路径（相对项目根）：docs/stagepass/CHG-1/Build-r2-opposition.md —— 不要写到别的地方，也不要自己起名。
    可以读这一轮改动涉及的文件、它们的直接调用方，以及任务里列出的那几份已批准上游产物（要判它有没有做到要求，就得对着要求看）—— 只读这些，不要把整个仓库读一遍。不要自己执行任何东西，也不要动手修：跑没跑过看正方交出来的运行证据。
-   每个问题一个稳定 id（例如 SPEC-SCOPE-1），同一个问题在后续轮次要用同一个 id。
    下面这段格式要求**原样转达给反方**，一个字都不要改：
 Reply with one ```json block and nothing that contradicts it:
-{"artifactIds": ["<path or id you produced>"], "blockers": [{"id": "...", "severity": "P0|P1|P2", "title": "...", "where": "...", "why": "..."}]}
-Report every problem you found as a blocker. An empty list means you found none.
-   各字段什么意思在这个文件里，**原样转达这一行**，让它先读：/tmp/stagepass-round/result-contract-notes.md
-   它找出的每个问题都要放进 blockers。
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}
+   **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。
    再要它在同一个 json 块里多给一个 `overall` 字段：一句话说这一轮整体够不够格、为什么。这一句不挡任何东西，是写给人看的。
 
 两个都做完之后，轮到你。**两件事**：
