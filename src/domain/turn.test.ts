@@ -50,8 +50,96 @@ describe("L2 · reading the model's answer", () => {
         // `kind` 不在契约里，模型也不写它 —— 是这里盖上去的。模型在报「我发现了
         // 什么」，那定义上就是 finding；一条 standard 是 rubric 判出来的二元结论，
         // 永远不从模型的自述里来。
-        blockers: [{ id: "B", kind: "finding", severity: "P1", title: "x" }],
+        blockers: [{
+          id: "B", kind: "finding", severity: "P1", title: "x",
+          // 契约里有，这一条没写 —— 缺就是 null，不作废整轮。见下面三条。
+          where: null, why: null,
+        }],
       },
+    );
+  });
+
+  /**
+   * 「在哪儿」和「为什么」必须原样活到下游（用户 2026-08-04：「绝对不能出现语义
+   * 损失」）。这三条钉的是那条链子的**第一环**：解析器不许把它们丢掉。
+   *
+   * 丢掉的后果不是报错，是**安静地少一截**——红方明明写了 foo.ts:42，下一轮的红方
+   * 和 Fix 只看得到一个标题。所以这里断言的是「一字不改地带过来」，不是「有值」。
+   */
+  it("**带上 where / why，一字不改**", () => {
+    assert.deepEqual(
+      parseTurnResult(
+        '{"artifactIds":[],"blockers":[{"id":"B","severity":"P0","title":"空指针",'
+        + '"where":"src/foo.ts:42","why":"list 为空时 head() 返回 undefined"}]}',
+      ).blockers,
+      [{
+        id: "B", kind: "finding", severity: "P0", title: "空指针",
+        where: "src/foo.ts:42", why: "list 为空时 head() 返回 undefined",
+      }],
+    );
+  });
+
+  it("**没写就是 null —— 不是解析失败**", () => {
+    const parsed = parseTurnResult(
+      '{"artifactIds":[],"blockers":[{"id":"B","severity":"P1","title":"x"}]}',
+    );
+    assert.equal(parsed.blockers[0]?.where, null);
+    assert.equal(parsed.blockers[0]?.why, null);
+  });
+
+  /**
+   * 空串和「没写」是同一件事。让它们在库里长成两个样子，下游就得判两次 ——
+   * 而判漏一次的表现是提示词里出现一行 `在这儿：`，后面什么都没有。
+   */
+  it("**空串和只有空白，都归一成 null**", () => {
+    const parsed = parseTurnResult(
+      '{"artifactIds":[],"blockers":[{"id":"B","severity":"P1","title":"x",'
+      + '"where":"","why":"   "}]}',
+    );
+    assert.equal(parsed.blockers[0]?.where, null);
+    assert.equal(parsed.blockers[0]?.why, null);
+  });
+
+  /**
+   * 一份**注定被丢掉**的 blockers，形状再烂也不许作废整轮。
+   *
+   * 2026-08-05 真机（Build 第 4 轮，58 分钟）：红方把 blockers 交成了字符串数组。
+   * 而 Build 的红方写的是自己的代码，自评本来就被丢掉（`redReviewsOthers`）——
+   * 一份没人会用的数据形状错了，整轮作废，蓝方同一轮 11 条有效发现陪葬。
+   *
+   * `discardBlockers` 是调用方的声明：「我不会用 blockers，别让它们的形状毁掉
+   * 我要用的那部分。」所以它**永远返回空**（形状对的也不带回来 —— 带回来就是
+   * 邀请谁顺手用一下，而声明说了不用）；artifactIds 的校验**一点都不放宽**。
+   */
+  it("**discardBlockers：形状烂掉的 blockers 不作废整轮**", () => {
+    assert.deepEqual(
+      parseTurnResult(
+        '{"artifactIds":["x.ts"],"blockers":["BUILD-WEB-1: npm run build 失败了"]}',
+        { discardBlockers: true },
+      ),
+      { artifactIds: ["x.ts"], blockers: [] },
+    );
+  });
+
+  it("**discardBlockers 丢的是这半个答案，不只是错误** —— 形状对的也不带回来", () => {
+    assert.deepEqual(
+      parseTurnResult(
+        '{"artifactIds":[],"blockers":[{"id":"B","severity":"P1","title":"x"}]}',
+        { discardBlockers: true },
+      ).blockers,
+      [],
+    );
+  });
+
+  it("**discardBlockers 不放宽 artifactIds** —— 那半个是真要用的", () => {
+    assert.throws(
+      () => parseTurnResult(
+        '{"artifactIds":[42],"blockers":[]}',
+        { discardBlockers: true },
+      ),
+      (error: unknown) =>
+        error instanceof TurnResultUnparsableError
+        && error.code === "turn_result_artifacts_invalid",
     );
   });
 

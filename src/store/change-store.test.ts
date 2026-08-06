@@ -41,7 +41,7 @@ describe("L0 · a Change starts where the machine says it starts", () => {
       assert.deepEqual(created.state, {
         phase: "PRD",
         status: "pending",
-        returnPhase: null,
+        returnStack: [],
       });
       assert.equal(created.seq, 0);
       assert.deepEqual(store.ledger("CHG-1").map((entry) => entry.action), [
@@ -56,6 +56,100 @@ describe("L0 · a Change starts where the machine says it starts", () => {
     const { database, store } = open();
     try {
       assert.throws(() => store.read("CHG-NOPE"), ChangeNotFoundError);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("L0 · 打回上游落库：栈、理由、账本一次到位（§5.9.1/5.9.2）", () => {
+  /** 把一个 Change 推到 Build/settled。 */
+  const toBuildSettled = (store: ChangeStore, id: string) => {
+    store.create(id);
+    for (let step = 0; step < 5; step += 1) {
+      store.apply(id, "start");
+      store.apply(id, "settle");
+      store.apply(id, "approve");
+    }
+    store.apply(id, "start");
+    store.apply(id, "settle");
+  };
+
+  it("sendBack 带目标和理由 —— 状态压栈，理由进账本那一行", () => {
+    const { database, store } = open();
+    try {
+      toBuildSettled(store, "CHG-1");
+      const after = store.apply("CHG-1", "sendBack", {
+        to: "Spec", reason: "接口边界在 Spec 里就画错了",
+      });
+      assert.deepEqual(after.state, {
+        phase: "Spec", status: "pending", returnStack: ["Build"],
+      });
+      const jump = store.ledger("CHG-1").at(-1)!;
+      assert.equal(jump.action, "sendBack");
+      assert.equal(jump.from?.phase, "Build");
+      assert.equal(jump.to.phase, "Spec");
+      // 理由在账本上，不在别处 —— 环上历史箭头的「什么理由」就从这儿来（§4.3）。
+      assert.equal(jump.reason, "接口边界在 Spec 里就画错了");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("被打回的阶段批准后弹栈回去 —— 不沿主线前进", () => {
+    const { database, store } = open();
+    try {
+      toBuildSettled(store, "CHG-1");
+      store.apply("CHG-1", "sendBack", { to: "Spec", reason: "r" });
+      store.apply("CHG-1", "start");
+      store.apply("CHG-1", "settle");
+      const back = store.apply("CHG-1", "approve");
+      assert.deepEqual(back.state, {
+        phase: "Build", status: "pending", returnStack: [],
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("普通动作不带理由 —— 账本那一列是 null，不编", () => {
+    const { database, store } = open();
+    try {
+      store.create("CHG-1");
+      store.apply("CHG-1", "start");
+      assert.equal(store.ledger("CHG-1").at(-1)!.reason, null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("L0 · 项目的阶段图是数据（§4.5）", () => {
+  it("设了 phase_order 的项目：Change 生在子序列的第一站，approve 沿子序列走", () => {
+    const { database, store } = open();
+    try {
+      database.prepare(
+        "INSERT INTO projects (id, name, phase_order, created_at) VALUES ('PRJ-S', 'p', ?, ?)",
+      ).run(JSON.stringify(["PRD", "Build", "Review", "Done"]), AT);
+      const created = store.create("CHG-S", { projectId: "PRJ-S" });
+      assert.equal(created.state.phase, "PRD");
+
+      store.apply("CHG-S", "start");
+      store.apply("CHG-S", "settle");
+      // 全序里 PRD 的下一站是 Spec；这张图上是 Build。
+      assert.equal(store.apply("CHG-S", "approve").state.phase, "Build");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("存坏的 phase_order 在用到时炸出来，不把 Change 引进走不通的图", () => {
+    const { database, store } = open();
+    try {
+      database.prepare(
+        "INSERT INTO projects (id, name, phase_order, created_at) VALUES ('PRJ-B', 'p', ?, ?)",
+      ).run(JSON.stringify(["Spec", "PRD", "Done"]), AT);   // 重排 —— 非法
+      assert.throws(() => store.create("CHG-B", { projectId: "PRJ-B" }));
     } finally {
       database.close();
     }
@@ -128,7 +222,7 @@ describe("L0 · an illegal action changes nothing", () => {
       const record = store.read("CHG-1");
       assert.equal(record.seq, 0);
       assert.deepEqual(record.state, {
-        phase: "PRD", status: "pending", returnPhase: null,
+        phase: "PRD", status: "pending", returnStack: [],
       });
       assert.equal(store.ledger("CHG-1").length, 1);
     } finally {
@@ -178,12 +272,12 @@ describe("L0 · the ledger cannot be bypassed", () => {
   it("refuses a stored state the machine could not have produced", () => {
     const { database } = open();
     try {
-      // Fix without a return target, inserted straight past the store.
+      // Fix without a return stack, inserted straight past the store.
       assert.throws(
         () => database.prepare(
           `INSERT INTO changes
-             (id, phase, status, return_phase, seq, created_at, updated_at)
-           VALUES ('CHG-BAD', 'Fix', 'pending', NULL, 0, ?, ?)`,
+             (id, phase, status, return_stack, seq, created_at, updated_at)
+           VALUES ('CHG-BAD', 'Fix', 'pending', '[]', 0, ?, ?)`,
         ).run(AT, AT),
         /CHECK constraint failed/,
       );
@@ -191,8 +285,17 @@ describe("L0 · the ledger cannot be bypassed", () => {
       assert.throws(
         () => database.prepare(
           `INSERT INTO changes
-             (id, phase, status, return_phase, seq, created_at, updated_at)
-           VALUES ('CHG-BAD2', 'Spec', 'closed', NULL, 0, ?, ?)`,
+             (id, phase, status, return_stack, seq, created_at, updated_at)
+           VALUES ('CHG-BAD2', 'Spec', 'closed', '[]', 0, ?, ?)`,
+        ).run(AT, AT),
+        /CHECK constraint failed/,
+      );
+      // closed 还欠着回程 —— 关不了。
+      assert.throws(
+        () => database.prepare(
+          `INSERT INTO changes
+             (id, phase, status, return_stack, seq, created_at, updated_at)
+           VALUES ('CHG-BAD3', 'Done', 'closed', '["Build"]', 0, ?, ?)`,
         ).run(AT, AT),
         /CHECK constraint failed/,
       );
@@ -207,8 +310,8 @@ describe("L0 · the ledger cannot be bypassed", () => {
       assert.throws(
         () => database.prepare(
           `INSERT INTO changes
-             (id, phase, status, return_phase, seq, created_at, updated_at)
-           VALUES ('CHG-BAD', 'Intake', 'pending', NULL, 0, ?, ?)`,
+             (id, phase, status, return_stack, seq, created_at, updated_at)
+           VALUES ('CHG-BAD', 'Intake', 'pending', '[]', 0, ?, ?)`,
         ).run(AT, AT),
         /CHECK constraint failed/,
       );

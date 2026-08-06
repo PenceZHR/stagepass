@@ -20,21 +20,22 @@ import {
 const SETTLED: ChangeState = {
   phase: "Spec",
   status: "settled",
-  returnPhase: null,
+  returnStack: [],
 };
 
 function evidence(patch: Partial<Evidence> = {}): Evidence {
   return { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"], ...patch };
 }
 
-const p0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围与 PRD 冲突" };
-const p1: Blocker = { id: "B-2", kind: "finding", severity: "P1", title: "验收标准不可测" };
-const p2: Blocker = { id: "B-3", kind: "finding", severity: "P2", title: "措辞含糊" };
+const p0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围与 PRD 冲突", where: null, why: null };
+const p1: Blocker = { id: "B-2", kind: "finding", severity: "P1", title: "验收标准不可测", where: null, why: null };
+const p2: Blocker = { id: "B-3", kind: "finding", severity: "P2", title: "措辞含糊", where: null, why: null };
 
 describe("L1 · the gate decides from facts, never from a summary", () => {
   it("permits approval when something was produced and nothing blocks", () => {
     const gate = computeGate(SETTLED, evidence());
-    assert.deepEqual([...gate.permitted].sort(), ["approve", "reject"]);
+    // sendBack 也在：Spec 有上游（PRD），闸门把长回边摆出来（§5.9.1）。
+    assert.deepEqual([...gate.permitted].sort(), ["approve", "reject", "sendBack"]);
     assert.equal(gate.refusals.approve, undefined);
   });
 
@@ -115,7 +116,7 @@ describe("L1 · the gate decides from facts, never from a summary", () => {
         const state: ChangeState = {
           phase,
           status,
-          returnPhase: phase === "Fix" ? "Review" : null,
+          returnStack: phase === "Fix" ? ["Review"] : [],
         };
         const gate = computeGate(state, evidence({ blockers: [p1] }));
         for (const action of CHANGE_ACTIONS) {
@@ -193,6 +194,8 @@ describe("L1 · 一条没被满足的标准，waive 不掉", () => {
   const standard: Blocker = {
     id: "RB:producer:RBC-a", kind: "standard", severity: null,
     title: "每条需求都有可测的验收标准",
+    where: null,
+    why: null,
   };
 
   it("照挡 —— 有一条标准没满足，就不能批准", () => {

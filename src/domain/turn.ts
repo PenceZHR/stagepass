@@ -86,9 +86,33 @@ export function requestHash(request: TurnRequest): string {
 }
 
 /** The exact shape a turn must answer in. Sent to the model verbatim. */
+/**
+ * 答案的**形状**。永远原样印在提示词里，两遍（红蓝各一份）。
+ *
+ * ## 为什么这一半不许走文件
+ *
+ * 2026-08-05 把契约的说明那半挪进了文件（`RESULT_CONTRACT_NOTES`，占提示词
+ * 44.3% 是主要动机）。**骨架没跟着走，是故意的**：
+ *
+ *   需求 / 问题名单没被读到  →  模型少了信息，它会大声说读不到
+ *   **骨架没被读到**         →  它答出来的形状不对，**整轮无法解析、直接作废**
+ *
+ * 前者可以赌，后者不能。判据是「缺了会怎样」，不是「长不长」。
+ */
 export const RESULT_CONTRACT = `Reply with one \`\`\`json block and nothing that contradicts it:
-{"artifactIds": ["<path or id you produced>"], "blockers": [{"id": "...", "severity": "P0|P1|P2", "title": "..."}]}
+{"artifactIds": ["<path or id you produced>"], "blockers": [{"id": "...", "severity": "P0|P1|P2", "title": "...", "where": "...", "why": "..."}]}
 Report every problem you found as a blocker. An empty list means you found none.`;
+
+/**
+ * 各字段是什么意思。**这一半走文件**（`judgePrompt` 的 `contractNotesPath`）。
+ *
+ * 缺了它，模型照样答得出合法形状 —— 只是 `where` / `why` 会写得糙，而那两样
+ * **本来就有人在判**（critic rubric 的第 1、2 条：指向具体位置、说明为什么是问题）。
+ * 判据归 rubric，不归提示词长度。
+ */
+export const RESULT_CONTRACT_NOTES =
+  `"where" is where the problem is, in your own words: a file and position for code (src/foo.ts:42), a section for a document (PRD 3.2).
+"why" is why it is a problem, in a sentence or two. Do not restate the title.`;
 
 const FENCE = /```json\s*([\s\S]*?)```/g;
 
@@ -197,7 +221,29 @@ function lastJsonObject(text: string): string | null {
   return null;
 }
 
-export function parseTurnResult(text: string): TurnResult {
+export function parseTurnResult(
+  text: string,
+  options?: {
+    /**
+     * 调用方声明：「我不会用 blockers，别让它们的形状毁掉我要用的那半。」
+     *
+     * ## 为什么要有这一档
+     *
+     * 红方的 blockers 在自审阶段**注定被丢掉**（`readRound` 的 `redReviewsOthers`
+     * 分支）—— 产出者对自己作品的评价不算对抗性发现。而解析原来在「要不要用」
+     * 之前：2026-08-05 真机（Build 第 4 轮），红方把 blockers 交成字符串数组，
+     * 一份没人会用的数据形状错了，整轮作废，蓝方同一轮 11 条有效发现陪葬，
+     * 58 分钟白烧。
+     *
+     * ## 丢的是这半个答案，不只是错误
+     *
+     * 开着这一档时 blockers **永远返回空** —— 形状对的也不带回来。带回来就是
+     * 邀请谁顺手用一下，而声明说了不用；「有时有值有时没有」比「永远没有」
+     * 难对付得多。artifactIds 的校验一点都不放宽：那半个是真要用的。
+     */
+    readonly discardBlockers?: boolean;
+  },
+): TurnResult {
   const candidate = jsonAnswerIn(text) ?? text.trim();
 
   let parsed: unknown;
@@ -228,6 +274,15 @@ export function parseTurnResult(text: string): TurnResult {
     );
   }
 
+  // 声明了不用，就连形状都不看 —— 看了再抛，等于那份声明没说过。
+  if (options?.discardBlockers === true) {
+    return { artifactIds: artifactIds as string[], blockers: [] };
+  }
+
+  /** 不是非空字符串的一律当成「没写」。见下面 `where` / `why` 那段。 */
+  const blank = (value: unknown): string | null =>
+    typeof value === "string" && value.trim() !== "" ? value : null;
+
   const blockers = record.blockers;
   if (!Array.isArray(blockers)) {
     throw new TurnResultUnparsableError(
@@ -255,6 +310,22 @@ export function parseTurnResult(text: string): TurnResult {
       kind: "finding",
       severity: blocker.severity as BlockerSeverity,
       title: blocker.title,
+      /*
+       * **缺了不整轮作废，只当成 null。**
+       *
+       * 上面那四样（id / title / severity / 数组形状）漏一个就抛，因为**少了它们这条
+       * blocker 没法用**：没有 id 就接不上下一轮，没有严重度就排不了序。
+       *
+       * `where` / `why` 不一样：少了它们，这条问题**仍然是一条能用的问题**，只是说得
+       * 不够清楚。为它整轮作废，等于拿几分钟的一轮去罚一次措辞不全 —— 而这两样
+       * **本来就有人在判**（critic rubric 的第 1、2 条，Review producer 的第 3 条）。
+       * 判据归 rubric，别在解析器里再立一道会烧掉整轮的闸。
+       *
+       * 空串归一成 null：`""` 和「没写」是同一件事，让它们在库里长成两个样子，
+       * 下游就得判两次。
+       */
+      where: blank(blocker.where),
+      why: blank(blocker.why),
     };
   });
 

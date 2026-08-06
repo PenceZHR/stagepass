@@ -9,7 +9,7 @@ import { ChangeStore } from "./change-store";
 import { GapStore } from "./gap-store";
 
 const AT = "2026-07-28T00:00:00.000Z";
-const SETTLED = { phase: "PRD" as const, status: "settled" as const, returnPhase: null };
+const SETTLED = { phase: "PRD" as const, status: "settled" as const, returnStack: [] };
 
 function open() {
   const database = new Database(":memory:");
@@ -21,7 +21,7 @@ function open() {
 }
 
 const found = (id: string, severity: "P0" | "P1" | "P2", title: string) =>
-  ({ id, severity, title });
+  ({ id, severity, title, where: null, why: null });
 
 describe("L4 · a gap outlives the round that found it", () => {
   it("survives a round that never mentions it", () => {

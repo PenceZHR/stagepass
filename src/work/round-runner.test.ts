@@ -61,7 +61,12 @@ function database(): Database.Database {
 /** A role transcript in the shape the result contract asks for. */
 function answer(input: {
   artifactIds?: string[];
-  blockers?: { id: string; severity: string; title: string }[];
+  // where / why 可选：模型少写这两样不是解析错误（见 domain/turn.ts 那段注释），
+  // 所以造答案的这个工具也得能造出「没写」的那种。
+  blockers?: {
+    id: string; severity: string; title: string;
+    where?: string | null; why?: string | null;
+  }[];
 }): string {
   return "```json\n" + JSON.stringify({
     artifactIds: input.artifactIds ?? [],
@@ -145,7 +150,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
         worklist: worklistOf(db),
         readThread: roles(
           answer({ artifactIds: ["spec.md"] }),
-          answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
+          answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测", where: null, why: null }] }),
         ),
       },
     );
@@ -171,7 +176,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       worklist: worklistOf(db),
       readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
-        answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
+        answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测", where: null, why: null }] }),
       ),
     };
     const request = {
@@ -222,7 +227,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
       worklist,
       readThread: roles(
         answer({ artifactIds: ["spec.md"] }),
-        answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }] }),
+        answer({ blockers: [{ id: "SPEC-1", severity: "P1", title: "验收不可测", where: null, why: null }] }),
       ),
     };
     const request = {
@@ -247,7 +252,10 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const request = {
       changeId: CHANGE, phase: "Spec" as const, task: "写 Spec", judgeThreadId: null,
     };
-    const withBlue = (blockers: { id: string; severity: string; title: string }[]) => ({
+    const withBlue = (blockers: {
+      id: string; severity: string; title: string;
+      where?: string | null; why?: string | null;
+    }[]) => ({
       transport,
       gaps,
       childThreads: spawnedBy(transport),
@@ -257,7 +265,7 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     });
 
     await runRound({ ...request, round: 1 },
-      withBlue([{ id: "SPEC-1", severity: "P1", title: "验收不可测" }]));
+      withBlue([{ id: "SPEC-1", severity: "P1", title: "验收不可测", where: null, why: null }]));
     const settled = await runRound({ ...request, round: 2, judgeThreadId: "JUDGE-1" },
       withBlue([]));
 
@@ -449,7 +457,7 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
   const withGap = (db: Database.Database, gaps: GapStore) => {
     gaps.settleRound(CHANGE, "Spec", {
       round: 0,
-      found: [{ id: "SPEC-1", severity: "P1", title: "验收不可测" }],
+      found: [{ id: "SPEC-1", severity: "P1", title: "验收不可测", where: null, why: null }],
       verdicts: {},
     });
     return db;
@@ -545,8 +553,8 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     gaps.settleRound(CHANGE, "Spec", {
       round: 0,
       found: [
-        { id: "SPEC-1", severity: "P1", title: "第一个" },
-        { id: "SPEC-2", severity: "P1", title: "第二个" },
+        { id: "SPEC-1", severity: "P1", title: "第一个", where: null, why: null },
+        { id: "SPEC-2", severity: "P1", title: "第二个", where: null, why: null },
       ],
       verdicts: {},
     });

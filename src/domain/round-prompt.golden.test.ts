@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import { judgePrompt } from "./round";
 import { PHASES } from "./phase";
+import { blueDocPath } from "./artifact-home";
 import type { Gap } from "./gap";
 
 /**
@@ -38,11 +39,15 @@ const FIXTURE_GAPS: Gap[] = [
     id: "HUMAN-1", kind: "finding", severity: "P1",
     title: "人明确要求的那一条", status: "open",
     openedRound: 1, resolution: null, note: "人对这条说的话", closedBy: null,
+    where: null,
+    why: null,
   },
   {
     id: "SPEC-SCOPE-1", kind: "finding", severity: "P0",
     title: "模型报出来的那一条", status: "open",
     openedRound: 1, resolution: null, note: null, closedBy: null,
+    where: null,
+    why: null,
   },
 ];
 
@@ -54,6 +59,12 @@ export function everyPhasePrompt(): string {
       `########## ${phase} ##########`,
       judgePrompt({
         phase, round: 2, task: "（这一阶段的任务书）", openGaps: FIXTURE_GAPS,
+        // 真实运行时每一轮都带（E：反方的输出路径经裁判转达）——golden 要钉的是
+        // 真实形状，不是最小形状。用真 builder，别在夹具里手写第二份路径格式。
+        blueDocPath: blueDocPath("CHG-1", phase, 2),
+        // 同上：真实运行时每一轮都写这份文件并只给路径（BACKLOG §3.4）。
+        // 夹具不传它，golden 钉的就是那条内联兜底 —— 而那条路生产上不走。
+        contractNotesPath: "/tmp/stagepass-round/result-contract-notes.md",
       }),
     ].join("\n"))
     .join("\n\n");

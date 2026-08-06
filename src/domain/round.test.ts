@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { Gap } from "./gap";
+import { humanGapId, type Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
-  readVerdicts, RED, renderSettled, summariseConvergence,
+  readVerdicts, RED, renderOpenGaps, renderSettled, summariseConvergence,
   summariseRoundNotes,
   UnreadableVerdictError,
 } from "./round";
@@ -16,6 +16,8 @@ const answer = (artifacts: string[], blockers: object[] = []) =>
 const gap = (id: string, title: string): Gap => ({
   id, kind: "finding", severity: "P1", title, status: "open", openedRound: 1,
   resolution: null, note: null, closedBy: null,
+  where: null,
+  why: null,
 });
 
 describe("L4 · what the judge is told", () => {
@@ -98,10 +100,84 @@ describe("L4 · what the judge is told", () => {
         id: "RB:producer:RBC-a", kind: "standard", severity: null,
         title: "每条需求都有可测的验收标准",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       }],
     });
     assert.match(prompt, /RB:producer:RBC-a \[标准\]/);
     assert.doesNotMatch(prompt, /\[null\]/);
+  });
+});
+
+describe("L4 · 结果契约：形状留在提示词里，说明走文件", () => {
+  /**
+   * BACKLOG §3.4：`RESULT_CONTRACT` 占整份提示词 44.3%（它在提示词里出现两遍，
+   * 红蓝各一份原文）。当初不敢文件化的顾虑是「藏到文件读取后面是自举风险」，
+   * 而三处文件转达（需求、开着的问题、rubric 那两个路径）都真机验通了。
+   *
+   * **但这一份和那三份不是同一种东西，不能照抄。**
+   *
+   *   需求 / 问题名单没读到  →  模型少了信息，它会大声说读不到
+   *   **结果契约没读到**     →  它答的形状不对，**整轮无法解析、直接作废**
+   *
+   * 所以按「缺了会怎样」切开，而不是按「长不长」切：
+   *
+   *   **形状**（那两行 json 骨架）留在提示词里 —— 缺了整轮作废，不许赌它去读文件
+   *   **说明**（where / why 各是什么意思）走文件 —— 缺了只是写得糙一点，rubric 在判
+   */
+  it("**骨架永远在提示词里** —— 它缺了整轮就废了，不赌文件读没读", () => {
+    const withFile = judgePrompt({
+      phase: "Spec", round: 1, task: "t", openGaps: [],
+      contractNotesPath: "/tmp/round/contract-notes.md",
+    });
+    assert.match(withFile, /artifactIds/, "骨架被一起挪走了");
+    assert.match(withFile, /P0\|P1\|P2/, "严重度取值不在提示词里了");
+  });
+
+  it("**给了路径，说明就不再印正文**", () => {
+    const path = "/tmp/round/contract-notes.md";
+    const withFile = judgePrompt({
+      phase: "Spec", round: 1, task: "t", openGaps: [], contractNotesPath: path,
+    });
+    // 说明里那句「不要复述标题」是它独有的，拿它当在不在的判据。
+    assert.doesNotMatch(withFile, /Do not restate the title/,
+      "说明正文还在提示词里，文件化没生效");
+    assert.ok(withFile.includes(path), "路径没进提示词");
+  });
+
+  it("**没给路径就照旧全文印** —— 这一层不知道文件是谁写的", () => {
+    const inline = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
+    assert.match(inline, /Do not restate the title/);
+  });
+
+  it("**省下来的是真的** —— 文件化之后提示词短一大截", () => {
+    const inline = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
+    const withFile = judgePrompt({
+      phase: "Spec", round: 1, task: "t", openGaps: [],
+      contractNotesPath: "/tmp/round/contract-notes.md",
+    });
+    /*
+     * 说明在提示词里出现两遍（红蓝各一份原文），所以省下来的也是两份。
+     * 实测 13.9%（2140 → 1842 字符）—— 毛省两份说明约 23%，减去那两行路径本身。
+     * 阈值 10% 是给措辞留的余地，**不是「差不多就行」**：它要挡的是
+     * 「换成一行同样长的东西」那种假文件化。
+     */
+    assert.ok(withFile.length < inline.length * 0.9,
+      `只省了 ${((1 - withFile.length / inline.length) * 100).toFixed(1)}% —— 没省到两份`);
+  });
+
+  it("**路径也要有收件人** —— 无主的一行到不了红蓝手里", () => {
+    /*
+     * 2026-08-02 那三张脸的教训：一段没有抬头的文本递到裁判手上，它就当成可以
+     * 自己消化的背景。rubric 那两个路径、settled 那份、任务那段，全都写了
+     * 「原样转达给谁」—— 这一行不能例外。
+     */
+    const withFile = judgePrompt({
+      phase: "Spec", round: 1, task: "t", openGaps: [],
+      contractNotesPath: "/tmp/round/contract-notes.md",
+    });
+    const line = withFile.split("\n").find((each) => each.includes("contract-notes.md")) ?? "";
+    assert.match(line, /原样转达|转达给/, `那一行没写收件人：${line}`);
   });
 });
 
@@ -167,8 +243,8 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
   it("**Review：红方报的缺陷进 gaps**", () => {
     const reading = readRound({
       phase: "Review", round: 1,
-      red: red([{ id: "RV-1", severity: "P0", title: "空指针没处理" }]),
-      blue: answer([], [{ id: "RVB-1", severity: "P1", title: "你漏了错误路径" }]),
+      red: red([{ id: "RV-1", severity: "P0", title: "空指针没处理", where: null, why: null }]),
+      blue: answer([], [{ id: "RVB-1", severity: "P1", title: "你漏了错误路径", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(
@@ -181,8 +257,8 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
   it("设计阶段照旧：红方报自己的问题一概不算", () => {
     const reading = readRound({
       phase: "Spec", round: 1,
-      red: red([{ id: "SELF-1", severity: "P0", title: "我自己觉得这里不太好" }]),
-      blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测" }]),
+      red: red([{ id: "SELF-1", severity: "P0", title: "我自己觉得这里不太好", where: null, why: null }]),
+      blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
@@ -191,7 +267,7 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
   it("**Build 也照旧** —— 红方写的代码是它自己的作品", () => {
     const reading = readRound({
       phase: "Build", round: 1,
-      red: red([{ id: "SELF-1", severity: "P0", title: "我知道这里有问题" }]),
+      red: red([{ id: "SELF-1", severity: "P0", title: "我知道这里有问题", where: null, why: null }]),
       blue: answer([], []),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
@@ -208,8 +284,8 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
      */
     const reading = readRound({
       phase: "QA", round: 1,
-      red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了" }]),
-      blue: answer([], [{ id: "QAB-1", severity: "P1", title: "你跳过了第 5 条" }]),
+      red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了", where: null, why: null }]),
+      blue: answer([], [{ id: "QAB-1", severity: "P1", title: "你跳过了第 5 条", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.outcome.found.map((e) => e.id).sort(),
@@ -222,12 +298,49 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
     for (const phase of ["Merge", "Retro", "Fix"] as const) {
       const reading = readRound({
         phase, round: 1,
-        red: red([{ id: "X-1", severity: "P0", title: "我自己觉得有问题" }]),
+        red: red([{ id: "X-1", severity: "P0", title: "我自己觉得有问题", where: null, why: null }]),
         blue: answer([], []),
         judge: '```json\n{"verdicts":{}}\n```',
       }, {});
       assert.deepEqual(reading.outcome.found, [], `${phase} 被顺手改了`);
     }
+  });
+
+  /**
+   * 红方那半 blockers 在这些阶段**注定被丢掉** —— 那它的形状就不许毁掉整轮。
+   *
+   * 2026-08-05 真机（Build 第 4 轮）：红方把 blockers 交成字符串数组，解析在
+   * 「要不要用」之前就抛了。整轮作废、蓝方 11 条有效发现陪葬、58 分钟白烧 ——
+   * 为一份没人要用的数据。
+   */
+  it("**Build：红方 blockers 形状烂掉 → 轮照常成立，产物和蓝方的发现都保住**", () => {
+    const reading = readRound({
+      phase: "Build", round: 4,
+      // 真机那次的原样形状：数组套字符串。
+      red: "```json\n" + JSON.stringify({
+        artifactIds: ["x.ts"],
+        blockers: ["BUILD-WEB-1/BUILD-SCENE-SCOPE-1: npm run build 失败了"],
+      }) + "\n```",
+      blue: answer([], [{ id: "B-1", severity: "P1", title: "改动没接进调用方", where: null, why: null }]),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.artifactIds, ["x.ts"], "红方的产物被陪葬了");
+    assert.deepEqual(reading.outcome.found.map((e) => e.id), ["B-1"],
+      "蓝方的发现被陪葬了");
+  });
+
+  it("**Review：红方的发现算数，形状错了就该照旧作废**", () => {
+    // 这里红方审的是别人的代码，它的 blockers 就是这个阶段的产出 —— 读不出来
+    // 等于这一轮什么都没产出，作废是对的，不是误伤。
+    assert.throws(
+      () => readRound({
+        phase: "Review", round: 1,
+        red: '```json\n{"artifactIds":["review.md"],"blockers":["RV-1: 就一句话"]}\n```',
+        blue: answer([], []),
+        judge: '```json\n{"verdicts":{}}\n```',
+      }, {}),
+      (error: unknown) => error instanceof TurnResultUnparsableError,
+    );
   });
 
   it("**提示词里给两边分了 id 前缀** —— 让它压根不该撞", () => {
@@ -259,8 +372,8 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
     // 前缀（见 judgePrompt），这里钉住「撞了也不会多出一条假的」。
     const reading = readRound({
       phase: "Review", round: 1,
-      red: red([{ id: "RV-1", severity: "P0", title: "红方这么说" }]),
-      blue: answer([], [{ id: "RV-1", severity: "P1", title: "蓝方那么说" }]),
+      red: red([{ id: "RV-1", severity: "P0", title: "红方这么说", where: null, why: null }]),
+      blue: answer([], [{ id: "RV-1", severity: "P1", title: "蓝方那么说", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.equal(reading.outcome.found.filter((e) => e.id === "RV-1").length, 1);
@@ -543,12 +656,12 @@ describe("L4 · each role is read from its own transcript", () => {
       phase: "Spec",
       round: 2,
       red: answer(["spec.md"]),
-      blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突" }]),
+      blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.artifactIds, ["spec.md"]);
     assert.deepEqual(reading.outcome.found, [
-      { id: "SPEC-9", severity: "P0", title: "范围冲突" },
+      { id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null },
     ]);
     assert.equal(reading.outcome.round, 2);
   });
@@ -562,7 +675,7 @@ describe("L4 · each role is read from its own transcript", () => {
     const reading = readRound({
       phase: "Spec",
       round: 1,
-      red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行" }]),
+      red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行", where: null, why: null }]),
       blue: answer([], []),
       judge: "",
     }, {});
@@ -1054,7 +1167,7 @@ describe("L4 · 已裁定的事跨阶段跟着走", () => {
     id: "SPEC-DEDUP-1", kind: "finding" as const, severity: "P1" as const,
     title: "去重语义没定义", status: "closed" as const, openedRound: 1,
     resolution: "实测过了，那个定义在第 3 节", note: null,
-    closedBy: "human" as const, ...patch,
+    closedBy: "human" as const, where: null, why: null, ...patch,
   });
 
   it("**驳回的和接受风险的分开列** —— 两句话不一样", () => {
@@ -1136,5 +1249,137 @@ describe("L4 · 跑满预算就把收敛数据摊出来", () => {
      */
     const text = summariseConvergence({ round: 5, budget: 5, raised: 12, open: 7 });
     assert.ok(!text.includes("再来一轮（红蓝在这个阶段重新跑）"), "把选项原文抄进散文里了");
+  });
+});
+
+describe("L4 · 「在哪儿」和「为什么」要活到下一轮的提示词里", () => {
+  const found = (patch: Partial<Gap>): Gap => ({
+    id: "RV-NPE-1", kind: "finding", severity: "P0",
+    title: "空指针", status: "open", openedRound: 1,
+    resolution: null, note: null, closedBy: null,
+    where: null, why: null, ...patch,
+  });
+
+  /**
+   * 这条钉的是那条语义损失链子的**最后一环**。
+   *
+   * 契约收下了、gaps 存下了，如果渲染这一步不印，红方下一轮读到的**照样只是一个
+   * 标题** —— 前面两环白做，而且是安静地白做（库里查得到，提示词里没有）。
+   * 用户 2026-08-04：「绝对不能出现语义损失」。
+   */
+  it("**两样都印出来**", () => {
+    const text = renderOpenGaps([found({
+      where: "src/foo.ts:42",
+      why: "list 为空时 head() 返回 undefined，调用方没判",
+    })]);
+    assert.ok(text.includes("src/foo.ts:42"), `位置没进提示词：\n${text}`);
+    assert.ok(text.includes("head() 返回 undefined"), `理由没进提示词：\n${text}`);
+  });
+
+  /**
+   * 没有就一行都不印。
+   *
+   * 印一个空标签（`在这儿：` 后面什么都没有）比不印更糟：模型分不出「没人写」和
+   * 「写了但是空的」，而这两件事该有的反应不一样。
+   */
+  it("**没有的那一样，连标签都不出现**", () => {
+    const text = renderOpenGaps([found({ where: "src/foo.ts:42", why: null })]);
+    assert.ok(text.includes("在这儿："), "有 where 却没印");
+    assert.ok(!text.includes("为什么是问题："), `why 是空的，却印了标签：\n${text}`);
+  });
+
+  /** 两样都没有时，这一行和加这个功能之前**逐字节相同** —— 老用例不该被惊动。 */
+  it("**两样都没有时，和以前一模一样**", () => {
+    assert.equal(renderOpenGaps([found({})]), "- RV-NPE-1 [P0] 空指针");
+  });
+
+  /** 人说的话排在最后：上面两行是模型说的，这一行是人说的，分量不同。 */
+  it("**人说的排在模型说的后面**", () => {
+    const text = renderOpenGaps([found({
+      where: "src/foo.ts:42", why: "空列表", note: "这条必须这轮修掉",
+    })]);
+    assert.ok(
+      text.indexOf("人说：") > text.indexOf("为什么是问题："),
+      `人说的没有排在最后：\n${text}`,
+    );
+  });
+});
+
+describe("L4 · 被打回的阶段，红方必须知道是谁打回来的、为什么（§5.5 最后一米）", () => {
+  /*
+   * F 档把长回边做进了状态机，但理由只落在账本上 —— **目标阶段的红方读不到**。
+   * 于是 Build 发现 Spec 错了、人打回 Spec，Spec 的红方从零重写一份 Spec，
+   * 完全不知道下游为什么把它退回来。反馈链路（§5.5）就断在这最后一米。
+   */
+  const sentBack = (patch: Partial<{ from: string; reason: string | null; round: number }> = {}) =>
+    judgePrompt({
+      phase: "Spec", round: 3, task: "写出 Spec", openGaps: [],
+      sentBack: { from: "Build", reason: "接口边界在 Spec 里就画错了", round: 2, ...patch },
+    });
+
+  it("说清是谁打回的、什么时候、原话是什么", () => {
+    const prompt = sentBack();
+    assert.match(prompt, /被 Build 打回来的/);
+    assert.match(prompt, /第 2 轮/);
+    // **原文照抄** —— 转述必然改写，而这是人写的话。
+    assert.match(prompt, /接口边界在 Spec 里就画错了/);
+  });
+
+  it("**写明收件人**，原样转达给红蓝两方（2026-08-02 四张脸的教训）", () => {
+    const prompt = sentBack();
+    assert.match(prompt, new RegExp(`原样转达给${RED}和${BLUE}`));
+    // 那句话必须出现两次：裁判自己读一次，转达的原文一次 —— 只写一次就又变回
+    // 「参照上文」，而那正是四次转丢的成因。
+    assert.equal(prompt.split("接口边界在 Spec 里就画错了").length - 1, 2);
+  });
+
+  it("红方的活儿改了：不是重写一份，是修好被指出的地方", () => {
+    assert.match(sentBack(), /不是从零重写/);
+  });
+
+  it("人没写理由 —— 照实说「没留理由」，不编一个", () => {
+    const prompt = sentBack({ reason: null });
+    assert.match(prompt, /被 Build 打回来的/);
+    assert.match(prompt, /没有留下理由/);
+  });
+
+  it("没被打回 —— 一个字都不印（和加这个参数之前逐字一样）", () => {
+    const plain = judgePrompt({ phase: "Spec", round: 3, task: "写出 Spec", openGaps: [] });
+    assert.ok(!plain.includes("打回"), "正常进入的阶段不该看见打回那一段");
+  });
+});
+
+describe("L4 · 人的批注和上游文档打架时，谁说了算要写死（旧账 G）", () => {
+  /*
+   * 2026-08-02 记的账：**操作员批注和上游文档打架会制造震荡** —— 红方一边读
+   * 上游那份已批准的文档、一边读人的批注，两者冲突时它每轮各按一次，人只好
+   * 每轮再说一遍。原话给的出路是「批注要么对着上游写，要么就去改上游」。
+   *
+   * 「去改上游」这条边 2026-08-05 才有（sendBack）。所以这里把两件事都写进
+   * 那份名单：**冲突时以人的话为准**（以人为主，那条从 07-30 就定了），
+   * 而且**必须把冲突写进产出** —— 否则人根本不知道自己在跟一份文档拧着。
+   */
+  const humanGap = (title: string, note: string | null = null): Gap => ({
+    id: humanGapId(1), kind: "finding", severity: "P1", title,
+    status: "open", openedRound: 2, resolution: null, note,
+    closedBy: null, where: null, why: null,
+  });
+
+  it("有人提的问题时，名单里写明「冲突以人的话为准」", () => {
+    const text = renderOpenGaps([humanGap("排行榜要按周重置")]);
+    assert.match(text, /以人的话为准/);
+  });
+
+  it("**并且要求把冲突报出来** —— 闷头照做，人就不知道自己在跟文档拧着", () => {
+    const text = renderOpenGaps([humanGap("排行榜要按周重置")]);
+    assert.match(text, /写进产出/);
+    // 彻底的解法是去改上游，而那条边现在有了（§5.9.1 的 sendBack）。
+    assert.match(text, /打回上游/);
+  });
+
+  it("模型报的问题不带这段 —— 它们跟上游没有「谁说了算」这回事", () => {
+    const found: Gap = { ...humanGap("x"), id: "SPEC-1" };
+    const text = renderOpenGaps([found]);
+    assert.doesNotMatch(text, /以人的话为准/);
   });
 });

@@ -1,8 +1,10 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
+import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
 import { PHASES, producesCommit, type Phase } from "../domain/phase";
-import type { RoundConclusion } from "../domain/round";
+import { pendingSendBack } from "../domain/journey";
+import { roundFromLedger, type RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
@@ -47,6 +49,12 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   readonly workspaceFor: (changeId: string) => string | null;
   /** 红方要做什么。按阶段给一句话。 */
   readonly taskFor: (phase: string) => string;
+  /**
+   * 只写给人看的一行去哪（缺省 console）。目前唯一的客户是越界报告 ——
+   * 它进不了 `round_notes`：那张表的 `source` CHECK 建表时定死，加新值会让
+   * 所有已存在的库当场拒收（`closed_by` 那次的教训），而这一行不值得一次真迁移。
+   */
+  readonly log?: (line: string) => void;
 }
 
 /**
@@ -93,21 +101,20 @@ export class RoundTurnRunner implements TurnRunner {
     }
 
     /*
-     * **轮次从账本数，不用 `job.attempt`。**
-     *
-     * attempt 是「这个 job 的第几次尝试」，而每次「跑这个阶段」都新建一个 job ——
-     * 于是它恒等于 1。实测过的后果：CHG-002 跑了两轮，`gaps.opened_round` 全是 1，
-     * 「第几轮发现的」在库里是假话，而 REMAP §3.5「按轮读，不按 run 读」建在这个
-     * 数上。
-     *
-     * 账本 append-only：这个阶段第几次落到 `running`（`start` 和 `retry`，只有
-     * 这两个动作落进 running），就是第几轮。`queueTurn` 在派发之前就把这一轮的
-     * `start` 写进去了，所以这里数出来的正是**当前**这一轮。失败后的 retry 也
-     * 天然算得进去 —— 那确实是新的一轮。
+     * **轮次从账本数，不用 `job.attempt`**（理由在 `roundFromLedger` 的注释里，
+     * 一份实现三处用）。`queueTurn` 在派发之前就把这一轮的 `start` 写进去了，
+     * 所以这里数出来的正是**当前**这一轮。
      */
-    const round = this.options.changes.ledger(job.changeId)
-      .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
-      .length;
+    const round = roundFromLedger(this.options.changes.ledger(job.changeId), phase);
+
+    /*
+     * **轮前把脏文件拍个快照** —— 轮末的越界报告靠差集把「模型这一轮写的」和
+     * 「人本来就没提交的」分开。少了这一步就只能拿轮末的全量脏名单去指认，
+     * 把人写了一半的活儿说成模型的违规。
+     */
+    const cwd = this.options.workspaceFor(job.changeId);
+    const dirtyBefore = cwd === null
+      ? null : new Set(this.options.repo.dirtyPaths(cwd));
 
     /*
      * **裁判线程一出现就绑上，不等整轮跑完。**
@@ -195,7 +202,35 @@ export class RoundTurnRunner implements TurnRunner {
               `- ${entry.phase}: ${entry.artifactIds.map(describeArtifact).join("、")}`),
           ];
         })(),
+        /*
+         * **输出路径由 StagePass 指定，不让红方自己起名**（E，用户 2026-08-04 拍板）。
+         *
+         * 模型现编文件名的下场实测过：一个仓库里四套互不兼容的命名，连 Change id
+         * 都编。这一行在 `task` 里，而 task 是**原样转达**给红方的（上面那个抬头），
+         * 路径到得了。Build / Fix 不加 —— 它们的产出是 commit，不是一份文档。
+         */
+        ...(producesCommit(phase) ? [] : [
+          "",
+          `这一轮的文档写到仓库里这个路径（相对项目根）：${
+            redDocPath(job.changeId, phase, round)
+          } —— 不要写到别的地方，也不要自己起名。`,
+        ]),
       ].join("\n"),
+      // 反方的那份同理，经裁判的提示词转达（共享模板，不进 PHASE_PLAY 那张
+      // 十一份的表）。所有阶段都给 —— 反方在每个阶段都写意见，Build 也不例外。
+      blueDocPath: blueDocPath(job.changeId, phase, round),
+      /*
+       * **被打回的阶段，红方得知道是谁退的、为什么**（§5.5 的最后一米）。
+       *
+       * 取数在 `pendingSendBack`：判据是**栈顶欠着谁**，不是「账本里有过打回」——
+       * 早就还清的那次再念一遍，是拿一件了结的事去改变这一轮的性质。
+       * 没欠债就是 `undefined`，提示词一个字都不印。
+       */
+      ...(() => {
+        const back = pendingSendBack(
+          this.options.changes.ledger(job.changeId), change.state);
+        return back === null ? {} : { sentBack: back };
+      })(),
       // 同一个 (Change, 阶段) 复用同一个裁判线程。
       //
       // **必须看 status。** 一条 detached 的绑定仍然留着 threadId —— 直接拿它去
@@ -211,8 +246,33 @@ export class RoundTurnRunner implements TurnRunner {
     this.recordNotes(job.changeId, phase, round, settled);
     this.releaseIfMalformed(job.changeId, phase, round, settled.malformed);
 
+    const artifactIds = this.producedBy(job.changeId, phase, round, settled.artifactIds);
+
+    /*
+     * **越界的文件当场报出来，不自动收拾**（用户 2026-08-04 拍板）。
+     *
+     * 到这里产物目录已经入档（`producedBy`），树上剩下的、轮前没有的，就是模型
+     * 写到家外面的东西。**不动它们** —— 收编、删除都是替人决定；报出来，让人处置。
+     *
+     * 报告走 `log`（面板 stdout —— 收尸人也在那儿说话，是既有的人看的通道）。
+     * 不进 `round_notes`：那张表的 source CHECK 建表定死，加值会让已存在的库
+     * 当场拒收（`closed_by` 的教训）。文件真被留着不管，Build 的干净树预检还会
+     * 兜底把它们逐个列给人（`workspace_dirty`）。
+     */
+    if (cwd !== null && dirtyBefore !== null) {
+      const home = `${artifactHome(job.changeId)}/`;
+      const strays = this.options.repo.dirtyPaths(cwd)
+        .filter((path) => !dirtyBefore.has(path) && !path.startsWith(home));
+      if (strays.length > 0) {
+        (this.options.log ?? console.log)(
+          `[round] ${job.changeId}/${phase} 第 ${round} 轮有文件写到了产物目录外`
+          + `（不自动收拾，人处置）：${strays.join("、")}`,
+        );
+      }
+    }
+
     return {
-      artifactIds: this.producedBy(job.changeId, phase, round, settled.artifactIds),
+      artifactIds,
       // 空的，理由见文件开头 —— 这一轮的问题已经落库了。
       blockers: [],
       verdicts: {},
@@ -337,9 +397,27 @@ export class RoundTurnRunner implements TurnRunner {
     round: number,
     reported: readonly string[],
   ): readonly string[] {
-    if (!producesCommit(phase)) return reported;
     const cwd = this.options.workspaceFor(changeId);
     if (cwd === null) return reported;
+    if (!producesCommit(phase)) {
+      /*
+       * **设计/报告类阶段轮末把产物目录窄提交掉**（E，2026-08-05）。
+       *
+       * 在这之前它们写文件不 commit，树越攒越脏，走到 Build（第一个要求干净树的
+       * 阶段）一次性爆掉 —— 08-02 手动 `git commit` 入档 5 次、08-05 又清了 33 个。
+       *
+       * 只提交 `docs/stagepass/<change>/`，目录外一个字节不碰（连人的暂存区都不动，
+       * 见 `repo.commitPaths`）——「不替人 commit 他自己的活儿」那条保护原样成立。
+       *
+       * **证据仍然是红方报的路径，不换 sha。** commit 只是让树干净的记账：下游
+       * （面板读产物、上游产物列表、fence）都按路径找，这里换了它们全断。
+       * 提交失败（不是 git 仓库、目录是空的）也照样返回路径 —— 记账失败不该
+       * 吃掉一轮真产出。
+       */
+      this.options.repo.commitPaths(
+        cwd, [artifactHome(changeId)], `StagePass ${changeId} ${phase} 第 ${round} 轮`);
+      return reported;
+    }
     const sha = this.options.repo.commitAll(
       cwd, `StagePass ${changeId} ${phase} 第 ${round} 轮`);
     return sha === null ? [] : [sha];

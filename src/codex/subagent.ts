@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
-  allTextIn, findLastCompletedTurn, lineageOf, parseRollout, threadIdFromRolloutName,
+  allTextIn, contextUsageOf, findLastCompletedTurn, lineageOf, parseRollout,
+  threadIdFromRolloutName, type ContextUsage,
 } from "./rollout";
 
 /**
@@ -92,7 +93,12 @@ export function createSubAgentLookup(
  * 那一列只有原生 `spawn_agent({task_name})` 会设，而**那个工具不是每个 Codex 会话
  * 都有**（2026-07-30 实测：同一天同一台机器，几小时前有、后来没有）。没有它的会话里
  * 每个阶段的每一轮都跑不了，症状是 `no sub-agent at /root/red`。
- * 现在改成裁判把它派生的两个 `agent_id` 报进答案（`domain/round.ts` 的 `readAgents`）。
+ *
+ * 中间有过一版「让裁判把两个 `agent_id` 报进答案」（`readAgents`），而那正是
+ * 手抄面 #1：36 字符的 UUID 抄错一个字这一轮就作废，实测栽过（`02059a8` 把自己
+ * 的线程报成了子 Agent）。**现在两条都不走了** —— 血缘写在 rollout 的
+ * `session_meta.parent_thread_id` 里（CHG-003 真数据 76/76 有值），
+ * StagePass 自己认，模型手上一个标识符都没有。`readAgents` 连同它的守卫已拆。
  *
  * ## 顺带：不再碰 Codex 的私有库
  *
@@ -143,9 +149,12 @@ export function readThreadWholeText(input: ThreadLookup): string {
  *
  * ## 一条线程可能有两个 rollout 文件
  *
- * 补问会 `resume` 蓝方那条线程，而 resume 有时会另起一个文件（2026-08-02 在真目录
- * 里见过同一个 id 出现两次）。所以**按 thread id 去重**，取它最早的那次出生时刻 ——
- * 认的是线程，不是文件。
+ * `resume` 有时会另起一个文件（2026-08-02 在真目录里见过同一个 id 出现两次）。
+ * 所以**按 thread id 去重**，取它最早的那次出生时刻 —— 认的是线程，不是文件。
+ *
+ * （这段原来举的例子是「补问会 resume 蓝方那条线程」—— 那条机制 2026-08-03 被
+ * Codex 封死了：子 Agent 线程拒绝外部输入（`domain/round.ts` 那段）。机制死了，
+ * 但「一个 id 两个文件」这个现象本身与谁去 resume 无关，去重照旧要做。）
  *
  * ## 只读文件头
  *
@@ -215,6 +224,23 @@ function rolloutOf(input: ThreadLookup) {
     throw new SubAgentNotFoundError(input.threadId);
   }
   return parseRollout(read(path));
+}
+
+/**
+ * 这条线程离上下文墙多远（§3.3·11）。
+ *
+ * 找不到线程、或 rollout 里还没有 `token_count`，都返回 null。和
+ * `readThreadTranscript` **抛错**的理由正相反：那边一个空字符串会被上游当成
+ * 「这一方什么都没说」写进下一轮提示词；这边 null 只是界面少显示一行 ——
+ * 「说不出」照实说不出，不该为此把进度端点带崩。
+ */
+export function threadContextUsage(input: ThreadLookup): ContextUsage | null {
+  try {
+    return contextUsageOf(rolloutOf(input));
+  } catch (error) {
+    if (error instanceof SubAgentNotFoundError) return null;
+    throw error;
+  }
 }
 
 const DEFAULT_SESSIONS = join(homedir(), ".codex", "sessions");

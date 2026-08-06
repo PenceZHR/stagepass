@@ -35,7 +35,7 @@ const REFUSAL = "controlled by its parent";
 const PROMPT = "只回一个数字，别的什么都不要写：1+1 等于几？";
 
 const CWD = process.env.PROBE_CWD
-  ?? "/Users/zhanghr/Desktop/stagepass/.stagepass/verification/round-0803/workspace";
+  ?? process.cwd(); // 一次性验证目录 2026-08-05 清掉了；要指定就传参
 
 interface Subject {
   threadId: string;

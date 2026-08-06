@@ -374,6 +374,57 @@ body::after {
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
 /*
+ * 环上的地图层：回头的弦、能去的虚线、节点的轮次刻度（§5.9.3 / §5.9.4）。
+ *
+ * **两种画法必须一眼分得开**（§5.9.3②）：走过的是实线，永久留着 —— 那是这个
+ * Change 的病历，「被 Build 打回来过两次」应当一眼看得出；能去的是虚线，随状态
+ * 变。混成一种，历史和可能性就分不清了。
+ *
+ * 不吃鼠标事件：节点那一层的悬停和点击照旧（pointer-events 只在 <title> 需要的
+ * 那几条线上开）。
+ */
+.orbit-map { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.orbit-map .chord {
+  fill: none; stroke: rgba(226,200,164,.5); stroke-width: .5;
+  stroke-linecap: round; pointer-events: stroke;
+}
+.orbit-map .chord.hot { stroke: rgba(255,146,128,.62); stroke-width: .7; }
+/*
+ * 能去的那条路：**一根极淡的发丝**，只说「走哪条道」。
+ *
+ * 方向整个交给飞在上面那串 V（用户 2026-08-05 第二次看后重做）。上一版是流动的
+ * 虚线 + 实心小三角：虚线两头长得一样、看不出往哪流，而虚线本身在这一屏的细线
+ * 质感里显得又粗又碎。**减，不是加。**
+ */
+.orbit-map .live {
+  fill: none; stroke: rgba(226,200,164,.17); stroke-width: .35;
+  stroke-linecap: round; pointer-events: stroke;
+}
+.orbit-map .live.back { stroke: rgba(255,146,128,.2); }
+/** 自环那条轨道：只给 V 骑，本身不画（画出来就和刻度打架了）。 */
+.orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
+/*
+ * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
+ * 才和这一屏别的东西是同一种笔触。跟在后面的两个淡下去 —— 队形本身就是箭头。
+ */
+.orbit-map .arrow {
+  fill: none; stroke: rgba(240,220,190,.95); stroke-width: .5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.orbit-map .arrow.trail { stroke: rgba(240,220,190,.42); stroke-width: .42; }
+.orbit-map .arrow.back { stroke: rgba(255,152,134,.95); }
+.orbit-map .arrow.back.trail { stroke: rgba(255,152,134,.4); }
+/*
+ * 刻度要**一眼看得见**才有意义（§5.9.4：节点上花的轮数比它在环上的位置更能说明
+ * 「你在哪」）。第一版 stroke-width .9、长 1.8 单位，实测在真尺寸下是 4×8 像素 ——
+ * DOM 里在、几何也对，屏幕上等于没画。这一版按「能一眼数出几段」定粗细。
+ */
+.orbit-map .tick {
+  fill: none; stroke: rgba(226,200,164,.9); stroke-width: 1.5; stroke-linecap: round;
+}
+.orbit-map .tick.done { stroke: rgba(150,214,168,.9); }
+
+/*
  * `--progress` 必须注册才过渡得了。
  *
  * 自定义属性默认是「无类型的字符串」，浏览器不知道 0.3 到 0.6 中间是什么，于是
@@ -427,14 +478,21 @@ body::after {
   border: 1px solid rgba(255,255,255,.44); background: #575264;
   transition: background .28s, border-color .28s, box-shadow .28s;
 }
-/* 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。 */
+/*
+ * 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。
+ *
+ * **64px → 80px（2026-08-05）**：圆外面那一圈现在住着轮次刻度和绕圈的箭头
+ * （§5.9.3/§5.9.4），而它们只能待在「圆的边缘」和「标签顶」之间。原来那条缝
+ * 只有 36px，圈大不起来 —— 用户要的是「起码包裹住 stage 的圆」。
+ * 节点之间隔着约 150px，多让 16px 不会挤到邻居。
+ */
 .stage-node button span {
-  position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 80px; left: 50%; transform: translateX(-50%);
   font: 700 12px/1 ui-sans-serif, sans-serif; letter-spacing: .04em; white-space: nowrap;
   color: rgba(255,255,255,.66); transition: color .28s;
 }
 .stage-node button em {
-  position: absolute; top: 82px; left: 50%; transform: translate(-50%, 3px);
+  position: absolute; top: 98px; left: 50%; transform: translate(-50%, 3px);
   font: 500 10px/1 ui-sans-serif, sans-serif; font-style: normal; white-space: nowrap;
   color: rgba(255,255,255,.44); opacity: 0; transition: .24s;
 }
@@ -677,6 +735,21 @@ body::after {
 .rubric-note { margin-top: 12px; font: 400 11.5px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 .rubric-note.bad { color: var(--problem); }
 .sheet-line { margin: 16px 0 0; color: rgba(255,255,255,.6); font-size: 12.5px; line-height: 1.75; }
+
+/* 一轮的进度：三个里程碑一段一段亮过去。全灰 = 在跑但还看不出走到哪。 */
+.round-progress { display: flex; gap: 4px; margin: 10px 0 0; }
+/*
+ * `display: flex` 会压掉 UA 样式表给 `[hidden]` 的 `display: none` —— 于是没在跑
+ * 也摆着一条条。2026-08-05 在浏览器里当场看见的，typecheck 看不见这种。
+ */
+.round-progress[hidden] { display: none; }
+.round-progress span {
+  flex: 1; padding: 6px 0; text-align: center; border-radius: 4px;
+  font: 500 11px/1 ui-sans-serif, sans-serif;
+  color: rgba(255,255,255,.38); background: rgba(255,255,255,.05);
+  transition: background .4s, color .4s;
+}
+.round-progress span.reached { color: #1c1913; background: var(--sand-deep); }
 .sheet-empty { margin: 18px 0 4px; font: 400 12px/1.7 var(--serif); color: rgba(255,255,255,.46); }
 
 /*
@@ -688,6 +761,14 @@ body::after {
   border-left: 2px solid var(--sand-deep); border-radius: 0 10px 10px 0;
   background: rgba(225,198,160,.07);
   font: 500 12.5px/1.75 ui-sans-serif, sans-serif; color: rgba(255,255,255,.9);
+}
+
+/* 上次裁决被拒。长得像 next-step 但偏警示色 —— 它说的是「为什么没推动」。 */
+.last-outcome {
+  margin: 12px 0 0; padding: 11px 14px;
+  border-left: 2px solid rgba(255,128,112,.72); border-radius: 0 10px 10px 0;
+  background: rgba(255,128,112,.08);
+  font: 500 12.5px/1.75 ui-sans-serif, sans-serif; color: rgba(255,255,255,.88);
 }
 .next-step b {
   color: var(--sand-strong); font-weight: 800;
@@ -908,6 +989,16 @@ body::after {
         <div class="orbit-wrap" id="orbit-wrap">
           <div class="halo"></div>
           <div class="progress" id="progress"></div>
+          <!--
+            环上的地图层（§5.9.3）。**它不是第五个装饰圈** —— §5.0.1 那条「只留
+            一个大环」管的是同心圆，这里画的是环**内部**的关系：回头的弦、能去的
+            虚线、节点的轮次刻度。
+
+            viewBox 用 0–100 的方格，圆心 (50,50)、轨道半径 45.5 —— 那个 45.5 和
+            CSS 的 `inset: 4.5%`、panel.js 的 0.455 是同一个数。改一个就要改三个，
+            否则弦会连到轨道外面去。
+          -->
+          <svg class="orbit-map" id="orbit-map" viewBox="0 0 100 100" aria-hidden="true"></svg>
           <div class="center">
             <small id="center-kicker">Stage Orbit</small>
             <h3 id="center-title">—</h3>
@@ -1015,6 +1106,16 @@ body::after {
       <div class="sheet-body">
         <p class="sheet-line" id="sheet-line"></p>
         <!--
+          这一轮走到哪一步（§2.3）。三段是三个**看得见的里程碑**（裁判起来 /
+          红方出现 / 蓝方出现），不是编出来的百分比 —— 说不出走到哪就一段都不亮：
+          「在跑但看不出位置」和「没在跑」必须长得不一样。
+        -->
+        <div class="round-progress" id="round-progress" hidden>
+          <span>裁判起来了</span>
+          <span>红方在写</span>
+          <span>蓝方在挑</span>
+        </div>
+        <!--
           **下一步该干什么，直接写出来。**
 
           在这之前，人只能靠「哪个按钮是亮的」去猜下一步 —— 而按钮全灰的时候
@@ -1025,6 +1126,12 @@ body::after {
           开发」。**说出下一步就是这条本身**，不是装饰。
         -->
         <p class="next-step" id="next-step" hidden></p>
+        <!--
+          上次裁决被闸门拒了 —— **留得住的状态，不是一句一闪而过的话**（§3.2·5）。
+          它原来写在终端底下那行注解里，而「进程已经结束了」会盖掉它 —— 那正是
+          答完之后必然发生的事。这里每次重画都从库里的 lastOutcome 来，盖不掉。
+        -->
+        <p class="last-outcome" id="last-outcome" hidden></p>
         <div id="sheet-gaps"></div>
         <div id="sheet-rubric" hidden></div>
       </div>

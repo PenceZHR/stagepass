@@ -59,6 +59,15 @@ export interface Gap {
    * 里那段重开的注释。用户 2026-07-30 拍的「以人为主」，2026-08-03 明确到「一直管」。
    */
   readonly closedBy: "human" | null;
+  /**
+   * 报的人说它在哪儿、为什么是问题，原文照抄。定义和理由见 `domain/gate.ts` 的
+   * `Blocker.where` —— 用户 2026-08-04：「绝对不能出现语义损失」。
+   *
+   * `standard` 一律是 null（rubric 派生的，没有「在哪儿」），人自己提的那条也是
+   * null（他的话就是标题本身）。
+   */
+  readonly where: string | null;
+  readonly why: string | null;
 }
 
 export type Verdict =
@@ -72,6 +81,7 @@ export class InvalidVerdictError extends Error {
     | "reason_missing"
     | "unknown_gap"
     | "standard_not_waivable"
+    | "p0_not_waivable"
     | "title_missing") {
     super(code);
     this.name = "InvalidVerdictError";
@@ -146,6 +156,9 @@ export function raise(
     // 标题就是他的话，不用再抄一份到 note 里（E3：一份实现，一处存放）。
     note: null,
     closedBy: null,
+    // 人自己提的：他的话就是标题本身，没有「在哪儿」和「为什么」这两问。
+    where: null,
+    why: null,
   }];
 }
 
@@ -228,7 +241,14 @@ export interface RoundOutcome {
    * 一律是 `finding` 且必须带严重度 —— 这是模型在报「它发现了什么」。
    * `standard` 进不来这条路，理由见 `applyRound` 里那段注释。
    */
-  readonly found: readonly { id: string; severity: BlockerSeverity; title: string }[];
+  readonly found: readonly {
+    id: string;
+    severity: BlockerSeverity;
+    title: string;
+    /** 在哪儿、为什么。缺就是 null —— 见 `domain/gate.ts` 的 `Blocker.where`。 */
+    where: string | null;
+    why: string | null;
+  }[];
   /** What this round says about gaps that were already open. */
   readonly verdicts: Readonly<Record<string, Verdict>>;
 }
@@ -327,6 +347,8 @@ export function applyRound(
       resolution: null,
       note: null,
       closedBy: null,
+      where: found.where,
+      why: found.why,
     });
   }
 
@@ -353,6 +375,14 @@ export function waive(gaps: readonly Gap[], gapId: string, reason: string): Gap[
   const gap = gaps.find((candidate) => candidate.id === gapId);
   if (!gap || gap.status !== "open") throw new InvalidVerdictError("unknown_gap");
   if (gap.kind === "standard") throw new InvalidVerdictError("standard_not_waivable");
+  /*
+   * P0 不许豁免（gate.ts：「严重到不可接受的问题不能靠普通确认绕过」）。这道闸必须
+   * 在这里而不是只在挑候选名单的地方：`/api/waive` 筛了 P1，但裁决表「回应蓝方」
+   * 对每条 open gap 都给「先接受这个风险」—— 2026-08-05 发现对 P0 选它会一路落到
+   * 这里，P0 落成 waived 就从 blockers 里消失，闸门就开了。名单是每个入口自己挑的，
+   * 规则只有这一份。
+   */
+  if (gap.severity === "P0") throw new InvalidVerdictError("p0_not_waivable");
   return gaps.map((candidate) =>
     candidate.id === gapId
       ? { ...candidate, status: "waived" as const, resolution: reason }
@@ -418,6 +448,7 @@ export function blockersFrom(gaps: readonly Gap[]): Blocker[] {
     .filter((gap) => gap.status === "open")
     .map((gap) => ({
       id: gap.id, kind: gap.kind, severity: gap.severity, title: gap.title,
+      where: gap.where, why: gap.why,
     }));
 }
 

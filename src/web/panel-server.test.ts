@@ -132,6 +132,15 @@ async function withPanel(
     recoverEveryMs?: PanelOptions["recoverEveryMs"];
     repo?: PanelOptions["repo"];
     trust?: PanelOptions["trust"];
+    /**
+     * 项目的目录。默认 `/tmp`。
+     *
+     * **要验「落在项目目录外」的那条必须自己指定一个**：默认值只在 macOS 上碰巧
+     * 是对的 —— 那里 `tmpdir()` 是 `/var/folders/…`，天然不在 `/tmp` 底下。Linux
+     * 上 `tmpdir()` 就是 `/tmp`，于是「外面」那个目录其实在项目里面，护栏照放行，
+     * 而测试断言的是它该拒（2026-08-06 CI 撞到）。
+     */
+    projectPath?: string;
   } = {},
 ): Promise<void> {
   const database = new Database(":memory:");
@@ -142,7 +151,7 @@ async function withPanel(
   // 而那条触发器正是这么设计的。
   // **项目必须有路径**：Codex 跑在项目的目录里（2026-07-30 起），没有路径
   // launchInto 会抛 ProjectPathMissingError。用 /tmp，测试里的 pty 是假的，不会真跑。
-  new ProjectStore(database).ensure(PROJECT, "p", "/tmp");
+  new ProjectStore(database).ensure(PROJECT, "p", extra.projectPath ?? "/tmp");
   new ChangeStore(database).create(CHANGE, { projectId: PROJECT });
 
   const started: Fake["started"] = [];
@@ -210,6 +219,7 @@ async function withPanel(
     repo: extra.repo ?? {
       dirtyPaths: () => [],
       commitAll: () => { throw new Error("测试里不许真的动 git"); },
+      commitPaths: () => { throw new Error("测试里不许真的动 git"); },
       show: () => { throw new Error("测试里不许真的动 git"); },
     },
     /*
@@ -266,6 +276,10 @@ describe("panel · what it offers", () => {
         // 空数组 = 还没产出任何东西。闸门不会放行一个什么都没产出的阶段，
         // 所以这一格是「红方主张」那一侧的原料。
         produced: [],
+        // null = 这个阶段还没有裁决落过 —— 不许编一个下场出来（§3.2·5）。
+        lastOutcome: null,
+        // 一轮都没跑过。环上那个节点因此一个刻度都不画（§5.9.4）。
+        rounds: 0,
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));
@@ -350,7 +364,7 @@ describe("panel · pass and fail per phase", () => {
     await withPanel(async ({ open, database }) => {
       new GapStore(database).settleRound(CHANGE, "PRD", {
         round: 1,
-        found: [{ id: "G1", severity: "P1", title: "验收标准不可测" }],
+        found: [{ id: "G1", severity: "P1", title: "验收标准不可测", where: null, why: null }],
         verdicts: {},
       });
       assert.equal((await marksOf(open))["PRD"], "problem");
@@ -369,7 +383,7 @@ describe("panel · pass and fail per phase", () => {
       // Green would then be claiming something that is no longer true.
       new GapStore(database).settleRound(CHANGE, "PRD", {
         round: 2,
-        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突" }],
+        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突", where: null, why: null }],
         verdicts: {},
       });
       assert.equal((await marksOf(open))["PRD"], "problem");
@@ -432,8 +446,8 @@ describe("panel · pass and fail per phase", () => {
       gaps.settleRound(CHANGE, "PRD", {
         round: 1,
         found: [
-          { id: "G1", severity: "P0", title: "没有验收标准" },
-          { id: "G2", severity: "P2", title: "术语不一致" },
+          { id: "G1", severity: "P0", title: "没有验收标准", where: null, why: null },
+          { id: "G2", severity: "P2", title: "术语不一致", where: null, why: null },
         ],
         verdicts: {},
       });
@@ -441,7 +455,7 @@ describe("panel · pass and fail per phase", () => {
         round: 2, found: [], verdicts: { G2: { kind: "closed", reason: "第二轮统一了叫法" } },
       });
       gaps.settleRound(CHANGE, "Spec", {
-        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码" }], verdicts: {},
+        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码", where: null, why: null }], verdicts: {},
       });
 
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as
@@ -526,7 +540,17 @@ describe("panel · 产出的正文读得到，读不到要说为什么", () => {
     /*
      * `artifactIds` 是**模型**写的。一个想歪的模型往里放 `~/.ssh/id_rsa`，
      * 「只读库里列着的」挡不住它 —— 挡得住的是这一条。
+     *
+     * **项目根和「外面」都得自己造，而且是两个兄弟目录。**
+     *
+     * 原来项目根用默认的 `/tmp`、外面用 `tmpdir()` 下的一个临时目录 —— 那只在
+     * macOS 上成立（`tmpdir()` 是 `/var/folders/…`）。Linux 上 `tmpdir()` 就是
+     * `/tmp`，于是「外面」其实在项目**里面**，护栏正确放行，而这条测试断言它该
+     * 拒 —— 2026-08-06 CI 第一次在 Linux 上跑就红在这里。
+     *
+     * 两个兄弟目录谁也不包含谁，哪个平台都成立。
      */
+    const root = mkdtempSync(join(tmpdir(), "sp-artifact-root-"));
     const outside = mkdtempSync(join(tmpdir(), "sp-artifact-outside-"));
     const file = join(outside, "elsewhere.md");
     writeFileSync(file, "在项目外面");
@@ -536,8 +560,32 @@ describe("panel · 产出的正文读得到，读不到要说为什么", () => {
         const read = await readArtifact(open, file);
         assert.equal(read.readable, false);
         assert.equal(read.reason, "outside_project");
-      });
-    } finally { rmSync(outside, { recursive: true, force: true }); }
+      }, { projectPath: root });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 上面那条**验的是拒**，所以它有一个安静的失效方式：只要「外面」那个路径压根
+   * 读不到（拼错、不存在），它照样绿 —— 而 `outside_project` 和 `gone` 是两回事。
+   *
+   * 这一条把同一个夹具反过来用：**同一个项目根，里面的文件必须读得到**。两条
+   * 一起才说明那道边界画在了该在的地方，而不是「什么都读不到」。
+   */
+  it("同一个根，**里面的读得到** —— 上面那条不是靠「什么都读不到」绿的", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sp-artifact-root-"));
+    const file = join(root, "inside.md");
+    writeFileSync(file, "在项目里面");
+    try {
+      await withPanel(async ({ open, database }) => {
+        produce(database, [file]);
+        const read = await readArtifact(open, file);
+        assert.equal(read.readable, true);
+        assert.match(read.text!, /在项目里面/);
+      }, { projectPath: root });
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it("文件不在了 —— 说出来，不给一块空白", async () => {
@@ -1189,6 +1237,8 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
       new GapStore(database).replace(CHANGE, "Spec", [{
         id: `RB:producer:${key}`, kind: "standard", severity: null,
         title: "挡着的", status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       }]);
       assert.equal(new GapStore(database).blockers(CHANGE, "Spec").length, 1);
 
@@ -1606,6 +1656,72 @@ describe("panel · Codex 没信任过这个目录就别派", () => {
   });
 });
 
+describe("panel · 派发立刻返回，不把一轮的时长压在一个 HTTP 请求上", () => {
+  /**
+   * BACKLOG §3.4：`POST /api/run` 原来 `await loop.runOnce`，而实测一轮 60~343 分钟。
+   *
+   * 三个后果：浏览器/代理会先超时（那时人看到的是「网络错误」，而轮跑得好好的）；
+   * 一个 HTTP 请求挂几十分钟本身就不该；**以及它逼着所有人绕过去** ——
+   * 2026-08-04 那一夜每一轮我都是 fire-and-forget 发的，测试里也到处是
+   * `void open(...).catch(() => {})` + 睡 120ms，那正是这条语义的活证据。
+   *
+   * 进度不靠这个响应：`panel.js` 有一条**独立的只读轮询**，而且 `panel.status`
+   * 一变成 `running` 它自己就开始转（`drawWorkspace`）。响应要说的只有
+   * 「派出去了没有」。
+   */
+  it("**排完队就回，不等轮跑完** —— 而且回执里带得走 jobId", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+
+      const started = Date.now();
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as
+        { ran: boolean; phase: string; jobId?: string; outcome?: unknown };
+      const waited = Date.now() - started;
+
+      assert.equal(ran.ran, true);
+      // 没有真 Codex，这一轮注定要慢慢失败；响应必须在那之前就回来了。
+      assert.ok(waited < 2_000, `派发等了 ${waited}ms —— 它还在 await 整轮`);
+      assert.ok(ran.jobId, "没给 jobId —— 人和测试都没法指认这一轮");
+      // **不许再给 outcome**：那是「等它跑完」才有的东西，留着就是留一个
+      // 有时有值、有时没有的字段，比没有更难对付。
+      assert.equal("outcome" in ran, false, "还在返回轮结果");
+
+      // 而活儿是真的排出去了。
+      const job = database.prepare("SELECT id, status FROM jobs WHERE id = ?")
+        .get(ran.jobId) as { id: string; status: string } | undefined;
+      assert.ok(job, "回执里的 jobId 在库里不存在");
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "running");
+    });
+  });
+
+  it("**后台那一轮炸了也不许掀翻进程** —— 它只落成一次失败", async () => {
+    /*
+     * 移到后台之后，抛出来的东西没有 HTTP 请求接着了。不接就是
+     * unhandledRejection —— Node 默认直接杀进程，而那会把面板整个带走。
+     */
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { jobId?: string };
+
+      // 没有真 Codex，这一轮会失败。等它落地。
+      for (let i = 0; i < 100; i += 1) {
+        const row = database.prepare("SELECT status FROM jobs WHERE id = ?")
+          .get(ran.jobId) as { status: string } | undefined;
+        if (row?.status === "failed") break;
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
+
+      const row = database.prepare("SELECT status FROM jobs WHERE id = ?")
+        .get(ran.jobId) as { status: string } | undefined;
+      assert.equal(row?.status, "failed", "后台那一轮既没成也没落成失败");
+      // 两边都记上 —— 和收尸人同一条规矩，只记一边就是「绿 job 压着死 Change」。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "blocked");
+    });
+  });
+});
+
 describe("panel · Build 要在干净的工作树上跑", () => {
   /**
    * Build 的产出是 commit，而 StagePass 提交的是「工作树里所有的改动」—— 它分不出
@@ -1616,7 +1732,7 @@ describe("panel · Build 要在干净的工作树上跑", () => {
    * commit 边界严格等于轮次边界。
    */
   const dirty: PanelOptions["repo"] = {
-    dirtyPaths: () => ["半成品.md"], commitAll: () => null, show: () => null,
+    dirtyPaths: () => ["半成品.md"], commitAll: () => null, commitPaths: () => null, show: () => null,
   };
 
   const advanceToBuild = (database: Database.Database): void => {
@@ -1639,6 +1755,33 @@ describe("panel · Build 要在干净的工作树上跑", () => {
       // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
       assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
         .get() as { n: number }).n, 0);
+      // pending 的拒绝不动状态：它没说过自己在跑，没有谎要圆。
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
+    }, { repo: dirty });
+  });
+
+  /**
+   * retry 先推状态、这里才预检（`questions.apply` 把 blocked 推到 running）。
+   * 拒了不回滚，就留下「界面说在跑、库里什么都没有」—— 而 running 只允许
+   * settle / fail，人一个按钮都没有。2026-08-05 真机：Build/running 永久卡死。
+   *
+   * `queueTurn` 的不变量：**a running Change always has work behind it。**
+   * 拒绝派发的那一刻它已经破了，这里就是把它当场修回来的地方。
+   */
+  it("**running 却被拒 → 当场回到 blocked，不留一个说谎的状态**", async () => {
+    await withPanel(async ({ open, database }) => {
+      advanceToBuild(database);
+      const changes = new ChangeStore(database);
+      changes.apply(CHANGE, "start"); // 人 retry 之后的形状：running，job 还没排
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "workspace_dirty");
+      assert.equal(changes.read(CHANGE).state.status, "blocked",
+        "状态留在 running —— 界面会说它在跑，而库里什么都没有");
+      // blocked 允许 retry —— 人清完树还有路走。
+      assert.doesNotThrow(() => changes.apply(CHANGE, "retry"));
     }, { repo: dirty });
   });
 
@@ -1671,6 +1814,7 @@ describe("panel · 弹窗里读得到一个 commit", () => {
       repo: {
         dirtyPaths: () => [],
         commitAll: () => null,
+        commitPaths: () => null,
         show: () => "commit a1b2c3d\n\n    加了 x\n\n+export const x = 1;\n",
       },
     });
@@ -1775,10 +1919,14 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       {
         id: "SPEC-1", kind: "finding", severity: "P1", title: "验收标准不可测",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       },
       {
         id: "SPEC-2", kind: "finding", severity: "P1", title: "范围与 PRD 冲突",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       },
     ]);
     new EvidenceStore(database).put(CHANGE, "PRD", {
@@ -1934,6 +2082,8 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       new GapStore(database).replace(CHANGE, "PRD", [{
         id: "SPEC-9", kind: "finding", severity: "P0", title: "人没看见过的这一条",
         status: "open", openedRound: 2, resolution: null, note: null, closedBy: null,
+        where: null,
+        why: null,
       }]);
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
@@ -1998,6 +2148,110 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         { kind: "refused", action: "approve", reason: "blocking_problem_outstanding" });
       // 阶段一步都没动。
       assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "PRD");
+    });
+  });
+
+  it("**打回上游端到端** —— 选目标 + 裁决，状态压栈、理由进账本（§5.9.1）", async () => {
+    await withPanel(async ({ open, database }) => {
+      // 走到 Spec/settled。打回不需要 gap —— 它说的是上游文档错了，不是这轮有毛病。
+      const changes = new ChangeStore(database);
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      new EvidenceStore(database).put(CHANGE, "Spec", {
+        artifactIds: ["spec.md"], blockers: [], waivedBlockerIds: [],
+      });
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, { T: "PRD", decision: decisionLabel("sendBack", "Spec") });
+      // 第二趟只有一格：为什么打回。
+      await answerNext(database, { Tx: "验收口径在 PRD 里就写反了" });
+
+      const result = await (await asking).json() as { outcome: unknown };
+      assert.deepEqual(result.outcome, { kind: "advanced", action: "sendBack" });
+
+      // 状态压栈：人在 PRD 改完批准，会弹回 Spec，不沿主线往 TechSpec 走。
+      assert.deepEqual(changes.read(CHANGE).state, {
+        phase: "PRD", status: "pending", returnStack: ["Spec"],
+      });
+      // 理由在账本那一行上 —— 历史箭头（§5.9.2）就写它。
+      const jump = changes.ledger(CHANGE).at(-1)!;
+      assert.equal(jump.action, "sendBack");
+      assert.equal(jump.reason, "验收口径在 PRD 里就写反了");
+
+      // 面板的跳转表（账本投影）说得出同一跳 —— G 档读的就是这一份。
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        journey: { action: string; fromPhase: string; toPhase: string; kind: string }[];
+      };
+      const back = panel.journey.find((each) => each.action === "sendBack")!;
+      assert.deepEqual(
+        { from: back.fromPhase, to: back.toPhase, kind: back.kind },
+        { from: "Spec", to: "PRD", kind: "backward" },
+      );
+    });
+  });
+
+  it("**选了打回却没选哪一份 —— 拒，并说出来**，不静默当成没发生", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      new EvidenceStore(database).put(CHANGE, "PRD", {
+        artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+      });
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      // 目标格留在「不打回」上 —— 半个决定。没有第二趟（没选目标就不问理由）。
+      answer(database, { T: "不打回", decision: decisionLabel("sendBack", "Spec") });
+
+      const result = await (await asking).json() as { outcome: unknown };
+      assert.deepEqual(result.outcome,
+        { kind: "refused", action: "sendBack", reason: "no_target_chosen" });
+      // 一步都没动。
+      assert.equal(changes.read(CHANGE).state.phase, "Spec");
+      assert.equal(changes.read(CHANGE).state.status, "settled");
+    });
+  });
+
+  it("**闸门拒了那句话留得住** —— 刷新之后 /api/panel 还说得出上次裁决的下场（§3.2·5）", async () => {
+    /*
+     * 原来 {kind:"refused"} 只活在 /api/ask 的响应里，前端把它写进 stageNote ——
+     * 而至少两处会覆盖那一行，其中一处是「进程已经结束了」，**那正是答完之后必然
+     * 发生的事**。所以下场必须是库里留得住的状态，不是一句一闪而过的话。
+     */
+    await withPanel(async ({ open, database }) => {
+      settledWithGaps(database);
+      const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
+      await new Promise((resolve) => { setTimeout(resolve, 150); });
+      answer(database, {
+        R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
+        decision: decisionLabel("approve", "PRD"),
+      });
+      await (await asking).json();
+
+      const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
+        phases: {
+          phase: string;
+          lastOutcome: { kind: string; action?: string; reason?: string; at?: string } | null;
+        }[];
+      };
+      const prd = panel.phases.find((entry) => entry.phase === "PRD")!;
+      assert.equal(prd.lastOutcome?.kind, "refused");
+      assert.equal(prd.lastOutcome?.action, "approve");
+      assert.equal(prd.lastOutcome?.reason, "blocking_problem_outstanding");
+      assert.ok(prd.lastOutcome?.at, "什么时候拒的也要说得出来");
+      // 没裁决过的阶段不许编一个下场出来。
+      assert.equal(panel.phases.find((entry) => entry.phase === "Spec")!.lastOutcome, null);
     });
   });
 
@@ -2397,7 +2651,7 @@ describe("panel · 派发前查上游产物", () => {
       assert.equal(result.missing?.[0]?.id, "0123456789abcdef0123456789abcdef01234567");
     }, {
       repo: {
-        dirtyPaths: () => [], commitAll: () => null, show: () => null,
+        dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null,
       },
     });
   });
@@ -2422,6 +2676,15 @@ describe("panel · 失败的轮不留毒线程", () => {
       const result = await (await open(`/api/run?change=${CHANGE}`, { method: "POST" }))
         .json() as { ran: boolean };
       assert.equal(result.ran, true);
+      /*
+       * **等后台跑完再看。** 2026-08-05 派发改成不等一轮跑完（BACKLOG §3.4），
+       * 放开线程这件事也跟着挪到了后台那一段 —— 行为一个字没变，只是它不再发生在
+       * 响应返回的那一刻。轮询库比睡一个定死的毫秒数可靠：这一轮多久失败取决于
+       * 那个假 transport 的超时，不该被抄成第二个魔法数。
+       */
+      for (let i = 0; i < 100 && bindings.find(CHANGE, "PRD")?.status !== "detached"; i += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
       const bound = bindings.find(CHANGE, "PRD");
       assert.equal(bound?.status, "detached",
         "失败的轮还绑着旧线程 —— 下一轮会 resume 回去接着中毒");
@@ -2500,6 +2763,33 @@ describe("panel · 问人超时，题也要收掉", () => {
       // 一个字都不答，等它自己放弃（测试里的 askTimeoutMs 是 4 秒）。
       const asked = await (await open(
         `/api/ask?change=${CHANGE}`, { method: "POST" })).json() as
+        { answered: boolean; reason: string };
+      assert.equal(asked.answered, false);
+      assert.equal(asked.reason, "no_answer_in_time");
+
+      assert.equal(
+        new QuestionStore(database).open(CHANGE), null,
+        "超时之后还留着一道 open 的题 —— 下一个调 stagepass_ask 的会被端出这道死题",
+      );
+    });
+  });
+
+  /**
+   * **同一条规则的第二份拷贝，而它漏了。**
+   *
+   * 上面那条治的是 `/api/ask`。接受风险（`/api/waive`）第一趟等答案超时之后
+   * 只关会话、**没有 settle** —— 同一道死题、同一个后果，只是还没人在那条路上
+   * 撞到过。三条问人的路（ask / brief / waive）各写了一份等答案的循环，治了两份。
+   */
+  it("**接受风险那条路超时，题一样要收掉** —— 第二份拷贝漏了 settle", async () => {
+    await withPanel(async ({ open, database }) => {
+      new GapStore(database).replace(CHANGE, "PRD", [{
+        id: "G-1", kind: "finding", severity: "P1", title: "接口没有错误码",
+        status: "open", openedRound: 1, resolution: null,
+      } as never]);
+
+      const asked = await (await open(
+        `/api/waive?change=${CHANGE}`, { method: "POST" })).json() as
         { answered: boolean; reason: string };
       assert.equal(asked.answered, false);
       assert.equal(asked.reason, "no_answer_in_time");

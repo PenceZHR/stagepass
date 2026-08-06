@@ -36,6 +36,8 @@ export interface RolloutRecord {
     thread_source?: unknown;
     source?: unknown;
     timestamp?: unknown;
+    /** 只有 `token_count` 有 —— 见 `contextUsageOf`。 */
+    info?: unknown;
   } | undefined;
   readonly timestamp?: unknown;
 }
@@ -65,6 +67,42 @@ function eventType(record: RolloutRecord): string | null {
 export interface TurnOutcome {
   /** Everything the model said in the completed turn. */
   readonly text: string;
+}
+
+export interface ContextUsage {
+  /** 最近一次请求真实装进上下文的 token 数（input 已含全部历史 + 这次的 output）。 */
+  readonly used: number;
+  readonly window: number;
+}
+
+/**
+ * 这条线程离上下文墙多远（BACKLOG §3.3·11）。
+ *
+ * 每次请求后 Codex 都往 rollout 里落一条 `token_count`，`info.last_token_usage`
+ * 是**这一次**请求的量 —— 它的 `input_tokens` 已经装着全部历史，加上这次的输出
+ * 就是下一次的起点。取**最后一个**读得出来的：线程一直在长，旧的读了就是假话。
+ *
+ * （`total_token_usage` 不是它 —— 那是跨请求的累计账单，第二轮起就超过窗口。）
+ *
+ * 读不出来往前找，一个都没有就 null —— 「说不出」照实说，不编一个数。
+ */
+export function contextUsageOf(
+  records: readonly RolloutRecord[],
+): ContextUsage | null {
+  for (let index = records.length - 1; index >= 0; index--) {
+    const record = records[index]!;
+    if (eventType(record) !== "token_count") continue;
+    const info = record.payload?.info;
+    if (typeof info !== "object" || info === null) continue;
+    const last = (info as { last_token_usage?: unknown }).last_token_usage;
+    const window = (info as { model_context_window?: unknown }).model_context_window;
+    if (typeof last !== "object" || last === null || typeof window !== "number") continue;
+    const input = (last as { input_tokens?: unknown }).input_tokens;
+    const output = (last as { output_tokens?: unknown }).output_tokens;
+    if (typeof input !== "number" || typeof output !== "number") continue;
+    return { used: input + output, window };
+  }
+  return null;
 }
 
 /**

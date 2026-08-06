@@ -70,11 +70,30 @@ export interface TurnRunner {
  *
  * 只有 `expires_at <= now` 的 job 会被收拾（`JobStore.recover` 定的）。一个还在心跳
  * 的 job 不会被这里碰到 —— 那正是租约存在的意义，不许在这儿用「跑了很久」去猜。
+ *
+ * ## 第二档：running 却没有任何活儿的 Change（2026-08-05）
+ *
+ * 租约那档看不见它 —— **没有 job 就没有租约**。而它真的发生过：retry 那条路先推
+ * 状态、后派发（`questions.apply` 把 blocked 推到 running，预检才跑），派发被拒时
+ * 一度不回滚，Build/running 永久挂着，库里没有 job、没有进程，而 running 只允许
+ * settle / fail —— 人一个按钮都没有，唯一出口是改库。
+ *
+ * 派发那头已经修了（拒绝当场回滚）；这一档兜的是**进程死在推状态和排 job 之间**
+ * 那扇窄窗，以及一切还没想到的同类。判据不是「跑了很久」，是 `queueTurn` 写明的
+ * 不变量已经破了：**a running Change always has work behind it**。宽限期只为了
+ * 不误伤正常派发那几百毫秒的合法中间态。
  */
+export const STRANDED_GRACE_MS = 60_000;
+
 export function recoverStuckTurns(
   database: Database.Database,
   now: number,
-): { resumed: readonly string[]; failed: readonly { id: string; reason: string }[] } {
+): {
+  resumed: readonly string[];
+  failed: readonly { id: string; reason: string }[];
+  /** 因为「running 而身后没有任何未完成的 job」被收掉的 Change。 */
+  stranded: readonly string[];
+} {
   const jobs = new JobStore(database);
   const changes = new ChangeStore(database);
   const summary = jobs.recover(now);
@@ -85,7 +104,17 @@ export function recoverStuckTurns(
     if (changes.read(changeId).state.status !== "running") continue;
     changes.apply(changeId, "fail");
   }
-  return summary;
+
+  // 第二档要在第一档**之后**扫：刚被第一档收掉的 Change 已经是 blocked，天然跳过。
+  const stranded: string[] = [];
+  for (const record of changes.list()) {
+    if (record.state.status !== "running") continue;
+    if (Date.parse(record.updatedAt) + STRANDED_GRACE_MS > now) continue;
+    if (jobs.busyFor(record.id) !== null) continue; // 身后有活儿，不变量没破
+    changes.apply(record.id, "fail");
+    stranded.push(record.id);
+  }
+  return { ...summary, stranded };
 }
 
 /**
@@ -203,6 +232,8 @@ export class TurnLoop {
             id: blocker.id,
             severity: blocker.severity,
             title: blocker.title,
+            where: blocker.where,
+            why: blocker.why,
           })),
           verdicts: outcome.verdicts ?? {},
         });

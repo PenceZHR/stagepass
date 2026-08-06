@@ -35,6 +35,65 @@ import { ROUND_NOTE_SOURCES } from "../domain/round";
 const quoted = (values: readonly string[]) =>
   values.map((value) => `'${value}'`).join(",");
 
+/**
+ * `changes` 的表定义，单独一份 —— **迁移要重建它**（return_phase → return_stack，
+ * SQLite 改不了 CHECK，只能整表重建），重建用的必须和建新库用的是同一份，否则
+ * 两条路建出两种表。
+ */
+const CHANGES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS changes (
+  id            TEXT PRIMARY KEY,
+  -- Both nullable, and deliberately so: a Change is complete without either.
+  -- Every gate, every transition and every fence works on a Change that belongs
+  -- to no project and has no title, which is what the whole state machine was
+  -- proved against. These two carry what a PERSON needs to recognise it, and
+  -- nothing reads them to make a decision.
+  project_id    TEXT     NULL REFERENCES projects(id),
+  title         TEXT     NULL,
+  phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  status        TEXT NOT NULL CHECK (status IN (${quoted(PHASE_STATUSES)})),
+  -- 回程栈（domain/change-state.ts 的 returnStack，§5.9.2）：JSON 数组，'[]' =
+  -- 沿主线走。打回上游（sendBack）和 Review/QA 送修共用它。形状不变量（严格递减、
+  -- 每层在当前阶段下游）由 domain 判；这里只钉数据库说得清的两条。
+  return_stack  TEXT NOT NULL DEFAULT '[]',
+  seq           INTEGER NOT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  -- The same invariants the domain enforces, restated where the data lives.
+  -- A row that could not have come from transition() must not be storable.
+  CHECK (phase <> 'Fix' OR return_stack <> '[]'),
+  CHECK (status <> 'closed' OR return_stack = '[]'),
+  CHECK (status <> 'closed' OR phase = 'Done')
+)`;
+
+/**
+ * `changes` 上的两条账本触发器，单独一份 —— 迁移重建 `changes` 时它们随旧表一起
+ * 消失，必须当场重建（下一次进程重启才轮到 SCHEMA_SQL，中间这段时间不能没账）。
+ */
+const CHANGES_TRIGGERS_SQL = `
+-- The ledger is not optional. An update to a Change that is not accompanied by
+-- its ledger row aborts the transaction that attempted it.
+CREATE TRIGGER IF NOT EXISTS ck_changes_ledger
+AFTER UPDATE ON changes
+FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM change_events
+  WHERE change_id = NEW.id AND seq = NEW.seq
+)
+BEGIN
+  SELECT RAISE(ABORT, 'change_updated_without_ledger_entry');
+END;
+
+-- Sequence numbers are dense and monotonic, so "the ledger is complete" is
+-- checkable by arithmetic rather than by reading every row.
+CREATE TRIGGER IF NOT EXISTS ck_changes_seq_advances
+AFTER UPDATE ON changes
+FOR EACH ROW
+WHEN NEW.seq <> OLD.seq + 1
+BEGIN
+  SELECT RAISE(ABORT, 'change_seq_must_advance_by_one');
+END;
+`;
+
 export const SCHEMA_SQL = `
 -- What a Change belongs to. One row per body of work a person thinks of as a
 -- thing: it carries a name, and nothing else. No status, no phase, no gate --
@@ -52,29 +111,14 @@ CREATE TABLE IF NOT EXISTS projects (
   -- 可空是为了不弄坏已有的库；但没有它不许跑（panel-server 在排队之前就拒），
   -- 和 change_briefs 同一个 fail-closed 形状。空字符串不算路径，所以有 CHECK。
   path        TEXT     NULL CHECK (path IS NULL OR length(trim(path)) > 0),
+  -- 这个项目走哪几个阶段（BACKLOG §4.5：不是每个项目都值得走 12 个）。
+  -- JSON 数组，必须是全序的子序列、以 Done 收尾（domain/phase.ts 的 phaseGraphOf
+  -- 在读取时校验）。NULL = 走全序。
+  phase_order TEXT     NULL,
   created_at  TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS changes (
-  id            TEXT PRIMARY KEY,
-  -- Both nullable, and deliberately so: a Change is complete without either.
-  -- Every gate, every transition and every fence works on a Change that belongs
-  -- to no project and has no title, which is what the whole state machine was
-  -- proved against. These two carry what a PERSON needs to recognise it, and
-  -- nothing reads them to make a decision.
-  project_id    TEXT     NULL REFERENCES projects(id),
-  title         TEXT     NULL,
-  phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
-  status        TEXT NOT NULL CHECK (status IN (${quoted(PHASE_STATUSES)})),
-  return_phase  TEXT     NULL CHECK (return_phase IS NULL OR return_phase IN (${quoted(PHASES)})),
-  seq           INTEGER NOT NULL,
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL,
-  -- The same two invariants the domain enforces, restated where the data lives.
-  -- A row that could not have come from transition() must not be storable.
-  CHECK ((phase = 'Fix') = (return_phase IS NOT NULL)),
-  CHECK (status <> 'closed' OR phase = 'Done')
-);
+${CHANGES_TABLE_SQL};
 
 CREATE INDEX IF NOT EXISTS ix_changes_project ON changes (project_id, created_at);
 
@@ -100,6 +144,8 @@ CREATE TABLE IF NOT EXISTS change_briefs (
   updated_at  TEXT NOT NULL
 );
 
+-- 这就是那条事件流（BACKLOG §4.3）：append-only（触发器强制）、按 seq 稠密单调。
+-- 跳转表（§5.9.2）是它的投影（domain/journey.ts），不另建表。
 CREATE TABLE IF NOT EXISTS change_events (
   change_id   TEXT NOT NULL REFERENCES changes(id),
   seq         INTEGER NOT NULL,
@@ -108,32 +154,13 @@ CREATE TABLE IF NOT EXISTS change_events (
   from_status TEXT     NULL,
   to_phase    TEXT NOT NULL,
   to_status   TEXT NOT NULL,
+  -- 这一步为什么发生，人的话（打回的理由等）。NULL = 这一步没带理由。
+  -- 环上历史箭头的「什么理由」就从这儿来 —— 别处不许另存一份。
+  reason      TEXT     NULL,
   at          TEXT NOT NULL,
   PRIMARY KEY (change_id, seq)
 );
-
--- The ledger is not optional. An update to a Change that is not accompanied by
--- its ledger row aborts the transaction that attempted it.
-CREATE TRIGGER IF NOT EXISTS ck_changes_ledger
-AFTER UPDATE ON changes
-FOR EACH ROW
-WHEN NOT EXISTS (
-  SELECT 1 FROM change_events
-  WHERE change_id = NEW.id AND seq = NEW.seq
-)
-BEGIN
-  SELECT RAISE(ABORT, 'change_updated_without_ledger_entry');
-END;
-
--- Sequence numbers are dense and monotonic, so "the ledger is complete" is
--- checkable by arithmetic rather than by reading every row.
-CREATE TRIGGER IF NOT EXISTS ck_changes_seq_advances
-AFTER UPDATE ON changes
-FOR EACH ROW
-WHEN NEW.seq <> OLD.seq + 1
-BEGIN
-  SELECT RAISE(ABORT, 'change_seq_must_advance_by_one');
-END;
+${CHANGES_TRIGGERS_SQL}
 
 -- ---------------------------------------------------------------------------
 -- L1
@@ -302,6 +329,18 @@ CREATE TABLE IF NOT EXISTS gaps (
   -- 为什么是一列而不是第四个状态：status 的 CHECK 是建表时定死的，SQLite 改不了，
   -- 而 migrate() 只会 ADD COLUMN —— 加状态会让所有已存在的库当场拒收新值。
   closed_by     TEXT NULL CHECK (closed_by IS NULL OR closed_by = 'human'),
+  -- 报的人说它在哪儿、为什么是问题，原文照抄。理由见 domain/gate.ts 的 Blocker.where
+  -- （用户 2026-08-04：「绝对不能出现语义损失」）。
+  --
+  -- 列名和域里的字段名不一样，这是**被逼的**：where 是 SQL 保留字，裸着写每一条
+  -- 查询都得加引号，而这棵树的规矩是「一个概念一个名字」—— 与其让它在半数地方带
+  -- 引号、半数不带，不如在这一层显式改名并把理由写在这儿。域里、JSON 契约里一律
+  -- 还是 where / why。
+  --
+  -- 两列都可空：模型没写就是 NULL。**这不是「可有可无」** —— 有没有写是被 rubric
+  -- 判的（critic 第 1、2 条），判据归 rubric，不归建表约束。
+  found_where   TEXT NULL,
+  found_why     TEXT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (change_id, phase, id),
   -- A gap that has left the open state says why. Without this, "closed" and "forgotten"
@@ -333,7 +372,11 @@ CREATE TABLE IF NOT EXISTS questions (
   expected_snapshot TEXT NOT NULL,
   status            TEXT NOT NULL CHECK (status IN ('open','answered','applied','superseded')),
   asked_at          TEXT NOT NULL,
-  updated_at        TEXT NOT NULL
+  updated_at        TEXT NOT NULL,
+  -- 这次裁决的下场（advanced / refused …），落地时写。NULL = 还没落地。
+  -- 「闸门拒了」原来只活在 /api/ask 的一次响应里，前端一句话就把它盖掉（§3.2·5）——
+  -- 拒绝必须是留得住的状态，人刷新之后还要看得见上次为什么没推动。
+  outcome_json      TEXT
 );
 
 -- One Change asks one question at a time. A second open question would mean two
@@ -569,16 +612,84 @@ CREATE INDEX IF NOT EXISTS ix_worklist_open
 export function migrate(database: {
   pragma(sql: string): unknown;
   exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown };
 }): void {
   const added: [table: string, column: string, type: string][] = [
     ["projects", "path", "TEXT"],
+    ["projects", "phase_order", "TEXT"],
     ["gaps", "note", "TEXT"],
     ["gaps", "closed_by", "TEXT"],
+    ["gaps", "found_where", "TEXT"],
+    ["gaps", "found_why", "TEXT"],
+    ["questions", "outcome_json", "TEXT"],
+    ["change_events", "reason", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];
     if (columns.length === 0) continue;               // 表还不存在，SCHEMA_SQL 会建
     if (columns.some((entry) => entry.name === column)) continue;
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+
+  migrateReturnStack(database);
+}
+
+/**
+ * `return_phase`（单字段）→ `return_stack`（栈，§5.9.2）。
+ *
+ * **这是这棵树第一次「正经写迁移」**（上面那段注释预告过的那一天）：旧列绑在
+ * CHECK 里，SQLite 改不了约束，只能按官方十二步整表重建。老数据无损：
+ * `return_phase = 'Review'` 变成 `'["Review"]'`，NULL 变成 `'[]'`。
+ *
+ * 触发器随旧表一起消失，**当场**用同一份定义重建（`CHANGES_TRIGGERS_SQL`）——
+ * 等下一次重启的 SCHEMA_SQL 来补，中间这段时间账本就没人守了。
+ *
+ * `foreign_keys=OFF` 只包着重建这几步：十几张表引用 changes(id)，开着外键连
+ * DROP 都过不去。重建前后行数必须相等，不等就直接抛 —— 一半的库比旧库更糟。
+ */
+function migrateReturnStack(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown };
+}): void {
+  const columns = database.pragma("table_info(changes)") as { name: string }[];
+  if (columns.length === 0) return;                       // 新库，SCHEMA_SQL 会建
+  if (columns.some((entry) => entry.name === "return_stack")) return;   // 已迁移
+
+  const count = (table: string): number =>
+    (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+
+  database.pragma("foreign_keys=OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      const rows = count("changes");
+      database.exec(CHANGES_TABLE_SQL.replace(
+        "CREATE TABLE IF NOT EXISTS changes (",
+        "CREATE TABLE changes_migrating (",
+      ));
+      database.exec(`
+        INSERT INTO changes_migrating
+          (id, project_id, title, phase, status, return_stack, seq, created_at, updated_at)
+        SELECT id, project_id, title, phase, status,
+               CASE WHEN return_phase IS NULL THEN '[]'
+                    ELSE '["' || return_phase || '"]' END,
+               seq, created_at, updated_at
+        FROM changes;
+      `);
+      if (count("changes_migrating") !== rows) {
+        throw new Error("return_stack migration lost rows; rolling back");
+      }
+      database.exec("DROP TABLE changes");
+      database.exec("ALTER TABLE changes_migrating RENAME TO changes");
+      database.exec(CHANGES_TRIGGERS_SQL);
+      database.exec("CREATE INDEX IF NOT EXISTS ix_changes_project ON changes (project_id, created_at)");
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.pragma("foreign_keys=ON");
   }
 }

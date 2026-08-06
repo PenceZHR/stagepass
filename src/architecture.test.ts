@@ -1,4 +1,10 @@
 import assert from "node:assert/strict";
+import tsc from "typescript";
+
+import {
+  closureOf as graphClosureOf, dependenciesOf, parseModuleGraph,
+} from "./graph/module-graph";
+import { ingredientsFor, renderIngredients } from "./graph/ingredients";
 import { describe, it } from "node:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -40,6 +46,22 @@ const FILES = sourceFiles().map((path) => ({
  */
 const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
+  /*
+   * 真依赖图的解析器（H 档第一块）。它**只 import `typescript`**，我们自己的
+   * 东西一个都不碰 —— 所以放最低层，谁都够得着。
+   *
+   * 它同时是这条护栏自己的地基：图错了，下面「谁不许 import 谁」和「闭包别吃掉
+   * 全树」两条一起变成假的。所以它的层数不是随手放的，是「它不能依赖任何会被
+   * 它审判的东西」。
+   */
+  "graph/module-graph.ts": 0,
+  // 配料单（H 档第二块）。只依赖上面那个解析器，所以同一层 —— 它俩是同一族
+  // 工具：一个把树读成图，一个按图切出「这次改动该看见什么」。
+  "graph/ingredients.ts": 0,
+  // 两张图的对账（H 档第三块）。同一族工具，同一层：它只读图，不读代码。
+  "graph/reconcile.ts": 0,
+  // 只依赖 phase 的纯路径生成（E：产物的家）。
+  "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
   "store/project-store.ts": 0,
@@ -66,6 +88,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/turn-runner.ts": 2,
 
   "domain/round.ts": 4,
+  // 「接受一条已知风险」这个用例（§4.1·J 从 `handle()` 里搬出来的第一个）。
+  // 它够得着的最高一层是 `domain/round.ts`（轮次算法），所以住这儿 —— 层数是
+  // 它的依赖顶出来的，不是挑的。
+  "app/waive.ts": 4,
+  // 跳转表 = 账本投影（§5.9.2）。轮次算法在 round.ts（一份实现），所以同层。
+  "domain/journey.ts": 4,
   // 十三个阶段各自那一节。纯文本、只 import 一个类型，所以和读它的 round.ts 同层。
   "domain/phase-play.ts": 4,
   "codex/subagent.ts": 4,
@@ -81,6 +109,14 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/rubric-defaults.ts": 5,
   "work/rubric-round.ts": 5,
   "work/round-turn-runner.ts": 5,
+  // 「把这一轮的裁决交给人」这个用例 —— 三条问人的路里最绕的一条。它够得着
+  // `domain/rubric.ts`（把这一轮判成什么样写进题面），所以住 5。
+  "app/decide-gate.ts": 5,
+  // 看和改评分标准（PRD §1.1 那个唯一的例外）。rubric 整族在 5，它也在 5。
+  "app/edit-rubric.ts": 5,
+  // 新建 / 删除 Project 和 Change。它只够得着 change-store（0）和 project-store（0），
+  // 唯一把它顶上来的是新项目要装出厂标准（`RubricStore.installDefaults`，5）。
+  "app/workspace.ts": 5,
   // git。和 `codex/archive.ts` 同一个形状（包一个外部命令、整层可注入），所以同一层。
   // 它不 import 我们自己的任何东西，所以层数只影响「谁可以用它」——2 让 L2 起都能用。
   "work/repo.ts": 2,
@@ -96,6 +132,15 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // caught the drift the moment the question path was wired in, which is
   // exactly what this rule is for.
   "web/pty-session.ts": 2,
+  /*
+   * 面板那两屏读出来的东西（`/api/panel`、`/api/progress`）。
+   *
+   * **它在 `web/` 而不在 `app/` 是有判据的**：三条问人的路是用例（有下场，换个
+   * 界面那些下场一个字都不用改），这两屏出去的东西按「界面要画什么」组织
+   * （`workspace`、`currentPhase`、`mark`）—— 换个界面就是另一份形状。塞进
+   * `app/` 会把界面的词汇拖进那一层。层数和 `panel-server` 一样，理由也一样。
+   */
+  "web/panel-view.ts": 5,
   // 又提了一层，理由和当初 2 -> 3 一样：它开始承载 rubric 编辑（PRD §1.1 那个
   // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
   // 在接口写进去的那一刻就会红。
@@ -104,6 +149,17 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/question.ts": 3,
   "domain/brief.ts": 3,
   "store/question-store.ts": 3,
+  /*
+   * **应用层的第一块**（BACKLOG §4.1·J）：把一道题交给人、等他答。
+   *
+   * 和 `question` 同层，理由也一样 —— 它就是「问人」这件事本身，够得着的东西
+   * 不超过 question / question-store / binding-store。它**不认识 HTTP**，所以
+   * `web/`（L5）在它上面，而不是它的一部分。
+   */
+  "app/ask-human.ts": 3,
+  // 「把这次改动要什么问出来」这个用例。够得着的最高一层是 `domain/brief.ts`（3），
+  // 所以和它同层 —— 它连 Codex 都不认识（「跑一次 turn」是注进来的）。
+  "app/record-brief.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
   // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
@@ -124,7 +180,26 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "db/schema.ts": 5,
 };
 
-const production = FILES.filter((file) => !file.path.endsWith(".test.ts"));
+const production = FILES.filter((file) =>
+  !file.path.endsWith(".test.ts")
+  // `.d.ts` 只是声明，没有实现、没有运行时依赖 —— 分层说的是「谁可以用谁」，
+  // 而一个环境声明（xterm 挂成全局的那两个类）不参与任何依赖关系。
+  // 2026-08-05 给 panel.js 上类型检查时加的：panel-globals.d.ts 是它的伴生声明。
+  && !file.path.endsWith(".d.ts"));
+
+/**
+ * 这一整棵树的**真依赖图**，用真编译器解析（`graph/module-graph.ts`）。
+ *
+ * 分层护栏和闭包护栏原来各自数一遍 `from "…"` 的正则 —— §5.10 早就写着那个
+ * 「只够量结构，不够当护栏」。2026-08-05 换过来时先做了对照：**今天这棵树上
+ * 两者逐条一致**（48 模块 152 边，0 差异、0 落空边）。
+ *
+ * 所以换它的理由不是「正则今天算错了」，是**正则明天会算错而没人知道**：树里
+ * 现在恰好没有副作用 import、没有动态 import、注释里也没有假的 `from "./x"`，
+ * 而这三样任何一样出现，正则都会静默给出错的图 —— 一条护栏建在错的图上，
+ * 比没有护栏更糟。
+ */
+const GRAPH = parseModuleGraph(production);
 
 /**
  * Entry points that live outside `src` but are production callers all the same
@@ -171,7 +246,7 @@ describe("standing · layers depend downward only", () => {
     const violations: string[] = [];
     for (const file of production) {
       const layer = LAYER[file.path]!;
-      for (const target of imports(file)) {
+      for (const target of dependenciesOf(GRAPH, file.path)) {
         const targetLayer = LAYER[target];
         if (targetLayer === undefined) continue;
         if (targetLayer > layer) {
@@ -290,26 +365,210 @@ describe("standing · pty output is never interpreted", () => {
     // And the type it hands out is the narrow one.
     assert.match(code, /onBytes\(listener:\s*\(bytes:\s*Uint8Array\)/);
   });
+
+  /**
+   * **`node-pty` 只许用到才加载。**
+   *
+   * 它是原生模块，而且只带 darwin / win32 的预编译产物。一句模块顶部的值导入，
+   * 就让整条注入假 pty 的路一起废掉 —— 2026-08-06 CI 第一次真跑撞到：
+   * `panel-server.test.ts` 明明塞的是假的，却因为加载不了原生模块，114 条测试
+   * 一条都没执行。
+   *
+   * **注入点在、依赖却是硬加载的，那道缝就是假的。** 这条钉住它别再变回去。
+   * `import type` 不算 —— 它编译后一个字节都不留。
+   */
+  it("**不在模块顶部加载 node-pty** —— 那会让注入的那道缝重新变成假的", () => {
+    const session = production.find((file) => file.path === "web/pty-session.ts");
+    assert.ok(session, "web/pty-session.ts is missing");
+    const valueImports = [...withoutComments(session.text)
+      .matchAll(/^import\s+(?!type\b)[^;]*?from\s+["']node-pty["']/gm)];
+    assert.deepEqual(
+      valueImports.map((match) => match[0]), [],
+      "值导入会在加载模块时就要原生模块 —— 改成 import type + 用到才 require",
+    );
+  });
 });
 
-function imports(file: { path: string; text: string }): string[] {
-  const directory = file.path.includes("/")
-    ? file.path.slice(0, file.path.lastIndexOf("/"))
-    : "";
-  const found: string[] = [];
-  for (const match of file.text.matchAll(/from "(\.[^"]+)"/g)) {
-    const specifier = match[1]!;
-    const parts = (directory ? `${directory}/${specifier}` : specifier).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "." || part === "") continue;
-      if (part === "..") resolved.pop();
-      else resolved.push(part);
-    }
-    found.push(`${resolved.join("/")}.ts`);
+/**
+ * 两条**棘轮**护栏（BACKLOG §4.1）：单函数行数、单模块依赖闭包占比。
+ *
+ * ## 为什么是棘轮，不是干净的上限
+ *
+ * `handle()` 现在 1463 行、`panel-server.ts` 的闭包够得着全树 91% —— 定一条干净的
+ * 上限它们当场就红，而「先把违例修完再装护栏」的顺序等于永远装不上。棘轮反过来：
+ * **现行违例逐个钉死在例外表里，只许缩、不许涨**；其余所有函数/模块从今天起受
+ * 干净上限管。修掉一个违例，就把它从表里删掉（有一条护栏盯着表不许留死条目，
+ * 和 `LAYER` 那张表同一个道理）。
+ *
+ * ## 为什么这两个数
+ *
+ * 上限取的是「现状第二名再留点余量」：函数第二名 279 行（`runRound`）→ 上限 300；
+ * 闭包第二名 57%（`round-turn-runner`）→ 上限 60%。**不是审美数字，是「别再长出
+ * 第二个 handle()」的机械底线** —— 分层护栏防住了「下层依赖上层」，没防住
+ * 「某一层长出一个吃掉一切的模块」，这两条补的就是那个盲区。
+ */
+const FUNCTION_LINES_CAP = 300;
+const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
+  // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
+  // 2026-08-05：抽 launchAskPrompt（1463 → 1462）、askFollowUp（→ 1453）、
+  // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）、
+  // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）、`app/record-brief.ts`（→ 1093）、
+  // `app/decide-gate.ts`（→ 875）。三条问人的路现在全在应用层，`handle()` 只剩转发。
+  // 再抽 `app/edit-rubric.ts` + `web/panel-view.ts`（那两屏的读）（→ 652）、
+  // `app/workspace.ts`（新建 / 删除）（→ 607）。
+  //
+  // **剩下的不再是「抽一块业务逻辑」能降的了。** 607 行里，pty 那一段 113 行是
+  // 真正的 HTTP 流，十六条路由各自的转发加起来又是三百多 —— 要下到 300，得把
+  // 这条 if 链换成一张路由表，那是另一种改动，不是这一批的延长线。
+  "web/panel-server.ts#handle": 607,
+};
+const CLOSURE_SHARE_CAP = 0.6;
+const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
+  // 91% —— 它一个模块够得着全树。同上，拆一块钉一块。
+  // 2026-08-05 J 批：搬走五块之后 89%。**它掉得比配料单慢，而这是对的** ——
+  // 搬出去的模块仍然在它下游，闭包照样够得着；真正变小的是「改它一次要读多少」。
+  "web/panel-server.ts": 0.89,
+};
+
+describe("standing · 没有一个函数长成一层", () => {
+  /** 用真编译器量，不用正则猜函数边界 —— 边界猜错一次这条护栏就静默失效。 */
+  const measured: { key: string; lines: number }[] = [];
+  for (const file of production) {
+    const source = tsc.createSourceFile(
+      file.path, file.text, tsc.ScriptTarget.ES2022, true);
+    const visit = (node: tsc.Node): void => {
+      if (
+        tsc.isFunctionDeclaration(node) || tsc.isMethodDeclaration(node)
+        || tsc.isArrowFunction(node) || tsc.isFunctionExpression(node)
+      ) {
+        const lines = source.getLineAndCharacterOfPosition(node.getEnd()).line
+          - source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        const name = (tsc.isFunctionDeclaration(node) || tsc.isMethodDeclaration(node))
+          && node.name !== undefined ? node.name.getText()
+          : tsc.isVariableDeclaration(node.parent) && tsc.isIdentifier(node.parent.name)
+            ? node.parent.name.getText() : "(anon)";
+        measured.push({ key: `${file.path}#${name}`, lines });
+      }
+      tsc.forEachChild(node, visit);
+    };
+    visit(source);
   }
-  return found;
-}
+
+  it("**超过上限的只有例外表里那几个，而且没涨**", () => {
+    const over = measured
+      .filter(({ key, lines }) =>
+        lines > (FUNCTION_RATCHET[key] ?? FUNCTION_LINES_CAP))
+      .map(({ key, lines }) => `${key} = ${lines} 行`);
+    assert.deepEqual(over, [], "要么拆它，要么（仅当它在缩）更新例外表");
+  });
+
+  it("例外表里没有已经修好的死条目", () => {
+    // 修到上限以下还留在表里，下一个人会以为它还是雷。和 LAYER 那条同一个形状。
+    const stale = Object.keys(FUNCTION_RATCHET).filter((key) => {
+      const now = measured.find((entry) => entry.key === key);
+      return now === undefined || now.lines <= FUNCTION_LINES_CAP;
+    });
+    assert.deepEqual(stale, [], "把它从 FUNCTION_RATCHET 里删掉");
+  });
+});
+
+/**
+ * standing · 配料单**真的只带一小片树**（§5.4.1 / §5.7）。
+ *
+ * 「只给签名不给实现」这个机关的收益是可以量的：改一个模块时，喂进去的东西
+ * 占全树多少。2026-08-05 第一次量（49 个模块 / 502 KB）：
+ *
+ * ```
+ * domain/gap.ts               18.0 KB   3.6%   28×
+ * domain/journey.ts           18.7 KB   3.7%   27×
+ * work/round-turn-runner.ts   32.2 KB   6.4%   16×
+ * web/panel-server.ts        145.9 KB  29.0%    3×   ← 说明问题的那一个
+ * ```
+ *
+ * **收益和「这棵树拆得好不好」成正比**：一个划得干净的模块拿到 28×，而那个
+ * 1410 行的 `handle()` 只有 3× —— 它自己正文就 94.6 KB，还牵着 33 个依赖。
+ * 换句话说，J 批（拆 handle）不只是好看，它直接决定这套机关值不值钱。
+ *
+ * **J 批之后（2026-08-05 晚，56 个模块 / 524.6 KB）** —— 这不是预测，是搬完
+ * 量出来的：
+ *
+ * ```
+ * web/panel-server.ts         91.1 KB  17.4%    6×   ← 29.0% / 3× 搬下来的
+ * app/decide-gate.ts          32.2 KB   6.1%   16×   ← 裁决
+ * web/panel-view.ts           31.7 KB   6.0%   17×   ← 那两屏的读
+ * app/waive.ts                20.8 KB   4.0%   25×   ← 接受风险
+ * app/record-brief.ts         16.6 KB   3.2%   31×   ← 录需求
+ * app/edit-rubric.ts          15.8 KB   3.0%   33×   ← 改标准
+ * app/ask-human.ts            11.7 KB   2.2%   45×   ← 三条问人的路共用的那段
+ * ```
+ *
+ * 同一段逻辑，待在 `handle()` 里是 3×，搬出去就是 16~45×。**这是「拆它直接
+ * 提升整套机关的收益」这句话的实测值**，不是一句好听的话。
+ *
+ * 这条护栏钉的是**别再退步**：除了例外表里那个，谁的配料单都不许超过全树三成。
+ */
+const INGREDIENT_SHARE_CAP = 0.3;
+
+describe("standing · 配料单只带一小片树", () => {
+  /**
+   * **依赖那半份里一个注释都不许有。**
+   *
+   * 这条是在真树上看输出才发现要写的：第一版用 `getText()` 取签名，它把花括号里
+   * 的注释一起带出来 —— `ChangeState` 那个接口的成员上挂着十几行讲不变量和历史
+   * 的 JSDoc，整段漏进了配料单。而「只给签名不给实现」这个机关的全部价值就在于
+   * **看不见实现**，注释里恰恰装着实现（这棵树尤其如此）。
+   *
+   * 玩具夹具测不出这个 —— 它的注释太短、太干净。所以护栏放在真树上。
+   */
+  it("**依赖的签名里没有注释** —— 注释装着实现，漏一行机关就少一分", () => {
+    const leaking: string[] = [];
+    for (const file of production) {
+      const list = ingredientsFor({ graph: GRAPH, files: production, group: [file.path] });
+      for (const dependency of list.dependencies) {
+        const text = dependency.signatures.join("\n");
+        if (/\/\*|\/\//.test(text)) leaking.push(`${file.path} -> ${dependency.path}`);
+      }
+    }
+    assert.deepEqual(leaking, []);
+  });
+
+  it("**没有模块的配料单吃掉全树三成以上**", () => {
+    const whole = production.reduce((sum, file) => sum + file.text.length, 0);
+    const over = production
+      .map((file) => ({
+        path: file.path,
+        share: renderIngredients(
+          ingredientsFor({ graph: GRAPH, files: production, group: [file.path] }),
+        ).length / whole,
+      }))
+      .filter(({ share }) => share > INGREDIENT_SHARE_CAP)
+      .map(({ path, share }) => `${path} = ${(share * 100).toFixed(0)}%`);
+    assert.deepEqual(over, [], "改它一次就要读小半棵树 —— 拆它");
+  });
+});
+
+describe("standing · 没有一个模块的依赖闭包吃掉全树", () => {
+  it("**闭包占比超线的只有例外表里那几个，而且没涨**", () => {
+    const total = production.length;
+    const over = production
+      .map((file) => ({
+        path: file.path,
+        share: (graphClosureOf(GRAPH, file.path).length - 1) / total,
+      }))
+      .filter(({ path, share }) => share > (CLOSURE_RATCHET[path] ?? CLOSURE_SHARE_CAP))
+      .map(({ path, share }) => `${path} = ${(share * 100).toFixed(0)}%`);
+    assert.deepEqual(over, [], "它正在变成第二个 panel-server —— 拆，别喂");
+  });
+
+  it("例外表里没有已经修好的死条目", () => {
+    const total = production.length;
+    const stale = Object.keys(CLOSURE_RATCHET).filter((path) =>
+      !production.some((file) => file.path === path)
+      || (graphClosureOf(GRAPH, path).length - 1) / total <= CLOSURE_SHARE_CAP);
+    assert.deepEqual(stale, [], "把它从 CLOSURE_RATCHET 里删掉");
+  });
+});
+
 
 function exportedNames(text: string): string[] {
   const names = new Set<string>();

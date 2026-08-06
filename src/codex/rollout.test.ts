@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   allTextIn,
+  contextUsageOf,
   findCompletedTurn,
   parseRollout,
   threadIdFromRolloutName,
@@ -310,5 +311,43 @@ describe("L2 · 一条线程的血缘", () => {
 
   it("session_meta 里没有 id 也读不出来", () => {
     assert.equal(lineageOf(parseRollout(meta({ thread_source: "subagent" }))), null);
+  });
+});
+
+describe("L2 · 这条线程离上下文墙多远（§3.3·11）", () => {
+  /*
+   * 同一条裁判线程跑到第 5 轮，上下文 99,553 / 258,400 = 38.5%，每轮稳定涨约
+   * 16k —— 而人看不见自己离墙多远。数据一直在 rollout 里：每次请求后都有一条
+   * `token_count`，`last_token_usage` 是**这一次**真实装进上下文的量（input 已含
+   * 全部历史）。形状照 2026-08-05 真机 rollout 抄的，不是猜的。
+   */
+  const tokenCount = (info: unknown): string => JSON.stringify({
+    type: "event_msg", payload: { type: "token_count", info },
+  });
+  const usage = (input: number, output: number): unknown => ({
+    last_token_usage: { input_tokens: input, output_tokens: output },
+    model_context_window: 258_400,
+  });
+
+  it("取最后一个 token_count —— 一条线程一直在长，旧的读了就是假话", () => {
+    const records = parseRollout([
+      tokenCount(usage(10_000, 200)),
+      tokenCount(usage(99_353, 200)),
+    ].join("\n"));
+    assert.deepEqual(contextUsageOf(records), { used: 99_553, window: 258_400 });
+  });
+
+  it("最后一条读不出来就往前找 —— 不因为一条坏行就说不出", () => {
+    const records = parseRollout([
+      tokenCount(usage(50_000, 100)),
+      tokenCount(null),
+    ].join("\n"));
+    assert.deepEqual(contextUsageOf(records), { used: 50_100, window: 258_400 });
+  });
+
+  it("一个 token_count 都没有 —— null，不编一个数", () => {
+    assert.equal(contextUsageOf(parseRollout(
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+    )), null);
   });
 });

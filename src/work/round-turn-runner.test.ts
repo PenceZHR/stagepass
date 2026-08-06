@@ -76,6 +76,7 @@ function runner(
   transport: CodexTransport,
   readThread: (threadId: string) => string,
   repo?: RepoOps,
+  log?: (line: string) => void,
 ): RoundTurnRunner {
   return new RoundTurnRunner({
     transport,
@@ -86,7 +87,7 @@ function runner(
     evidence: new EvidenceStore(context.db),
     notes: new RoundNoteStore(context.db),
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
-    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, show: () => null },
+    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
     writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
@@ -96,6 +97,7 @@ function runner(
     // 这些用例不问送达 —— 它们问的是这个 runner 有没有把各层接对。
     readThreadWhole: readThread,
     taskFor: () => "写 PRD",
+    ...(log === undefined ? {} : { log }),
   });
 }
 
@@ -198,6 +200,45 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     const prompt = transport.dispatches[0]?.prompt ?? "";
     assert.match(prompt, /docs\/prd\/countdown\.md/, "上游产物的路径没进任务书");
     assert.match(prompt, /PRD/, "没说这份产物是哪个阶段的");
+  });
+
+  it("**被打回的阶段，打回的理由从账本走进了提示词**（§5.5 最后一米）", async () => {
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    // PRD 批准 → Spec 批准 → Build 结算，然后人把活打回 Spec 并写下理由。
+    for (const [phase, artifact] of [["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"]] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [artifact], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    // 把 Change 从 TechSpec 一路推到 Build（中间几段不带产物，够用）。
+    for (const phase of ["TechSpec", "Plan", "TestPlan"] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, { artifactIds: ["x.md"], blockers: [], waivedBlockerIds: [] });
+      context.changes.apply(CHANGE, "approve");
+    }
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    context.changes.apply(CHANGE, "sendBack",
+      { to: "Spec", reason: "接口边界在 Spec 里就画错了，别再往下修补" });
+    assert.equal(context.changes.read(CHANGE).state.phase, "Spec");
+
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const prompt = transport.dispatches[0]?.prompt ?? "";
+    assert.match(prompt, /被 Build 打回来的/, "红方不知道是谁退的它");
+    // **原话，不是转述** —— 而且要出现两遍（裁判自己读一次、转达原文一次）。
+    assert.equal(prompt.split("接口边界在 Spec 里就画错了，别再往下修补").length - 1, 2);
+    assert.match(prompt, /不是从零重写/);
   });
 
   it("走到 TestPlan 时，四份上游按线的顺序全在", async () => {
@@ -317,6 +358,10 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
         calls.push(`commit ${message}`);
         return sha;
       },
+      commitPaths: (_cwd: string, paths: readonly string[], message: string) => {
+        calls.push(`commitPaths ${paths.join(",")} ${message}`);
+        return sha;
+      },
       show: () => null,
     };
   };
@@ -386,7 +431,13 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
       ["f1x0000c0mm1t"], "Fix 的产出还是红方报的路径");
   });
 
-  it("设计阶段不走这条路 —— 产出仍然是红方报的那个路径", async () => {
+  it("设计阶段不换 sha —— 产出仍然是红方报的那个路径", async () => {
+    /*
+     * 2026-08-05 被 E 改写过：原断言是「设计阶段不碰 repo」（`repo.calls` 为空）。
+     * 现在设计阶段轮末**窄提交产物目录**（commitPaths，treeE 的测试盯着），
+     * 但这一条守的东西没变：**证据不换 sha**。commit 只是让树干净的记账，
+     * 产物形态还是路径 —— 下游全按路径找。
+     */
     const context = open();
     const repo = fakeRepo("a1b2c3d4e5f6");
     const loop = new TurnLoop({
@@ -398,7 +449,8 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
 
     assert.deepEqual(
       new EvidenceStore(context.db).read(CHANGE, "PRD").artifactIds, ["prd.md"]);
-    assert.deepEqual(repo.calls, [], "设计阶段也去 commit 了");
+    assert.ok(!repo.calls.some((call) => call.startsWith("commit ")),
+      "设计阶段走了 commitAll —— 整树提交会把人的活儿卷进去");
   });
 });
 
@@ -513,5 +565,93 @@ describe("RoundTurnRunner · 形状坏了就放开裁判线程", () => {
     assert.match(said, /已放开裁判线程/);
     // 「还要不要再来一轮」在这里没有答案 —— 记 false 会被渲染成「可以了」。
     assert.equal(notes.find((note) => /已放开裁判线程/.test(note.text))?.anotherRound, null);
+  });
+});
+
+describe("L4 · E：产物有家，轮末自己入档，越界要报出来", () => {
+  /**
+   * E（产物污染干净树）的执行端。四件事各一条：
+   *
+   *   任务书给红方指路      设计阶段的文档写到 docs/stagepass/<change>/<Phase>-r<N>.md
+   *   轮末窄提交            只提交那个目录，树外的（人的活儿）一个字节不碰
+   *   Build 一个字不改      producesCommit 阶段照旧 commitAll + 换 sha
+   *   越界当场报出来        轮里新冒出来的、目录外的文件 —— 报给人，不自动收拾
+   */
+  const trackingRepo = (dirtySeq: string[][]) => {
+    const calls: string[] = [];
+    let reads = 0;
+    return {
+      calls,
+      dirtyPaths: () => dirtySeq[Math.min(reads++, dirtySeq.length - 1)] ?? [],
+      commitAll: (_cwd: string, message: string) => {
+        calls.push(`commitAll ${message}`);
+        return "deadbeefcafe";
+      },
+      commitPaths: (_cwd: string, paths: readonly string[], message: string) => {
+        calls.push(`commitPaths ${paths.join(",")} ${message}`);
+        return "beefdeadcafe";
+      },
+      show: () => null,
+    };
+  };
+
+  const openLoop = (repo: RepoOps, log?: (line: string) => void) => {
+    const context = open();
+    const transport = new ScriptedCodexTransport([judgeSays]);
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, transport, () => answer(), repo, log),
+    });
+    return { context, transport, loop };
+  };
+
+  it("**设计阶段：任务书里有确切的输出路径** —— 不让红方自己起名", async () => {
+    const { transport, loop } = openLoop(trackingRepo([[]]) as unknown as RepoOps);
+    await dispatchRound(loop, "J1");
+    const prompt = transport.dispatches[0]?.prompt ?? "";
+    assert.match(prompt, /docs\/stagepass\/CHG-RT\/PRD-r1\.md/,
+      "红方的输出路径没进任务书 —— 它又要自己起名了");
+    assert.match(prompt, /docs\/stagepass\/CHG-RT\/PRD-r1-opposition\.md/,
+      "反方的输出路径没进裁判的提示词");
+  });
+
+  it("**设计阶段轮末只提交产物目录** —— 证据仍然是路径，不换 sha", async () => {
+    const repo = trackingRepo([[]]);
+    const { context, loop } = openLoop(repo as unknown as RepoOps);
+    await dispatchRound(loop, "J1");
+
+    assert.deepEqual(repo.calls, ["commitPaths docs/stagepass/CHG-RT StagePass CHG-RT PRD 第 1 轮"],
+      "该窄提交产物目录，而且只提交它");
+    // 证据照旧是红方报的路径 —— commit 只是让树干净的记账，不是产物形态的改变。
+    assert.deepEqual(
+      new EvidenceStore(context.db).read(CHANGE, "PRD").artifactIds,
+      ["prd.md"]);
+  });
+
+  it("**越界的文件当场报出来，人的旧文件不背锅**", async () => {
+    /*
+     * 轮前就脏的（人写了一半的）不报 —— 报了就是把人的活儿说成模型的违规。
+     * 轮里新冒出来、又不在产物目录里的，才是越界（用户 2026-08-04：
+     * 「当场报出来，不自动收拾」）。
+     */
+    const said: string[] = [];
+    const repo = trackingRepo([
+      ["人写了一半.md"],                       // 轮前快照
+      ["人写了一半.md", "乱写的笔记.md"],      // 轮后：多了一个目录外的
+    ]);
+    const { loop } = openLoop(repo as unknown as RepoOps, (line) => said.push(line));
+    await dispatchRound(loop, "J1");
+
+    const report = said.join("\n");
+    assert.match(report, /乱写的笔记\.md/, "越界文件没被报出来");
+    assert.doesNotMatch(report, /人写了一半\.md/, "人的旧文件被说成了模型的违规");
+  });
+
+  it("什么都没越界 —— 一个字都不说", async () => {
+    const said: string[] = [];
+    const { loop } = openLoop(
+      trackingRepo([[], []]) as unknown as RepoOps, (line) => said.push(line));
+    await dispatchRound(loop, "J1");
+    assert.deepEqual(said, []);
   });
 });

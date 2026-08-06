@@ -42,6 +42,21 @@ export interface RepoOps {
    * 人需要知道的事，而一个空 commit 会把它伪装成「产出了东西」。
    */
   commitAll(cwd: string, message: string): string | null;
+  /**
+   * 只把点名的路径提交成一个 commit，**路径外一个字节都不碰**。
+   *
+   * E 的执行端（2026-08-05）：设计/报告类阶段每轮把 `docs/stagepass/<change>/`
+   * 提交掉，树保持干净，Build 的干净树预检不再被自己的上游产物挡住 —— 而目录外
+   * 可能躺着人写了一半的活儿，那正是这个动词和 `commitAll` 必须分开的理由：
+   * commitAll 以「树已验干净」为前提，这里以「树很可能是脏的」为前提。
+   *
+   * **连人的暂存区都不许动**：`git commit -m <msg> -- <path>` 带 pathspec，
+   * 只提交路径内的改动，人 stage 了一半的东西原样留在暂存区里。
+   *
+   * 没东西可提交（目录没变、或根本不存在）返回 null，不造空 commit ——
+   * 和 `commitAll` 同一条规矩。
+   */
+  commitPaths(cwd: string, paths: readonly string[], message: string): string | null;
   /** 一个 commit 的正文（带 diff）。读不到就返回 null —— 不猜、不回落到别的东西。 */
   show(cwd: string, sha: string): string | null;
 }
@@ -101,6 +116,33 @@ export function createRepoOps(options: {
           // 有差异，继续提交
         }
         run(cwd, ["commit", "-m", message]);
+        return run(cwd, ["rev-parse", "HEAD"]).trim();
+      } catch {
+        return null;
+      }
+    },
+
+    commitPaths(cwd, paths, message) {
+      try {
+        /*
+         * `add -A -- <path>` 只把路径内的新增/修改/删除放进暂存区；路径不存在时
+         * git 会报 pathspec 不匹配 —— 那就是「这一轮没有产物可提」，走 catch 出去。
+         */
+        run(cwd, ["add", "-A", "--", ...paths]);
+        // 有没有东西可提交，问 git、只问这几个路径 —— 人 stage 在路径外的东西
+        // 不算数（`--quiet` 时有差异退出码为 1，和 commitAll 同一招）。
+        try {
+          run(cwd, ["diff", "--cached", "--quiet", "--", ...paths]);
+          return null; // 路径内暂存区和 HEAD 一样，没东西可提交
+        } catch {
+          // 有差异，继续提交
+        }
+        /*
+         * **带 pathspec 的 commit** —— 提交的是「HEAD + 这些路径里的改动」，
+         * 人 stage 了一半的活儿留在暂存区里，一个字节不动。不带 pathspec 的
+         * `commit -m` 提交的是整个暂存区，那就是替人做了他没说要做的事。
+         */
+        run(cwd, ["commit", "-m", message, "--", ...paths]);
         return run(cwd, ["rev-parse", "HEAD"]).trim();
       } catch {
         return null;

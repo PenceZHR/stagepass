@@ -30,49 +30,76 @@ const changeId = params.get("change") || "CHG-1";
 const projectParam = params.get("project");
 const startCollapsed = params.get("collapsed") === "1";
 
-const orbitView = document.getElementById("orbit-view");
-const stageView = document.getElementById("stage-view");
-const wrap = document.getElementById("orbit-wrap");
-const portal = document.getElementById("portal");
-const centerKicker = document.getElementById("center-kicker");
-const centerTitle = document.getElementById("center-title");
-const centerLine = document.getElementById("center-line");
-const centerCount = document.getElementById("center-count");
-const columns = document.getElementById("columns");
-const stageName = document.getElementById("stage-name");
-const stageThread = document.getElementById("stage-thread");
-const stageNote = document.getElementById("stage-note");
+/**
+ * 按 id 取元素，**取不到就当场炸**。
+ *
+ * 三个理由，第三个是这次（2026-08-05 给 panel.js 上类型检查）才补的：
+ *
+ * 1. `getElementById` 的返回类型是 `HTMLElement | null`，而这里每一个 id 都在
+ *    `panel.html` 里写死存在 —— 取不到就是 html 和 js 对不上，那是**开发期的
+ *    结构错误**，不该在运行时静默变成 `null.textContent` 之后再报。
+ * 2. 报的时候要说出**是哪个 id**。`Cannot read properties of null` 说不出。
+ * 3. 收窄类型。`button()` / `field()` / `dialog()` 各自返回对应的元素类型，
+ *    于是 `.disabled` / `.value` / `.showModal()` 不用在 30 个使用点各写一次
+ *    断言 —— **一处收窄，全文可用**。
+ */
+function pick(id) {
+  const found = document.getElementById(id);
+  if (found === null) throw new Error(`panel.html 里没有 #${id}`);
+  return found;
+}
+/** @returns {HTMLButtonElement} */
+function button(id) { return /** @type {HTMLButtonElement} */ (pick(id)); }
+/** @returns {HTMLInputElement} */
+function field(id) { return /** @type {HTMLInputElement} */ (pick(id)); }
+/** @returns {HTMLDialogElement} */
+function dialog(id) { return /** @type {HTMLDialogElement} */ (pick(id)); }
+
+const orbitView = pick("orbit-view");
+const stageView = pick("stage-view");
+const wrap = pick("orbit-wrap");
+const portal = pick("portal");
+const centerKicker = pick("center-kicker");
+const centerTitle = pick("center-title");
+const centerLine = pick("center-line");
+const centerCount = pick("center-count");
+const columns = pick("columns");
+const stageName = pick("stage-name");
+const stageThread = pick("stage-thread");
+const stageNote = pick("stage-note");
 /** 终端底下那行注解的原话。say() 会盖掉它，进终端时还原。 */
 const NOTE_DEFAULT = stageNote.textContent;
 
 // 左侧 40% 的常驻面板
-const statusKicker = document.getElementById("status-kicker");
-const statusTitle = document.getElementById("status-title");
-const statusMark = document.getElementById("status-mark");
-const statusLine = document.getElementById("status-line");
-const statusFacts = document.getElementById("status-facts");
-const statusFoot = document.getElementById("status-foot");
+const statusKicker = pick("status-kicker");
+const statusTitle = pick("status-title");
+const statusMark = pick("status-mark");
+const statusLine = pick("status-line");
+const statusFacts = pick("status-facts");
+const statusFoot = pick("status-foot");
 
 // 点小环打开的弹窗
-const sheet = document.getElementById("sheet");
-const sheetKicker = document.getElementById("sheet-kicker");
-const sheetTitle = document.getElementById("sheet-title");
-const sheetMark = document.getElementById("sheet-mark");
-const sheetLine = document.getElementById("sheet-line");
-const sheetGaps = document.getElementById("sheet-gaps");
-const sheetRubric = document.getElementById("sheet-rubric");
-const tabGaps = document.getElementById("tab-gaps");
-const tabRubric = document.getElementById("tab-rubric");
-const enterButton = document.getElementById("enter");
-const waiveButton = document.getElementById("waive");
-const briefButton = document.getElementById("brief");
-const closeTermButton = document.getElementById("close-term");
-const openTermButton = document.getElementById("open-term");
-const nextStepLine = document.getElementById("next-step");
-const runButton = document.getElementById("run");
-const askButton = document.getElementById("ask");
+const sheet = dialog("sheet");
+const sheetKicker = pick("sheet-kicker");
+const sheetTitle = pick("sheet-title");
+const sheetMark = pick("sheet-mark");
+const sheetLine = pick("sheet-line");
+const sheetGaps = pick("sheet-gaps");
+const sheetRubric = pick("sheet-rubric");
+const tabGaps = pick("tab-gaps");
+const tabRubric = pick("tab-rubric");
+const enterButton = button("enter");
+const waiveButton = button("waive");
+const briefButton = button("brief");
+const closeTermButton = button("close-term");
+const openTermButton = button("open-term");
+const nextStepLine = pick("next-step");
+const lastOutcomeLine = pick("last-outcome");
+const roundProgress = pick("round-progress");
+const runButton = button("run");
+const askButton = button("ask");
 
-document.getElementById("crumb-change").textContent = changeId;
+pick("crumb-change").textContent = changeId;
 
 const term = new Terminal({
   convertEol: false,
@@ -88,7 +115,7 @@ const term = new Terminal({
 });
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
-term.open(document.getElementById("term"));
+term.open(pick("term"));
 
 /**
  * 阶段的 pass / fail，用**词**说一遍。
@@ -171,6 +198,9 @@ const STAGE_WORDS = {
   blue_attacking: "蓝方在挑毛病",
 };
 
+/** 里程碑的顺序 —— 和 panel.html 里 #round-progress 三段的书写顺序是同一份。 */
+const STAGE_ORDER = ["judge_starting", "red_writing", "blue_attacking"];
+
 /** 3:20 这种。毫秒对人没有意义。 */
 function spell(ms) {
   const seconds = Math.max(0, Math.round(ms / 1000));
@@ -197,6 +227,33 @@ function progressWords(progress) {
     : `${progress.phase} 在跑，已经 ${elapsed}：${STAGE_WORDS[progress.stage] ?? progress.stage}。`;
 }
 
+/**
+ * 一轮的进度条（§2.3）：三个**看得见的里程碑**，亮到走到的那一段。
+ *
+ * 不是百分比 —— 百分比只能编，而里程碑是从「裁判派生了几个子 Agent」真实数出来
+ * 的（/api/progress 的 stage）。说不出走到哪（第一轮开头）就一段都不亮：条在、
+ * 全灰 —— 「在跑但看不出位置」和「没在跑」长得不一样。挂了（processGone）就收起
+ * 来，让那句 ⚠ 单独说话，不摆一条还在走的条骗人。
+ */
+function paintRoundProgress(progress) {
+  const running = progress.status === "running" && !progress.processGone;
+  roundProgress.hidden = !running;
+  if (!running) return;
+  const reached = progress.stage === null ? -1 : STAGE_ORDER.indexOf(progress.stage);
+  [...roundProgress.children].forEach((piece, index) => {
+    piece.classList.toggle("reached", index <= reached);
+  });
+}
+
+/** 裁判线程离墙多远，一小句。说不出就空 —— 不编（§3.3·11）。 */
+function contextWords(progress) {
+  const context = progress.context;
+  if (!context || typeof context.used !== "number" || !context.window) return "";
+  const percent = Math.round((context.used / context.window) * 100);
+  return `　线程上下文已用 ${percent}%`
+    + `（${Math.round(context.used / 1000)}k / ${Math.round(context.window / 1000)}k）。`;
+}
+
 async function pollProgress() {
   let progress;
   try {
@@ -205,10 +262,11 @@ async function pollProgress() {
   } catch {
     return; // 一次没拉到不说话，下一次再说 —— 报「读不到进度」比没有进度更吵
   }
+  paintRoundProgress(progress);
   const words = progressWords(progress);
   if (words === null) return;
   // 写在弹窗那一行。人是从弹窗里按下「跑这个阶段」的，结果就该回到那儿。
-  sheetLine.textContent = words;
+  sheetLine.textContent = words + contextWords(progress);
   if (progress.status === "running" && !progress.processGone) {
     runButton.textContent = `在跑 ${spell(progress.job?.elapsedMs ?? 0)}`;
   }
@@ -221,6 +279,7 @@ function startProgress() {
 }
 
 function stopProgress() {
+  roundProgress.hidden = true;
   if (progressTimer === null) return;
   clearInterval(progressTimer);
   progressTimer = null;
@@ -320,8 +379,11 @@ function runRefusal(result) {
 async function run() {
   runButton.disabled = true;
   runButton.textContent = "派发中…";
-  // 这个 fetch 要等整一轮（几分钟）。**进度靠一条独立的只读轮询**，不靠它 ——
-  // 等它回来才说话，就是现在这个「几分钟不说话」。
+  /*
+   * 这个 fetch 现在**排完队就回**（2026-08-05，BACKLOG §3.4）—— 原来它要等整一轮，
+   * 而实测一轮 60~343 分钟，浏览器和代理会先超时，那时人看到「网络错误」而轮跑得
+   * 好好的。进度一直靠下面这条独立的只读轮询，不靠这个响应。
+   */
   startProgress();
   try {
     const result = await (await fetch(
@@ -333,7 +395,9 @@ async function run() {
     } else if (result.ran === false) {
       say(runRefusal(result));
     } else {
-      say(`${result.phase} 跑完了：${JSON.stringify(result.outcome)}`);
+      // **说「派出去了」，不说「跑完了」。** 它还在跑，而说错这一句就是让人
+      // 以为可以去裁决了 —— 那正是这个面板最该防的那类。
+      say(`${result.phase} 这一轮派出去了，正在跑。进度看环上那条，跑完了这里会变。`);
     }
   } finally {
     stopProgress();
@@ -361,6 +425,7 @@ const REFUSAL_WORDS = {
   reason_missing: "没写理由，所以这一条留着没动",
   unknown_gap: "这一条在你回答的时候已经不是未解决状态了",
   standard_not_waivable: "这是一条标准，出口是在「标准」页签里撤下它",
+  p0_not_waivable: "P0 不许豁免 —— 出口是红方改掉它，或者你判它不成立",
 };
 
 /**
@@ -376,7 +441,8 @@ function saidWhat(result) {
   if (result.raised) parts.push(`你自己提的那条记成了 ${result.raised}`);
   if (result.outcome?.kind === "refused") {
     // 他自己刚提的要求挡住了他自己的批准，这种最要说清楚。
-    parts.push(`⚠ 闸门拒了这次「${result.outcome.action}」：${result.outcome.reason}`);
+    parts.push(`⚠ 闸门拒了这次「${result.outcome.action}」：`
+      + `${GATE_REFUSAL_WORDS[result.outcome.reason] ?? result.outcome.reason}`);
   } else {
     parts.push(`裁决 → ${JSON.stringify(result.outcome)}`);
   }
@@ -553,8 +619,319 @@ async function waive() {
 
 function placeNodes() {
   const radius = wrap.clientWidth * 0.455;
+  // querySelectorAll 给的是 Element；只有 HTMLElement 才有 style。
   wrap.querySelectorAll(".stage-node").forEach((node) => {
-    node.style.setProperty("--r", `${radius}px`);
+    if (node instanceof HTMLElement) node.style.setProperty("--r", `${radius}px`);
+  });
+}
+
+/*
+ * ── 环上的地图（§5.9.3 / §5.9.4）────────────────────────────
+ *
+ * 用户 2026-08-04：「环的形状还是要的，只是不能暗示用户下个阶段一定是这个，
+ * 可以用箭头指示，不管是向前还是跳转到别的阶段。」
+ *
+ * ## 三种东西，三种画法 —— 而且**不重复画**
+ *
+ * ```
+ * 向前的历史   已经是那道进度弧了       这儿不画（画了就是同一件事说两遍）
+ * 回头的历史   穿过中心的弦，实线永久     §5.9.3④：形状本身带语义
+ * 自环的历史   节点上的刻度，一轮一格     §5.9.4：真实形状是「各自带自环的节点」
+ * 能去的边     虚线 + 流动，随状态变      §5.9.3②：和历史必须一眼分得开
+ * ```
+ *
+ * ## 边从哪来
+ *
+ * 历史来自 `panel.journey`（账本投影），能去的来自 `panel.options`（闸门长出来的）。
+ * **两样都不在这儿算** —— 前端自己推第二份判据，就会画出闸门不认的箭头，那正是
+ * 老树那五个死按钮的形状（§5.4）。
+ */
+const MAP_RADIUS = 45.5;   // 和 CSS 的 inset:4.5%、placeNodes 的 0.455 是同一个数
+
+/** 第 n 个阶段在方格里的坐标。十二点起、顺时针 —— 和节点的摆法同一套。 */
+function nodeAt(index, total) {
+  const radians = (index / total) * Math.PI * 2;
+  return {
+    x: 50 + MAP_RADIUS * Math.sin(radians),
+    y: 50 - MAP_RADIUS * Math.cos(radians),
+  };
+}
+
+/*
+ * ── 节点周围那一圈的地盘（实测，别凭感觉改）────────────────
+ *
+ * 2026-08-05 在真尺寸上量的（1 viewBox 单位 ≈ 5.8px）：
+ *
+ * ```
+ * 0 ~ 4.86    节点那个圆自己
+ * 4.86 ~ 9.0  空的 —— 刻度和绕圈箭头住在这里（标签让开之后腾出来的）
+ * 9.0 ~ 11.1  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
+ * ```
+ *
+ * 标签原来卡在 6.25，那条缝窄得圈根本大不起来。用户 2026-08-05：「自循环的圈
+ * 可以大一点，起码包裹住 stage 的圆」—— 所以 `panel.html` 把标签从 64px 推到
+ * 80px，这条带子才够住人。**改这里就要改那边**，两个数是同一件事的两半。
+ *
+ * 刻度和箭头**共用同一条轨道**：一个节点周围只有一圈东西，读起来是「这个盘
+ * 走过几格、指针正在再走一圈」，而不是套了两三个同心圆。
+ *
+ * 第一版刻度画在 7.1 且按「环的内侧」摆，对**上半圈**的节点正好压在字上
+ * （PRD 那一圈就是）—— 内侧对上半圈就是下方。所以改成按**屏幕正上方**摆：
+ * 字永远在正下方，避开它才是绝对的，跟着环转的相对方位不是。
+ */
+const RIM = 7.5;          // 刻度和绕圈箭头共用这条轨道（节点圆半径 4.86）
+const TICK_SPAN = 150;    // 刻度占正上方这 150°，正下方那块留给阶段名
+
+function svgNode(tag, attributes, tooltip) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    element.setAttribute(name, String(value));
+  }
+  if (tooltip) {
+    // 理由挂在原生 tooltip 上：§5.0 第 4 条要的是「环那一屏不加东西」，而一条
+    // 悬停才出现的说明不占版面 —— 但「每条边都说得出后果」这条不能少。
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = tooltip;
+    element.append(title);
+  }
+  return element;
+}
+
+/**
+ * 回头的那一跳画成一条**穿过中心方向**的弦。
+ *
+ * 二次贝塞尔，控制点拉向圆心 —— 直线也能连上，但一堆直线会和轨道缠在一起；
+ * 往圆心弯一下，回边就天然落在环的内部，和沿环走的推进泾渭分明（§5.9.3④）。
+ */
+function chordPath(from, to) {
+  const bend = 0.45;   // 0 = 直线，1 = 顶到圆心
+  const cx = from.x + (50 - from.x) * bend + (to.x - from.x) / 2 * (1 - bend);
+  const cy = from.y + (50 - from.y) * bend + (to.y - from.y) / 2 * (1 - bend);
+  return `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`;
+}
+
+/**
+ * 沿着**环**走的一段弧 —— 向前推进就该长这样（§5.9.3④）。
+ *
+ * 第一版把向前的边也画成了穿心的弦，于是「沿环走 = 推进 / 穿心 = 回头」这条
+ * 语义当场失效：两种边长得一模一样。形状本身要带语义，就不能两边共用一个画法。
+ */
+function arcAlongRing(from, to) {
+  return `M ${from.x} ${from.y} A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y}`;
+}
+
+/** 圆心 `at`、半径 `radius` 上从 `startDeg` 到 `endDeg` 的一段弧（0° = 十二点）。 */
+function arcSegment(at, radius, startDeg, endDeg) {
+  const point = (degrees) => {
+    const radians = degrees * Math.PI / 180;
+    return { x: at.x + radius * Math.sin(radians), y: at.y - radius * Math.cos(radians) };
+  };
+  const a = point(startDeg);
+  const b = point(endDeg);
+  const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+  return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${large} 1 ${b.x} ${b.y}`;
+}
+
+/**
+ * 一枚会动的小箭头，沿着一条路径走 —— 用户 2026-08-05 定的画法：
+ * 「自循环的动画设置成一个绕着这个 stage 的小箭头在绕圈，stage 间的就做成
+ * 小箭头飞向目标 stage」。
+ *
+ * **动本身就说明了方向**，所以路径可以画得很淡：静态那条只说「能去哪」，
+ * 箭头说「往哪边走」。第一版靠虚线流动来表达方向，而一条流动的虚线两头
+ * 长得一样 —— 人得盯着看一会儿才知道它在往哪流。
+ *
+ * 走 SVG 原生的 `animateMotion` + `mpath`：路径改了动画自动跟着改，不用 JS
+ * 每帧算位置（那种一定会和 `drawMap` 的重画打架）。`rotate="auto"` 让箭头
+ * 自己扭向前进方向。
+ */
+function flyingArrow(pathId, seconds, className, offset = 0) {
+  const arrow = svgNode("path", {
+    class: className,
+    /*
+     * **一个 V 字，不是实心三角。**
+     *
+     * 实心三角在这个尺寸上是一个小黑块，方向要凑近了才看得出，而且和整屏
+     * 那种细线质感打架（用户 2026-08-05：「stage 间的动画和 UI 不好看」）。
+     * 描边的 V 字轻、尖端明确，一眼就知道朝哪飞。
+     */
+    d: "M -0.85 -0.85 L 0.35 0 L -0.85 0.85",
+  });
+  /*
+   * **说了不要动效就真的不动。**
+   *
+   * SMIL 不受 CSS 的 `animation: none` 管（那一条只关得掉 CSS 动画，见
+   * panel.html 末尾那个 media query），所以这里自己问一次。箭头照样画出来、
+   * 照样停在路径起点，方向仍然看得出 —— 只是不动。
+   */
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    const still = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+    still.setAttribute("dur", "1s");
+    still.setAttribute("repeatCount", "1");
+    still.setAttribute("fill", "freeze");
+    still.setAttribute("rotate", "auto");
+    still.setAttribute("keyPoints", "0;0");
+    still.setAttribute("keyTimes", "0;1");
+    still.setAttribute("calcMode", "linear");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
+    path.setAttribute("href", `#${pathId}`);
+    path.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
+    still.append(path);
+    arrow.append(still);
+    return arrow;
+  }
+  const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+  motion.setAttribute("dur", `${seconds}s`);
+  motion.setAttribute("repeatCount", "indefinite");
+  motion.setAttribute("rotate", "auto");
+  /*
+   * 一条路上前后跟着几个 V，才读得出「一股往那边流的劲」，而不是「有个小东西
+   * 在爬」。**错的是相位，不是出发时刻。**
+   *
+   * 用 `begin="1.9s"` 那一版实测出一个 bug：轮到它之前，这个 V 停在 viewBox 的
+   * 原点上 —— 也就是环左上角外面凭空多两个小勾，而页面刚打开那两秒正好看得见。
+   * 改成让它从路径的 34%／68% 处起跑、跑到头瞬回起点：所有 V 都在 t=0 就位，
+   * 没有「还没开始」这个状态。
+   */
+  if (offset > 0) {
+    const turn = (1 - offset).toFixed(4);
+    motion.setAttribute("calcMode", "linear");
+    motion.setAttribute("keyPoints", `${offset};1;0;${offset}`);
+    motion.setAttribute("keyTimes", `0;${turn};${turn};1`);
+  }
+  const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
+  // 两种写法都设上：`href` 是现在的规范，`xlink:href` 是老引擎唯一认的那个。
+  mpath.setAttribute("href", `#${pathId}`);
+  mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
+  motion.append(mpath);
+  arrow.append(motion);
+  return arrow;
+}
+
+/** 绕着一个节点转一圈的轨道。箭头骑着它，就是「再来一轮」。 */
+function orbitAround(at) {
+  return `M ${at.x} ${at.y - RIM} `
+    + `A ${RIM} ${RIM} 0 1 1 ${at.x - 0.01} ${at.y - RIM} Z`;
+}
+
+function drawMap(panel) {
+  const map = pick("orbit-map");
+  map.replaceChildren();
+  const total = phases.length;
+  const indexOf = (phase) => phases.findIndex((entry) => entry.phase === phase);
+
+  /*
+   * ① 走过的回头路，实线，**永久留着**。
+   *
+   * Fix 不在环上（它没有节点），所以送修那一跳画不出来 —— 那不是遗漏：Fix 的
+   * 节点确实在环上（THREADED_PHASES 含它），indexOf 找得到就画。找不到就跳过，
+   * 不去猜一个坐标。
+   */
+  for (const jump of panel.journey ?? []) {
+    if (jump.kind !== "backward") continue;
+    const from = indexOf(jump.fromPhase);
+    const to = indexOf(jump.toPhase);
+    if (from < 0 || to < 0) continue;
+    map.append(svgNode("path", {
+      class: `chord${jump.action === "sendBack" ? " hot" : ""}`,
+      d: chordPath(nodeAt(from, total), nodeAt(to, total)),
+    }, `第 ${jump.round} 轮：${jump.fromPhase} → ${jump.toPhase}`
+      + (jump.reason ? `\n理由：${jump.reason}` : "")));
+  }
+
+  /*
+   * ② 每个节点跑过几轮，画成刻度（§5.9.4）。
+   *
+   * 「真实形状不是 12 个节点的环，是 12 个各自带自环的节点」—— 节点上花的轮数
+   * 比它在环上的位置更能说明「你在哪」。批准过的用绿色：那是「这几轮换来了一次
+   * 放行」，和「跑了三轮还卡着」是两回事。
+   */
+  /*
+   * 「再来一轮」那条边不画成线，画成**这个节点盘上的下一格空刻度**（见
+   * `selfLoopPath` 被删掉的地方那段注释）。所以先把它从边里挑出来。
+   */
+  const selfEdge = (panel.options ?? []).find((edge) => edge.kind === "self");
+
+  phases.forEach((entry, index) => {
+    const at = nodeAt(index, total);
+    const rounds = Math.min(entry.rounds ?? 0, 8);   // 画得下才有意义，8 段封顶
+    for (let tick = 0; tick < rounds; tick += 1) {
+      /*
+       * **一段一段的弧，不是放射状的短线。**
+       *
+       * 放射线那一版实测长得像爪子 —— 而这里要的是「带刻度的圆」（§5.9.4），
+       * 也就是一圈分段的表盘。分段弧还有一个好处：段数一眼数得出来，而放射线
+       * 越多越糊成一片。
+       *
+       * 摆在节点**内侧**那 150°：外侧要留给阶段名，而且顶上那个节点朝外就是
+       * 画布外面（第一版实测 y 是负的）。
+       */
+      /*
+       * **段占一格的一半多一点，缝要看得见。** 第一版占 76%，实测 6 段连成了
+       * 一道实心月牙 —— 数不出来，那「跑了几轮」这件事就白标了。
+       *
+       * 摆在**屏幕正上方**那 150°（不是环的内侧）：阶段名永远在正下方，
+       * 避开它的规则必须是绝对的 —— 见 RIM 上面那段实测。
+       */
+      const each = TICK_SPAN / rounds;
+      const base = -TICK_SPAN / 2 + tick * each;
+      map.append(svgNode("path", {
+        class: `tick${entry.mark === "approved" ? " done" : ""}`,
+        d: arcSegment(at, RIM, base + each * 0.22, base + each * 0.78),
+      }, `${entry.phase} 跑了 ${entry.rounds} 轮`));
+    }
+  });
+
+  /*
+   * ③ 现在能去哪，虚线 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
+   */
+  const here = phases.findIndex((entry) => entry.current);
+  if (here < 0) return;
+  const from = nodeAt(here, total);
+  panel.options?.forEach((edge, order) => {
+    /*
+     * **自环：一枚小箭头绕着这个 stage 转圈**（用户 2026-08-05 定的画法）。
+     * 轨道就是刻度那一圈 —— 于是它读起来是「指针再走一圈这个盘」，而不是
+     * 环上又多了一样东西。轨道本身不画，只有箭头在动。
+     */
+    if (edge.kind === "self") {
+      const id = "map-self";
+      map.append(svgNode("path", { id, class: "rail", d: orbitAround(from) }, edge.why));
+      // 两个 V 分处半圈，读起来是「这一圈在转」而不是「有个东西在爬」。
+      map.append(flyingArrow(id, 5, "arrow"));
+      map.append(flyingArrow(id, 5, "arrow trail", 0.5));
+      return;
+    }
+    const to = indexOf(edge.to);
+    if (to < 0) return;
+    /*
+     * **形状带语义，两种边不共用一个画法**（§5.9.3④）：沿着环走 = 正常推进，
+     * 穿过中心的弦 = 回头。第一版两种都画成弦，那条语义当场失效。
+     */
+    const id = `map-live-${order}`;
+    map.append(svgNode("path", {
+      id,
+      class: `live${edge.kind === "backward" ? " back" : ""}`,
+      d: edge.kind === "forward"
+        ? arcAlongRing(from, nodeAt(to, total))
+        : chordPath(from, nodeAt(to, total)),
+    }, edge.why));
+    /*
+     * **一串 V 飞向目标 stage**（用户 2026-08-05 定的画法，第二版重做）。
+     *
+     * 第一版是一条流动的虚线 + 一个实心小三角：虚线两头长得一样、看不出方向，
+     * 三角在这个尺寸上是个小黑块。现在路线退成极淡的发丝（只说「走哪条道」），
+     * 三个 V 错开出发 —— 「往那边流」这件事由队形说出来。
+     */
+    const trip = 2.8;
+    map.append(flyingArrow(id, trip, `arrow${edge.kind === "backward" ? " back" : ""}`));
+    for (const behind of [0.34, 0.68]) {
+      map.append(flyingArrow(
+        id, trip,
+        `arrow trail${edge.kind === "backward" ? " back" : ""}`,
+        behind,
+      ));
+    }
   });
 }
 
@@ -661,8 +1038,8 @@ function drawWorkspace(panel) {
     });
     return row;
   });
-  document.getElementById("projects").replaceChildren(...projectRows);
-  document.getElementById("project-count").textContent =
+  pick("projects").replaceChildren(...projectRows);
+  pick("project-count").textContent =
     String(panel.projects.length).padStart(2, "0");
 
   const rows = panel.changes.map((change) => {
@@ -692,8 +1069,8 @@ function drawWorkspace(panel) {
     });
     return row;
   });
-  document.getElementById("changes").replaceChildren(...rows);
-  document.getElementById("change-count").textContent =
+  pick("changes").replaceChildren(...rows);
+  pick("change-count").textContent =
     String(panel.changes.length).padStart(2, "0");
   // Change 的标题现在是左侧常驻面板的默认标题，由 renderStatus(null) 写 —— 环那
   // 一屏上已经没有标题栏了（§5.0 第 1 条）。
@@ -761,6 +1138,7 @@ async function load() {
   artifactCache.clear();
   drawWorkspace(panel);
   drawOrbit();
+  drawMap(panel);
 
   drawCenter();
   renderStatus(null);
@@ -785,8 +1163,15 @@ async function load() {
  * 这份名单和 domain/question.ts 里的 `gateDecisionQuestion` 是同一份。
  */
 function decidableActions() {
-  return (panelState?.gate?.permitted ?? []).filter((action) =>
-    action === "approve" || action === "reject" || action === "retry");
+  /*
+   * **读服务端算好的那份边，不在这儿再筛一遍名单。**
+   *
+   * 原来这里写死 `approve / reject / retry` 三个 —— 于是 2026-08-05 加
+   * `sendBack` 和 `rerun` 时它一个字都没跟上：一份漂开了的判据拷贝，而它决定
+   * 「请 Codex 问我」这个按钮亮不亮。`options` 是 `optionsFrom` 从闸门长出来的
+   * （panel-server），这里读它就永远不会和裁决表说两件事。
+   */
+  return (panelState?.options ?? []).map((edge) => edge.action);
 }
 
 /** 闸门此刻说了什么，一句话。只陈述，永远不提供改变它的控件。 */
@@ -802,6 +1187,30 @@ function gateSentence() {
 }
 
 const openGaps = (entry) => entry.gaps.filter((gap) => gap.status === "open");
+
+/** 闸门拒人的理由，翻成人话。前三条对应 `domain/gate.ts` 的 RefusalReason。 */
+const GATE_REFUSAL_WORDS = {
+  blocking_problem_outstanding: "还有问题挡着闸门",
+  nothing_was_produced: "这个阶段什么都没产出",
+  not_legal_in_this_status: "现在这个状态不接受这个动作",
+  // question-store 的那半个决定：裁决选了打回上游，目标那格却是「不打回」。
+  no_target_chosen: "选了「打回上游」，但没选打回哪一份 —— 再裁一次，把那格也选上",
+};
+
+/**
+ * 上次裁决的下场，翻成一句留得住的话（§3.2·5）。
+ *
+ * 只有被拒的下场要挂出来 —— 落地成功的那些，环上的标记已经在说了；给它们也挂
+ * 一条横幅，警示色就不再意味着警示。null = 没什么要挂的。
+ */
+function lastOutcomeWords(outcome) {
+  if (!outcome || outcome.kind !== "refused") return null;
+  const reason = GATE_REFUSAL_WORDS[outcome.reason] ?? outcome.reason;
+  const at = typeof outcome.at === "string"
+    ? `（${new Date(outcome.at).toLocaleString()}）` : "";
+  return `⚠ 上次裁决被闸门拒了${at}：「${outcome.action}」没落地 —— ${reason}。`
+    + "处理掉挡着的问题，再裁一次。";
+}
 
 /** 一行「词条 / 值」。左侧面板和弹窗共用同一种写法。 */
 function factRows(rows) {
@@ -866,6 +1275,10 @@ function renderStatus(entry) {
     ["未解决的问题", String(open.length)],
     ["问题总数", String(entry.gaps.length)],
     ["当前阶段", entry.current ? "是" : "否"],
+    // 悬停这一层也要看得见「上次为什么没推动」—— 明细在弹窗那条横幅里。
+    ...(entry.lastOutcome?.kind === "refused"
+      ? [["上次裁决", `被闸门拒了：${GATE_REFUSAL_WORDS[entry.lastOutcome.reason] ?? entry.lastOutcome.reason}`]]
+      : []),
   ]);
   statusFoot.textContent = "点这个阶段的小圈，看它的问题明细。";
 }
@@ -886,7 +1299,7 @@ function drawCenter() {
    * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
    */
   const reached = at === undefined ? 0 : phases.indexOf(at) / phases.length;
-  document.getElementById("progress").style.setProperty("--progress", String(reached));
+  pick("progress").style.setProperty("--progress", String(reached));
   const approved = phases.filter((entry) => entry.mark === "approved").length;
 
   centerKicker.textContent = panelState?.status
@@ -963,6 +1376,15 @@ function drawSheet(phase) {
     ?? (entry.current && panelState?.brief === null
       ? "还没说清楚这次改动要什么。先按「说清楚我要什么」—— 没有它，红方只能自己猜。"
       : entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry))
+
+  /*
+   * 上次裁决被拒 —— **留得住**（§3.2·5）。它原来只写进 stageNote / sheetLine，
+   * 而「进程已经结束了」会盖掉它，那正是答完之后必然发生的事。这里每次重画都从
+   * 库里的 lastOutcome 来：盖不掉，刷新也还在；下一次裁决落地它自己就换掉了。
+   */
+  const refusedWords = lastOutcomeWords(entry.lastOutcome);
+  lastOutcomeLine.hidden = refusedWords === null;
+  lastOutcomeLine.textContent = refusedWords ?? "";
 
   drawGaps(entry);
   sheetGaps.prepend(drawProduced(entry));
@@ -1441,8 +1863,19 @@ async function attach(phase, reattaching = false) {
      * 长得一样。
      *
      * 只连一次（reattaching 不再递归），免得在一个反复断的服务上转圈。
+     *
+     * ## 这里曾经有一个 `&& label === null`，它让整个重连从来没有发生过
+     *
+     * `label` 是 aside 那套东西的变量。`7d8e53b` 把整套 aside 撤掉时删掉了它，
+     * **漏了这一处引用**。于是每次流一断，这一行就抛 `ReferenceError: label is
+     * not defined`，下面两行永远执行不到 —— 症状是「Codex 问完话、或者阶段一动，
+     * 终端就再也不动了，可底下明明在跑」。用户 2026-08-04 报的就是这个。
+     *
+     * 它躲过了 `pnpm check`：`tsconfig.src.json` 的 include 只有 `src/**\/*.ts`
+     * 和 `scripts/**\/*.ts`，**这个文件根本不在类型检查范围内**。一个裸标识符
+     * 引用在浏览器里才会炸，而没有任何一层在它炸之前看过它。
      */
-    if (!reattaching && label === null) {
+    if (!reattaching) {
       await wait(800);
       if (stream !== mine) return; // 人已经走开或换了格子
       await attach(phase, true);
@@ -1450,14 +1883,14 @@ async function attach(phase, reattaching = false) {
   }
 }
 
-document.getElementById("back").addEventListener("click", () => { void leave(); });
+button("back").addEventListener("click", () => { void leave(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
 closeTermButton.addEventListener("click", () => { void closeTerminal(); });
 openTermButton.addEventListener("click", () => { void openTerminal(); });
 waiveButton.addEventListener("click", () => { void waive(); });
-document.getElementById("expand").addEventListener("click", () => { setCollapsed(false); });
+button("expand").addEventListener("click", () => { setCollapsed(false); });
 
 /*
  * 新建 Project / Change。
@@ -1475,10 +1908,10 @@ document.getElementById("expand").addEventListener("click", () => { setCollapsed
  *
  * 仍然不进主屏：它是个 <dialog>，和阶段弹窗同一个位置。
  */
-const projectSheet = document.getElementById("project-sheet");
-const projectName = document.getElementById("project-name");
-const projectPath = document.getElementById("project-path");
-const projectError = document.getElementById("project-error");
+const projectSheet = dialog("project-sheet");
+const projectName = field("project-name");
+const projectPath = field("project-path");
+const projectError = pick("project-error");
 
 /** 服务端的拒绝原因，翻成人话。原样显示 `path_must_be_absolute` 等于没说。 */
 const PROJECT_REFUSALS = {
@@ -1525,13 +1958,13 @@ function showProjectError(reason) {
   projectError.hidden = false;
 }
 
-document.getElementById("new-project").addEventListener("click", () => {
+button("new-project").addEventListener("click", () => {
   openProjectSheet();
 });
-document.getElementById("project-create").addEventListener("click", () => {
+button("project-create").addEventListener("click", () => {
   void createProject();
 });
-document.getElementById("project-cancel").addEventListener("click", () => {
+button("project-cancel").addEventListener("click", () => {
   projectSheet.close();
 });
 // 在任一字段里回车就提交 —— 填完路径还要去找按钮，是没必要的一步。
@@ -1548,10 +1981,10 @@ for (const field of [projectName, projectPath]) {
  * 在哪个目录里跑。不说的话，又是一次「建了但不知道建在哪」—— 用户 2026-07-30 在
  * Project 上撞的就是这个。
  */
-const changeSheet = document.getElementById("change-sheet");
-const changeTitle = document.getElementById("change-title");
-const changeTarget = document.getElementById("change-target");
-const changeError = document.getElementById("change-error");
+const changeSheet = dialog("change-sheet");
+const changeTitle = field("change-title");
+const changeTarget = field("change-target");
+const changeError = pick("change-error");
 
 /** 服务端的拒绝原因，翻成人话。 */
 const CHANGE_REFUSALS = {
@@ -1607,13 +2040,13 @@ async function createChange() {
   location.search = `?change=${encodeURIComponent(created.id)}`;
 }
 
-document.getElementById("new-change").addEventListener("click", () => {
+button("new-change").addEventListener("click", () => {
   openChangeSheet();
 });
-document.getElementById("change-create").addEventListener("click", () => {
+button("change-create").addEventListener("click", () => {
   void createChange();
 });
-document.getElementById("change-cancel").addEventListener("click", () => {
+button("change-cancel").addEventListener("click", () => {
   changeSheet.close();
 });
 changeTitle.addEventListener("keydown", (event) => {
@@ -1625,7 +2058,7 @@ enterButton.addEventListener("click", () => {
   closeSheet();
   if (phase) void enter(phase);
 });
-document.getElementById("sheet-close").addEventListener("click", () => { closeSheet(); });
+button("sheet-close").addEventListener("click", () => { closeSheet(); });
 // 点遮罩也关。<dialog> 的遮罩不是独立元素，点在它上面时 event.target 就是 dialog
 // 自己 —— 点在内容上时 target 是里面的节点，所以这个判断足够分开两者。
 sheet.addEventListener("click", (event) => {

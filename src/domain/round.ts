@@ -1,4 +1,6 @@
-import { jsonAnswerIn, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
+import {
+  jsonAnswerIn, RESULT_CONTRACT, RESULT_CONTRACT_NOTES, TurnResultUnparsableError,
+} from "./turn";
 import { parseTurnResult } from "./turn";
 import { isHumanGap } from "./gap";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
@@ -63,6 +65,34 @@ export interface RoundInstructions {
    */
   readonly openGapsPath?: string | undefined;
   /**
+   * 这个阶段是被下游打回来的 —— 谁打的、为什么、哪一轮打的（§5.9.1 的回边）。
+   *
+   * ## 为什么它必须进提示词
+   *
+   * F 档（2026-08-05）把长回边做进了状态机，理由落在账本的 `reason` 列上，
+   * **而目标阶段的红方读不到它**。于是 Build 发现 Spec 错了、人把活打回 Spec，
+   * Spec 的红方从零重写一份 Spec，完全不知道下游为什么退它 —— §5.5 那条反馈
+   * 链路就断在这最后一米，和「人在选择器里写的话进不了红方眼里」是同一个病。
+   *
+   * 缺席就一个字都不印：正常沿主线进来的阶段没有「被谁打回」这回事，印一段空的
+   * 会让裁判去猜要不要提。
+   */
+  readonly sentBack?: {
+    readonly from: string;
+    /** 人写的原话。null = 他没留理由（照实说，不编）。 */
+    readonly reason: string | null;
+    /** 打回发生在打回方的第几轮。 */
+    readonly round: number;
+  } | undefined;
+  /**
+   * 反方这一轮的意见写到哪（相对项目根，`domain/artifact-home.ts` 生成）。
+   *
+   * 它一直在写 —— 每个阶段都见过 `-opposition` / `-review` 落在仓库根目录，
+   * 只是从来没人告诉它写到哪，于是它自己起名、自己挑地方，树就这么脏的（E）。
+   * 给了就渲染一行；缺席一行不印 —— 这一层是纯的，不知道产物目录归谁管。
+   */
+  readonly blueDocPath?: string | undefined;
+  /**
    * 反方这一轮还要逐条判定的那几条标准 —— **两个路径，正文一个字都不进提示词。**
    *
    * ## 为什么非得经裁判转达
@@ -109,6 +139,19 @@ export interface RoundInstructions {
    * 人裁过任何事）就一行都不印。
    */
   readonly settledPath?: string | undefined;
+  /**
+   * 结果契约里**说明那一半**（`RESULT_CONTRACT_NOTES`）写成文件之后，它在哪。
+   *
+   * 契约在提示词里出现两遍（红蓝各一份原文），2026-08-05 实测占整份的 44.3%。
+   * 走文件省下来的是两份。
+   *
+   * **只挪说明，不挪骨架** —— 判据是「缺了会怎样」：骨架没被读到，答案形状不对、
+   * 整轮无法解析；说明没被读到，只是 `where` / `why` 写得糙，而那两样 critic 的
+   * rubric 本来就在判。前者不能赌，后者可以。
+   *
+   * 缺席就照旧把说明印进去 —— 和 `openGapsPath` 同一条规矩，这一层是纯的。
+   */
+  readonly contractNotesPath?: string | undefined;
 }
 
 
@@ -128,12 +171,29 @@ export interface RoundInstructions {
  * 眼里都是 `[null]`：一个模型看不懂的分级，而它正要对这条表态。
  */
 const gapLine = (gap: Gap): string => {
-  const head = `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`;
+  const lines = [
+    `- ${gap.id} [${gap.kind === "standard" ? "标准" : gap.severity}] ${gap.title}`,
+  ];
+  /*
+   * 报的人说的「在哪儿」和「为什么」跟着进下一轮。
+   *
+   * **这是那条语义损失的出口**：以前它们只活在报告散文里，下一轮的红方读到的是一个
+   * 光秃秃的标题，得自己回去把那份报告再解析一遍才知道改哪儿 —— 而「转述必然改写」
+   * 是这棵树到处在防的事（用户 2026-08-04）。
+   *
+   * 没有就一行都不印，不印空标签：`null` 和「写了但是空的」在提示词里长成一样，
+   * 模型就会开始猜哪种是哪种。
+   */
+  if (gap.where !== null) lines.push(`  在这儿：${gap.where}`);
+  if (gap.why !== null) lines.push(`  为什么是问题：${gap.why}`);
   /*
    * 人对这一条说过的话跟着它进提示词。**这是「我的话进下一轮」那条的落点** ——
    * 不带上它，人在选择器里逐条写的东西就只存在于库里，红方下一轮照样不知道他要什么。
+   *
+   * **排在最后**：上面两行是模型自己说的，这一行是人说的，而人说的话分量不同。
    */
-  return gap.note === null ? head : `${head}\n  人说：${gap.note}`;
+  if (gap.note !== null) lines.push(`  人说：${gap.note}`);
+  return lines.join("\n");
 };
 
 /**
@@ -145,12 +205,44 @@ const gapLine = (gap: Gap): string => {
  * 人提的排在模型报的前面（用户 2026-07-30）：一条模型报的问题，判它不成立是裁判的
  * 本职；一条人提的要求，不该被「我觉得这个建议可以不采纳」关掉。
  */
+/**
+ * 契约里说明那一半：给了路径就印一行路径，没给就印正文。
+ *
+ * **路径那一行必须写收件人。** 2026-08-02 那三张脸的教训：一段没有抬头的文本递到
+ * 裁判手上，它就当成可以自己消化的背景 —— 任务、settled、rubric 那两个路径全都
+ * 写了「原样转达给谁」，这一行不能例外。
+ */
+const contractNotes = (path: string | undefined): string[] =>
+  path === undefined
+    ? [RESULT_CONTRACT_NOTES]
+    : [`   各字段什么意思在这个文件里，**原样转达这一行**，让它先读：${path}`];
+
 export function renderOpenGaps(openGaps: readonly Gap[]): string {
   const human = openGaps.filter(isHumanGap);
   const found = openGaps.filter((gap) => !isHumanGap(gap));
   const sections: string[] = [];
   if (human.length > 0) {
-    sections.push("**人明确要求下一轮处理的（不许当成建议）：**", ...human.map(gapLine));
+    sections.push(
+      "**人明确要求下一轮处理的（不许当成建议）：**",
+      ...human.map(gapLine),
+      "",
+      /*
+       * **谁说了算，必须写死**（2026-08-02 记的旧账 G：操作员批注和上游文档打架
+       * 会制造震荡）。
+       *
+       * 红方一边读上游那份已批准的文档、一边读人的批注，两者冲突时它每轮各按
+       * 一次 —— 人只好每轮再说一遍。规则本身早就定了（用户 2026-07-30「以人为
+       * 主」），只是从来没告诉过模型。
+       *
+       * 第二句同样要紧：**闷头照做，人根本不知道自己在跟一份文档拧着。**
+       * 而彻底的解法是去改那份上游 —— 那条边 2026-08-05 才有（`sendBack`），
+       * 所以这里点它的名，让人在报告里看见这个选项。
+       */
+      "上面这几条**和上游那些已批准的文档冲突时，以人的话为准**。",
+      "但**必须把冲突写进产出**：说清楚顶掉了上游的哪一句、为什么 —— "
+      + "人看到之后可以决定「打回上游」把那份文档改了，那才是根治。"
+      + "闷头照做，他不会知道自己正跟一份文档拧着，于是每一轮都要再说一遍。",
+    );
   }
   if (found.length > 0) {
     if (sections.length > 0) sections.push("", "之前轮次报出来的问题：");
@@ -304,6 +396,45 @@ function blueRubricLines(
  * 红方和反方都要，而且要的东西不同：**红方**别再去"修"一条人已经驳掉的；
  * **反方**别再把它当成新问题报出来。
  */
+/**
+ * 「你是被打回来的」那一段 —— **自己读，并且原样转达给两边。**
+ *
+ * ## 为什么是原文而不是路径
+ *
+ * 别处的正文能走文件就走文件（需求、名单、契约说明），判据是「它天然是一份文档、
+ * 而且能有几百字」。打回的理由是**人随手写的一两句话**，做成文件只是多一次读盘，
+ * 而少了它红方就要先读一个路径才知道自己为什么在这儿 —— 这一句必须一眼看见。
+ *
+ * ## 抬头照旧
+ *
+ * 2026-08-02 那四张脸（任务、rubric 契约、反方格式、名单）教会的同一件事：
+ * **凡是要经裁判转达的文本，指望它「参照上文」就是指望它转述，只有原文加收件人
+ * 才到得了。** 所以这段话出现两次：裁判自己读一次，转达的原文一次。
+ *
+ * ## 红方的活儿变了，必须说出来
+ *
+ * 被打回的阶段不是「再写一份」，是「下游发现你这份有问题，修那个地方」。不说这句，
+ * 红方会照常从零重写 —— 而重写出来的那份很可能又踩同一个坑。
+ */
+function sentBackLines(sentBack: RoundInstructions["sentBack"]): string[] {
+  if (sentBack === undefined) return [];
+  const said = sentBack.reason === null
+    ? `${sentBack.from} 那边没有留下理由。`
+    : sentBack.reason;
+  return [
+    `**这个阶段是被 ${sentBack.from} 打回来的**（${sentBack.from} 的第 `
+    + `${sentBack.round} 轮），人给的理由是：`,
+    said,
+    "",
+    `**下面这三行原样转达给${RED}和${BLUE}，一个字都不要改：**`,
+    `   这个阶段是被下游的 ${sentBack.from} 打回来的，人给的理由是：${said}`,
+    `   ${RED}：你的活儿**不是从零重写一份**，是把上面这条指出来的地方改对；`
+    + "别的部分只有在跟着这条改动必须动时才动。",
+    `   ${BLUE}：先看这条有没有真的被解决 —— 它是这一轮最要紧的一条。`,
+    "",
+  ];
+}
+
 function settledLines(settledPath: string | undefined): string[] {
   if (settledPath === undefined) return [];
   return [
@@ -378,6 +509,12 @@ export function judgePrompt(input: RoundInstructions): string {
      * 收件人的文本递到裁判手上，它就当成可以自己消化的背景。rubric 契约修了抬头，
      * 任务这段当时漏了。
      */
+    /*
+     * 打回那一段排在**最前面**（比「已经裁定过的事」还靠前）：它改的是这一轮
+     * 整件事的性质 —— 从「写一份」变成「修一处」。放在后面，裁判读到它时已经
+     * 按「照常跑一轮」把活分下去了。
+     */
+    ...sentBackLines(input.sentBack),
     ...settledLines(input.settledPath),
     play.red.heading,
     input.task,
@@ -385,8 +522,16 @@ export function judgePrompt(input: RoundInstructions): string {
     ...play.red.idRule,
     `   要求它按下面的格式作答：`,
     RESULT_CONTRACT,
+    ...contractNotes(input.contractNotesPath),
     "",
     play.blue.task,
+    /*
+     * 反方的输出路径。放在**共享模板**这儿而不是 `PHASE_PLAY` —— 那张表十一个阶段
+     * 各一份，把同一句话抄十一遍就是十一份必然漂移的拷贝（E 的设计定的）。
+     */
+    ...(input.blueDocPath === undefined ? [] : [
+      `   意见写到仓库里这个路径（相对项目根）：${input.blueDocPath} —— 不要写到别的地方，也不要自己起名。`,
+    ]),
     play.blue.reach,
     ...play.blue.idRule,
     /*
@@ -401,6 +546,7 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
     RESULT_CONTRACT,
+    ...contractNotes(input.contractNotesPath),
     ...play.blue.after.slice(0, 1),
     /*
      * 逐条之外再要一句整体的（用户 2026-07-31）。
@@ -686,6 +832,27 @@ export type RoundNoteSource = (typeof ROUND_NOTE_SOURCES)[number];
  * 人选完就映射不回 `reject` 了 —— 而那是静默失败。标签是**枚举值**，这段是**散文**，
  * 正好对应「模型和人的输出里只允许有枚举里的选择和散文」那条。
  */
+/**
+ * 这个阶段现在是第几轮：账本里落进 `running` 的次数。
+ *
+ * **轮次从账本数，不用 `job.attempt`** —— attempt 是「这个 job 的第几次尝试」，
+ * 而每次「跑这个阶段」都新建一个 job，于是它恒等于 1（实测：CHG-002 跑了两轮，
+ * `gaps.opened_round` 全是 1）。账本 append-only：只有 `start` 和 `retry` 落进
+ * `running`，数它就是数轮。
+ *
+ * 抽成一份是因为它已经有了两份拷贝（派发那边和裁决题面那边），2026-08-05 要加
+ * 第三个用途（waive 表带轮次依据）—— 各算一套迟早会说出两个不同的「第几轮」，
+ * 而人正拿着这个数做决定。
+ */
+export function roundFromLedger(
+  entries: readonly { readonly to: { readonly phase: string; readonly status: string } }[],
+  phase: string,
+): number {
+  return entries
+    .filter((entry) => entry.to.phase === phase && entry.to.status === "running")
+    .length;
+}
+
 export function summariseConvergence(input: {
   readonly round: number;
   readonly budget: number;
@@ -883,11 +1050,23 @@ export function readRound(
    */
   verdicts: Readonly<Record<string, Verdict>>,
 ): RoundReading {
-  const red = parseTurnResult(transcript.red);
+  /*
+   * 红方的 blockers 在自审阶段注定被丢掉（下面 `found` 那个分支）—— 那它的形状
+   * 就不许毁掉要用的那半（artifactIds）。2026-08-05 真机：Build 第 4 轮红方把
+   * blockers 交成字符串数组，解析在「要不要用」之前就抛，整轮作废，蓝方同一轮
+   * 11 条有效发现陪葬。Review / QA 里红方的发现算数，照旧全须全尾地解析。
+   */
+  const red = parseTurnResult(transcript.red, {
+    discardBlockers: !redReviewsOthers(transcript.phase),
+  });
   let blueBlockers: RoundOutcome["found"];
   try {
     blueBlockers = parseTurnResult(transcript.blue).blockers.map((blocker) => ({
       id: blocker.id, severity: blocker.severity, title: blocker.title,
+      // **这两样以前就是在这一行被丢掉的。** 红方明明知道问题在 foo.ts:42、也写清了
+      // 为什么，交出来之后只剩一个标题往下走，下一轮的红方和 Fix 得回去重新解析
+      // 那份报告散文。用户 2026-08-04：「绝对不能出现语义损失」。
+      where: blocker.where, why: blocker.why,
     }));
   } catch (error) {
     // A blue that answered in the wrong shape found nothing StagePass can act
@@ -902,6 +1081,8 @@ export function readRound(
     ? dedupeById([
         ...red.blockers.map((blocker) => ({
           id: blocker.id, severity: blocker.severity, title: blocker.title,
+          // Review / QA 里红方报的问题算数，它说的「在哪儿、为什么」当然也要跟着走。
+          where: blocker.where, why: blocker.why,
         })),
         ...blueBlockers,
       ])

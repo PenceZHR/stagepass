@@ -1,9 +1,12 @@
 import {
   advancesTo,
+  DEFAULT_GRAPH,
   sendsToFix,
+  upstreamOf,
   FIRST_PHASE,
   TERMINAL_PHASE,
   type Phase,
+  type PhaseGraph,
 } from "./phase";
 
 /**
@@ -50,6 +53,22 @@ export const CHANGE_ACTIONS = [
   "retry",
   "approve",
   "reject",
+  /**
+   * 打回上游（长回边，§5.9.1）：这个阶段发现某份**上游文档**错了，把工作送回去改。
+   * 带目标（`TransitionOptions.to`），目标必须在严格上游。
+   */
+  "sendBack",
+  /**
+   * 就在这儿再来一轮 —— **只有 Review/QA 有**（2026-08-02 记的旧账 F）。
+   *
+   * 那两个阶段的 `reject` 语义是**送修**（→ Fix），于是「这一轮方法不对，
+   * 再跑一次」没有自己的动作：唯一出路是绕道 Fix，在一份根本没问题的代码上
+   * 跑一轮修理，只为了回到 Review 再审一次。
+   *
+   * **别的阶段没有这个动作**：那儿的 `reject` 已经就是这个意思，两条路一个
+   * 意思是这棵树一直在删的东西。
+   */
+  "rerun",
 ] as const;
 
 export type ChangeAction = (typeof CHANGE_ACTIONS)[number];
@@ -58,24 +77,34 @@ export interface ChangeState {
   readonly phase: Phase;
   readonly status: PhaseStatus;
   /**
-   * Where leaving Fix returns to.
+   * 回程栈：「这儿完了之后回哪去」，后进先出（§5.9.2）。
    *
-   * Set when Review or QA sends work back, cleared on the way out. Non-null
-   * only while `phase` is `Fix` -- `assertStateValid` enforces that, because a
-   * stale return target is how a QA failure ends up back in Review.
+   * 空栈 = 正常沿主线走。两种动作压栈：打回上游（`sendBack`，压发起的阶段），
+   * 和 Review/QA 送修（`reject` → Fix，压发起的阶段）—— **同一个机制，不是两个**。
+   * 被打回/送修的阶段 approve 时弹栈回去，而不是沿主线前进。
+   *
+   * 原来是单字段 `returnPhase`，而单字段存不下嵌套回跳：Build 打回 Spec 之后，
+   * Spec 又发现 PRD 错了 —— 这时「回来之后去哪」有两个答案要记（§5.9.2 的例子）。
+   *
+   * 不变量（`assertStateValid`）：自底向顶严格递减（后压进来的必然更靠上游）、
+   * 每一层都在当前阶段的严格下游、Fix 的栈非空且顶是 Review/QA、closed 时栈空。
    */
-  readonly returnPhase: Phase | null;
+  readonly returnStack: readonly Phase[];
 }
 
 /**
  * The only actions each status accepts. This table IS the state machine; the
  * transition function below decides where an accepted action lands, never
  * whether it was allowed.
+ *
+ * `sendBack` 在表里挂在 `settled` 下，但它还多一道判据：**当前阶段得有上游**
+ * （PRD 没有，Fix 不在主线上）—— 那一半在 `isLegal` 里，因为它取决于阶段，
+ * 不取决于状态。
  */
 const ACCEPTS: Readonly<Record<PhaseStatus, readonly ChangeAction[]>> = {
   pending: ["start"],
   running: ["settle", "fail"],
-  settled: ["approve", "reject"],
+  settled: ["approve", "reject", "sendBack", "rerun"],
   blocked: ["retry"],
   closed: [],
 };
@@ -103,16 +132,53 @@ export class InvalidStateError extends Error {
 export const INITIAL_STATE: ChangeState = {
   phase: FIRST_PHASE,
   status: "pending",
-  returnPhase: null,
+  returnStack: [],
 };
 
 export function accepts(status: PhaseStatus): readonly ChangeAction[] {
   return ACCEPTS[status];
 }
 
-export function isLegal(state: ChangeState, action: ChangeAction): boolean {
-  return ACCEPTS[state.status].includes(action);
+/**
+ * `sendBack` 的目标不合法时抛这个，不抛 `IllegalTransitionError` ——
+ * 后者说「这一步在这儿不合法」，这个说「这一步合法，但你指的地方不对」。
+ * 两句话的收拾方式不同：前者是调用方的 bug，后者要把名单摆给人重选。
+ */
+export class SendBackTargetError extends Error {
+  constructor(
+    readonly code: "target_missing" | "target_not_upstream",
+    readonly detail: string,
+  ) {
+    super(`${code}: ${detail}`);
+    this.name = "SendBackTargetError";
+  }
 }
+
+export interface TransitionOptions {
+  /** `sendBack` 的目标。别的动作不读它。 */
+  readonly to?: Phase | undefined;
+  /** 这个 Change 走的图。缺省 = 全序（DEFAULT_GRAPH）。 */
+  readonly graph?: PhaseGraph | undefined;
+}
+
+export function isLegal(
+  state: ChangeState,
+  action: ChangeAction,
+  graph: PhaseGraph = DEFAULT_GRAPH,
+): boolean {
+  if (!ACCEPTS[state.status].includes(action)) return false;
+  // 打回要有地方可回：PRD 没有上游，Fix 不在主线上。这一半是阶段的属性，
+  // 不是状态的属性，所以不在 ACCEPTS 表里。
+  if (action === "sendBack") return upstreamOf(state.phase, graph).length > 0;
+  // 原地再来一轮只有 Review/QA 有 —— 别处的 `reject` 已经就是这个意思。
+  // 同一个判据（`sendsToFix`）在这儿和 `reject` 的落点上各用一次，不另算一套。
+  if (action === "rerun") return sendsToFix(state.phase);
+  return true;
+}
+
+/** 栈序校验用全序的下标 —— 子序列图保持相对顺序，所以这里不需要知道图。 */
+const ORDER_INDEX: ReadonlyMap<Phase, number> =
+  new Map(DEFAULT_GRAPH.order.map((phase, index) => [phase, index]));
 
 /**
  * A state that could never have been produced by `transition` must not be
@@ -120,23 +186,49 @@ export function isLegal(state: ChangeState, action: ChangeAction): boolean {
  * point and the machine's guarantees stop meaning anything.
  */
 export function assertStateValid(state: ChangeState): void {
-  if (state.returnPhase !== null && state.phase !== "Fix") {
-    throw new InvalidStateError(
-      `returnPhase is set on ${state.phase}; only Fix may carry one`,
-    );
+  if (state.phase === "Fix") {
+    const top = state.returnStack[state.returnStack.length - 1];
+    if (top === undefined) {
+      throw new InvalidStateError(
+        "Fix has an empty returnStack, so nothing can say where approving it leads",
+      );
+    }
+    // 只有 Review 和 QA 送修。栈顶是别人，说明这一行不是 transition 写出来的。
+    if (!sendsToFix(top)) {
+      throw new InvalidStateError(`Fix's return target is ${top}; only Review/QA send work there`);
+    }
   }
-  if (state.phase === "Fix" && state.returnPhase === null) {
-    throw new InvalidStateError(
-      "Fix has no returnPhase, so nothing can say where approving it leads",
-    );
+  /*
+   * 栈的形状：自底向顶严格递减（后压进来的必然更靠上游），且每一层都在当前阶段
+   * 的严格下游（Fix 不在主线上，跳过和当前阶段的比较）。破了任何一条，弹栈就是
+   * 往回抄近道 —— 一个「从 Spec 打回到 Build」的状态必须造不出来。
+   */
+  let below = state.phase === "Fix" ? -1 : ORDER_INDEX.get(state.phase)!;
+  for (let level = state.returnStack.length - 1; level >= 0; level -= 1) {
+    const entry = state.returnStack[level]!;
+    const index = ORDER_INDEX.get(entry);
+    if (index === undefined) {
+      throw new InvalidStateError(`${entry} is not on the line and cannot be returned to`);
+    }
+    if (index <= below) {
+      throw new InvalidStateError(
+        `returnStack ${state.returnStack.join(">")} is not strictly downstream of ${state.phase}`,
+      );
+    }
+    below = index;
   }
-  // Terminal by name, not by "has no outgoing edge". Fix also has no entry in
-  // ADVANCES_TO -- it leaves via its return target -- so deriving terminality
-  // from that map would make `Fix/closed` a representable state, and a Change
-  // stranded there could never be touched again.
+  // Terminal by name, not by "has no outgoing edge". Fix has no forward edge
+  // either -- it leaves via the stack -- so deriving terminality from edges
+  // would make `Fix/closed` representable, and a Change stranded there could
+  // never be touched again.
   if (state.status === "closed" && state.phase !== TERMINAL_PHASE) {
     throw new InvalidStateError(
       `${state.phase} is closed but ${TERMINAL_PHASE} is the only terminal phase`,
+    );
+  }
+  if (state.status === "closed" && state.returnStack.length > 0) {
+    throw new InvalidStateError(
+      "a closed Change still owes a return; the stack must be empty",
     );
   }
 }
@@ -148,38 +240,68 @@ export function assertStateValid(state: ChangeState): void {
 export function transition(
   state: ChangeState,
   action: ChangeAction,
+  options?: TransitionOptions,
 ): ChangeState {
   assertStateValid(state);
-  if (!isLegal(state, action)) throw new IllegalTransitionError(state, action);
+  const graph = options?.graph ?? DEFAULT_GRAPH;
+  if (!isLegal(state, action, graph)) {
+    throw new IllegalTransitionError(state, action);
+  }
 
   switch (action) {
     case "start":
     case "retry":
       return { ...state, status: "running" };
+    case "rerun":
+      // 阶段不动、栈不动 —— 和设计阶段的 `reject` 落点逐字一样。被打回来的
+      // Review 原地再跑一轮，它欠着的回程照旧欠着。
+      return { ...state, status: "pending" };
     case "settle":
       return { ...state, status: "settled" };
     case "fail":
       return { ...state, status: "blocked" };
     case "reject":
       // Rejecting a design phase means "run another round here". Rejecting
-      // Review or QA means the code is wrong, which is Fix's job -- and Fix has
-      // to remember which of the two to return to.
+      // Review or QA means the code is wrong, which is Fix's job -- and the
+      // way back rides the same return stack every send-back rides.
       return sendsToFix(state.phase)
-        ? { phase: "Fix", status: "pending", returnPhase: state.phase }
+        ? {
+            phase: "Fix",
+            status: "pending",
+            returnStack: [...state.returnStack, state.phase],
+          }
         : { ...state, status: "pending" };
-    case "approve":
-      if (state.phase === "Fix") {
+    case "sendBack": {
+      const to = options?.to;
+      if (to === undefined) {
+        throw new SendBackTargetError("target_missing", state.phase);
+      }
+      if (!upstreamOf(state.phase, graph).includes(to)) {
+        throw new SendBackTargetError("target_not_upstream", `${state.phase} -> ${to}`);
+      }
+      return {
+        phase: to,
+        status: "pending",
+        returnStack: [...state.returnStack, state.phase],
+      };
+    }
+    case "approve": {
+      /*
+       * 欠着回程就先还：栈非空说明**下游有阶段在等这份上游改完** —— 沿主线前进
+       * 会把等的人晾在原地。Fix 的「回到发起方」是同一条规则的特例，不再特判。
+       */
+      const top = state.returnStack[state.returnStack.length - 1];
+      if (top !== undefined) {
         return {
-          phase: state.returnPhase!,
+          phase: top,
           status: "pending",
-          returnPhase: null,
+          returnStack: state.returnStack.slice(0, -1),
         };
       }
-      {
-        const next = advancesTo(state.phase);
-        return next === null
-          ? { ...state, status: "closed" }
-          : { phase: next, status: "pending", returnPhase: null };
-      }
+      const next = advancesTo(state.phase, graph);
+      return next === null
+        ? { ...state, status: "closed" }
+        : { phase: next, status: "pending", returnStack: [] };
+    }
   }
 }

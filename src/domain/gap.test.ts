@@ -9,6 +9,7 @@ import {
   InvalidVerdictError,
   isHumanGap,
   raise,
+  respond,
   waive,
   waivedFrom,
   type Gap,
@@ -24,6 +25,8 @@ function gap(patch: Partial<Gap> = {}): Gap {
     resolution: null,
     note: null,
     closedBy: null,
+    where: null,
+    why: null,
     ...patch,
   };
 }
@@ -43,7 +46,7 @@ describe("L4 · silence keeps a gap open", () => {
   it("carries it even when the round found other things", () => {
     const after = applyRound([gap()], {
       round: 2,
-      found: [{ id: "G-2", severity: "P0", title: "范围冲突" }],
+      found: [{ id: "G-2", severity: "P0", title: "范围冲突", where: null, why: null }],
       verdicts: {},
     });
     assert.deepEqual(after.map((each) => [each.id, each.status]), [
@@ -115,7 +118,7 @@ describe("L4 · silence keeps a gap open", () => {
      */
     const after = applyRound([], {
       round: 1,
-      found: [{ id: "SPEC-VERIFY-1", severity: "P1", title: "引入了 Spec 外行为" }],
+      found: [{ id: "SPEC-VERIFY-1", severity: "P1", title: "引入了 Spec 外行为", where: null, why: null }],
       verdicts: {
         "SPEC-VERIFY-1": { kind: "closed", reason: "对照 Spec 可确认均有上游依据" },
       },
@@ -138,7 +141,7 @@ describe("L4 · silence keeps a gap open", () => {
   it("**对不认识的 id 说 still_open —— 跳过，不作废整轮**", () => {
     const after = applyRound([gap()], {
       round: 2,
-      found: [{ id: "SPEC-FLOW-1", severity: "P1", title: "loading 期间 game-over 的成绩去向未定义" }],
+      found: [{ id: "SPEC-FLOW-1", severity: "P1", title: "loading 期间 game-over 的成绩去向未定义", where: null, why: null }],
       verdicts: {
         "G-1": { kind: "closed", reason: "已修" },
         // 裁判对蓝方本轮新报的那条顺手说了 still_open —— 它还不在库里。
@@ -155,7 +158,7 @@ describe("L4 · finding the same problem again", () => {
   it("does not duplicate a gap that is already open", () => {
     const after = applyRound([gap()], {
       round: 2,
-      found: [{ id: "G-1", severity: "P1", title: "验收标准不可测" }],
+      found: [{ id: "G-1", severity: "P1", title: "验收标准不可测", where: null, why: null }],
       verdicts: {},
     });
     assert.equal(after.length, 1);
@@ -171,7 +174,7 @@ describe("L4 · finding the same problem again", () => {
       [gap({ status: "closed", resolution: "以为修好了" })],
       {
         round: 3,
-        found: [{ id: "G-1", severity: "P1", title: "验收标准不可测" }],
+        found: [{ id: "G-1", severity: "P1", title: "验收标准不可测", where: null, why: null }],
         verdicts: {},
       },
     );
@@ -187,7 +190,7 @@ describe("L4 · finding the same problem again", () => {
       [gap({ status: "waived", resolution: "本期接受，下期处理" })],
       {
         round: 3,
-        found: [{ id: "G-1", severity: "P1", title: "验收标准不可测" }],
+        found: [{ id: "G-1", severity: "P1", title: "验收标准不可测", where: null, why: null }],
         verdicts: {},
       },
     );
@@ -218,6 +221,33 @@ describe("L4 · accepting a risk is a person's act, with a reason", () => {
       () => waive([gap({ status: "closed", resolution: "done" })], "G-1", "r"),
       InvalidVerdictError,
     );
+  });
+
+  it("waive 一条 P0 —— 拒绝，从哪条路进来都一样", () => {
+    /*
+     * `/api/waive` 那条路筛掉了 P0，但裁决表「回应蓝方」对**每条** open gap 都给
+     * 「先接受这个风险」这个选项 —— 2026-08-05 发现对一条 P0 选它会一路落到这里，
+     * 而这里原来只拒 standard。P0 一旦落成 waived 就从 blockers 里消失，闸门开了
+     * —— 「P0 不许豁免」就成了只在其中一条路上成立的规则。守在域层，两条路共用
+     * 同一道闸。
+     */
+    assert.throws(
+      () => waive([gap({ severity: "P0" })], "G-1", "想带着它走"),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidVerdictError);
+        assert.equal(error.code, "p0_not_waivable");
+        return true;
+      });
+  });
+
+  it("裁决表里对 P0 选「先接受这个风险」—— 报回去，不静默落地", () => {
+    const result = respond(
+      [gap({ severity: "P0" })],
+      { "G-1": { kind: "waive", reason: "想带着它走" } },
+    );
+    // 这一条还开着、还挡门；而**人必须被告知没落地** —— 他已经答完走了。
+    assert.equal(result.gaps[0]?.status, "open");
+    assert.deepEqual(result.refused, [{ id: "G-1", code: "p0_not_waivable" }]);
   });
 });
 
@@ -251,8 +281,8 @@ describe("L4 · a round-by-round walk", () => {
     let gaps = applyRound([], {
       round: 1,
       found: [
-        { id: "G-1", severity: "P0", title: "范围与 PRD 冲突" },
-        { id: "G-2", severity: "P1", title: "验收标准不可测" },
+        { id: "G-1", severity: "P0", title: "范围与 PRD 冲突", where: null, why: null },
+        { id: "G-2", severity: "P1", title: "验收标准不可测", where: null, why: null },
       ],
       verdicts: {},
     });
@@ -281,6 +311,8 @@ describe("L1 · standard 的出口不是 waive", () => {
     id: "RB:producer:RBC-a", kind: "standard", severity: null,
     title: "每条需求都有可测的验收标准",
     status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
+    where: null,
+    why: null,
   };
 
   it("waive 一条 standard —— 拒绝", () => {
@@ -376,7 +408,7 @@ describe("L1 · 人驳回一条发现 —— 以人为主", () => {
     const dismissed = dismiss([gap()], "G-1", "反方没读到第 3 节");
     const after = applyRound(dismissed, {
       round: 2,
-      found: [{ id: "G-1", severity: "P1", title: "第 3 节那条也不可测" }],
+      found: [{ id: "G-1", severity: "P1", title: "第 3 节那条也不可测", where: null, why: null }],
       verdicts: {},
     });
     assert.equal(after[0]?.status, "closed");
@@ -406,6 +438,8 @@ describe("L1 · 人自己提一个问题", () => {
       resolution: null,
       note: null,
       closedBy: null,
+      where: null,
+      why: null,
     });
     assert.equal(isHumanGap(only!), true);
     assert.equal(isHumanGap(gap()), false);
@@ -463,7 +497,7 @@ describe("L1 · 人自己提一个问题", () => {
 describe("L1 · 人驳回的不许被模型重开", () => {
   const found = (id: string) => ({
     round: 2,
-    found: [{ id, severity: "P1" as const, title: "又报了一遍" }],
+    found: [{ id, severity: "P1" as const, title: "又报了一遍", where: null, why: null }],
     verdicts: {},
   });
 

@@ -4,6 +4,7 @@ import type { ChangeAction } from "../domain/change-state";
 import {
   decisionFrom,
   readAnswer,
+  sendBackTargetFrom,
   type Answer,
   type Question,
   type QuestionKind,
@@ -89,7 +90,13 @@ export type ApplyOutcome =
   /** A human declined. Recorded, not treated as a failure. */
   | { readonly kind: "declined" }
   /** Answered, but it carries no gate action -- a clarification batch. */
-  | { readonly kind: "recorded" };
+  | { readonly kind: "recorded" }
+  /**
+   * 裁决选了「打回上游」，目标那格却是「不打回」（或读不出来）—— 半个决定推不动
+   * 闸门，而**人已经答完走了，必须报回去**，不许静默当成没发生（§3.2 的老病）。
+   * 形状和闸门拒的那种一致，前端一条横幅两处用。
+   */
+  | { readonly kind: "refused"; readonly action: ChangeAction; readonly reason: string };
 
 export class QuestionStore {
   private readonly commands: CommandStore;
@@ -191,6 +198,41 @@ export class QuestionStore {
   }
 
   /**
+   * 这次裁决的下场，落库（§3.2·5）。
+   *
+   * 「闸门拒了」原来只活在 `/api/ask` 的一次响应里，前端把它写进终端底下那行 ——
+   * 而至少两处会覆盖那一行，其中一处是「进程已经结束了」，**那正是答完之后必然
+   * 发生的事**。所以下场必须是留得住的状态。成功的下场也记：它自己就把上一次的
+   * 拒绝顶下去了，不用另写清除逻辑。
+   */
+  recordOutcome(questionId: string, outcome: unknown): void {
+    this.database.prepare(
+      "UPDATE questions SET outcome_json = ?, updated_at = ? WHERE id = ?",
+    ).run(JSON.stringify(outcome), this.now().toISOString(), questionId);
+  }
+
+  /**
+   * 这个阶段最近一次裁决的下场，带上什么时候。null = 这个阶段还没裁决落过。
+   *
+   * 形状就是当时存进去的 outcome（`{kind:"refused",action,reason}` 那种），
+   * 摊平加一个 `at` —— 界面直接讲人话用的，不是给状态机的。
+   */
+  latestOutcomeFor(changeId: string, phase: Phase): Record<string, unknown> | null {
+    const row = this.database.prepare(
+      `SELECT outcome_json, updated_at FROM questions
+       WHERE change_id = ? AND phase = ? AND outcome_json IS NOT NULL
+       ORDER BY updated_at DESC LIMIT 1`,
+    ).get(changeId, phase) as
+      | { outcome_json: string; updated_at: string }
+      | undefined;
+    if (!row) return null;
+    return {
+      ...(JSON.parse(row.outcome_json) as Record<string, unknown>),
+      at: row.updated_at,
+    };
+  }
+
+  /**
    * fence：这道题问出去时的那份证据，现在还是不是同一份。
    *
    * ## 为什么要有一个单独的方法
@@ -242,6 +284,11 @@ export class QuestionStore {
      * 「我刚写完的东西还在不在」。顺序反过来就成了真的绕过 fence。
      */
     readonly rebaseFence?: boolean;
+    /**
+     * 打回的理由（第二趟 `Tx` 格）。理由在**合并后**的答案里，而这里只重读得到
+     * 第一趟落库的那份 —— 所以由掌握合并答案的调用方递进来，进账本的 reason 列。
+     */
+    readonly sendBackReason?: string;
   }): ApplyOutcome {
     const record = this.read(questionId);
     const answer = this.readAnswerFor(questionId);
@@ -264,6 +311,17 @@ export class QuestionStore {
       finish();
       return { kind: "recorded" };
     }
+    // 目标从**这道题自己的答案**读（T 是第一趟的格子，就在这份里）。
+    let to: Phase | undefined;
+    if (action === "sendBack") {
+      const target = sendBackTargetFrom(record.question, answer);
+      if (target === null) {
+        finish();
+        return { kind: "refused", action, reason: "no_target_chosen" };
+      }
+      to = target;
+    }
+    const reason = options?.sendBackReason?.trim() ?? "";
     this.commands.apply({
       changeId: record.changeId,
       action,
@@ -271,6 +329,8 @@ export class QuestionStore {
       expectedSnapshot: options?.rebaseFence === true
         ? this.commands.gateFor(record.changeId).snapshot
         : record.expectedSnapshot,
+      ...(to === undefined ? {} : { to }),
+      ...(action === "sendBack" && reason !== "" ? { reason } : {}),
     });
     finish();
     return { kind: "advanced", action };

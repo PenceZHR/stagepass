@@ -2,13 +2,18 @@ import type Database from "better-sqlite3";
 
 import {
   assertStateValid,
-  INITIAL_STATE,
   transition,
   type ChangeAction,
   type ChangeState,
   type PhaseStatus,
 } from "../domain/change-state";
-import { isPhase, type Phase } from "../domain/phase";
+import {
+  DEFAULT_GRAPH,
+  isPhase,
+  phaseGraphOf,
+  type Phase,
+  type PhaseGraph,
+} from "../domain/phase";
 
 /**
  * The only code in the tree that writes a Change's position.
@@ -51,11 +56,25 @@ export interface ChangeRecord {
   readonly updatedAt: string;
 }
 
+/**
+ * 账本里的一站：只有 phase 和 status —— **表里存的就只有这两样**。
+ *
+ * 原来这儿谎报成完整的 `ChangeState`（`returnPhase: null` 硬编出来的），于是一条
+ * Fix 行读出来是一个 `assertStateValid` 都过不了的假状态。账本答的是「它在哪、
+ * 什么状态」，栈是当下的事实，不是历史的一部分 —— 类型收窄到表能作证的范围。
+ */
+export interface LedgerStop {
+  readonly phase: Phase;
+  readonly status: PhaseStatus;
+}
+
 export interface LedgerEntry {
   readonly seq: number;
   readonly action: ChangeAction | "create";
-  readonly from: ChangeState | null;
-  readonly to: ChangeState;
+  readonly from: LedgerStop | null;
+  readonly to: LedgerStop;
+  /** 这一步为什么发生（打回的理由等），人的话。null = 这一步没带理由。 */
+  readonly reason: string | null;
   readonly at: string;
 }
 
@@ -66,7 +85,7 @@ interface ChangeRow {
   brief: string | null;
   phase: string;
   status: string;
-  return_phase: string | null;
+  return_stack: string;
   seq: number;
   created_at: string;
   updated_at: string;
@@ -79,6 +98,7 @@ interface EventRow {
   from_status: string | null;
   to_phase: string;
   to_status: string;
+  reason: string | null;
   at: string;
 }
 
@@ -90,12 +110,16 @@ function toPhase(value: string): Phase {
 function toState(row: {
   phase: string;
   status: string;
-  return_phase: string | null;
+  return_stack: string;
 }): ChangeState {
+  const parsed: unknown = JSON.parse(row.return_stack);
+  if (!Array.isArray(parsed)) {
+    throw new Error(`return_stack is not a list: ${row.return_stack}`);
+  }
   const state: ChangeState = {
     phase: toPhase(row.phase),
     status: row.status as PhaseStatus,
-    returnPhase: row.return_phase === null ? null : toPhase(row.return_phase),
+    returnStack: parsed.map((entry) => toPhase(String(entry))),
   };
   assertStateValid(state);
   return state;
@@ -128,18 +152,19 @@ export class ChangeStore {
     belonging: { projectId?: string; title?: string } = {},
   ): ChangeRecord {
     const at = this.now().toISOString();
+    // 起点跟着项目的图走（§4.5）：一个只走 Build->Review->Done 的项目，它的
+    // Change 生在 Build，不是 PRD。没有项目就是全序，起点还是 PRD。
+    const first = this.graphFor(belonging.projectId ?? null).order[0]!;
     this.database.transaction(() => {
       this.database.prepare(
         `INSERT INTO changes
-           (id, project_id, title, phase, status, return_phase, seq, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+           (id, project_id, title, phase, status, return_stack, seq, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', '[]', 0, ?, ?)`,
       ).run(
         changeId,
         belonging.projectId ?? null,
         belonging.title ?? null,
-        INITIAL_STATE.phase,
-        INITIAL_STATE.status,
-        INITIAL_STATE.returnPhase,
+        first,
         at,
         at,
       );
@@ -148,10 +173,31 @@ export class ChangeStore {
       this.database.prepare(
         `INSERT INTO change_events
            (change_id, seq, action, from_phase, from_status, to_phase, to_status, at)
-         VALUES (?, 0, 'create', NULL, NULL, ?, ?, ?)`,
-      ).run(changeId, INITIAL_STATE.phase, INITIAL_STATE.status, at);
+         VALUES (?, 0, 'create', NULL, NULL, ?, 'pending', ?)`,
+      ).run(changeId, first, at);
     })();
     return this.read(changeId);
+  }
+
+  /**
+   * 这个项目的阶段图。null / 没设 = 全序（DEFAULT_GRAPH）。
+   *
+   * 校验在读取时发生（`phaseGraphOf` 会拒绝重排、缺 Done、不认识的名字）——
+   * 一个存坏的 phase_order 在第一次被用到时炸出来，而不是把 Change 引进一张
+   * 走不通的图里。
+   */
+  private graphFor(projectId: string | null): PhaseGraph {
+    if (projectId === null) return DEFAULT_GRAPH;
+    const row = this.database.prepare(
+      "SELECT phase_order FROM projects WHERE id = ?",
+    ).get(projectId) as { phase_order: string | null } | undefined;
+    if (!row || row.phase_order === null) return DEFAULT_GRAPH;
+    return phaseGraphOf(JSON.parse(row.phase_order) as string[]);
+  }
+
+  /** 这个 Change 走的图。闸门要拿它判 sendBack 的合法性（command-store）。 */
+  graphOf(changeId: string): PhaseGraph {
+    return this.graphFor(this.read(changeId).projectId);
   }
 
   read(changeId: string): ChangeRecord {
@@ -218,9 +264,21 @@ export class ChangeStore {
    * database when the machine refuses it, so a rejected action leaves no trace
    * and no partial write.
    */
-  apply(changeId: string, action: ChangeAction): ChangeRecord {
+  apply(
+    changeId: string,
+    action: ChangeAction,
+    options: {
+      /** `sendBack` 的目标（打回哪一份上游文档）。别的动作不读。 */
+      to?: Phase;
+      /** 这一步为什么发生，人的话。进账本的 reason 列，环上历史箭头读它。 */
+      reason?: string;
+    } = {},
+  ): ChangeRecord {
     const current = this.read(changeId);
-    const next = transition(current.state, action);
+    const next = transition(current.state, action, {
+      ...(options.to === undefined ? {} : { to: options.to }),
+      graph: this.graphFor(current.projectId),
+    });
     const at = this.now().toISOString();
     const seq = current.seq + 1;
 
@@ -229,8 +287,8 @@ export class ChangeStore {
       // below fires, so writing it second would abort every legal transition.
       this.database.prepare(
         `INSERT INTO change_events
-           (change_id, seq, action, from_phase, from_status, to_phase, to_status, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (change_id, seq, action, from_phase, from_status, to_phase, to_status, reason, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         changeId,
         seq,
@@ -239,16 +297,17 @@ export class ChangeStore {
         current.state.status,
         next.phase,
         next.status,
+        options.reason ?? null,
         at,
       );
       const changed = this.database.prepare(
         `UPDATE changes
-            SET phase = ?, status = ?, return_phase = ?, seq = ?, updated_at = ?
+            SET phase = ?, status = ?, return_stack = ?, seq = ?, updated_at = ?
           WHERE id = ? AND seq = ?`,
       ).run(
         next.phase,
         next.status,
-        next.returnPhase,
+        JSON.stringify(next.returnStack),
         seq,
         at,
         changeId,
@@ -322,13 +381,12 @@ export class ChangeStore {
         : {
             phase: toPhase(row.from_phase),
             status: row.from_status as PhaseStatus,
-            returnPhase: null,
           },
       to: {
         phase: toPhase(row.to_phase),
         status: row.to_status as PhaseStatus,
-        returnPhase: null,
       },
+      reason: row.reason,
       at: row.at,
     }));
   }

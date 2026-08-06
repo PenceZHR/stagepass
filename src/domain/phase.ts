@@ -41,31 +41,110 @@ export function isPhase(value: string): value is Phase {
 }
 
 /**
- * Where an approval moves the Change.
+ * 阶段图：主线的顺序，作为**值**（BACKLOG §4.5）。
  *
- * `Fix` is deliberately absent from this map. It is not a step in the line: it
- * is entered when Review or QA sends work back, and leaving it returns to
- * whichever of the two sent it. That target is state, not a constant, so it
- * lives on the Change (`returnPhase`) rather than here. Encoding it as a fixed
- * edge would silently send every QA failure back through Review.
+ * ## 为什么从常量变成数据
+ *
+ * bootstrap 框架下「只有一个 Change，YAGNI」不成立 —— 不是每个项目都值得走
+ * 12 个阶段（§1.5·④）。图变成值之后，一个项目可以只走
+ * `PRD → Build → Review → Done`，而状态机一行不改。
+ *
+ * ## 自定义图 = 全序的子序列，不许重排
+ *
+ * 「上游」这个词建立在全序上，而长回边（sendBack）整个建在「上游」上。允许重排，
+ * `upstreamOf` 就说不清 TestPlan 和 Plan 谁先谁后 —— 那不是灵活性，是把一个
+ * 有语义的顺序退化成一个列表。跳过阶段可以，交换阶段不行。
+ *
+ * ## `Fix` 永远不在主线上
+ *
+ * 它由打回进入（Review/QA 的 reject），由弹栈离开。写进主线等于每个 Change
+ * 都要路过修理厂。
  */
-const ADVANCES_TO: Readonly<Record<Phase, Phase | null>> = {
-  PRD: "Spec",
-  Spec: "TechSpec",
-  TechSpec: "Plan",
-  Plan: "TestPlan",
-  TestPlan: "Build",
-  Build: "Review",
-  Review: "QA",
-  Fix: null,
-  QA: "Merge",
-  Merge: "Retro",
-  Retro: "Done",
-  Done: null,
+export interface PhaseGraph {
+  readonly order: readonly Phase[];
+}
+
+/** 默认图：除 Fix 外的 11 个阶段，全序。 */
+export const DEFAULT_GRAPH: PhaseGraph = {
+  order: PHASES.filter((phase) => phase !== "Fix"),
 };
 
-export function advancesTo(phase: Phase): Phase | null {
-  return ADVANCES_TO[phase];
+export class InvalidPhaseGraphError extends Error {
+  constructor(readonly code:
+    | "must_end_with_done"
+    | "fix_not_on_the_line"
+    | "unknown_phase"
+    | "not_a_subsequence",
+  readonly detail: string) {
+    super(`${code}: ${detail}`);
+    this.name = "InvalidPhaseGraphError";
+  }
+}
+
+/**
+ * 从一串阶段名构造一张图。**拒绝发生在构造时，不在走到一半时** —— 一张走到
+ * Build 才发现没有出口的图，比一张建不出来的图贵得多。
+ */
+export function phaseGraphOf(order: readonly string[]): PhaseGraph {
+  if (order.length === 0 || order[order.length - 1] !== TERMINAL_PHASE) {
+    throw new InvalidPhaseGraphError("must_end_with_done", order.join(","));
+  }
+  const phases: Phase[] = [];
+  for (const name of order) {
+    if (!isPhase(name)) throw new InvalidPhaseGraphError("unknown_phase", name);
+    if (name === "Fix") {
+      throw new InvalidPhaseGraphError("fix_not_on_the_line", order.join(","));
+    }
+    phases.push(name);
+  }
+  // 子序列判定：在全序里按序找得到每一个。找不到 = 重排或重复。
+  let cursor = 0;
+  const full = DEFAULT_GRAPH.order;
+  for (const phase of phases) {
+    const found = full.indexOf(phase, cursor);
+    if (found === -1) {
+      throw new InvalidPhaseGraphError("not_a_subsequence", order.join(","));
+    }
+    cursor = found + 1;
+  }
+  return { order: phases };
+}
+
+/**
+ * Where an approval moves the Change.
+ *
+ * `Fix` is deliberately absent: it is not a step in the line -- it is entered
+ * when Review or QA sends work back, and leaving it pops the return stack.
+ * That target is state, not a constant, so it lives on the Change
+ * (`returnStack`) rather than here.
+ */
+export function advancesTo(
+  phase: Phase,
+  graph: PhaseGraph = DEFAULT_GRAPH,
+): Phase | null {
+  if (phase === "Fix") return null;
+  const index = graph.order.indexOf(phase);
+  if (index === -1) {
+    // 一个不在图上的阶段没有「下一步」可言。返回 null 会让 transition 把它
+    // 当成终点直接 closed —— 静默失败往危险那边倒，所以抛。
+    throw new InvalidPhaseGraphError("unknown_phase", phase);
+  }
+  return graph.order[index + 1] ?? null;
+}
+
+/**
+ * `phase` 的严格上游，按主线顺序 —— sendBack（长回边，§5.9.1）的合法目标名单。
+ *
+ * 第一个阶段和 Fix 都是空名单：前者没有上游，后者不在主线上。空名单的含义由
+ * 调用方判 —— 一道没有选项的题不该问出去（domain/question.ts 那条规矩）。
+ */
+export function upstreamOf(
+  phase: Phase,
+  graph: PhaseGraph = DEFAULT_GRAPH,
+): Phase[] {
+  const index = graph.order.indexOf(phase);
+  if (index <= 0) return [];
+  return graph.order.slice(0, index);
 }
 
 /**
@@ -132,6 +211,12 @@ export const TERMINAL_PHASE: Phase = "Done";
  * 这个名单还决定**要不要查干净树**：StagePass 提交的是工作树里所有的改动，它分不出
  * 哪一行是红方写的、哪一行是人自己写了一半的。所以凡是要 commit 的阶段，派发之前
  * 必须先确认树是干净的 —— 两件事同一个名单，不许分开。
+ *
+ * **名单外的阶段轮末也 commit，但那不违反上面这条**（E，2026-08-05）：它们走的是
+ * `repo.commitPaths`，只提交 `docs/stagepass/<change>/` —— 逐个点名，结构上卷不走
+ * 没点到的东西，所以不需要干净树。上面那条约束的前提是「分不出哪行是谁写的」，
+ * 而一个 StagePass 独占的目录就是那条分界。意思是「整树提交」的名单，仍然精确
+ * 等于意思是「要求干净树」的名单。
  */
 const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>(["Build", "Fix"]);
 
