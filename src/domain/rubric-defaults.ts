@@ -1,4 +1,5 @@
 import type { Phase } from "./phase";
+import { reportsFreeFormBlockers } from "./phase-play";
 import type { CriterionDraft, RubricRole } from "./rubric";
 
 /**
@@ -56,10 +57,45 @@ import type { CriterionDraft, RubricRole } from "./rubric";
  * 所有阶段共同的事** —— 后者才是这一份该管的。
  */
 const CRITIC = [
+  "它说的每一句都建立在实际看过的东西上，没有靠猜、也没有假设一件它没核实过的事",
+];
+
+/**
+ * 只在**反方交问题清单**的阶段判的那几条。
+ *
+ * ## 为什么要分出来 —— 2026-08-06 真机撞的
+ *
+ * 这三条原来在 `CRITIC` 里，所有阶段共用。而 08-06 那一刀砍掉了有模板的阶段里
+ * 反方的 blockers 通道（`reportsFreeFormBlockers`），于是它在 PRD 里**结构上没有
+ * id、也没有「每条问题」这回事** —— 裁判照着判，两条当场 `no`，理由写得明明白白：
+ * 「反方的意见与返回 JSON 都没有携带既有问题的 id」。
+ *
+ * ## 判据，以及它是哪条老规矩的反面
+ *
+ * `VERDICT` 那段注释记着 2026-07-30 的教训：**放开一样能力，就要回头看有没有哪条
+ * 标准在禁它。** 这次是反过来的那半，一样要记：
+ *
+ * > **收走一样能力，就要回头看有没有哪条标准在要它。**
+ *
+ * 一条建在已经没有的能力上的标准，每一轮都给出一个没有依据的 `no` —— 和
+ * 「一条只能靠猜的标准」是同一个病，只是方向相反。
+ */
+const CRITIC_WITH_BLOCKERS = [
   "每条问题都指向产出里的具体位置，而不是泛泛地说「不够清楚」",
   "每条问题都说明了它为什么是问题，而不只是说它存在",
-  "每条问题都建立在它实际看过的东西上，没有靠猜、也没有假设一件它没核实过的事",
   "同一个问题在后续轮次沿用了同一个 id，没有换个说法重开一条",
+];
+
+/**
+ * 只在**反方走逐条判定**的阶段判的那几条。
+ *
+ * 上面那三条被拿走之后，这些阶段的 critic rubric 不能只剩一条 —— 反方在这儿仍然
+ * 有实打实的活儿（逐条判、写依据、给一句整体判断），那些活儿一样要有人判。
+ */
+const CRITIC_WITH_ASSESSMENTS = [
+  "每条判定都写了依据，而不只是一个 yes 或 no",
+  "判 no 的每一条都说得出产出里是哪一节、哪一句不满足它",
+  "那句整体判断说清了这一轮够不够格以及为什么，不是复述逐条判定",
 ];
 
 /**
@@ -119,7 +155,12 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "out-of-scope", text: "明确写出了这一次不做什么" },
     { section: "assumption", text: "列出了至少一个会让整个方案不成立的前提" },
     { section: "assumption", text: "每条前提都写了怎么判它成不成立" },
-    { section: "deferred", text: "架构、技术栈、模块划分、接口、测试用例、实现步骤都没有在这一份里定" },
+    { section: "fixed", text: "这一节里的每一条都说得出是谁定的，没有把自己的设计决定混进来当成既定约束" },
+    { section: "fixed", text: "没有定死的约束时明写了「没有」，而不是留空" },
+    // **「新定」和「转述人已经定死的」是两件事**（2026-08-06 真机撞出来的）：
+    // 原措辞是「都没有在这一份里定」，于是红方把一条不可退让的技术栈约束挪到
+    // 哪一节都判 no —— 一条结构上满足不了的标准，比没有更糟。
+    { section: "deferred", text: "架构、模块划分、接口、测试用例、实现步骤都没有在这一份里**新定**；人已经定死的写在「已经定死的约束」那一节，不写这儿" },
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   Spec: [
@@ -129,7 +170,7 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "edge", text: "每条行为都写了它的边界情况和出错时的表现" },
     { section: "edge", text: "没有用「其余情况未定义」这类写法把边界推给下游" },
     { section: "terms", text: "用词和上游文档一致，没有为同一个概念发明第二个名字" },
-    { section: "deferred", text: "数据怎么存、模块怎么划分、用什么技术都没有在这一份里定" },
+    { section: "deferred", text: "数据怎么存、模块怎么划分、用什么技术都没有在这一份里**新定** —— 上游已经定死的照抄过来不算" },
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   TechSpec: [
@@ -310,7 +351,12 @@ export function defaultCriteria(phase: Phase, role: RubricRole): CriterionDraft[
   // 终局阶段（Done）没有 producer 标准，那就一栏都不给 —— 空 rubric 本来就合法。
   if (PRODUCER[phase].length === 0) return [];
   const texts = role === "critic"
-    ? [...CRITIC, ...CRITIC_EXTRA[phase] ?? []]
+    ? [
+      ...CRITIC,
+      // 按**这个阶段的反方到底有什么通道**拼，不按一张手维护的名单。
+      ...(reportsFreeFormBlockers(phase) ? CRITIC_WITH_BLOCKERS : CRITIC_WITH_ASSESSMENTS),
+      ...CRITIC_EXTRA[phase] ?? [],
+    ]
     : [...VERDICT, ...VERDICT_EXTRA[phase] ?? []];
   // blocking 一律 false，理由见文件开头。**不要在这里开一个参数把它打开。**
   return texts.map((text) => ({ text, blocking: false, section: null }));

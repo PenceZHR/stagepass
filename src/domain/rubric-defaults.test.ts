@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import { PHASES } from "./phase";
+import { reportsFreeFormBlockers } from "./phase-play";
 import { templateFor } from "./phase-template";
 import { RUBRIC_ROLES } from "./rubric";
 import { defaultCriteria } from "./rubric-defaults";
@@ -128,3 +129,40 @@ describe("出厂标准 · 共用的 critic 不许和某个阶段的规矩打架"
     assert.ok(defaultCriteria("Review", "critic").length >= 3);
   });
 });
+
+/*
+ * **收走一样能力，就要回头看有没有哪条标准在要它。**
+ *
+ * 2026-08-06 真机：08-06 那一刀砍掉了有模板的阶段里反方的 blockers 通道，而
+ * `CRITIC` 里「沿用同一个 id」「每条问题指向具体位置」两条还在 —— 裁判照着判，
+ * 两条当场 no，理由是「反方的返回 JSON 里没有携带既有问题的 id」。
+ * 一条建在已经没有的能力上的标准，每一轮都给出一个没有依据的 no。
+ */
+describe("出厂标准 · critic 那份不许要一个这阶段没有的能力", () => {
+  it("**不交问题清单的阶段，标准里不许提「问题的 id」或「每条问题」**", () => {
+    for (const phase of PHASES) {
+      if (phase === "Done" || reportsFreeFormBlockers(phase)) continue;
+      for (const entry of defaultCriteria(phase, "critic")) {
+        assert.doesNotMatch(entry.text, /同一个 id|每条问题/,
+          `${phase} 的反方没有这个通道，这条永远判 no：${entry.text}`);
+      }
+    }
+  });
+
+  it("交问题清单的阶段照旧要判那几条 —— 别把它们一起删了", () => {
+    for (const phase of ["Build", "Fix", "Review", "QA", "Merge"] as const) {
+      const texts = defaultCriteria(phase, "critic").map((each) => each.text);
+      assert.ok(texts.some((t) => t.includes("同一个 id")), `${phase} 少了 id 那条`);
+      assert.ok(texts.some((t) => t.includes("每条问题都指向")), `${phase} 少了位置那条`);
+    }
+  });
+
+  it("**两边都不许只剩一条** —— 反方在哪个阶段都有实打实的活儿要被判", () => {
+    for (const phase of PHASES) {
+      if (phase === "Done") continue;
+      assert.ok(defaultCriteria(phase, "critic").length >= 3,
+        `${phase} 的 critic 只剩 ${defaultCriteria(phase, "critic").length} 条`);
+    }
+  });
+});
+
