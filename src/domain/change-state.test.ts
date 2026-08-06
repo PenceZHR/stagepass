@@ -572,6 +572,25 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
     assert.deepEqual(approvalTargets(settled(TERMINAL_PHASE)), []);
   });
 
+  /**
+   * **图是数据（§4.5），所以图会变。** 打回之后项目把在等的那个阶段从
+   * `phase_order` 里去掉了 —— 那时清单不能是空的：批准是还债的唯一出口，空清单
+   * 会把一个已经欠着的 Change 锁死在一个没有出口的格子里。
+   *
+   * 这是 §8.10 第一刀自己带出来的洞，写这条测试时当场撞到的。
+   */
+  it("在等的那个已经不在图上了 —— 债照还，不许把 Change 锁死", () => {
+    const shrunk = phaseGraphOf(
+      ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Merge", "Done"]);
+    const state = settled("TestPlan", ["Review"]);
+    assert.deepEqual(approvalTargets(state, shrunk), ["Review"]);
+    assert.equal(recommendedApproval(state, shrunk), "Review");
+    assert.deepEqual(
+      transition(state, "approve", { graph: shrunk }),
+      { phase: "Review", status: "pending", returnStack: [] },
+    );
+  });
+
   it("Fix 只有还债那一条 —— 它不在主线上，没有「下一个阶段」可言", () => {
     assert.deepEqual(approvalTargets(settled("Fix", ["QA"])), ["QA"]);
   });

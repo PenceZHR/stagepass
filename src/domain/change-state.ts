@@ -239,6 +239,15 @@ export function approvalTargets(
   const until = top === undefined
     ? graph.order.length - 1          // 没人在等 —— 主线末尾之内随便挑
     : graph.order.indexOf(top);       // 有人在等 —— 最远只能到他那儿（含）
+  /*
+   * **在等的那个已经不在这个 Change 的图上了** —— 项目的 `phase_order` 在打回
+   * 之后被改过（阶段图是数据，§4.5）。那时唯一走得通的就是还债：清单空着而推荐
+   * 指着他，`transition` 会当场拒，而批准正是还债的唯一出口 —— **一个没有出口
+   * 的格子**，恰恰是那两条硬校验存在的理由。
+   *
+   * 债照还，栈照弹。图变了不该把一个已经欠着的 Change 锁死。
+   */
+  if (top !== undefined && until === -1) return [top];
   return graph.order.slice(from, until + 1);
 }
 
