@@ -140,6 +140,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * `web/`（L5）在它上面，而不是它的一部分。
    */
   "app/ask-human.ts": 3,
+  // 「把这次改动要什么问出来」这个用例。够得着的最高一层是 `domain/brief.ts`（3），
+  // 所以和它同层 —— 它连 Codex 都不认识（「跑一次 turn」是注进来的）。
+  "app/record-brief.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
   // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
@@ -370,8 +373,8 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // §4.1 的主角。拆应用层（BACKLOG §四 J 批）每拆走一块就把这个数往下钉。
   // 2026-08-05：抽 launchAskPrompt（1463 → 1462）、askFollowUp（→ 1453）、
   // phasesFor（→ 1410）、waitForAnswer 收掉四份手写的等答案循环（→ 1329）、
-  // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）。
-  "web/panel-server.ts#handle": 1225,
+  // `app/waive.ts` —— 应用层的第一个真用例（→ 1225）、`app/record-brief.ts`（→ 1093）。
+  "web/panel-server.ts#handle": 1093,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

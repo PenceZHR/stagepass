@@ -23,14 +23,9 @@ import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import {
   gateDecisionQuestion,
-  clarificationQuestion,
   responseFollowUpQuestion,
-  type ClarificationItem, type Answer,
   responsesFrom, runsAgainHere, DECISION_FIELD, sendBackReasonFrom,
 } from "../domain/question";
-import {
-  briefContract, readBriefProposal, briefFrom, followUpFields, BriefProposalVoidError,
-} from "../domain/brief";
 import { GateMovedError, GateRefusedError } from "../domain/gate";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
@@ -54,6 +49,7 @@ import { retireStandards } from "../domain/rubric-gaps";
 import { QuestionStore } from "../store/question-store";
 import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { askFollowUp, launchAskPrompt, waitForAnswer } from "../app/ask-human";
+import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
 
@@ -1230,6 +1226,33 @@ function json(response: ServerResponse, body: unknown): void {
 }
 
 /**
+ * 录需求那个用例的下场，翻成网页认识的那份 JSON。和 `waiveBody` 同一个道理：
+ * `asked / answered / recorded` 是**界面的词汇**，用例不该知道它们存在。
+ */
+function briefBody(outcome: Exclude<BriefOutcome, { kind: "no_such_change" }>): unknown {
+  const phase = outcome.phase;
+  switch (outcome.kind) {
+    case "busy":
+      return { asked: false, phase, ...outcome.busy };
+    case "proposal_failed":
+      return {
+        asked: false, reason: outcome.reason, detail: outcome.detail, phase,
+      };
+    case "not_asked":
+      return { asked: false, reason: "session_died_before_asking", phase };
+    case "unanswered":
+      return {
+        asked: true, answered: false, phase, questionId: outcome.questionId,
+        reason: outcome.reason, threadId: outcome.threadId,
+      };
+    case "not_recorded":
+      return { asked: true, answered: true, recorded: false, phase };
+    case "recorded":
+      return { asked: true, answered: true, recorded: true, phase, brief: outcome.brief };
+  }
+}
+
+/**
  * 接受风险那个用例的下场，翻成网页认识的那份 JSON。
  *
  * **翻译只发生在这里。** 用例返回的是 `WaiveOutcome`（一个说得清的下场），
@@ -2116,175 +2139,43 @@ export async function handle(
    */
   if (url.pathname === "/api/brief" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
-    const changes = new ChangeStore(database);
-    let change: { title: string | null; state: { phase: Phase } };
-    try {
-      change = changes.read(changeId);
-    } catch {
+    const { outcome, closeSession } = await recordBrief({
+      database, sessions, changeId,
+      cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
+      /*
+       * **插件在这里就得注册上**，虽然提问题这一步用不到它：第二段提示词是打进
+       * **同一个会话**的（见 `PanelSessions.type`），而 MCP 工具是启动时注册的。
+       * 这时候不注册，后面打字让它调 `stagepass_ask` 只会得到「没有这个工具」。
+       */
+      propose: async (prompt) => {
+        const phase = new ChangeStore(database).read(changeId).state.phase;
+        const pluginConfig = pluginConfigFor(database, changeId);
+        const transport = new CodexTuiTransport({
+          ...options.session,
+          ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
+          // argv 由这里自己配，不用 transport 给的那份 —— 它不知道要带插件。
+          launch: () => {
+            sessions.launchInto(changeId, phase, codexArgv({
+              threadId: null,
+              sandbox: options.session.sandbox,
+              approval: options.session.approval,
+              model: options.session.model,
+              reasoningEffort: options.session.reasoningEffort,
+              config: pluginConfig,
+              prompt,
+            }));
+          },
+        });
+        return (await transport.runTurn({ threadId: null, prompt })).text;
+      },
+      timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
+    });
+    if (outcome.kind === "no_such_change") {
       response.writeHead(404).end("no such change");
       return;
     }
-    const phase = change.state.phase;
-    const busy = cannotAskNow(database, sessions, changeId, phase);
-    if (busy) {
-      json(response, { asked: false, phase, ...busy });
-      return;
-    }
-
-    /*
-     * 第一步：让模型读仓库，提问题。用一次普通的 turn，不用对抗轮 —— 提问题不需要
-     * 有人反驳它，而一轮对抗要好几分钟。
-     *
-     * **插件在这里就得注册上**，虽然这一步用不到它：第二段提示词是**打进同一个
-     * 会话**的（见 `PanelSessions.type`），而 MCP 工具是启动时注册的。这时候不注册，
-     * 后面打字让它调 `stagepass_ask` 只会得到「没有这个工具」。
-     */
-    const pluginConfig = pluginConfigFor(database, changeId);
-    const transport = new CodexTuiTransport({
-      ...options.session,
-      ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
-      // argv 由这里自己配，不用 transport 给的那份 —— 它不知道要带插件。
-      launch: () => {
-        sessions.launchInto(changeId, phase, codexArgv({
-          threadId: null,
-          sandbox: options.session.sandbox,
-          approval: options.session.approval,
-          model: options.session.model,
-          reasoningEffort: options.session.reasoningEffort,
-          config: pluginConfig,
-          prompt: briefContract({ changeTitle: change.title }),
-        }));
-      },
-    });
-
-    let items;
-    try {
-      const proposed = await transport.runTurn({
-        threadId: null,
-        prompt: briefContract({ changeTitle: change.title }),
-      });
-      items = readBriefProposal(proposed.text);
-    } catch (error: unknown) {
-      // 模型一条都没提、或者提得不成形 —— **不许降级成「不需要问」**，那样需求录入
-      // 就被静默跳过了，而下游那份 PRD 仍然会生成出来，看着一切正常。
-      json(response, {
-        asked: false,
-        reason: error instanceof BriefProposalVoidError ? error.code : "proposal_failed",
-        detail: error instanceof Error ? error.message : String(error),
-        phase,
-      });
-      return;
-    }
-
-    /*
-     * 第二步：把它组成题问人。**两趟。**
-     *
-     * 第一趟纯选项格，一路回车就答得完；只有点了「都不对，我自己写」的那几题，
-     * 才有第二趟给他写字（`followUpFields`）。全用选项答完的人一个字都不用打。
-     *
-     * 为什么非分两趟不可：客户端**空的自由文本格会吃掉回车**，`optional` 不管用
-     * （2026-07-30 实测）。所以「选了就不用打字」只有在第一趟里根本没有文本格时
-     * 才是真的 —— 用户 2026-08-03 明确要求过这件事。
-     */
-    const gate = new CommandStore(database).gateFor(changeId);
-    const questions = new QuestionStore(database);
-
-    /** 问一趟，等人答完。返回 null = 这一趟没走通，原因已经写进响应了。 */
-    const askOnce = async (
-      fields: readonly ClarificationItem[], title: string,
-    ): Promise<Answer | null> => {
-      const question = clarificationQuestion({ title, items: fields })!;
-      const questionId = `BR-${changeId}-${Date.now()}`;
-      questions.ask({
-        id: questionId, changeId, phase, kind: "clarification",
-        question, expectedSnapshot: gate.snapshot,
-      });
-
-      /*
-       * **打进同一个会话，不另起进程。** 完整理由在 `PanelSessions.type` 那段注释里，
-       * 两句话：`launchInto` 会把活着会话的 argv 丢掉；`close` 再起会掐断浏览器正在
-       * 读的流。两条我都踩过。
-       *
-       * 一行，因为 composer 里的换行就是提交。
-       */
-      const typed = await sessions.type(changeId, phase,
-        "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数**。"
-        + "它会把「这次改动要什么」交给我来答。不要替我回答，不要猜我想要什么，调用完就停下。");
-      if (!typed) {
-        // 会话在这中间死了。**不许假装问出去了** —— 题已经落库，人却永远看不到它。
-        questions.settle(questionId);
-        json(response, { asked: false, reason: "session_died_before_asking", phase });
-        return null;
-      }
-
-      const waited = await waitForAnswer({
-        database, questions, sessions, changeId, phase, questionId,
-        timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
-      });
-      if (!waited.answered) {
-        // 题已经被 waitForAnswer 收掉了。
-        json(response, {
-          asked: true, answered: false, phase, questionId,
-          reason: waited.reason, threadId: waited.threadId,
-        });
-        /*
-         * **放弃了就把会话关掉。**
-         *
-         * 原来这里直接 `return` —— 于是问人超时之后进程还留着，`sessions.has()`
-         * 永远 true，这个阶段的**每一个动作**都被闸门拒掉，而界面上没有杀掉终端的
-         * 入口。2026-08-03 现场复现过这个死锁：录需求说「阶段在跑」，跑阶段说
-         * 「还没有需求」，而挡着的那个会话是 StagePass 自己 15 分钟前放弃、却忘了
-         * 关的僵尸。
-         *
-         * 关掉是安全的：这条路已经决定不等了，那个进程再没有人会去读它。
-         */
-        sessions.close(changeId, phase);
-        return null;
-      }
-      // 录需求拿到答案就用完了，没有下一步要拿着这道题走 —— 收掉。
-      questions.settle(questionId);
-      return waited.answer;
-    };
-
-    const first = await askOnce(items, `${changeId}：先把这次改动要什么说清楚`);
-    if (!first) return;
-
-    /*
-     * 第二趟只在真有人要写字的时候才弹。**一条都没有就不弹** —— 「全用选项答完的人
-     * 一个字都不用打」如果还要他再点一次「提交」，那句话就打了折。
-     */
-    const more = followUpFields(items, first);
-    let content = first.content;
-    if (more.length > 0) {
-      const second = await askOnce(more, `${changeId}：你说要自己写的那几条`);
-      if (!second) return;
-      content = { ...content, ...second.content };
-    }
-    const answer: Answer = { action: first.action, content };
-
-    const brief = briefFrom(items, answer);
-
-    /*
-     * 办完了就把这个会话关掉。
-     *
-     * **和前面那次「中途 close」是两件事**：中途关会掐断浏览器正在读的流，让人看不见
-     * 选择器（我踩过）。这里是流程真的走完了 —— 题问过、答案拿到、需求落库，那个
-     * Codex 只是坐在 composer 上没事干。
-     *
-     * 不关的话它一直 `live`，而 §6.5 规则 5 会挡住下一次派发：「跑这个阶段」永远是
-     * 灰的，界面上又没有结束终端的入口 —— 人就卡在录完需求之后那一步（2026-07-30
-     * 实测到这个死角）。
-     */
-    sessions.close(changeId, phase);
-
-    if (brief === null) {
-      // 按了 Esc，或者必答的没答完。**不拿一段空白往下走** —— 那等于又回到那份
-      // 编出来的 PRD。
-      json(response, { asked: true, answered: true, recorded: false, phase });
-      return;
-    }
-    changes.setBrief(changeId, brief);
-    json(response, { asked: true, answered: true, recorded: true, phase, brief });
+    if (closeSession) sessions.close(changeId, outcome.phase);
+    json(response, briefBody(outcome));
     return;
   }
 
