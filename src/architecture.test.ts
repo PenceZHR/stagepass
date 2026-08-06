@@ -365,6 +365,28 @@ describe("standing · pty output is never interpreted", () => {
     // And the type it hands out is the narrow one.
     assert.match(code, /onBytes\(listener:\s*\(bytes:\s*Uint8Array\)/);
   });
+
+  /**
+   * **`node-pty` 只许用到才加载。**
+   *
+   * 它是原生模块，而且只带 darwin / win32 的预编译产物。一句模块顶部的值导入，
+   * 就让整条注入假 pty 的路一起废掉 —— 2026-08-06 CI 第一次真跑撞到：
+   * `panel-server.test.ts` 明明塞的是假的，却因为加载不了原生模块，114 条测试
+   * 一条都没执行。
+   *
+   * **注入点在、依赖却是硬加载的，那道缝就是假的。** 这条钉住它别再变回去。
+   * `import type` 不算 —— 它编译后一个字节都不留。
+   */
+  it("**不在模块顶部加载 node-pty** —— 那会让注入的那道缝重新变成假的", () => {
+    const session = production.find((file) => file.path === "web/pty-session.ts");
+    assert.ok(session, "web/pty-session.ts is missing");
+    const valueImports = [...withoutComments(session.text)
+      .matchAll(/^import\s+(?!type\b)[^;]*?from\s+["']node-pty["']/gm)];
+    assert.deepEqual(
+      valueImports.map((match) => match[0]), [],
+      "值导入会在加载模块时就要原生模块 —— 改成 import type + 用到才 require",
+    );
+  });
 });
 
 /**

@@ -1,4 +1,6 @@
-import { spawn as ptySpawn, type IPty } from "node-pty";
+import { createRequire } from "node:module";
+
+import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from "node-pty";
 
 import type { Phase } from "../domain/phase";
 
@@ -37,7 +39,44 @@ import type { Phase } from "../domain/phase";
  * Launching through osascript meant StagePass discarded the child entirely and
  * could not tell a finished turn from a dead one; §6.4's first pit could only be
  * covered by a timeout. Here a process that dies is an `onExit`, immediately.
+ *
+ * ## 为什么 `node-pty` 是**用到才加载**的
+ *
+ * 它是原生模块，而且只带 darwin / win32 的预编译产物 —— Linux 上要现编。于是
+ * 一句模块顶部的 `import` 就让**整条注入的路一起废掉**：`panel-server.test.ts`
+ * 明明塞的是假 pty（`options.spawn`），却因为加载不了原生模块而整个文件跑不起来。
+ * 2026-08-06 CI 第一次真跑就撞上这个 —— 那 114 条测试一条都没执行。
+ *
+ * **那道缝原来是假的**：注入点在，可依赖仍然是硬加载的。改成用到才拿，
+ * 「不碰 Codex 也能证明这一半」这句话才第一次成立，而且哪个平台都跑得动。
+ *
+ * 类型仍然从 `node-pty` 来（`import type` 编译后不留任何东西），所以下面那个
+ * `encoding: null` 和 `IPty` 该管的一样都没少。
  */
+
+/**
+ * `node-pty` 的 `spawn`。
+ *
+ * 照着它的 `.d.ts` 写一份，而不是 `typeof ptySpawn` —— 后者要一个**值**导入，
+ * 也就是要在模块顶部加载原生模块，正是这里要避开的那件事。
+ */
+export type PtySpawn = (
+  file: string,
+  args: string[] | string,
+  options: IPtyForkOptions | IWindowsPtyForkOptions,
+) => IPty;
+
+/**
+ * 真的那一个，第一次要用时才加载。
+ *
+ * `createRequire` 而不是 `await import()`：`startPtySession` 是同步的，而它同步
+ * 是有理由的 —— 调用方拿到的必须是一个立刻能挂监听的句柄。
+ */
+let realSpawn: PtySpawn | null = null;
+function nodePtySpawn(): PtySpawn {
+  realSpawn ??= (createRequire(import.meta.url)("node-pty") as { spawn: PtySpawn }).spawn;
+  return realSpawn;
+}
 
 export interface PtySessionOptions {
   readonly cwd: string;
@@ -49,7 +88,7 @@ export interface PtySessionOptions {
   readonly cols?: number;
   readonly rows?: number;
   /** Injected so the server half can be proved without spawning Codex. */
-  readonly spawn?: typeof ptySpawn;
+  readonly spawn?: PtySpawn;
 }
 
 export interface PtySession {
@@ -80,7 +119,8 @@ export function startPtySession(input: {
   options: PtySessionOptions;
 }): PtySession {
   const { options } = input;
-  const spawn = options.spawn ?? ptySpawn;
+  // 注入的优先。没注入才去拿真的 —— 也就是**只有真要起进程时才加载原生模块**。
+  const spawn = options.spawn ?? nodePtySpawn();
   const terminal: IPty = spawn("codex", input.argv, {
     name: "xterm-256color",
     cols: options.cols ?? 120,
