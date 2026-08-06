@@ -2233,6 +2233,17 @@ function drawRubric() {
   }
   parts.push(roles);
 
+  /*
+   * 升级排在**判定和标准之前**。
+   *
+   * 它原来跟在这一轮的判定后面，于是被那一长串顶到折叠线以外 —— 2026-08-06 真机
+   * 实测：DOM 里有、屏幕上看不见，和「这个按钮不存在」对使用者是同一件事。
+   *
+   * 而且位置本身也是错的：它是**项目级**的动作，和你正在看哪个阶段、哪个角色
+   * 没有关系。埋在某一个阶段的判定底下，等于说它属于那个阶段。
+   */
+  parts.push(drawUpgrade());
+
   parts.push(drawVerdicts());
 
   const scope = document.createElement("p");
@@ -2241,8 +2252,6 @@ function drawRubric() {
     ? "这一份只属于这个 Change，覆盖了项目级默认。"
     : "这是项目级默认，改它会影响这个项目里之后每一个 Change。";
   parts.push(scope);
-
-  parts.push(drawUpgrade());
 
   editing.drafts.forEach((entry, index) => {
     const row = document.createElement("div");
