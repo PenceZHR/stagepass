@@ -5,7 +5,7 @@ import { humanGapId, type Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
   readVerdicts, RED, renderOpenGaps, renderSettled, summariseConvergence,
-  summariseRoundNotes,
+  summariseRoundNotes, templateGaps,
   UnreadableVerdictError,
 } from "./round";
 import { templateFor } from "./phase-template";
@@ -1153,6 +1153,87 @@ describe("L4 · 那两个路径要经裁判转达给反方", () => {
       blueRubric: { criteriaPath: "/tmp/a", answersPath: "/tmp/b", count: 0 },
     });
     assert.equal(zero, without, "count=0 和压根没给，印出来该一模一样");
+  });
+});
+
+const filled = (titles: readonly string[]): string =>
+  titles.map((title) => `## ${title}\n有内容\n`).join("\n");
+
+const allTitles = templateFor("PRD")!.map((each) => each.title);
+
+describe("L4 · 缺模板节 = 挡闸门，但不丢这一轮", () => {
+  const base = { sections: templateFor("PRD")!, round: 2, docPath: "docs/x/PRD-r2.md" };
+
+  it("缺一节就开一条挡门的，位置和它该回答什么都带着", () => {
+    const next = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, 5)) });
+    assert.equal(next.length, 1);
+    const [gap] = next;
+    assert.equal(gap!.id, "TEMPLATE-deferred");
+    assert.equal(gap!.kind, "finding");
+    assert.equal(gap!.severity, "P1", "P0 不可豁免 —— 人可能真不想要那一节");
+    assert.ok(gap!.title.includes("留给下游决定的"));
+    assert.equal(gap!.where, "docs/x/PRD-r2.md");
+    assert.ok(gap!.why !== null && gap!.why.length > 0, "该回答什么要带着");
+    assert.equal(gap!.openedRound, 2);
+  });
+
+  it("六节齐了一条都不开", () => {
+    assert.deepEqual(templateGaps([], { ...base, markdown: filled(allTitles) }), []);
+  });
+
+  it("**下一轮补上了就机械地关掉** —— 不用裁判表态", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, 5)) });
+    const next = templateGaps(opened, { ...base, round: 3, markdown: filled(allTitles) });
+    assert.equal(next.length, 1);
+    assert.equal(next[0]!.status, "closed");
+    assert.equal(next[0]!.closedBy, null, "是这一轮判它没了，不是人驳的");
+    assert.ok(next[0]!.resolution !== null && next[0]!.resolution.trim() !== "");
+  });
+
+  it("还缺着就保持 open，不重复开第二条", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, 5)) });
+    const next = templateGaps(opened, { ...base, round: 3, markdown: filled(allTitles.slice(0, 5)) });
+    assert.equal(next.length, 1);
+    assert.equal(next[0]!.status, "open");
+    assert.equal(next[0]!.openedRound, 2, "还是当初那一条，轮次不许被改写");
+  });
+
+  it("**人 waive 掉的不再碰** —— 他说了「我接受没有这一节」", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, 5)) });
+    const waived = opened.map((gap) => ({
+      ...gap, status: "waived" as const, resolution: "这一节我不要",
+    }));
+    assert.deepEqual(
+      templateGaps(waived, { ...base, round: 3, markdown: filled(allTitles.slice(0, 5)) }),
+      waived,
+    );
+  });
+
+  it("**人驳回掉的也不再碰**，但一轮关掉的会重开", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, 5)) });
+    const short = filled(allTitles.slice(0, 5));
+
+    const dismissed = opened.map((gap) => ({
+      ...gap, status: "closed" as const, resolution: "不要这节", closedBy: "human" as const,
+    }));
+    assert.deepEqual(templateGaps(dismissed, { ...base, round: 3, markdown: short }), dismissed);
+
+    const closedByRound = opened.map((gap) => ({
+      ...gap, status: "closed" as const, resolution: "上一轮有了", closedBy: null,
+    }));
+    const reopened = templateGaps(closedByRound, { ...base, round: 3, markdown: short });
+    assert.equal(reopened[0]!.status, "open");
+    assert.equal(reopened[0]!.openedRound, 3, "重开算新一轮发现的");
+  });
+
+  it("产出压根不在（红方什么都没写）—— 六节全开", () => {
+    assert.equal(templateGaps([], { ...base, markdown: null }).length, 6);
+  });
+
+  it("别人的 gap 一个字都不碰", () => {
+    const other = gap("SPEC-1", "反方报的");
+    const next = templateGaps([other], { ...base, markdown: filled(allTitles) });
+    assert.deepEqual(next, [other]);
   });
 });
 

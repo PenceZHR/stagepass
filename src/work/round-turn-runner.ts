@@ -1,10 +1,14 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
+import { join } from "node:path";
+
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
 import { producesCommit, upstreamOf, type Phase } from "../domain/phase";
 import { pendingSendBack } from "../domain/journey";
-import { roundFromLedger, type RoundConclusion } from "../domain/round";
+import { templateFor } from "../domain/phase-template";
+import type { Gap } from "../domain/gap";
+import { roundFromLedger, templateGaps, type RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
@@ -262,6 +266,7 @@ export class RoundTurnRunner implements TurnRunner {
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
     this.recordNotes(job.changeId, phase, round, settled);
     this.releaseIfMalformed(job.changeId, phase, round, settled.malformed);
+    this.checkTemplate(job.changeId, phase, round, settled.gaps, cwd);
 
     const artifactIds = this.producedBy(job.changeId, phase, round, settled.artifactIds);
 
@@ -354,6 +359,41 @@ export class RoundTurnRunner implements TurnRunner {
       text: `这一轮有读不出来的地方（${malformed.join("、")}），`
         + "已放开裁判线程，下一轮从干净的线程开 —— 坏格式会留在线程自己的历史里循环。",
     });
+  }
+
+  /**
+   * 红方这一轮的产出照没照模板写。缺的每一节挡一次闸门（`domain/round.ts` 的
+   * `templateGaps`）。
+   *
+   * ## 为什么在这儿，而不是在轮子里面
+   *
+   * 红蓝是**在裁判那一个 turn 里**跑完的 —— StagePass 插不进「红方交完、派反方
+   * 之前」那个缝。所以只能事后查，而事后查正好也是对的：这一轮反方已经干完的活儿
+   * 一个字都不会丢（用户 2026-08-06 选的）。
+   *
+   * ## 没有工作区就不查
+   *
+   * 查不了和「查了、缺六节」是两件事。离线测试里 `workspaceFor` 返回 null，
+   * 那时凭空开六条挡门的 gap 就是拿「我看不见」当「它没写」——
+   * 和 `rubric-defaults.ts` 那句「一条只能靠猜的标准比没有更糟」同一个道理。
+   */
+  private checkTemplate(
+    changeId: string,
+    phase: Phase,
+    round: number,
+    gaps: readonly Gap[],
+    cwd: string | null,
+  ): void {
+    const sections = templateFor(phase);
+    if (sections === null || cwd === null) return;
+    const relative = redDocPath(changeId, phase, round);
+    const next = templateGaps(gaps, {
+      sections,
+      markdown: this.options.readRoundFile(join(cwd, relative)),
+      round,
+      docPath: relative,
+    });
+    if (next !== gaps) this.options.gaps.replace(changeId, phase, next);
   }
 
   private recordNotes(

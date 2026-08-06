@@ -2,8 +2,10 @@ import {
   jsonAnswerIn, RESULT_CONTRACT, RESULT_CONTRACT_NOTES, TurnResultUnparsableError,
 } from "./turn";
 import { parseTurnResult } from "./turn";
-import { isHumanGap } from "./gap";
-import { renderTemplate, type TemplateSection } from "./phase-template";
+import { isHumanGap, templateGapId } from "./gap";
+import {
+  missingSections, renderTemplate, type TemplateSection,
+} from "./phase-template";
 import type { Gap, RoundOutcome, Verdict } from "./gap";
 import { redReviewsOthers, type Phase } from "./phase";
 import { PHASE_PLAY } from "./phase-play";
@@ -59,7 +61,7 @@ export interface RoundInstructions {
    *
    * 别处的正文能走文件就走文件（需求名单、契约说明），判据是「它天然是一份文档、
    * 而且能有几百字」。模板不是资料，**是这一轮活儿的骨架**：少了它，红方交出来的
-   * 形状就不对，而形状不对是**整轮作废**（`assertTemplateComplete`），不是「少点
+   * 形状就不对，而形状不对**每一节都会挡住闸门**（`templateGaps`），不是「少点
    * 信息」。判据和 `RESULT_CONTRACT` 那一半一样 —— **缺了会怎样**，不是长不长。
    *
    * ## 缺席 = 这个阶段还没有模板，不是「空模板」
@@ -288,6 +290,94 @@ export function renderOpenGaps(openGaps: readonly Gap[]): string {
  * 「这条不成立」和「问题还在，我接受这个风险」是两句不同的话。混成一段，反方会
  * 以为被接受的那些也已经不存在了。
  */
+/**
+ * 红方这一轮的产出照没照模板写 —— **缺的每一节开一条挡门的**。
+ *
+ * ## 为什么是挡闸门，不是整轮作废
+ *
+ * 用户 2026-08-06 选的。整轮作废会把同一轮反方已经干完的活儿一起扔掉 ——
+ * 这棵树 2026-08-05 正好栽过一次（`readRound` 里那段注释：红方 blockers 格式错，
+ * 解析在「要不要用」之前就抛，蓝方同一轮 11 条有效发现陪葬），那次是当成 bug
+ * 修掉的。同一个形状不要复发第二遍。
+ *
+ * ## 为什么它不经模型的嘴
+ *
+ * 缺没缺是**数出来的**（`missingSections`），补上了也是数出来的。所以这一类 gap
+ * 由这里开、由这里关，**裁判不需要对它表态** —— 让模型去判一个机械事实，就是把
+ * 刚拿到手的确定性又还回去。
+ *
+ * ## 四种状态各走各的
+ *
+ * | 这一条现在 | 那一节还缺着 | 补上了 |
+ * |---|---|---|
+ * | 没有 | 开一条 | 什么都不做 |
+ * | `open` | 原样留着（**轮次不改写** —— 它是第几轮发现的就是第几轮） | 关掉，写清是哪一轮补的 |
+ * | `closed`（一轮关的） | 重开，算新一轮发现的 | 不动 |
+ * | `closed`（人驳的）/ `waived` | **一个字都不碰** | 不动 |
+ *
+ * 最后那一行是承重的：人驳回「这一节我不要」或者 waive「我接受没有它」之后，
+ * 再机械地重开一遍，就是拿一个数出来的事实去覆盖人的裁定。以人为主
+ * （用户 2026-07-30 拍的，2026-08-03 明确到「一直管」）。
+ */
+export function templateGaps(
+  before: readonly Gap[],
+  input: {
+    readonly sections: readonly TemplateSection[];
+    /** 红方那份产出的正文。`null` = 那个文件不在（红方什么都没写）。 */
+    readonly markdown: string | null;
+    readonly round: number;
+    /** 产出在哪（相对项目根）—— 进 `where`，让人一眼知道去翻哪个文件。 */
+    readonly docPath: string;
+  },
+): Gap[] {
+  const missing = new Set(missingSections(input.markdown ?? "", input.sections));
+  const byId = new Map(before.map((gap) => [gap.id, gap]));
+  const next = [...before];
+
+  for (const section of input.sections) {
+    const id = templateGapId(section.key);
+    const existing = byId.get(id);
+    const stillMissing = missing.has(section.key);
+
+    // 人表过态的，两种都不碰。
+    if (existing !== undefined
+      && (existing.status === "waived" || existing.closedBy === "human")) continue;
+
+    if (stillMissing) {
+      if (existing?.status === "open") continue;          // 已经开着，别开第二条
+      const opened: Gap = {
+        id,
+        kind: "finding",
+        // P1 而不是 P0：**P0 不可豁免**，而人完全可能有正当理由不要某一节
+        // （出口是 waive 或者把那一节从模板里拿掉）。和 `HUMAN-<n>` 同一条理由。
+        severity: "P1",
+        title: `产出缺了「${section.title}」这一节`,
+        status: "open",
+        openedRound: input.round,
+        resolution: null,
+        note: null,
+        closedBy: null,
+        where: input.docPath,
+        // 「该回答什么」原样带过去 —— 少了它，下一轮红方只知道缺了个标题。
+        why: section.asks,
+      };
+      if (existing === undefined) next.push(opened);
+      else next[next.indexOf(existing)] = opened;
+      continue;
+    }
+
+    if (existing?.status === "open") {
+      next[next.indexOf(existing)] = {
+        ...existing,
+        status: "closed",
+        resolution: `第 ${input.round} 轮的产出里有这一节了`,
+        closedBy: null,
+      };
+    }
+  }
+  return next;
+}
+
 export function renderSettled(
   settled: readonly (Gap & { phase: string })[],
 ): string {
