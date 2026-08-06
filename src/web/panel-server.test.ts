@@ -132,6 +132,15 @@ async function withPanel(
     recoverEveryMs?: PanelOptions["recoverEveryMs"];
     repo?: PanelOptions["repo"];
     trust?: PanelOptions["trust"];
+    /**
+     * 项目的目录。默认 `/tmp`。
+     *
+     * **要验「落在项目目录外」的那条必须自己指定一个**：默认值只在 macOS 上碰巧
+     * 是对的 —— 那里 `tmpdir()` 是 `/var/folders/…`，天然不在 `/tmp` 底下。Linux
+     * 上 `tmpdir()` 就是 `/tmp`，于是「外面」那个目录其实在项目里面，护栏照放行，
+     * 而测试断言的是它该拒（2026-08-06 CI 撞到）。
+     */
+    projectPath?: string;
   } = {},
 ): Promise<void> {
   const database = new Database(":memory:");
@@ -142,7 +151,7 @@ async function withPanel(
   // 而那条触发器正是这么设计的。
   // **项目必须有路径**：Codex 跑在项目的目录里（2026-07-30 起），没有路径
   // launchInto 会抛 ProjectPathMissingError。用 /tmp，测试里的 pty 是假的，不会真跑。
-  new ProjectStore(database).ensure(PROJECT, "p", "/tmp");
+  new ProjectStore(database).ensure(PROJECT, "p", extra.projectPath ?? "/tmp");
   new ChangeStore(database).create(CHANGE, { projectId: PROJECT });
 
   const started: Fake["started"] = [];
@@ -531,7 +540,17 @@ describe("panel · 产出的正文读得到，读不到要说为什么", () => {
     /*
      * `artifactIds` 是**模型**写的。一个想歪的模型往里放 `~/.ssh/id_rsa`，
      * 「只读库里列着的」挡不住它 —— 挡得住的是这一条。
+     *
+     * **项目根和「外面」都得自己造，而且是两个兄弟目录。**
+     *
+     * 原来项目根用默认的 `/tmp`、外面用 `tmpdir()` 下的一个临时目录 —— 那只在
+     * macOS 上成立（`tmpdir()` 是 `/var/folders/…`）。Linux 上 `tmpdir()` 就是
+     * `/tmp`，于是「外面」其实在项目**里面**，护栏正确放行，而这条测试断言它该
+     * 拒 —— 2026-08-06 CI 第一次在 Linux 上跑就红在这里。
+     *
+     * 两个兄弟目录谁也不包含谁，哪个平台都成立。
      */
+    const root = mkdtempSync(join(tmpdir(), "sp-artifact-root-"));
     const outside = mkdtempSync(join(tmpdir(), "sp-artifact-outside-"));
     const file = join(outside, "elsewhere.md");
     writeFileSync(file, "在项目外面");
@@ -541,8 +560,32 @@ describe("panel · 产出的正文读得到，读不到要说为什么", () => {
         const read = await readArtifact(open, file);
         assert.equal(read.readable, false);
         assert.equal(read.reason, "outside_project");
-      });
-    } finally { rmSync(outside, { recursive: true, force: true }); }
+      }, { projectPath: root });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 上面那条**验的是拒**，所以它有一个安静的失效方式：只要「外面」那个路径压根
+   * 读不到（拼错、不存在），它照样绿 —— 而 `outside_project` 和 `gone` 是两回事。
+   *
+   * 这一条把同一个夹具反过来用：**同一个项目根，里面的文件必须读得到**。两条
+   * 一起才说明那道边界画在了该在的地方，而不是「什么都读不到」。
+   */
+  it("同一个根，**里面的读得到** —— 上面那条不是靠「什么都读不到」绿的", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sp-artifact-root-"));
+    const file = join(root, "inside.md");
+    writeFileSync(file, "在项目里面");
+    try {
+      await withPanel(async ({ open, database }) => {
+        produce(database, [file]);
+        const read = await readArtifact(open, file);
+        assert.equal(read.readable, true);
+        assert.match(read.text!, /在项目里面/);
+      }, { projectPath: root });
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it("文件不在了 —— 说出来，不给一块空白", async () => {
