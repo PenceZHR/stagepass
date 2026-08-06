@@ -13,6 +13,18 @@ import type { CriterionDraft, RubricRole } from "./rubric";
  * 默认是给人一个起点去读、去改、去决定哪几条值得挡，不是替他做那个决定。
  * 这条是 `RUBRIC-DESIGN.md` §3 末句，别在补默认条目时顺手把它翻掉。
  *
+ * ## 2026-08-06：挂了模板节的那些出厂就阻断
+ *
+ * 上面那条**只被这一种情况例外**，而且理由是结构性的。
+ *
+ * 原来一律 false 防的是「`not_assessed` 视同阻断 → 任何一次漏答都给新项目挂上挡门
+ * 的东西」。**在模板下漏答有了另一个出口**：缺节在红方那一侧就被 `templateGaps`
+ * 机械判掉了，轮不到反方漏答；而反方漏判某一节，本来就该挡 —— 那一节没有人看过。
+ *
+ * 真库取证（`~/.stagepass/panel.db` 的 CHG-001）：298 条 criterion 全 `blocking=0`，
+ * 反方答出来的 **64 个 `no` 一条都没挡门、一条都没变成 gap**。
+ * **准的那条路只说不算，野的那条路说了算。** 这一刀就是让准的那条算数。
+ *
  * ## 为什么 critic 和 verdict 只有一套
  *
  * 它们讲的不是产物，是**方法**：怎么质疑一份东西、怎么裁一场争论。这两件事在
@@ -72,13 +84,43 @@ const VERDICT = [
   "给出了「还要不要再来一轮」的结论，并写清楚依据是什么",
 ];
 
+/**
+ * 一条出厂的 producer 标准。
+ *
+ * **写成字符串 = 不挂模板节**（还没有模板的那十一个阶段就是这样，一个字都没改）。
+ * 带 `section` 的形式只给有模板的阶段用 —— 挂了节就意味着两件事：反方判它时知道
+ * 自己在判哪一节，以及**它出厂就阻断**（见 `defaultCriteria`）。
+ */
+type ProducerEntry = string | { readonly text: string; readonly section: string };
+
 /** 每个阶段该产出什么。**这一栏才是逐阶段不同的。** */
-const PRODUCER: Readonly<Record<Phase, readonly string[]>> = {
+const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
+  /*
+   * ## 2026-08-06：按模板的六节铺开
+   *
+   * 原来是四条散着的。真库取证（CHG-001，PRD 四轮 18 条 gap）：只有两条挂得回那
+   * 四条里，其余追的是 TechSpec 的规范化对象、TestPlan 的失败阈值、Plan 的工具
+   * 冻结版本 —— **全都不归 PRD 管**。四条太薄，当边界会把反方勒死，它只好自己去
+   * 找别的东西挑。
+   *
+   * 用户 2026-08-06：「我宁可在每个阶段写的比较详细，也不要互相的扯皮。」
+   * 所以成本花在这儿：**十一条，六节每节都有人判**。
+   *
+   * `acceptance` 那条「细到…就够了」是这份里**唯一直接掐颗粒度**的标准，对着的是
+   * 那条实证：PRD 四轮是同一句抱怨在降尺度，第四轮追到了「13.0 的词法形式」。
+   */
   PRD: [
-    "写清楚了要解决谁的什么问题，而不是先写要做什么功能",
-    "每条需求都有可观察、可测量的验收标准",
-    "明确写出了这一次**不做**什么",
-    "列出了至少一个会让整个方案不成立的前提",
+    { section: "problem", text: "写清楚了用的人是谁、他今天怎么受阻，而不是先写要做什么功能" },
+    { section: "problem", text: "写了不解决会怎样，而不只是说「需要改进」" },
+    { section: "outcome", text: "写的是做完之后可观察的变化，不是一张功能清单" },
+    { section: "acceptance", text: "每条验收标准都可观察、可测量" },
+    { section: "acceptance", text: "验收标准细到「一个称职的实施者照着做不会做错」就够了，没有去追每个词的唯一裁定" },
+    { section: "acceptance", text: "每条验收标准都对得上前面写的那个结果，没有凭空多出来的" },
+    { section: "out-of-scope", text: "明确写出了这一次不做什么" },
+    { section: "assumption", text: "列出了至少一个会让整个方案不成立的前提" },
+    { section: "assumption", text: "每条前提都写了怎么判它成不成立" },
+    { section: "deferred", text: "架构、技术栈、模块划分、接口、测试用例、实现步骤都没有在这一份里定" },
+    { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   Spec: [
     "每条需求都能对应回 PRD 里的某一条，没有凭空多出来的",
@@ -245,10 +287,18 @@ const VERDICT_EXTRA: Partial<Readonly<Record<Phase, readonly string[]>>> = {
  * 等于这个角色不做判定。
  */
 export function defaultCriteria(phase: Phase, role: RubricRole): CriterionDraft[] {
-  const texts = role === "producer" ? PRODUCER[phase]
-    : PRODUCER[phase].length === 0 ? []
-      : role === "critic" ? [...CRITIC, ...CRITIC_EXTRA[phase] ?? []]
-        : [...VERDICT, ...VERDICT_EXTRA[phase] ?? []];
+  if (role === "producer") {
+    return PRODUCER[phase].map((entry) => (typeof entry === "string"
+      ? { text: entry, blocking: false, section: null }
+      // **挂了节就出厂阻断。** 判据是结构性的，不是一张要维护的例外名单 ——
+      // 名单会漂，「有没有挂节」不会。
+      : { text: entry.text, blocking: true, section: entry.section }));
+  }
+  // 终局阶段（Done）没有 producer 标准，那就一栏都不给 —— 空 rubric 本来就合法。
+  if (PRODUCER[phase].length === 0) return [];
+  const texts = role === "critic"
+    ? [...CRITIC, ...CRITIC_EXTRA[phase] ?? []]
+    : [...VERDICT, ...VERDICT_EXTRA[phase] ?? []];
   // blocking 一律 false，理由见文件开头。**不要在这里开一个参数把它打开。**
-  return texts.map((text) => ({ text, blocking: false }));
+  return texts.map((text) => ({ text, blocking: false, section: null }));
 }

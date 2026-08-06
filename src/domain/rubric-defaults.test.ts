@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
+import { PHASES } from "./phase";
+import { templateFor } from "./phase-template";
+import { RUBRIC_ROLES } from "./rubric";
 import { defaultCriteria } from "./rubric-defaults";
 
 /**
@@ -33,11 +36,46 @@ describe("出厂标准 · 要求的东西必须先被要求", () => {
     }
   });
 
-  it("出厂的一条都不阻断 —— 这是拍过板的，别顺手翻掉", () => {
-    for (const phase of ["PRD", "Build", "Review"] as const) {
-      for (const entry of defaultCriteria(phase, "producer")) {
-        assert.equal(entry.blocking, false, `${phase}：${entry.text}`);
+  /*
+   * 「出厂一律不阻断」是 2026-07-31 拍的，2026-08-06 **只被挂了模板节的那些narrowly
+   * 例外掉**。所以这条护栏改成钉那个例外的边界，而不是放宽 ——
+   * 判据是**结构性的**：阻断 ⟺ 挂了节，两个方向都要成立。
+   */
+  it("阻断 ⟺ 挂了模板节，一条都不许多", () => {
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        for (const entry of defaultCriteria(phase, role)) {
+          assert.equal(
+            entry.blocking, entry.section !== null && entry.section !== undefined,
+            `${phase}/${role}：${entry.text}`,
+          );
+        }
       }
+    }
+  });
+
+  it("没有模板的阶段，出厂仍然一条都不阻断 —— 那条拍板没被翻", () => {
+    for (const phase of ["Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review"] as const) {
+      for (const role of RUBRIC_ROLES) {
+        for (const entry of defaultCriteria(phase, role)) {
+          assert.equal(entry.blocking, false, `${phase}/${role}：${entry.text}`);
+        }
+      }
+    }
+  });
+
+  it("PRD 的 producer：每条都挂在一个真实存在的模板节上", () => {
+    const keys = new Set(templateFor("PRD")!.map((each) => each.key));
+    for (const entry of defaultCriteria("PRD", "producer")) {
+      assert.ok(entry.section != null, `没挂节：${entry.text}`);
+      assert.ok(keys.has(entry.section!), `挂到了不存在的节 ${entry.section}`);
+    }
+  });
+
+  it("**六节每一节都至少有一条标准** —— 没人判的节等于没有那一节", () => {
+    const covered = new Set(defaultCriteria("PRD", "producer").map((each) => each.section));
+    for (const section of templateFor("PRD")!) {
+      assert.ok(covered.has(section.key), `没人判这一节：${section.key}`);
     }
   });
 });

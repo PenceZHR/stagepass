@@ -254,25 +254,34 @@ describe("rubric store · 判定按轮读", () => {
 });
 
 describe("rubric store · 出厂标准", () => {
-  it("**一条都不阻断** —— 这条不是保守，是有出口的问题", () => {
+  it("**装进库之后，阻断 ⟺ 挂了模板节** —— 一条都不许多", () => {
     /*
-     * not_assessed 是阻断的。出厂就勾上阻断，等于任何一次模型漏答都会立刻给每个
-     * 项目挂上一条挡门的东西，而它的出口只有「进设置里把这条标准撤下来」——
+     * 出厂一律不阻断（2026-07-31 拍的）：not_assessed 是阻断的，出厂就勾上等于任何
+     * 一次漏答都给每个项目挂一条挡门的东西，出口只有「进设置里把它撤下来」——
      * 人会在完全不知道 rubric 是什么的情况下先被拦住。
+     *
+     * 2026-08-06 **只对挂了模板节的那些窄口例外**：那时漏答有了另一个出口 ——
+     * 缺节在红方那一侧就被 `templateGaps` 机械判掉了，轮不到反方漏答。
+     *
+     * 这条测试钉的是**边界**，不是放宽：两个方向都要成立，例外一条都不许多。
+     * （`domain/rubric-defaults.test.ts` 有同一条的域层版本 —— 这一份走的是
+     * 「真的装进库、再读回来」，两边判的不是同一段路。）
      */
     const { rubrics } = open();
     rubrics.installDefaults(PROJECT);
 
-    const blocking: string[] = [];
+    const wrong: string[] = [];
     for (const phase of PHASES) {
       for (const role of RUBRIC_ROLES) {
         const current = rubrics.current({ projectId: PROJECT, changeId: null, phase, role });
         for (const entry of current?.criteria ?? []) {
-          if (entry.blocking) blocking.push(`${phase}/${role}: ${entry.text}`);
+          if (entry.blocking !== (entry.section !== null)) {
+            wrong.push(`${phase}/${role}: blocking=${entry.blocking} section=${entry.section} ${entry.text}`);
+          }
         }
       }
     }
-    assert.deepEqual(blocking, []);
+    assert.deepEqual(wrong, []);
   });
 
   it("只补空缺 —— 人改过的一个字都不碰", () => {
