@@ -144,18 +144,23 @@ export class JobStore {
     status: JobStatus;
     createdAt: string;
     attempt: number;
+    /** 为什么失败。没失败（或没记）就是 null —— 界面靠它说「上一轮的原因」。 */
+    error: string | null;
   } | null {
     const row = this.database.prepare(
-      `SELECT id, status, attempt, created_at FROM jobs
+      `SELECT id, status, attempt, created_at, error FROM jobs
         WHERE change_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).get(changeId) as
-      | { id: string; status: JobStatus; attempt: number; created_at: string }
+      | {
+          id: string; status: JobStatus; attempt: number; created_at: string;
+          error: string | null;
+        }
       | undefined;
     return row === undefined
       ? null
       : {
           id: row.id, status: row.status, attempt: row.attempt,
-          createdAt: row.created_at,
+          createdAt: row.created_at, error: row.error,
         };
   }
 
@@ -269,6 +274,54 @@ export class JobStore {
       this.markFailed(input.jobId, "deadline_reached");
     }
     return result;
+  }
+
+  /**
+   * 人主动收掉一条活儿（面板上的「中止这一轮」）。
+   *
+   * ## 为什么它绕开租约的所有权
+   *
+   * 租约防的是**两个工人**互相抢一条活儿；而这里是人对着一条看得见的活儿说停。
+   * 人的出口不该被一个死进程手里的 token 挡住 —— 出口被藏正是交接 §5.5.2 记的
+   * 那个死结（进程在跑、面板说没有、人一个能按的都没有）。工人那边迟到的失败由
+   * `TurnLoop.runOnce` 的「谁先收尾谁说了算」兜住，账不会被翻回去。
+   *
+   * 只收 queued / running；已经收过尾的原样返回 —— 出口按两次不该炸。
+   */
+  abort(jobId: string, reason: string): Job {
+    const job = this.read(jobId);
+    if (job.status === "queued" || job.status === "running") {
+      this.markFailed(jobId, reason);
+    }
+    return this.read(jobId);
+  }
+
+  /**
+   * 派发在预检就被拒了 —— 把这次拒绝原样记成一条失败的活儿。
+   *
+   * ## 为什么拒绝也要进账本
+   *
+   * 交接 §5.5.4 / §5.5.5 的真机现场：retry 被干净树预检拒掉时**没有任何新记录**，
+   * 库里最近的 error 还是上一轮的超时 —— 人看到的原因是假的。拒绝也是「这一次
+   * 发生了什么」，它落在同一本账上，「最近一条」才永远是真话。
+   *
+   * `kind` 是 `dispatch_refusal`，和真跑过的 `phase_turn` 分得开 ——
+   * 「一轮都没排出去」这句话仍然按 kind 查得出来。
+   */
+  recordRefusal(input: {
+    id: string;
+    changeId: string;
+    reason: string;
+    at: number;
+  }): Job {
+    const at = this.now().toISOString();
+    this.database.prepare(
+      `INSERT INTO jobs
+         (id, change_id, kind, status, attempt, max_attempts,
+          owner, token, expires_at, deadline_at, error, created_at, updated_at)
+       VALUES (?, ?, 'dispatch_refusal', 'failed', 0, 0, NULL, NULL, NULL, ?, ?, ?, ?)`,
+    ).run(input.id, input.changeId, input.at, input.reason, at, at);
+    return this.read(input.id);
   }
 
   complete(input: { jobId: string; owner: string; token: string }): Job {

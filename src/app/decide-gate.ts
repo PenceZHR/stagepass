@@ -342,6 +342,7 @@ export async function decideGate(input: {
   const decided = answer.content[DECISION_FIELD];
   const continued = runsAgainHere(decided) ? await input.rerun(phase) : null;
 
+  const after = changes.read(changeId).state;
   return {
     outcome: {
       kind: "decided", phase, questionId, answer,
@@ -350,8 +351,18 @@ export async function decideGate(input: {
       raised: raised?.id ?? null,
       outcome,
       continued,
-      state: changes.read(changeId).state,
+      state: after,
     },
-    closeSession: false,
+    /*
+     * 裁决把 Change 送出了这个阶段（批准进下一站、打回上游），这个阶段的会话就
+     * 跟着收掉。真机 2026-08-06（交接 §5.5.1）：批准之后那个 `codex resume` 活了
+     * 22 分钟，下一阶段起轮时 `awaitNewThread` 在一堆新会话里认不出自己的，
+     * 整轮作废（`codex_unavailable: … another Codex is probably running`）。
+     *
+     * 只按「阶段换没换」判：「再来一轮」留在本阶段，而它刚在同一个 key 上派出了
+     * 新会话 —— 这时关会话就是杀掉刚派出去的那一轮；被拒 / gate_moved 也留在
+     * 本阶段，人还要回那个终端看它说了什么。
+     */
+    closeSession: after.phase !== phase,
   };
 }

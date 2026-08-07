@@ -249,6 +249,18 @@ export function panelView(input: {
     status: state?.status ?? null,
     /** 人答出来的需求，null = 还没录。界面靠它决定能不能跑。 */
     brief,
+    /**
+     * 这个 Change 最近的一条活儿（跑过的轮、或被预检拒掉的派发）。null = 一条
+     * 都没有。界面靠它做两件事：`blocked` 时说出**这一次**失败的真原因（交接
+     * §5.5.4 —— 原来 `jobs.error` 屏幕上一个字都没有），以及判断「有一轮在飞」
+     * 好把出口亮出来（§5.5.2 —— 出口原来只看注册表）。
+     */
+    job: (() => {
+      const job = new JobStore(database).latestFor(changeId);
+      return job === null ? null : {
+        id: job.id, status: job.status, error: job.error, createdAt: job.createdAt,
+      };
+    })(),
     // Read-only, and it stays that way. The panel shows what the gate says;
     // it never offers a control that changes it (PRD §1).
     //

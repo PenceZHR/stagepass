@@ -1638,7 +1638,9 @@ describe("panel · Codex 没信任过这个目录就别派", () => {
       assert.equal(ran.reason, "workspace_not_trusted");
       assert.equal(ran.workspace, "/tmp", "没说是哪个目录，人无从下手");
       assert.equal(pty.started.length, 0, "起了一个注定停在提问上的 Codex");
-      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+      // 一轮都没排出去（拦在排队之前）；账本上只许留下这次拒绝本身。
+      assert.equal((database.prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'phase_turn'")
         .get() as { n: number }).n, 0, "拦在排队之前，不是跑起来再失败");
     }, { trust: { isTrusted: () => false } });
   });
@@ -1722,6 +1724,70 @@ describe("panel · 派发立刻返回，不把一轮的时长压在一个 HTTP �
   });
 });
 
+describe("panel · 「中止这一轮」是真的出口（交接 §5.5.2）", () => {
+  /**
+   * 光杀进程不算出口：账本上那一轮还挂着，Change 停在 `running` 等满 30 分钟
+   * 超时，这段时间里人一个能按的都没有。出口要两个来源都收 —— 进程照旧 kill，
+   * 账本上的活儿记成 `aborted_by_human`、Change 收回 `blocked`（可以 retry）。
+   */
+  it("**/api/close 连账本一起收** —— job 记中止、Change 回 blocked、retry 有路", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; jobId?: string };
+      assert.equal(ran.ran, true);
+
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=PRD`,
+        { method: "POST" })).json() as { closed: boolean; aborted?: string };
+      assert.equal(closed.aborted, ran.jobId,
+        "没收账 —— 那一轮还挂着，人要陪它等满 30 分钟超时");
+
+      const job = new JobStore(database).latestFor(CHANGE);
+      assert.equal(job?.status, "failed");
+      assert.equal(job?.error, "aborted_by_human");
+      const changes = new ChangeStore(database);
+      assert.equal(changes.read(CHANGE).state.status, "blocked");
+      assert.doesNotThrow(() => changes.apply(CHANGE, "retry"));
+    });
+  });
+
+  /**
+   * 中止之后人立刻 retry —— 后台那条 transport 随后才超时。迟到的失败不许把
+   * 人刚 retry 出来的状态打回去，也不许把「中止」这句话盖掉（`TurnLoop.runOnce`
+   * 的「谁先收尾谁说了算」）。
+   */
+  it("**迟到的超时不翻账** —— 中止后转手 retry，新状态留得住", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json();
+      await open(`/api/close?change=${CHANGE}&phase=PRD`, { method: "POST" });
+      new ChangeStore(database).apply(CHANGE, "retry");
+
+      // transport 的超时（200ms + 1s 轮询步长）在这之后才落地 —— 等它过去。
+      await new Promise((resolve) => { setTimeout(resolve, 1_600); });
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "running",
+        "迟到的失败把人刚 retry 出来的 running 打回了 blocked");
+      assert.equal(new JobStore(database).latestFor(CHANGE)?.error,
+        "aborted_by_human", "中止的原因被迟到的超时盖掉了");
+    });
+  });
+
+  it("关一个**不是当前阶段**的闲终端 —— 不碰账本", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { jobId?: string };
+      // Change 停在 PRD；人关的是 Spec 上一个看过就走的终端。
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=Spec`,
+        { method: "POST" })).json() as { aborted?: string };
+      assert.equal(closed.aborted, undefined, "把正在跑的那一轮顺手打掉了");
+      const row = database.prepare("SELECT status FROM jobs WHERE id = ?")
+        .get(ran.jobId) as { status: string } | undefined;
+      assert.notEqual(row?.status, "failed");
+    });
+  });
+});
+
 describe("panel · Build 要在干净的工作树上跑", () => {
   /**
    * Build 的产出是 commit，而 StagePass 提交的是「工作树里所有的改动」—— 它分不出
@@ -1753,8 +1819,17 @@ describe("panel · Build 要在干净的工作树上跑", () => {
       assert.deepEqual(ran.dirty, ["半成品.md"], "没说是哪几个文件，人无从下手");
       assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
       // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
-      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+      assert.equal((database.prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'phase_turn'")
         .get() as { n: number }).n, 0);
+      /*
+       * 而拒绝本身要进账本（§5.5.4 / §5.5.5）：不记的话，库里最近的 error 还是
+       * 上一轮的旧话，人看到的原因是假的。文件名单也要在 —— 「树脏了」这句话
+       * 本身没法让人动手。
+       */
+      const refusal = new JobStore(database).latestFor(CHANGE);
+      assert.equal(refusal?.status, "failed");
+      assert.match(refusal?.error ?? "", /workspace_dirty：半成品\.md/);
       // pending 的拒绝不动状态：它没说过自己在跑，没有谎要圆。
       assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
     }, { repo: dirty });

@@ -282,6 +282,51 @@ describe("L1 · a failed turn is failed in both places", () => {
   });
 });
 
+describe("L1 · 谁先收尾谁说了算", () => {
+  /**
+   * 人从面板上中止一轮（`JobStore.abort`）之后立刻 retry —— 后台那条 turn 随后
+   * 才超时。迟到的失败不许把人刚 retry 出来的 running 打回 blocked，也不许把
+   * 「中止」这句话盖掉。这扇窗是「中止」这个出口打开的：没有它之前，busy 的 job
+   * 挡着 retry，这个竞态在结构上不存在。
+   */
+  it("**迟到的失败不翻账** —— job 已被人收尾时，Change 一个字都不动", async () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    const now = () => new Date(AT);
+    const changes = new ChangeStore(database, { now });
+    changes.create("CHG-1");
+    const jobs = new JobStore(database, now);
+    const loop = new TurnLoop({
+      database,
+      runner: {
+        run: async (job) => {
+          // turn 还在飞的那段时间里：人按了「中止这一轮」，又立刻 retry 开了新局。
+          jobs.abort(job.id, "aborted_by_human");
+          changes.apply("CHG-1", "fail");
+          changes.apply("CHG-1", "retry");
+          throw new Error("codex_unavailable: 迟到的超时");
+        },
+      },
+      now,
+    });
+    try {
+      loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-LATE",
+        deadlineAt: DEADLINE, maxAttempts: 1,
+      });
+      const result = await loop.runOnce(WORKER);
+      assert.equal(result.kind, "failed");
+      assert.equal(changes.read("CHG-1").state.status, "running",
+        "迟到的失败把人刚 retry 出来的 running 打回了 blocked");
+      assert.equal(jobs.read("JOB-LATE").error, "aborted_by_human",
+        "中止的原因被迟到的超时盖掉了");
+    } finally {
+      database.close();
+    }
+  });
+});
+
 describe("L1 · a re-run replaces artifacts but never resolves a problem", () => {
   /**
    * This test used to assert the opposite -- that a second round finding

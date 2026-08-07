@@ -756,7 +756,18 @@ async function runRound(input: {
    * 拒绝的那一刻已经破了；fail 把它修回 blocked，人清完路障还能 retry。
    * 拒绝的理由本身跟着 HTTP 响应回去（`runRefusal` 那套人话），这里只管状态不说谎。
    */
-  const refuse = <T extends { readonly ran: false }>(refusal: T): T => {
+  const refuse = <T extends {
+    readonly ran: false; readonly reason: string;
+  }>(refusal: T): T => {
+    /*
+     * **拒绝也要进账本**（交接 §5.5.4 / §5.5.5）。不记的话，库里最近的 error
+     * 还是上一轮的旧话（实测：retry 被干净树拒掉，屏幕上挂着的还是 30 分钟前的
+     * 超时）—— 界面读「最近一条」，那一条必须是这一次的真话。
+     */
+    new JobStore(database).recordRefusal({
+      id: `JOB-${changeId}-${phase}-${Date.now()}-refused`,
+      changeId, reason: refusalError(refusal), at: Date.now(),
+    });
     if (status === "running") new ChangeStore(database).apply(changeId, "fail");
     return refusal;
   };
@@ -953,6 +964,28 @@ async function runRound(input: {
    */
   void runToCompletion({ loop, database, changeId, phase, jobId, at, turnMs });
   return { ran: true, phase, jobId };
+}
+
+/**
+ * 一次预检拒绝，落进账本的那句话。
+ *
+ * 细节（哪几个文件、哪个目录、缺哪几份）都要在 —— 「树脏了」这句话本身没法让人
+ * 动手，这正是那几个字段被加进返回值的理由，落账时不能又把它们丢掉。
+ */
+function refusalError(refusal: {
+  readonly reason: string;
+  readonly dirty?: readonly string[];
+  readonly workspace?: string;
+  readonly missing?: readonly { phase: Phase; id: string }[];
+}): string {
+  const detail = refusal.dirty !== undefined && refusal.dirty.length > 0
+    ? refusal.dirty.join("、")
+    : refusal.workspace !== undefined
+      ? refusal.workspace
+      : refusal.missing !== undefined && refusal.missing.length > 0
+        ? refusal.missing.map((each) => `${each.phase} 的 ${each.id}`).join("、")
+        : "";
+  return detail === "" ? refusal.reason : `${refusal.reason}：${detail}`;
 }
 
 /**
@@ -1225,6 +1258,60 @@ async function serveRubricSave(
           : { saved: false, reason: outcome.code });
     return;
   }
+
+/**
+ * 结束一个阶段的终端 —— 以及，有一轮在飞时，**把那一轮当场收掉**。
+ *
+ * ## 光杀进程不算出口（交接 §5.5.2）
+ *
+ * 「这个 (Change, 阶段) 上有没有活儿」有两个来源：注册表里的进程，和账本里
+ * queued / running 的 job。原来这条路只问注册表 —— 杀掉进程，账本上那一轮照旧
+ * 挂着，Change 停在 `running` 等满 30 分钟超时，这段时间里人一个能按的都没有；
+ * 面板重启过的话连进程都不在注册表里，出口整个被藏。
+ *
+ * 所以两个都收：进程照旧 kill，账本上的活儿记成 `aborted_by_human`、Change 收回
+ * `blocked`（可以 retry）。迟到的工人失败由 `TurnLoop.runOnce` 的「谁先收尾谁
+ * 说了算」兜住，不会把账翻回去。
+ *
+ * ## 这仍然不是网页上的裁决入口
+ *
+ * 中止一轮和结束一个进程同一类：不推动闸门、不对任何产物下判断，只陈述
+ * 「人把这一轮停了」—— 和收尸人对过期租约做的是同一件事，只是由人当场触发。
+ */
+function serveClose(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+): void {
+  const changeId = url.searchParams.get("change") ?? "";
+  const phase = url.searchParams.get("phase") ?? "";
+  if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
+  const was = sessions.has(changeId, phase);
+  sessions.close(changeId, phase);
+
+  // 只收「这个阶段」的账。job 按 Change 记，而它背后的活儿只会在当前阶段 ——
+  // 人关一个历史阶段的闲终端，不该顺手把正在跑的那一轮打掉。
+  const busy = phaseBusy(database, changeId);
+  let aborted: string | null = null;
+  if (busy !== null) {
+    let state: { phase: Phase; status: string } | null = null;
+    try {
+      const read = new ChangeStore(database).read(changeId).state;
+      state = { phase: read.phase, status: read.status };
+    } catch { /* Change 已经没了 —— 没有账可收 */ }
+    if (state !== null && state.phase === phase) {
+      new JobStore(database).abort(busy.jobId, "aborted_by_human");
+      if (state.status === "running") {
+        new ChangeStore(database).apply(changeId, "fail");
+      }
+      aborted = busy.jobId;
+    }
+  }
+  json(response, {
+    closed: was, phase, ...(aborted === null ? {} : { aborted }),
+  });
+}
 
 export async function handle(
   request: IncomingMessage,
@@ -1674,12 +1761,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/close" && request.method === "POST") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phase = url.searchParams.get("phase") ?? "";
-    if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
-    const was = sessions.has(changeId, phase);
-    sessions.close(changeId, phase);
-    json(response, { closed: was, phase });
+    serveClose(database, url, response, sessions);
     return;
   }
 

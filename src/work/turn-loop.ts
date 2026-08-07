@@ -246,6 +246,19 @@ export class TurnLoop {
       // only one is how the old tree produced a green job above a Change that
       // had never moved.
       const reason = error instanceof Error ? error.message : String(error);
+      /*
+       * **谁先收尾谁说了算。** 人从面板上中止（`JobStore.abort`）或收尸人先到时，
+       * 这个 job 已经不是 running 了，Change 也已经被收走 —— 这里再记一遍就是
+       * 一次迟到的失败去翻别人已经平了的账。最坏的形状：人中止后立刻 retry，
+       * 新一轮正在跑，这条迟到的 `fail` 把**新一轮**的 Change 打成 blocked。
+       */
+      let stillMine = false;
+      try {
+        stillMine = this.jobs.read(job.id).status === "running";
+      } catch {
+        // job 连行都没了（Change 被删级联掉）—— 更没有账要记。
+      }
+      if (!stillMine) return { kind: "failed", jobId: job.id, reason };
       this.changes.apply(job.changeId, "fail");
       this.jobs.fail({
         jobId: job.id, owner: input.owner, token: input.token, reason,

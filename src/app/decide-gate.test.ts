@@ -278,6 +278,38 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
   });
 
   /**
+   * §5.5.1：裁决把 Change 送出了这个阶段，这个阶段的 Codex 会话就该跟着收掉。
+   *
+   * 真机 2026-08-06：批准之后那个 `codex resume` 进程活了 22 分钟（父进程就是
+   * 面板），下一阶段起轮时 `awaitNewThread` 在一堆新会话里认不出自己的，整轮作废
+   * （`codex_unavailable: … another Codex is probably running`）。
+   *
+   * 反面同样承重：「再来一轮」刚在同一个 (Change, 阶段) 上派出了新会话，这时
+   * 关会话就是杀掉刚派出去的那一轮。
+   */
+  it("裁决送走了 Change 就关会话；留在本阶段的裁决不关", async () => {
+    for (const [action, closed] of [
+      ["approve", true],  // PRD -> Spec：换了阶段，旧会话再没人要它了
+      ["rerun", false],   // 续跑同一阶段：rerun 自己管会话，这里关就是杀新轮
+    ] as const) {
+      const database = freshDatabase();
+      settledWithGaps(database);
+      const { sessions, answerOpen } = answerer(database, {
+        R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+        R01x: "不成立", R02x: "不成立",
+        [DECISION_FIELD]: decisionLabel(action, "PRD"),
+      });
+      const result = await decideGate({
+        database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+        timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+      });
+      assert.equal(result.outcome.kind, "decided");
+      assert.equal(result.closeSession, closed, `${action} 之后关不关会话`);
+      database.close();
+    }
+  });
+
+  /**
    * **批准了才归档这个阶段的线程**（用户 2026-07-30 拍板的那一半）。别的地方一概
    * 不许调 —— 一个还没批准的阶段的线程被归档，下一次 resume 就会一起来就死。
    */

@@ -257,10 +257,16 @@ function contextWords(progress) {
 async function pollProgress() {
   let progress;
   try {
-    progress = await (await fetch(
-      `/api/progress?change=${encodeURIComponent(changeId)}`)).json();
+    const response = await fetch(
+      `/api/progress?change=${encodeURIComponent(changeId)}`);
+    // 404（Change 没了）不算失联 —— 别拿它去触发重连。
+    if (!response.ok) return;
+    progress = await response.json();
   } catch {
-    return; // 一次没拉到不说话，下一次再说 —— 报「读不到进度」比没有进度更吵
+    // 连 fetch 都失败，多半是面板在重启 —— 交给自愈那条路（§5.5.3），
+    // 它会说一声、按间隔重试，回来时整屏一起刷新。
+    void loadOrReconnect();
+    return;
   }
   paintRoundProgress(progress);
   const words = progressWords(progress);
@@ -315,8 +321,13 @@ function crashed(result) {
 /** 没派起来时说清是哪一种。原样吐一个 reason 等于没说。 */
 function runRefusal(result) {
   if (result.reason === "phase_already_running") {
-    return `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
-      + "先「结束这个终端」。";
+    // `busy` 说的是挡路的是什么：一个闲终端，还是账本上没了结的一轮 ——
+    // 两者的出路不同，一句话不能混着说。
+    return result.busy === "terminal"
+      ? `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
+        + "先「结束这个终端」。"
+      : `${result.phase} 有一轮没了结（${result.busy ?? "?"}）。等它跑完，`
+        + "或者按「中止这一轮」。";
   }
   if ((result.reason ?? "").startsWith("phase_cannot_queue:")) {
     const status = result.reason.slice("phase_cannot_queue:".length);
@@ -402,7 +413,7 @@ async function run() {
   } finally {
     stopProgress();
     runButton.textContent = "跑这个阶段";
-    await load();
+    await loadOrReconnect();
   }
 }
 
@@ -451,9 +462,15 @@ function saidWhat(result) {
   }
   // 「再来一轮」会当场续跑，不用人再按一次「跑这个阶段」—— 所以要说出来它已经在跑了。
   if (result.continued) {
+    /*
+     * §5.5.5：没派出去的原因要**整句**上屏，不是光吐一个 reason 码 ——
+     * `runRound` 带回来的 dirty 文件名单、没被信任的目录、缺的上游产物都在
+     * `continued` 里，`runRefusal` 正是给它们配的那套人话。真机现场：retry 被
+     * 干净树预检拒掉，代码里带着文件名单，人看到的只有「点了没反应」。
+     */
     parts.push(result.continued.ran
       ? "下一轮已经派出去了"
-      : `下一轮没派出去：${result.continued.reason}`);
+      : `下一轮没派出去 —— ${runRefusal(result.continued)}`);
   }
   return parts.join("；");
 }
@@ -485,7 +502,7 @@ async function ask() {
     }
   } finally {
     askButton.textContent = "请 Codex 问我";
-    await load();
+    await loadOrReconnect();
   }
 }
 
@@ -576,7 +593,7 @@ async function recordBrief() {
     }
   } finally {
     briefButton.textContent = "说清楚我要什么";
-    if (!briefLanded) await load();
+    if (!briefLanded) await loadOrReconnect();
   }
 }
 
@@ -613,7 +630,7 @@ async function waive() {
     }
   } finally {
     waiveButton.textContent = "接受风险";
-    await load();
+    await loadOrReconnect();
   }
 }
 
@@ -1155,6 +1172,32 @@ async function load() {
 }
 
 /**
+ * §5.5.3 自愈：`load()` 挂了（最常见：面板正在重启的那几秒）不许让页面从此
+ * 冻在旧状态 —— 原来一抛循环就死，服务器回来之后按钮不变灰、点了没反应、
+ * 终端不动，人第一反应是「系统坏了」，而其实只差一次刷新。
+ *
+ * 所以：抓住、把失败原样说出来（不翻译 —— 它也可能是这一屏自己画不出来，
+ * 那时原样的报错正是要给人看的）、按固定间隔重试，成的那一刻整屏刷新并说一声。
+ */
+const RELOAD_RETRY_MS = 2_000;
+let reloadTimer = null;
+async function loadOrReconnect() {
+  try {
+    await load();
+    if (reloadTimer !== null) {
+      clearInterval(reloadTimer);
+      reloadTimer = null;
+      say("面板回来了，这一屏已经刷新。");
+    }
+  } catch (error) {
+    if (reloadTimer !== null) return; // 已经在重试了，别叠着说
+    say(`这一屏刷新失败（${error?.message ?? error}）—— 会自动重试，`
+      + "面板回来会自己刷新。");
+    reloadTimer = setInterval(() => { void loadOrReconnect(); }, RELOAD_RETRY_MS);
+  }
+}
+
+/**
  * 闸门里**要人裁决**的那几项。
  *
  * 只有这三个会被拿去问人。`start` / `settle` / `fail` 是系统在陈述发生了什么，
@@ -1425,10 +1468,19 @@ function drawSheet(phase) {
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
 
-  // 出口：有活进程时才出现。没有它，上面每一个 disabled 都是一个没有出路的死结。
-  closeTermButton.hidden = !entry.live;
+  /*
+   * 出口：**两个来源都问**（交接 §5.5.2）。注册表里有活进程，或者账本上有一轮
+   * 在飞（queued / running 的 job）—— 后者在进程死了、或面板重启过之后照样成立，
+   * 而那正是原来出口被藏、人一个能按的都没有的那个死结。
+   * 没有出口，上面每一个 disabled 都是一个没有出路的死结。
+   */
+  const flying = roundInFlight(entry);
+  closeTermButton.hidden = !(entry.live || flying);
+  // 有一轮在飞时，这个出口收的不只是进程，还有账本上的那一轮（job 记失败、
+  // Change 回 blocked、retry 有路）—— 名字要说实话。
+  closeTermButton.textContent = flying ? "中止这一轮" : "结束这个终端";
   // 「开一个」和「结束这个」互斥：一个阶段同时只许一个进程。
-  openTermButton.hidden = entry.live;
+  openTermButton.hidden = entry.live || flying;
 
   drawNextStep(entry);
 }
@@ -1462,8 +1514,31 @@ function drawNextStep(entry) {
   nextStepLine.append(what, why);
 }
 
+/**
+ * 这一格上有一轮在飞吗 —— 按**账本**判（queued / running 的 job），不按注册表。
+ * 出口的判据（§5.5.2）和「下一步」的话术都读它，两处必须是同一份。
+ */
+function roundInFlight(entry) {
+  const job = panelState?.job ?? null;
+  return entry.current
+    && (job?.status === "queued" || job?.status === "running");
+}
+
 function nextStep(entry) {
   // 顺序 = 优先级。第一条命中的就是答案。
+  if (roundInFlight(entry)) {
+    return entry.live
+      ? {
+          what: "等这一轮跑完",
+          why: "红蓝对抗在跑，进度看上面那条。不想等了就按「中止这一轮」——"
+            + "它会把这一轮记成失败（可以 retry），不会推动任何闸门。",
+        }
+      : {
+          what: "按「中止这一轮」",
+          why: "账本记着一轮在飞，可它的进程不在了（进程死了，或面板重启过）——"
+            + "等下去只会等到超时。中止把这一轮当场记成失败，然后就能 retry。",
+        };
+  }
   if (entry.live) {
     return {
       what: "先结束这个终端",
@@ -1486,12 +1561,20 @@ function nextStep(entry) {
     };
   }
   if (panelState?.status === "blocked") {
+    /*
+     * §5.5.4：失败原因一直写在 jobs.error 里，屏幕上原来一个字都没有 ——
+     * 这里原来说「失败的原因在『问题』里」，而那是假话：超时、树脏这类原因
+     * 从来不进 gaps。拒绝的派发现在也落账（`recordRefusal`），所以「最近一条」
+     * 就是这一次的真原因，不再是上一轮的旧话。
+     */
+    const error = panelState?.job?.error;
     return {
       what: "请 Codex 问我",
       // 这一行是当成纯文本渲染的（`textContent`），所以不写 markdown 的星号 ——
       // 界面上会原样出现两个 `**`。
       why: "上一轮跑失败了。这个阶段现在只接受 retry，而 retry 是你的裁决 ——"
-        + "所以它在 Codex 的选择器里问，不在这个按钮上。失败的原因在「问题」里。",
+        + "所以它在 Codex 的选择器里问，不在这个按钮上。"
+        + (error ? `这一次失败的原因：${error}` : "原因没被记下来。"),
     };
   }
   if (panelState?.status === "settled") {
@@ -1541,7 +1624,7 @@ async function openTerminal() {
       + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
     );
     const result = response.ok ? await response.json() : { opened: false };
-    await load();
+    await loadOrReconnect();
     // 起成了就直接进去 —— 人要的是那个终端，不是「已开启」四个字。
     if (result.opened) { closeSheet(); await enter(phase); return; }
     if (sheetPhase) drawSheet(sheetPhase);
@@ -1555,11 +1638,17 @@ async function closeTerminal() {
   if (!phase) return;
   closeTermButton.disabled = true;
   try {
-    await fetch(
+    const result = await (await fetch(
       `/api/close?change=${encodeURIComponent(changeId)}`
       + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
-    );
-    await load();
+    )).json();
+    // 连账本一起收掉了一轮，就要说出来 —— job 记了失败、Change 回了 blocked，
+    // 静默的话人不知道现在已经可以 retry 了。
+    if (result.aborted) {
+      say(`这一轮中止了（${result.aborted}）。`
+        + "现在可以 retry ——「请 Codex 问我」，在选择器里选。");
+    }
+    await loadOrReconnect();
     if (sheetPhase) drawSheet(sheetPhase);
   } finally {
     closeTermButton.disabled = false;
@@ -1787,7 +1876,7 @@ async function leave() {
   await wait(300);
   moving = false;
 
-  await load();
+  await loadOrReconnect();
 }
 
 async function attach(phase, reattaching = false) {
@@ -2076,7 +2165,7 @@ addEventListener("resize", () => {
   else placeNodes();
 });
 
-void load();
+void loadOrReconnect();
 
 /*
  * ── 标准编辑器 ────────────────────────────────────────────
@@ -2405,7 +2494,7 @@ async function saveRubric() {
     bad: false,
   };
   drawRubric();
-  await load(); // 环上的颜色可能变了
+  await loadOrReconnect(); // 环上的颜色可能变了
 }
 
 tabGaps.addEventListener("click", () => { showTab("gaps"); });
