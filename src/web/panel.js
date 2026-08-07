@@ -95,6 +95,7 @@ const closeTermButton = button("close-term");
 const asideTermButton = button("aside-term");
 const briefDraftButton = button("brief-draft");
 const briefConfirmButton = button("brief-confirm");
+const openParallelButton = button("open-parallel");
 const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
@@ -162,8 +163,22 @@ function resize(phase) {
   return fetch(path(phase, `/resize?cols=${term.cols}&rows=${term.rows}`), { method: "POST" });
 }
 
+const SEAT_WORDS = {
+  pending: "并行座位开着，还没跑",
+  running: "并行座位上一轮在跑",
+  settled: "并行座位跑完了，等主线走到时收编",
+  blocked: "并行座位上一轮失败了",
+};
+
 function statusOf(entry) {
   if (entry.live) return { short: "进程活着", long: "线程活着，点开直接接上去。" };
+  // 并行座位（批 3）：主线在别处，这一格自己在攒轮次。
+  if (entry.seat) {
+    return {
+      short: `并行·${entry.seat}`,
+      long: `${SEAT_WORDS[entry.seat] ?? entry.seat}。主线走到这儿时会把进度收编进来。`,
+    };
+  }
   if (entry.threadId) return { short: "有线程", long: "有线程，点开会恢复它的历史。" };
   if (entry.current) return { short: "待运行", long: "Change 就停在这个阶段。跑它会派发一次真的 turn。" };
   return { short: "未开始", long: "还没轮到它。点开只是打开一个终端看看。" };
@@ -391,6 +406,13 @@ function runRefusal(result) {
  * the Change is actually at.
  */
 async function run() {
+  /*
+   * 跑的是哪个座位（批 3）：主线的格子不带 phase（老语义）；开着并行座位的
+   * 格子把自己的阶段带上 —— 服务端按它路由到座位。
+   */
+  const at = phases.find((each) => each.phase === sheetPhase);
+  const seatParam = at && !at.current && at.seat !== null
+    ? `&phase=${encodeURIComponent(at.phase)}` : "";
   runButton.disabled = true;
   runButton.textContent = "派发中…";
   /*
@@ -401,7 +423,8 @@ async function run() {
   startProgress();
   try {
     const result = await (await fetch(
-      `/api/run?change=${encodeURIComponent(changeId)}`, { method: "POST" },
+      `/api/run?change=${encodeURIComponent(changeId)}${seatParam}`,
+      { method: "POST" },
     )).json();
     const broke = crashed(result);
     if (broke !== null) {
@@ -1459,7 +1482,8 @@ function drawSheet(phase) {
   briefConfirmButton.hidden = !entry.current;
 
   const decidable = decidableActions();
-  runButton.hidden = !entry.current;
+  // 并行座位开着的格子也能跑（批 3）——「跑」发给座位，不发给主线。
+  runButton.hidden = !(entry.current || entry.seat !== null);
   /*
    * **能派的只有 `pending` 和 `running`**，和服务端 `runRound` 那份名单同一份。
    *
@@ -1469,9 +1493,17 @@ function drawSheet(phase) {
    * 2026-07-30 实测：在 `blocked` 上按下去回来的是 HTTP 500、空 body，界面显示
    * 「没跑起来：undefined」—— 亮着的按钮、按下去什么也没有，正是老树那种病。
    */
-  const status = panelState?.status ?? "pending";
+  const status = entry.seat ?? panelState?.status ?? "pending";
   runButton.disabled = entry.live || needsBrief
     || (status !== "pending" && status !== "running");
+  /*
+   * 「并行开这个阶段」（批 3）：只摆在主线**下游**、还没开座位的格子上。
+   * 下游与否由服务端最终把关（图是它的）；这里按显示顺序粗筛，别摆必拒的按钮。
+   */
+  const mainIndex = phases.findIndex((each) => each.current);
+  const myIndex = phases.findIndex((each) => each.phase === entry.phase);
+  openParallelButton.hidden = mainIndex === -1 || entry.current
+    || entry.seat !== null || myIndex <= mainIndex || entry.phase === "Fix";
   askButton.hidden = !entry.current;
   askButton.disabled = decidable.length === 0 || entry.live;
 
@@ -1527,8 +1559,10 @@ function drawNextStep(entry) {
  */
 function roundInFlight(entry) {
   const job = panelState?.job ?? null;
-  return entry.current
-    && (job?.status === "queued" || job?.status === "running");
+  if (job?.status !== "queued" && job?.status !== "running") return false;
+  // 活儿自己说它在哪个座位（批 3）；老行没有这一格，按主线算。
+  const at = job.phase ?? panelState?.currentPhase;
+  return entry.phase === at && (entry.current || entry.seat !== null);
 }
 
 function nextStep(entry) {
@@ -2053,8 +2087,31 @@ async function confirmBriefEdit() {
   }
 }
 
+/** 并行开一个下游阶段（批 3）。开座位不是裁决 —— 它不推动任何闸门。 */
+async function openParallel() {
+  const phase = sheetPhase;
+  if (!phase) return;
+  openParallelButton.disabled = true;
+  try {
+    const result = await (await fetch(
+      `/api/parallel?change=${encodeURIComponent(changeId)}`
+      + `&phase=${encodeURIComponent(phase)}`, { method: "POST" })).json();
+    if (result.opened) {
+      say(`${phase} 的并行座位开了。它可以在主线还没走到时先跑轮 ——`
+        + "主线走到这儿时会把进度收编进来。");
+    } else {
+      say(`没开成：${result.reason}`);
+    }
+    await loadOrReconnect();
+    if (sheetPhase) drawSheet(sheetPhase);
+  } finally {
+    openParallelButton.disabled = false;
+  }
+}
+
 button("back").addEventListener("click", () => { void leave(); });
 asideTermButton.addEventListener("click", () => { void openAside(); });
+openParallelButton.addEventListener("click", () => { void openParallel(); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });

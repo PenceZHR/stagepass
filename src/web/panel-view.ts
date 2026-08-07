@@ -8,6 +8,7 @@ import { roundFromLedger } from "../domain/round";
 import { createSubAgentLookup, threadContextUsage } from "../codex/subagent";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore, type LedgerEntry } from "../store/change-store";
+import { ParallelStore } from "../store/parallel-store";
 import { CommandStore } from "../store/command-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
@@ -123,6 +124,11 @@ function phasesFor(input: {
   const evidence = new EvidenceStore(database);
   const rubricRounds = new RubricStore(database);
   const questions = new QuestionStore(database);
+  // 开着的并行座位（批 3）。一次读全，十一个格子各认各的。
+  const seats = new Map(
+    new ParallelStore(database).list(changeId)
+      .map((seat) => [seat.phase, seat.status]),
+  );
 
   return THREADED_PHASES.map((phase) => {
     /*
@@ -157,6 +163,11 @@ function phasesFor(input: {
       })(),
       live: input.sessions.has(changeId, phase),
       current: state?.phase === phase,
+      /**
+       * 这一格开着的并行座位的状态（批 3）。null = 没开。
+       * 界面靠它：座位开着的格子亮「跑这个阶段」（带 &phase=）、显示「并行」。
+       */
+      seat: seats.get(phase) ?? null,
       mark: markOf(phase, ledger, state, gaps),
       gaps,
       /**
@@ -259,6 +270,8 @@ export function panelView(input: {
       const job = new JobStore(database).latestFor(changeId);
       return job === null ? null : {
         id: job.id, status: job.status, error: job.error, createdAt: job.createdAt,
+        // 哪个座位的活儿（批 3）——「有一轮在飞」要亮在对的格子上。
+        phase: job.phase,
       };
     })(),
     // Read-only, and it stays that way. The panel shows what the gate says;

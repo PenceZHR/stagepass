@@ -64,6 +64,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
+  // 并行座位（批 3）。和 change-store 同一层：它是主线旁边的第二个座，
+  // change-store 的收编要在同一个事务里读它的行。
+  "store/parallel-store.ts": 0,
   "store/project-store.ts": 0,
 
   "domain/gate.ts": 1,

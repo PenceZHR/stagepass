@@ -237,6 +237,30 @@ CREATE TABLE IF NOT EXISTS commands (
   at                TEXT NOT NULL
 );
 
+-- 并行座位（批 3，DESIGN-phase-not-the-only-axis §3.1 的第一阶段）。
+--
+-- ## 主线不动，这张表只放「同时活着的第二个阶段」
+--
+-- changes.phase 仍然是主状态（账本触发器、fence、seq 全部原样）——「TestPlan 和
+-- Build 同时 active」落成：主线停在 TestPlan，Build 在这张表里有一行，各自跑轮、
+-- 各自积累 evidence / gaps / rubric（那三张表本来就按 (change, phase) 建键）。
+--
+-- ## 出口：主线走到时**收编**（ChangeStore.apply）
+--
+-- 并行座位没有自己的裁决面 —— 主线推进到这个阶段时，把这一行的 status 原样
+-- 收编进主状态、删掉这一行，之后走正常的裁决流。于是「人只在状态的出口表一次态」
+-- 保持成立，网页上也不用长出第二个裁决入口（PRD §1）。
+--
+-- status 没有 closed：座位不会自己关掉，它的终点是被收编。
+CREATE TABLE IF NOT EXISTS change_states (
+  change_id  TEXT NOT NULL REFERENCES changes(id),
+  phase      TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  status     TEXT NOT NULL CHECK (status IN ('pending','running','settled','blocked')),
+  opened_at  TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase)
+);
+
 -- Long-running work and who owns it.
 CREATE TABLE IF NOT EXISTS jobs (
   id            TEXT PRIMARY KEY,
@@ -250,6 +274,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   expires_at    INTEGER NULL,
   deadline_at   INTEGER NOT NULL,
   error         TEXT NULL,
+  -- 这条活儿跑在哪个阶段（批 3：并行座位的轮和主线的轮要分得开）。
+  -- NULL = 加这一列之前的老行 —— 按「挡所有阶段」保守对待，别猜它是谁的。
+  phase         TEXT NULL CHECK (phase IS NULL OR phase IN (${quoted(PHASES)})),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   -- A running job has an owner; a job that is not running has none. Without
@@ -647,6 +674,7 @@ export function migrate(database: {
     ["questions", "outcome_json", "TEXT"],
     ["change_events", "reason", "TEXT"],
     ["rubric_criteria", "section", "TEXT"],
+    ["jobs", "phase", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];

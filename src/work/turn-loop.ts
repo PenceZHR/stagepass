@@ -2,9 +2,11 @@ import type Database from "better-sqlite3";
 
 import type { Finding } from "../domain/gate";
 import type { Verdict } from "../domain/gap";
+import type { Phase } from "../domain/phase";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
+import { ParallelStore } from "../store/parallel-store";
 import { JobStore, type Job } from "./job-store";
 
 /**
@@ -96,10 +98,20 @@ export function recoverStuckTurns(
 } {
   const jobs = new JobStore(database);
   const changes = new ChangeStore(database);
+  const seats = new ParallelStore(database);
   const summary = jobs.recover(now);
 
   for (const each of summary.failed) {
-    const changeId = jobs.read(each.id).changeId;
+    const job = jobs.read(each.id);
+    const changeId = job.changeId;
+    // 并行座位的活儿：收座位，不动主线（批 3）。
+    if (job.phase !== null && job.phase !== changes.read(changeId).state.phase) {
+      const seat = seats.find(changeId, job.phase as Phase);
+      if (seat?.status === "running") {
+        seats.apply(changeId, job.phase as Phase, "fail");
+      }
+      continue;
+    }
     // 幂等：Change 可能已经不是 running 了（比如上一次恢复已经处理过），那就不用再动。
     if (changes.read(changeId).state.status !== "running") continue;
     changes.apply(changeId, "fail");
@@ -108,9 +120,20 @@ export function recoverStuckTurns(
   // 第二档要在第一档**之后**扫：刚被第一档收掉的 Change 已经是 blocked，天然跳过。
   const stranded: string[] = [];
   for (const record of changes.list()) {
+    /*
+     * 并行座位的同一条不变量：running 的座位身后也必须有活儿（批 3）。
+     * 座位没有租约，只有这道扫得到它。
+     */
+    for (const seat of seats.list(record.id)) {
+      if (seat.status !== "running") continue;
+      if (jobs.busyFor(record.id, seat.phase) !== null) continue;
+      seats.apply(record.id, seat.phase, "fail");
+      stranded.push(`${record.id}/${seat.phase}`);
+    }
     if (record.state.status !== "running") continue;
     if (Date.parse(record.updatedAt) + STRANDED_GRACE_MS > now) continue;
-    if (jobs.busyFor(record.id) !== null) continue; // 身后有活儿，不变量没破
+    // 按主线阶段问 —— 并行座位的活儿撑不起主线的 running（批 3）。
+    if (jobs.busyFor(record.id, record.state.phase) !== null) continue;
     changes.apply(record.id, "fail");
     stranded.push(record.id);
   }
@@ -181,15 +204,37 @@ export class TurnLoop {
     jobId: string;
     deadlineAt: number;
     maxAttempts: number;
+    /**
+     * 排给哪个阶段（批 3）。不给 = 主线当前阶段（老语义）。
+     * 给了而它不是主线阶段 —— 那是一个并行座位，start 落在座位上，主线不动。
+     */
+    phase?: Phase;
   }): Job {
     return this.dependencies.database.transaction((): Job => {
-      const status = this.changes.read(input.changeId).state.status;
-      if (status === "pending") {
-        this.changes.apply(input.changeId, "start");
-      } else if (status !== "running") {
-        throw new Error(
-          `cannot queue a turn for a Change that is ${status}`,
+      const main = this.changes.read(input.changeId).state;
+      const phase = input.phase ?? main.phase;
+      if (phase === main.phase) {
+        if (main.status === "pending") {
+          this.changes.apply(input.changeId, "start");
+        } else if (main.status !== "running") {
+          throw new Error(
+            `cannot queue a turn for a Change that is ${main.status}`,
+          );
+        }
+      } else {
+        // 并行座位：同一份「pending 补 start、running 直通、别的抛」的名单，
+        // 落在座位的小状态机上。座位不存在它自己会抛（no_such_seat）。
+        const seat = new ParallelStore(this.dependencies.database).find(
+          input.changeId, phase,
         );
+        if (seat?.status === "pending") {
+          new ParallelStore(this.dependencies.database)
+            .apply(input.changeId, phase, "start");
+        } else if (seat?.status !== "running") {
+          throw new Error(
+            `cannot queue a turn for seat ${phase} that is ${seat?.status ?? "not open"}`,
+          );
+        }
       }
       return this.jobs.enqueue({
         id: input.jobId,
@@ -197,6 +242,7 @@ export class TurnLoop {
         kind: "phase_turn",
         deadlineAt: input.deadlineAt,
         maxAttempts: input.maxAttempts,
+        phase,
       });
     })();
   }
@@ -211,9 +257,21 @@ export class TurnLoop {
     const job = this.jobs.claimNext(input);
     if (!job) return { kind: "idle" };
 
+    /*
+     * 这条活儿的成果与成败落到哪个座位（批 3）：
+     * 主线的落主线（`changes.apply`），并行座位的落座位（`ParallelStore.apply`）。
+     * job.phase 为 null 的老行走主线 —— 加这一列之前只有主线。
+     */
+    const seatOf = (): "main" | "parallel" => {
+      if (job.phase === null) return "main";
+      if (job.phase === this.changes.read(job.changeId).state.phase) return "main";
+      return "parallel";
+    };
+
     try {
       const outcome = await this.dependencies.runner.run(job);
-      const phase = this.changes.read(job.changeId).state.phase;
+      const phase = (job.phase ?? this.changes.read(job.changeId).state.phase) as Phase;
+      const landing = seatOf();
       this.dependencies.database.transaction(() => {
         // Artifacts belong to the round that made them, so they are replaced.
         // Problems do not: they go to `gaps`, where a later round that never
@@ -237,7 +295,12 @@ export class TurnLoop {
           })),
           verdicts: outcome.verdicts ?? {},
         });
-        this.changes.apply(job.changeId, "settle");
+        if (landing === "main") {
+          this.changes.apply(job.changeId, "settle");
+        } else {
+          new ParallelStore(this.dependencies.database)
+            .apply(job.changeId, phase, "settle");
+        }
       })();
       this.jobs.complete({ jobId: job.id, owner: input.owner, token: input.token });
       return { kind: "settled", jobId: job.id };
@@ -259,7 +322,12 @@ export class TurnLoop {
         // job 连行都没了（Change 被删级联掉）—— 更没有账要记。
       }
       if (!stillMine) return { kind: "failed", jobId: job.id, reason };
-      this.changes.apply(job.changeId, "fail");
+      if (seatOf() === "main") {
+        this.changes.apply(job.changeId, "fail");
+      } else {
+        new ParallelStore(this.dependencies.database)
+          .apply(job.changeId, job.phase as Phase, "fail");
+      }
       this.jobs.fail({
         jobId: job.id, owner: input.owner, token: input.token, reason,
       });

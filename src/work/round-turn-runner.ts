@@ -54,6 +54,11 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   /** 红方要做什么。按阶段给一句话。 */
   readonly taskFor: (phase: string) => string;
   /**
+   * 并行座位这一轮是第几轮（批 3）—— 座位的 start 不进账本，账本数不到。
+   * 不给就退回账本那条路（老调用点一个字不用改）。
+   */
+  readonly parallelRound?: (changeId: string, phase: Phase) => number;
+  /**
    * 只写给人看的一行去哪（缺省 console）。目前唯一的客户是越界报告 ——
    * 它进不了 `round_notes`：那张表的 `source` CHECK 建表时定死，加新值会让
    * 所有已存在的库当场拒收（`closed_by` 那次的教训），而这一行不值得一次真迁移。
@@ -79,7 +84,8 @@ export class RoundTurnRunner implements TurnRunner {
 
   async run(job: Job): Promise<TurnOutcome> {
     const change = this.options.changes.read(job.changeId);
-    const phase = change.state.phase;
+    // 这条活儿自己说它跑在哪个阶段（批 3：并行座位）。老行没有这一格，走主线。
+    const phase = (job.phase ?? change.state.phase) as Phase;
 
     if (change.projectId === null) {
       // rubric 有项目级默认，没有项目就取不到。这不是「没有 rubric」（那是合法
@@ -109,7 +115,15 @@ export class RoundTurnRunner implements TurnRunner {
      * 一份实现三处用）。`queueTurn` 在派发之前就把这一轮的 `start` 写进去了，
      * 所以这里数出来的正是**当前**这一轮。
      */
-    const round = roundFromLedger(this.options.changes.ledger(job.changeId), phase);
+    /*
+     * 并行座位的轮次从活儿数（批 3）：座位的 start 写在 change_states，不进账本，
+     * `roundFromLedger` 数不到它。当前这条活儿在 `queueTurn` 里已经排进去了，
+     * 所以数出来的正是当前这一轮 —— 和账本那条路同一个性质。
+     */
+    const round = job.phase !== null && job.phase !== change.state.phase
+      ? this.options.parallelRound?.(job.changeId, phase)
+        ?? roundFromLedger(this.options.changes.ledger(job.changeId), phase)
+      : roundFromLedger(this.options.changes.ledger(job.changeId), phase);
 
     /*
      * **轮前把脏文件拍个快照** —— 轮末的越界报告靠差集把「模型这一轮写的」和

@@ -282,6 +282,26 @@ export class ChangeStore {
     const at = this.now().toISOString();
     const seq = current.seq + 1;
 
+    /*
+     * **主线走到一个开着的并行座位上，就把座位的进度收编进来**（批 3）。
+     *
+     * 座位（change_states）在主线停在别处时替这个阶段攒轮次：evidence / gaps /
+     * rubric 都已经按 (change, phase) 落在各自的表里，主线一到，缺的只有 status。
+     * 收编 = 到达时的 status 用座位的（settled 就是 settled，人可以直接裁决，
+     * 不用把并行跑过的轮再跑一遍），座位那一行删掉 —— 一个阶段从此只有一个座。
+     *
+     * 只在**到达**（换了阶段、落点是 pending）时收编：start/settle/fail/retry
+     * 不换阶段，closed 是终点，都轮不到它。ledger 的 to_status 记收编后的值 ——
+     * 账本说的必须是真发生的那一步。
+     */
+    const arriving = next.phase !== current.state.phase && next.status === "pending";
+    const seat = arriving
+      ? (this.database.prepare(
+          "SELECT status FROM change_states WHERE change_id = ? AND phase = ?",
+        ).get(changeId, next.phase) as { status: PhaseStatus } | undefined) ?? null
+      : null;
+    const landed = seat?.status ?? next.status;
+
     this.database.transaction(() => {
       // Ledger first: `ck_changes_ledger` looks for this row when the update
       // below fires, so writing it second would abort every legal transition.
@@ -296,17 +316,22 @@ export class ChangeStore {
         current.state.phase,
         current.state.status,
         next.phase,
-        next.status,
-        options.reason ?? null,
+        landed,
+        options.reason ?? (seat === null ? null : "adopted_parallel_progress"),
         at,
       );
+      if (seat !== null) {
+        this.database.prepare(
+          "DELETE FROM change_states WHERE change_id = ? AND phase = ?",
+        ).run(changeId, next.phase);
+      }
       const changed = this.database.prepare(
         `UPDATE changes
             SET phase = ?, status = ?, return_stack = ?, seq = ?, updated_at = ?
           WHERE id = ? AND seq = ?`,
       ).run(
         next.phase,
-        next.status,
+        landed,
         JSON.stringify(next.returnStack),
         seq,
         at,
@@ -360,7 +385,8 @@ export class ChangeStore {
       for (const table of [
         "turns", "jobs", "rubric_assessments", "rubrics", "questions",
         "commands", "gaps", "round_notes", "round_worklist",
-        "change_bindings", "change_briefs", "change_evidence", "change_events",
+        "change_bindings", "change_briefs", "change_evidence", "change_states",
+        "change_events",
       ]) {
         this.database.prepare(`DELETE FROM ${table} WHERE change_id = ?`).run(changeId);
       }

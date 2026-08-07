@@ -38,6 +38,11 @@ export interface Job {
   readonly maxAttempts: number;
   readonly lease: Lease | null;
   readonly error: string | null;
+  /**
+   * 这条活儿跑在哪个阶段（批 3）。null = 老行 —— 加这一列之前排的活儿，
+   * 按「挡所有阶段」保守对待。
+   */
+  readonly phase: string | null;
 }
 
 interface JobRow {
@@ -52,6 +57,7 @@ interface JobRow {
   expires_at: number | null;
   deadline_at: number;
   error: string | null;
+  phase: string | null;
 }
 
 export class JobNotFoundError extends Error {
@@ -86,6 +92,7 @@ function toJob(row: JobRow): Job {
         }
       : null,
     error: row.error,
+    phase: row.phase ?? null,
   };
 }
 
@@ -106,16 +113,18 @@ export class JobStore {
     kind: string;
     deadlineAt: number;
     maxAttempts: number;
+    /** 跑在哪个阶段。不给 = 老语义（挡所有阶段）。 */
+    phase?: string;
   }): Job {
     const at = this.now().toISOString();
     this.database.prepare(
       `INSERT INTO jobs
          (id, change_id, kind, status, attempt, max_attempts,
-          owner, token, expires_at, deadline_at, error, created_at, updated_at)
-       VALUES (?, ?, ?, 'queued', 0, ?, NULL, NULL, NULL, ?, NULL, ?, ?)`,
+          owner, token, expires_at, deadline_at, error, phase, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', 0, ?, NULL, NULL, NULL, ?, NULL, ?, ?, ?)`,
     ).run(
       input.id, input.changeId, input.kind, input.maxAttempts,
-      input.deadlineAt, at, at,
+      input.deadlineAt, input.phase ?? null, at, at,
     );
     return this.read(input.id);
   }
@@ -146,21 +155,23 @@ export class JobStore {
     attempt: number;
     /** 为什么失败。没失败（或没记）就是 null —— 界面靠它说「上一轮的原因」。 */
     error: string | null;
+    /** 跑在哪个阶段。null = 老行（或拒绝那类不分阶段的记录）。 */
+    phase: string | null;
   } | null {
     const row = this.database.prepare(
-      `SELECT id, status, attempt, created_at, error FROM jobs
+      `SELECT id, status, attempt, created_at, error, phase FROM jobs
         WHERE change_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).get(changeId) as
       | {
           id: string; status: JobStatus; attempt: number; created_at: string;
-          error: string | null;
+          error: string | null; phase: string | null;
         }
       | undefined;
     return row === undefined
       ? null
       : {
           id: row.id, status: row.status, attempt: row.attempt,
-          createdAt: row.created_at, error: row.error,
+          createdAt: row.created_at, error: row.error, phase: row.phase ?? null,
         };
   }
 
@@ -180,13 +191,42 @@ export class JobStore {
    * 「进程活着」是**当下这一刻**的事实，而闸门要问的是**这个阶段有没有事情还没了结**。
    * 后者只有账本知道。
    */
-  busyFor(changeId: string): { id: string; status: JobStatus } | null {
-    const row = this.database.prepare(
-      `SELECT id, status FROM jobs
-        WHERE change_id = ? AND status IN ('queued', 'running')
-        ORDER BY created_at DESC, id DESC LIMIT 1`,
-    ).get(changeId) as { id: string; status: JobStatus } | undefined;
+  busyFor(
+    changeId: string,
+    /**
+     * 只问这个阶段的活儿（批 3：并行座位互不打断）。不给 = 任何阶段的都算
+     * （删除 Change、收尸那类「整个 Change 有没有事」的问法）。
+     * phase 为 NULL 的老行**对每个阶段都算忙** —— 分不清就保守。
+     */
+    phase?: string,
+  ): { id: string; status: JobStatus } | null {
+    const row = (phase === undefined
+      ? this.database.prepare(
+          `SELECT id, status FROM jobs
+            WHERE change_id = ? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC, id DESC LIMIT 1`,
+        ).get(changeId)
+      : this.database.prepare(
+          `SELECT id, status FROM jobs
+            WHERE change_id = ? AND status IN ('queued', 'running')
+              AND (phase = ? OR phase IS NULL)
+            ORDER BY created_at DESC, id DESC LIMIT 1`,
+        ).get(changeId, phase)) as { id: string; status: JobStatus } | undefined;
     return row ?? null;
+  }
+
+  /**
+   * 这个 (Change, 阶段) 一共排过几条真轮（refusal 不算）。
+   *
+   * 并行座位的轮次从这儿数 —— 主线的轮次从账本数（`roundFromLedger`），而并行
+   * 座位的 start 不进账本（它写的是 change_states，不是 change_events）。
+   */
+  countFor(changeId: string, phase: string): number {
+    const row = this.database.prepare(
+      `SELECT COUNT(*) AS n FROM jobs
+        WHERE change_id = ? AND phase = ? AND kind = 'phase_turn'`,
+    ).get(changeId, phase) as { n: number };
+    return row.n;
   }
 
   /**

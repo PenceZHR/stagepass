@@ -283,6 +283,8 @@ describe("panel · what it offers", () => {
         lastOutcome: null,
         // 一轮都没跑过。环上那个节点因此一个刻度都不画（§5.9.4）。
         rounds: 0,
+        // null = 没开并行座位（批 3）。
+        seat: null,
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));
@@ -1778,6 +1780,70 @@ describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.
       assert.equal(closed.closed, true);
       assert.equal(closed.aborted, undefined, "旁路没有账，不该有中止可言");
       assert.equal(sessions.has(CHANGE, "aside"), false);
+    });
+  });
+});
+
+describe("panel · TestPlan ∥ Build 同时 active（批 3 验收）", () => {
+  it("**两个座位各自跑轮，互不打断** —— 两条活儿同时在飞", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "TestPlan");
+
+      const seat = await (await open(
+        `/api/parallel?change=${CHANGE}&phase=Build`, { method: "POST" }))
+        .json() as { opened: boolean };
+      assert.equal(seat.opened, true);
+
+      // 主线 TestPlan 跑一轮。
+      const main = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; jobId?: string; reason?: string };
+      assert.equal(main.ran, true, main.reason);
+      // Build 的座位同时也跑一轮 —— 不被主线那条活儿挡住。
+      const seatRun = await (await open(
+        `/api/run?change=${CHANGE}&phase=Build`, { method: "POST" }))
+        .json() as { ran: boolean; jobId?: string; reason?: string };
+      assert.equal(seatRun.ran, true,
+        `并行座位被主线的活儿挡住了：${seatRun.reason ?? ""}`);
+
+      const rows = database.prepare(
+        `SELECT phase, status FROM jobs WHERE kind = 'phase_turn'
+          ORDER BY created_at`).all() as { phase: string; status: string }[];
+      assert.deepEqual(rows.map((row) => row.phase), ["TestPlan", "Build"]);
+      assert.ok(rows.every((row) => row.status === "queued" || row.status === "running"),
+        "两条活儿没有同时在飞");
+      // 主线 running、座位 running —— 各自的座各自记。
+      assert.equal(changes.read(CHANGE).state.status, "running");
+      assert.equal((database.prepare(
+        "SELECT status FROM change_states WHERE change_id = ? AND phase = 'Build'",
+      ).get(CHANGE) as { status: string }).status, "running");
+    });
+  });
+
+  it("既不在主线、也没开座位的阶段 —— 拒，说 phase_not_active", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}&phase=Build`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "phase_not_active");
+    });
+  });
+
+  it("开座的守卫：主线自己、上游、没有这个 Change —— 各说各的", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "TestPlan");
+      const atMain = await (await open(
+        `/api/parallel?change=${CHANGE}&phase=TestPlan`, { method: "POST" }))
+        .json() as { opened: boolean; reason?: string };
+      assert.equal(atMain.reason, "already_the_main_phase");
+      const upstream = await (await open(
+        `/api/parallel?change=${CHANGE}&phase=PRD`, { method: "POST" }))
+        .json() as { opened: boolean; reason?: string };
+      assert.equal(upstream.reason, "not_downstream_of_main");
     });
   });
 });

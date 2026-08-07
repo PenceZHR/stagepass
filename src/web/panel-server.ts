@@ -25,6 +25,7 @@ import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
+import { ParallelStore, ParallelSeatError } from "../store/parallel-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { WorklistStore } from "../store/worklist-store";
@@ -119,8 +120,10 @@ type Seat = Phase | typeof ASIDE;
 const phaseBusy = (
   database: Database.Database,
   changeId: string,
+  /** 只问这个阶段（批 3：并行座位互不打断）。不给 = 任何阶段的活儿都算。 */
+  phase?: Phase,
 ): { reason: "phase_already_running"; busy: string; jobId: string } | null => {
-  const job = new JobStore(database).busyFor(changeId);
+  const job = new JobStore(database).busyFor(changeId, phase);
   return job === null
     ? null
     // `reason` 是**界面在精确匹配的那个字符串**（`panel.js`），不许改。要说得更细
@@ -145,7 +148,7 @@ const cannotAskNow = (
   changeId: string,
   phase: Phase,
 ): { reason: "phase_already_running"; busy: string; jobId?: string } | null =>
-  phaseBusy(database, changeId)
+  phaseBusy(database, changeId, phase)
   ?? (sessions.has(changeId, phase)
     // 同上：`reason` 保持界面认识的那个，细节走 `busy`。
     ? { reason: "phase_already_running" as const, busy: "terminal" }
@@ -737,12 +740,23 @@ async function runRound(input: {
    * 所以两个都查（`phaseBusy`）：账本说有活儿，或者注册表里还有个活进程。
    * 都不忙时，把那个闲窗口关掉再派 —— `close` 会主动通知正在看的人，不留死画面。
    */
-  const busy = phaseBusy(database, changeId);
+  const busy = phaseBusy(database, changeId, phase);
   if (busy) {
     return { ran: false, phase, ...busy };
   }
   if (sessions.has(changeId, phase)) {
     sessions.close(changeId, phase);
+  }
+  /*
+   * **这一轮跑在哪个座位上**（批 3）：主线，或者一个开着的并行座位。
+   * 都不是就拒 —— 一个既不在主线上、也没开座位的阶段没有「跑它」这回事。
+   */
+  const mainPhase = new ChangeStore(database).read(changeId).state.phase;
+  const seat = phase === mainPhase
+    ? null
+    : new ParallelStore(database).find(changeId, phase);
+  if (phase !== mainPhase && seat === null) {
+    return { ran: false, phase, reason: "phase_not_active" };
   }
   /*
    * **只有 `pending` 和 `running` 能派。这份名单和 `TurnLoop.queueTurn` 是同一份。**
@@ -759,7 +773,10 @@ async function runRound(input: {
    * **第一版我写成了「只有 pending」，那是错的** —— 那会把 retry 之后那一步堵死：
    * `retry` 把 Change 推到 `running`，而那时正需要派一轮。名单要跟着 `queueTurn` 走。
    */
-  const status = new ChangeStore(database).read(changeId).state.status;
+  // 并行座位看座位自己的状态，主线看主线的 —— 同一份名单，两个座。
+  const status = seat === null
+    ? new ChangeStore(database).read(changeId).state.status
+    : seat.status;
   if (status !== "pending" && status !== "running") {
     return { ran: false, phase, reason: `phase_cannot_queue:${status}` };
   }
@@ -791,98 +808,17 @@ async function runRound(input: {
       id: `JOB-${changeId}-${phase}-${Date.now()}-refused`,
       changeId, reason: refusalError(refusal), at: Date.now(),
     });
-    if (status === "running") new ChangeStore(database).apply(changeId, "fail");
+    if (status === "running") {
+      // 回滚落在拒绝的那个座位上：并行座位收座位，主线收主线（批 3）。
+      if (seat === null) new ChangeStore(database).apply(changeId, "fail");
+      else new ParallelStore(database).apply(changeId, phase, "fail");
+    }
     return refusal;
   };
-  /*
-   * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
-   *
-   * RoundTurnRunner 里也有同一条检查（防御在两层），但只靠那一层是不够的：
-   * TurnLoop 会把 runner 抛的错当成「这一轮跑失败了」，于是给 Change 应用 fail、
-   * 标成 blocked。而「还没录需求」是前置条件不满足，**不是这一轮失败** —— 因为它
-   * 把 Change 打成阻塞，就得再去 retry 才能恢复，白折腾一圈。
-   */
-  if (new ChangeStore(database).read(changeId).brief === null) {
-    return refuse({ ran: false, phase, reason: "change_has_no_brief" });
-  }
-  /*
-   * 项目没写路径也不跑。
-   *
-   * 和上面那条同一个形状、同一个理由：**前置条件不满足不该把 Change 打成 blocked**。
-   * `PanelSessions.launchInto` 里也会拒（防御在两层），但那一层抛出来会被 TurnLoop
-   * 当成「这一轮跑失败了」。
-   */
-  if (sessions.workspaceFor(changeId) === null) {
-    return refuse({ ran: false, phase, reason: "project_has_no_path" });
-  }
-  /*
-   * **Codex 没信任过这个目录就别派。**
-   *
-   * 2026-07-30 实测：派下去之后 30 分钟拿到 `no new Codex session appeared`。真实
-   * 情况是 Codex 起来了、停在「Do you trust the contents of this directory?」上等人
-   * 按，而这一侧看得见的只有「没有新线程」——**界面上它和「在跑」一模一样**，正是
-   * 这个产品从头到尾在防的那一类。而且每加一个新项目都会撞一次。
-   *
-   * **只有明确的 `false` 才拦。** 查不出来（配置读不到、Codex 换了格式）就照旧往下
-   * 走 —— 和归档那一层同一条规矩：不因为读不到别人的东西就不干活。
-   *
-   * **不替人答那个提问。** 答一次就往用户的 `~/.codex/config.toml` 里写一条信任，
-   * 而信任是人对一个目录的授权，不是 StagePass 的决定（我 2026-07-30 越过这条线一次，
-   * 后来要清理）。所以这里只说清楚，让他自己去答。
-   */
-  if (sessions.trust.isTrusted(sessions.workspaceFor(changeId)!) === false) {
-    return refuse({
-      ran: false, phase, reason: "workspace_not_trusted",
-      workspace: sessions.workspaceFor(changeId)!,
-    });
-  }
-  /*
-   * **Build 要在干净的工作树上跑。**
-   *
-   * Build 一轮的产出是一个 commit（用户 2026-07-30），而 StagePass 提交的是「工作树里
-   * 所有的改动」—— 它分不出哪一行是红方写的、哪一行是人自己写了一半的。树脏就跑，
-   * 这一次 commit 会**把人没提交的活儿一起卷进去**，而那是不该替他做的事。
-   *
-   * 干净之后，「这一轮改了什么」才有唯一定义：commit 边界严格等于轮次边界。
-   *
-   * **只有产出 commit 的阶段查这个**（Build / Fix，见 `producesCommit`）：别的阶段
-   * 产出一份文档、一个路径就说全了，人手里有没有没提交的东西和写文档无关，
-   * 拦它只会让人没法干活。
-   *
-   * 把文件列出来，因为「树脏了」这句话本身没法让人动手 —— 他得知道是哪几个。
-   */
-  if (producesCommit(phase)) {
-    const dirty = sessions.repo.dirtyPaths(sessions.workspaceFor(changeId)!);
-    if (dirty.length > 0) {
-      return refuse({ ran: false, phase, reason: "workspace_dirty", dirty });
-    }
-  }
-  /*
-   * **第五道预检：这个阶段的上游产物还在不在**（交接文档 C1）。
-   *
-   * 任务书会把上游产物列给红方当输入（`round-turn-runner.ts`）。列一个磁盘上没有的
-   * 东西，红方到 rollout 里才发现「输入不见了」—— 实测烧过一整轮几分钟只换来这一句
-   * （2026-07-31 Review 那次：红方报了 `RV-index-html`，磁盘上没有，QA 和 Merge 的
-   * 四个角色各自又发现了一遍）。下游兜得住，但这几分钟可以省。
-   *
-   * 判据和 `/api/artifact` **同一个**（`locateArtifact`）：sha 问 git，路径查磁盘。
-   * 把缺的逐条列出来 —— 「上游产物不见了」这句话本身没法让人动手。
-   *
-   * **查的名单必须和任务书列的那一份是同一个**（`upstreamOf`，§8.6·①）。这里
-   * 原来自己切主线前缀 —— 同一个错想法的第三份拷贝，而它的后果最直接：派发
-   * TestPlan 会因为 **Plan** 的产物不见了而拒跑，一份 TestPlan 根本不消费的文档。
-   */
-  const missing = upstreamOf(phase, new ChangeStore(database).graphOf(changeId))
-    .flatMap((each) =>
-      new EvidenceStore(database).read(changeId, each).artifactIds
-        .map((id) => ({ phase: each, id })))
-    .filter(({ id }) =>
-      !locateArtifact({
-        root: sessions.workspaceFor(changeId)!, id, repo: sessions.repo,
-      }).ok);
-  if (missing.length > 0) {
-    return refuse({ ran: false, phase, reason: "upstream_artifact_missing", missing });
-  }
+  // 五条预检（brief / path / trust / dirty / upstream）—— 判据全在
+  // `dispatchPrecheck` 里，这里只管把拒绝按 `refuse` 的规矩落账、回滚状态。
+  const refused = dispatchPrecheck(database, sessions, changeId, phase);
+  if (refused !== null) return refuse(refused);
 
   const loop = new TurnLoop({
     database,
@@ -942,6 +878,9 @@ async function runRound(input: {
       },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
+      // 并行座位的轮次从活儿数（批 3）：座位的 start 不进账本。
+      parallelRound: (each, seatPhase) =>
+        new JobStore(database).countFor(each, seatPhase),
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
       // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。
       readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
@@ -971,7 +910,7 @@ async function runRound(input: {
    * Codex 还在动。
    */
   const turnMs = options.turnTimeoutMs ?? 30 * 60_000;
-  loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1 });
+  loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1, phase });
 
   /*
    * **排完队就返回，不把一轮的时长压在一个 HTTP 请求上**（BACKLOG §3.4）。
@@ -987,6 +926,62 @@ async function runRound(input: {
    */
   void runToCompletion({ loop, database, changeId, phase, jobId, at, turnMs });
   return { ran: true, phase, jobId };
+}
+
+/**
+ * 派发前的五条预检（brief / path / trust / dirty / upstream）。
+ * 拒 = 返回那个说得清的拒绝对象；null = 五条都过。**纯判据，不动任何状态** ——
+ * 落账和回滚归 `runRound` 里的 `refuse`。从 runRound 抽出来是函数上限
+ * （300 行）逼的，判据一个字没变。
+ *
+ * - **没有录入需求就不跑**：能绕过的录入等于装饰（用户 2026-07-29 的洞）。
+ *   RoundTurnRunner 里有同一条（防御在两层），但那层抛出来会被 TurnLoop 记成
+ *   「这一轮失败了」—— 而前置条件不满足不是失败。
+ * - **项目没写路径也不跑**：同一个形状，`launchInto` 那层抛出来同样会被记错。
+ * - **Codex 没信任过这个目录就别派**（2026-07-30 实测：Codex 停在信任提问上，
+ *   这一侧等满 30 分钟只拿到「没有新线程」）。只有明确的 `false` 才拦；不替人
+ *   答那个提问 —— 信任是人对目录的授权，不是 StagePass 的决定。
+ * - **产出 commit 的阶段要干净树**（`producesCommit` —— 两件事同一个名单）：
+ *   StagePass 提交整树，分不出哪行是红方写的、哪行是人写了一半的。文件要列出来。
+ * - **上游产物还在不在**（C1）：判据和 `/api/artifact` 同一个（`locateArtifact`），
+ *   名单和任务书同一份（`upstreamOf`）。缺的逐条列出来。
+ */
+function dispatchPrecheck(
+  database: Database.Database,
+  sessions: PanelSessions,
+  changeId: string,
+  phase: Phase,
+):
+  | { ran: false; phase: Phase; reason: string }
+  | { ran: false; phase: Phase; reason: string; workspace: string }
+  | { ran: false; phase: Phase; reason: string; dirty: readonly string[] }
+  | { ran: false; phase: Phase; reason: string; missing: readonly { phase: Phase; id: string }[] }
+  | null {
+  if (new ChangeStore(database).read(changeId).brief === null) {
+    return { ran: false, phase, reason: "change_has_no_brief" };
+  }
+  const root = sessions.workspaceFor(changeId);
+  if (root === null) {
+    return { ran: false, phase, reason: "project_has_no_path" };
+  }
+  if (sessions.trust.isTrusted(root) === false) {
+    return { ran: false, phase, reason: "workspace_not_trusted", workspace: root };
+  }
+  if (producesCommit(phase)) {
+    const dirty = sessions.repo.dirtyPaths(root);
+    if (dirty.length > 0) {
+      return { ran: false, phase, reason: "workspace_dirty", dirty };
+    }
+  }
+  const missing = upstreamOf(phase, new ChangeStore(database).graphOf(changeId))
+    .flatMap((each) =>
+      new EvidenceStore(database).read(changeId, each).artifactIds
+        .map((id) => ({ phase: each, id })))
+    .filter(({ id }) => !locateArtifact({ root, id, repo: sessions.repo }).ok);
+  if (missing.length > 0) {
+    return { ran: false, phase, reason: "upstream_artifact_missing", missing };
+  }
+  return null;
 }
 
 /**
@@ -1472,9 +1467,9 @@ function serveClose(
   const was = sessions.has(changeId, phase);
   sessions.close(changeId, phase);
 
-  // 只收「这个阶段」的账。job 按 Change 记，而它背后的活儿只会在当前阶段 ——
+  // 只收「这个阶段」的账（批 3 起 busy 按阶段问）——
   // 人关一个历史阶段的闲终端，不该顺手把正在跑的那一轮打掉。
-  const busy = phaseBusy(database, changeId);
+  const busy = phaseBusy(database, changeId, phase);
   let aborted: string | null = null;
   if (busy !== null) {
     let state: { phase: Phase; status: string } | null = null;
@@ -1482,10 +1477,18 @@ function serveClose(
       const read = new ChangeStore(database).read(changeId).state;
       state = { phase: read.phase, status: read.status };
     } catch { /* Change 已经没了 —— 没有账可收 */ }
-    if (state !== null && state.phase === phase) {
+    const seat = state !== null && state.phase !== phase
+      ? new ParallelStore(database).find(changeId, phase)
+      : null;
+    if (state !== null && (state.phase === phase || seat !== null)) {
       new JobStore(database).abort(busy.jobId, "aborted_by_human");
-      if (state.status === "running") {
-        new ChangeStore(database).apply(changeId, "fail");
+      // 中止落在这一轮的座位上：主线收主线，并行座位收座位（批 3）。
+      if (state.phase === phase) {
+        if (state.status === "running") {
+          new ChangeStore(database).apply(changeId, "fail");
+        }
+      } else if (seat?.status === "running") {
+        new ParallelStore(database).apply(changeId, phase, "fail");
       }
       aborted = busy.jobId;
     }
@@ -1899,14 +1902,65 @@ export async function handle(
 
   if (url.pathname === "/api/run" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
+    /*
+     * `&phase=` 指定跑哪个座位（批 3）。不给 = 主线当前阶段（老语义）。
+     * 给了一个既不在主线、也没开座位的阶段，`runRound` 会拒（phase_not_active）。
+     */
+    const asked = url.searchParams.get("phase");
     let phase: Phase;
     try {
-      phase = new ChangeStore(database).read(changeId).state.phase;
+      const main = new ChangeStore(database).read(changeId).state.phase;
+      if (asked !== null && !isPhase(asked)) {
+        response.writeHead(400).end("no such phase");
+        return;
+      }
+      phase = asked === null ? main : asked;
     } catch {
       response.writeHead(404).end("no such change");
       return;
     }
     json(response, await runRound({ changeId, phase, sessions, options }));
+    return;
+  }
+
+  /*
+   * 开一个并行座位（批 3）：主线停在 TestPlan 时把 Build 也变成 active，
+   * 各自跑轮、互不打断；主线走到时收编座位的进度（ChangeStore.apply）。
+   *
+   * 这不是裁决入口：开座位不推动任何闸门、不对任何产物下判断 —— 和「新建
+   * Change」同一类动作。守卫只有形状：阶段在这个 Change 的图上、在主线下游
+   * （上游的重跑是 sendBack 的事）、不是主线自己、座位还没开。
+   */
+  if (url.pathname === "/api/parallel" && request.method === "POST") {
+    const changeId = url.searchParams.get("change") ?? "";
+    const phase = url.searchParams.get("phase") ?? "";
+    if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
+    let main: Phase;
+    let order: readonly Phase[];
+    try {
+      const change = new ChangeStore(database).read(changeId);
+      main = change.state.phase;
+      order = new ChangeStore(database).graphOf(changeId).order;
+    } catch {
+      response.writeHead(404).end("no such change");
+      return;
+    }
+    if (phase === main) {
+      json(response, { opened: false, reason: "already_the_main_phase" });
+      return;
+    }
+    if (order.indexOf(phase) <= order.indexOf(main)) {
+      json(response, { opened: false, reason: "not_downstream_of_main" });
+      return;
+    }
+    try {
+      new ParallelStore(database).open(changeId, phase);
+    } catch (error: unknown) {
+      if (!(error instanceof ParallelSeatError)) throw error;
+      json(response, { opened: false, reason: error.code });
+      return;
+    }
+    json(response, { opened: true, phase });
     return;
   }
 
@@ -1938,8 +1992,8 @@ export async function handle(
       return;
     }
     // 账本闲着才许起：一个阶段同时只许一个进程（PRD §6.5 规则 5），而正在跑的
-    // 那一轮拥有这个座位。
-    const busy = phaseBusy(database, changeId);
+    // 那一轮拥有这个座位。批 3 起按阶段问 —— 并行座位的轮不挡别的阶段开终端。
+    const busy = phaseBusy(database, changeId, phase);
     if (busy) { json(response, { opened: false, ...busy }); return; }
     try {
       sessions.openForChat(changeId, phase, pluginConfigFor(database, changeId));
