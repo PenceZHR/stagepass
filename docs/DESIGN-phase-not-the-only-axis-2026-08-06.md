@@ -1,7 +1,7 @@
 # 地基改动方案：把「阶段」从唯一的组织维度降级
 
-> 2026-08-06 晚，用户一整轮谈话的收敛点。**方案，不是计划** —— 里面有三处没答案的，
-> 逐条标着。
+> 2026-08-06 晚，用户一整轮谈话的收敛点。**方案，不是计划**。
+> 三个开放问题当天全拍了（见 §六），只剩一个。
 >
 > 背景与证据：`docs/HANDOFF-2026-08-06.md` §5.8 / §5.9 / §5.10。
 
@@ -45,7 +45,7 @@ Change
 > 蓝方跑的是「这一轮改的东西通不通」，QA 跑的是「**整体验收 + 有没有让别处退化**」。
 > 范围不同，而且 QA 有自己的闸门 —— Merge 之前那道独立的验收因此保留。
 
-**Review / QA / Fix 不再是阶段，是 Build 这个状态上的角色。** 于是：
+**Review 和 Fix 不再是阶段，是 Build 这个状态上的角色**（QA 仍是状态）。于是：
 
 ```
 Build 状态里同时在跑：
@@ -77,7 +77,7 @@ Build 那一轮对抗的内部循环，和设计阶段的「红方产出 + 反�
 ```sql
 CREATE TABLE change_states (
   change_id  TEXT NOT NULL REFERENCES changes(id),
-  phase      TEXT NOT NULL,          -- 只许是「状态」那九个
+  phase      TEXT NOT NULL,          -- 只许是「状态」那十个
   status     TEXT NOT NULL,          -- pending/running/settled/blocked
   updated_at TEXT NOT NULL,
   PRIMARY KEY (change_id, phase)
@@ -94,7 +94,7 @@ CREATE TABLE change_states (
 ```sql
 CREATE TABLE change_activities (
   change_id TEXT NOT NULL,
-  kind      TEXT NOT NULL,   -- review | fix   （qa 并进 review）
+  kind      TEXT NOT NULL,   -- review | fix   （QA 不并，它仍是状态）
   on_phase  TEXT NOT NULL,   -- 它盯着哪个状态（今天恒为 Build）
   status    TEXT NOT NULL,   -- open | settled
   opened_round INTEGER NOT NULL,
@@ -159,7 +159,8 @@ phase: 状态名（round）或 NULL（aside —— 旁路会话）
 
 ### 批 2 · 闲聊 → brief（3.4）
 
-批 1 落地之后，闲聊就是它的第一个用户。**要先答开放问题 B。**
+批 1 落地之后，闲聊就是它的第一个用户。**模型起草、人改**（§六·B 已拍）——
+难点在那条机械判据：**未经人编辑的草稿不算 brief**。
 
 **验收**：新建一个 Change，谈十分钟，brief 是几百字而不是 9 个字。
 
@@ -175,7 +176,8 @@ phase: 状态名（round）或 NULL（aside —— 旁路会话）
 
 ### 批 4 · 联动（3.2）
 
-Review / QA / Fix 从 `PHASES` 里摘出来，变成 `change_activities`。`returnStack` 退休。
+Review 和 Fix 从 `PHASES` 里摘出来，变成 `change_activities`。`returnStack` 退休。
+**QA 不动** —— 它仍是状态，仍有自己的闸门。
 
 **这一批必须在 Review 真跑过至少一轮之后做** —— 它要建的形状有一端从没在真机上
 出现过（§5.9）。
@@ -204,10 +206,10 @@ TestPlan 交测试代码、Build 的红方看不到它、Build 的蓝方跑它�
 | 破什么 | 说明 |
 |---|---|
 | **六个阶段那份实测账** | 批 3 一动就作废。它是这套机制唯一的证据，而上一份已经被删过一次不可恢复。**批 3 之前先导出来** |
-| `RED_REVIEWS_OTHERS` / `SENDS_TO_FIX` / `PRODUCES_COMMIT` / `CONSUMES` | 批 4 全要重算 —— Review/QA/Fix 不再是阶段了 |
+| `RED_REVIEWS_OTHERS` / `SENDS_TO_FIX` / `CONSUMES` | 批 4 要重算 —— Review 和 Fix 不再是阶段。**`RED_REVIEWS_OTHERS` 会只剩 QA** |
 | `architecture.test.ts` 的分层护栏 | 新增 `change_activities` 要声明所属层 |
-| `round-prompt.golden.txt` | 批 4/5 会大改，十二份变九份 |
-| **2026-08-06 那一刀的 TestPlan 部分** | 它按「TestPlan 跑在 Build 之前」做的（进 `PRODUCES_COMMIT`、加「实际跑出来的结果」节）。批 5 要重新对一遍执行归属 |
+| `round-prompt.golden.txt` | 批 4/5 会大改，十二份变**十份** |
+| **2026-08-06 给 TestPlan 加的「实际跑出来的结果」那一节** | **要撤掉**（§六·§8.7·1 已拍）。`PRODUCES_COMMIT` 里保留 TestPlan —— 它要交代码，那件事和「先跑一遍」无关 |
 
 ---
 
