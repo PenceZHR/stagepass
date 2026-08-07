@@ -1,0 +1,988 @@
+{
+ "assessments": [
+  {
+   "phase": "PRD",
+   "round": 3,
+   "role": "producer",
+   "yes": 10,
+   "no": 1,
+   "na": 0,
+   "total": 11
+  },
+  {
+   "phase": "PRD",
+   "round": 3,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "PRD",
+   "round": 5,
+   "role": "critic",
+   "yes": 2,
+   "no": 2,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "PRD",
+   "round": 5,
+   "role": "producer",
+   "yes": 10,
+   "no": 1,
+   "na": 0,
+   "total": 11
+  },
+  {
+   "phase": "PRD",
+   "round": 6,
+   "role": "producer",
+   "yes": 13,
+   "no": 0,
+   "na": 0,
+   "total": 13
+  },
+  {
+   "phase": "PRD",
+   "round": 6,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "Spec",
+   "round": 2,
+   "role": "producer",
+   "yes": 8,
+   "no": 0,
+   "na": 0,
+   "total": 8
+  },
+  {
+   "phase": "Spec",
+   "round": 2,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "TechSpec",
+   "round": 1,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "TechSpec",
+   "round": 1,
+   "role": "producer",
+   "yes": 7,
+   "no": 1,
+   "na": 0,
+   "total": 8
+  },
+  {
+   "phase": "TechSpec",
+   "round": 2,
+   "role": "producer",
+   "yes": 8,
+   "no": 0,
+   "na": 0,
+   "total": 8
+  },
+  {
+   "phase": "TechSpec",
+   "round": 2,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "Plan",
+   "round": 1,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "Plan",
+   "round": 1,
+   "role": "producer",
+   "yes": 5,
+   "no": 0,
+   "na": 0,
+   "total": 5
+  },
+  {
+   "phase": "TestPlan",
+   "round": 1,
+   "role": "critic",
+   "yes": 4,
+   "no": 0,
+   "na": 0,
+   "total": 4
+  },
+  {
+   "phase": "TestPlan",
+   "round": 1,
+   "role": "producer",
+   "yes": 7,
+   "no": 0,
+   "na": 0,
+   "total": 7
+  },
+  {
+   "phase": "Build",
+   "round": 1,
+   "role": "producer",
+   "yes": 7,
+   "no": 6,
+   "na": 0,
+   "total": 13
+  },
+  {
+   "phase": "Build",
+   "round": 1,
+   "role": "critic",
+   "yes": 4,
+   "no": 1,
+   "na": 0,
+   "total": 5
+  }
+ ],
+ "gaps": [
+  {
+   "id": "RB:producer:RBC-d10b88cf-4bdb-456c-9a9a-f53fe2f924be",
+   "phase": "Build",
+   "kind": "standard",
+   "severity": null,
+   "title": "改动范围和 Plan 一致，没有顺手做计划外的事",
+   "status": "open",
+   "opened_round": 1,
+   "resolution": null,
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-20ed8323-881c-499e-951b-32830fdf3097",
+   "phase": "Build",
+   "kind": "standard",
+   "severity": null,
+   "title": "实现的行为对得上 Spec 写的那几条",
+   "status": "open",
+   "opened_round": 1,
+   "resolution": null,
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-49aff80d-ff08-4021-bd18-6f00ebf5224b",
+   "phase": "Build",
+   "kind": "standard",
+   "severity": null,
+   "title": "跑的是 TestPlan 交的用例，贴了命令和输出，而不是只说「应该能跑」",
+   "status": "open",
+   "opened_round": 1,
+   "resolution": null,
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-5c02896a-8be3-4c47-bf1b-5b39a01c848c",
+   "phase": "Build",
+   "kind": "standard",
+   "severity": null,
+   "title": "和 Plan 不一样的地方逐条写了为什么；一条都没有时明写了「没有」",
+   "status": "open",
+   "opened_round": 1,
+   "resolution": null,
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-4a92a235-bbe8-4703-8e8a-b0c17373f0a2",
+   "phase": "Build",
+   "kind": "standard",
+   "severity": null,
+   "title": "每一处不明显的决定都写清了为什么",
+   "status": "open",
+   "opened_round": 1,
+   "resolution": null,
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-76c74113-d03b-4343-9ede-a3e647d068da",
+   "phase": "Build",
+   "kind": "standard",
+   "severity": null,
+   "title": "没做完的写明了差什么、留给谁；没有时明写了「没有」",
+   "status": "open",
+   "opened_round": 1,
+   "resolution": null,
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-aa2337da-aea8-4143-b7f4-15fce3fb2100",
+   "phase": "PRD",
+   "kind": "standard",
+   "severity": null,
+   "title": "架构、技术栈、模块划分、接口、测试用例、实现步骤都没有在这一份里定",
+   "status": "closed",
+   "opened_round": 3,
+   "resolution": "PRD 已把需求选择人预先锁定的 Cocos Creator 3.8.8 单列为既定约束，并将架构、模块划分、接口、测试用例、实现步骤及未锁定技术细节明确交给对应下游阶段，未在本轮新定这些事项。",
+   "closed_by": null
+  },
+  {
+   "id": "RB:producer:RBC-8f0833fc-60bc-4fec-a332-2762fd7ce34b",
+   "phase": "TechSpec",
+   "kind": "standard",
+   "severity": null,
+   "title": "有意留给下游的每一项都写明了留给哪个阶段",
+   "status": "closed",
+   "opened_round": 1,
+   "resolution": "TechSpec-r2 的「留给下游决定的」已将每个延后事项逐条标为 Plan 或 Build，上一轮含糊的接口归属与未锁定技术栈也都唯一改归 Plan，因此该问题不再成立。",
+   "closed_by": null
+  }
+ ],
+ "round_notes": [
+  {
+   "phase": "PRD",
+   "round": 3,
+   "source": "judge_conclusion",
+   "another_round": 1,
+   "text": "需要再来一轮：唯一场景、入口、配置源和产品说明是人明确给出的成功结果，不应被当成擅自设计架构；但正方把 Cocos Creator 3.8.8 技术栈基线写进了结果、验收标准和范围，而本轮规则要求技术栈只在「留给下游决定的」中提及，需在保留该不可退让约束的同时修正阶段边界。"
+  },
+  {
+   "phase": "PRD",
+   "round": 3,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "这一轮还不够格：主体、结果、验收、范围和前提整体完整，但 PRD 已直接规定目标架构及技术栈基线，没有把这些决定全部留给下游阶段。"
+  },
+  {
+   "phase": "PRD",
+   "round": 5,
+   "source": "judge_conclusion",
+   "another_round": 1,
+   "text": "还需要一轮：PRD 在“留给下游决定的”中仍将 Cocos Creator 3.8.8 固定为不可退让的技术栈约束，直接违反第 10 条阶段边界；其余 10 条标准均已满足，下一轮只需消除这一处冲突并保留需求中的兼容约束来源。"
+  },
+  {
+   "phase": "PRD",
+   "round": 5,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "本轮不够格，因为文档将 Cocos Creator 3.8.8 固定为不可退让的技术栈约束，不满足第 10 条阶段边界。"
+  },
+  {
+   "phase": "PRD",
+   "round": 6,
+   "source": "judge_conclusion",
+   "another_round": 0,
+   "text": "本轮已解决上一轮的阶段边界冲突：Cocos Creator 3.8.8 被明确标注为需求选择人预先定死的约束，其余架构、模块、接口、测试和实现决策均下放到具名阶段；13 条标准均有正文依据，未发现需要继续修订的缺口。"
+  },
+  {
+   "phase": "PRD",
+   "round": 6,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "这一轮整体够格：13 条标准均满足，需求边界、既定约束来源及下游决策归属清晰完整。"
+  },
+  {
+   "phase": "Spec",
+   "round": 2,
+   "source": "judge_conclusion",
+   "another_round": 0,
+   "text": "我逐项核对了需求、PRD、Spec 和反方意见：9 条验收标准均映射到明确的正常行为与失败表现，五个规定章节齐全，未新增实现层决定，所有保留事项也注明了承接阶段，因此无需再来一轮。"
+  },
+  {
+   "phase": "Spec",
+   "round": 2,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "这一轮整体够格，8 条判定标准均有明确依据且全部通过。"
+  },
+  {
+   "phase": "TechSpec",
+   "round": 1,
+   "source": "judge_conclusion",
+   "another_round": 1,
+   "text": "需要再来一轮：TechSpec 其余七项均有充分内容支撑，但「留给下游决定的」仍把接口归给两个候选阶段，并将未锁定技术栈含糊地交给“相应下游阶段”，未满足每项明确归属一个阶段的要求；应修正这两处后复审。"
+  },
+  {
+   "phase": "TechSpec",
+   "round": 1,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "本轮尚不够格：前 7 条均满足，但部分下游留项未明确归属到具体阶段，因此第 8 条不满足。"
+  },
+  {
+   "phase": "TechSpec",
+   "round": 2,
+   "source": "judge_conclusion",
+   "another_round": 0,
+   "text": "不需要再来一轮：我复核后确认状态迁移、权威与镜像、交接契约、选择代价、单一首要风险和 Spec 追溯均完整；上一轮唯一遗留问题也已修复，7 项下游决定全部明确归属 Plan 或 Build，未发现新的本阶段缺口。"
+  },
+  {
+   "phase": "TechSpec",
+   "round": 2,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "本轮够格，因为数据与状态、权威关系、交接契约、选择代价、首要风险、Spec 追溯及下游归属均已明确覆盖。"
+  },
+  {
+   "phase": "Plan",
+   "round": 1,
+   "source": "judge_conclusion",
+   "another_round": 0,
+   "text": "实际核对需求、PRD、Spec、TechSpec 与本轮文件后，计划的八步均明确了独立交付物、影响范围和即时判据，依赖顺序覆盖上游门槛与重叠变更，逐步回退可恢复到检查点，并合理将首次改动仓库对象的步骤 6 识别为最高风险，因此无需再来一轮。"
+  },
+  {
+   "phase": "Plan",
+   "round": 1,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "本轮够格，因为五条标准均有充分、可核验的对应内容。"
+  },
+  {
+   "phase": "TestPlan",
+   "round": 1,
+   "source": "judge_conclusion",
+   "another_round": 0,
+   "text": "实际复核需求、PRD、Spec、TechSpec及双方产出后，9条上游验收标准均有用例覆盖，12个用例完整定义输入、前置状态、期望输出、失败判据及测试错误辨别方式，并清楚区分本轮与后续闸门，自动化命令和人工步骤也足以复现，因此无需再来一轮。"
+  },
+  {
+   "phase": "TestPlan",
+   "round": 1,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "本轮够格：7 条逐项标准全部满足，验收映射、用例结构、失败辨别、闸门分类与复现说明均完整。"
+  },
+  {
+   "phase": "Build",
+   "round": 1,
+   "source": "judge_conclusion",
+   "another_round": 1,
+   "text": "已批准输入缺少 Plan 步骤 5 至 8 明定的诊断、有效基线、具体目标收敛、逐项追溯及实施批准，导致本轮没有实施任何整理，也无法执行 TP-10 至 TP-12；上游补齐并批准这些前置产物后，需要再进行一轮 Build。"
+  },
+  {
+   "phase": "Build",
+   "round": 1,
+   "source": "blue_overall",
+   "another_round": null,
+   "text": "这一轮不够格，因为没有完成 Plan 要求的前置规划交付，也没有提供 TestPlan 用例的实际运行证据。"
+  }
+ ],
+ "change_events": [
+  {
+   "seq": 0,
+   "action": "create",
+   "from_phase": null,
+   "from_status": null,
+   "to_phase": "PRD",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T08:58:21.453Z"
+  },
+  {
+   "seq": 1,
+   "action": "start",
+   "from_phase": "PRD",
+   "from_status": "pending",
+   "to_phase": "PRD",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T09:06:58.652Z"
+  },
+  {
+   "seq": 2,
+   "action": "fail",
+   "from_phase": "PRD",
+   "from_status": "running",
+   "to_phase": "PRD",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T09:28:38.504Z"
+  },
+  {
+   "seq": 3,
+   "action": "retry",
+   "from_phase": "PRD",
+   "from_status": "blocked",
+   "to_phase": "PRD",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T09:31:34.337Z"
+  },
+  {
+   "seq": 4,
+   "action": "fail",
+   "from_phase": "PRD",
+   "from_status": "running",
+   "to_phase": "PRD",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T09:37:30.868Z"
+  },
+  {
+   "seq": 5,
+   "action": "retry",
+   "from_phase": "PRD",
+   "from_status": "blocked",
+   "to_phase": "PRD",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T09:44:00.427Z"
+  },
+  {
+   "seq": 6,
+   "action": "settle",
+   "from_phase": "PRD",
+   "from_status": "running",
+   "to_phase": "PRD",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T09:53:51.432Z"
+  },
+  {
+   "seq": 7,
+   "action": "reject",
+   "from_phase": "PRD",
+   "from_status": "settled",
+   "to_phase": "PRD",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T09:59:18.267Z"
+  },
+  {
+   "seq": 8,
+   "action": "start",
+   "from_phase": "PRD",
+   "from_status": "pending",
+   "to_phase": "PRD",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T09:59:18.301Z"
+  },
+  {
+   "seq": 9,
+   "action": "fail",
+   "from_phase": "PRD",
+   "from_status": "running",
+   "to_phase": "PRD",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T11:12:22.813Z"
+  },
+  {
+   "seq": 10,
+   "action": "retry",
+   "from_phase": "PRD",
+   "from_status": "blocked",
+   "to_phase": "PRD",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T11:27:27.718Z"
+  },
+  {
+   "seq": 11,
+   "action": "settle",
+   "from_phase": "PRD",
+   "from_status": "running",
+   "to_phase": "PRD",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T11:47:08.768Z"
+  },
+  {
+   "seq": 12,
+   "action": "reject",
+   "from_phase": "PRD",
+   "from_status": "settled",
+   "to_phase": "PRD",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T12:22:34.042Z"
+  },
+  {
+   "seq": 13,
+   "action": "start",
+   "from_phase": "PRD",
+   "from_status": "pending",
+   "to_phase": "PRD",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T12:22:34.060Z"
+  },
+  {
+   "seq": 14,
+   "action": "settle",
+   "from_phase": "PRD",
+   "from_status": "running",
+   "to_phase": "PRD",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T12:29:08.364Z"
+  },
+  {
+   "seq": 15,
+   "action": "approve",
+   "from_phase": "PRD",
+   "from_status": "settled",
+   "to_phase": "Spec",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T12:31:53.148Z"
+  },
+  {
+   "seq": 16,
+   "action": "start",
+   "from_phase": "Spec",
+   "from_status": "pending",
+   "to_phase": "Spec",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T12:33:06.758Z"
+  },
+  {
+   "seq": 17,
+   "action": "fail",
+   "from_phase": "Spec",
+   "from_status": "running",
+   "to_phase": "Spec",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T13:03:07.108Z"
+  },
+  {
+   "seq": 18,
+   "action": "retry",
+   "from_phase": "Spec",
+   "from_status": "blocked",
+   "to_phase": "Spec",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T13:13:23.762Z"
+  },
+  {
+   "seq": 19,
+   "action": "settle",
+   "from_phase": "Spec",
+   "from_status": "running",
+   "to_phase": "Spec",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T13:30:40.053Z"
+  },
+  {
+   "seq": 20,
+   "action": "approve",
+   "from_phase": "Spec",
+   "from_status": "settled",
+   "to_phase": "TechSpec",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T13:33:19.250Z"
+  },
+  {
+   "seq": 21,
+   "action": "start",
+   "from_phase": "TechSpec",
+   "from_status": "pending",
+   "to_phase": "TechSpec",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T13:35:57.931Z"
+  },
+  {
+   "seq": 22,
+   "action": "settle",
+   "from_phase": "TechSpec",
+   "from_status": "running",
+   "to_phase": "TechSpec",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T14:02:42.566Z"
+  },
+  {
+   "seq": 23,
+   "action": "reject",
+   "from_phase": "TechSpec",
+   "from_status": "settled",
+   "to_phase": "TechSpec",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T14:18:53.568Z"
+  },
+  {
+   "seq": 24,
+   "action": "start",
+   "from_phase": "TechSpec",
+   "from_status": "pending",
+   "to_phase": "TechSpec",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T14:18:53.592Z"
+  },
+  {
+   "seq": 25,
+   "action": "settle",
+   "from_phase": "TechSpec",
+   "from_status": "running",
+   "to_phase": "TechSpec",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T14:35:26.909Z"
+  },
+  {
+   "seq": 26,
+   "action": "approve",
+   "from_phase": "TechSpec",
+   "from_status": "settled",
+   "to_phase": "Plan",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T14:37:06.848Z"
+  },
+  {
+   "seq": 27,
+   "action": "start",
+   "from_phase": "Plan",
+   "from_status": "pending",
+   "to_phase": "Plan",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T14:37:16.973Z"
+  },
+  {
+   "seq": 28,
+   "action": "settle",
+   "from_phase": "Plan",
+   "from_status": "running",
+   "to_phase": "Plan",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T14:47:46.779Z"
+  },
+  {
+   "seq": 29,
+   "action": "approve",
+   "from_phase": "Plan",
+   "from_status": "settled",
+   "to_phase": "TestPlan",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T14:49:08.861Z"
+  },
+  {
+   "seq": 30,
+   "action": "start",
+   "from_phase": "TestPlan",
+   "from_status": "pending",
+   "to_phase": "TestPlan",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T14:49:56.738Z"
+  },
+  {
+   "seq": 31,
+   "action": "settle",
+   "from_phase": "TestPlan",
+   "from_status": "running",
+   "to_phase": "TestPlan",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T15:05:27.258Z"
+  },
+  {
+   "seq": 32,
+   "action": "approve",
+   "from_phase": "TestPlan",
+   "from_status": "settled",
+   "to_phase": "Build",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T15:06:52.582Z"
+  },
+  {
+   "seq": 33,
+   "action": "start",
+   "from_phase": "Build",
+   "from_status": "pending",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T15:34:57.181Z"
+  },
+  {
+   "seq": 34,
+   "action": "settle",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "settled",
+   "reason": null,
+   "at": "2026-08-06T15:45:05.631Z"
+  },
+  {
+   "seq": 35,
+   "action": "reject",
+   "from_phase": "Build",
+   "from_status": "settled",
+   "to_phase": "Build",
+   "to_status": "pending",
+   "reason": null,
+   "at": "2026-08-06T15:48:11.363Z"
+  },
+  {
+   "seq": 36,
+   "action": "start",
+   "from_phase": "Build",
+   "from_status": "pending",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T15:48:11.417Z"
+  },
+  {
+   "seq": 37,
+   "action": "fail",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T16:18:12.717Z"
+  },
+  {
+   "seq": 38,
+   "action": "retry",
+   "from_phase": "Build",
+   "from_status": "blocked",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T16:42:25.027Z"
+  },
+  {
+   "seq": 39,
+   "action": "fail",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T16:42:25.063Z"
+  },
+  {
+   "seq": 40,
+   "action": "retry",
+   "from_phase": "Build",
+   "from_status": "blocked",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T16:44:01.153Z"
+  },
+  {
+   "seq": 41,
+   "action": "fail",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T16:44:01.211Z"
+  },
+  {
+   "seq": 42,
+   "action": "retry",
+   "from_phase": "Build",
+   "from_status": "blocked",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T16:46:19.186Z"
+  },
+  {
+   "seq": 43,
+   "action": "fail",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T16:46:19.244Z"
+  },
+  {
+   "seq": 44,
+   "action": "retry",
+   "from_phase": "Build",
+   "from_status": "blocked",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T16:50:02.725Z"
+  },
+  {
+   "seq": 45,
+   "action": "fail",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T16:50:02.783Z"
+  },
+  {
+   "seq": 46,
+   "action": "retry",
+   "from_phase": "Build",
+   "from_status": "blocked",
+   "to_phase": "Build",
+   "to_status": "running",
+   "reason": null,
+   "at": "2026-08-06T16:53:27.373Z"
+  },
+  {
+   "seq": 47,
+   "action": "fail",
+   "from_phase": "Build",
+   "from_status": "running",
+   "to_phase": "Build",
+   "to_status": "blocked",
+   "reason": null,
+   "at": "2026-08-06T17:23:35.591Z"
+  }
+ ],
+ "jobs": [
+  {
+   "id": "JOB-CHG-001-PRD-1786007218651",
+   "kind": "phase_turn",
+   "status": "failed",
+   "attempt": 1,
+   "error": "turn_result_artifacts_invalid: blue: undefined",
+   "created_at": "2026-08-06T09:06:58.652Z"
+  },
+  {
+   "id": "JOB-CHG-001-PRD-1786008694365",
+   "kind": "phase_turn",
+   "status": "failed",
+   "attempt": 1,
+   "error": "turn_result_artifacts_invalid: blue: undefined",
+   "created_at": "2026-08-06T09:31:34.366Z"
+  },
+  {
+   "id": "JOB-CHG-001-PRD-1786009440464",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T09:44:00.464Z"
+  },
+  {
+   "id": "JOB-CHG-001-PRD-1786010358301",
+   "kind": "phase_turn",
+   "status": "failed",
+   "attempt": 1,
+   "error": "codex_unavailable: turn did not complete within 1800000ms on thread 019fd675-52ac-7ac1-b50e-ec92e76482a4",
+   "created_at": "2026-08-06T09:59:18.301Z"
+  },
+  {
+   "id": "JOB-CHG-001-PRD-1786015647749",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T11:27:27.749Z"
+  },
+  {
+   "id": "JOB-CHG-001-PRD-1786018954060",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T12:22:34.060Z"
+  },
+  {
+   "id": "JOB-CHG-001-Spec-1786019586758",
+   "kind": "phase_turn",
+   "status": "failed",
+   "attempt": 1,
+   "error": "codex_unavailable: new Codex sessions appeared but none carried this prompt; another Codex is probably running",
+   "created_at": "2026-08-06T12:33:06.758Z"
+  },
+  {
+   "id": "JOB-CHG-001-Spec-1786022003800",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T13:13:23.800Z"
+  },
+  {
+   "id": "JOB-CHG-001-TechSpec-1786023357931",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T13:35:57.932Z"
+  },
+  {
+   "id": "JOB-CHG-001-TechSpec-1786025933592",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T14:18:53.592Z"
+  },
+  {
+   "id": "JOB-CHG-001-Plan-1786027036973",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T14:37:16.974Z"
+  },
+  {
+   "id": "JOB-CHG-001-TestPlan-1786027796738",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T14:49:56.738Z"
+  },
+  {
+   "id": "JOB-CHG-001-Build-1786030497181",
+   "kind": "phase_turn",
+   "status": "done",
+   "attempt": 1,
+   "error": null,
+   "created_at": "2026-08-06T15:34:57.181Z"
+  },
+  {
+   "id": "JOB-CHG-001-Build-1786031291417",
+   "kind": "phase_turn",
+   "status": "failed",
+   "attempt": 1,
+   "error": "codex_unavailable: turn did not complete within 1800000ms on thread 019fd7b6-a00a-7e90-b2d2-2c1629f96c37",
+   "created_at": "2026-08-06T15:48:11.418Z"
+  },
+  {
+   "id": "JOB-CHG-001-Build-1786035207428",
+   "kind": "phase_turn",
+   "status": "failed",
+   "attempt": 1,
+   "error": "codex_unavailable: turn did not complete within 1800000ms on thread 019fd7fe-7e15-7533-9a09-413bcdeb313b",
+   "created_at": "2026-08-06T16:53:27.428Z"
+  }
+ ]
+}
