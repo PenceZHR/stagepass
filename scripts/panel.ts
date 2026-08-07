@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
-import { SCHEMA_SQL, migrate } from "../src/db/schema";
+import { prepareSchema } from "../src/db/schema";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { RubricStore } from "../src/store/rubric-store";
@@ -107,9 +107,14 @@ const dbPath = argument("db")
 const database = new Database(dbPath);
 database.pragma("journal_mode = WAL");
 database.pragma("foreign_keys = ON");
-database.exec(SCHEMA_SQL);
-// 旧库补列。SCHEMA_SQL 只会建新表，不会给已存在的表加列 —— 见 migrate 的注释。
-migrate(database);
+/*
+ * 建表 + 迁移，**顺序由 `prepareSchema` 定死**（先拉平旧形状，再补齐新东西）。
+ *
+ * 这里原来是 `exec(SCHEMA_SQL)` 紧跟 `migrate(database)` 两句 —— 2026-08-06
+ * 真机上炸了：旧库的 `change_bindings` 还没有 `kind` 列，而 SCHEMA_SQL 里的
+ * 部分索引引用它，面板起不来。顺序挪进那个函数里，这里就没有可排错的东西。
+ */
+prepareSchema(database);
 
 /*
  * 收拾上一次进程死掉时留下的活。**这是 L1 崩溃恢复的生产调用者。**

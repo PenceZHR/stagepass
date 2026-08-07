@@ -644,6 +644,32 @@ CREATE INDEX IF NOT EXISTS ix_worklist_open
 `;
 
 /**
+ * 把一个库准备好 —— **建表和迁移的顺序在这里定死，调用方不许自己排。**
+ *
+ * ## 顺序是承重的，而它 2026-08-06 真机上炸过一次
+ *
+ * `SCHEMA_SQL` 里有引用**新列**的部分索引（`change_bindings` 那三个带
+ * `WHERE kind = ...`）。旧库里那张表还没有 `kind` —— 它是 `migrate` 才补的，
+ * 而 `CREATE TABLE IF NOT EXISTS` 对一张已经存在的表是空操作。于是
+ * 「先 SCHEMA_SQL 后 migrate」在旧库上必然抛 `no such column: kind`，
+ * 面板压根起不来。全新库不会撞上，所以离线测试全绿也不代表它对。
+ *
+ * 正确的顺序是**先把旧形状拉平，再补齐新东西**：`migrate` 对全新库是空操作
+ * （每一步都先问 `table_info`，表不在就返回），所以这个顺序两种库都成立。
+ *
+ * 做成一个函数而不是在文档里写一句「记得先 migrate」：一条只能靠人记得的规则
+ * 是一条撑到第二个调用者出现的规则，而这棵树一直在删这种东西。
+ */
+export function prepareSchema(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown; all(): unknown };
+}): void {
+  migrate(database);
+  database.exec(SCHEMA_SQL);
+}
+
+/**
  * 给已经存在的库补上后来才加的列。
  *
  * ## 为什么 SCHEMA_SQL 一个人不够

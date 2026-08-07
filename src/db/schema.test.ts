@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
-import { SCHEMA_SQL, migrate } from "./schema";
+import { SCHEMA_SQL, migrate, prepareSchema } from "./schema";
 
 /**
  * 后加的列，得能补进一个已经存在的库。
@@ -99,6 +99,122 @@ describe("L0 · 旧库能补上后加的列", () => {
     assert.doesNotThrow(() => {
       database.prepare("SELECT id, name, path, created_at FROM projects").all();
     });
+    database.close();
+  });
+});
+
+/**
+ * **一个真实旧库能不能被打开** —— 2026-08-06 真机上炸在这儿，而这个文件里所有
+ * 别的测试都建全新库，所以它们全绿也没拦住。
+ *
+ * 病是顺序：`SCHEMA_SQL` 里有引用新列的部分索引（`change_bindings` 那三个
+ * `WHERE kind = ...`），而旧库那张表的 `kind` 是 `migrate` 才补的，
+ * `CREATE TABLE IF NOT EXISTS` 对已存在的表又什么都不做 —— 于是
+ * 「先 SCHEMA_SQL 后 migrate」必抛 `no such column: kind`，面板起不来。
+ *
+ * 所以这一组用的是**真库那个形状**：2026-08-06 之前的 `change_bindings`
+ * （没有 kind）、`gaps`（phase 名单里没有 Arch）、`jobs`（没有 phase 列）。
+ */
+describe("L0 · 打开一个 2026-08-06 之前的旧库", () => {
+  const oldDatabase = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NULL,
+        phase_order TEXT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE changes (
+        id TEXT PRIMARY KEY, project_id TEXT NULL, title TEXT NULL,
+        phase TEXT NOT NULL, status TEXT NOT NULL,
+        return_stack TEXT NOT NULL DEFAULT '[]',
+        seq INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE change_bindings (
+        change_id  TEXT NOT NULL REFERENCES changes(id),
+        phase      TEXT NOT NULL CHECK (phase IN ('PRD','Spec','TechSpec','Plan','TestPlan','Build','Review','Fix','QA','Merge','Retro','Done')),
+        thread_id  TEXT NOT NULL,
+        status     TEXT NOT NULL CHECK (status IN ('bound','detached')),
+        bound_at   TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (change_id, phase));
+      CREATE UNIQUE INDEX uq_change_bindings_thread
+        ON change_bindings (thread_id) WHERE status = 'bound';
+      CREATE TABLE jobs (
+        id TEXT PRIMARY KEY, change_id TEXT NOT NULL REFERENCES changes(id),
+        kind TEXT NOT NULL, status TEXT NOT NULL,
+        attempt INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
+        owner TEXT NULL, token TEXT NULL, expires_at INTEGER NULL,
+        deadline_at INTEGER NOT NULL, error TEXT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `);
+    database.prepare(
+      `INSERT INTO changes VALUES ('CHG-001', NULL, '重构项目', 'Build', 'blocked', '[]', 9, 't', 't')`,
+    ).run();
+    database.prepare(
+      `INSERT INTO change_bindings VALUES ('CHG-001', 'Build', 'T-OLD', 'bound', 't', 't')`,
+    ).run();
+    return database;
+  };
+
+  it("**prepareSchema 打得开** —— 老数据一行不少", () => {
+    const database = oldDatabase();
+    prepareSchema(database);
+    assert.equal((database.prepare("SELECT COUNT(*) AS n FROM changes")
+      .get() as { n: number }).n, 1);
+    assert.deepEqual(
+      database.prepare("SELECT change_id, kind, phase, thread_id FROM change_bindings")
+        .get(),
+      { change_id: "CHG-001", kind: "round", phase: "Build", thread_id: "T-OLD" },
+    );
+    database.close();
+  });
+
+  it("打开之后新东西全都在：Arch、aside、并行座位、jobs.phase", () => {
+    const database = oldDatabase();
+    prepareSchema(database);
+    /*
+     * 批 5：Arch 进了 phase 名单。
+     *
+     * **插一行新的，不 UPDATE 老的** —— `ck_changes_ledger` 会拒掉任何没有配套
+     * 账本行的 UPDATE（那条触发器正是这么设计的），拿它测 CHECK 只会撞见账本。
+     */
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO changes VALUES ('CHG-ARCH', NULL, 'x', 'Arch', 'pending', '[]', 0, 't', 't')`,
+    ).run());
+    // 批 1：旁路绑定存得进去，而且那三个部分索引真的建出来了。
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO change_bindings
+         (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+       VALUES ('CHG-001', 'aside', NULL, 'T-ASIDE', 'bound', 't', 't')`).run());
+    assert.throws(() => database.prepare(
+      `INSERT INTO change_bindings
+         (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+       VALUES ('CHG-001', 'aside', NULL, 'T-TWO', 'bound', 't', 't')`).run(),
+    /UNIQUE/, "一个 Change 两条 aside —— 部分索引没建出来");
+    // 批 3：并行座位表和 jobs.phase 都在。
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO change_states VALUES ('CHG-001', 'QA', 'pending', 't', 't')`).run());
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO jobs (id, change_id, kind, status, attempt, max_attempts,
+         owner, token, expires_at, deadline_at, error, phase, created_at, updated_at)
+       VALUES ('J-1', 'CHG-001', 'phase_turn', 'queued', 0, 1,
+         NULL, NULL, NULL, 0, NULL, 'QA', 't', 't')`).run());
+    database.close();
+  });
+
+  it("**跑两次是空操作** —— 面板重启走的就是第二次", () => {
+    const database = oldDatabase();
+    prepareSchema(database);
+    assert.doesNotThrow(() => { prepareSchema(database); });
+    assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_bindings")
+      .get() as { n: number }).n, 1);
+    database.close();
+  });
+
+  it("全新的空库照样打得开 —— migrate 那半是空操作", () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    assert.doesNotThrow(() => { prepareSchema(database); });
+    assert.doesNotThrow(() => database.prepare(
+      "SELECT change_id, kind, phase FROM change_bindings").all());
     database.close();
   });
 });
