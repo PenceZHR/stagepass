@@ -93,6 +93,8 @@ const waiveButton = button("waive");
 const briefButton = button("brief");
 const closeTermButton = button("close-term");
 const asideTermButton = button("aside-term");
+const briefDraftButton = button("brief-draft");
+const briefConfirmButton = button("brief-confirm");
 const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
@@ -1451,6 +1453,10 @@ function drawSheet(phase) {
   const needsBrief = panelState?.brief === null;
   briefButton.hidden = !entry.current;
   briefButton.disabled = entry.live;
+  // 批 2 的两步跟着 brief 那个按钮走同一个可见性：都是「说清这次要什么」的入口。
+  // 不随 entry.live 禁用 —— 它们走旁路线程，不占这个阶段的座。
+  briefDraftButton.hidden = !entry.current;
+  briefConfirmButton.hidden = !entry.current;
 
   const decidable = decidableActions();
   runButton.hidden = !entry.current;
@@ -1995,8 +2001,62 @@ async function openAside() {
   }
 }
 
+/**
+ * 批 2「模型起草，人改」的两步。中间那段（人在编辑器里改文件）不经过这个页面 ——
+ * 它本来就是人的活儿。机械判据（未经修改不算）在服务端。
+ */
+async function draftBriefFromAside() {
+  briefDraftButton.disabled = true;
+  briefDraftButton.textContent = "模型在整理那段对话…";
+  try {
+    const result = await (await fetch(
+      `/api/brief-draft?change=${encodeURIComponent(changeId)}`,
+      { method: "POST" })).json();
+    if (result.kind === "drafted") {
+      say(`草稿写好了：${result.editPath} —— 在编辑器里改它（未经修改不算数），`
+        + "改完回来按「brief 定稿」。");
+    } else if (result.kind === "no_aside_conversation") {
+      say("还没有旁路对话可整理 —— 先按「旁路窗口」谈这次要什么，谈完再来起草。");
+    } else {
+      say(`没起草成：${result.detail ?? result.kind}`);
+    }
+  } finally {
+    briefDraftButton.disabled = false;
+    briefDraftButton.textContent = "闲聊起草 brief";
+  }
+}
+
+const CONFIRM_BRIEF_WORDS = {
+  nothing_drafted: "还没起草过（或者草稿文件被删了）。先按「闲聊起草 brief」。",
+  edit_missing: "工作稿不见了 —— 先重新起草一份。",
+  draft_unedited: "这份和模型的草稿逐字相同 —— 未经你编辑的草稿不算 brief。"
+    + "在文件里改成你的话（删掉不对的、补上你真正要的），再来定稿。",
+  empty_brief: "文件被改成了一片空白 —— 一段空 brief 等于回到编出来的需求。",
+};
+
+async function confirmBriefEdit() {
+  briefConfirmButton.disabled = true;
+  try {
+    const result = await (await fetch(
+      `/api/brief-confirm?change=${encodeURIComponent(changeId)}`,
+      { method: "POST" })).json();
+    if (result.kind === "recorded") {
+      say(`brief 定稿了（${result.brief.length} 字）。现在可以跑这个阶段 ——`
+        + "红方拿的是你改过的那份，不是模型猜的。");
+      await loadOrReconnect();
+      if (sheetPhase) drawSheet(sheetPhase);
+    } else {
+      say(CONFIRM_BRIEF_WORDS[result.kind] ?? `没定稿成：${result.kind}`);
+    }
+  } finally {
+    briefConfirmButton.disabled = false;
+  }
+}
+
 button("back").addEventListener("click", () => { void leave(); });
 asideTermButton.addEventListener("click", () => { void openAside(); });
+briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
+briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });

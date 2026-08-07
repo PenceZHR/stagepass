@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
@@ -38,6 +40,7 @@ import {
   createChange, createProject, deleteChange, deleteProject,
 } from "../app/workspace";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
+import { confirmBrief, draftBrief } from "../app/converge-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
@@ -192,6 +195,11 @@ const ARTIFACT_MAX_BYTES = 2_000_000;
 export interface PanelOptions {
   readonly database: Database.Database;
   readonly session: PtySessionOptions;
+  /**
+   * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
+   * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
+   */
+  readonly briefsDir?: string;
   /** Injected so the routing half is provable without spawning Codex. */
   readonly start?: typeof startPtySession;
   /** 同理：归档那一层也要能在不碰 Codex 的情况下证明。 */
@@ -1354,6 +1362,79 @@ async function serveAside(
 }
 
 /**
+ * 批 2 的两步：起草（POST /api/brief-draft）和定稿（POST /api/brief-confirm）。
+ *
+ * 用例在 `app/converge-brief.ts`（含那条机械判据）；这里只提供它不认识的三样：
+ * 在旁路线程上跑一个 turn、和 briefs 目录的读写。
+ */
+function briefFiles(options: PanelOptions): {
+  write: (name: string, content: string) => string;
+  read: (name: string) => string | null;
+} {
+  const directory = options.briefsDir
+    ?? join(homedir(), ".stagepass", "briefs");
+  return {
+    write: (name, content) => {
+      mkdirSync(directory, { recursive: true });
+      const path = join(directory, name);
+      writeFileSync(path, content, "utf-8");
+      return path;
+    },
+    read: (name) => {
+      try {
+        return readFileSync(join(directory, name), "utf-8");
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+async function serveBriefDraft(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+  options: PanelOptions,
+): Promise<void> {
+  const changeId = url.searchParams.get("change") ?? "";
+  const outcome = await draftBrief({
+    database, changeId,
+    runTurn: async (threadId, prompt) => {
+      /*
+       * 起草的 turn 要独占旁路线程。窗口开着时先关掉再 resume —— 往一个活着的
+       * 会话里 launchInto 会把带提示词的 argv 原样丢掉（§6.5 规则 5 的契约），
+       * 提示词就没了。关掉的代价是浏览器那条流断一次，C3 的自动重连会接上新的。
+       */
+      if (sessions.has(changeId, ASIDE)) sessions.close(changeId, ASIDE);
+      const transport = new CodexTuiTransport({
+        ...options.session,
+        ...(options.turnTimeoutMs === undefined
+          ? {} : { timeoutMs: options.turnTimeoutMs }),
+        config: pluginConfigFor(database, changeId),
+        launch: ({ argv }) => { sessions.launchInto(changeId, ASIDE, argv); },
+      });
+      return (await transport.runTurn({ threadId, prompt })).text;
+    },
+    writeBriefFile: briefFiles(options).write,
+  });
+  json(response, outcome);
+}
+
+function serveBriefConfirm(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  options: PanelOptions,
+): void {
+  json(response, confirmBrief({
+    database,
+    changeId: url.searchParams.get("change") ?? "",
+    readBriefFile: briefFiles(options).read,
+  }));
+}
+
+/**
  * 结束一个阶段的终端 —— 以及，有一轮在飞时，**把那一轮当场收掉**。
  *
  * ## 光杀进程不算出口（交接 §5.5.2）
@@ -1414,6 +1495,96 @@ function serveClose(
   });
 }
 
+/**
+ * 一份产出的正文（GET /api/artifact）—— 从 `handle()` 抽出来还棘轮的债
+ * （§4.1：加一条路由必须先还等量的债）。语义一个字没变，注释跟着正文走。
+ *
+ * ## 为什么这一条最要紧
+ *
+ * 在它之前弹窗只显示 artifactIds 里的**文件名**。用户 2026-07-30 的原话：
+ * 「他们把 PRD 和建议一起带回给我 —— 现在只有建议，我拿不到那份 PRD。」
+ * 五步场景的第 ④ 步就断在这儿：红蓝对抗跑完了，蓝方挑的毛病看得见，**被挑的那
+ * 份东西看不见** —— 那份建议是悬着的，人没法判断该不该接受。
+ *
+ * ## 这不违反 §9.3
+ *
+ * 那条护栏管的是**pty 的字节**：不许读懂 Codex 画在终端里的东西。这里读的是模型
+ * **落在磁盘上的产物**，和 `codex/rollout.ts` 读 rollout、`codex/subagent.ts` 读
+ * 子 Agent 的文件同一类动作。区别是判据性的：pty 输出是「界面」，产物是「文档」。
+ *
+ * ## 只读，而且只读这个阶段自己报出来的那些
+ *
+ * 路径必须出现在这个 (Change, 阶段) 的 `artifactIds` 里，而且落在项目目录内 ——
+ * 两道都不省。`artifactIds` 是模型写的，一个想歪的模型可以往里放
+ * `~/.ssh/id_rsa`；「只读库里列着的」挡不住那个，「必须在项目目录内」才挡得住。
+ *
+ * 读接口不写任何东西（M5）。
+ */
+function serveArtifact(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+): void {
+  const changeId = url.searchParams.get("change") ?? "";
+  const phaseName = url.searchParams.get("phase") ?? "";
+  const wanted = url.searchParams.get("id") ?? "";
+  if (!isPhase(phaseName)) { response.writeHead(404).end("no_such_phase"); return; }
+
+  const listed = new EvidenceStore(database).read(changeId, phaseName).artifactIds;
+  if (!listed.includes(wanted)) {
+    // 不是这个阶段报出来的东西。**不猜、不去别处找。**
+    json(response, { path: wanted, readable: false, reason: "not_produced_here" });
+    return;
+  }
+  const root = sessions.workspaceFor(changeId);
+  if (root === null) {
+    json(response, { path: wanted, readable: false, reason: "project_has_no_path" });
+    return;
+  }
+
+  /*
+   * 产出是一个 commit（Build 走这条，见 `work/repo.ts`）。
+   *
+   * 判据是**这一格长得像不像 sha**，而不是「这是不是 Build 阶段」：一个阶段产出
+   * 什么形态是那一轮的事实，不该由读的人按阶段去猜 —— 猜错的那一天，Build 的
+   * commit 会被当成路径去磁盘上找，回来一句「这份产出不见了」。
+   *
+   * 「必须在 artifactIds 里」的闸照旧管着这一条：一个不是这个阶段报出来的 sha，
+   * 走不到这里。
+   */
+  // 判据在 `locateArtifact` 里，和派发前预检（C1）**同一份** —— 别在这儿另算。
+  const located = locateArtifact({ root, id: wanted, repo: sessions.repo });
+  if (!located.ok) {
+    // 「文件被移走了」要说出来 —— 一个空白的正文框和「这份产出不见了」是
+    // 两件完全不同的事（M7）。
+    json(response, {
+      path: wanted, readable: false, reason: located.reason,
+      ...(located.kind === undefined ? {} : { kind: located.kind }),
+    });
+    return;
+  }
+  if (located.kind === "commit") {
+    json(response, {
+      path: wanted, readable: true, kind: "commit",
+      bytes: located.text.length, text: located.text,
+    });
+    return;
+  }
+  if (located.bytes > ARTIFACT_MAX_BYTES) {
+    json(response, {
+      path: wanted, readable: false, reason: "too_big", bytes: located.bytes,
+    });
+    return;
+  }
+  json(response, {
+    path: wanted,
+    readable: true,
+    bytes: located.bytes,
+    text: readFileSync(located.real, "utf-8"),
+  });
+}
+
 export async function handle(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1454,88 +1625,8 @@ export async function handle(
     return;
   }
 
-  /*
-   * 一份产出的正文。
-   *
-   * ## 为什么这一条最要紧
-   *
-   * 在这之前弹窗只显示 artifactIds 里的**文件名**。用户 2026-07-30 的原话：
-   * 「他们把 PRD 和建议一起带回给我 —— 现在只有建议，我拿不到那份 PRD。」
-   * 五步场景的第 ④ 步就断在这儿：红蓝对抗跑完了，蓝方挑的毛病看得见，**被挑的那
-   * 份东西看不见** —— 那份建议是悬着的，人没法判断该不该接受。
-   *
-   * ## 这不违反 §9.3
-   *
-   * 那条护栏管的是**pty 的字节**：不许读懂 Codex 画在终端里的东西。这里读的是模型
-   * **落在磁盘上的产物**，和 `codex/rollout.ts` 读 rollout、`codex/subagent.ts` 读
-   * 子 Agent 的文件同一类动作。区别是判据性的：pty 输出是「界面」，产物是「文档」。
-   *
-   * ## 只读，而且只读这个阶段自己报出来的那些
-   *
-   * 路径必须出现在这个 (Change, 阶段) 的 `artifactIds` 里，而且落在项目目录内 ——
-   * 两道都不省。`artifactIds` 是模型写的，一个想歪的模型可以往里放
-   * `~/.ssh/id_rsa`；「只读库里列着的」挡不住那个，「必须在项目目录内」才挡得住。
-   *
-   * 读接口不写任何东西（M5）。
-   */
   if (url.pathname === "/api/artifact" && request.method === "GET") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phaseName = url.searchParams.get("phase") ?? "";
-    const wanted = url.searchParams.get("id") ?? "";
-    if (!isPhase(phaseName)) { response.writeHead(404).end("no_such_phase"); return; }
-
-    const listed = new EvidenceStore(database).read(changeId, phaseName).artifactIds;
-    if (!listed.includes(wanted)) {
-      // 不是这个阶段报出来的东西。**不猜、不去别处找。**
-      json(response, { path: wanted, readable: false, reason: "not_produced_here" });
-      return;
-    }
-    const root = sessions.workspaceFor(changeId);
-    if (root === null) {
-      json(response, { path: wanted, readable: false, reason: "project_has_no_path" });
-      return;
-    }
-
-    /*
-     * 产出是一个 commit（Build 走这条，见 `work/repo.ts`）。
-     *
-     * 判据是**这一格长得像不像 sha**，而不是「这是不是 Build 阶段」：一个阶段产出
-     * 什么形态是那一轮的事实，不该由读的人按阶段去猜 —— 猜错的那一天，Build 的
-     * commit 会被当成路径去磁盘上找，回来一句「这份产出不见了」。
-     *
-     * 上面那道「必须在 artifactIds 里」的闸照旧管着这一条：一个不是这个阶段报出来的
-     * sha，走不到这里。
-     */
-    // 判据在 `locateArtifact` 里，和派发前预检（C1）**同一份** —— 别在这儿另算。
-    const located = locateArtifact({ root, id: wanted, repo: sessions.repo });
-    if (!located.ok) {
-      // 「文件被移走了」要说出来 —— 一个空白的正文框和「这份产出不见了」是
-      // 两件完全不同的事（M7）。
-      json(response, {
-        path: wanted, readable: false, reason: located.reason,
-        ...(located.kind === undefined ? {} : { kind: located.kind }),
-      });
-      return;
-    }
-    if (located.kind === "commit") {
-      json(response, {
-        path: wanted, readable: true, kind: "commit",
-        bytes: located.text.length, text: located.text,
-      });
-      return;
-    }
-    if (located.bytes > ARTIFACT_MAX_BYTES) {
-      json(response, {
-        path: wanted, readable: false, reason: "too_big", bytes: located.bytes,
-      });
-      return;
-    }
-    json(response, {
-      path: wanted,
-      readable: true,
-      bytes: located.bytes,
-      text: readFileSync(located.real, "utf-8"),
-    });
+    serveArtifact(database, url, response, sessions);
     return;
   }
 
@@ -1863,6 +1954,16 @@ export async function handle(
 
   if (url.pathname === "/api/aside" && request.method === "POST") {
     await serveAside(database, url, response, sessions, options);
+    return;
+  }
+
+  if (url.pathname === "/api/brief-draft" && request.method === "POST") {
+    await serveBriefDraft(database, url, response, sessions, options);
+    return;
+  }
+
+  if (url.pathname === "/api/brief-confirm" && request.method === "POST") {
+    serveBriefConfirm(database, url, response, options);
     return;
   }
 

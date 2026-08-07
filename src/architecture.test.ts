@@ -163,6 +163,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 「把这次改动要什么问出来」这个用例。够得着的最高一层是 `domain/brief.ts`（3），
   // 所以和它同层 —— 它连 Codex 都不认识（「跑一次 turn」是注进来的）。
   "app/record-brief.ts": 3,
+  // 批 2「模型起草，人改」：和 record-brief 同一族用例，同一层。
+  "app/converge-brief.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
   // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给

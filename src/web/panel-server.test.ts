@@ -132,6 +132,8 @@ async function withPanel(
     recoverEveryMs?: PanelOptions["recoverEveryMs"];
     repo?: PanelOptions["repo"];
     trust?: PanelOptions["trust"];
+    /** brief 草稿和工作稿的目录（批 2）。测试不摸真的 ~/.stagepass。 */
+    briefsDir?: string;
     /**
      * 项目的目录。默认 `/tmp`。
      *
@@ -192,6 +194,7 @@ async function withPanel(
     // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
     // 测试会陪着默认的 30 分钟一起等。
     database, session: { cwd: "/tmp" }, start, turnTimeoutMs: 200,
+    ...(extra.briefsDir === undefined ? {} : { briefsDir: extra.briefsDir }),
     // 问人那条路的截止时间。生产是 15 分钟 —— 在测试里那意味着一条没答对形状的
     // 用例会坐等到框架超时（300 秒）。写错的代价应该是 1 秒，不是 5 分钟。
     askTimeoutMs: 4_000,
@@ -1776,6 +1779,39 @@ describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.
       assert.equal(closed.aborted, undefined, "旁路没有账，不该有中止可言");
       assert.equal(sessions.has(CHANGE, "aside"), false);
     });
+  });
+});
+
+describe("panel · 闲聊起草 brief 的两个端点（批 2）", () => {
+  it("没有旁路对话 —— /api/brief-draft 说清楚，不跑任何 turn", async () => {
+    await withPanel(async ({ open, pty }) => {
+      const outcome = await (await open(`/api/brief-draft?change=${CHANGE}`,
+        { method: "POST" })).json() as { kind: string };
+      assert.equal(outcome.kind, "no_aside_conversation");
+      assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
+    });
+  });
+
+  it("定稿走同一个 briefs 目录：未编辑拒、编辑过录", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "stagepass-briefs-"));
+    try {
+      await withPanel(async ({ open, database }) => {
+        // 摆出「起草过」的样子 —— 起草本身要真 Codex，这里只考定稿那半。
+        writeFileSync(join(directory, `${CHANGE}-draft.md`), "草稿", "utf-8");
+        writeFileSync(join(directory, `${CHANGE}.md`), "草稿", "utf-8");
+        const unedited = await (await open(`/api/brief-confirm?change=${CHANGE}`,
+          { method: "POST" })).json() as { kind: string };
+        assert.equal(unedited.kind, "draft_unedited");
+
+        writeFileSync(join(directory, `${CHANGE}.md`), "改过的需求正文", "utf-8");
+        const recorded = await (await open(`/api/brief-confirm?change=${CHANGE}`,
+          { method: "POST" })).json() as { kind: string };
+        assert.equal(recorded.kind, "recorded");
+        assert.equal(new ChangeStore(database).read(CHANGE).brief, "改过的需求正文");
+      }, { briefsDir: directory });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 
