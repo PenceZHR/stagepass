@@ -1,0 +1,219 @@
+# 地基改动方案：把「阶段」从唯一的组织维度降级
+
+> 2026-08-06 晚，用户一整轮谈话的收敛点。**方案，不是计划** —— 里面有三处没答案的，
+> 逐条标着。
+>
+> 背景与证据：`docs/HANDOFF-2026-08-06.md` §5.8 / §5.9 / §5.10。
+
+---
+
+## 一、要治的是什么
+
+今天 `ChangeState.phase` 是**一个字段、十二选一**，而下面这三类东西**都挂不上去**：
+
+| 类别 | 例子 | 今天怎么被硬塞进去 |
+|---|---|---|
+| **跨阶段的联动** | Review 盯着 Build、Fix 改 Build | `returnStack` 替它记「谁在等谁」；`SENDS_TO_FIX` 和「Fix 不在主线上」是另两处补丁 |
+| **多阶段同时** | TestPlan ∥ Build、Plan ∥ TestPlan | 做不到。`phase` 是单数 |
+| **不属于任何阶段** | 先闲聊再 PRD、中途问个名词 | `change_bindings` 按 `(change, phase)` 建键 —— **会话必须属于某个阶段**，于是「问名词」和「跑一轮」抢同一把椅子 |
+
+**一个根：今天每一样东西都必须挂在一个阶段上。**
+
+---
+
+## 二、目标形状
+
+一个 Change 上同时可以有三样东西，**各自有生命周期，互不占座**：
+
+```
+Change
+├── 状态（state）      主线走到哪。可以不止一个（TestPlan ∥ Build）
+├── 联动（activity）   挂在某个状态上的持续活动（Review 盯 Build）
+└── 旁路会话（aside）  不属于任何状态，不产出、不推闸门、不占座
+```
+
+### 2.1 十二个阶段重新分类
+
+用户的判据（§5.8）：**这个阶段的产出，是它自己的，还是关于别人的产出的？**
+
+| | 有哪些 | 为什么 |
+|---|---|---|
+| **状态**（9） | PRD / Spec / TechSpec / Plan / TestPlan / Build / Merge / Retro / Done | 产出是它自己的，有闸门 |
+| **联动**（3） | **Review / QA / Fix** | 产出都是「关于 Build 那份代码的」 |
+
+**Review / QA / Fix 不再是阶段，是 Build 这个状态上的角色。** 于是：
+
+```
+Build 状态里同时在跑：
+  红方   写代码（看不到测试源码）
+  蓝方   跑 TestPlan 交的测试 → 反馈「哪条失败、输出是什么」
+  Review 全程盯：审代码，也审测试代码本身对不对
+  「Fix」= 红方响应意见继续改 —— 那是下一轮，不是新阶段
+```
+
+**QA 并进来的理由**：它跑的是 TestPlan 的用例对 Build 的产出 —— 蓝方已经在做同一件事。
+两个角色做同一件事，是「一个概念两个名字」。
+
+> ⚠ **开放问题 A**：Merge 之前要不要一道独立的「验收」闸门？把 QA 并进 Build 之后，
+> 「代码跑通了」和「这一版可以发」就只剩 Build 出口那一次表态。用户没拍。
+
+### 2.2 闸门落在哪
+
+**人在状态的出口表一次态**，回答的是「这个状态交出来的东西够好了吗」。
+
+联动内部的往返（Review 报了、红方改了、蓝方重跑）**不需要人逐次表态** —— 它们是
+Build 那一轮对抗的内部循环，和设计阶段的「红方产出 + 反方质疑 + 人裁决」是**同一个
+形状的一次实例**，只是循环发生在里面。
+
+这顺手解掉 §8.9：「回程跳回不重走」之所以是洞，正因为 Review→TestPlan→Build 被当成
+三次位移，而它本来是一次联动内部的往返。
+
+---
+
+## 三、数据模型
+
+### 3.1 `changes.phase` → `change_states`
+
+```sql
+CREATE TABLE change_states (
+  change_id  TEXT NOT NULL REFERENCES changes(id),
+  phase      TEXT NOT NULL,          -- 只许是「状态」那九个
+  status     TEXT NOT NULL,          -- pending/running/settled/blocked
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase)
+);
+```
+
+`ChangeState.phase: Phase` → `states: ReadonlyMap<Phase, Status>`。
+
+**主线仍然是全序**（`projects.phase_order` 不变），并行只是「同时有多个 active」，
+不是重排 —— `phaseGraphOf` 那条「拒绝一切非子序列」原样成立。
+
+### 3.2 `returnStack` 退休，换成 `change_activities`
+
+```sql
+CREATE TABLE change_activities (
+  change_id TEXT NOT NULL,
+  kind      TEXT NOT NULL,   -- review | fix   （qa 并进 review）
+  on_phase  TEXT NOT NULL,   -- 它盯着哪个状态（今天恒为 Build）
+  status    TEXT NOT NULL,   -- open | settled
+  opened_round INTEGER NOT NULL,
+  PRIMARY KEY (change_id, kind, on_phase)
+);
+```
+
+**`returnStack` 记的本来就是关系数据**（谁在等谁改完），只是被塞进了位置字段。
+换成这张表之后 `assertStateValid` 里那条「严格下游」的校验也一起退休 —— 它挡的
+「状态机走进没有出口的格子」，在这个模型里由「联动必须挂在一个存在的状态上」来保证。
+
+### 3.3 `change_bindings` 加一个 `kind`，`phase` 可空
+
+```
+kind:  round | aside
+phase: 状态名（round）或 NULL（aside —— 旁路会话）
+```
+
+**旁路会话不占「一个阶段只许一个进程」那个座位**（`phaseBusy` 只数 `kind='round'`）。
+于是「问个名词」和「跑一轮对抗」不再抢同一把椅子。
+
+### 3.4 闲聊：`brief` 从问卷变成一段对话
+
+今天 `domain/brief.ts` 是 elicitation 问卷，2026-07-30 用户就说过「**是问卷不是对话**」，
+而这个 Change 的 brief 实测**只有 9 个字**。
+
+改法：**闲聊就是一个旁路会话**（`kind='aside'`），人跟它谈到满意，然后**把这段对话
+收敛成 brief**。不新增机制 —— 它就是 3.3 那条能力的第一个用户。
+
+> ⚠ **开放问题 B**：谁来收敛？人自己写、模型起草人改、还是模型直接写进 brief。
+> 判据是「brief 是不是人的话」—— 那条今天由 `round-turn-runner` 的注释守着
+> （「人要的是这些，他自己答的，不是模型猜的」）。
+
+---
+
+## 四、分批的顺序
+
+**每一批单独可验收、可回滚。不许一次全上。**
+
+### 批 0 · 先修投递层（不动地基）
+
+`HANDOFF-2026-08-06.md` §5.5 那五条：会话不关、出口按注册表判、轮询死了不自愈、
+错误信息是旧的、拒绝理由不上屏。
+
+**理由不是保守**：今天六个阶段里对抗机制一次没错，**每次卡住都是它们**。地基改动
+要跑很多轮才验得完，而现在每一轮都要交这个税。
+
+**验收**：连着跑三轮不同阶段，一次都不需要手动 kill 进程或改库。
+
+### 批 1 · 旁路会话（3.3）
+
+只加 `change_bindings.kind`，`phaseBusy` 只数 `round`。**不动状态机。**
+
+**验收**：一个阶段正在跑轮的同时，能开一个窗口问名词，两边互不干扰。
+
+**这一批为什么排第一**：它是三类诉求里**唯一不需要动状态机**的，而且它立刻能用 ——
+「一条路走到黑」这个体感当场消失。
+
+### 批 2 · 闲聊 → brief（3.4）
+
+批 1 落地之后，闲聊就是它的第一个用户。**要先答开放问题 B。**
+
+**验收**：新建一个 Change，谈十分钟，brief 是几百字而不是 9 个字。
+
+### 批 3 · 多状态（3.1）
+
+`ChangeState.phase` → `states`。**这一批最贵，而且它一动，六个阶段那份实测账全部作废。**
+
+先做**只读的兼容层**：`state.phase` 保留为「主状态」的派生 getter，让绝大多数调用点
+不用改。然后逐个把真正需要多状态的调用点（`upstreamOf`、`journey`、闸门、面板）
+迁过去。
+
+**验收**：TestPlan 和 Build 同时 active，各自跑轮、各自有闸门，互不打断。
+
+### 批 4 · 联动（3.2）
+
+Review / QA / Fix 从 `PHASES` 里摘出来，变成 `change_activities`。`returnStack` 退休。
+
+**这一批必须在 Review 真跑过至少一轮之后做** —— 它要建的形状有一端从没在真机上
+出现过（§5.9）。
+
+**验收**：Build 状态上挂着一个 open 的 review 联动，红方改、蓝方跑、Review 盯，
+人只在 Build 出口表一次态。
+
+### 批 5 · 十二阶段重定义（2.1 / §5.9）
+
+TestPlan 交测试代码、Build 的红方看不到它、Build 的蓝方跑它、Review 审测试本身。
+
+**要先答开放问题 A 和 §8.7·1。**
+
+---
+
+## 五、会破的东西（诚实清单）
+
+| 破什么 | 说明 |
+|---|---|
+| **六个阶段那份实测账** | 批 3 一动就作废。它是这套机制唯一的证据，而上一份已经被删过一次不可恢复。**批 3 之前先导出来** |
+| `RED_REVIEWS_OTHERS` / `SENDS_TO_FIX` / `PRODUCES_COMMIT` / `CONSUMES` | 批 4 全要重算 —— Review/QA/Fix 不再是阶段了 |
+| `architecture.test.ts` 的分层护栏 | 新增 `change_activities` 要声明所属层 |
+| `round-prompt.golden.txt` | 批 4/5 会大改，十二份变九份 |
+| **2026-08-06 那一刀的 TestPlan 部分** | 它按「TestPlan 跑在 Build 之前」做的（进 `PRODUCES_COMMIT`、加「实际跑出来的结果」节）。批 5 要重新对一遍执行归属 |
+
+---
+
+## 六、三个没答案的（要人拍）
+
+- **A**：QA 并进 Build 之后，Merge 之前还要不要一道独立的验收闸门？
+- **B**：闲聊怎么收敛成 brief —— 人写、模型起草人改、还是模型直接写？
+  判据是「brief 必须是人的话」。
+- **§8.7·1**（老账）：TestPlan 交的测试要不要求当场能跑、而且是红的？
+  在新形状下更重要 —— 「测试代码未必正确」是用户自己点出来的风险，
+  而「Review 全程盯」是他给的答案。两者要一起定。
+
+---
+
+## 七、一句话
+
+**不是重写架构。** 今天十几次提交、十份模板、Build 三刀改造，一次都没碰状态机 ——
+这架构承载力没问题。它承载不了的只有一类东西：**不属于任何单个阶段的东西**。
+
+而批 0 和批 1 加起来就能让「一条路走到黑」这个体感消失，**它们都不动状态机**。
+真正的地基改动（批 3、批 4）可以等到 Review 跑过、投递层修完之后再动。
