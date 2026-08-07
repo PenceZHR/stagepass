@@ -104,6 +104,83 @@ describe("L0 · 旧库能补上后加的列", () => {
 });
 
 /**
+ * `change_bindings` 加 `kind`、`phase` 放开可空（DESIGN-phase-not-the-only-axis
+ * §3.3）：第二次整表重建，和 return_stack 那次同一个理由 —— 旧列绑在 CHECK
+ * 和 PRIMARY KEY 里，SQLite 改不了约束。
+ */
+describe("L0 · change_bindings 旧库重建出 kind 列", () => {
+  /** 照 2026-08-06 之前的 SCHEMA_SQL 原样搭的老库，一行阶段绑定。 */
+  const oldShape = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(`
+      -- 重建后的表带 REFERENCES changes(id)，老库里得有被引用的那张。
+      -- 带上 return_stack 免得触发它自己的那场迁移 —— 这里只考 bindings 这场。
+      CREATE TABLE changes (id TEXT PRIMARY KEY, return_stack TEXT NOT NULL DEFAULT '[]');
+      CREATE TABLE change_bindings (
+        change_id   TEXT NOT NULL,
+        phase       TEXT NOT NULL,
+        thread_id   TEXT NOT NULL,
+        status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
+        bound_at    TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        PRIMARY KEY (change_id, phase));
+      CREATE UNIQUE INDEX uq_change_bindings_thread
+        ON change_bindings (thread_id) WHERE status = 'bound';
+    `);
+    database.prepare("INSERT INTO changes (id) VALUES ('CHG-A')").run();
+    database.prepare("INSERT INTO change_bindings VALUES (?,?,?,?,?,?)")
+      .run("CHG-A", "PRD", "T-1", "bound", "t", "t");
+    return database;
+  };
+
+  it("老行无损，全部记成 kind = round", () => {
+    const database = oldShape();
+    migrate(database);
+    assert.deepEqual(
+      database.prepare(
+        "SELECT change_id, kind, phase, thread_id FROM change_bindings").all(),
+      [{ change_id: "CHG-A", kind: "round", phase: "PRD", thread_id: "T-1" }],
+    );
+    database.close();
+  });
+
+  it("重建之后 aside 存得进去，而错配的行仍然不可存", () => {
+    const database = oldShape();
+    migrate(database);
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO change_bindings
+        (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+       VALUES ('CHG-A', 'aside', NULL, 'T-2', 'bound', 't', 't')`).run());
+    // round 没阶段、aside 带阶段 —— 两种错配都被 CHECK 挡住。
+    assert.throws(() => database.prepare(
+      `INSERT INTO change_bindings
+        (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+       VALUES ('CHG-A', 'round', NULL, 'T-3', 'bound', 't', 't')`).run());
+    assert.throws(() => database.prepare(
+      `INSERT INTO change_bindings
+        (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+       VALUES ('CHG-A', 'aside', 'PRD', 'T-4', 'bound', 't', 't')`).run());
+    database.close();
+  });
+
+  it("跑两次是空操作，线程唯一索引也重建了", () => {
+    const database = oldShape();
+    migrate(database);
+    migrate(database);
+    const kinds = (database.pragma("table_info(change_bindings)") as { name: string }[])
+      .filter((column) => column.name === "kind");
+    assert.equal(kinds.length, 1);
+    // 索引随旧表消失，必须当场重建 —— 同一条线程绑两次要被拒。
+    assert.throws(() => database.prepare(
+      `INSERT INTO change_bindings
+        (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+       VALUES ('CHG-A', 'round', 'Spec', 'T-1', 'bound', 't', 't')`).run());
+    database.close();
+  });
+});
+
+/**
  * `return_phase` → `return_stack`：**这棵树第一次整表重建**（migrate 注释里
  * 预告过的「正经写迁移」那一天，2026-08-05 因为 §5.9.2 的跳转栈到了）。
  * 加列那条路走不了：旧列绑在 CHECK 里，SQLite 改不了约束。

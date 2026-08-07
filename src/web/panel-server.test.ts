@@ -1724,6 +1724,61 @@ describe("panel · 派发立刻返回，不把一轮的时长压在一个 HTTP �
   });
 });
 
+describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.3）", () => {
+  it("**一轮在飞的时候旁路窗口照样开** —— 这正是它存在的理由", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean };
+      assert.equal(ran.ran, true);
+
+      const aside = await (await open(`/api/aside?change=${CHANGE}`,
+        { method: "POST" })).json() as { opened: boolean };
+      assert.equal(aside.opened, true, "被正在跑的一轮挡住了 —— 抢了同一把椅子");
+      // 旁路进程真的起来了，坐在自己的座位上。
+      assert.ok(pty.started.some((entry) => entry.phase === "aside"),
+        "没有起旁路进程");
+    });
+  });
+
+  it("反过来也成立：旁路开着，派发照走 —— 它不占阶段的座", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, true,
+        `旁路会话把派发挡住了：${ran.reason ?? ""}`);
+    });
+  });
+
+  it("绑过线程的旁路，重开是 resume 同一条 —— 闲聊的历史续得上", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new BindingStore(database).bindAside(CHANGE, "T-ASIDE-1");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const started = pty.started.find((entry) => entry.phase === "aside");
+      assert.ok(started, "没有起旁路进程");
+      assert.deepEqual(started?.argv.slice(0, 2), ["resume", "T-ASIDE-1"],
+        "没有 resume 绑定的线程 —— 每次都是新对话，收敛 brief 就没有对话可读");
+    });
+  });
+
+  it("旁路的流走同一条 /pty 机制，关它走同一个 /api/close", async () => {
+    await withPanel(async ({ open, database, sessions }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const stream = await open(`/pty/${CHANGE}/aside`);
+      assert.equal(stream.status, 200, "旁路的终端流打不开");
+
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=aside`,
+        { method: "POST" })).json() as { closed: boolean; aborted?: string };
+      assert.equal(closed.closed, true);
+      assert.equal(closed.aborted, undefined, "旁路没有账，不该有中止可言");
+      assert.equal(sessions.has(CHANGE, "aside"), false);
+    });
+  });
+});
+
 describe("panel · 「中止这一轮」是真的出口（交接 §5.5.2）", () => {
   /**
    * 光杀进程不算出口：账本上那一轮还挂着，Change 停在 `running` 等满 30 分钟

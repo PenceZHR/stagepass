@@ -92,6 +92,7 @@ const enterButton = button("enter");
 const waiveButton = button("waive");
 const briefButton = button("brief");
 const closeTermButton = button("close-term");
+const asideTermButton = button("aside-term");
 const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
@@ -1972,7 +1973,30 @@ async function attach(phase, reattaching = false) {
   }
 }
 
+/**
+ * 旁路窗口：不属于任何阶段的 Codex 聊天（DESIGN §3.3）。
+ *
+ * **永远能按** —— 一轮对抗跑着的时候想问个名词，不用等它跑完。服务端不查
+ * phaseBusy（这正是旁路的定义），所以这里也没有 disabled 逻辑可写。
+ */
+async function openAside() {
+  asideTermButton.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/aside?change=${encodeURIComponent(changeId)}`, { method: "POST" });
+    if (!response.ok) {
+      say(`旁路窗口没开成：${await response.text()}`);
+      return;
+    }
+    closeSheet();
+    await enter("aside");
+  } finally {
+    asideTermButton.disabled = false;
+  }
+}
+
 button("back").addEventListener("click", () => { void leave(); });
+asideTermButton.addEventListener("click", () => { void openAside(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });

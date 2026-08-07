@@ -72,6 +72,20 @@ import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * 旁路会话的座位名（DESIGN-phase-not-the-only-axis §3.3）。
+ *
+ * 一个 Change 的注册表座位从「十一个阶段」变成「十一个阶段 + 这一个」：旁路会话
+ * 不属于任何阶段、不产出、不推闸门，**也不占任何阶段的座**（`cannotAskNow` 和
+ * 派发的守卫都按阶段问，永远问不到它）——「问个名词」和「跑一轮对抗」从此不抢
+ * 同一把椅子。
+ *
+ * 它是字符串 `"aside"` 而不是一个 Phase：把它塞进 PHASES 会让每一张按阶段铺开的
+ * 表（模板、rubric、闸门）都得回答「aside 那一格填什么」，而答案全是「不适用」。
+ */
+export const ASIDE = "aside" as const;
+type Seat = Phase | typeof ASIDE;
+
+/**
  * 把 StagePass 的插件挂给一次 Codex 启动。
  *
  * **每次启动都带，从不写进人的全局配置** —— 那样一个跑砸的实验会留在他机器上。
@@ -303,7 +317,7 @@ export class PanelSessions {
   }
 
 
-  private static key(changeId: string, phase: Phase): string {
+  private static key(changeId: string, phase: Seat): string {
     return `${changeId}${phase}`;
   }
 
@@ -322,7 +336,7 @@ export class PanelSessions {
     }
   }
 
-  has(changeId: string, phase: Phase): boolean {
+  has(changeId: string, phase: Seat): boolean {
     const found = this.live.get(PanelSessions.key(changeId, phase));
     return found !== undefined && found.session.alive;
   }
@@ -333,7 +347,7 @@ export class PanelSessions {
    * 「死了」和「从没跑过」在屏幕上必须分得开：前者要让人看见它是怎么死的
    * （`corpses` 存在的全部理由），后者该说「还没有进程」而不是给一片空白。
    */
-  lastScreen(changeId: string, phase: Phase): readonly Uint8Array[] {
+  lastScreen(changeId: string, phase: Seat): readonly Uint8Array[] {
     return this.corpses.get(PanelSessions.key(changeId, phase)) ?? [];
   }
 
@@ -344,7 +358,7 @@ export class PanelSessions {
    * 一个进程来接收那几个字节（而且是浏览用的那种，手上没有插件）。
    * 「已经在跑就给我，没有就是没有」—— 补按键、查状态都该用这一条。
    */
-  current(changeId: string, phase: Phase): LiveSession | undefined {
+  current(changeId: string, phase: Seat): LiveSession | undefined {
     const found = this.live.get(PanelSessions.key(changeId, phase));
     return found !== undefined && found.session.alive ? found : undefined;
   }
@@ -394,7 +408,7 @@ export class PanelSessions {
    * than applied. That is the guarantee from the top of this file: a second
    * `codex resume` on the same rollout interleaves turn boundaries.
    */
-  launchInto(changeId: string, phase: Phase, argv: string[]): LiveSession {
+  launchInto(changeId: string, phase: Seat, argv: string[]): LiveSession {
     const key = PanelSessions.key(changeId, phase);
     const existing = this.live.get(key);
     if (existing && existing.session.alive) return existing;
@@ -571,7 +585,7 @@ export class PanelSessions {
     return true;
   }
 
-  close(changeId: string, phase: Phase): void {
+  close(changeId: string, phase: Seat): void {
     const key = PanelSessions.key(changeId, phase);
     const entry = this.live.get(key);
     entry?.session.kill();
@@ -614,7 +628,8 @@ export class PanelSessions {
    * 精确的 key 就没有这个问题。
    */
   forget(changeId: string): void {
-    for (const phase of PHASES) {
+    // 旁路会话也是这个 Change 的座位 —— 阶段之外的那一个，删 Change 一样要收。
+    for (const phase of [...PHASES, ASIDE] as const) {
       const key = PanelSessions.key(changeId, phase);
       // 先立标记再 kill：`onExit` 是异步的，晚于下面那句 `corpses.delete`。
       const entry = this.live.get(key);
@@ -1260,6 +1275,85 @@ async function serveRubricSave(
   }
 
 /**
+ * 打开（或接上）这个 Change 的旁路会话 —— 一个不属于任何阶段的 Codex 聊天窗口。
+ *
+ * ## 为什么它不查 `phaseBusy`
+ *
+ * 这正是它存在的理由（DESIGN §3.3）：一个阶段正在跑轮的时候，人中途想问个名词，
+ * 原来只能等整轮跑完 ——「问个名词」和「跑一轮」抢同一把椅子。旁路会话有自己的
+ * 座位（`ASIDE`），不产出、不推闸门，所以什么都不用等。
+ *
+ * ## 线程怎么被认出来、绑定
+ *
+ * 聊天没有「turn 跑完」这回事，但线程要能跨窗口续（批 2 的「把闲聊收敛成 brief」
+ * 要按它找到那段对话）。所以第一次打开带一句开场提示词，走 transport 的
+ * `awaitNewThread`（按提示词认线程，不认「谁先出现」）；`onThread` 一认出来就
+ * 绑进 `change_bindings (kind='aside')`，之后每次打开都 resume 同一条。
+ * 认线程在后台跑，不挡这个响应 —— 人要的是窗口，不是绑定回执。
+ */
+async function serveAside(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+  options: PanelOptions,
+): Promise<void> {
+  const changeId = url.searchParams.get("change") ?? "";
+  try {
+    new ChangeStore(database).read(changeId);
+  } catch {
+    response.writeHead(404).end("no such change");
+    return;
+  }
+  // 已经开着就原样接上，不起第二个 —— 和 /api/terminal 同一个幂等契约。
+  if (sessions.has(changeId, ASIDE)) {
+    json(response, { opened: true });
+    return;
+  }
+
+  const bound = new BindingStore(database).findAside(changeId);
+  if (bound?.status === "bound") {
+    sessions.launchInto(changeId, ASIDE, codexArgv({
+      threadId: bound.threadId,
+      sandbox: options.session.sandbox,
+      approval: options.session.approval,
+      model: options.session.model,
+      reasoningEffort: options.session.reasoningEffort,
+      // 人要跟它说话，手上得有 StagePass 的工具 —— 和 openForChat 同一条理由。
+      config: pluginConfigFor(database, changeId),
+    }));
+    json(response, { opened: true });
+    return;
+  }
+
+  const transport = new CodexTuiTransport({
+    ...options.session,
+    ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
+    config: pluginConfigFor(database, changeId),
+    launch: ({ argv }) => { sessions.launchInto(changeId, ASIDE, argv); },
+  });
+  void transport.runTurn({
+    threadId: null,
+    // 开场词带 changeId 和时刻：awaitNewThread 按它认线程，两个 Change 同时
+    // 开旁路、或同一个 Change 关了重开，都不许认错。
+    prompt: `这是 StagePass 里 ${changeId} 的旁路会话（${new Date().toISOString()}）。`
+      + "人会在这里问问题、聊这次改动要什么。你不产出任何阶段的东西、不推动任何"
+      + "闸门。回答要基于这个仓库的真实代码，不知道就说不知道。收到请简短回应。",
+    onThread: (threadId) => {
+      try {
+        new BindingStore(database).bindAside(changeId, threadId);
+      } catch (error: unknown) {
+        console.error(`[panel] ${changeId} 旁路线程绑定失败：${String(error)}`);
+      }
+    },
+  }).catch((error: unknown) => {
+    // 认不出线程只丢「续得上」这件事，窗口本身好好开着 —— 说一声，别带走面板。
+    console.error(`[panel] ${changeId} 旁路会话认线程失败：${String(error)}`);
+  });
+  json(response, { opened: true });
+}
+
+/**
  * 结束一个阶段的终端 —— 以及，有一轮在飞时，**把那一轮当场收掉**。
  *
  * ## 光杀进程不算出口（交接 §5.5.2）
@@ -1286,6 +1380,13 @@ function serveClose(
 ): void {
   const changeId = url.searchParams.get("change") ?? "";
   const phase = url.searchParams.get("phase") ?? "";
+  // 旁路会话也从这儿关：只有进程可收，没有账 —— 它不产出、不占座、没有 job。
+  if (phase === ASIDE) {
+    const had = sessions.has(changeId, ASIDE);
+    sessions.close(changeId, ASIDE);
+    json(response, { closed: had, phase });
+    return;
+  }
   if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
   const was = sessions.has(changeId, phase);
   sessions.close(changeId, phase);
@@ -1760,6 +1861,11 @@ export async function handle(
     return;
   }
 
+  if (url.pathname === "/api/aside" && request.method === "POST") {
+    await serveAside(database, url, response, sessions, options);
+    return;
+  }
+
   if (url.pathname === "/api/close" && request.method === "POST") {
     serveClose(database, url, response, sessions);
     return;
@@ -1768,11 +1874,14 @@ export async function handle(
   const pty = /^\/pty\/([^/]+)\/([^/]+)(\/in|\/resize)?$/.exec(url.pathname);
   if (pty) {
     const changeId = decodeURIComponent(pty[1]!);
-    const phase = decodeURIComponent(pty[2]!);
-    if (!isPhase(phase) || phase === "Done") {
+    const seat = decodeURIComponent(pty[2]!);
+    // 旁路会话（ASIDE）和十个能开终端的阶段共用这一条流的机制 —— 它只是
+    // 注册表里多出来的那一个座位，字节进出的规矩一个字都不变。
+    if (seat !== ASIDE && (!isPhase(seat) || seat === "Done")) {
       response.writeHead(404).end("no such phase");
       return;
     }
+    const phase = seat as Seat;
     const action = pty[3];
 
     if (action === undefined && request.method === "GET") {

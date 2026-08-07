@@ -94,6 +94,48 @@ BEGIN
 END;
 `;
 
+/**
+ * `change_bindings` 的表定义，单独一份 —— 和 `CHANGES_TABLE_SQL` 同一个理由：
+ * 迁移（加 `kind`、`phase` 放开可空，SQLite 改不了 CHECK/PK，只能整表重建）
+ * 用的必须和建新库用的是同一份。
+ *
+ * ## Which Codex thread work happens in
+ *
+ * `kind = 'round'`：一个阶段的对抗线程，一线程一 (Change, phase)。按对儿建键
+ * 而不是按 Change，理由是 fence：一线程一 Change 的话，阶段的判断有一部分
+ * 停在模型对更早阶段的记忆里 —— 那记忆在 Codex 的会话历史里，任何 StagePass
+ * 快照都罩不住。按阶段分线程逼着跨阶段信息走文档，而文档才能被快照、被哈希、
+ * 被 fence（重建 PRD §6.5）。重进一个阶段复用它的线程（Fix 第三轮最需要的
+ * 正是前两轮改了什么、为什么还不行）。
+ *
+ * `kind = 'aside'`：旁路会话（DESIGN-phase-not-the-only-axis §3.3）—— 人在
+ * 里面问问题、聊需求。**不属于任何阶段、不产出、不推闸门、不占「一个阶段
+ * 一个进程」的座位**，所以 `phase` 是 NULL。一个 Change 一条 aside：它是
+ * 「这个 Change 的闲聊」，两条并存只会让「把闲聊收敛成 brief」不知道读哪条。
+ */
+const CHANGE_BINDINGS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS change_bindings (
+  change_id   TEXT NOT NULL REFERENCES changes(id),
+  kind        TEXT NOT NULL DEFAULT 'round' CHECK (kind IN ('round','aside')),
+  phase       TEXT     NULL CHECK (phase IS NULL OR phase IN (${quoted(PHASES)})),
+  thread_id   TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
+  bound_at    TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  -- round 挂在一个阶段上，aside 不挂 —— 错配的行不可存
+  -- （和 gaps 的 kind/severity 配对是同一个路子）。
+  CHECK ((kind = 'round') = (phase IS NOT NULL))
+)`;
+
+/** 同上，迁移重建时要当场重建，不能等下一次重启的 SCHEMA_SQL。 */
+const CHANGE_BINDINGS_INDEXES_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_round
+  ON change_bindings (change_id, phase) WHERE kind = 'round';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_aside
+  ON change_bindings (change_id) WHERE kind = 'aside';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_thread
+  ON change_bindings (thread_id) WHERE status = 'bound';
+`;
+
 export const SCHEMA_SQL = `
 -- What a Change belongs to. One row per body of work a person thinks of as a
 -- thing: it carries a name, and nothing else. No status, no phase, no gate --
@@ -225,35 +267,8 @@ CREATE INDEX IF NOT EXISTS ix_jobs_claimable ON jobs (status, created_at);
 -- L2
 -- ---------------------------------------------------------------------------
 
--- Which Codex thread a phase's work happens in: one thread per (Change, phase).
---
--- Keyed by the pair rather than by the Change, because with one thread per
--- Change part of a phase's decision rests on what the model remembers from
--- EARLIER phases -- and that memory lives in Codex's conversation history,
--- inside no StagePass snapshot. The fence cannot reach it. Per-phase threads
--- force cross-phase information through documents, which can be snapshotted,
--- hashed and fenced. See the rebuild PRD section 6.5.
---
--- The price, paid deliberately: each phase opens on a conversation that knows
--- nothing about the earlier ones, so every phase's opening prompt has to carry
--- its upstream documents itself.
---
--- Re-entering a phase reuses its thread rather than starting another. Fix can
--- be entered many times, so the pair is not unique in TIME; what a third round
--- of Fix most needs is what the first two changed and why it still failed, and
--- that is in this same thread.
-CREATE TABLE IF NOT EXISTS change_bindings (
-  change_id   TEXT NOT NULL REFERENCES changes(id),
-  phase       TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
-  thread_id   TEXT NOT NULL,
-  status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
-  bound_at    TEXT NOT NULL,
-  updated_at  TEXT NOT NULL,
-  PRIMARY KEY (change_id, phase)
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_thread
-  ON change_bindings (thread_id) WHERE status = 'bound';
+${CHANGE_BINDINGS_TABLE_SQL};
+${CHANGE_BINDINGS_INDEXES_SQL}
 
 -- Every turn StagePass asks for, written down BEFORE it is dispatched.
 --
@@ -641,6 +656,57 @@ export function migrate(database: {
   }
 
   migrateReturnStack(database);
+  migrateBindingsKind(database);
+}
+
+/**
+ * `change_bindings` 加 `kind`、`phase` 放开可空（DESIGN-phase-not-the-only-axis §3.3）。
+ *
+ * 和 `migrateReturnStack` 同一个形状：旧列绑在 CHECK 和 PRIMARY KEY 里，SQLite
+ * 改不了约束，只能整表重建。老数据无损：已有的行全是阶段线程，`kind = 'round'`。
+ * 索引随旧表一起消失，当场用同一份定义重建。
+ */
+function migrateBindingsKind(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown };
+}): void {
+  const columns = database.pragma("table_info(change_bindings)") as { name: string }[];
+  if (columns.length === 0) return;                       // 新库，SCHEMA_SQL 会建
+  if (columns.some((entry) => entry.name === "kind")) return;   // 已迁移
+
+  const count = (table: string): number =>
+    (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+
+  database.pragma("foreign_keys=OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      const rows = count("change_bindings");
+      database.exec(CHANGE_BINDINGS_TABLE_SQL.replace(
+        "CREATE TABLE IF NOT EXISTS change_bindings (",
+        "CREATE TABLE change_bindings_migrating (",
+      ));
+      database.exec(`
+        INSERT INTO change_bindings_migrating
+          (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+        SELECT change_id, 'round', phase, thread_id, status, bound_at, updated_at
+        FROM change_bindings;
+      `);
+      if (count("change_bindings_migrating") !== rows) {
+        throw new Error("bindings kind migration lost rows; rolling back");
+      }
+      database.exec("DROP TABLE change_bindings");
+      database.exec("ALTER TABLE change_bindings_migrating RENAME TO change_bindings");
+      database.exec(CHANGE_BINDINGS_INDEXES_SQL);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.pragma("foreign_keys=ON");
+  }
 }
 
 /**
