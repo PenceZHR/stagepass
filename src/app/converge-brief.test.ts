@@ -5,7 +5,9 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../db/schema";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
-import { confirmBrief, draftBrief, briefFileNames } from "./converge-brief";
+import {
+  confirmBrief, draftBrief, draftPrompt, briefFileNames, humanTurnsIn, STAGEPASS_SAID,
+} from "./converge-brief";
 
 /**
  * 批 2「模型起草，人改」，不经过 HTTP、不碰 Codex。
@@ -38,6 +40,7 @@ describe("app · 闲聊起草 brief（draftBrief）", () => {
     try {
       const outcome = await draftBrief({
         database, changeId: CHANGE,
+        saidIn: () => [],
         runTurn: async () => { throw new Error("不该被调"); },
         writeBriefFile,
       });
@@ -47,6 +50,47 @@ describe("app · 闲聊起草 brief（draftBrief）", () => {
     }
   });
 
+  /**
+   * **2026-08-06 真机上放过去的那一份。**
+   *
+   * 判据原来是「有没有旁路会话」，而按一下「旁路窗口」会话当场就建好 —— 那道闸
+   * 永远放行。模型于是交回一份四节全是「本会话尚未谈到具体改动内容」的草稿，
+   * StagePass 把它写进了 ~/.stagepass/briefs/。一份没有对话的草稿不是差一点的
+   * 草稿，是**凭空的需求**。
+   */
+  it("**窗口开着但人没说过话 —— 拒**，一个 turn 都不跑", async () => {
+    const { database, files, writeBriefFile } = open();
+    try {
+      new BindingStore(database).bindAside(CHANGE, "T-CHAT");
+      const outcome = await draftBrief({
+        database, changeId: CHANGE,
+        // rollout 里只有 StagePass 自己打进去的那两句（开场白 + 上次的起草指令）。
+        saidIn: () => [
+          `${STAGEPASS_SAID} 这是 StagePass 里 ${CHANGE} 的旁路会话（…）。`,
+          draftPrompt(CHANGE),
+        ],
+        runTurn: async () => { throw new Error("不该被调 —— 没对话就不该起草"); },
+        writeBriefFile,
+      });
+      assert.equal(outcome.kind, "no_conversation_yet");
+      assert.equal(files.size, 0, "空对话也落了草稿文件");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("StagePass 自己的话不算「人说过」—— 标记是判据，不靠比对正文", () => {
+    assert.equal(humanTurnsIn([`${STAGEPASS_SAID} 开场白`, draftPrompt(CHANGE)]), 0);
+    assert.equal(humanTurnsIn([`${STAGEPASS_SAID} 开场白`, "我要重构存档"]), 1);
+    // 前面有空白也认得出来 —— composer 有时会带一格缩进。
+    assert.equal(humanTurnsIn([`  ${STAGEPASS_SAID} 开场白`]), 0);
+  });
+
+  it("起草的提示词必须是一行 —— 它要被打进 composer，换行就是提交", () => {
+    assert.ok(!draftPrompt(CHANGE).includes("\n"),
+      "多行提示词打进 composer 会被截成半句发出去");
+  });
+
   it("起草跑在旁路线程上，草稿和工作稿各落一份、内容相同", async () => {
     const { database, files, writeBriefFile } = open();
     try {
@@ -54,6 +98,7 @@ describe("app · 闲聊起草 brief（draftBrief）", () => {
       const turns: string[] = [];
       const outcome = await draftBrief({
         database, changeId: CHANGE,
+        saidIn: () => ["我要一键回滚"],
         runTurn: async (threadId, prompt) => {
           turns.push(threadId, prompt);
           return "要一键回滚：上线砸了要能在一分钟内回去。\n";
@@ -77,6 +122,7 @@ describe("app · 闲聊起草 brief（draftBrief）", () => {
       new BindingStore(database).bindAside(CHANGE, "T-CHAT");
       const outcome = await draftBrief({
         database, changeId: CHANGE,
+        saidIn: () => ["我要一键回滚"],
         runTurn: async () => "  \n ",
         writeBriefFile,
       });
@@ -94,6 +140,7 @@ describe("app · brief 定稿（confirmBrief）—— 未经编辑的草稿不�
     new BindingStore(context.database).bindAside(CHANGE, "T-CHAT");
     await draftBrief({
       database: context.database, changeId: CHANGE,
+      saidIn: () => ["我要一键回滚"],
       runTurn: async () => "草稿：要一键回滚。",
       writeBriefFile: context.writeBriefFile,
     });
@@ -133,7 +180,28 @@ describe("app · brief 定稿（confirmBrief）—— 未经编辑的草稿不�
         "要一键回滚，而且回滚本身要有演练：每次发布前自动演练一次回滚路径。");
       const outcome = confirmBrief({ database, changeId: CHANGE, readBriefFile });
       assert.equal(outcome.kind, "recorded");
+      assert.equal(outcome.kind === "recorded" ? outcome.replaced : "?", null,
+        "本来就没有 brief，不该报「顶掉了谁」");
       assert.match(new ChangeStore(database).read(CHANGE).brief ?? "", /演练/);
+    } finally {
+      database.close();
+    }
+  });
+
+  /**
+   * **顶掉一份已经存在的 brief 要说出来。** 下游每个阶段的任务书都读它 ——
+   * 换掉它就是换掉整条流水线的地基，而 2026-08-06 真机上界面一个字都没提醒：
+   * CHG-001 手里有一份人答过九道题的真 brief，而一份空对话草稿差点顶掉它。
+   */
+  it("顶掉已有的 brief —— 把被顶掉的那份原文交出去", async () => {
+    const { database, files, readBriefFile } = await drafted();
+    try {
+      new ChangeStore(database).setBrief(CHANGE, "人当初答出来的那份需求");
+      files.set(briefFileNames(CHANGE).edit, "改过的新需求");
+      const outcome = confirmBrief({ database, changeId: CHANGE, readBriefFile });
+      assert.equal(outcome.kind, "recorded");
+      assert.equal(outcome.kind === "recorded" ? outcome.replaced : null,
+        "人当初答出来的那份需求", "顶掉了一份 brief 却没说");
     } finally {
       database.close();
     }

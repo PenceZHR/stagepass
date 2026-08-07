@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import {
   allTextIn, contextUsageOf, findLastCompletedTurn, lineageOf, parseRollout,
-  threadIdFromRolloutName, type ContextUsage,
+  threadIdFromRolloutName, userMessagesIn, type ContextUsage,
 } from "./rollout";
 
 /**
@@ -136,6 +136,20 @@ export function readThreadTranscript(input: ThreadLookup): string {
  */
 export function readThreadWholeText(input: ThreadLookup): string {
   return allTextIn(rolloutOf(input));
+}
+
+/**
+ * 这条线程上打进去的话，按先后。**「谁开的口」那一问**（`userMessagesIn`）。
+ *
+ * 线程还不存在就是空数组，不抛：一条刚建、还没落盘的旁路会话确实一句人话都没有，
+ * 那不是故障，正是调用方要判的那个事实。
+ */
+export function readThreadUserMessages(input: ThreadLookup): string[] {
+  try {
+    return userMessagesIn(rolloutOf(input));
+  } catch {
+    return [];
+  }
 }
 
 /**

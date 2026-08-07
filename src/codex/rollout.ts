@@ -243,6 +243,33 @@ export function allTextIn(records: readonly RolloutRecord[]): string {
 }
 
 /**
+ * 这条线程上**人（或 StagePass）打进去的那些话**，按先后。
+ *
+ * ## 和 `allTextIn` 的分工
+ *
+ * `allTextIn` 是「这条线程经历过的全部文本」——问的是「找得到吗」，所以它把模型
+ * 说的、被告知的一起捞。这里问的是另一个问题：**谁开的口。** 一条只有 StagePass
+ * 自己发过提示词的线程，和一条人真聊过十句的线程，在 `allTextIn` 里长得一样长，
+ * 而「能不能拿它起草 brief」正好取决于这个区别（`app/converge-brief.ts`）。
+ *
+ * ## 判据是 `user_message`，不是「谁的口气像人」
+ *
+ * 只收 `event_msg / user_message`（`payload.message`）——那是输入侧的记录，模型的
+ * 回答不在里面。`response_item` 那一路不收：它的 role 要再判一次，而多一个判据就
+ * 多一处会漂的地方。StagePass 自己打进去的提示词也落在这里，所以调用方要能认出
+ * 它们——那由发的人负责标记（`STAGEPASS_SAID`），不由这里猜。
+ */
+export function userMessagesIn(records: readonly RolloutRecord[]): string[] {
+  const said: string[] = [];
+  for (const record of records) {
+    if (record.payload?.type !== "user_message") continue;
+    const message = record.payload?.message;
+    if (typeof message === "string" && message !== "") said.push(message);
+  }
+  return said;
+}
+
+/**
  * A thread id, taken from a rollout's filename.
  *
  * `rollout-<timestamp>-<uuid>.jsonl`. Reading it from the name rather than from

@@ -14,7 +14,7 @@ import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport } from "../codex/tui-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
-  childThreadsOf, readThreadTranscript, readThreadWholeText,
+  childThreadsOf, readThreadTranscript, readThreadUserMessages, readThreadWholeText,
 } from "../codex/subagent";
 import {
   archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
@@ -41,7 +41,7 @@ import {
   createChange, createProject, deleteChange, deleteProject,
 } from "../app/workspace";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
-import { confirmBrief, draftBrief } from "../app/converge-brief";
+import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
@@ -583,7 +583,7 @@ export class PanelSessions {
    * 所以这个方法是 async 的。别为了「看起来干净」把它改回同步一次写 —— 那会静默地
    * 什么都不做。
    */
-  async type(changeId: string, phase: Phase, line: string): Promise<boolean> {
+  async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
     if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
     const entry = this.live.get(PanelSessions.key(changeId, phase));
     if (!entry || !entry.session.alive) return false;
@@ -1337,9 +1337,16 @@ async function serveAside(
   });
   void transport.runTurn({
     threadId: null,
-    // 开场词带 changeId 和时刻：awaitNewThread 按它认线程，两个 Change 同时
-    // 开旁路、或同一个 Change 关了重开，都不许认错。
-    prompt: `这是 StagePass 里 ${changeId} 的旁路会话（${new Date().toISOString()}）。`
+    /*
+     * 开场词带 changeId 和时刻：awaitNewThread 按它认线程，两个 Change 同时
+     * 开旁路、或同一个 Change 关了重开，都不许认错。
+     *
+     * **开头那个标记是承重的**（`STAGEPASS_SAID`）：起草前要数「人说过几句」，
+     * 而这句话也落在 rollout 的 `user_message` 里 —— 不标记它就会被算成人说的，
+     * 那道闸当场失效（2026-08-06 真机上就是这么放过一份空草稿的）。
+     */
+    prompt: `${STAGEPASS_SAID} 这是 StagePass 里 ${changeId} 的旁路会话`
+      + `（${new Date().toISOString()}）。`
       + "人会在这里问问题、聊这次改动要什么。你不产出任何阶段的东西、不推动任何"
       + "闸门。回答要基于这个仓库的真实代码，不知道就说不知道。收到请简短回应。",
     onThread: (threadId) => {
@@ -1395,19 +1402,29 @@ async function serveBriefDraft(
   const changeId = url.searchParams.get("change") ?? "";
   const outcome = await draftBrief({
     database, changeId,
+    saidIn: (threadId) => readThreadUserMessages({ threadId }),
     runTurn: async (threadId, prompt) => {
-      /*
-       * 起草的 turn 要独占旁路线程。窗口开着时先关掉再 resume —— 往一个活着的
-       * 会话里 launchInto 会把带提示词的 argv 原样丢掉（§6.5 规则 5 的契约），
-       * 提示词就没了。关掉的代价是浏览器那条流断一次，C3 的自动重连会接上新的。
-       */
-      if (sessions.has(changeId, ASIDE)) sessions.close(changeId, ASIDE);
       const transport = new CodexTuiTransport({
         ...options.session,
         ...(options.turnTimeoutMs === undefined
           ? {} : { timeoutMs: options.turnTimeoutMs }),
         config: pluginConfigFor(database, changeId),
-        launch: ({ argv }) => { sessions.launchInto(changeId, ASIDE, argv); },
+        /*
+         * **窗口开着就把提示词打进去，绝不 close 再起。**
+         *
+         * 2026-08-06 真机上我犯的就是这个错：先 `close(ASIDE)` 再 spawn 一个
+         * 带提示词的 resume。从人那边看，他正在聊的窗口当场死掉重开，而起草那一轮
+         * 要跑几分钟 —— 屏幕上就是「卡住」。`PanelSessions.type` 那段注释早写着
+         * 这条（「先 close 再 launchInto 会掐断浏览器正在读的那条流」），
+         * 录需求那条路一直是打字的，起草这条当时没跟上。
+         *
+         * 打字要求提示词是**一行**（composer 里一个换行就是提交），
+         * `draftPrompt` 因此是一行。没有活窗口时才 resume 一个带提示词的。
+         */
+        launch: ({ argv }) => {
+          if (sessions.has(changeId, ASIDE)) void sessions.type(changeId, ASIDE, prompt);
+          else sessions.launchInto(changeId, ASIDE, argv);
+        },
       });
       return (await transport.runTurn({ threadId, prompt })).text;
     },

@@ -2039,20 +2039,36 @@ async function openAside() {
  * 批 2「模型起草，人改」的两步。中间那段（人在编辑器里改文件）不经过这个页面 ——
  * 它本来就是人的活儿。机械判据（未经修改不算）在服务端。
  */
+const DRAFT_REFUSAL_WORDS = {
+  no_aside_conversation: "还没有旁路对话可整理 —— 先按「旁路窗口」谈这次要什么，"
+    + "谈完再来起草。",
+  // 2026-08-06 真机：判据原来是「有没有会话」，而按一下「旁路窗口」会话当场就建好，
+  // 于是模型交回一份四节全是「本会话尚未谈到」的草稿，还被当成草稿写进了文件。
+  no_conversation_yet: "那个窗口开着，但你还没在里面说过话 —— 没有对话就只能编一份"
+    + "需求出来。先去旁路窗口聊清楚这次要做什么，再回来起草。",
+};
+
 async function draftBriefFromAside() {
   briefDraftButton.disabled = true;
+  /*
+   * 起草那一轮要跑几分钟（xhigh），而它跑在旁路窗口里 —— 把人送进去看着，
+   * 比让他对着一个「整理中…」的按钮干等强。这也是 2026-08-06 那个「卡住」的
+   * 另一半：屏幕上没有任何东西说它在跑。
+   */
   briefDraftButton.textContent = "模型在整理那段对话…";
+  const pending = fetch(
+    `/api/brief-draft?change=${encodeURIComponent(changeId)}`, { method: "POST" });
+  closeSheet();
+  await enter("aside");
+  stageNote.textContent = "正在让模型把这段对话整理成 brief 草稿 ——"
+    + "它就在这个窗口里跑，几分钟。写好之后这行会给出草稿文件的路径。";
   try {
-    const result = await (await fetch(
-      `/api/brief-draft?change=${encodeURIComponent(changeId)}`,
-      { method: "POST" })).json();
+    const result = await (await pending).json();
     if (result.kind === "drafted") {
       say(`草稿写好了：${result.editPath} —— 在编辑器里改它（未经修改不算数），`
-        + "改完回来按「brief 定稿」。");
-    } else if (result.kind === "no_aside_conversation") {
-      say("还没有旁路对话可整理 —— 先按「旁路窗口」谈这次要什么，谈完再来起草。");
+        + "改完回阶段卡片按「brief 定稿」。");
     } else {
-      say(`没起草成：${result.detail ?? result.kind}`);
+      say(DRAFT_REFUSAL_WORDS[result.kind] ?? `没起草成：${result.detail ?? result.kind}`);
     }
   } finally {
     briefDraftButton.disabled = false;
@@ -2075,8 +2091,13 @@ async function confirmBriefEdit() {
       `/api/brief-confirm?change=${encodeURIComponent(changeId)}`,
       { method: "POST" })).json();
     if (result.kind === "recorded") {
+      // 顶掉一份已经存在的 brief = 换掉下游每个阶段的地基。**必须说出来。**
       say(`brief 定稿了（${result.brief.length} 字）。现在可以跑这个阶段 ——`
-        + "红方拿的是你改过的那份，不是模型猜的。");
+        + "红方拿的是你改过的那份，不是模型猜的。"
+        + (result.replaced
+          ? `⚠ 它顶掉了原来那份 brief（${result.replaced.length} 字）——`
+            + "下游每个阶段的任务书从此读的是新的这份。"
+          : ""));
       await loadOrReconnect();
       if (sheetPhase) drawSheet(sheetPhase);
     } else {
