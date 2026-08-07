@@ -314,14 +314,27 @@ describe("L1 · 人的出口：中止与拒绝都要进账本", () => {
       jobs.fail({ jobId: "JOB-OLD", owner: "w", token: "t", reason: "老超时" });
 
       jobs.recordRefusal({
-        id: "JOB-REFUSED", changeId: "CHG-1",
+        id: "JOB-REFUSED", changeId: "CHG-1", phase: "Build",
         reason: "workspace_dirty：半成品.md", at: T0,
       });
       const latest = jobs.latestFor("CHG-1");
       assert.equal(latest?.id, "JOB-REFUSED");
       assert.equal(latest?.error, "workspace_dirty：半成品.md");
+      // 拒的是哪个阶段要记上 —— 界面靠它把原因挂在对的那张卡片上。
+      assert.equal(latest?.phase, "Build");
       // 拒绝不是活儿：闸门问「有没有没了结的」时它不许占座。
       assert.equal(jobs.busyFor("CHG-1"), null);
+
+      /*
+       * **同一个 id 再来一次不许炸。** 调用方拿 `Date.now()` 拼 id，同一毫秒里
+       * 来两次拒绝是可能的（人手快点两下）—— 主键冲突会让一次「树脏了」变成
+       * 一句「出错了：SqliteError」，而这条路正在替一次已经失败的派发记账。
+       */
+      assert.doesNotThrow(() => jobs.recordRefusal({
+        id: "JOB-REFUSED", changeId: "CHG-1", phase: "Build",
+        reason: "同一毫秒的第二次拒绝", at: T0,
+      }));
+      assert.equal(jobs.latestFor("CHG-1")?.error, "同一毫秒的第二次拒绝");
     } finally {
       database.close();
     }

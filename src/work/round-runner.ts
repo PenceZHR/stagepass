@@ -327,7 +327,22 @@ export async function runRound(
   ];
   dependencies.worklist.open(request.changeId, request.phase, request.round, items);
 
-  const delivery = await dependencies.transport.runTurn({
+  /*
+   * **这一轮不管怎么结束，名单都要收工。**
+   *
+   * 名单在 turn 之前开（裁判一起来就可能调 `stagepass_next`），而收工原来只写在
+   * 顺利跑完那条路上。于是任何一种routine 失败 —— 超时、`deadline_reached`、
+   * 「认不出两条子 Agent 线程」—— 都会留下一份 `status='open'` 的名单。
+   *
+   * 而插件取下一项**只按 Change 和 open 挑**（`WorklistStore.next`），它手上没有
+   * 阶段和轮次。于是这个 Change 之后的任何一个会话（旁路窗口、人自己开的终端）
+   * 都会被喂上一轮死掉的题，而它答出来的东西写进了没人会去读的行
+   * （`worklist.read` 按 (阶段, 轮) 取）。下一次派轮会自愈，可那扇窗正好是
+   * 「人在终端里查刚才为什么炸」的那段时间。
+   */
+  let delivery;
+  try {
+    delivery = await dependencies.transport.runTurn({
     threadId: request.judgeThreadId,
     prompt: judgePrompt({
       phase: request.phase,
@@ -348,7 +363,12 @@ export async function runRound(
       ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
       contractNotesPath,
     }),
-  });
+    });
+  } catch (error) {
+    // 派轮炸了 —— 名单先收工，再把错原样抛上去（失败仍然是失败）。
+    dependencies.worklist.close(request.changeId, request.phase, request.round);
+    throw error;
+  }
 
   /*
    * 这一轮派生的那两条线程，然后读它们自己的话。
@@ -362,7 +382,11 @@ export async function runRound(
    */
   const fresh = dependencies.childThreads(delivery.threadId)
     .filter((threadId) => !before.includes(threadId));
-  if (fresh.length < 2) throw new RoundAgentsNotFoundError(fresh.length);
+  if (fresh.length < 2) {
+    // 同上：认不出两方也要先收名单，否则它开着毒下一个会话。
+    dependencies.worklist.close(request.changeId, request.phase, request.round);
+    throw new RoundAgentsNotFoundError(fresh.length);
+  }
   const agents: RoundAgents = {
     red: fresh[fresh.length - 2]!,
     blue: fresh[fresh.length - 1]!,

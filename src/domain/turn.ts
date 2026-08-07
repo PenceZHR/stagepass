@@ -321,7 +321,19 @@ export function parseTurnResult(
     const blocker = value as Record<string, unknown>;
     if (
       typeof blocker?.id !== "string" || blocker.id.trim() === ""
-      || typeof blocker.title !== "string"
+      /*
+       * **标题也要非空**，和 id 同一条。
+       *
+       * 只查类型的后果不是「标题难看」：空标题一路流到 `GapStore.write`，撞上
+       * `gaps.title CHECK (length(trim(title)) > 0)`，整笔 upsert 回滚、
+       * `settleRound` 抛 SqliteError，于是**一轮跑了半小时的对抗被判为失败作废**，
+       * 而账本里记下的原因是一句既不说哪一条、也不说哪个字段的 SQLite 报错。
+       *
+       * 在这里拦住，那一轮仍然作废（信封坏了就是坏了），但报的是
+       * `turn_result_blockers_invalid` 并附上那一条的原文 —— 人看得出是谁写坏了。
+       * `domain/gap.ts` 的 `raise` 早就这么守着同一条 CHECK，这里是补齐的那半。
+       */
+      || typeof blocker.title !== "string" || blocker.title.trim() === ""
       || typeof blocker.severity !== "string"
       || !(BLOCKER_SEVERITIES as readonly string[]).includes(blocker.severity)
     ) {

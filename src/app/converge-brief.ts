@@ -115,9 +115,10 @@ export async function draftBrief(input: {
   runTurn: (threadId: string, prompt: string) => Promise<string>;
   /**
    * 这条线程上打进去过哪些话（`codex/subagent.ts` 的 `readThreadUserMessages`）。
+   * **`null` = 读不出来**，和「读到了，一句都没有」是两件事。
    * 注进来是为了这一层能离线证 —— 它只管数，不管从哪读。
    */
-  saidIn: (threadId: string) => readonly string[];
+  saidIn: (threadId: string) => readonly string[] | null;
   /** 落一份文件，返回绝对路径。放哪由 web 层定（生产在 ~/.stagepass/briefs/）。 */
   writeBriefFile: (name: string, content: string) => string;
 }): Promise<DraftOutcome> {
@@ -135,7 +136,23 @@ export async function draftBrief(input: {
    * **人得先开口。** 会话存在不等于谈过 —— 见 `no_conversation_yet`。
    * StagePass 自己打进去的话（开场白、上一次的起草指令）按标记刨掉。
    */
-  if (humanTurnsIn(input.saidIn(aside.threadId)) === 0) {
+  const said = input.saidIn(aside.threadId);
+  if (said === null) {
+    /*
+     * **读不出来 ≠ 没说过话。**
+     *
+     * 两者原来都返回空数组，于是一次读取失败（文件不在、Codex 换了格式、
+     * 权限没了）会被说成「你还没在窗口里说过话」—— 人对着满屏自己的对话，
+     * 每按一次都得到同一句，而任何地方都没有第二个诊断。这道闸是「不许凭空
+     * 造需求」的地基，一次读不到就把它静默解除掉，正是这棵树最防的那种失败。
+     */
+    return {
+      kind: "draft_failed",
+      detail: `读不到那条旁路线程的记录（${aside.threadId}）——`
+        + "所以说不出你在里面说过什么。不是「你没说过话」。",
+    };
+  }
+  if (humanTurnsIn(said) === 0) {
     return { kind: "no_conversation_yet" };
   }
 

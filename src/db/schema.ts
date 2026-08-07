@@ -743,31 +743,49 @@ function migrateStaleChecks(database: {
     // SCHEMA_SQL 里没有的表不归这里迁（有人在库里手建过表，或者它是迁移的中间产物）。
     return found === null ? null : found[0];
   };
-  /** 一段建表 SQL 里所有的字面量 —— 枚举 CHECK 的内容就是它们。 */
-  const literalsIn = (sql: string): Set<string> =>
-    new Set([...sql.matchAll(/'([^']*)'/g)].map((match) => match[1]!));
+  /**
+   * 一段建表 SQL 归一化成「可比的形状」。
+   *
+   * 三处不许参与比较，都是 SQLite 或迁移自己造成的差异，不是库落后：
+   *
+   * - **`IF NOT EXISTS` 被 SQLite 丢掉** —— 存进 `sqlite_master` 的没有它。
+   * - **重建改名之后表名带引号** —— `ALTER TABLE … RENAME TO t` 存的是
+   *   `CREATE TABLE "t" (`。不抹掉这一处，每次启动都会重建一遍同一张表。
+   * - **注释和空白** —— 改一句注释不该触发整表重建；而注释里一个英文所有格
+   *   （`model's`）会让按引号配对的比较整体错位，先删掉就没有这回事。
+   *
+   * 上面这三条都是 2026-08-07 用一个探针在真 SQLite 上量出来的，不是推测。
+   */
+  const shapeOf = (sql: string): string => sql
+    .replace(/--[^\n]*/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/CREATE TABLE (?:IF NOT EXISTS )?"?([A-Za-z_]+)"?/, "CREATE TABLE $1")
+    .trim();
 
   /**
-   * **代码现在允许、而库里那张表不认的字面量** —— 有一个就得重建。
+   * **库里那张表和代码现在说的不一样** —— 差一个字就重建。
    *
-   * 判据原来是「有 `'PRD'` 却没有 `'Arch'`」，只认阶段名那一种陈旧。2026-08-07
-   * 真机因此栽了一次：`change_events.action` 的名单是老库建的，里面没有
-   * `sendBack`（它是后来加进 `CHANGE_ACTIONS` 的）——于是人在选择器里选了「打回
-   * 上游」，账本写不进去、整个事务回滚，`apply` 抛 SqliteError 而 `decideGate`
-   * 只接得住闸门那两种异常，最后是一个 500。**那个库物理上记不下「打回」。**
+   * 判据走过两版，都是被真机推着走的：
    *
-   * 所以判据换成通用的：每一份枚举 CHECK 都是从代码常量生成的，而**任何一个
-   * 常量加了新值，老库那张表就落后一次**。逐个字面量比对，一次覆盖全部
-   * （阶段、动作、状态、gap 种类、rubric 角色……），也覆盖以后新加的。
+   * 1. 「有 `'PRD'` 却没有 `'Arch'`」—— 只认阶段名。2026-08-07 栽在
+   *    `change_events.action` 上：老库的名单里没有 `sendBack`，于是人选了
+   *    「打回上游」，账本写不进去、事务回滚、`apply` 抛 SqliteError，
+   *    最后是一个 500。**那个库物理上记不下这个动作。**
+   * 2. 「代码允许而库里没有的字面量」—— 覆盖了全部枚举，可是**一个字面量都
+   *    没有的表它永远看不见**。真库实测：`projects` / `change_briefs` /
+   *    `rubric_criteria` 三张表因此从没被迁过，而 `projects.path` 那条
+   *    `CHECK (length(trim(path)) > 0)` 至今不在库里 —— 空路径存得进去，
+   *    而 `ensure` 的 COALESCE 让它永不自愈。
+   *
+   * 所以第三版直接比整段定义：枚举、CHECK、类型、主键、外键，一次全在里面。
+   * 代价是「注释改了也重建」，而那已经被 `shapeOf` 抹掉了。
    */
   const stale = (database.prepare(
     "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
   ).all() as { name: string; sql: string }[])
     .filter((table) => {
       const canonical = definitionOf(table.name);
-      if (canonical === null) return false;
-      const known = literalsIn(table.sql);
-      return [...literalsIn(canonical)].some((value) => !known.has(value));
+      return canonical !== null && shapeOf(canonical) !== shapeOf(table.sql);
     });
   if (stale.length === 0) return;
 

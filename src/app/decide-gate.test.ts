@@ -310,6 +310,47 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
   });
 
   /**
+   * **裁决落不了地的时候，人要看得见为什么** —— 2026-08-07 真机那一次。
+   *
+   * `questions.apply` 抛了 SqliteError（老库的账本记不下 `sendBack`），而当时
+   * 只接得住 `GateRefusedError`：异常穿到 HTTP 层变成 500，题永远停在 `answered`
+   * （既没落地也没被收掉），人在界面上只看到「点了没反应」。**他已经答完走了，
+   * 一次静默失败等于他的话被扔了。**
+   */
+  it("**闸门那一步炸了 —— 说出来，别 500**，题要收掉、原因要留住", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    const { sessions, answerOpen } = answerer(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+    });
+    // 摆出那天的形状：账本记不下这次转移（老库的 CHECK 名单落后了）。
+    database.exec(
+      "CREATE TRIGGER boom BEFORE INSERT ON change_events"
+      + " WHEN NEW.action = 'approve'"
+      + " BEGIN SELECT RAISE(ABORT, 'action_not_allowed_in_this_database'); END",
+    );
+
+    const result = await decideGate({
+      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    });
+
+    assert.equal(result.outcome.kind, "decided", "异常穿出去了 —— 那就是一个 500");
+    const outcome = result.outcome.kind === "decided"
+      ? result.outcome.outcome as { kind?: string; error?: string } : null;
+    assert.equal(outcome?.kind, "failed");
+    assert.match(outcome?.error ?? "", /action_not_allowed_in_this_database/,
+      "没把真实原因交出来 —— 人还是不知道为什么没落地");
+    // 题不许停在 answered：那是「答了但没人收」，屏幕上一个字都没有。
+    assert.equal(new QuestionStore(database).open(CHANGE), null);
+    // 下场要留得住（§3.2·5）：刷新之后卡片上还看得见。
+    assert.ok(new QuestionStore(database).latestOutcomeFor(CHANGE, "PRD") !== null);
+    database.close();
+  });
+
+  /**
    * **批准了才归档这个阶段的线程**（用户 2026-07-30 拍板的那一半）。别的地方一概
    * 不许调 —— 一个还没批准的阶段的线程被归档，下一次 resume 就会一起来就死。
    */

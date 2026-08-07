@@ -95,7 +95,6 @@ const closeTermButton = button("close-term");
 const asideTermButton = button("aside-term");
 const briefDraftButton = button("brief-draft");
 const briefConfirmButton = button("brief-confirm");
-const openParallelButton = button("open-parallel");
 const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
@@ -1501,14 +1500,6 @@ function drawSheet(phase) {
   const barred = entry.current && Boolean(panelState?.blocked);
   runButton.disabled = entry.live || needsBrief || barred
     || (status !== "pending" && status !== "running");
-  /*
-   * 「并行开这个阶段」（批 3）：只摆在主线**下游**、还没开座位的格子上。
-   * 下游与否由服务端最终把关（图是它的）；这里按显示顺序粗筛，别摆必拒的按钮。
-   */
-  const mainIndex = phases.findIndex((each) => each.current);
-  const myIndex = phases.findIndex((each) => each.phase === entry.phase);
-  openParallelButton.hidden = mainIndex === -1 || entry.current
-    || entry.seat !== null || myIndex <= mainIndex || entry.phase === "Fix";
   askButton.hidden = !entry.current;
   /*
    * **预检会拒的时候，连问都别问**（2026-08-07 真机）。
@@ -2139,31 +2130,8 @@ async function confirmBriefEdit() {
   }
 }
 
-/** 并行开一个下游阶段（批 3）。开座位不是裁决 —— 它不推动任何闸门。 */
-async function openParallel() {
-  const phase = sheetPhase;
-  if (!phase) return;
-  openParallelButton.disabled = true;
-  try {
-    const result = await (await fetch(
-      `/api/parallel?change=${encodeURIComponent(changeId)}`
-      + `&phase=${encodeURIComponent(phase)}`, { method: "POST" })).json();
-    if (result.opened) {
-      say(`${phase} 的并行座位开了。它可以在主线还没走到时先跑轮 ——`
-        + "主线走到这儿时会把进度收编进来。");
-    } else {
-      say(`没开成：${result.reason}`);
-    }
-    await loadOrReconnect();
-    if (sheetPhase) drawSheet(sheetPhase);
-  } finally {
-    openParallelButton.disabled = false;
-  }
-}
-
 button("back").addEventListener("click", () => { void leave(); });
 asideTermButton.addEventListener("click", () => { void openAside(); });
-openParallelButton.addEventListener("click", () => { void openParallel(); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });

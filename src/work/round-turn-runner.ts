@@ -375,6 +375,21 @@ export class RoundTurnRunner implements TurnRunner {
   ): void {
     if (malformed.length === 0) return;
     this.options.bindings.detach(changeId, phase);
+    /*
+     * **裁判自己说过的那句话不许被这条盖掉。**
+     *
+     * `RoundNoteStore.put` 是按 `(change, phase, round, source)` upsert 的，而
+     * `recordNotes` 刚刚用同一个 source 写过裁判的结论。于是「形状有一处坏掉」
+     * （比如只有 `verdicts_unreadable`，而结论本身读得好好的）会把它的原话和
+     * `anotherRound` 一起顶掉 —— 那正是这个方法自己的注释在禁的事：**替裁判说
+     * 一句它没说过的话**，只是方向反过来，把它说过的抹掉了。
+     *
+     * 所以先看它到底给没给结论：给了就只放开线程、不动那条记录（形状坏掉这件事
+     * 由 `malformed` 自己带上去，人在裁决表上看得见）；没给才补这一句。
+     */
+    const already = this.options.notes.read(changeId, phase, round)
+      .some((note) => note.source === "judge_conclusion");
+    if (already) return;
     this.options.notes.put(changeId, phase, round, {
       source: "judge_conclusion",
       // **不是 false。**「还要不要再来一轮」这个问题在这里没有答案 —— 记 false 会被

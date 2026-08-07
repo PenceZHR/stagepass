@@ -462,8 +462,9 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 2026-08-06：`serveRubricSave` / `serveRubricUpgrade` 抽出去（607 → 579）。
   // **加一条路由必须先还等量的债**，这条棘轮就是这么用的。
   // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
-  // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）。
-  "web/panel-server.ts#handle": 553,
+  // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）；
+  // 同日再抽 `serveParallel`、撤掉并行座位的入口（553 → 517）。
+  "web/panel-server.ts#handle": 517,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

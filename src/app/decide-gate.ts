@@ -5,10 +5,10 @@ import {
   approvalTargets, recommendedApproval, type ChangeState,
 } from "../domain/change-state";
 import { GateMovedError, GateRefusedError } from "../domain/gate";
-import type { GapResponse } from "../domain/gap";
+import type { Gap, GapResponse } from "../domain/gap";
 import {
   gateDecisionQuestion, responseFollowUpQuestion, responsesFrom, runsAgainHere,
-  DECISION_FIELD, sendBackReasonFrom, type Answer,
+  DECISION_FIELD, sendBackReasonFrom, type Answer, type Question,
 } from "../domain/question";
 import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
 import { summariseAssessments } from "../domain/rubric";
@@ -85,6 +85,96 @@ export interface DecideResult {
   readonly outcome: DecideOutcome;
   /** 放弃了就把会话关掉 —— 理由和录需求那条一样（见 `record-brief.ts`）。 */
   readonly closeSession: boolean;
+}
+
+/**
+ * **落人的表态，再推闸门** —— 三步里的后两步（fence 那一步在调用方，它要能提前
+ * 返回 `gate_moved`）。抽出来是函数上限（300 行）逼的，顺序和理由一个字没变。
+ *
+ * ## 这里的每一次失败都要变成一句话，不能是一个 500
+ *
+ * 2026-08-07 真机：`questions.apply` 抛了 `SqliteError`（老库的账本记不下
+ * `sendBack`），而当时只接得住 `GateRefusedError` —— 异常一路穿到 HTTP 层变成
+ * 500，那道题永远停在 `answered`（既没落地也没被收掉），人在界面上只看到
+ * 「点了没反应」。**他已经答完走了，一次静默失败等于他的话被扔了。**
+ *
+ * 这条路上够得着的还有 `IllegalTransitionError` / `SendBackTargetError` /
+ * `ApprovalTargetError` / `InvalidStateError` / `change_seq_conflict` ——
+ * 逐个 catch 是列不全的，所以一律兜住：把题收掉、把真实原因记成这次裁决的下场
+ * （`lastOutcome` 会把它挂到卡片上，§3.2·5：下场必须留得住）。
+ *
+ * `stopped` = 表态那一步就炸了，连闸门都没走到；调用方据此不再往下做归档和续跑。
+ */
+function landDecision(input: {
+  questions: QuestionStore;
+  gaps: GapStore;
+  changeId: string;
+  phase: Phase;
+  question: Question;
+  answer: Answer;
+  openGaps: readonly Gap[];
+  raiseRound: number;
+  questionId: string;
+}): {
+  responded: { responses: Readonly<Record<string, GapResponse>>; raised: string };
+  applied: { readonly refused: readonly { readonly id: string; readonly code: string }[] };
+  raised: { readonly id: string } | null;
+  outcome: unknown;
+  stopped: boolean;
+} {
+  const { questions, gaps, changeId, phase, answer, questionId } = input;
+  const failed = (error: unknown): { kind: string; error: string } => ({
+    kind: "failed",
+    error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+  });
+
+  /*
+   * 落表态。`gaps.respond` 逐条收下 `InvalidVerdictError`（那是它该做的），但
+   * `raise` 会把人自己提的那句话直接交给 `gaps.title` 的 CHECK；删 Change、
+   * 库形状落后这类事故也会从这两句里抛别的东西出来。
+   */
+  let responded: { responses: Readonly<Record<string, GapResponse>>; raised: string };
+  let applied: { readonly refused: readonly { readonly id: string; readonly code: string }[] };
+  let raised: { readonly id: string } | null;
+  try {
+    responded = responsesFrom({
+      question: input.question, answer, openGaps: input.openGaps,
+    });
+    applied = Object.keys(responded.responses).length === 0
+      ? { refused: [] as { id: string; code: string }[] }
+      : gaps.respond(changeId, phase, responded.responses);
+    // 人自己提的那一条 —— 它挡闸门，所以要在裁决之前落进去。
+    raised = responded.raised === ""
+      ? null
+      : gaps.raise(changeId, phase, responded.raised, input.raiseRound);
+  } catch (error: unknown) {
+    const outcome = failed(error);
+    questions.settle(questionId);
+    questions.recordOutcome(questionId, outcome);
+    return {
+      responded: { responses: {}, raised: "" },
+      applied: { refused: [] }, raised: null, outcome, stopped: true,
+    };
+  }
+
+  /*
+   * 裁决可能在人自己的表态之后就不合法了 —— 最典型的是他刚提了一条新要求，又选了
+   * 「批准」。**那时闸门该拒，而且要说出来**：默默当成没发生，人会以为批准了。
+   */
+  let outcome: unknown;
+  try {
+    // 打回的理由在合并后的答案里（Tx 在第二趟），store 重读不到 —— 递进去。
+    outcome = questions.apply(
+      questionId, { rebaseFence: true, sendBackReason: sendBackReasonFrom(answer) });
+  } catch (error: unknown) {
+    questions.settle(questionId);
+    outcome = error instanceof GateRefusedError
+      ? { kind: "refused", action: error.action, reason: error.reason }
+      : failed(error);
+  }
+  // 下场落库 ——「闸门拒了」必须留得住（§3.2·5），不能只活在这一次响应里。
+  questions.recordOutcome(questionId, outcome);
+  return { responded, applied, raised, outcome, stopped: false };
 }
 
 export async function decideGate(input: {
@@ -286,31 +376,28 @@ export async function decideGate(input: {
     };
   }
 
-  const responded = responsesFrom({ question, answer, openGaps });
-  const applied = Object.keys(responded.responses).length === 0
-    ? { refused: [] as { id: string; code: string }[] }
-    : gaps.respond(changeId, phase, responded.responses);
-  // 人自己提的那一条 —— 它挡闸门，所以要在裁决之前落进去。
-  const raised = responded.raised === ""
-    ? null
-    : gaps.raise(changeId, phase, responded.raised, raiseRound);
-
   /*
-   * 裁决可能在人自己的表态之后就不合法了 —— 最典型的是他刚提了一条新要求，又选了
-   * 「批准」。**那时闸门该拒，而且要说出来**：默默当成没发生，人会以为批准了。
+   * 落表态这两步也要兜住 —— 和下面裁决那一步同一条理由。
+   *
+   * `gaps.respond` 逐条收下 `InvalidVerdictError`（那是它该做的），但 `raise`
+   * 会把人自己提的那句话直接交给 `gaps.title` 的 CHECK；而删 Change、库形状
+   * 落后这类事故会从这两句里抛别的东西出来。抛到 HTTP 层就是 500 + 一道停在
+   * `answered` 的题 —— 人答完走了，而他的话被静默扔了。
    */
-  let outcome: unknown;
-  try {
-    // 打回的理由在合并后的答案里（Tx 在第二趟），store 重读不到 —— 递进去。
-    outcome = questions.apply(
-      questionId, { rebaseFence: true, sendBackReason: sendBackReasonFrom(answer) });
-  } catch (error: unknown) {
-    if (!(error instanceof GateRefusedError)) throw error;
-    questions.settle(questionId);
-    outcome = { kind: "refused", action: error.action, reason: error.reason };
+  const landed = landDecision({
+    questions, gaps, changeId, phase, question, answer, openGaps, raiseRound, questionId,
+  });
+  const { responded, applied, raised, outcome } = landed;
+  if (landed.stopped) {
+    return {
+      outcome: {
+        kind: "decided", phase, questionId, answer,
+        responses: {}, refused: [], raised: null,
+        outcome, continued: null, state: changes.read(changeId).state,
+      },
+      closeSession: false,
+    };
   }
-  // 下场落库 ——「闸门拒了」必须留得住（§3.2·5），不能只活在这一次响应里。
-  questions.recordOutcome(questionId, outcome);
 
   /*
    * **批准了就归档这个阶段的线程。**

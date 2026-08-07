@@ -353,15 +353,31 @@ export class JobStore {
     changeId: string;
     reason: string;
     at: number;
+    /** 拒的是哪个阶段的派发。界面靠它把原因挂在对的那张卡片上。 */
+    phase?: string;
   }): Job {
     const at = this.now().toISOString();
+    /*
+     * **id 撞了就换一个，别把一次拒绝变成一次 500。**
+     *
+     * 调用方拿 `Date.now()` 拼 id，而同一毫秒里来两次拒绝是可能的（人手快点两下，
+     * 或者两个座位同时被拒）—— 主键冲突会从这里抛出去，而拒绝那条路的调用方
+     * （`runRound` 的 `refuse`）正在替一次**已经失败**的派发记账，让它再炸一次
+     * 只会把「树脏了」变成「出错了：SqliteError」。
+     */
+    let id = input.id;
+    for (let bump = 1; ; bump += 1) {
+      const taken = this.database.prepare("SELECT 1 FROM jobs WHERE id = ?").get(id);
+      if (taken === undefined) break;
+      id = `${input.id}-${bump}`;
+    }
     this.database.prepare(
       `INSERT INTO jobs
          (id, change_id, kind, status, attempt, max_attempts,
-          owner, token, expires_at, deadline_at, error, created_at, updated_at)
-       VALUES (?, ?, 'dispatch_refusal', 'failed', 0, 0, NULL, NULL, NULL, ?, ?, ?, ?)`,
-    ).run(input.id, input.changeId, input.at, input.reason, at, at);
-    return this.read(input.id);
+          owner, token, expires_at, deadline_at, error, phase, created_at, updated_at)
+       VALUES (?, ?, 'dispatch_refusal', 'failed', 0, 0, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
+    ).run(id, input.changeId, input.at, input.reason, input.phase ?? null, at, at);
+    return this.read(id);
   }
 
   complete(input: { jobId: string; owner: string; token: string }): Job {

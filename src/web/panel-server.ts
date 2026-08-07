@@ -25,7 +25,7 @@ import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
-import { ParallelStore, ParallelSeatError } from "../store/parallel-store";
+import { ParallelStore } from "../store/parallel-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { WorklistStore } from "../store/worklist-store";
@@ -806,7 +806,7 @@ async function runRound(input: {
      */
     new JobStore(database).recordRefusal({
       id: `JOB-${changeId}-${phase}-${Date.now()}-refused`,
-      changeId, reason: refusalError(refusal), at: Date.now(),
+      changeId, phase, reason: refusalError(refusal), at: Date.now(),
     });
     if (status === "running") {
       // 回滚落在拒绝的那个座位上：并行座位收座位，主线收主线（批 3）。
@@ -1516,6 +1516,50 @@ function serveClose(
 }
 
 /**
+ * 开一个并行座位（POST /api/parallel，批 3）—— **这个入口 2026-08-07 撤回了。**
+ *
+ * ## 为什么撤，而不是补
+ *
+ * 真机验收前的一轮审计（`:memory:` 库上逐条实跑）在它身上找出十二个问题，
+ * 其中六个落在它被设计出来的那个默认场景（TestPlan ∥ Build）上：
+ *
+ * 1. **两条并行的轮共用一条 worklist 队列** —— `WorklistStore.open/next` 按
+ *    Change 关、按 Change 取（插件手上只有 `STAGEPASS_CHANGE`，拿不到阶段）。
+ *    实测：TestPlan 的裁判把理由答进了 Build 的 gap，TestPlan 那两条静默作废。
+ * 2. **跳过式批准甩出孤儿座位** —— 收编只在「到达那个阶段」时发生，而人可以
+ *    批准着跳过它。实测在一个 `Done/closed` 的 Change 上照样起 Codex、排 job、
+ *    写 evidence，且清不掉。
+ * 3. **座位 blocked 之后没有任何出路** —— `ParallelStore.retry` 全树没有调用者，
+ *    `decideGate` 只认主线阶段，界面上一个按钮都没有。
+ * 4. **`sendBack` 会当场收编一个 settled 座位** —— 打回的意见一轮都没跑就变成
+ *    「可以批准了」，正是 §8.9 要挡的形状。
+ * 5. **两个整树 commit 的阶段共用一个工作区** —— TestPlan 和 Build 都在
+ *    `PRODUCES_COMMIT` 里，先收工的那条把另一条的半成品 commit 进自己的 sha。
+ * 6. **`Done` 也能开座位**，而 `Done` 在界面上没有格子 —— 收编成 `Done/blocked`
+ *    之后这个 Change 永远关不掉。
+ *
+ * 前五条各自都要动地基（worklist 换键、座位要有关闭和 retry、收编要覆盖跳过、
+ * 并行的 commit 阶段要有工作区隔离），第五条更是**设计层没答的问题**，不是补丁
+ * 能收的。而这些洞全都能烧真的 Codex、写真的库 —— 留一个「大概能用」的入口在
+ * 那儿，比没有这个功能糟得多。
+ *
+ * ## 留下的是什么
+ *
+ * `change_states` 那张表、`ParallelStore`、收编那一段照旧在：**已经存在的座位
+ * 仍然收编得掉**（真库里一个都没有，但语义不该随入口一起消失），而新的开不出来。
+ * 重新开张要跟着上面那六条一起来，见 docs/PLAN-2026-08-06.md 批 3。
+ */
+function serveParallel(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+): void {
+  void database;
+  void url;
+  json(response, { opened: false, reason: "parallel_seats_withdrawn" });
+}
+
+/**
  * 主屏那一份（GET /api/panel）：环、工作区两栏，外加**现在派得出去吗**。
  *
  * ## 为什么路障要在这一屏上
@@ -1977,44 +2021,8 @@ export async function handle(
     return;
   }
 
-  /*
-   * 开一个并行座位（批 3）：主线停在 TestPlan 时把 Build 也变成 active，
-   * 各自跑轮、互不打断；主线走到时收编座位的进度（ChangeStore.apply）。
-   *
-   * 这不是裁决入口：开座位不推动任何闸门、不对任何产物下判断 —— 和「新建
-   * Change」同一类动作。守卫只有形状：阶段在这个 Change 的图上、在主线下游
-   * （上游的重跑是 sendBack 的事）、不是主线自己、座位还没开。
-   */
   if (url.pathname === "/api/parallel" && request.method === "POST") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phase = url.searchParams.get("phase") ?? "";
-    if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
-    let main: Phase;
-    let order: readonly Phase[];
-    try {
-      const change = new ChangeStore(database).read(changeId);
-      main = change.state.phase;
-      order = new ChangeStore(database).graphOf(changeId).order;
-    } catch {
-      response.writeHead(404).end("no such change");
-      return;
-    }
-    if (phase === main) {
-      json(response, { opened: false, reason: "already_the_main_phase" });
-      return;
-    }
-    if (order.indexOf(phase) <= order.indexOf(main)) {
-      json(response, { opened: false, reason: "not_downstream_of_main" });
-      return;
-    }
-    try {
-      new ParallelStore(database).open(changeId, phase);
-    } catch (error: unknown) {
-      if (!(error instanceof ParallelSeatError)) throw error;
-      json(response, { opened: false, reason: error.code });
-      return;
-    }
-    json(response, { opened: true, phase });
+    serveParallel(database, url, response);
     return;
   }
 

@@ -141,14 +141,21 @@ export function readThreadWholeText(input: ThreadLookup): string {
 /**
  * 这条线程上打进去的话，按先后。**「谁开的口」那一问**（`userMessagesIn`）。
  *
- * 线程还不存在就是空数组，不抛：一条刚建、还没落盘的旁路会话确实一句人话都没有，
- * 那不是故障，正是调用方要判的那个事实。
+ * ## 「读不出来」和「一句都没有」必须分开
+ *
+ * 返回 `null` = 这条线程的 rollout 读不到（文件不在、Codex 换了格式、权限没了）；
+ * 返回 `[]` = 读到了，里面确实一句都没有。
+ *
+ * 原来两种都返回 `[]`，而 `converge-brief` 拿它判「人开过口没有」—— 于是一次
+ * 读取失败会被说成「你还没在窗口里说过话」，人对着满屏自己的对话，每按一次都
+ * 得到同一句，而任何地方都没有第二个诊断。这道闸是「不许凭空造需求」的地基，
+ * 一次读不到就把它静默解除掉，正是这棵树最防的那种失败。
  */
-export function readThreadUserMessages(input: ThreadLookup): string[] {
+export function readThreadUserMessages(input: ThreadLookup): string[] | null {
   try {
     return userMessagesIn(rolloutOf(input));
   } catch {
-    return [];
+    return null;
   }
 }
 
