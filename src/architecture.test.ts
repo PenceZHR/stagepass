@@ -461,7 +461,9 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 路由表，那是另一种改动，不是这一批的延长线。
   // 2026-08-06：`serveRubricSave` / `serveRubricUpgrade` 抽出去（607 → 579）。
   // **加一条路由必须先还等量的债**，这条棘轮就是这么用的。
-  "web/panel-server.ts#handle": 579,
+  // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
+  // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）。
+  "web/panel-server.ts#handle": 553,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

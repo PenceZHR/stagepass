@@ -1494,7 +1494,12 @@ function drawSheet(phase) {
    * 「没跑起来：undefined」—— 亮着的按钮、按下去什么也没有，正是老树那种病。
    */
   const status = entry.seat ?? panelState?.status ?? "pending";
-  runButton.disabled = entry.live || needsBrief
+  /*
+   * 预检已经说了会拒，就别摆一个按下去必然失败的按钮（2026-08-07 真机的那一课）。
+   * 判据来自服务端那份 `dispatchPrecheck`，不是这里另算的。
+   */
+  const barred = entry.current && Boolean(panelState?.blocked);
+  runButton.disabled = entry.live || needsBrief || barred
     || (status !== "pending" && status !== "running");
   /*
    * 「并行开这个阶段」（批 3）：只摆在主线**下游**、还没开座位的格子上。
@@ -1505,7 +1510,18 @@ function drawSheet(phase) {
   openParallelButton.hidden = mainIndex === -1 || entry.current
     || entry.seat !== null || myIndex <= mainIndex || entry.phase === "Fix";
   askButton.hidden = !entry.current;
-  askButton.disabled = decidable.length === 0 || entry.live;
+  /*
+   * **预检会拒的时候，连问都别问**（2026-08-07 真机）。
+   *
+   * 那天闸门只放行 `retry`，而 retry 落地之后必然要派一轮 —— 派发被预检拒掉，
+   * 人白走一趟选择器、白烧一个 Codex 会话，末了眼前是个被关掉的终端。
+   *
+   * **只在「唯一能裁决的动作都要靠派发才有意义」时才挡**：blocked 上只有 retry，
+   * 而 retry 就是「再派一轮」。settled 上还有批准/打回，那些不派轮，照旧能问。
+   */
+  const onlyRetry = decidable.length > 0 && decidable.every((each) => each === "retry");
+  askButton.disabled = decidable.length === 0 || entry.live
+    || (onlyRetry && barred);
 
   /*
    * 出口：**两个来源都问**（交接 §5.5.2）。注册表里有活进程，或者账本上有一轮
@@ -1567,6 +1583,21 @@ function roundInFlight(entry) {
 
 function nextStep(entry) {
   // 顺序 = 优先级。第一条命中的就是答案。
+  /*
+   * **派发前的五条预检，摆在人按下去之前**（2026-08-07 真机）。
+   *
+   * 那天：闸门只放行 retry，人在选择器里选了它，题落地了，然后干净树预检当场
+   * 把这一轮拒掉、终端被关，人眼前只剩一个死终端 —— 而屏幕上事先一个字都没说
+   * 「这个阶段现在根本派不出去」。它排在最前面：别的「下一步」都建立在
+   * 「这个阶段派得出去」上，而这一条正说它派不出去。
+   */
+  if (entry.current && panelState?.blocked) {
+    return {
+      what: "先清掉这个路障",
+      why: runRefusal(panelState.blocked)
+        + "（这一条在你按任何按钮之前就成立 —— 现在去跑、或者去 retry，都会被它拒掉。）",
+    };
+  }
   if (roundInFlight(entry)) {
     return entry.live
       ? {

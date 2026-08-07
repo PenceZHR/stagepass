@@ -86,6 +86,27 @@ describe("app · 闲聊起草 brief（draftBrief）", () => {
     assert.equal(humanTurnsIn([`  ${STAGEPASS_SAID} 开场白`]), 0);
   });
 
+  /**
+   * **2026-08-06 真机上，加了标记之后它仍然放行了一次。**
+   *
+   * 那条旁路线程是改动之前建的，里面躺着两句**没有标记**的 StagePass 原话
+   * （开场白、上一次的起草指令）—— 于是它们被算成「人说过话」，闸门放行，
+   * 又写出一份「本会话未谈到具体改动内容」的草稿。
+   *
+   * 这一条钉住那两句的原文形状。等那批线程都不在了，它和 SAID_BEFORE_THE_MARK
+   * 一起删。
+   */
+  it("**改动之前留下的 StagePass 原话也不算** —— 那条线程实测放行过一次", () => {
+    const legacy = [
+      "这是 StagePass 里 CHG-001 的旁路会话（2026-08-07T03:53:09.511Z）。"
+      + "人会在这里问问题、聊这次改动要什么。",
+      "把我们在这个会话里谈到的、关于 CHG-001 这次改动的内容，整理成一份需求"
+      + "（brief）草稿。",
+    ];
+    assert.equal(humanTurnsIn(legacy), 0, "旧线程里 StagePass 自己的话被算成了人说的");
+    assert.equal(humanTurnsIn([...legacy, "我要把存档重构掉"]), 1);
+  });
+
   it("起草的提示词必须是一行 —— 它要被打进 composer，换行就是提交", () => {
     assert.ok(!draftPrompt(CHANGE).includes("\n"),
       "多行提示词打进 composer 会被截成半句发出去");

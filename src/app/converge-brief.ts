@@ -42,9 +42,27 @@ import { ChangeStore } from "../store/change-store";
  */
 export const STAGEPASS_SAID = "[StagePass]";
 
+/**
+ * 2026-08-07 之前，StagePass 打进旁路窗口的话**没有标记**。
+ *
+ * 这两条是它那时发过的原文的开头，认出来只为了一件事：不把自己说过的话算成人说的。
+ * 这不是「猜哪句像人说的」—— 两句都是 StagePass 自己写的常量，它当然认得。
+ *
+ * **它是过渡条款**：2026-08-06 真机上那条线程里躺着这两句，于是加了标记之后那道闸
+ * 仍然放行，又写出一份空草稿。等那批线程都不在了，这个常量可以整个删掉。
+ */
+const SAID_BEFORE_THE_MARK: readonly string[] = [
+  "这是 StagePass 里 ",
+  "把我们在这个会话里谈到的、",
+];
+
 /** 这条线程上**人**说过几句（把 StagePass 自己说的刨掉）。 */
 export function humanTurnsIn(messages: readonly string[]): number {
-  return messages.filter((text) => !text.trimStart().startsWith(STAGEPASS_SAID)).length;
+  return messages.filter((text) => {
+    const said = text.trimStart();
+    if (said.startsWith(STAGEPASS_SAID)) return false;
+    return !SAID_BEFORE_THE_MARK.some((prefix) => said.startsWith(prefix));
+  }).length;
 }
 
 /** 草稿和工作稿的文件名 —— 定稿那步靠同一套名字找回来，别在两处各拼一份。 */

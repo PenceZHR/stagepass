@@ -1729,6 +1729,63 @@ describe("panel · 派发立刻返回，不把一轮的时长压在一个 HTTP �
   });
 });
 
+describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 真机）", () => {
+  /**
+   * 那天的现场：闸门只放行 `retry`，人走「请 Codex 问我」在选择器里选了它，
+   * 题成功落地 —— 然后干净树预检 36 毫秒把这一轮拒掉，Change 回到 blocked，
+   * 而 `rerun` 那条路派发前先关掉了那个阶段的终端。人眼前只剩一个死终端，
+   * 屏幕上事先一个字都没说「这个阶段现在根本派不出去」。
+   *
+   * **闸门放行的动作，预检必拒** —— 两处判据从不对话。这一条钉住它们现在对话了。
+   */
+  it("**/api/panel 带上 blocked** —— 判据和派发那条路是同一份", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "Build");
+
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: { reason: string; dirty?: string[] } | null };
+      assert.equal(view.blocked?.reason, "workspace_dirty");
+      assert.deepEqual(view.blocked?.dirty, ["半成品.md"],
+        "路障说不出是哪几个文件，人还是没法动手");
+
+      // 而它确实和派发那条路判得一样 —— 同一份判据，不是两份拷贝。
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.reason, view.blocked?.reason);
+    }, {
+      repo: {
+        dirtyPaths: () => ["半成品.md"], commitAll: () => null,
+        commitPaths: () => null, show: () => null,
+      },
+    });
+  });
+
+  it("路障清掉之后 blocked 就是 null —— 只读，一行都不写", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const before = (database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n;
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: unknown };
+      assert.equal(view.blocked, null);
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n, before, "读那一屏写了账本");
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0, "读那一屏落了 job");
+    });
+  });
+
+  it("没录需求时，路障说的是 change_has_no_brief", async () => {
+    await withPanel(async ({ open }) => {
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: { reason: string } | null };
+      assert.equal(view.blocked?.reason, "change_has_no_brief");
+    });
+  });
+});
+
 describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.3）", () => {
   it("**一轮在飞的时候旁路窗口照样开** —— 这正是它存在的理由", async () => {
     await withPanel(async ({ open, database, pty }) => {

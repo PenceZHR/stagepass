@@ -1516,6 +1516,48 @@ function serveClose(
 }
 
 /**
+ * 主屏那一份（GET /api/panel）：环、工作区两栏，外加**现在派得出去吗**。
+ *
+ * ## 为什么路障要在这一屏上
+ *
+ * 2026-08-07 真机：闸门只放行 `retry`，人走「请 Codex 问我」在选择器里选了它，
+ * 题成功落地 —— 然后干净树预检 36 毫秒把这一轮拒掉，Change 回到 blocked，而
+ * `rerun` 那条路派发前先关掉了那个阶段的终端。人眼前只剩一个死终端，屏幕上事先
+ * 一个字都没说「这个阶段现在根本派不出去」。
+ *
+ * **闸门放行的动作，预检必拒**，两处判据从不对话 —— 那正是「亮着的按钮，按下去
+ * 什么都没有」，这个产品存在的理由就是不许出现它。
+ *
+ * 判据不另算一份：调的就是派发那条路自己用的 `dispatchPrecheck`。它是纯读的
+ * （状态和落账都归 `runRound` 的 `refuse`），所以这一屏仍然一个字都不写（M5）。
+ */
+function servePanel(
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+  options: PanelOptions,
+): void {
+  const database = options.database;
+  const changeId = url.searchParams.get("change") ?? "";
+  let blocked: unknown = null;
+  try {
+    const state = new ChangeStore(database).read(changeId).state;
+    blocked = dispatchPrecheck(database, sessions, changeId, state.phase);
+  } catch {
+    blocked = null;   // 没有这个 Change —— 那一屏本来就空着
+  }
+  json(response, {
+    ...panelView({
+      database, sessions, changeId,
+      askedProject: url.searchParams.get("project"),
+      workspace: basename(options.session.cwd),
+    }) as object,
+    /** 现在派这个阶段会被哪一条预检拒。null = 五条都过。 */
+    blocked,
+  });
+}
+
+/**
  * 一份产出的正文（GET /api/artifact）—— 从 `handle()` 抽出来还棘轮的债
  * （§4.1：加一条路由必须先还等量的债）。语义一个字没变，注释跟着正文走。
  *
@@ -1627,12 +1669,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/panel" && request.method === "GET") {
-    json(response, panelView({
-      database, sessions,
-      changeId: url.searchParams.get("change") ?? "",
-      askedProject: url.searchParams.get("project"),
-      workspace: basename(options.session.cwd),
-    }));
+    servePanel(url, response, sessions, options);
     return;
   }
 
