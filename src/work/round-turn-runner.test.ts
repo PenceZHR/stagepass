@@ -246,7 +246,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
       context.changes.apply(CHANGE, "approve");
     }
     // 把 Change 从 TechSpec 一路推到 Build（中间几段不带产物，够用）。
-    for (const phase of ["TechSpec", "Plan", "TestPlan"] as const) {
+    for (const phase of ["Arch", "TechSpec", "Plan", "TestPlan"] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
       evidence.put(CHANGE, phase, { artifactIds: ["x.md"], blockers: [], waivedBlockerIds: [] });
@@ -283,7 +283,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     const context = open();
     const evidence = new EvidenceStore(context.db);
     const line: [string, string][] = [
-      ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"],
+      ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"], ["Arch", "docs/arch.md"],
       ["TechSpec", "docs/techspec.md"], ["Plan", "docs/plan.md"],
     ];
     for (const [phase, artifact] of line) {
@@ -326,7 +326,8 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     const context = open();
     const evidence = new EvidenceStore(context.db);
     for (const [phase, artifact] of [
-      ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"], ["TechSpec", "docs/ts.md"],
+      ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"], ["Arch", "docs/arch.md"],
+      ["TechSpec", "docs/ts.md"],
       ["Plan", "docs/plan.md"], ["TestPlan", "docs/tp.md"],
       ["Build", "349c17d7d10414882f2c91f3241fda2645534645"],
     ] as const) {
@@ -381,7 +382,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
    */
   const atBuild = (context: ReturnType<typeof open>): void => {
     const evidence = new EvidenceStore(context.db);
-    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan"] as const) {
+    for (const phase of ["PRD", "Spec", "Arch", "TechSpec", "Plan", "TestPlan"] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
       evidence.put(CHANGE, phase, {
@@ -452,7 +453,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
      */
     const context = open();
     const evidence = new EvidenceStore(context.db);
-    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review"] as const) {
+    for (const phase of ["PRD", "Spec", "Arch", "TechSpec", "Plan", "TestPlan", "Build", "Review"] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
       evidence.put(CHANGE, phase, {

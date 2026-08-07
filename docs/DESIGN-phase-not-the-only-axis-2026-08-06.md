@@ -74,17 +74,15 @@ Build 状态里同时在跑：
 加 Arch 之后 §5.5 第一次有落点：**Build 的反馈回流到 Arch，而不是回流到一份没人
 负责的散文。**
 
-#### 位置：倾向 TechSpec 之后、Plan 之前
+#### 位置：**已拍（2026-08-06 晚）—— TechSpec 之前**
 
 ```
-PRD → Spec → TechSpec → Arch → Plan → TestPlan ∥ Build → QA → Merge → Retro
+PRD → Spec → Arch → TechSpec → Plan → TestPlan ∥ Build → QA → Merge → Retro
 ```
 
-理由：**Plan 拆步骤，得先知道模块边界在哪。** Arch 消费 TechSpec（数据和接口已定），
-产出「模块图 + 这次动哪几个 + 新增哪些边」—— 正好是 §5.5 那条分界线要比对的东西。
-
-> ⚠ **待拍**：也可能是 Arch 在 TechSpec **之前**（先定骨架再定数据）。那形状完全不同 ——
-> 前者是「在已定的数据和接口上划模块」，后者是「先划模块再往里填数据」。
+用户选的是**先划骨架再填数据**（推翻了这份方案原先「TechSpec 之后」的倾向）：
+Arch 消费 Spec，产出「动哪几个模块 + 新增哪些边 + 边界 + 没选的划法」；
+TechSpec 在既定模块边界内写数据和接口 —— Arch 的产出约束它，不是反过来。
 
 #### Arch 的模板（草案，四节）
 

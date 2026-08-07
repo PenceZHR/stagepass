@@ -104,6 +104,66 @@ describe("L0 · 旧库能补上后加的列", () => {
 });
 
 /**
+ * 旧库的 phase CHECK 名单补上 `Arch`（批 5）：名单是建表时从 PHASES 生成的，
+ * 旧库拒收 'Arch'，新代码第一次让 Change 走进 Arch 就当场炸。
+ */
+describe("L0 · 旧库的 phase 名单补上 Arch", () => {
+  /** 照 Arch 之前的样子搭一张带 phase CHECK 的表（拿 gaps 当代表）。 */
+  const oldShape = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(`
+      -- 迁移末尾会整篇补 SCHEMA_SQL 的索引，所以桩表要带上索引摸得到的列。
+      CREATE TABLE changes (
+        id TEXT PRIMARY KEY, project_id TEXT NULL, created_at TEXT NULL,
+        return_stack TEXT NOT NULL DEFAULT '[]');
+      CREATE TABLE gaps (
+        id TEXT NOT NULL,
+        change_id TEXT NOT NULL REFERENCES changes(id),
+        phase TEXT NOT NULL CHECK (phase IN ('PRD','Spec','TechSpec','Plan','TestPlan','Build','Review','Fix','QA','Merge','Retro','Done')),
+        kind TEXT NOT NULL, severity TEXT NULL,
+        title TEXT NOT NULL, status TEXT NOT NULL,
+        opened_round INTEGER NOT NULL, resolution TEXT NULL,
+        note TEXT NULL, closed_by TEXT NULL,
+        found_where TEXT NULL, found_why TEXT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (change_id, phase, id));
+    `);
+    database.prepare("INSERT INTO changes (id) VALUES ('CHG-A')").run();
+    database.prepare(
+      `INSERT INTO gaps (id, change_id, phase, kind, severity, title, status,
+         opened_round, updated_at)
+       VALUES ('G-1', 'CHG-A', 'Build', 'finding', 'P1', '老问题', 'open', 1, 't')`,
+    ).run();
+    return database;
+  };
+
+  it("**没迁移之前，Arch 行存不进去** —— 这一条钉住为什么必须迁", () => {
+    const database = oldShape();
+    assert.throws(() => database.prepare(
+      `INSERT INTO gaps (id, change_id, phase, kind, severity, title, status,
+         opened_round, updated_at)
+       VALUES ('G-2', 'CHG-A', 'Arch', 'finding', 'P1', 'x', 'open', 1, 't')`,
+    ).run(), /CHECK constraint failed/);
+    database.close();
+  });
+
+  it("迁移之后老行无损、Arch 存得进去，跑两次是空操作", () => {
+    const database = oldShape();
+    migrate(database);
+    assert.equal((database.prepare("SELECT COUNT(*) AS n FROM gaps")
+      .get() as { n: number }).n, 1, "老行丢了");
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO gaps (id, change_id, phase, kind, severity, title, status,
+         opened_round, updated_at)
+       VALUES ('G-2', 'CHG-A', 'Arch', 'finding', 'P1', 'x', 'open', 1, 't')`,
+    ).run());
+    assert.doesNotThrow(() => { migrate(database); });
+    database.close();
+  });
+});
+
+/**
  * `change_bindings` 加 `kind`、`phase` 放开可空（DESIGN-phase-not-the-only-axis
  * §3.3）：第二次整表重建，和 return_stack 那次同一个理由 —— 旧列绑在 CHECK
  * 和 PRIMARY KEY 里，SQLite 改不了约束。

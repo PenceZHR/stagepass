@@ -46,10 +46,10 @@ export interface LiveSessions {
 }
 
 /**
- * The phases that can hold a thread: eleven of the twelve.
+ * The phases that can hold a thread: twelve of the thirteen.
  *
  * `Done` is excluded because it is terminal -- nothing is dispatched there, so
- * a terminal for it would be a tab that can never show anything. Eleven is a
+ * a terminal for it would be a tab that can never show anything. Twelve is a
  * fixed number, which is what lets the panel be enumerated rather than being a
  * list that grows (PRD §6.5 rule 1). Do not introduce a third count.
  */

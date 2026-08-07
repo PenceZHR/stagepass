@@ -188,7 +188,7 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
     assert.deepEqual(edges.map((edge) => [edge.action, edge.to, edge.kind]), [
       ["approve", "Plan", "forward"],
       ["reject", "TechSpec", "self"],
-      ["sendBack", "Spec", "backward"],
+      ["sendBack", "Arch", "backward"],
     ]);
     assert.match(edges[2]!.why, /裁决表里可以挑更远的/);
     // 每条都说得出「按下去会怎样」—— 光画箭头不说后果等于又要人猜。
@@ -214,9 +214,9 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
    */
   it("欠着回程时，批准那条指向主线的下一站 —— 中间的要重走", () => {
     const forward = optionsOf(settled("Spec", ["Build"])).find((e) => e.action === "approve")!;
-    assert.equal(forward.to, "TechSpec");
+    assert.equal(forward.to, "Arch");
     // 话里得说清楚「谁还在等」，否则人看不出这一步是在还债路上。
-    assert.match(forward.why, /TechSpec/);
+    assert.match(forward.why, /Arch/);
     assert.match(forward.why, /Build/);
   });
 

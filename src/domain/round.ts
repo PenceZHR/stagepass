@@ -557,6 +557,16 @@ function settledLines(settledPath: string | undefined): string[] {
   ];
 }
 
+/**
+ * 红方越界名单，按阶段。Arch 拥有架构和模块划分（那正是它的产出），
+ * 通用那句对它自相矛盾；别的有模板阶段沿用原句（golden 钉着，一个字不动）。
+ */
+function outOfScope(phase: string): string {
+  return phase === "Arch"
+    ? "数据存储、接口契约、测试用例、实现步骤都不在这个阶段定"
+    : "架构、技术栈、模块划分、接口、测试用例、实现步骤都不在这个阶段定";
+}
+
 export function judgePrompt(input: RoundInstructions): string {
   /*
    * 人提的问题**单独一区，措辞和模型报的不一样**（用户 2026-07-30）。
@@ -624,6 +634,12 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     ...sentBackLines(input.sentBack),
     ...settledLines(input.settledPath),
+    /*
+     * 越界名单按阶段说（2026-08-06，Arch 进来时撞出来的）：这句原来对所有
+     * 有模板的阶段写死「架构、模块划分……都不在这个阶段定」，而 Arch 拥有的
+     * 正是架构和模块划分 —— 一条自相矛盾的边界比没有边界更糟。别的阶段的
+     * 措辞一个字不动（golden 钉着），只有 Arch 拿到自己的名单。
+     */
     play.red.heading,
     input.task,
     /*
@@ -635,8 +651,11 @@ export function judgePrompt(input: RoundInstructions): string {
       `   下面这份模板**原样转达给${RED}**，一个字都不要改 ——`
       + `它必须照这个模板写，每一节都要有，标题原样用：`,
       renderTemplate(input.template),
-      `   模板之外不要另起小节。**架构、技术栈、模块划分、接口、测试用例、实现步骤`
-      + `都不在这个阶段定** —— 需要提到就写进「留给下游决定的」那一节。`,
+      ...(input.phase === "Arch"
+        ? [`   模板之外不要另起小节。**${outOfScope(input.phase)}** —— `
+          + `需要提到就写明留给哪个下游阶段（多半是 TechSpec），不展开。`]
+        : [`   模板之外不要另起小节。**${outOfScope(input.phase)}** —— `
+          + `需要提到就写进「留给下游决定的」那一节。`]),
     ]),
     ...redFixList(input.openGaps, input.openGapsPath),
     ...play.red.idRule,
@@ -678,7 +697,9 @@ export function judgePrompt(input: RoundInstructions): string {
       : [BLUE_VERDICT_ONLY_CONTRACT]),
     ...(reportsFreeFormBlockers(input.phase) ? play.blue.after.slice(0, 1) : [
       `   **不要另外列问题清单** —— 这个阶段你的判断全部走下面那份逐条判定。`
-      + `模板之外的事（架构、技术栈、实现细节、测试用例）不归这个阶段管，不要提。`,
+      + `模板之外的事（${input.phase === "Arch"
+        ? "数据存储、接口契约、测试用例、实现步骤"
+        : "架构、技术栈、实现细节、测试用例"}）不归这个阶段管，不要提。`,
     ]),
     /*
      * 逐条之外再要一句整体的（用户 2026-07-31）。

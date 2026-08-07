@@ -30,7 +30,7 @@ import type { PtySession } from "./pty-session";
 /**
  * The panel over a real socket, with a fake pty in place of Codex.
  *
- * What is proved here is the half with no Codex in it: eleven phases offered,
+ * What is proved here is the half with no Codex in it: twelve phases offered,
  * bytes reaching the browser unchanged, keystrokes reaching the pty, and a
  * phase never getting a second live process.
  *
@@ -259,12 +259,12 @@ async function withPanel(
 }
 
 describe("panel · what it offers", () => {
-  it("offers eleven phases, and never Done", async () => {
+  it("offers twelve phases, and never Done", async () => {
     await withPanel(async ({ open }) => {
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
         phases: PhaseEntry[];
       };
-      assert.equal(panel.phases.length, 11);
+      assert.equal(panel.phases.length, 12);
       assert.ok(!panel.phases.some((entry) => entry.phase === "Done"));
       // A fresh Change sits at PRD, so that is the one node that may be run.
       // Nothing has passed or failed yet, so no node carries a mark.

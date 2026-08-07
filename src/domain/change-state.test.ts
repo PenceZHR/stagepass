@@ -109,13 +109,13 @@ describe("L0 · the state machine is exhaustively decided", () => {
       legal + rejected + unrepresentable * CHANGE_ACTIONS.length,
       PHASES.length * PHASE_STATUSES.length * CHANGE_ACTIONS.length,
     );
-    // 12 phases x (start 1 + settle/fail 2 + retry 1 + approve/reject 2)
-    // + sendBack：主线上除 PRD 外的 10 个（PRD 没有上游，Fix 不在主线上）
+    // 13 phases x (start 1 + settle/fail 2 + retry 1 + approve/reject 2)
+    // + sendBack：主线上除 PRD 外的 11 个（PRD 没有上游，Fix 不在主线上；Arch 有）
     // + rerun：只有 Review 和 QA 两个（别处的 reject 已经是这个意思）。
-    assert.equal(legal, 12 * (1 + 2 + 1 + 2) + 10 + 2);
-    // `closed` is representable only on Done, so 11 phases contribute no state.
+    assert.equal(legal, 13 * (1 + 2 + 1 + 2) + 11 + 2);
+    // `closed` is representable only on Done, so 12 phases contribute no state.
     assert.equal(unrepresentable, PHASES.length - 1);
-    assert.equal(rejected, 308);
+    assert.equal(rejected, 333);
   });
 
   it("accepts nothing at all once closed", () => {
@@ -277,8 +277,8 @@ describe("L0 · 打回上游：长回边压栈，approve 弹栈（§5.9.1 / §5.
       walked.push(state.phase);
     }
     assert.deepEqual(
-      walked, ["TechSpec", "Plan", "TestPlan", "Build"],
-      "中间三个阶段的产物都是照旧 Spec 建的，一个都不许跳过",
+      walked, ["Arch", "TechSpec", "Plan", "TestPlan", "Build"],
+      "中间几个阶段的产物都是照旧 Spec 建的，一个都不许跳过",
     );
     assert.deepEqual(state.returnStack, [], "走到发起方，债还清");
   });
@@ -301,12 +301,12 @@ describe("L0 · 打回上游：长回边压栈，approve 弹栈（§5.9.1 / §5.
     assert.deepEqual(state, {
       phase: "Spec", status: "pending", returnStack: ["Build"],
     });
-    // Spec 批准 → TechSpec（§8.9：沿主线重走，不跳回 Build），栈原样带着。
+    // Spec 批准 → Arch（§8.9：沿主线重走，不跳回 Build），栈原样带着。
     state = transition(
       transition(transition(state, "start"), "settle"), "approve",
     );
     assert.deepEqual(state, {
-      phase: "TechSpec", status: "pending", returnStack: ["Build"],
+      phase: "Arch", status: "pending", returnStack: ["Build"],
     });
     // 一路走到 Build，债才还清。
     while (state.returnStack.length > 0) {
@@ -452,7 +452,7 @@ describe("L0 · the walk a real Change takes", () => {
     assert.equal(state.phase, TERMINAL_PHASE);
     // Fix is absent: nothing was rejected, so nothing was sent back.
     assert.deepEqual(visited, [
-      "PRD", "Spec", "TechSpec", "Plan", "TestPlan",
+      "PRD", "Spec", "Arch", "TechSpec", "Plan", "TestPlan",
       "Build", "Review", "QA", "Merge", "Retro", "Done",
     ]);
   });
@@ -580,7 +580,7 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
     );
     assert.deepEqual(
       approvalTargets(settled("Spec", ["Build"])),
-      ["TechSpec", "Plan", "TestPlan", "Build"],
+      ["Arch", "TechSpec", "Plan", "TestPlan", "Build"],
     );
     // 推荐是主线的下一站（§8.9 反转之后），不是直接跳回在等的那个。
     assert.equal(recommendedApproval(settled("TestPlan", ["Review"])), "Build");
@@ -665,7 +665,7 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
       walked.push(state.phase);
     }
     assert.deepEqual(
-      walked, ["Spec", "TechSpec", "Plan", "TestPlan", "Build"],
+      walked, ["Spec", "Arch", "TechSpec", "Plan", "TestPlan", "Build"],
       "中间的阶段一个都没被跳过，而栈也一路还干净了",
     );
     assert.deepEqual(state.returnStack, []);

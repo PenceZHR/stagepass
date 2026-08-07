@@ -418,13 +418,19 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
     }
   });
 
-  it("**Build：能读改动涉及的代码，但有边界，而且不自己跑**", () => {
+  /**
+   * 2026-08-06 分工再拍（PLAN §3.2）：**蓝方跑 TestPlan 交的测试** —— 红方看
+   * 不到测试，反馈「哪条失败、输出是什么」由蓝方跑出来。所以这条测试从
+   * 「拦住蓝方自己跑」反转成「必须叫它跑」；不许修代码、不许改测试照旧拦着。
+   */
+  it("**Build：能读改动涉及的代码，而且要跑 TestPlan 交的测试**", () => {
     const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
     assert.doesNotMatch(prompt, /不要去读仓库/,
       "Build 还在叫蓝方闭着眼睛审代码");
     assert.match(prompt, /改动/, "没告诉蓝方读什么");
     assert.match(prompt, /调用方/, "范围没说到直接调用方");
-    assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
+    assert.match(prompt, /要跑 TestPlan 交的测试/, "没叫蓝方去跑测试 —— 红方看不到测试，失败反馈只能从这儿来");
+    assert.match(prompt, /不要动手修代码，也不要改任何测试/, "没拦住蓝方顺手修东西");
   });
 
   it("**Review：和红方一样能读被审的那个 commit**", () => {

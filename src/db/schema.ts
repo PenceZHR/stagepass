@@ -662,7 +662,7 @@ CREATE INDEX IF NOT EXISTS ix_worklist_open
 export function migrate(database: {
   pragma(sql: string): unknown;
   exec(sql: string): unknown;
-  prepare(sql: string): { get(): unknown };
+  prepare(sql: string): { get(): unknown; all(): unknown };
 }): void {
   const added: [table: string, column: string, type: string][] = [
     ["projects", "path", "TEXT"],
@@ -685,6 +685,78 @@ export function migrate(database: {
 
   migrateReturnStack(database);
   migrateBindingsKind(database);
+  migrateArchPhase(database);
+}
+
+/**
+ * 旧库的 phase CHECK 名单里补上 `Arch`（批 5，2026-08-06）。
+ *
+ * ## 为什么是「整表重建 × N」
+ *
+ * 十几张表的 `CHECK (phase IN (...))` 是建表时从 PHASES 生成的 —— 旧库里那份
+ * 名单没有 Arch，新代码一写 `phase = 'Arch'` 就被旧约束当场拒掉。SQLite 改不了
+ * CHECK，只能按官方十二步重建；表多，所以判据和过程都做成**通用的**：
+ *
+ * - 判据：`sqlite_master.sql` 里有 `'PRD'`（说明带 phase 名单）而没有 `'Arch'`
+ * - 新定义从 `SCHEMA_SQL` 里按表名截出来 —— 建新库和迁旧库用的必须是同一份
+ * - 列按旧表的名单拷（`added` 那批列的迁移排在这之前，所以两边列一致）
+ * - 索引和触发器随旧表消失，重建完把 `SCHEMA_SQL` 整篇补一遍（全是 IF NOT
+ *   EXISTS，幂等）—— 不能等下一次重启，中间这段时间账本没人守
+ */
+function migrateArchPhase(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown; all(): unknown };
+}): void {
+  const stale = (database.prepare(
+    "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
+  ).all() as { name: string; sql: string }[])
+    .filter((table) => table.sql.includes("'PRD'") && !table.sql.includes("'Arch'"));
+  if (stale.length === 0) return;
+
+  const count = (table: string): number =>
+    (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+  const definitionOf = (name: string): string => {
+    const found = new RegExp(
+      `CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\)`,
+    ).exec(SCHEMA_SQL);
+    if (!found) {
+      // SCHEMA_SQL 里没有的表轮不到这里迁 —— 真出现说明有人在库里手建过表。
+      throw new Error(`no definition for ${name} in SCHEMA_SQL; cannot migrate it`);
+    }
+    return found[0];
+  };
+
+  database.pragma("foreign_keys=OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      for (const { name } of stale) {
+        const columns = (database.pragma(`table_info(${name})`) as { name: string }[])
+          .map((column) => column.name).join(", ");
+        const rows = count(name);
+        database.exec(definitionOf(name).replace(
+          `CREATE TABLE IF NOT EXISTS ${name} (`,
+          `CREATE TABLE ${name}_migrating (`,
+        ));
+        database.exec(
+          `INSERT INTO ${name}_migrating (${columns}) SELECT ${columns} FROM ${name}`,
+        );
+        if (count(`${name}_migrating`) !== rows) {
+          throw new Error(`Arch migration lost rows in ${name}; rolling back`);
+        }
+        database.exec(`DROP TABLE ${name}`);
+        database.exec(`ALTER TABLE ${name}_migrating RENAME TO ${name}`);
+      }
+      database.exec(SCHEMA_SQL);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.pragma("foreign_keys=ON");
+  }
 }
 
 /**

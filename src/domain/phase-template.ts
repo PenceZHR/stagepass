@@ -145,7 +145,39 @@ const SPEC_SECTIONS: readonly TemplateSection[] = [
   },
 ];
 
-/** TechSpec 的六节。消费 Spec。 */
+/**
+ * Arch 的四节。消费 Spec（位置在 TechSpec **之前**，用户 2026-08-06 拍：
+ * 先划骨架，再填数据）。
+ *
+ * `edges` 那一节是 BACKLOG §5.5 那条机械分界线的落点：「修一个模块时要新增一条
+ * 图上没有的依赖边，就不是模块问题，是架构问题 —— 停手，攒进架构那一批。」
+ * 攒到的就是这一节。「架构在脑子里」对 AI 不成立：写不下来就不存在。
+ */
+const ARCH_SECTIONS: readonly TemplateSection[] = [
+  {
+    key: "modules",
+    title: "这次动哪几个模块",
+    asks: "已有的哪几个、新增哪几个。每个新增的写清它为什么不能并进已有的。",
+  },
+  {
+    key: "edges",
+    title: "新增了哪些依赖边",
+    asks: "每条写为什么非加不可。没有新增时明写「没有」—— 这一节是 Build 反馈"
+      + "回流的落点，空着和「没有」是两回事。",
+  },
+  {
+    key: "boundaries",
+    title: "边界划在哪",
+    asks: "每个被动到的模块对外露什么、不露什么。用 Spec 的词，不发明新名字。",
+  },
+  {
+    key: "alternatives",
+    title: "想过但没选的划法",
+    asks: "至少一个，写为什么没选。没有备选说明还没想。",
+  },
+];
+
+/** TechSpec 的六节。消费 Arch（在既定模块边界内写数据和接口）。 */
 const TECHSPEC_SECTIONS: readonly TemplateSection[] = [
   {
     key: "data",
@@ -211,14 +243,13 @@ const PLAN_SECTIONS: readonly TemplateSection[] = [
 /**
  * TestPlan 的五节。消费 TechSpec。
  *
- * ## `ran` 那一节 2026-08-06 才补上，而它等了一刀
+ * ## `ran`（实际跑出来的结果）那一节 2026-08-06 加、当天又撤了
  *
- * 用户当天拍了「TestPlan 可以出测试方案**和执行**」，但那时 `PRODUCES_COMMIT` 只有
- * Build / Fix —— TestPlan 写了测试代码也会被静默丢掉（BACKLOG §8.4）。放这一节进来
- * 就是造一条**永远满足不了**的硬要求，而那正是这套机制要防的事。
- *
- * TestPlan 进名单之后它才第一次有地方落。**注意它要的是「跑过、输出是什么」，
- * 不是「必须红」** —— 「交的测试要不要求当场红」是 §8.7·1，用户还没拍。
+ * §8.7·1 用户拍了：「肯定是 build 做完了跑 test」—— **TestPlan 只交测试方案和
+ * 测试代码，自己不跑**；执行的责任在 Build 的蓝方，时点在红方写完之后。
+ * `ran` 是按「TestPlan 跑在 Build 之前」做的，和这个分工冲突，所以撤掉，
+ * `ran` 那两条出厂标准跟着撤（rubric-defaults）。TestPlan 留在
+ * `PRODUCES_COMMIT` —— 它交代码，那件事和「先跑一遍」无关。
  */
 const TESTPLAN_SECTIONS: readonly TemplateSection[] = [
   {
@@ -244,13 +275,8 @@ const TESTPLAN_SECTIONS: readonly TemplateSection[] = [
   {
     key: "how",
     title: "怎么跑",
-    asks: "命令、环境、前置条件。别人照着能重现。没有「跑一遍看看」这种写法。",
-  },
-  {
-    key: "ran",
-    title: "实际跑出来的结果",
-    asks: "把上面那些用例真跑一遍，贴命令和输出。**功能还没实现，所以预期是失败的** ——"
-      + "要说清每条是「功能没实现」失败的，还是「测试自己写错」失败的。",
+    asks: "命令、环境、前置条件。**跑的人不是你** —— Build 的蓝方在红方写完之后"
+      + "照这一节执行，所以它必须细到不在场的人照着能跑。没有「跑一遍看看」这种写法。",
   },
 ];
 
@@ -362,9 +388,11 @@ const BUILD_SECTIONS: readonly TemplateSection[] = [
   },
   {
     key: "tests",
-    title: "跑了哪些测试，结果是什么",
-    asks: "跑的是 TestPlan 交的哪几个用例、命令是什么、输出是什么。"
-      + "**这一阶段不写测试** —— 需要新用例就说明缺哪一条，留给 TestPlan。",
+    title: "自己跑了什么来验证",
+    asks: "跑的是改动本身（编译、启动、走一遍改的路径），命令和输出贴出来。"
+      + "**这一阶段不读、不改、不跑测试代码** —— TestPlan 交的测试由反方在你"
+      + "写完之后执行，你会拿到「哪条失败、输出是什么」。需要新用例就说明缺"
+      + "哪一条，留给 TestPlan。",
   },
   {
     key: "deviation",
@@ -431,6 +459,7 @@ const RETRO_SECTIONS: readonly TemplateSection[] = [
 const TEMPLATES: Partial<Readonly<Record<Phase, readonly TemplateSection[]>>> = {
   PRD: PRD_SECTIONS,
   Spec: SPEC_SECTIONS,
+  Arch: ARCH_SECTIONS,
   TechSpec: TECHSPEC_SECTIONS,
   Plan: PLAN_SECTIONS,
   TestPlan: TESTPLAN_SECTIONS,

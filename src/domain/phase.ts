@@ -1,5 +1,5 @@
 /**
- * The twelve phases a Change moves through, and where approval leads.
+ * The thirteen phases a Change moves through, and where approval leads.
  *
  * ## One phase, one name
  *
@@ -20,6 +20,15 @@
 export const PHASES = [
   "PRD",
   "Spec",
+  /*
+   * Arch：先划骨架，再填数据（用户 2026-08-06 拍位置：TechSpec **之前**）。
+   *
+   * 它给 BACKLOG §5.5 那条反馈链路第一次提供落点 ——「要新增图上没有的依赖边
+   * 就停手，攒进架构那一批」，攒到的就是这儿。产出四节：动哪几个模块 / 新增哪些
+   * 依赖边（每条写为什么非加不可）/ 边界划在哪 / 想过但没选的划法。
+   * 「架构在脑子里」对 AI 不成立：写不下来就不存在，所以它有产出、有闸门。
+   */
+  "Arch",
   "TechSpec",
   "Plan",
   "TestPlan",
@@ -64,7 +73,7 @@ export interface PhaseGraph {
   readonly order: readonly Phase[];
 }
 
-/** 默认图：除 Fix 外的 11 个阶段，全序。 */
+/** 默认图：除 Fix 外的 12 个阶段，全序。 */
 export const DEFAULT_GRAPH: PhaseGraph = {
   order: PHASES.filter((phase) => phase !== "Fix"),
 };
@@ -101,7 +110,10 @@ export const DEFAULT_GRAPH: PhaseGraph = {
 const CONSUMES: Readonly<Record<Phase, readonly Phase[]>> = {
   PRD: [],
   Spec: ["PRD"],
-  TechSpec: ["Spec"],
+  // 先划骨架再填数据（Arch 在 TechSpec 之前，2026-08-06 拍）：Arch 消费 Spec，
+  // TechSpec 在既定模块边界内写数据和接口 —— Arch 的产出约束它，不是反过来。
+  Arch: ["Spec"],
+  TechSpec: ["Arch"],
   Plan: ["TechSpec"],
   // **不含 Plan**：两者都只消费 TechSpec，互不消费（BACKLOG §8.6·①/③）。
   TestPlan: ["TechSpec"],

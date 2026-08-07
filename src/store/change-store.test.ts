@@ -66,7 +66,8 @@ describe("L0 · 打回上游落库：栈、理由、账本一次到位（§5.9.1
   /** 把一个 Change 推到 Build/settled。 */
   const toBuildSettled = (store: ChangeStore, id: string) => {
     store.create(id);
-    for (let step = 0; step < 5; step += 1) {
+    // 主线 12 站（含 Arch）：到 Build 要过 6 道批准。
+    for (let step = 0; step < 6; step += 1) {
       store.apply(id, "start");
       store.apply(id, "settle");
       store.apply(id, "approve");
@@ -110,7 +111,7 @@ describe("L0 · 打回上游落库：栈、理由、账本一次到位（§5.9.1
       store.apply("CHG-1", "settle");
       const next = store.apply("CHG-1", "approve");
       assert.deepEqual(next.state, {
-        phase: "TechSpec", status: "pending", returnStack: ["Build"],
+        phase: "Arch", status: "pending", returnStack: ["Build"],
       });
 
       // 一路走回 Build，债才还清 —— 每一步都真的落进账本。
@@ -218,9 +219,9 @@ describe("L0 · every transition lands in the ledger", () => {
       const record = store.read("CHG-1");
       assert.equal(record.state.phase, "Done");
       assert.equal(record.state.status, "closed");
-      // 11 phases x 3 actions, plus the creation entry.
-      assert.equal(store.ledger("CHG-1").length, 11 * 3 + 1);
-      assert.equal(record.seq, 11 * 3);
+      // 12 phases x 3 actions, plus the creation entry（主线含 Arch）.
+      assert.equal(store.ledger("CHG-1").length, 12 * 3 + 1);
+      assert.equal(record.seq, 12 * 3);
     } finally {
       database.close();
     }

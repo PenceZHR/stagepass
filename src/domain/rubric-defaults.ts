@@ -173,6 +173,21 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "deferred", text: "数据怎么存、模块怎么划分、用什么技术都没有在这一份里**新定** —— 上游已经定死的照抄过来不算" },
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
+  /*
+   * Arch（2026-08-06 加，位置在 TechSpec 之前）：四节每节都有人判 ——
+   * 「架构在脑子里」对 AI 不成立，写不下来就不存在，所以判据全部落在写出来的
+   * 东西上。`edges` 那两条对着 BACKLOG §5.5 的分界线：那一节是 Build 反馈
+   * 回流的落点，空着和「没有」必须分得开。
+   */
+  Arch: [
+    { section: "modules", text: "写清了动的是哪几个已有模块、新增哪几个；每个新增的都写了为什么不能并进已有的" },
+    { section: "edges", text: "每条新增依赖边都写了为什么非加不可；没有新增时明写了「没有」，而不是留空" },
+    { section: "edges", text: "没有一条边只写「A 需要 B」—— 每条都说得出少了它哪个行为做不成" },
+    { section: "boundaries", text: "每个被动到的模块都写了对外露什么、不露什么" },
+    { section: "boundaries", text: "用词和 Spec 一致，没有为同一个概念发明第二个名字" },
+    { section: "alternatives", text: "至少写了一个想过但没选的划法，以及为什么没选" },
+    { section: "modules", text: "数据怎么存、接口长什么样都没有在这一份里定 —— 那些留给 TechSpec，在这里的边界内做" },
+  ],
   TechSpec: [
     { section: "data", text: "写清楚了数据怎么存、状态怎么迁移，而不只是模块怎么划分" },
     { section: "data", text: "说清了哪些是权威、哪些是镜像" },
@@ -196,10 +211,13 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "failure", text: "写了失败长什么样，而不只是成功长什么样" },
     { section: "failure", text: "写了怎么把「功能没实现」的失败和「测试自己写错」的失败区分开" },
     { section: "gating", text: "区分了「必须通过」和「知道会失败但先记着」，后者写了为什么" },
-    { section: "how", text: "命令、环境、前置条件都写了，别人照着能重现" },
+    /*
+     * `ran` 那两条 2026-08-06 撤了（§8.7·1 拍：TestPlan 只交方案和代码，自己
+     * 不跑 —— 执行在 Build 的蓝方）。「收走一样能力，要看有没有标准在要它」：
+     * 模板的 `ran` 节撤了，这两条不撤就是两条结构上满足不了的硬要求。
+     */
+    { section: "how", text: "命令、环境、前置条件都写了，**不在场的人**照着能跑 —— 跑它的是 Build 的反方，不是写它的人" },
     { section: "how", text: "没有把「跑一遍看看」当成一条用例" },
-    { section: "ran", text: "上面那些用例真跑过了，贴了命令和输出，而不是只说「应该会失败」" },
-    { section: "ran", text: "每条失败都说清了是「功能没实现」失败的，还是「测试自己写错」失败的" },
   ],
   /*
    * Build 这几条是照着**蓝方够得着什么**写的（2026-07-30 定）：它能读这一轮改动
@@ -239,9 +257,12 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "did", text: "新增或改名的每个导出都有调用方，没有留下没人调用的代码或半途的开关" },
     { section: "did", text: "受影响的调用点都跟着改了，没有把现成的调用方留在对不上的状态" },
     // **这一节是「Build 不许自审」落到报告上的那一格**（BACKLOG §8.3/§8.4）。
-    // 第二道是轮末的 diff 闸门 —— 机械的那道，因为 StagePass 分不出哪一行是红方写的。
-    { section: "tests", text: "跑的是 TestPlan 交的用例，贴了命令和输出，而不是只说「应该能跑」" },
-    { section: "tests", text: "这一轮没有自己新写或改动测试；缺用例的地方是说明缺哪一条、留给 TestPlan" },
+    // 2026-08-06 分工再拍（PLAN §3.2）：红方看不到测试、蓝方跑 —— 第一条从
+    // 「红方跑了 TestPlan 的用例」换成「红方没碰测试」；第二条是蓝方新权限
+    // （它现在真的执行）换来的：必过用例通不通过，由它跑出来判，不再靠猜。
+    { section: "tests", text: "这一轮的改动没有碰任何测试代码；缺用例的地方是说明缺哪一条、留给 TestPlan" },
+    { section: "tests", text: "TestPlan 标为「必须通过」的用例在这一轮的代码上全部通过 —— 按它「怎么跑」那一节实际执行判定，没通过的每条都对得上原因" },
+    { section: "tests", text: "自己跑了改动本身（编译、启动、走一遍改的路径）并贴了命令和输出，而不是只说「应该能跑」" },
     { section: "deviation", text: "和 Plan 不一样的地方逐条写了为什么；一条都没有时明写了「没有」" },
     { section: "decisions", text: "每一处不明显的决定都写清了为什么" },
     { section: "risk", text: "指名了这一轮最可能出问题的一处，而不是并列罗列多项" },

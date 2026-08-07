@@ -20,9 +20,10 @@ import {
  * （跳过阶段，不重排 —— 重排会让「上游」这个词失去意义，而长回边建在它上面）。
  */
 describe("L0 · 阶段图是值：默认图与老常量逐字一致", () => {
-  it("默认图的主线 = 除 Fix 外的 11 个阶段，Done 收尾", () => {
+  it("默认图的主线 = 除 Fix 外的 12 个阶段，Done 收尾", () => {
+    // Arch 在 TechSpec 之前（2026-08-06 拍：先划骨架，再填数据）。
     assert.deepEqual(DEFAULT_GRAPH.order, [
-      "PRD", "Spec", "TechSpec", "Plan", "TestPlan",
+      "PRD", "Spec", "Arch", "TechSpec", "Plan", "TestPlan",
       "Build", "Review", "QA", "Merge", "Retro", "Done",
     ]);
   });
@@ -89,7 +90,8 @@ describe("L0 · 图的合法性 —— 拒绝在构造时发生，不在走到�
 
 describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
   it("严格上游，按主线顺序", () => {
-    assert.deepEqual(upstreamOf("TechSpec"), ["PRD", "Spec"]);
+    assert.deepEqual(upstreamOf("TechSpec"), ["PRD", "Spec", "Arch"]);
+    assert.deepEqual(upstreamOf("Arch"), ["PRD", "Spec"]);
     assert.deepEqual(upstreamOf("Spec"), ["PRD"]);
   });
 
@@ -120,8 +122,8 @@ describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
    * 人眼前，和一个假选项没有区别。
    */
   it("**TestPlan 的上游里没有 Plan** —— 它没消费过 Plan 的任何东西", () => {
-    assert.deepEqual(upstreamOf("TestPlan"), ["PRD", "Spec", "TechSpec"]);
-    assert.deepEqual(upstreamOf("Plan"), ["PRD", "Spec", "TechSpec"]);
+    assert.deepEqual(upstreamOf("TestPlan"), ["PRD", "Spec", "Arch", "TechSpec"]);
+    assert.deepEqual(upstreamOf("Plan"), ["PRD", "Spec", "Arch", "TechSpec"]);
   });
 
   /**
