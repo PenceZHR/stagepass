@@ -115,6 +115,87 @@ describe("L0 · 旧库能补上后加的列", () => {
  * 所以这一组用的是**真库那个形状**：2026-08-06 之前的 `change_bindings`
  * （没有 kind）、`gaps`（phase 名单里没有 Arch）、`jobs`（没有 phase 列）。
  */
+/**
+ * **老库记不下「打回上游」** —— 2026-08-07 真机栽的那一次。
+ *
+ * `change_events.action` 的 CHECK 名单是建表时从 `CHANGE_ACTIONS` 生成的，而
+ * `sendBack` / `rerun` 是后来加进那个常量的。`CREATE TABLE IF NOT EXISTS` 对已经
+ * 存在的表什么都不做，于是人在选择器里选了「打回上游」→ 账本写不进去 → 整个事务
+ * 回滚 → `questions.apply` 抛 SqliteError（`decideGate` 只接得住闸门那两种）→ 500。
+ *
+ * 迁移的判据原来只认阶段名那一种陈旧（有 'PRD' 没 'Arch'），看不见这一列。
+ * 现在换成通用的：**代码现在允许、而库里那张表不认的字面量**，有一个就重建。
+ */
+describe("L0 · 老库的枚举 CHECK 落后了就重建", () => {
+  const oldLedger = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(`
+      CREATE TABLE changes (
+        id TEXT PRIMARY KEY, project_id TEXT NULL, title TEXT NULL,
+        phase TEXT NOT NULL, status TEXT NOT NULL,
+        return_stack TEXT NOT NULL DEFAULT '[]',
+        seq INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      -- 2026-08-05 之前的名单：没有 sendBack、没有 rerun
+      CREATE TABLE change_events (
+        change_id   TEXT NOT NULL REFERENCES changes(id),
+        seq         INTEGER NOT NULL,
+        action      TEXT NOT NULL CHECK (action IN
+          ('start','settle','fail','retry','approve','reject','create')),
+        from_phase  TEXT NULL, from_status TEXT NULL,
+        to_phase    TEXT NOT NULL, to_status TEXT NOT NULL,
+        at          TEXT NOT NULL,
+        PRIMARY KEY (change_id, seq));
+      CREATE TRIGGER ck_changes_ledger AFTER UPDATE ON changes FOR EACH ROW
+      WHEN NOT EXISTS (SELECT 1 FROM change_events WHERE change_id = NEW.id AND seq = NEW.seq)
+      BEGIN SELECT RAISE(ABORT, 'change_updated_without_ledger_entry'); END;
+    `);
+    database.prepare(
+      "INSERT INTO changes VALUES ('CHG-1',NULL,NULL,'Build','settled','[]',3,'t','t')",
+    ).run();
+    database.prepare(
+      `INSERT INTO change_events VALUES ('CHG-1',3,'settle',NULL,NULL,'Build','settled','t')`,
+    ).run();
+    return database;
+  };
+
+  it("**没迁移，账本记不下 sendBack**", () => {
+    const database = oldLedger();
+    assert.throws(() => database.prepare(
+      `INSERT INTO change_events VALUES ('CHG-1',4,'sendBack','Build','settled','Arch','pending','t')`,
+    ).run(), /CHECK constraint failed/);
+    database.close();
+  });
+
+  it("prepareSchema 之后记得下了，老账一行不少", () => {
+    const database = oldLedger();
+    prepareSchema(database);
+    assert.doesNotThrow(() => database.prepare(
+      `INSERT INTO change_events
+         (change_id, seq, action, from_phase, from_status, to_phase, to_status, reason, at)
+       VALUES ('CHG-1',4,'sendBack','Build','settled','Arch','pending','我要做arch','t')`,
+    ).run());
+    assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_events")
+      .get() as { n: number }).n, 2, "重建把老账本行弄丢了");
+    database.close();
+  });
+
+  it("**重建之后账本触发器还在** —— 摘掉它只为躲开悬空引用，不是放它走", () => {
+    // change_events 自己就在待重建名单里，触发器引用它 —— 不先摘掉，DROP 之后
+    // 下一条语句就撞 “no such table: main.change_events”。摘了必须装回来。
+    const database = oldLedger();
+    prepareSchema(database);
+    // seq 要**加一**：否则先撞上的是 ck_changes_seq_advances 那条，
+    // 而这里要问的是账本那条还在不在。
+    assert.throws(
+      () => database.prepare(
+        "UPDATE changes SET seq = 4, updated_at = 'x' WHERE id = 'CHG-1'").run(),
+      /change_updated_without_ledger_entry/,
+    );
+    database.close();
+  });
+});
+
 describe("L0 · 打开一个 2026-08-06 之前的旧库", () => {
   const oldDatabase = () => {
     const database = new Database(":memory:");
@@ -230,9 +311,12 @@ describe("L0 · 旧库的 phase 名单补上 Arch", () => {
     database.pragma("foreign_keys = ON");
     database.exec(`
       -- 迁移末尾会整篇补 SCHEMA_SQL 的索引，所以桩表要带上索引摸得到的列。
+      -- **列要摆全**：重建是「按老表有的列拷进新表」，缺列会撞新表的 NOT NULL。
       CREATE TABLE changes (
-        id TEXT PRIMARY KEY, project_id TEXT NULL, created_at TEXT NULL,
-        return_stack TEXT NOT NULL DEFAULT '[]');
+        id TEXT PRIMARY KEY, project_id TEXT NULL, title TEXT NULL,
+        phase TEXT NOT NULL, status TEXT NOT NULL,
+        return_stack TEXT NOT NULL DEFAULT '[]',
+        seq INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE gaps (
         id TEXT NOT NULL,
         change_id TEXT NOT NULL REFERENCES changes(id),
@@ -245,7 +329,8 @@ describe("L0 · 旧库的 phase 名单补上 Arch", () => {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (change_id, phase, id));
     `);
-    database.prepare("INSERT INTO changes (id) VALUES ('CHG-A')").run();
+    database.prepare(
+      "INSERT INTO changes VALUES ('CHG-A',NULL,NULL,'PRD','pending','[]',0,'t','t')").run();
     database.prepare(
       `INSERT INTO gaps (id, change_id, phase, kind, severity, title, status,
          opened_round, updated_at)
@@ -291,8 +376,13 @@ describe("L0 · change_bindings 旧库重建出 kind 列", () => {
     database.pragma("foreign_keys = ON");
     database.exec(`
       -- 重建后的表带 REFERENCES changes(id)，老库里得有被引用的那张。
-      -- 带上 return_stack 免得触发它自己的那场迁移 —— 这里只考 bindings 这场。
-      CREATE TABLE changes (id TEXT PRIMARY KEY, return_stack TEXT NOT NULL DEFAULT '[]');
+      -- **列要摆全**：迁移是「按老表有的列拷进新表」，桩表缺列就会撞新表的
+      -- NOT NULL —— 那是桩不真实，不是迁移有问题。
+      CREATE TABLE changes (
+        id TEXT PRIMARY KEY, project_id TEXT NULL, title TEXT NULL,
+        phase TEXT NOT NULL, status TEXT NOT NULL,
+        return_stack TEXT NOT NULL DEFAULT '[]',
+        seq INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE change_bindings (
         change_id   TEXT NOT NULL,
         phase       TEXT NOT NULL,
@@ -304,7 +394,8 @@ describe("L0 · change_bindings 旧库重建出 kind 列", () => {
       CREATE UNIQUE INDEX uq_change_bindings_thread
         ON change_bindings (thread_id) WHERE status = 'bound';
     `);
-    database.prepare("INSERT INTO changes (id) VALUES ('CHG-A')").run();
+    database.prepare(
+      "INSERT INTO changes VALUES ('CHG-A',NULL,NULL,'PRD','pending','[]',0,'t','t')").run();
     database.prepare("INSERT INTO change_bindings VALUES (?,?,?,?,?,?)")
       .run("CHG-A", "PRD", "T-1", "bound", "t", "t");
     return database;

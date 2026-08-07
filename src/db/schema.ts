@@ -711,7 +711,7 @@ export function migrate(database: {
 
   migrateReturnStack(database);
   migrateBindingsKind(database);
-  migrateArchPhase(database);
+  migrateStaleChecks(database);
 }
 
 /**
@@ -729,39 +729,73 @@ export function migrate(database: {
  * - 索引和触发器随旧表消失，重建完把 `SCHEMA_SQL` 整篇补一遍（全是 IF NOT
  *   EXISTS，幂等）—— 不能等下一次重启，中间这段时间账本没人守
  */
-function migrateArchPhase(database: {
+function migrateStaleChecks(database: {
   pragma(sql: string): unknown;
   exec(sql: string): unknown;
   prepare(sql: string): { get(): unknown; all(): unknown };
 }): void {
-  const stale = (database.prepare(
-    "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
-  ).all() as { name: string; sql: string }[])
-    .filter((table) => table.sql.includes("'PRD'") && !table.sql.includes("'Arch'"));
-  if (stale.length === 0) return;
-
   const count = (table: string): number =>
     (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
-  const definitionOf = (name: string): string => {
+  const definitionOf = (name: string): string | null => {
     const found = new RegExp(
       `CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\)`,
     ).exec(SCHEMA_SQL);
-    if (!found) {
-      // SCHEMA_SQL 里没有的表轮不到这里迁 —— 真出现说明有人在库里手建过表。
-      throw new Error(`no definition for ${name} in SCHEMA_SQL; cannot migrate it`);
-    }
-    return found[0];
+    // SCHEMA_SQL 里没有的表不归这里迁（有人在库里手建过表，或者它是迁移的中间产物）。
+    return found === null ? null : found[0];
   };
+  /** 一段建表 SQL 里所有的字面量 —— 枚举 CHECK 的内容就是它们。 */
+  const literalsIn = (sql: string): Set<string> =>
+    new Set([...sql.matchAll(/'([^']*)'/g)].map((match) => match[1]!));
+
+  /**
+   * **代码现在允许、而库里那张表不认的字面量** —— 有一个就得重建。
+   *
+   * 判据原来是「有 `'PRD'` 却没有 `'Arch'`」，只认阶段名那一种陈旧。2026-08-07
+   * 真机因此栽了一次：`change_events.action` 的名单是老库建的，里面没有
+   * `sendBack`（它是后来加进 `CHANGE_ACTIONS` 的）——于是人在选择器里选了「打回
+   * 上游」，账本写不进去、整个事务回滚，`apply` 抛 SqliteError 而 `decideGate`
+   * 只接得住闸门那两种异常，最后是一个 500。**那个库物理上记不下「打回」。**
+   *
+   * 所以判据换成通用的：每一份枚举 CHECK 都是从代码常量生成的，而**任何一个
+   * 常量加了新值，老库那张表就落后一次**。逐个字面量比对，一次覆盖全部
+   * （阶段、动作、状态、gap 种类、rubric 角色……），也覆盖以后新加的。
+   */
+  const stale = (database.prepare(
+    "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
+  ).all() as { name: string; sql: string }[])
+    .filter((table) => {
+      const canonical = definitionOf(table.name);
+      if (canonical === null) return false;
+      const known = literalsIn(table.sql);
+      return [...literalsIn(canonical)].some((value) => !known.has(value));
+    });
+  if (stale.length === 0) return;
 
   database.pragma("foreign_keys=OFF");
   try {
     database.exec("BEGIN");
     try {
+      /*
+       * **重建期间先摘掉账本触发器。**
+       *
+       * 它们挂在 `changes` 上、引用 `change_events` —— 而 `change_events` 自己
+       * 也可能在这一批待重建的表里（2026-08-07：`action` 的名单缺 `sendBack`）。
+       * 表一 DROP，触发器就悬空，下一条语句撞上
+       * 「error in trigger ck_changes_ledger: no such table: main.change_events」。
+       *
+       * 摘掉是安全的：整段包在一个事务里，而结尾的 `exec(SCHEMA_SQL)` 用**同一份
+       * 定义**把它们装回来（`CHANGES_TRIGGERS_SQL`）。失败则整体回滚，触发器跟着
+       * 一起回来 —— 任何一条路上都不存在「账本没人守」的时刻。
+       */
+      database.exec(
+        "DROP TRIGGER IF EXISTS ck_changes_ledger;"
+        + "DROP TRIGGER IF EXISTS ck_changes_seq_advances;",
+      );
       for (const { name } of stale) {
         const columns = (database.pragma(`table_info(${name})`) as { name: string }[])
           .map((column) => column.name).join(", ");
         const rows = count(name);
-        database.exec(definitionOf(name).replace(
+        database.exec(definitionOf(name)!.replace(
           `CREATE TABLE IF NOT EXISTS ${name} (`,
           `CREATE TABLE ${name}_migrating (`,
         ));
@@ -769,7 +803,7 @@ function migrateArchPhase(database: {
           `INSERT INTO ${name}_migrating (${columns}) SELECT ${columns} FROM ${name}`,
         );
         if (count(`${name}_migrating`) !== rows) {
-          throw new Error(`Arch migration lost rows in ${name}; rolling back`);
+          throw new Error(`check migration lost rows in ${name}; rolling back`);
         }
         database.exec(`DROP TABLE ${name}`);
         database.exec(`ALTER TABLE ${name}_migrating RENAME TO ${name}`);
