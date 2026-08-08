@@ -162,6 +162,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     // 哪一节都判 no —— 一条结构上满足不了的标准，比没有更糟。
     { section: "deferred", text: "架构、模块划分、接口、测试用例、实现步骤都没有在这一份里**新定**；人已经定死的写在「已经定死的约束」那一节，不写这儿" },
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
+    { section: "acceptance", text: "每条验收标准都写出了条件、指标和数值（或什么状态算通过），没有一条停在「更快」「更稳定」「体验更好」这种量不出来的词上" },
+    { section: "problem", text: "用的人点到了是哪一类人、在什么场景下，并写出了他今天实际走的那几步卡在哪一步，没有停在「用户」「体验不好」这种谁都套得上的说法" },
   ],
   Spec: [
     { section: "scope", text: "每条需求都能对应回 PRD 里的某一条，没有凭空多出来的" },
@@ -172,6 +174,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "terms", text: "用词和上游文档一致，没有为同一个概念发明第二个名字" },
     { section: "deferred", text: "数据怎么存、模块怎么划分、用什么技术都没有在这一份里**新定** —— 上游已经定死的照抄过来不算" },
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
+    { section: "behaviour", text: "每条行为都有名字或编号，输入逐项写了名称、含义和合法取值，输出写了具体是什么；没有一条停在「处理请求并返回结果」这种一项都没交代的写法" },
+    { section: "edge", text: "每条边界和出错都写出了触发条件和当时的具体表现，没有一条只写「报错」「失败」而不说是哪一种" },
   ],
   /*
    * Arch：**这一份就是完整的技术架构**（2026-08-08 TechSpec 并进来）。
@@ -215,6 +219,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "verification", text: "每一步都能独立验证，不需要等到最后才知道对不对" },
     { section: "rollback", text: "写了实施到一半失败时怎么退回去，而不只是停止条件" },
     { section: "riskiest", text: "指名了哪一步风险最高，以及为什么先做或后做" },
+    { section: "steps", text: "每一步都写出了它动哪几个文件（路径写全）以及在每个文件里加什么改什么，没有一步只写了模块名或功能名；确实不动文件的步骤写清了它跑什么、看什么" },
+    { section: "verification", text: "每一步的判据都写到了照着能做：命令原样写出来、看到什么算过；没有一步停在「跑测试」「确认正常」这种没有对象的说法" },
   ],
   TestPlan: [
     { section: "coverage", text: "上游每条验收标准都至少有一个用例对着它，逐条列出来了" },
@@ -229,6 +235,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
      */
     { section: "how", text: "命令、环境、前置条件都写了，**不在场的人**照着能跑 —— 跑它的是 Build 的反方，不是写它的人" },
     { section: "how", text: "没有把「跑一遍看看」当成一条用例" },
+    { section: "cases", text: "每个用例都写出了实际的输入值、具体的前置状态和能逐字比对的期望输出，没有一条停在「输入合法数据」「返回成功」这种没有值的说法" },
+    { section: "cases", text: "每个用例都写出了它的 id 和它落在哪个测试文件的哪个用例名上 —— 下游按 id 单独跑它，按文件名翻到它" },
   ],
   /*
    * Build 这几条是照着**蓝方够得着什么**写的（2026-07-30 定）：它能读这一轮改动
@@ -278,6 +286,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "decisions", text: "每一处不明显的决定都写清了为什么" },
     { section: "risk", text: "指名了这一轮最可能出问题的一处，而不是并列罗列多项" },
     { section: "leftover", text: "没做完的写明了差什么、留给谁；没有时明写了「没有」" },
+    { section: "did", text: "动过的文件逐个列了路径，每个都写了在里面改的是哪个函数、哪个导出或哪一段；没有一处只写了模块名或「相关文件」" },
+    { section: "risk", text: "指名那一处落到了文件和函数名上，并写了它出问题时看到的是什么，而不是一句「某某逻辑有风险」" },
   ], /*
    * Review 这几条也是照着**判它的人够得着什么**写的：蓝方能读被审的那个 commit
    * 涉及的文件和它们的直接调用方，但不自己执行（2026-07-30 定）。
@@ -292,6 +302,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "findings", text: "没有发现问题时明写了没有，而不是留空" },
     { section: "severity", text: "区分了「必须改」和「可以这样也可以那样」" },
     { section: "paths", text: "检查了错误路径和边界，而不只是主流程" },
+    { section: "findings", text: "每条意见的位置到了文件路径加函数名或行号，并写出了它在什么输入或什么状态下会真的出问题；没有一条停在「错误处理不完善」这种既没位置也没条件的说法" },
+    { section: "against", text: "每条对照都同时点到了上游那一条和它在代码里的落点（文件加函数），没有一条只给结论不给这两样" },
   ],
   Fix: [
     "每一条修的都对应一条具体的问题，没有夹带",
@@ -310,6 +322,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "failures", text: "失败的用例记下了实际输出和它来自哪一条用例，而不只是「没过」" },
     { section: "regression", text: "确认过这一轮的改动没有让别处退化，并写了是怎么确认的" },
     { section: "repro", text: "跑的命令和环境写下来了，别人照着能重现" },
+    { section: "executed", text: "按 TestPlan 的用例 id 逐条列了结果，每条写了跑的命令和过没过；没有把多条并成一句「全部通过」" },
+    { section: "failures", text: "失败的用例贴了输出原文（报错那几行、实际值和期望值），而不是转述一句「结果不对」" },
   ],
   /*
    * 原来第一条是「没有未解决的阻断项」—— **那是闸门在管的事**（`domain/gate.ts` 会拿
@@ -325,12 +339,16 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "risks", text: "每一条被接受的风险都写了理由和影响范围；一条都没有时明写了没有" },
     { section: "rollback", text: "写明了怎么回滚，而不只是说「可以回滚」" },
     { section: "coverage", text: "说明和实际改动对得上，没有漏掉某个 commit 里的东西" },
+    { section: "coverage", text: "逐个列出了这一次的 commit（sha 加标题），每个都写清对应上面说明里的哪一条；没有用一句「已全部覆盖」代替这张清单" },
+    { section: "what", text: "改的东西点到了名（哪个命令、哪个导出、哪个配置项、哪张表），受影响的写到了哪一类人在哪个动作上；没有一条停在「优化」「完善」这种看不出改了什么的说法" },
   ],
   Retro: [
     { section: "happened", text: "写的是这一次真实发生的事，不是应该发生的事" },
     { section: "process", text: "至少有一条是关于流程本身的，而不全是关于代码" },
     { section: "next", text: "每条结论都能落到一个具体的下次会不一样的做法" },
     { section: "kept", text: "记下了这次做对的事，不只是做错的" },
+    { section: "next", text: "每条做法都写出了它动的是哪一样东西（哪份模板的哪一节、哪条标准、哪个阶段的哪一步），没有一条停在「以后多注意」「加强沟通」这种没有对象的说法" },
+    { section: "happened", text: "每条都写出了它发生在哪个阶段、第几轮，能数的地方写了数；没有一条是既没有时点也没有数的整体感受" },
   ],
   // 终局阶段：没有 turn 在这里跑，所以没有人可以被摆一张清单。
   // 硬凑一份出来，就是给一个后端答不出的栏目 —— 那是反着方向的静默失效。
