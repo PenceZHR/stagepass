@@ -5,6 +5,7 @@ import {
   allTextIn,
   contextUsageOf,
   findCompletedTurn,
+  findOwnCompletedTurn,
   parseRollout,
   threadIdFromRolloutName,
   findLastCompletedTurn,
@@ -137,6 +138,62 @@ describe("L2 · finding the turn StagePass asked for", () => {
  * 文件追加」），护栏一直在，只是子 Agent 那一侧没用上。而那一侧**不知道**问之前有
  * 几条记录（它不盯子 Agent 的文件），所以只能取最后一个。
  */
+/**
+ * **认自己那句提示词，不认「谁先完成」** —— 2026-08-08 真机那一次。
+ *
+ * Arch 第 3 轮派出去 2.6 秒就被判 `round_agents_not_found`，而那条线程里唯一
+ * 一个「完成的轮」是上一轮的（提示词其实比失败还晚 10 秒才送达，裁判之后照常
+ * 派了子 Agent）。起点是调用方数出来的，而 `recordCount` 读不到文件时返回 0 ——
+ * 「读不出来」被当成了「整个文件都是新的」，于是上一轮的答复被当成了这一轮的。
+ */
+describe("L2 · 只认自己问出去的那一轮", () => {
+  const round2 = "你是本轮的裁判。阶段：Arch，第 2 轮。";
+  const round3 = "你是本轮的裁判。阶段：Arch，第 3 轮。";
+
+  it("**起点数错也不许把上一轮的答复当成这一轮的**", () => {
+    // 上一轮完整跑完了；这一轮的提示词还没落进 rollout。
+    const records = parseRollout([
+      started, user(round2), agent("上一轮的结论"), complete,
+    ].join("\n"));
+    // 老判据：起点是 0 就当场认下上一轮 —— 正是真机上发生的事。
+    assert.deepEqual(findCompletedTurn(records, 0), { text: "上一轮的结论" });
+    // 新判据：这一轮的提示词都还没出现，什么都不认。
+    assert.equal(findOwnCompletedTurn(records, 0, round3), null);
+  });
+
+  it("提示词落进去了但轮还没跑完 —— 还是不认", () => {
+    const records = parseRollout([
+      started, user(round2), agent("上一轮的结论"), complete,
+      started, user(round3),
+    ].join("\n"));
+    assert.equal(findOwnCompletedTurn(records, 0, round3), null);
+  });
+
+  it("自己那一轮真跑完了才认，拿到的是这一轮的话", () => {
+    const records = parseRollout([
+      started, user(round2), agent("上一轮的结论"), complete,
+      started, user(round3), agent("这一轮的结论"), complete,
+    ].join("\n"));
+    assert.deepEqual(
+      findOwnCompletedTurn(records, 0, round3), { text: "这一轮的结论" });
+  });
+
+  /*
+   * 夹具的顺序是照真机来的：`task_started` 落在 `user_message` **之前**
+   * （2026-08-08 实测那条线程：轮起于索引 134，提示词在 139）。反过来写
+   * 测试会绿，而生产环境一条都认不出来。
+   */
+  it("同一条提示词被 resume 过好几次 —— 取第一次跑完的那一轮", () => {
+    const records = parseRollout([
+      started, user(round3), agent("第一次的答复"), complete,
+      started, user(round3), agent("重来一次的答复"), complete,
+    ].join("\n"));
+    // 取**第一个**装着这句话的完成轮：那就是我们问出去之后最早的答复。
+    assert.deepEqual(
+      findOwnCompletedTurn(records, 0, round3), { text: "第一次的答复" });
+  });
+});
+
 describe("rollout · 累积了好几轮时取最后一轮", () => {
   it("**取最后一个完成的 turn，不是第一个**", () => {
     const text = [

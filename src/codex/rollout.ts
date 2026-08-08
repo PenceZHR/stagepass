@@ -113,6 +113,73 @@ export function contextUsageOf(
  * question -- a rollout accumulates every turn the thread has ever had, and
  * `codex resume` appends to the same file.
  */
+/**
+ * **我们自己问出去的那一轮**跑完了没有 —— 认提示词，不认「谁先完成」。
+ *
+ * ## 为什么不能只靠「派发前有几条记录」
+ *
+ * `findCompletedTurn(records, fromIndex)` 认的是「起点之后第一个跑完的轮」，
+ * 而那个起点是调用方数出来的。**数错一次，它就会把线程历史上任何一轮的答复
+ * 当成这一轮的**：2026-08-08 真机上，Arch 第 3 轮派出去 2.6 秒就被判失败
+ * （`round_agents_not_found`），而那条线程里唯一一个「完成的轮」在索引 116 ——
+ * 只有从 ≤1 开始扫才碰得到它。起点变 0 的路只有一条：`recordCount` 读不到
+ * 文件时返回 0，**「读不出来」被当成了「整个文件都是新的」**。
+ *
+ * 那一轮的裁判其实好好的：提示词比失败晚 10 秒才送达，之后它照常派了子 Agent。
+ * StagePass 认下的是**上一轮**的答复，然后因为「这一轮没派出子 Agent」把活儿
+ * 判死了。
+ *
+ * 所以判据换成：**先在 rollout 里找到我们这一次问出去的那句话，从它之后再找
+ * 完成的轮。** 和 `CodexTuiTransport.awaitNewThread` 逐字同一条纪律（那边认线程
+ * 也是靠提示词，不靠「谁先出现」）。起点数错不再是灾难 —— 最坏是多等一会儿。
+ *
+ * 取**最后一次**出现：一条线程会被反复 resume，而每一轮的提示词里都带着轮次，
+ * 所以最后一次就是这一次。
+ */
+export function findOwnCompletedTurn(
+  records: readonly RolloutRecord[],
+  fromIndex: number,
+  prompt: string,
+): TurnOutcome | null {
+  // 转义后的形式：rollout 是 JSON 行，换行和引号都不是原样。
+  const needle = JSON.stringify(prompt).slice(1, -1);
+  /*
+   * **找的是「装着我们这句话的那一轮」，不是「提示词之后的第一轮」。**
+   *
+   * rollout 里 `task_started` 落在 `user_message` **之前**（真机实测：轮起于
+   * 134，提示词在 139）。所以不能从提示词那一格起扫 —— 那会把轮的开头跳掉，
+   * `started` 永远为假，什么都认不出来。
+   */
+  let started = false;
+  let mine = false;
+  const said: string[] = [];
+
+  for (let index = Math.max(0, fromIndex); index < records.length; index += 1) {
+    const record = records[index]!;
+    const type = eventType(record);
+    if (type === "task_started") {
+      started = true;
+      mine = false;
+      said.length = 0;
+      continue;
+    }
+    if (!started) continue;
+    if (!mine && JSON.stringify(record).includes(needle)) mine = true;
+    if (type === "agent_message") {
+      const message = record.payload?.message;
+      if (typeof message === "string" && message !== "") said.push(message);
+      continue;
+    }
+    if (type === "task_complete") {
+      if (mine) return { text: said.join("\n") };
+      // 别人那一轮跑完了 —— 接着往后找我们自己那一轮。
+      started = false;
+      said.length = 0;
+    }
+  }
+  return null;
+}
+
 export function findCompletedTurn(
   records: readonly RolloutRecord[],
   fromIndex: number,
