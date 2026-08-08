@@ -44,14 +44,27 @@ export type PhaseInstructions = Readonly<Record<Phase, string>>;
 export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   PRD: "Write the product requirement for this change: who it is for, what outcome it must produce, and what is out of scope.",
   Spec: "Turn the approved PRD into a product specification. Name every behaviour a user can observe, and every case the PRD leaves undecided.",
-  // Arch 在 TechSpec **之前**（用户 2026-08-06 拍）：先划骨架，再填数据。
-  // 产出四节见 domain/phase-template.ts 的 ARCH_SECTIONS。
-  Arch: "Decide the architecture for this change: which modules it touches, which new"
-    + " dependency edges it needs (each with why it cannot be avoided), where the module"
-    + " boundaries lie, and at least one considered-but-rejected alternative."
-    + " Do not design data storage or interfaces -- that is TechSpec's job, inside the"
-    + " boundaries you draw here.",
-  TechSpec: "Turn the approved specification into a technical design: system behaviour, constraints, blast radius, and the main risks -- inside the module boundaries the approved architecture drew.",
+  /*
+   * Arch **是这次改动的完整技术架构**（2026-08-08 TechSpec 并进来，见
+   * domain/phase.ts 的 RETIRED_PHASES）。十节见 ARCH_SECTIONS。
+   *
+   * 这段话里的 "down to file paths and function names" 是承重的：老的那一版说的是
+   * "which modules it touches"，而**问到哪一层就只会答到哪一层** —— 真机产出因此
+   * 停在模块层，人看完说「太宽泛」。
+   */
+  Arch: "Design the complete technical architecture for this change, down to file paths"
+    + " and function names: which modules and files it touches or adds (with paths), what"
+    + " each file exports (by name) and who calls it, how data is stored and how state"
+    + " moves, the signature of every cross-module function, which dependency edges are"
+    + " new (as file-imports-file, each with why it cannot be avoided), what each module"
+    + " does and does not expose, at least one considered-but-rejected alternative plus"
+    + " the price of the one you chose, the single riskiest part, and how each decision"
+    + " traces back to the approved Spec."
+    + " Leave only step ordering and code-writing to the downstream phases -- function"
+    + " names, signatures and data structures belong in this document.",
+  // 退休了（并进 Arch）。留一句话是因为 PhaseInstructions 要每个阶段都有；
+  // 没有 Change 会再走到它。
+  TechSpec: "This phase has been merged into Arch and is no longer used.",
   Plan: "Break the approved design into executable steps, each with its expected blast radius and how it will be verified.",
   /*
    * §8.7·1（用户 2026-08-06 拍）：TestPlan 交方案**和测试代码**，自己不跑 ——

@@ -127,6 +127,10 @@ export const PHASE_PLAY: Readonly<Record<Exclude<Phase, "Done">, PhasePlay>> = {
       ],
     },
   },
+  /*
+   * 退休了（并进 Arch，2026-08-08）。这一格留着只因为 PHASE_PLAY 是
+   * Record<Phase, …> —— 没有 Change 会再走到它，内容原样冻在这儿。
+   */
   TechSpec: {
     red: {
       heading: "1. 正方。**下面这段任务原样转达给正方，一个字都不要改** ——「人要的是这些」那几行是人自己答的需求，改写或省略它，正方就只能凭空编。",

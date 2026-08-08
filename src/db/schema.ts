@@ -712,6 +712,77 @@ export function migrate(database: {
   migrateReturnStack(database);
   migrateBindingsKind(database);
   migrateStaleChecks(database);
+  migrateRetiredPhases(database);
+}
+
+/**
+ * 停在**退休阶段**上的 Change，挪回主线（2026-08-08：TechSpec 并进 Arch）。
+ *
+ * ## 为什么非挪不可
+ *
+ * 退休只是把名字从主线图上拿掉，历史照旧读得出来（见 `domain/phase.ts` 的
+ * `RETIRED_PHASES`）。但**正停在那儿的 Change 走不动了**：`advancesTo` 对一个
+ * 不在图上的阶段直接抛，于是批准这条路整个没有出口 —— 人在界面上一个能按的
+ * 都没有，而这正是这棵树反复在治的那种死结。
+ *
+ * 合并前查实：CHG-001 当时就停在 `TechSpec/blocked`。
+ *
+ * ## 挪去哪、怎么记
+ *
+ * 挪到那个退休阶段**并进去的那一个**（`ABSORBED_BY`）。状态回 `pending` ——
+ * 它要用新模板重跑一轮，上一轮的 `blocked` 说的是老阶段的事。
+ *
+ * **账本照记**（`sendBack`，带理由）：账本是这个产品的地基，一次静默的
+ * UPDATE 会被 `ck_changes_ledger` 当场拒掉，而就算能绕过去也不该绕 ——
+ * 人回头看时必须看得出这一步是谁、为什么把它挪走的。
+ *
+ * `returnStack` 原样不动：栈里记的是「回来之后去哪」，那笔债和阶段退休无关。
+ * 退休阶段本身不许在栈里（`assertStateValid` 会拒），而它从来也进不去 ——
+ * 压栈的只有 sendBack 的发起方和 Review/QA 的送修。
+ */
+function migrateRetiredPhases(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(...args: unknown[]): unknown; all?(...args: unknown[]): unknown };
+}): void {
+  const ABSORBED_BY: Readonly<Record<string, string>> = { TechSpec: "Arch" };
+  const at = new Date().toISOString();
+  for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
+    let rows: { id: string; seq: number }[];
+    try {
+      rows = (database.prepare(
+        "SELECT id, seq FROM changes WHERE phase = ?",
+      ).all?.(retired) ?? []) as { id: string; seq: number }[];
+    } catch {
+      return;   // changes 表还不存在（全新库）
+    }
+    for (const row of rows) {
+      const seq = row.seq + 1;
+      database.exec("BEGIN");
+      try {
+        // 账本先写 —— `ck_changes_ledger` 在下面那句 UPDATE 触发时会找它。
+        (database.prepare(
+          `INSERT INTO change_events
+             (change_id, seq, action, from_phase, from_status, to_phase, to_status, reason, at)
+           SELECT id, ?, 'sendBack', phase, status, ?, 'pending', ?, ?
+             FROM changes WHERE id = ?`,
+        ) as unknown as { run(...args: unknown[]): unknown }).run(
+          seq, absorbedBy,
+          `${retired} 并进 ${absorbedBy}（阶段退休），这个 Change 退回 ${absorbedBy} 重写`,
+          at, row.id,
+        );
+        (database.prepare(
+          "UPDATE changes SET phase = ?, status = 'pending', seq = ?, updated_at = ? WHERE id = ?",
+        ) as unknown as { run(...args: unknown[]): unknown }).run(
+          absorbedBy, seq, at, row.id,
+        );
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    }
+  }
 }
 
 /**

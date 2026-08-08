@@ -259,13 +259,15 @@ async function withPanel(
 }
 
 describe("panel · what it offers", () => {
-  it("offers twelve phases, and never Done", async () => {
+  it("offers eleven phases, and never Done or a retired one", async () => {
     await withPanel(async ({ open }) => {
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
         phases: PhaseEntry[];
       };
-      assert.equal(panel.phases.length, 12);
+      assert.equal(panel.phases.length, 11);
       assert.ok(!panel.phases.some((entry) => entry.phase === "Done"));
+      // 退休的阶段不画 —— 环上摆一个永远走不到的节点等于一个假选项。
+      assert.ok(!panel.phases.some((entry) => entry.phase === "TechSpec"));
       // A fresh Change sits at PRD, so that is the one node that may be run.
       // Nothing has passed or failed yet, so no node carries a mark.
       assert.deepEqual(panel.phases[0], {
@@ -473,7 +475,7 @@ describe("panel · pass and fail per phase", () => {
       assert.deepEqual(forPhase("PRD").map((gap) => [gap.id, gap.status]),
         [["G1", "open"], ["G2", "closed"]]);
       assert.deepEqual(forPhase("Spec").map((gap) => gap.id), ["S1"]);
-      assert.deepEqual(forPhase("TechSpec"), []);
+      assert.deepEqual(forPhase("Arch"), []);
     });
   });
 });

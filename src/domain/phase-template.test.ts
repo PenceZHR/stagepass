@@ -7,9 +7,9 @@ import { missingSections, renderTemplate, templateFor } from "./phase-template";
  * 覆盖面止于**产出文档的阶段**。Build / Fix 交的是 commit，套模板等于造一份永远
  * 缺齐所有节的产出 —— 每一节永远挡着闸门。
  */
-test("九个产出文档的阶段有模板，Build / Fix / Done 没有", () => {
+test("十个产出文档的阶段有模板；Fix / Done / 退休的没有", () => {
   for (const phase of
-    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review", "QA", "Merge", "Retro"] as const) {
+    ["PRD", "Spec", "Arch", "Plan", "TestPlan", "Build", "Review", "QA", "Merge", "Retro"] as const) {
     assert.ok((templateFor(phase)?.length ?? 0) >= 4, `${phase} 没有模板`);
   }
   for (const phase of ["Fix", "Done"] as const) {
@@ -19,7 +19,7 @@ test("九个产出文档的阶段有模板，Build / Fix / Done 没有", () => {
 
 test("每份模板的节 key 在自己那份里不重复，标题也不重复", () => {
   for (const phase of
-    ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Review", "QA", "Merge", "Retro"] as const) {
+    ["PRD", "Spec", "Arch", "Plan", "TestPlan", "Build", "Review", "QA", "Merge", "Retro"] as const) {
     const sections = templateFor(phase)!;
     assert.equal(new Set(sections.map((each) => each.key)).size, sections.length, `${phase} key 重复`);
     // 标题重复更要命：`missingSections` 按标题认节，两节同名会互相认领。

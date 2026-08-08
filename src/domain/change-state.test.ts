@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   advancesTo,
   isPhase,
+  isRetired,
   PHASES,
   phaseGraphOf,
   TERMINAL_PHASE,
@@ -69,6 +70,8 @@ describe("L0 · the state machine is exhaustively decided", () => {
     let unrepresentable = 0;
 
     for (const phase of PHASES) {
+      // 退休的阶段不在图上 —— `advancesTo` 对它抛，穷举它没有意义（也走不到）。
+      if (isRetired(phase)) continue;
       for (const status of PHASE_STATUSES) {
         const state = probe(phase, status);
         if (!representable(state)) {
@@ -105,17 +108,20 @@ describe("L0 · the state machine is exhaustively decided", () => {
     // Stated so a shrinking machine is visible rather than silent: if a future
     // edit removes a phase, a status or an action, these numbers move and the
     // test says so instead of quietly covering less.
+    // 退休的阶段整个跳过了，所以基数按「还在用的那些」算。
+    const live = PHASES.filter((phase) => !isRetired(phase)).length;
     assert.equal(
       legal + rejected + unrepresentable * CHANGE_ACTIONS.length,
-      PHASES.length * PHASE_STATUSES.length * CHANGE_ACTIONS.length,
+      live * PHASE_STATUSES.length * CHANGE_ACTIONS.length,
     );
-    // 13 phases x (start 1 + settle/fail 2 + retry 1 + approve/reject 2)
-    // + sendBack：主线上除 PRD 外的 11 个（PRD 没有上游，Fix 不在主线上；Arch 有）
+    // 12 phases x (start 1 + settle/fail 2 + retry 1 + approve/reject 2)
+    // + sendBack：主线上除 PRD 外的 10 个（PRD 没有上游，Fix 不在主线上；Arch 有）
     // + rerun：只有 Review 和 QA 两个（别处的 reject 已经是这个意思）。
-    assert.equal(legal, 13 * (1 + 2 + 1 + 2) + 11 + 2);
-    // `closed` is representable only on Done, so 12 phases contribute no state.
-    assert.equal(unrepresentable, PHASES.length - 1);
-    assert.equal(rejected, 333);
+    assert.equal(legal, 12 * (1 + 2 + 1 + 2) + 10 + 2);
+    // `closed` is representable only on Done, so the rest contribute no state.
+    assert.equal(unrepresentable, live - 1);
+    // 少一个阶段（TechSpec 退休），拒绝的组合跟着少 25 条。
+    assert.equal(rejected, 308);
   });
 
   it("accepts nothing at all once closed", () => {
@@ -163,11 +169,20 @@ describe("L0 · every phase is reachable and Done is the only exit", () => {
    * exactly the shape of the thing this rebuild is removing: something that
    * looks implemented and is not.
    */
-  it("reaches all twelve phases from a fresh Change", () => {
+  it("reaches every phase that is still on the line", () => {
     const reached = new Set(
       [...explore().values()].map((state) => state.phase),
     );
-    assert.deepEqual([...reached].sort(), [...PHASES].sort());
+    /*
+     * 退休的阶段走不到 —— 那正是「退休」的意思（`domain/phase.ts` 的
+     * `RETIRED_PHASES`：名字留给历史，主线上没有它）。名单里刨掉它们之后，
+     * 剩下的每一个都必须走得到 —— 一个走不到的阶段是「看起来实现了、其实没有」，
+     * 而这棵树存在的理由就是删掉那种东西。
+     */
+    assert.deepEqual(
+      [...reached].sort(),
+      PHASES.filter((phase) => !isRetired(phase)).sort(),
+    );
   });
 
   it("has exactly one state that nothing leaves", () => {
@@ -181,6 +196,8 @@ describe("L0 · every phase is reachable and Done is the only exit", () => {
 
   it("only the terminal phase can close", () => {
     for (const phase of PHASES) {
+      // 退休的阶段不在图上，`advancesTo` 对它抛 —— 它不参与「谁是终点」这个问题。
+      if (isRetired(phase)) continue;
       const terminal = advancesTo(phase) === null && phase !== "Fix";
       assert.equal(
         terminal,
@@ -222,7 +239,7 @@ describe("L0 · Fix returns to whoever sent it", () => {
   }
 
   it("reopens a design phase in place rather than sending it to Fix", () => {
-    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan"] as const) {
+    for (const phase of ["PRD", "Spec", "Arch", "Plan", "TestPlan"] as const) {
       assert.deepEqual(transition(settled(phase), "reject"), {
         phase,
         status: "pending",
@@ -254,8 +271,8 @@ describe("L0 · 打回上游：长回边压栈，approve 弹栈（§5.9.1 / §5.
   /**
    * §8.9（2026-08-06 反转）：**回程是重走，不是跳回。**
    *
-   * 这条测试原来钉的是相反的规则（「不沿主线去 TechSpec，弹栈回 Build」）。
-   * 那条规则的代价：Spec 改了，而 TechSpec / Plan / TestPlan 全是照旧 Spec 建的，
+   * 这条测试原来钉的是相反的规则（「不沿主线去 Arch，弹栈回 Build」）。
+   * 那条规则的代价：Spec 改了，而 Arch / Plan / TestPlan 全是照旧 Spec 建的，
    * 一个都没重跑，Build 却已经拿着它们接着干了。用户的原话定的这一反转：
    *
    * > 我不能默认当前 stage 之前的每个 stage 都是绝对正确的。
@@ -277,7 +294,7 @@ describe("L0 · 打回上游：长回边压栈，approve 弹栈（§5.9.1 / §5.
       walked.push(state.phase);
     }
     assert.deepEqual(
-      walked, ["Arch", "TechSpec", "Plan", "TestPlan", "Build"],
+      walked, ["Arch", "Plan", "TestPlan", "Build"],
       "中间几个阶段的产物都是照旧 Spec 建的，一个都不许跳过",
     );
     assert.deepEqual(state.returnStack, [], "走到发起方，债还清");
@@ -452,7 +469,7 @@ describe("L0 · the walk a real Change takes", () => {
     assert.equal(state.phase, TERMINAL_PHASE);
     // Fix is absent: nothing was rejected, so nothing was sent back.
     assert.deepEqual(visited, [
-      "PRD", "Spec", "Arch", "TechSpec", "Plan", "TestPlan",
+      "PRD", "Spec", "Arch", "Plan", "TestPlan",
       "Build", "Review", "QA", "Merge", "Retro", "Done",
     ]);
   });
@@ -491,7 +508,7 @@ describe("L0 · Review/QA 也要能「就在这儿再来一轮」（旧账 F）"
   }
 
   it("**设计阶段没有这个动作** —— 那儿的 reject 已经是这个意思，两条路一个意思不许并存", () => {
-    for (const phase of ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build"] as const) {
+    for (const phase of ["PRD", "Spec", "Arch", "Plan", "TestPlan", "Build"] as const) {
       assert.equal(isLegal(settled(phase), "rerun"), false, phase);
       assert.throws(() => transition(settled(phase), "rerun"), IllegalTransitionError);
     }
@@ -548,7 +565,8 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
 
   it("栈空时推荐就是主线的下一步 —— 不许和 `advancesTo` 各算一套", () => {
     for (const phase of PHASES) {
-      if (phase === "Fix") continue;   // 不在主线上，没有「下一步」
+      // 两个都不在主线上，没有「下一步」可言：Fix 靠弹栈离开，退休的走不到。
+      if (phase === "Fix" || isRetired(phase)) continue;
       assert.equal(recommendedApproval(settled(phase)), advancesTo(phase), phase);
     }
   });
@@ -580,7 +598,7 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
     );
     assert.deepEqual(
       approvalTargets(settled("Spec", ["Build"])),
-      ["Arch", "TechSpec", "Plan", "TestPlan", "Build"],
+      ["Arch", "Plan", "TestPlan", "Build"],
     );
     // 推荐是主线的下一站（§8.9 反转之后），不是直接跳回在等的那个。
     assert.equal(recommendedApproval(settled("TestPlan", ["Review"])), "Build");
@@ -606,7 +624,7 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
    */
   it("在等的那个已经不在图上了 —— 债照还，不许把 Change 锁死", () => {
     const shrunk = phaseGraphOf(
-      ["PRD", "Spec", "TechSpec", "Plan", "TestPlan", "Build", "Merge", "Done"]);
+      ["PRD", "Spec", "Arch", "Plan", "TestPlan", "Build", "Merge", "Done"]);
     const state = settled("TestPlan", ["Review"]);
     assert.deepEqual(approvalTargets(state, shrunk), ["Review"]);
     assert.equal(recommendedApproval(state, shrunk), "Review");
@@ -665,7 +683,7 @@ describe("L0 · 批准之后去哪：推荐 + 清单（§8.10）", () => {
       walked.push(state.phase);
     }
     assert.deepEqual(
-      walked, ["Spec", "Arch", "TechSpec", "Plan", "TestPlan", "Build"],
+      walked, ["Spec", "Arch", "Plan", "TestPlan", "Build"],
       "中间的阶段一个都没被跳过，而栈也一路还干净了",
     );
     assert.deepEqual(state.returnStack, []);

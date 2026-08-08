@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
-import { PHASES } from "./phase";
+import { PHASES, isRetired } from "./phase";
 import { reportsFreeFormBlockers } from "./phase-play";
 import { templateFor } from "./phase-template";
 import { RUBRIC_ROLES } from "./rubric";
@@ -161,7 +161,8 @@ describe("出厂标准 · critic 那份不许要一个这阶段没有的能力",
 
   it("**两边都不许只剩一条** —— 反方在哪个阶段都有实打实的活儿要被判", () => {
     for (const phase of PHASES) {
-      if (phase === "Done") continue;
+      // Done 没有 turn；退休的阶段没人会再走到（`RETIRED_PHASES`）。
+      if (phase === "Done" || isRetired(phase)) continue;
       assert.ok(defaultCriteria(phase, "critic").length >= 3,
         `${phase} 的 critic 只剩 ${defaultCriteria(phase, "critic").length} 条`);
     }

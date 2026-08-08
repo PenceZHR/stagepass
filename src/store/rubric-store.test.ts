@@ -6,7 +6,7 @@ import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "./change-store";
 import { ProjectStore } from "./project-store";
 import { ReasonRequiredError, RubricStore } from "./rubric-store";
-import { PHASES } from "../domain/phase";
+import { PHASES, isRetired } from "../domain/phase";
 import { RUBRIC_ROLES } from "../domain/rubric";
 
 const PROJECT = "PRJ-1";
@@ -363,7 +363,9 @@ describe("rubric store · 出厂标准", () => {
     const { rubrics } = open();
     rubrics.installDefaults(PROJECT);
     const missing: string[] = [];
-    for (const phase of PHASES.filter((entry) => entry !== "Done")) {
+    // Done 没有 turn；退休的阶段不再装出厂标准（库里已有的原样留着）。
+    for (const phase of PHASES.filter(
+      (entry) => entry !== "Done" && !isRetired(entry))) {
       for (const role of RUBRIC_ROLES) {
         const current = rubrics.current({ projectId: PROJECT, changeId: null, phase, role });
         if ((current?.criteria.length ?? 0) === 0) missing.push(`${phase}/${role}`);

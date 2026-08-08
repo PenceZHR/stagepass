@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-import { PHASES, type Phase } from "../domain/phase";
+import { PHASES, isRetired, type Phase } from "../domain/phase";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
@@ -53,7 +53,11 @@ export interface LiveSessions {
  * fixed number, which is what lets the panel be enumerated rather than being a
  * list that grows (PRD §6.5 rule 1). Do not introduce a third count.
  */
-const THREADED_PHASES: readonly Phase[] = PHASES.filter((phase) => phase !== "Done");
+const THREADED_PHASES: readonly Phase[] = PHASES.filter(
+  // 退休的阶段不画（2026-08-08：TechSpec 并进 Arch）。名字还在 PHASES 里是为了
+  // 让历史读得出来，但环上画一个永远走不到的节点，等于摆一个假选项。
+  (phase) => phase !== "Done" && !isRetired(phase),
+);
 
 /** Passed, failed, or neither yet. */
 type PhaseMark = "approved" | "problem" | null;

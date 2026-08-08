@@ -174,30 +174,41 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
   ],
   /*
-   * Arch（2026-08-06 加，位置在 TechSpec 之前）：四节每节都有人判 ——
-   * 「架构在脑子里」对 AI 不成立，写不下来就不存在，所以判据全部落在写出来的
-   * 东西上。`edges` 那两条对着 BACKLOG §5.5 的分界线：那一节是 Build 反馈
-   * 回流的落点，空着和「没有」必须分得开。
+   * Arch：**这一份就是完整的技术架构**（2026-08-08 TechSpec 并进来）。
+   *
+   * 每一节都配了一条**判粒度**的标准，因为老的那七条全是「有没有写」——
+   * 「每个被动到的模块都写了对外露什么」，写一句「只露出正式配置源」就满足了，
+   * **抽象在那套判据下是零成本的**。真机证据：2026-08-08 那一轮 11 条判定全 yes，
+   * 而人看完说「太宽泛」。
+   *
+   * 粒度标准的写法有一条硬要求：**反方要指得出来**。所以不写「够不够详细」
+   * （那判不了），写「有没有一处只给了概念名字而没有写出路径」——
+   * 反方能指着某一句说「这条不满足」。
    */
   Arch: [
     { section: "modules", text: "写清了动的是哪几个已有模块、新增哪几个；每个新增的都写了为什么不能并进已有的" },
+    { section: "modules", text: "每个模块都写出了它的目录或文件路径，没有一处只给概念名字（比如「配置模块」而不说它在哪）" },
+    { section: "files", text: "逐个文件列出了路径、职责、它导出的函数或类型的名字，以及谁调它们" },
+    { section: "files", text: "没有一处写「等实现时再定」或「视情况而定」—— 定不下来的函数说明模块还没划清" },
+    { section: "data", text: "每个数据结构都写出了字段名和类型，说清了哪些是权威、哪些是镜像；没有持久化数据时明写了「没有」" },
+    { section: "data", text: "状态迁移写出了状态名和触发它的那个函数，不是「状态会随流程推进」这种叙述" },
+    { section: "interfaces", text: "文件与函数那一节点过名的跨模块函数，这里都写了签名：参数名和类型、返回什么、出错时返回什么" },
+    { section: "interfaces", text: "没有一处用「返回一个结果对象」代替字段清单" },
     { section: "edges", text: "每条新增依赖边都写了为什么非加不可；没有新增时明写了「没有」，而不是留空" },
-    { section: "edges", text: "没有一条边只写「A 需要 B」—— 每条都说得出少了它哪个行为做不成" },
-    { section: "boundaries", text: "每个被动到的模块都写了对外露什么、不露什么" },
+    { section: "edges", text: "每条边都写成了「哪个文件 import 哪个文件」，而不是「A 模块需要 B 模块」" },
+    { section: "boundaries", text: "每个被动到的模块都写了对外露什么、不露什么，露的那些点名到了导出的函数或类型" },
     { section: "boundaries", text: "用词和 Spec 一致，没有为同一个概念发明第二个名字" },
-    { section: "alternatives", text: "至少写了一个想过但没选的划法，以及为什么没选" },
-    { section: "modules", text: "数据怎么存、接口长什么样都没有在这一份里定 —— 那些留给 TechSpec，在这里的边界内做" },
-  ],
-  TechSpec: [
-    { section: "data", text: "写清楚了数据怎么存、状态怎么迁移，而不只是模块怎么划分" },
-    { section: "data", text: "说清了哪些是权威、哪些是镜像" },
-    { section: "interfaces", text: "模块之间谁调谁、传什么、返回什么都写了，出错时返回什么也写了" },
-    { section: "tradeoffs", text: "每一个技术选择都写了它的代价，不只是好处" },
+    { section: "alternatives", text: "至少写了一个想过但没选的划法和为什么没选，并且写了选中这一套要付的代价" },
     { section: "riskiest", text: "指名了最可能出错的一处，而不是并列罗列多项风险" },
-    { section: "traceability", text: "没有引入 Spec 里不存在的行为" },
-    { section: "traceability", text: "每条设计都对得回 Spec 的某一条" },
-    { section: "deferred", text: "有意留给下游的每一项都写明了留给哪个阶段" },
+    { section: "traceability", text: "每一组决定都对得回 Spec 的某一条，没有引入 Spec 里不存在的行为" },
+    { section: "deferred", text: "留给下游的每一项都写明了留给哪个阶段和为什么现在定不了；没有把函数名、签名或数据结构推给下游" },
   ],
+  /*
+   * 退休了（并进 Arch，2026-08-08）。**空名单 = 这个阶段不再有出厂标准**，
+   * 而不是「标准还没写」—— 没有 Change 会再走到它。库里已有的 TechSpec 标准
+   * 和判定原样留着（历史），`installDefaults` 不会再为它装新的。
+   */
+  TechSpec: [],
   Plan: [
     { section: "steps", text: "每一步都有一个能独立交付的东西，不是一句「做 X 相关的工作」" },
     { section: "order", text: "步骤之间的依赖是明确的，没有两步在改同一处却没定顺序" },

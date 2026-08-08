@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { jumpsFrom, optionsFrom, pendingSendBack, type JourneyEntry } from "./journey";
 import { computeGate, EMPTY_EVIDENCE } from "./gate";
-import { PHASES } from "./phase";
+import { PHASES, isRetired } from "./phase";
 import type { ChangeState } from "./change-state";
 
 /**
@@ -177,18 +177,18 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
     optionsFrom(state, computeGate(state, { artifactIds: ["x.md"], blockers: [], waivedBlockerIds: [] }));
 
   it("一个干净的设计阶段：批准往前、再来一轮回自己、打回上游各一条", () => {
-    const edges = optionsOf(settled("TechSpec"));
+    const edges = optionsOf(settled("Arch"));
     /*
      * **打回那条只画最近的一个上游（Spec），不铺开 PRD。**
      *
-     * 4 条上限是硬的（§5.9.3③）：TestPlan 铺开就是四条 sendBack 加批准加自环，
+     * 4 条上限是硬的（§5.9.3③）：TestPlan 铺开就是三条 sendBack 加批准加自环，
      * 当场破限。环上摆「最可能的那一条」，全名单在裁决表那一格里 —— 环是地图，
      * 不是选单。
      */
     assert.deepEqual(edges.map((edge) => [edge.action, edge.to, edge.kind]), [
       ["approve", "Plan", "forward"],
-      ["reject", "TechSpec", "self"],
-      ["sendBack", "Arch", "backward"],
+      ["reject", "Arch", "self"],
+      ["sendBack", "Spec", "backward"],
     ]);
     assert.match(edges[2]!.why, /裁决表里可以挑更远的/);
     // 每条都说得出「按下去会怎样」—— 光画箭头不说后果等于又要人猜。
@@ -244,6 +244,8 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
   it("**护栏：任一时刻活箭头不超过 4 条**（§5.9.3③，防它以后悄悄涨到 8）", () => {
     let worst = 0;
     for (const phase of PHASES) {
+      // 退休的阶段不在图上，`computeGate` / `optionsFrom` 对它算不出边。
+      if (isRetired(phase)) continue;
       for (const status of ["pending", "running", "settled", "blocked"] as const) {
         for (const stack of [[], ["Build"], ["QA"]]) {
           const state = { phase, status, returnStack: stack } as ChangeState;

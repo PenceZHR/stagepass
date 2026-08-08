@@ -21,9 +21,9 @@ import {
  */
 describe("L0 · 阶段图是值：默认图与老常量逐字一致", () => {
   it("默认图的主线 = 除 Fix 外的 12 个阶段，Done 收尾", () => {
-    // Arch 在 TechSpec 之前（2026-08-06 拍：先划骨架，再填数据）。
+    // Arch 在 Spec 之后（2026-08-08：TechSpec 并进 Arch，见 RETIRED_PHASES）。
     assert.deepEqual(DEFAULT_GRAPH.order, [
-      "PRD", "Spec", "Arch", "TechSpec", "Plan", "TestPlan",
+      "PRD", "Spec", "Arch", "Plan", "TestPlan",
       "Build", "Review", "QA", "Merge", "Retro", "Done",
     ]);
   });
@@ -90,6 +90,11 @@ describe("L0 · 图的合法性 —— 拒绝在构造时发生，不在走到�
 
 describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
   it("严格上游，按主线顺序", () => {
+    /*
+     * TechSpec 退休了（并进 Arch）。它自己的上游名单**没变** —— `upstreamOf`
+     * 过滤的是「上游那几个在不在图上」，不是「问的这个在不在图上」。名单还对，
+     * 只是没有任何 Change 会再走到它去问这个问题。
+     */
     assert.deepEqual(upstreamOf("TechSpec"), ["PRD", "Spec", "Arch"]);
     assert.deepEqual(upstreamOf("Arch"), ["PRD", "Spec"]);
     assert.deepEqual(upstreamOf("Spec"), ["PRD"]);
@@ -122,8 +127,8 @@ describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
    * 人眼前，和一个假选项没有区别。
    */
   it("**TestPlan 的上游里没有 Plan** —— 它没消费过 Plan 的任何东西", () => {
-    assert.deepEqual(upstreamOf("TestPlan"), ["PRD", "Spec", "Arch", "TechSpec"]);
-    assert.deepEqual(upstreamOf("Plan"), ["PRD", "Spec", "Arch", "TechSpec"]);
+    assert.deepEqual(upstreamOf("TestPlan"), ["PRD", "Spec", "Arch"]);
+    assert.deepEqual(upstreamOf("Plan"), ["PRD", "Spec", "Arch"]);
   });
 
   /**
@@ -137,13 +142,14 @@ describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
       return at <= 0 ? [] : [...DEFAULT_GRAPH.order.slice(0, at)];
     };
     for (const phase of PHASES) {
-      if (phase === "TestPlan" || phase === "Fix") continue;
+      // TechSpec 退休了，它不在图上，`prefix` 对它算不出东西（indexOf 是 -1）。
+      if (phase === "TestPlan" || phase === "Fix" || phase === "TechSpec") continue;
       assert.deepEqual(upstreamOf(phase), prefix(phase), phase);
     }
   });
 
   it("传递闭包跨得过被跳掉的阶段", () => {
-    // TechSpec 被跳了，Plan 的上游仍然是 Spec / PRD —— 传递过来的。
+    // Arch 被跳了，Plan 的上游仍然是 Spec / PRD —— 传递过来的。
     const graph = phaseGraphOf(["PRD", "Spec", "Plan", "Build", "Review", "Done"]);
     assert.deepEqual(upstreamOf("Plan", graph), ["PRD", "Spec"]);
   });

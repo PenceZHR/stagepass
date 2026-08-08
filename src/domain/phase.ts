@@ -73,9 +73,40 @@ export interface PhaseGraph {
   readonly order: readonly Phase[];
 }
 
-/** 默认图：除 Fix 外的 12 个阶段，全序。 */
+/**
+ * **退休的阶段**：名字还在（库里有它的历史），但主线上没有它了。
+ *
+ * ## 为什么不是从 `PHASES` 里删掉
+ *
+ * 十几张表的 `phase` 列都有 `CHECK (phase IN (…PHASES…))`，而真库里有它的
+ * evidence、gap、逐条判定、绑定、题。名字一删，那些行连读都读不出来
+ * （`ChangeStore.read` 抛「Unknown phase」），一条 Change 会变得既看不了也删不掉
+ * —— 2026-08-08 合并前查实：CHG-001 当时正卡在 TechSpec 上。
+ *
+ * 所以退休 = **从主线图上拿掉**，名字留着给历史用。`Fix` 早就是这个形状
+ * （在 `PHASES` 里、不在 `DEFAULT_GRAPH.order` 里），只是它退的理由是
+ * 「不在主线上」，而不是「不再用了」。
+ *
+ * ## TechSpec 为什么退休（2026-08-08 用户拍）
+ *
+ * 它和 Arch 是同一批决定的粗细两版：Arch 的「新增哪些依赖边」「边界露什么」
+ * 就是 TechSpec 的「谁调谁、传什么、返回什么」，Arch 的「想过但没选的划法」
+ * 就是 TechSpec 的「选择和它的代价」。真正只属于 TechSpec 的只有「数据怎么存」
+ * 一节，而那撑不起一个独立阶段。
+ *
+ * 一旦 Arch 按要求写到**文件与函数**一级，重叠从「粗细两版」变成完全同一件事
+ * —— 而同一条规则的两份拷贝必然漂移（真机证据：Arch 那份产出里出现七次
+ * 「留给 TechSpec」，人读完拿不到完整图景）。所以合并，`data` 节并进 Arch。
+ */
+const RETIRED_PHASES: ReadonlySet<Phase> = new Set<Phase>(["TechSpec"]);
+
+export function isRetired(phase: string): boolean {
+  return isPhase(phase) && RETIRED_PHASES.has(phase);
+}
+
+/** 默认图：主线上的阶段，全序。Fix 不在线上，退休的也不在。 */
 export const DEFAULT_GRAPH: PhaseGraph = {
-  order: PHASES.filter((phase) => phase !== "Fix"),
+  order: PHASES.filter((phase) => phase !== "Fix" && !RETIRED_PHASES.has(phase)),
 };
 
 /**
@@ -110,13 +141,17 @@ export const DEFAULT_GRAPH: PhaseGraph = {
 const CONSUMES: Readonly<Record<Phase, readonly Phase[]>> = {
   PRD: [],
   Spec: ["PRD"],
-  // 先划骨架再填数据（Arch 在 TechSpec 之前，2026-08-06 拍）：Arch 消费 Spec，
-  // TechSpec 在既定模块边界内写数据和接口 —— Arch 的产出约束它，不是反过来。
+  /*
+   * Arch 消费 Spec，而**它现在是完整的技术架构**（2026-08-08 合并，见
+   * `RETIRED_PHASES`）：模块、文件与函数、数据与状态、接口与契约都在这一份里。
+   */
   Arch: ["Spec"],
+  // 退休了（并进 Arch）。这一行留着只为让历史读得出来 —— 它不在主线图上，
+  // `upstreamOf` 会按图过滤掉它，没有任何 Change 会再走到这儿。
   TechSpec: ["Arch"],
-  Plan: ["TechSpec"],
-  // **不含 Plan**：两者都只消费 TechSpec，互不消费（BACKLOG §8.6·①/③）。
-  TestPlan: ["TechSpec"],
+  Plan: ["Arch"],
+  // **不含 Plan**：两者都只消费 Arch，互不消费（BACKLOG §8.6·①/③）。
+  TestPlan: ["Arch"],
   Build: ["Plan", "TestPlan"],
 
   /*
@@ -146,6 +181,7 @@ export class InvalidPhaseGraphError extends Error {
   constructor(readonly code:
     | "must_end_with_done"
     | "fix_not_on_the_line"
+    | "retired_phase"
     | "unknown_phase"
     | "not_a_subsequence",
   readonly detail: string) {
@@ -167,6 +203,12 @@ export function phaseGraphOf(order: readonly string[]): PhaseGraph {
     if (!isPhase(name)) throw new InvalidPhaseGraphError("unknown_phase", name);
     if (name === "Fix") {
       throw new InvalidPhaseGraphError("fix_not_on_the_line", order.join(","));
+    }
+    // 退休的阶段不许排进任何一张图 —— 它的名字只为读历史而留着。
+    // 下面那道子序列判定其实也会拒（它不在 DEFAULT_GRAPH 里），但那句报错说的是
+    // 「顺序不对」，而真因是「这个阶段已经没了」。报错要指着真正挡住它的那一条。
+    if (RETIRED_PHASES.has(name)) {
+      throw new InvalidPhaseGraphError("retired_phase", name);
     }
     phases.push(name);
   }

@@ -342,7 +342,13 @@ export function assertStateValid(state: ChangeState): void {
    * 的严格下游（Fix 不在主线上，跳过和当前阶段的比较）。破了任何一条，弹栈就是
    * 往回抄近道 —— 一个「从 Spec 打回到 Build」的状态必须造不出来。
    */
-  let below = state.phase === "Fix" ? -1 : ORDER_INDEX.get(state.phase)!;
+  /*
+   * 不在主线图上的阶段（`Fix`，以及退休的）没有下标 —— 用 -1，让栈上每一层都
+   * 算在它下游。原来写的是 `state.phase === "Fix" ? -1 : ORDER_INDEX.get(...)!`，
+   * 那个 `!` 在退休阶段上会拿到 undefined，于是下面每次比较都是 false ——
+   * **整条栈序校验被静默关掉**，而它守的正是「弹栈不许往回抄近道」。
+   */
+  let below = ORDER_INDEX.get(state.phase) ?? -1;
   for (let level = state.returnStack.length - 1; level >= 0; level -= 1) {
     const entry = state.returnStack[level]!;
     const index = ORDER_INDEX.get(entry);
