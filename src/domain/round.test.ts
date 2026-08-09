@@ -5,7 +5,7 @@ import { humanGapId, type Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
   readVerdicts, RED, renderOpenGaps, renderSettled, summariseConvergence,
-  summariseRoundNotes, templateGaps,
+  summariseRoundNotes, summariseStall, templateGaps,
   UnreadableVerdictError,
 } from "./round";
 import { PHASES } from "./phase";
@@ -1611,5 +1611,24 @@ describe("L4 · 人的批注和上游文档打架时，谁说了算要写死（�
     const found: Gap = { ...humanGap("x"), id: "SPEC-1" };
     const text = renderOpenGaps([found]);
     assert.doesNotMatch(text, /以人的话为准/);
+  });
+});
+
+describe("L4 · 停机条件：账本不动 = 独立性耗尽（环 v3）", () => {
+  it("连停两轮才开口 —— 一轮没动可能只是这轮运气", () => {
+    const stalledOne = summariseStall({ round: 3, movedInRound: (r) => r !== 3 });
+    assert.equal(stalledOne, "");
+    const stalledTwo = summariseStall({ round: 4, movedInRound: (r) => r <= 2 });
+    assert.match(stalledTwo, /连续 2 轮没动/);
+    assert.match(stalledTwo, /换一种抽法/, "只报事实不给出口，人还是只会按「再来一轮」");
+  });
+
+  it("还在收敛就闭嘴 —— 轮数多不是停摆（和按轮数说话的那条分工）", () => {
+    assert.equal(summariseStall({ round: 8, movedInRound: () => true }), "");
+  });
+
+  it("从头就没动过的也数得对", () => {
+    assert.match(summariseStall({ round: 3, movedInRound: () => false }),
+      /连续 3 轮没动/);
   });
 });

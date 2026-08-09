@@ -1812,6 +1812,22 @@ describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.
     });
   });
 
+  it("**closed 之后旁路照开** —— 自由终端：问「这东西怎么用」不需要环还活着", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "QA");
+      changes.apply(CHANGE, "start");
+      changes.apply(CHANGE, "settle");
+      changes.apply(CHANGE, "approve");   // QA 批准 = closed（环 v3 的终点）
+      assert.equal(changes.read(CHANGE).state.status, "closed");
+      const outcome = await (await open(`/api/aside?change=${CHANGE}`,
+        { method: "POST" })).json() as { opened: boolean };
+      assert.equal(outcome.opened, true, "closed 把自由终端也关了");
+      assert.equal(pty.started.length, 1, "说开了却没起会话");
+    });
+  });
+
   it("反过来也成立：旁路开着，派发照走 —— 它不占阶段的座", async () => {
     await withPanel(async ({ open, database }) => {
       new ChangeStore(database).setBrief(CHANGE, "需求");

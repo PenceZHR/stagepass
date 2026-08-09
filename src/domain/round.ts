@@ -1019,6 +1019,34 @@ export function summariseConvergence(input: {
     + `\n该由你判断剩下的还值不值得再对抗一轮，还是就这样批准、或者把它们接受下来。`;
 }
 
+/**
+ * **停机条件**（环 v3，2026-08-09 谈话推齐的原理）。
+ *
+ * 多轮对抗成立的数学前提是每轮是一次**独立抽签**（每轮 60% 的解决率，n 轮就是
+ * 1−0.4ⁿ —— 但只在轮间独立时成立）。账本连续几轮不动 —— 没开出新问题、也没有
+ * 旧问题被判关闭 —— 说明这套抽法的独立性**耗尽了**：剩下的问题正是它系统性
+ * 看不见或解决不了的那类，再来一轮是同一张签再抽一次。
+ *
+ * 上面那条 `summariseConvergence` 按**轮数**说话（跑得多了提醒一句），这一条按
+ * **动没动**说话 —— 一个阶段可以第 3 轮就停摆，也可以第 8 轮还在实打实收敛，
+ * 轮数说不出这个区别。
+ *
+ * **不动闸门**（裁判给结论、人按按钮的老纪律）：它只把「停摆了」这个事实端给
+ * 人，并把换抽法的出口指出来 —— 正确动作是换一种抽签，不是第 n+1 轮。
+ */
+export function summariseStall(input: {
+  readonly round: number;
+  /** 第 r 轮账本动了没有：开了新 gap，或有旧 gap 被判关闭。 */
+  readonly movedInRound: (round: number) => boolean;
+}): string {
+  let stalled = 0;
+  for (let r = input.round; r >= 1 && !input.movedInRound(r); r -= 1) stalled += 1;
+  if (stalled < 2) return "";
+  return `\n\n**账本已经连续 ${stalled} 轮没动** —— 没开出新问题，也没关掉旧的。`
+    + `\n同一套对抗再来一轮，大概率是同一张签再抽一次。值得换一种抽法：`
+    + `打回上游改产物、把剩下的逐条裁决（驳回或 waive）、或者你自己上手改完再批。`;
+}
+
 export function summariseRoundNotes(
   notes: readonly {
     readonly source: RoundNoteSource;

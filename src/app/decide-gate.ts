@@ -10,7 +10,7 @@ import {
   gateDecisionQuestion, responseFollowUpQuestion, responsesFrom, runsAgainHere,
   DECISION_FIELD, sendBackReasonFrom, type Answer, type Question,
 } from "../domain/question";
-import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
+import { roundFromLedger, summariseConvergence, summariseRoundNotes, summariseStall } from "../domain/round";
 import { summariseAssessments } from "../domain/rubric";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore, type LedgerEntry } from "../store/change-store";
@@ -18,6 +18,7 @@ import { CommandStore } from "../store/command-store";
 import { GapStore } from "../store/gap-store";
 import { QuestionStore } from "../store/question-store";
 import { RoundNoteStore } from "../store/round-note-store";
+import { WorklistStore } from "../store/worklist-store";
 import { RubricStore } from "../store/rubric-store";
 import { TurnStore } from "../store/turn-store";
 import {
@@ -338,6 +339,18 @@ export async function decideGate(input: {
       + summariseConvergence({
         round, budget: input.roundBudget,
         raised: allGaps.length, open: blockers.length,
+      })
+      /*
+       * 停机条件（环 v3）：账本连续几轮不动就说出来 —— 「动」= 那一轮开了新
+       * gap，或那一轮的裁判把旧 gap 判成 closed（名单里 kind="gap" 的答案）。
+       * 判据取自已经落库的东西，和上面几段同一条纪律：题面只搬事实。
+       */
+      + summariseStall({
+        round,
+        movedInRound: (r) =>
+          allGaps.some((gap) => gap.openedRound === r)
+          || new WorklistStore(database).read(changeId, phase, r)
+            .some((item) => item.kind === "gap" && item.answer === "closed"),
       }),
     openGaps,
     round,

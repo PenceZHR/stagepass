@@ -1,7 +1,7 @@
 import { recommendedApproval, type ChangeAction, type ChangeState } from "./change-state";
 import type { Gate } from "./gate";
 import {
-  DEFAULT_GRAPH, upstreamOf,
+  DEFAULT_GRAPH, PHASES, upstreamOf,
   type Phase, type PhaseGraph,
 } from "./phase";
 import { roundFromLedger } from "./round";
@@ -63,8 +63,15 @@ export interface Jump {
  */
 const HUMAN_MOVES: ReadonlySet<string> = new Set(["approve", "reject", "sendBack"]);
 
+/*
+ * **直尺是 PHASES，不是主线图**：老账里躺着退休阶段的跳转（CHG-001 就有
+ * `Plan→TestPlan` 的批准），主线图认不出它们，一律「保守判回头」会把一次向前
+ * 的批准画成回头弦 —— 历史箭头说谎。PHASES 是带着全部退休位的全序（TechSpec/
+ * Plan 就躺在 Arch 和 BuildPlan 之间），拿它量，退休的名字也有正确的方向；
+ * 活着的阶段相对顺序两把尺子一致，行为一个字不变。
+ */
 const ORDER_INDEX: ReadonlyMap<string, number> =
-  new Map(DEFAULT_GRAPH.order.map((phase, index) => [phase, index]));
+  new Map(PHASES.map((phase, index) => [phase, index]));
 
 /**
  * 方向：全序的下标说了算（子序列图保持相对顺序，所以不用知道图）。
