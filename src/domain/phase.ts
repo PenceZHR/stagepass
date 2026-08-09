@@ -437,3 +437,17 @@ const PARALLEL_TWINS: Readonly<Partial<Record<Phase, Phase>>> = {
 export function parallelTwinOf(phase: string): Phase | null {
   return isPhase(phase) ? PARALLEL_TWINS[phase] ?? null : null;
 }
+
+/**
+ * 这些阶段的产物**没过人的手就不许批准**（批 6 · 编辑过门，机制见
+ * `domain/edit-gate.ts`）。
+ *
+ * 只有 Arch：它是钻石的分叉点，两轨都从它推导 —— 它的错误是共模失效，QA 的
+ * 对撞在原理上抓不住，人的编辑是唯一的防线。别的阶段各有下游或对撞替它们把关，
+ * 多进一个名单就是多一道每轮都要人动手的闸 —— 人的注意力是这个系统最贵的东西。
+ */
+const REQUIRES_HUMAN_EDIT: ReadonlySet<Phase> = new Set<Phase>(["Arch"]);
+
+export function requiresHumanEdit(phase: string): boolean {
+  return isPhase(phase) && REQUIRES_HUMAN_EDIT.has(phase);
+}

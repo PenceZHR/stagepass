@@ -1,4 +1,5 @@
 import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
+import { isEditGateGap } from "../domain/edit-gate";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import { templateFor } from "../domain/phase-template";
@@ -228,9 +229,11 @@ export async function runRound(
 ): Promise<RoundSettled> {
   // Only open gaps are put to the judge. A closed one is not a question, and
   // listing it would invite a verdict that reopens something already settled.
+  // 编辑过门那条也不进（批 6）：它是人和机器之间的门 —— 红方修不了它，裁判
+  // 判不了「人编辑没编辑」，送进去只会引来一个没有依据的表态把门顺手关掉。
   const openGaps = dependencies.gaps
     .all(request.changeId, request.phase)
-    .filter((gap) => gap.status === "open");
+    .filter((gap) => gap.status === "open" && !isEditGateGap(gap));
 
   /*
    * 名单落成文件，提示词里只印路径。空名单不写 —— 那时提示词里那句

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
 import {
-  PHASES, commitsWholeTree, isPhase, upstreamOf, type Phase,
+  PHASES, commitsWholeTree, isPhase, requiresHumanEdit, upstreamOf, type Phase,
 } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport, DEFAULT_SESSIONS, rollouts } from "../codex/tui-transport";
@@ -22,6 +22,7 @@ import {
 } from "../codex/archive";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { createTrustOps, type TrustOps } from "../codex/trust";
+import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import { BindingStore } from "../store/binding-store";
@@ -1673,6 +1674,46 @@ function serveParallel(
 }
 
 /**
+ * 编辑过门的**关门检测**（批 6，机制见 `domain/edit-gate.ts`）。
+ *
+ * 判据是机械的：这个阶段的产出文件（路径形态的那些）在工作树里有未提交的改动。
+ * StagePass 自己轮末就把产物目录窄提交掉了（`producedBy`），所以 settle 之后
+ * 树上这份文件的任何脏改动都只能出自人的手。
+ *
+ * 挂在 `/api/ask` 的进门处而不是读面板那条路上：检测到编辑要**写库**（关那条
+ * gap），而「看状态不该有副作用」—— 按下「请 Codex 问我」是一个动作，动作里
+ * 顺手把已经成立的事实落库，不违反那条原则。
+ *
+ * 人自己把编辑 commit 掉了的情形这里看不见 —— 那时门还开着，他在裁决表上驳回
+ * 或 waive 这一条（说明原因）就是出口，gap 的标题写着这句话。
+ */
+function settleEditGateIfEdited(
+  database: Database.Database,
+  sessions: PanelSessions,
+  changeId: string,
+): void {
+  let phase: Phase;
+  try {
+    phase = new ChangeStore(database).read(changeId).state.phase;
+  } catch {
+    return;   // 没有这个 Change —— decideGate 会用 404 说这件事
+  }
+  if (!requiresHumanEdit(phase)) return;
+  const gaps = new GapStore(database);
+  if (!gaps.all(changeId, phase).some(
+    (gap) => isEditGateGap(gap) && gap.status === "open")) return;
+  const root = sessions.workspaceFor(changeId);
+  if (root === null) return;
+  const artifacts = new EvidenceStore(database).read(changeId, phase).artifactIds
+    .filter((id) => !looksLikeSha(id));
+  const dirty = new Set(sessions.repo.dirtyPaths(root));
+  const edited = artifacts.filter((path) => dirty.has(path));
+  if (edited.length === 0) return;
+  gaps.replace(changeId, phase, editGateClosed(
+    gaps.all(changeId, phase), edited.join(", ")));
+}
+
+/**
  * 主屏那一份（GET /api/panel）：环、工作区两栏，外加**现在派得出去吗**。
  *
  * ## 为什么路障要在这一屏上
@@ -1936,6 +1977,7 @@ export async function handle(
    */
   if (url.pathname === "/api/ask" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
+    settleEditGateIfEdited(database, sessions, changeId);
     const { outcome, closeSession } = await decideGate({
       database, sessions, changeId,
       cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
@@ -2102,8 +2144,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/parallel" && request.method === "GET") {
-    serveParallel(database, url, response);
-    return;
+    return serveParallel(database, url, response);
   }
 
   /*

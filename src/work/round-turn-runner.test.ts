@@ -732,3 +732,57 @@ describe("L4 · E：产物有家，轮末自己入档，越界要报出来", () 
     assert.deepEqual(said, []);
   });
 });
+
+describe("RoundTurnRunner · 编辑过门（批 6）", () => {
+  it("**Arch 轮末开门，而裁判的名单里没有它** —— 模型判不了「人编辑没编辑」", async () => {
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    for (const phase of ["PRD", "Spec"] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [`${phase}.md`], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    assert.equal(context.changes.read(CHANGE).state.phase, "Arch");
+
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays, judgeSays]),
+        () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const gate = context.gaps.all(CHANGE, "Arch").find((gap) => gap.id === "EDIT-1");
+    assert.equal(gate?.status, "open", "Arch 轮末没开编辑过门");
+    assert.equal(gate?.severity, "P1", "门要是 P1 —— waive 是人的出口");
+
+    // 第二轮：门还开着（人没编辑），但**裁判的名单里没有它** —— 它是人和机器
+    // 之间的门，不是对抗的一部分。
+    context.changes.apply(CHANGE, "reject");
+    await dispatchRound(loop, "J2");
+    const asked = new WorklistStore(context.db).read(CHANGE, "Arch", 2)
+      .map((item) => item.target);
+    assert.ok(!asked.includes("EDIT-1"),
+      "编辑过门被送进了裁判的名单 —— 一个没有依据的表态会把门顺手关掉");
+  });
+
+  it("设计阶段的别家（Spec）不开门 —— 名单只有 Arch", async () => {
+    const context = open();
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    new EvidenceStore(context.db).put(CHANGE, "PRD", {
+      artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+    });
+    context.changes.apply(CHANGE, "approve");
+    assert.equal(context.changes.read(CHANGE).state.phase, "Spec");
+
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]), () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+    assert.ok(!context.gaps.all(CHANGE, "Spec").some((gap) => gap.id === "EDIT-1"));
+  });
+});

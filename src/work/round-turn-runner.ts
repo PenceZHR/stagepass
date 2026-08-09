@@ -5,8 +5,10 @@ import { join } from "node:path";
 
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
 import {
-  commitsWholeTree, parallelTwinOf, producesCommit, upstreamOf, type Phase,
+  commitsWholeTree, parallelTwinOf, producesCommit, requiresHumanEdit,
+  upstreamOf, type Phase,
 } from "../domain/phase";
+import { withEditGate } from "../domain/edit-gate";
 import { pendingSendBack } from "../domain/journey";
 import { templateFor } from "../domain/phase-template";
 import type { Gap } from "../domain/gap";
@@ -298,6 +300,14 @@ export class RoundTurnRunner implements TurnRunner {
     this.recordNotes(job.changeId, phase, round, settled);
     this.releaseIfMalformed(job.changeId, phase, round, settled.malformed);
     this.checkTemplate(job.changeId, phase, round, settled.gaps, cwd);
+    /*
+     * **编辑过门每轮重开**（批 6）：红方这一轮重写了产出，上一版上人的手迹随之
+     * 作废。门关（检测到编辑）在 `/api/ask` 那一侧 —— 开与关各归各的时机。
+     */
+    if (requiresHumanEdit(phase)) {
+      this.options.gaps.replace(job.changeId, phase, withEditGate(
+        this.options.gaps.all(job.changeId, phase), round));
+    }
 
     const artifactIds = this.producedBy(job.changeId, phase, round, settled.artifactIds);
 
