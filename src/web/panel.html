@@ -500,6 +500,10 @@ body::after {
   transition: transform .28s cubic-bezier(.2,.8,.2,1),
               background .28s, border-color .28s, box-shadow .28s;
 }
+/* 并行座位开着的格子：外沿一圈虚线 —— 这个钟点上同时有第二个座在跑。 */
+.stage-node.parallel button {
+  outline: 1px dashed rgba(226,200,164,.55); outline-offset: 5px;
+}
 .stage-node button i {
   width: 9px; height: 9px; border-radius: 50%;
   border: 1px solid rgba(255,255,255,.44); background: #575264;

@@ -1157,9 +1157,12 @@ function drawOrbit() {
     const node = document.createElement("div");
     // mark 放在最后，CSS 里对应的规则也排在 .bound / .live 之后 —— 一个阶段可以
     // 同时有线程、有进程、又被批准过，颜色以裁决为准。
+    // parallel：这一格开着并行座位（批 4 的分叉）—— 环的形状不变（用户
+    // 2026-08-09 拍：不要钻石画法，就要圆环），并行只用节点自己的记号说。
     node.className = "stage-node"
       + (entry.threadId ? " bound" : "")
       + (entry.live ? " live" : "")
+      + (entry.seat ? " parallel" : "")
       + (entry.mark ? ` ${entry.mark}` : "");
     node.style.setProperty("--a", `${angle}deg`);
 
