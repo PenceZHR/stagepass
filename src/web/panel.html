@@ -419,6 +419,9 @@ body::after {
   fill: none; stroke: rgba(255,166,120,.9); stroke-width: .4;
   stroke-linecap: round; stroke-linejoin: round;
 }
+/* 幽灵火箭：最近一跳的重演，比活边上的火箭淡一级 —— 它是回忆，不是事件。 */
+.orbit-map .rocket.ghost .hull { stroke: rgba(240,220,190,.5); }
+.orbit-map .rocket.ghost .flame { stroke: rgba(255,166,120,.45); }
 /*
  * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
  * 才和这一屏别的东西是同一种笔触。跟在后面的两个淡下去 —— 队形本身就是箭头。

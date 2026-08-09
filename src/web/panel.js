@@ -985,6 +985,7 @@ function drawMap(panel) {
    * 节点确实在环上（THREADED_PHASES 含它），indexOf 找得到就画。找不到就跳过，
    * 不去猜一个坐标。
    */
+  let lastTrip = null;   // 最近一次画得出来的回跳 —— 幽灵火箭要重飞它
   for (const jump of panel.journey ?? []) {
     if (jump.kind !== "backward") continue;
     const from = indexOf(jump.fromPhase);
@@ -1005,6 +1006,24 @@ function drawMap(panel) {
       d: `M ${start.x} ${start.y} Q ${apex.x} ${apex.y} ${end.x} ${end.y}`,
     }, `第 ${jump.round} 轮：${jump.fromPhase} → ${jump.toPhase}`
       + (jump.reason ? `\n理由：${jump.reason}` : "")));
+    lastTrip = { from: a, to: b };
+  }
+
+  /*
+   * **幽灵火箭：最近一跳定期重飞**（用户 2026-08-09 第二次拍板）。
+   *
+   * 回跳选项开着的时刻很短，只给活边配火箭的话，它 99% 的时间没有出场机会 ——
+   * 用户第一眼就问「火箭怎么没有」。所以病历的最后一笔由一枚淡一级的火箭
+   * 循环重演，环上随时看得到「它是怎么回去的」；更老的账保持静态，环不变机场。
+   *
+   * 路径本身不画（rail）：烟迹已经在那儿说了路线。若活边恰好同路，两枚火箭
+   * 完全同相叠住 —— 看起来就是一枚，不算噪音。
+   */
+  if (lastTrip !== null) {
+    const ghostId = "map-ghost";
+    const flight = rocketFlight(lastTrip.from, lastTrip.to);
+    map.append(svgNode("path", { id: ghostId, class: "rail", d: flight.d }));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, flight, 6.5));
   }
 
   /*
