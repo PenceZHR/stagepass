@@ -391,7 +391,17 @@ export class PanelSessions {
 
   /** 从 `fromIndex` 起，装着这句提示词的那一轮已经跑完了没有（`AskSessions`）。 */
   turnEnded(changeId: string, phase: Seat, fromIndex: number, prompt: string): boolean {
-    const path = this.rolloutPathFor(changeId, phase);
+    return this.completedIn(this.rolloutPathFor(changeId, phase), fromIndex, prompt);
+  }
+
+  /** 同一个判据，按线程 id 找文件 ——「上一轮死而复生」的探测用（`AskSessions`）。 */
+  threadTurnEnded(threadId: string, fromIndex: number, prompt: string): boolean {
+    const path = rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
+      .get(threadId) ?? null;
+    return this.completedIn(path, fromIndex, prompt);
+  }
+
+  private completedIn(path: string | null, fromIndex: number, prompt: string): boolean {
     if (path === null) return false;
     try {
       return findOwnCompletedTurn(

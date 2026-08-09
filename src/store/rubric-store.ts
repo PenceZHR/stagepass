@@ -387,6 +387,12 @@ export class RubricStore {
   latestRound(changeId: string, phase: Phase): {
     round: number;
     byRole: Record<RubricRole, StoredAssessment[]>;
+    /**
+     * 这一轮的判定落库的时刻（最晚那条）。裁决题面拿它对照账本判「上游在这之后
+     * 动过没有」—— 2026-08-09 真机：Plan 的题面写着「9 条全部满足」，其实是
+     * 三天前旧轮的判定，而上游 Arch 在那之后整个重写过。
+     */
+    at: string | null;
   } | null {
     const top = this.database.prepare(
       `SELECT max(round) AS round FROM rubric_assessments
@@ -399,7 +405,11 @@ export class RubricStore {
     for (const role of RUBRIC_ROLES) {
       byRole[role] = this.assessments(changeId, phase, role, top.round);
     }
-    return { round: top.round, byRole };
+    const when = this.database.prepare(
+      `SELECT max(created_at) AS at FROM rubric_assessments
+        WHERE change_id = ? AND phase = ? AND round = ?`,
+    ).get(changeId, phase, top.round) as { at: string | null };
+    return { round: top.round, byRole, at: when.at };
   }
 
   /** 一轮的判定。**按 round 读，不按 run 读** —— 理由见 schema 里那段注释。 */

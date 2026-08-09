@@ -14,6 +14,9 @@ import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
+import { RubricStore } from "../store/rubric-store";
+import { TurnStore } from "../store/turn-store";
+import { JobStore } from "../work/job-store";
 import { decideGate } from "./decide-gate";
 import type { AskSessions } from "./ask-human";
 
@@ -376,5 +379,127 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       assert.equal(calls.length, archived, `${action} 触发归档的次数`);
       database.close();
     }
+  });
+});
+
+describe("裁决题面的两条真机注记（2026-08-09）", () => {
+  /**
+   * **上一轮死而复生。** 被判 `codex_unavailable` 的那条线程后来把整轮跑完了
+   * （Arch r5：晚 77 分钟，产出落盘无人认领）—— 人选重跑之前必须知道磁盘上
+   * 已经有东西。只知情，不自动收编。
+   */
+  it("上一轮判了失败而线程后来跑完了 —— 题面要说", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    new JobStore(database).enqueue({
+      id: "JOB-1", changeId: CHANGE, kind: "phase_turn",
+      deadlineAt: Date.now() + 60_000, maxAttempts: 1, phase: "PRD",
+    });
+    const turns = new TurnStore(database);
+    turns.allocate({
+      id: "TURN-1", jobId: "JOB-1",
+      request: { changeId: CHANGE, phase: "PRD", prompt: "第 1 轮的提示词" },
+    });
+    turns.markDispatched("TURN-1", "THREAD-9");
+    turns.markFailed("TURN-1", "codex_unavailable: turn did not complete");
+
+    const probed: { threadId: string; prompt: string }[] = [];
+    const result = await decideGate({
+      database, changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
+      ...inert,
+      sessions: {
+        type: async () => true, has: () => true,
+        threadTurnEnded: (threadId, _from, prompt) => {
+          probed.push({ threadId, prompt });
+          return true;
+        },
+      },
+    });
+    assert.equal(result.outcome.kind, "unanswered");
+    // 探的是那条 turn 自己的线程和提示词，不是阶段现在绑着的。
+    assert.deepEqual(probed, [{ threadId: "THREAD-9", prompt: "第 1 轮的提示词" }]);
+    const { message } = database.prepare(
+      "SELECT message FROM questions WHERE change_id = ? ORDER BY asked_at DESC LIMIT 1",
+    ).get(CHANGE) as { message: string };
+    assert.match(message, /后来把整轮跑完了/);
+    assert.match(message, /codex_unavailable/);
+    database.close();
+  });
+
+  it("线程没跑完（探测说 false）就一个字都不多说", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    new JobStore(database).enqueue({
+      id: "JOB-1", changeId: CHANGE, kind: "phase_turn",
+      deadlineAt: Date.now() + 60_000, maxAttempts: 1, phase: "PRD",
+    });
+    const turns = new TurnStore(database);
+    turns.allocate({
+      id: "TURN-1", jobId: "JOB-1",
+      request: { changeId: CHANGE, phase: "PRD", prompt: "第 1 轮的提示词" },
+    });
+    turns.markDispatched("TURN-1", "THREAD-9");
+    turns.markFailed("TURN-1", "codex_unavailable: turn did not complete");
+
+    const result = await decideGate({
+      database, changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
+      ...inert,
+      sessions: {
+        type: async () => true, has: () => true,
+        threadTurnEnded: () => false,
+      },
+    });
+    assert.equal(result.outcome.kind, "unanswered");
+    const { message } = database.prepare(
+      "SELECT message FROM questions WHERE change_id = ? ORDER BY asked_at DESC LIMIT 1",
+    ).get(CHANGE) as { message: string };
+    assert.doesNotMatch(message, /后来把整轮跑完了/);
+    database.close();
+  });
+
+  /**
+   * **判定是旧的。** Plan 的题面写着「9 条全部满足，裁判：可以了」，其实是三天前
+   * 旧轮落库的 —— 上游 Arch 在那之后整个重写过。题面必须自己说出这个时间差。
+   */
+  it("判定落库之后上游又结算过 —— 题面要标出来", async () => {
+    const database = freshDatabase();
+    const changes = new ChangeStore(database);
+    const evidence = new EvidenceStore(database);
+
+    // 判定先落库（旧日期）——「三天前的旧轮」。
+    const rubrics = new RubricStore(database, {
+      now: () => new Date("2026-08-06T00:00:00.000Z"),
+    });
+    rubrics.installDefaults(PROJECT);
+    const rubric = rubrics.effective(PROJECT, CHANGE, "Spec", "producer");
+    assert.ok(rubric);
+    rubrics.record(CHANGE, "Spec", "producer", 1, rubric, [{
+      criterionKey: rubric.criteria[0]!.key, verdict: "yes", evidence: "看过了",
+    }]);
+
+    // 上游 PRD 在那之后（真实 now）结算过新产出，然后批到 Spec、跑完一轮。
+    evidence.put(CHANGE, "PRD", {
+      artifactIds: ["prd.md"], blockers: [], waivedBlockerIds: [],
+    });
+    changes.apply(CHANGE, "start");
+    changes.apply(CHANGE, "settle");
+    changes.apply(CHANGE, "approve");
+    evidence.put(CHANGE, "Spec", {
+      artifactIds: ["spec.md"], blockers: [], waivedBlockerIds: [],
+    });
+    changes.apply(CHANGE, "start");
+    changes.apply(CHANGE, "settle");
+
+    const result = await decideGate({
+      database, changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
+      ...inert, sessions: { type: async () => true, has: () => true },
+    });
+    assert.equal(result.outcome.kind, "unanswered");
+    const { message } = database.prepare(
+      "SELECT message FROM questions WHERE change_id = ? ORDER BY asked_at DESC LIMIT 1",
+    ).get(CHANGE) as { message: string };
+    assert.match(message, /上游 PRD 又结算过新产出/);
+    assert.match(message, /上游变动\*\*之前\*\*/);
+    database.close();
   });
 });

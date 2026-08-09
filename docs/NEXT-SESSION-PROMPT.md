@@ -1,15 +1,17 @@
 # 下一轮会话的开场提示词
 
-> 直接把下面整段贴给新会话。**这份每次交接都要重写** —— 上一版整篇过期了半个月
-> 没人发现（还写着 `main = 144bf19`、`pnpm check 418`、一个早就不存在的 CHG-002），
-> 而它正是新会话第一眼看的东西。
+> 直接把下面整段贴给新会话。**这份每次交接都要重写** —— 它是新会话第一眼看的
+> 东西，过期一句就会误导一整个会话（上上版整篇过期了半个月没人发现）。
+>
+> 本版写于 2026-08-09 07:00（美东)，当时 Plan 正在跑一轮 —— 读到这里先查库里
+> 的真状态，别拿下面的快照当现在。
 
 ---
 
 接手 StagePass。**先读这两份，别跳过：**
 
-1. `docs/HANDOFF-2026-08-08.md` —— 最近一次的账：三个真机 bug、撤回并行座位、
-   TechSpec 并进 Arch、「输出太宽泛」的治法。**它的 §〇 是三条接手须知。**
+1. `docs/HANDOFF-2026-08-08.md` —— 最近一次的大账：三个真机 bug、撤回并行座位、
+   TechSpec 并进 Arch、「输出太宽泛」的治法。
 2. `docs/PLAN-2026-08-06.md` —— 五批的总纲（批 0/1/2/5 已落，批 3 撤回，批 4 待）
 
 要挖背景再读：`PRD-stagepass-rebuild-2026-07-28.md`（唯一权威）、
@@ -17,26 +19,33 @@
 `RUBRICS-AND-TEMPLATES.md`（十份模板和标准的现状，**从代码生成**，改完跑
 `node --import tsx scripts/dump-rubrics.ts`）。
 
-## 当前状态（2026-08-09 00:30）
+## 2026-08-09 这天做了什么（快照）
 
-- 分支 `build-the-base-2026-08-05`，`pnpm check` **1112 全绿**，工作树干净
-- 阶段 **11 个**（TechSpec 2026-08-08 退休，并进 Arch）：
-  `PRD → Spec → Arch → Plan → TestPlan → Build → Review → QA → Merge → Retro → Done`
-  （`Fix` 由打回进入，不在主线上）
-- 真库 `~/.stagepass/panel.db`：`PRJ-001 小游戏`（`~/Desktop/demo`）、
-  **`CHG-001` 停在 `Arch/settled`，`returnStack: ["Build"]`**
+- **面板已经重启过了**：`bc956c6`（认自己提示词）从 06:39 起生效。此前它没生效时
+  又付了两次学费：Arch 第 5 轮 3 小时超时被判死（线程后来跑完，`Arch-r5.md`
+  落盘无人认领，被第 6 轮 commit 卷走）；Plan 派发 2 秒被误判。
+- **Arch 重写收工并批准**（seq 79，`Arch → Plan`）：7 轮，从「11 条全 yes 但人说
+  太宽泛」到「20 条含粒度挡门全过」。「输出太宽泛」的治法在真机上立住了。
+- **`8938e1b`**：裁决会话模型抽风（turn 结束了却没把题端给人）不再让人干等 ——
+  waitForAnswer 加第三个活性判据 + 自动补问一次 + 所有「没答上」的下场落库。
+- **裁决题面加了两条真机注记**（这天最后一个 commit）：
+  ① 上一轮判了失败而线程后来跑完了 → 题面说「产出可能已落盘，先看一眼再选」；
+  ② 判定落库之后上游又结算过 → 题面标「这些判定评的是上游变动之前的东西」
+  （Plan 那道「9 条全部满足」其实是三天前旧轮的判定，人差点拿着旧话裁新局）。
+
+## 当时的状态（快照，先查库核实）
+
+- 分支 `build-the-base-2026-08-05`，`pnpm check` 全绿，工作树干净
+- 阶段 11 个：`PRD → Spec → Arch → Plan → TestPlan → Build → Review → QA →
+  Merge → Retro → Done`（TechSpec/Fix 退休在册）
+- 真库 `~/.stagepass/panel.db`：`CHG-001` 在 **`Plan/running`**（对着 Arch-r7
+  重写计划的那一轮），`returnStack: ["Build"]` —— Plan 之后沿 TestPlan 回 Build
 
 ## 起面板（**必须从真终端起**，别用 Run 按钮 —— 那样起的面板 spawn codex 必 EPERM 秒死）
 
 ```bash
 cd ~/Desktop/stagepass && node --import tsx scripts/panel.ts --db ~/.stagepass/panel.db --change CHG-001 --effort xhigh --turn-timeout 180
 ```
-
-## 第一件事
-
-**重启面板**（当前跑的进程是 08-08 13:04 起的旧代码，没有 `bc956c6` 那个修复），
-然后处理 CHG-001 在 Arch 上等着的裁决：第 4 轮判了 6 条 `no`，裁判说还要再来一轮。
-选「再来一轮」会当场续跑，不用回来再按。
 
 ## 还欠着人拍的四件事
 
