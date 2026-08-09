@@ -64,6 +64,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
   "store/change-store.ts": 0,
+  // 并行座位（批 3）。和 change-store 同一层：它是主线旁边的第二个座，
+  // change-store 的收编要在同一个事务里读它的行。
+  "store/parallel-store.ts": 0,
   "store/project-store.ts": 0,
 
   "domain/gate.ts": 1,
@@ -96,6 +99,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/journey.ts": 4,
   // 十三个阶段各自那一节。纯文本、只 import 一个类型，所以和读它的 round.ts 同层。
   "domain/phase-play.ts": 4,
+  // 一个阶段的产出模板。和 `phase-play.ts` 逐字同一个形状（每阶段一份文本、
+  // 只 import `Phase` 类型、读它的是 round.ts），所以同层。
+  "domain/phase-template.ts": 4,
   "codex/subagent.ts": 4,
   "work/round-runner.ts": 4,
   // 一轮里那两句只写给人看的话（裁判的结论、反方的整体判断）。它只依赖
@@ -160,6 +166,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 「把这次改动要什么问出来」这个用例。够得着的最高一层是 `domain/brief.ts`（3），
   // 所以和它同层 —— 它连 Codex 都不认识（「跑一次 turn」是注进来的）。
   "app/record-brief.ts": 3,
+  // 批 2「模型起草，人改」：和 record-brief 同一族用例，同一层。
+  "app/converge-brief.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
   // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
@@ -255,6 +263,37 @@ describe("standing · layers depend downward only", () => {
       }
     }
     assert.deepEqual(violations, []);
+  });
+});
+
+/**
+ * **「谁是谁的上游」只有一份实现。**
+ *
+ * 这条是被咬过才写的：`upstreamOf` 用主线顺序的前缀算上游，而
+ * `round-turn-runner` 又自己写了一遍同样的前缀去挑「已批准的上游产物」——
+ * 两份拷贝，而且**两份都是错的**（TestPlan 从来没消费过 Plan，§8.6·①）。
+ *
+ * 判法：production 里除 `domain/phase.ts` 之外，谁都不许自己按顺序切前缀去当
+ * 「上游」。要上游就调 `upstreamOf`。
+ */
+describe("standing · 上游只有一份算法", () => {
+  it("没有第二处自己切主线前缀当上游", () => {
+    const sliced: string[] = [];
+    for (const file of production) {
+      if (file.path === "domain/phase.ts") continue;   // 它就是那一份实现
+      const code = withoutComments(file.text);
+      // `PHASES.slice(0, …indexOf(phase))` / `order.slice(0, …)` 这一族。
+      if (/\b(PHASES|\w*[Oo]rder)\s*\.\s*slice\(\s*0\s*,/.test(code)) {
+        sliced.push(file.path);
+      }
+    }
+    assert.deepEqual(sliced, [], "要上游就调 upstreamOf，别再自己切一遍");
+  });
+
+  it("这条护栏不是空转的 —— `upstreamOf` 真的有人在用", () => {
+    const callers = production.filter((file) =>
+      file.path !== "domain/phase.ts" && file.text.includes("upstreamOf("));
+    assert.ok(callers.length >= 2, `只有 ${callers.length} 个调用方`);
   });
 });
 
@@ -417,10 +456,15 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 再抽 `app/edit-rubric.ts` + `web/panel-view.ts`（那两屏的读）（→ 652）、
   // `app/workspace.ts`（新建 / 删除）（→ 607）。
   //
-  // **剩下的不再是「抽一块业务逻辑」能降的了。** 607 行里，pty 那一段 113 行是
-  // 真正的 HTTP 流，十六条路由各自的转发加起来又是三百多 —— 要下到 300，得把
-  // 这条 if 链换成一张路由表，那是另一种改动，不是这一批的延长线。
-  "web/panel-server.ts#handle": 607,
+  // **剩下的不再是「抽一块业务逻辑」能降的了。** pty 那一段 113 行是真正的 HTTP 流，
+  // 十几条路由各自的转发加起来又是三百多 —— 要下到 300，得把这条 if 链换成一张
+  // 路由表，那是另一种改动，不是这一批的延长线。
+  // 2026-08-06：`serveRubricSave` / `serveRubricUpgrade` 抽出去（607 → 579）。
+  // **加一条路由必须先还等量的债**，这条棘轮就是这么用的。
+  // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
+  // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）；
+  // 同日再抽 `serveParallel`、撤掉并行座位的入口（553 → 517）。
+  "web/panel-server.ts#handle": 517,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {

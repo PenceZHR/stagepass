@@ -41,6 +41,15 @@ export interface Criterion {
   readonly text: string;
   /** 判定为 `no` 时是否生成一条挡闸门的 gap。 */
   readonly blocking: boolean;
+  /**
+   * 它判的是产出模板的哪一节（`domain/phase-template.ts` 的 `TemplateSection.key`）。
+   *
+   * `null` = 不挂节 —— 老数据、以及还没有模板的那十一个阶段。
+   *
+   * **这一格是「越界」的机械判据。** 用户 2026-08-06：「PRD 阶段只能留 PRD 的，
+   * 就算漏了也不能留。」一条标准说不清自己管哪一节，就没有任何东西能判它越没越界。
+   */
+  readonly section: string | null;
 }
 
 /**
@@ -54,6 +63,8 @@ export interface CriterionDraft {
   readonly key?: string | null;
   readonly text: string;
   readonly blocking: boolean;
+  /** 挂哪一节。缺席和 `null` 一样，都是「不挂」。 */
+  readonly section?: string | null;
 }
 
 /**
@@ -73,6 +84,14 @@ export interface Assessment {
   readonly criterionText: string;
   /** 判定当时它是否标着阻断。 */
   readonly blockingThen: boolean;
+  /**
+   * 它判的是模板的哪一节。`null` = 这条标准没挂节。
+   *
+   * **不新增列**：从 `rubric_criteria` 按 `(rubric_id, criterion_key)` join 出来 ——
+   * `rubric_id` 记的就是判定当时那一版，所以 join 出来的天然是快照，和
+   * `criterionText` / `blockingThen` 同一个语义，只是不用再存一遍。
+   */
+  readonly section: string | null;
 }
 
 export class UntrustedKeyError extends Error {
@@ -137,7 +156,11 @@ export function nextVersion(
     if (taken.has(key)) throw new InvalidCriterionError("key_reused");
     taken.add(key);
 
-    return { key, ordinal: index, text: entry.text, blocking: entry.blocking };
+    return {
+      key, ordinal: index, text: entry.text, blocking: entry.blocking,
+      // 缺席和 null 统一成 null —— 两种「没挂」在库里长成一样，在类型里也该一样。
+      section: entry.section ?? null,
+    };
   });
 }
 
@@ -214,6 +237,17 @@ export function summariseAssessments(
     `${ROLE_LABEL[role]}「${entry.criterionText}」`
     + (entry.verdict === "no" ? "不满足" : "模型漏答"));
   const rest = missed.length - named.length;
-  return `标准 ${all.length} 条里 ${missed.length} 条没勾上：`
+  /*
+   * **卡在哪一节**（用户 2026-08-06：「人的耐心也是要有依据的」）。
+   *
+   * 点名两条之后就截断了，而「还差多少、差在哪个方向」不该跟着被截掉 —— 节的数量
+   * 是个位数，摆全了也就一行。人按「再来一轮还是批准」时，这一行才是他真正在读的：
+   * 三条全卡在验收标准上，和三条散在三节里，是完全不同的两种局面。
+   */
+  const sections = [...new Set(missed
+    .map(({ entry }) => entry.section)
+    .filter((each): each is string => each !== null))];
+  const where = sections.length === 0 ? "" : `（卡在 ${sections.join("、")}）`;
+  return `标准 ${all.length} 条里 ${missed.length} 条没勾上${where}：`
     + named.join("；") + (rest > 0 ? `；另有 ${rest} 条` : "") + "。";
 }

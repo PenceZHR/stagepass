@@ -6,7 +6,7 @@ import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "./change-store";
 import { ProjectStore } from "./project-store";
 import { ReasonRequiredError, RubricStore } from "./rubric-store";
-import { PHASES } from "../domain/phase";
+import { PHASES, isRetired } from "../domain/phase";
 import { RUBRIC_ROLES } from "../domain/rubric";
 
 const PROJECT = "PRJ-1";
@@ -29,6 +29,79 @@ function open(): { database: Database.Database; rubrics: RubricStore } {
 
 const projectScope = { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" } as const;
 const changeScope = { projectId: PROJECT, changeId: CHANGE, phase: "Spec", role: "producer" } as const;
+
+describe("rubric store · 把没被人碰过的出厂标准升上来", () => {
+  it("**v1 且和出厂版不同的，升到新出厂版**", () => {
+    const { rubrics, database } = open();
+    rubrics.installDefaults(PROJECT);
+    // 装一个「旧出厂版」：直接改库，模拟一个更早的默认装在这里
+    database.prepare("UPDATE rubric_criteria SET text = ?, section = NULL WHERE rubric_id IN (SELECT id FROM rubrics WHERE phase = ? AND role = ?)")
+      .run("老措辞", "PRD", "producer");
+
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.ok(result.upgraded.includes("PRD/producer"), `没升：${JSON.stringify(result)}`);
+
+    const after = rubrics.current({ projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" })!;
+    assert.equal(after.version, 2);
+    assert.ok(after.criteria.every((each) => each.section !== null), "升上来的还是没挂节");
+    assert.ok(after.criteria.every((each) => each.blocking), "升上来的还是不阻断");
+  });
+
+  it("**人改过的一个字都不碰**，而且说得出为什么", () => {
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+    const scope = { projectId: PROJECT, changeId: null, phase: "PRD" as const, role: "producer" as const };
+    // 换掉出厂那 11 条 = 退休一批阻断项，`save` 要一句理由。
+    rubrics.save(scope, [{ text: "我自己写的一条", blocking: false }], "我不要那些");
+
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.ok(!result.upgraded.includes("PRD/producer"));
+    assert.ok(
+      result.skipped.some((each) => each.scope === "PRD/producer" && each.why.includes("改过")),
+      `跳过的没被报出来：${JSON.stringify(result.skipped)}`,
+    );
+    assert.equal(rubrics.current(scope)!.criteria[0]!.text, "我自己写的一条");
+  });
+
+  it("已经是最新的就不动 —— 白升一版会让「v1 = 没人碰过」这条判据失效", () => {
+    const { rubrics } = open();
+    rubrics.installDefaults(PROJECT);
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.deepEqual(result.upgraded, [], "什么都没变却升了版");
+    assert.deepEqual(result.skipped, []);
+    assert.equal(
+      rubrics.current({ projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" })!.version,
+      1,
+    );
+  });
+});
+
+describe("rubric store · criterion 挂的模板节", () => {
+  it("**真的过一遍 SQLite 存得住、读得回**", () => {
+    const { rubrics } = open();
+    rubrics.save(projectScope, [
+      { text: "验收标准可测", blocking: true, section: "acceptance" },
+      { text: "不挂节的那种", blocking: false },
+    ]);
+
+    const current = rubrics.current(projectScope)!;
+    assert.equal(current.criteria[0]!.section, "acceptance");
+    assert.equal(current.criteria[1]!.section, null, "没给就是 null，不是 undefined");
+  });
+
+  it("改一版之后 section 跟着新的走，key 不动", () => {
+    const { rubrics } = open();
+    rubrics.save(projectScope, [{ text: "验收标准可测", blocking: true }]);
+    const key = rubrics.current(projectScope)!.criteria[0]!.key;
+
+    rubrics.save(projectScope, [
+      { key, text: "验收标准可测", blocking: true, section: "acceptance" },
+    ]);
+    const after = rubrics.current(projectScope)!;
+    assert.equal(after.criteria[0]!.key, key, "key 动了，派生的 gap id 就断了");
+    assert.equal(after.criteria[0]!.section, "acceptance");
+  });
+});
 
 describe("rubric store · 版本化写入", () => {
   it("存一版，读回来", () => {
@@ -227,25 +300,34 @@ describe("rubric store · 判定按轮读", () => {
 });
 
 describe("rubric store · 出厂标准", () => {
-  it("**一条都不阻断** —— 这条不是保守，是有出口的问题", () => {
+  it("**装进库之后，阻断 ⟺ 挂了模板节** —— 一条都不许多", () => {
     /*
-     * not_assessed 是阻断的。出厂就勾上阻断，等于任何一次模型漏答都会立刻给每个
-     * 项目挂上一条挡门的东西，而它的出口只有「进设置里把这条标准撤下来」——
+     * 出厂一律不阻断（2026-07-31 拍的）：not_assessed 是阻断的，出厂就勾上等于任何
+     * 一次漏答都给每个项目挂一条挡门的东西，出口只有「进设置里把它撤下来」——
      * 人会在完全不知道 rubric 是什么的情况下先被拦住。
+     *
+     * 2026-08-06 **只对挂了模板节的那些窄口例外**：那时漏答有了另一个出口 ——
+     * 缺节在红方那一侧就被 `templateGaps` 机械判掉了，轮不到反方漏答。
+     *
+     * 这条测试钉的是**边界**，不是放宽：两个方向都要成立，例外一条都不许多。
+     * （`domain/rubric-defaults.test.ts` 有同一条的域层版本 —— 这一份走的是
+     * 「真的装进库、再读回来」，两边判的不是同一段路。）
      */
     const { rubrics } = open();
     rubrics.installDefaults(PROJECT);
 
-    const blocking: string[] = [];
+    const wrong: string[] = [];
     for (const phase of PHASES) {
       for (const role of RUBRIC_ROLES) {
         const current = rubrics.current({ projectId: PROJECT, changeId: null, phase, role });
         for (const entry of current?.criteria ?? []) {
-          if (entry.blocking) blocking.push(`${phase}/${role}: ${entry.text}`);
+          if (entry.blocking !== (entry.section !== null)) {
+            wrong.push(`${phase}/${role}: blocking=${entry.blocking} section=${entry.section} ${entry.text}`);
+          }
         }
       }
     }
-    assert.deepEqual(blocking, []);
+    assert.deepEqual(wrong, []);
   });
 
   it("只补空缺 —— 人改过的一个字都不碰", () => {
@@ -281,7 +363,9 @@ describe("rubric store · 出厂标准", () => {
     const { rubrics } = open();
     rubrics.installDefaults(PROJECT);
     const missing: string[] = [];
-    for (const phase of PHASES.filter((entry) => entry !== "Done")) {
+    // Done 没有 turn；退休的阶段不再装出厂标准（库里已有的原样留着）。
+    for (const phase of PHASES.filter(
+      (entry) => entry !== "Done" && !isRetired(entry))) {
       for (const role of RUBRIC_ROLES) {
         const current = rubrics.current({ projectId: PROJECT, changeId: null, phase, role });
         if ((current?.criteria.length ?? 0) === 0) missing.push(`${phase}/${role}`);

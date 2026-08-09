@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 
 import { computeGate, EMPTY_EVIDENCE, type Evidence } from "./gate";
 import {
+  APPROVE_AS_RECOMMENDED,
+  approveTargetFrom,
   BadQuestionShapeError,
   clarificationQuestion,
   decisionFrom,
@@ -854,5 +856,60 @@ describe("L3 · Review/QA 的裁决表里有「再审一次」（旧账 F）", (
     assert.equal(runsAgainHere(decisionLabel("rerun", "Review")), true);
     // 「打回去修」照旧不算：那时 Change 已经换到 Fix 了。
     assert.equal(runsAgainHere(decisionLabel("reject", "Review")), false);
+  });
+});
+
+/**
+ * §8.10：**批准之后进哪，人可以选。**
+ *
+ * 形状和「打回哪一份」那一格逐字相同 —— 静态标签配动态名单、对着题目自己的
+ * enum 校验、默认排第一。只有一处**故意不同**：没选目标时，打回是一次废掉的
+ * 裁决（`no_target_chosen`），批准是最常见的那一次批准（走推荐）。
+ */
+describe("批准之后进哪（§8.10）", () => {
+  // 干净的证据 —— 闸门得真的放行 approve，那一格才有存在的理由。
+  const gate = computeGate(
+    { phase: "PRD", status: "settled", returnStack: [] }, CLEAN);
+  const ask = (alternatives: readonly Phase[]): Question =>
+    gateDecisionQuestion({
+      phase: "PRD", gate, summary: "s", approveAlternatives: alternatives,
+    })!;
+
+  it("**没有第二条路就不摆那一格** —— 一道没有选项的题比不问更糟", () => {
+    const question = ask([]);
+    assert.equal("U" in question.requestedSchema.properties, false);
+  });
+
+  it("有别的路时，「按推荐走」排第一 —— 一路回车的人一个字都不用打", () => {
+    const field = ask(["QA", "Merge"]).requestedSchema.properties.U;
+    assert.deepEqual([...field?.enum ?? []], [APPROVE_AS_RECOMMENDED, "QA", "Merge"]);
+    // `decision` 仍然是最后一格 —— 最后一格必须是选项格，整张表才提交得动。
+    assert.equal(Object.keys(ask(["QA"]).requestedSchema.properties).at(-1), DECISION_FIELD);
+  });
+
+  it("「按推荐走」= null，而 null 在落地那层的意思是**走推荐**，不是「没选」", () => {
+    const question = ask(["QA"]);
+    const answer = (value: string): Answer =>
+      ({ action: "accept", content: { U: value, [DECISION_FIELD]: "x" } });
+    assert.equal(approveTargetFrom(question, answer(APPROVE_AS_RECOMMENDED)), null);
+    assert.equal(approveTargetFrom(question, answer("QA")), "QA");
+  });
+
+  it("**名单外的一律不认** —— enum 是人当时真正看见的那份", () => {
+    const question = ask(["QA"]);
+    for (const value of ["Merge", "Done", "不是阶段", ""]) {
+      assert.equal(
+        approveTargetFrom(question, {
+          action: "accept", content: { U: value, [DECISION_FIELD]: "x" },
+        }),
+        null, value,
+      );
+    }
+    // 按了 Esc 的那一份，一个字都不读。
+    assert.equal(
+      approveTargetFrom(question, { action: "decline", content: { U: "QA" } }), null);
+    // 压根没那一格的题（没有第二条路），也读不出东西来。
+    assert.equal(
+      approveTargetFrom(ask([]), { action: "accept", content: { U: "QA" } }), null);
   });
 });

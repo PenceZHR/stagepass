@@ -4,6 +4,7 @@ import type { ChangeAction } from "../domain/change-state";
 import {
   decisionFrom,
   readAnswer,
+  approveTargetFrom,
   sendBackTargetFrom,
   type Answer,
   type Question,
@@ -311,7 +312,7 @@ export class QuestionStore {
       finish();
       return { kind: "recorded" };
     }
-    // 目标从**这道题自己的答案**读（T 是第一趟的格子，就在这份里）。
+    // 目标从**这道题自己的答案**读（T / U 都是第一趟的格子，就在这份里）。
     let to: Phase | undefined;
     if (action === "sendBack") {
       const target = sendBackTargetFrom(record.question, answer);
@@ -320,6 +321,14 @@ export class QuestionStore {
         return { kind: "refused", action, reason: "no_target_chosen" };
       }
       to = target;
+    }
+    if (action === "approve") {
+      /*
+       * §8.10：批准之后进哪，人可以选。**没选就是没选**，`transition` 会走推荐
+       * 那条 —— 和打回不一样，那边没选目标是一次废掉的裁决，这边没选是最常见的
+       * 那一次批准。
+       */
+      to = approveTargetFrom(record.question, answer) ?? undefined;
     }
     const reason = options?.sendBackReason?.trim() ?? "";
     this.commands.apply({

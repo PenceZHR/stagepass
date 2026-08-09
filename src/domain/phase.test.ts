@@ -9,6 +9,7 @@ import {
   PHASES,
   phaseGraphOf,
   upstreamOf,
+  type Phase,
 } from "./phase";
 
 /**
@@ -19,9 +20,10 @@ import {
  * （跳过阶段，不重排 —— 重排会让「上游」这个词失去意义，而长回边建在它上面）。
  */
 describe("L0 · 阶段图是值：默认图与老常量逐字一致", () => {
-  it("默认图的主线 = 除 Fix 外的 11 个阶段，Done 收尾", () => {
+  it("默认图的主线 = 除 Fix 外的 12 个阶段，Done 收尾", () => {
+    // Arch 在 Spec 之后（2026-08-08：TechSpec 并进 Arch，见 RETIRED_PHASES）。
     assert.deepEqual(DEFAULT_GRAPH.order, [
-      "PRD", "Spec", "TechSpec", "Plan", "TestPlan",
+      "PRD", "Spec", "Arch", "Plan", "TestPlan",
       "Build", "Review", "QA", "Merge", "Retro", "Done",
     ]);
   });
@@ -88,7 +90,13 @@ describe("L0 · 图的合法性 —— 拒绝在构造时发生，不在走到�
 
 describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
   it("严格上游，按主线顺序", () => {
-    assert.deepEqual(upstreamOf("TechSpec"), ["PRD", "Spec"]);
+    /*
+     * TechSpec 退休了（并进 Arch）。它自己的上游名单**没变** —— `upstreamOf`
+     * 过滤的是「上游那几个在不在图上」，不是「问的这个在不在图上」。名单还对，
+     * 只是没有任何 Change 会再走到它去问这个问题。
+     */
+    assert.deepEqual(upstreamOf("TechSpec"), ["PRD", "Spec", "Arch"]);
+    assert.deepEqual(upstreamOf("Arch"), ["PRD", "Spec"]);
     assert.deepEqual(upstreamOf("Spec"), ["PRD"]);
   });
 
@@ -109,5 +117,53 @@ describe("L0 · upstreamOf —— sendBack 的合法目标名单", () => {
     for (const phase of DEFAULT_GRAPH.order) {
       assert.ok((PHASES as readonly string[]).includes(phase));
     }
+  });
+
+  /**
+   * §8.6·①：**上游按「真正消费谁」算，不按顺序上谁在前面。**
+   *
+   * `upstreamOf("TestPlan")` 原来含 `Plan` —— 面板就摆着「从 TestPlan 打回 Plan」
+   * 这个选项，而 TestPlan 从来没消费过 Plan 的任何东西。一个必然说不通的打回摆在
+   * 人眼前，和一个假选项没有区别。
+   */
+  it("**TestPlan 的上游里没有 Plan** —— 它没消费过 Plan 的任何东西", () => {
+    assert.deepEqual(upstreamOf("TestPlan"), ["PRD", "Spec", "Arch"]);
+    assert.deepEqual(upstreamOf("Plan"), ["PRD", "Spec", "Arch"]);
+  });
+
+  /**
+   * 换掉的只有 TestPlan 那一行。**其余十一个逐条和原来的顺序前缀一致** ——
+   * 这条把「这一刀有多窄」钉住：Build 消费 Plan 和 TestPlan，传递下去仍然够得着
+   * TechSpec / Spec / PRD；Review 之后的每一个都通过 Build 够得着全部。
+   */
+  it("除 TestPlan 外，谁的上游都没变", () => {
+    const prefix = (phase: Phase): Phase[] => {
+      const at = DEFAULT_GRAPH.order.indexOf(phase);
+      return at <= 0 ? [] : [...DEFAULT_GRAPH.order.slice(0, at)];
+    };
+    for (const phase of PHASES) {
+      // TechSpec 退休了，它不在图上，`prefix` 对它算不出东西（indexOf 是 -1）。
+      if (phase === "TestPlan" || phase === "Fix" || phase === "TechSpec") continue;
+      assert.deepEqual(upstreamOf(phase), prefix(phase), phase);
+    }
+  });
+
+  it("传递闭包跨得过被跳掉的阶段", () => {
+    // Arch 被跳了，Plan 的上游仍然是 Spec / PRD —— 传递过来的。
+    const graph = phaseGraphOf(["PRD", "Spec", "Plan", "Build", "Review", "Done"]);
+    assert.deepEqual(upstreamOf("Plan", graph), ["PRD", "Spec"]);
+  });
+
+  /**
+   * **名单的顺序是有语义的**：`journey.ts` 画环时取 `.at(-1)` 当「最近的那个上游」。
+   * 闭包的遍历顺序不是主线顺序，靠它等于靠巧合。
+   */
+  it("名单按主线顺序排 —— `.at(-1)` 必须是最近的那个上游", () => {
+    for (const phase of PHASES) {
+      const upstream = upstreamOf(phase);
+      const byOrder = DEFAULT_GRAPH.order.filter((each) => upstream.includes(each));
+      assert.deepEqual(upstream, byOrder, phase);
+    }
+    assert.equal(upstreamOf("Build").at(-1), "TestPlan");
   });
 });

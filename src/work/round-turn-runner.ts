@@ -1,10 +1,14 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
 import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
+import { join } from "node:path";
+
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
-import { PHASES, producesCommit, type Phase } from "../domain/phase";
+import { producesCommit, upstreamOf, type Phase } from "../domain/phase";
 import { pendingSendBack } from "../domain/journey";
-import { roundFromLedger, type RoundConclusion } from "../domain/round";
+import { templateFor } from "../domain/phase-template";
+import type { Gap } from "../domain/gap";
+import { roundFromLedger, templateGaps, type RoundConclusion } from "../domain/round";
 import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
@@ -50,6 +54,11 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
   /** 红方要做什么。按阶段给一句话。 */
   readonly taskFor: (phase: string) => string;
   /**
+   * 并行座位这一轮是第几轮（批 3）—— 座位的 start 不进账本，账本数不到。
+   * 不给就退回账本那条路（老调用点一个字不用改）。
+   */
+  readonly parallelRound?: (changeId: string, phase: Phase) => number;
+  /**
    * 只写给人看的一行去哪（缺省 console）。目前唯一的客户是越界报告 ——
    * 它进不了 `round_notes`：那张表的 `source` CHECK 建表时定死，加新值会让
    * 所有已存在的库当场拒收（`closed_by` 那次的教训），而这一行不值得一次真迁移。
@@ -75,7 +84,8 @@ export class RoundTurnRunner implements TurnRunner {
 
   async run(job: Job): Promise<TurnOutcome> {
     const change = this.options.changes.read(job.changeId);
-    const phase = change.state.phase;
+    // 这条活儿自己说它跑在哪个阶段（批 3：并行座位）。老行没有这一格，走主线。
+    const phase = (job.phase ?? change.state.phase) as Phase;
 
     if (change.projectId === null) {
       // rubric 有项目级默认，没有项目就取不到。这不是「没有 rubric」（那是合法
@@ -105,7 +115,15 @@ export class RoundTurnRunner implements TurnRunner {
      * 一份实现三处用）。`queueTurn` 在派发之前就把这一轮的 `start` 写进去了，
      * 所以这里数出来的正是**当前**这一轮。
      */
-    const round = roundFromLedger(this.options.changes.ledger(job.changeId), phase);
+    /*
+     * 并行座位的轮次从活儿数（批 3）：座位的 start 写在 change_states，不进账本，
+     * `roundFromLedger` 数不到它。当前这条活儿在 `queueTurn` 里已经排进去了，
+     * 所以数出来的正是当前这一轮 —— 和账本那条路同一个性质。
+     */
+    const round = job.phase !== null && job.phase !== change.state.phase
+      ? this.options.parallelRound?.(job.changeId, phase)
+        ?? roundFromLedger(this.options.changes.ledger(job.changeId), phase)
+      : roundFromLedger(this.options.changes.ledger(job.changeId), phase);
 
     /*
      * **轮前把脏文件拍个快照** —— 轮末的越界报告靠差集把「模型这一轮写的」和
@@ -161,10 +179,17 @@ export class RoundTurnRunner implements TurnRunner {
        * 注释里写明的代价：「every phase's opening prompt has to carry its upstream
        * documents itself」。
        *
-       * 规则是阶段无关的：当前阶段之前、有产出的阶段，按线的顺序逐条列。不建
-       * 每阶段的映射表 —— 那是 PHASES 这条线的第二份拷贝，两份必然漂移。
-       * 能走到阶段 N 就意味着 N 之前的都被批准过（approve 是离开一个阶段的唯一
+       * 列的是**真正的上游**（`upstreamOf` → `CONSUMES`），有产出的逐条列。
+       * 能走到阶段 N 就意味着它的上游都被批准过（approve 是离开一个阶段的唯一
        * 前进路），所以「有产出的上游」就是「已批准的上游」。
+       *
+       * > 这里原来写着「不建每阶段的映射表 —— 那是 PHASES 这条线的第二份拷贝，
+       * > 两份必然漂移」，规则是「当前阶段之前、有产出的都列」。
+       *
+       * **那个顾虑是对的，而当时的答案是错的**：不建表并没有换来一份实现 ——
+       * 顺序前缀在这儿和 `upstreamOf` 里各写了一遍，正好是它想躲的那两份拷贝。
+       * 而且前缀本身就不对：TestPlan 从来没消费过 Plan（§8.6·①）。
+       * 现在是一张表（`CONSUMES`），两处都读它。
        */
       task: [
         this.options.taskFor(phase),
@@ -188,8 +213,18 @@ export class RoundTurnRunner implements TurnRunner {
           `# ${job.changeId}：人自己答出来的需求\n\n${change.brief}\n`,
         )}`,
         ...(() => {
-          const upstream = PHASES
-            .slice(0, PHASES.indexOf(phase))
+          /*
+           * **喂给红方的上游产物 = 真正的上游**（`upstreamOf`，§8.6·①）。
+           *
+           * 这里原来自己取主线顺序的前缀，于是 TestPlan 的红方会收到一份 Plan
+           * 的文档当输入 —— 而 TestPlan 从来没消费过 Plan 的任何东西。同一个错
+           * 想法在 `upstreamOf` 里有第一份拷贝，两处现在读同一张 `CONSUMES` 表。
+           *
+           * 顺带修掉一件更小的：原来数的是 `PHASES`（全序，还含 Fix），不是这个
+           * Change 自己的图。
+           */
+          const upstream = upstreamOf(
+            phase, this.options.changes.graphOf(job.changeId))
             .map((each) => ({
               phase: each,
               artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
@@ -209,12 +244,22 @@ export class RoundTurnRunner implements TurnRunner {
          * 都编。这一行在 `task` 里，而 task 是**原样转达**给红方的（上面那个抬头），
          * 路径到得了。Build / Fix 不加 —— 它们的产出是 commit，不是一份文档。
          */
-        ...(producesCommit(phase) ? [] : [
-          "",
-          `这一轮的文档写到仓库里这个路径（相对项目根）：${
-            redDocPath(job.changeId, phase, round)
-          } —— 不要写到别的地方，也不要自己起名。`,
-        ]),
+        /*
+         * **每个阶段都给文档路径，包括写代码的那几个**（2026-08-06 解开）。
+         *
+         * 这里原来是 `producesCommit(phase) ? [] : [...]` —— 于是「交 commit」和
+         * 「交文档」被绑成了互斥的两件事。**它们不是**：Build 既要交代码，也要交
+         * 一份说清「改了什么、跑过没有」的施工报告，而那份报告正是它的可离散化
+         * 表面（模板挂在它上面）。TestPlan 同理 —— 写测试代码，也交测试方案。
+         *
+         * `producesCommit` 现在只管两件事：**怎么提交**（整树 vs 窄提交）和
+         * **要不要查干净树**。`phase.ts` 那条「两件事同一个名单不许分开」说的正是
+         * 这两件，从来不包括文档路径 —— 是这里把第三件事混了进去。
+         */
+        "",
+        `这一轮的文档写到仓库里这个路径（相对项目根）：${
+          redDocPath(job.changeId, phase, round)
+        } —— 不要写到别的地方，也不要自己起名。`,
       ].join("\n"),
       // 反方的那份同理，经裁判的提示词转达（共享模板，不进 PHASE_PLAY 那张
       // 十一份的表）。所有阶段都给 —— 反方在每个阶段都写意见，Build 也不例外。
@@ -245,6 +290,7 @@ export class RoundTurnRunner implements TurnRunner {
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
     this.recordNotes(job.changeId, phase, round, settled);
     this.releaseIfMalformed(job.changeId, phase, round, settled.malformed);
+    this.checkTemplate(job.changeId, phase, round, settled.gaps, cwd);
 
     const artifactIds = this.producedBy(job.changeId, phase, round, settled.artifactIds);
 
@@ -329,6 +375,21 @@ export class RoundTurnRunner implements TurnRunner {
   ): void {
     if (malformed.length === 0) return;
     this.options.bindings.detach(changeId, phase);
+    /*
+     * **裁判自己说过的那句话不许被这条盖掉。**
+     *
+     * `RoundNoteStore.put` 是按 `(change, phase, round, source)` upsert 的，而
+     * `recordNotes` 刚刚用同一个 source 写过裁判的结论。于是「形状有一处坏掉」
+     * （比如只有 `verdicts_unreadable`，而结论本身读得好好的）会把它的原话和
+     * `anotherRound` 一起顶掉 —— 那正是这个方法自己的注释在禁的事：**替裁判说
+     * 一句它没说过的话**，只是方向反过来，把它说过的抹掉了。
+     *
+     * 所以先看它到底给没给结论：给了就只放开线程、不动那条记录（形状坏掉这件事
+     * 由 `malformed` 自己带上去，人在裁决表上看得见）；没给才补这一句。
+     */
+    const already = this.options.notes.read(changeId, phase, round)
+      .some((note) => note.source === "judge_conclusion");
+    if (already) return;
     this.options.notes.put(changeId, phase, round, {
       source: "judge_conclusion",
       // **不是 false。**「还要不要再来一轮」这个问题在这里没有答案 —— 记 false 会被
@@ -337,6 +398,41 @@ export class RoundTurnRunner implements TurnRunner {
       text: `这一轮有读不出来的地方（${malformed.join("、")}），`
         + "已放开裁判线程，下一轮从干净的线程开 —— 坏格式会留在线程自己的历史里循环。",
     });
+  }
+
+  /**
+   * 红方这一轮的产出照没照模板写。缺的每一节挡一次闸门（`domain/round.ts` 的
+   * `templateGaps`）。
+   *
+   * ## 为什么在这儿，而不是在轮子里面
+   *
+   * 红蓝是**在裁判那一个 turn 里**跑完的 —— StagePass 插不进「红方交完、派反方
+   * 之前」那个缝。所以只能事后查，而事后查正好也是对的：这一轮反方已经干完的活儿
+   * 一个字都不会丢（用户 2026-08-06 选的）。
+   *
+   * ## 没有工作区就不查
+   *
+   * 查不了和「查了、缺六节」是两件事。离线测试里 `workspaceFor` 返回 null，
+   * 那时凭空开六条挡门的 gap 就是拿「我看不见」当「它没写」——
+   * 和 `rubric-defaults.ts` 那句「一条只能靠猜的标准比没有更糟」同一个道理。
+   */
+  private checkTemplate(
+    changeId: string,
+    phase: Phase,
+    round: number,
+    gaps: readonly Gap[],
+    cwd: string | null,
+  ): void {
+    const sections = templateFor(phase);
+    if (sections === null || cwd === null) return;
+    const relative = redDocPath(changeId, phase, round);
+    const next = templateGaps(gaps, {
+      sections,
+      markdown: this.options.readRoundFile(join(cwd, relative)),
+      round,
+      docPath: relative,
+    });
+    if (next !== gaps) this.options.gaps.replace(changeId, phase, next);
   }
 
   private recordNotes(

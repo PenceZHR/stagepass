@@ -5,10 +5,13 @@ import { humanGapId, type Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
   readVerdicts, RED, renderOpenGaps, renderSettled, summariseConvergence,
-  summariseRoundNotes,
+  summariseRoundNotes, templateGaps,
   UnreadableVerdictError,
 } from "./round";
-import { TurnResultUnparsableError } from "./turn";
+import { PHASES } from "./phase";
+import { reportsFreeFormBlockers } from "./phase-play";
+import { templateFor } from "./phase-template";
+import { BLUE_VERDICT_ONLY_CONTRACT, RESULT_CONTRACT, TurnResultUnparsableError } from "./turn";
 
 const answer = (artifacts: string[], blockers: object[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: artifacts, blockers }) + "\n```";
@@ -32,8 +35,10 @@ describe("L4 · what the judge is told", () => {
   });
 
   it("carries the result contract to both roles", () => {
+    // Build：反方在这一阶段够得着代码、照旧交 blockers，所以两边共用同一份契约。
+    // 有模板的阶段反方拿的是只剩 overall 的那份（见「反方的自由 blockers 丢在解析层」）。
     const prompt = judgePrompt({
-      phase: "Spec", round: 1, task: "写出 Spec", openGaps: [],
+      phase: "Fix", round: 1, task: "写代码", openGaps: [],
     });
     /*
      * **契约原文要出现两遍 —— 红蓝各一份。** 第 4 轮实测：蓝方那节原来只写
@@ -151,9 +156,10 @@ describe("L4 · 结果契约：形状留在提示词里，说明走文件", () =
   });
 
   it("**省下来的是真的** —— 文件化之后提示词短一大截", () => {
-    const inline = judgePrompt({ phase: "Spec", round: 1, task: "t", openGaps: [] });
+    // 说明出现两遍是「红蓝各一份契约」的阶段才有的事 —— 取 Build。
+    const inline = judgePrompt({ phase: "Fix", round: 1, task: "t", openGaps: [] });
     const withFile = judgePrompt({
-      phase: "Spec", round: 1, task: "t", openGaps: [],
+      phase: "Fix", round: 1, task: "t", openGaps: [],
       contractNotesPath: "/tmp/round/contract-notes.md",
     });
     /*
@@ -261,7 +267,9 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测", where: null, why: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
-    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["S-1"]);
+    // 红方的自审一概不算（老规矩）；2026-08-06 起反方在这儿也不交自由 blockers 了
+    // （它有模板，判断走逐条判定）—— 所以这一轮这条通道**两边都是空的**。
+    assert.deepEqual(reading.outcome.found, []);
   });
 
   it("**Build 也照旧** —— 红方写的代码是它自己的作品", () => {
@@ -313,9 +321,14 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
    * 「要不要用」之前就抛了。整轮作废、蓝方 11 条有效发现陪葬、58 分钟白烧 ——
    * 为一份没人要用的数据。
    */
-  it("**Build：红方 blockers 形状烂掉 → 轮照常成立，产物和蓝方的发现都保住**", () => {
+  /*
+   * **夹具 2026-08-06 从 Build 换成 Fix。** 那次事故发生在 Build，但 Build 的反方
+   * 当天起走逐条判定、不再交 blockers（`investigates: false`）—— 拿它测「蓝方的
+   * 发现有没有被陪葬」已经测不到东西了。Fix 是同一个形状里还留着那条通道的那个。
+   */
+  it("**红方 blockers 形状烂掉 → 轮照常成立，产物和蓝方的发现都保住**", () => {
     const reading = readRound({
-      phase: "Build", round: 4,
+      phase: "Fix", round: 4,
       // 真机那次的原样形状：数组套字符串。
       red: "```json\n" + JSON.stringify({
         artifactIds: ["x.ts"],
@@ -405,13 +418,19 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
     }
   });
 
-  it("**Build：能读改动涉及的代码，但有边界，而且不自己跑**", () => {
+  /**
+   * 2026-08-06 分工再拍（PLAN §3.2）：**蓝方跑 TestPlan 交的测试** —— 红方看
+   * 不到测试，反馈「哪条失败、输出是什么」由蓝方跑出来。所以这条测试从
+   * 「拦住蓝方自己跑」反转成「必须叫它跑」；不许修代码、不许改测试照旧拦着。
+   */
+  it("**Build：能读改动涉及的代码，而且要跑 TestPlan 交的测试**", () => {
     const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
     assert.doesNotMatch(prompt, /不要去读仓库/,
       "Build 还在叫蓝方闭着眼睛审代码");
     assert.match(prompt, /改动/, "没告诉蓝方读什么");
     assert.match(prompt, /调用方/, "范围没说到直接调用方");
-    assert.match(prompt, /不要自己(执行|跑)/, "没拦住蓝方自己跑东西");
+    assert.match(prompt, /要跑 TestPlan 交的测试/, "没叫蓝方去跑测试 —— 红方看不到测试，失败反馈只能从这儿来");
+    assert.match(prompt, /不要动手修代码，也不要改任何测试/, "没拦住蓝方顺手修东西");
   });
 
   it("**Review：和红方一样能读被审的那个 commit**", () => {
@@ -653,7 +672,8 @@ describe("L4 · reading the judge's verdicts", () => {
 describe("L4 · each role is read from its own transcript", () => {
   it("takes artifacts from red and problems from blue", () => {
     const reading = readRound({
-      phase: "Spec",
+      // Fix：反方够得着代码，它报的东西照旧算数。
+      phase: "Fix",
       round: 2,
       red: answer(["spec.md"]),
       blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null }]),
@@ -1146,12 +1166,231 @@ describe("L4 · 那两个路径要经裁判转达给反方", () => {
 
   it("**没有要反方判的标准就一行都不印** —— 空小节会让裁判去猜", () => {
     const without = judgePrompt(base);
-    assert.ok(!without.includes("逐条判定"), "没有标准却印了那一节");
+    /*
+     * 判据取 rubric 那一节**独有**的东西（要判几条 + 那句作废警告），不取「逐条
+     * 判定」四个字 —— 2026-08-06 起有模板的阶段在别处也提到它（「你的判断走逐条
+     * 判定那一份」），拿一个会在两处出现的词做判据，测的就不是它本来要测的事了。
+     */
+    assert.doesNotMatch(without, /要它\*\*逐条判定 \d+ 条标准\*\*/, "没有标准却印了那一节");
+    assert.doesNotMatch(without, /数不对整份判定作废/, "没有标准却印了那一节");
     const zero = judgePrompt({
       ...base,
       blueRubric: { criteriaPath: "/tmp/a", answersPath: "/tmp/b", count: 0 },
     });
     assert.equal(zero, without, "count=0 和压根没给，印出来该一模一样");
+  });
+});
+
+const filled = (titles: readonly string[]): string =>
+  titles.map((title) => `## ${title}\n有内容\n`).join("\n");
+
+const allTitles = templateFor("PRD")!.map((each) => each.title);
+
+/*
+ * **整条路照契约原文走一遍**，而不是照夹具走。
+ *
+ * 2026-08-06 真机：反方按 `BLUE_VERDICT_ONLY_CONTRACT` 原样答，`readRound` 当场抛
+ * `turn_result_artifacts_invalid` —— 而当时 1037 条测试一条都没红，因为夹具里的
+ * 反方答复全是**手写的**，每次都恰好带着 `artifactIds`。
+ *
+ * 所以这一组不手写答复：**它把契约正文里那个示例当成模型的回答**，走完整条
+ * `readRound`。测的是「照我们发出去的那份契约答，我们自己接不接得住」。
+ */
+describe("L4 · 反方照契约原文答，整条路走得通", () => {
+  /** 契约里那个 `{...}`，占位符换成合法的值 —— 模型照抄的就是它。 */
+  const asAnswered = (contract: string): string => {
+    const shape = /\{[\s\S]*\}/.exec(contract)![0];
+    return "```json\n" + shape
+      .replaceAll(/"<[^"]*>"/g, '"填了点什么"')
+      .replaceAll(/"P0\|P1\|P2"/g, '"P1"')
+      .replaceAll(/"\.\.\."/g, '"填了点什么"') + "\n```";
+  };
+
+  const red = "```json\n" + JSON.stringify({ artifactIds: ["PRD-r1.md"], blockers: [] }) + "\n```";
+
+  it("**PRD：不抛，产物读得到，overall 读得到，问题清单是空的**", () => {
+    const reading = readRound({
+      phase: "PRD", round: 1, red,
+      blue: asAnswered(BLUE_VERDICT_ONLY_CONTRACT),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.artifactIds, ["PRD-r1.md"]);
+    assert.deepEqual(reading.outcome.found, []);
+    assert.equal(reading.blueOverall, "填了点什么", "overall 没读出来 —— 那是人唯一能看到的整体判断");
+  });
+
+  it("Fix：照 RESULT_CONTRACT 答，问题清单进得来", () => {
+    const reading = readRound({
+      phase: "Fix", round: 1, red,
+      blue: asAnswered(RESULT_CONTRACT),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.equal(reading.outcome.found.length, 1);
+  });
+
+  it("**每个阶段都要接得住它自己那份契约** —— 一个阶段都不许漏", () => {
+    for (const phase of PHASES) {
+      if (phase === "Done") continue;
+      const contract = reportsFreeFormBlockers(phase)
+        ? RESULT_CONTRACT : BLUE_VERDICT_ONLY_CONTRACT;
+      assert.doesNotThrow(() => readRound({
+        phase, round: 1, red, blue: asAnswered(contract),
+        judge: '```json\n{"verdicts":{}}\n```',
+      }, {}), `${phase} 接不住自己那份契约`);
+    }
+  });
+});
+
+describe("L4 · 有模板的阶段，反方的自由 blockers 丢在解析层", () => {
+  const red = "```json\n" + JSON.stringify({ artifactIds: ["prd.md"], blockers: [] }) + "\n```";
+  const blueWith = (id: string) => "```json\n" + JSON.stringify({
+    artifactIds: [],
+    blockers: [{ id, severity: "P1", title: "我偏要报", where: "a", why: "b" }],
+    overall: "还行",
+  }) + "\n```";
+
+  it("**PRD：反方硬报也不算数** —— 它的判断全部走逐条判定", () => {
+    const reading = readRound({
+      phase: "PRD", round: 1, red, blue: blueWith("X-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found, []);
+    assert.equal(reading.blueOverall, "还行", "overall 还要 —— 它是写给人看的");
+  });
+
+  it("**丢在解析层，不靠提示词叮嘱** —— 光在提示词里要求是抓不到的", () => {
+    // 这一条和上面那条的区别：上面证「结果是空的」，这一条证**它不是靠模型听话**
+    // 才空的。提示词里根本没让它报，而它照报了 —— 结果仍然是空的。
+    const reading = readRound({
+      phase: "PRD", round: 1, red, blue: blueWith("X-2"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.equal(reading.outcome.found.length, 0);
+  });
+
+  it("Fix 照旧收 —— 它交的是 commit，没有报告可套模板", () => {
+    const reading = readRound({
+      phase: "Fix", round: 1, red, blue: blueWith("B-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["B-1"]);
+  });
+
+  it("Fix 照旧收 —— 它交的是 commit，没有文档可套模板", () => {
+    const reading = readRound({
+      phase: "Fix", round: 1, red, blue: blueWith("F-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found.map((each) => each.id), ["F-1"]);
+  });
+
+  it("Spec 现在也不收了 —— 它有模板了", () => {
+    const reading = readRound({
+      phase: "Spec", round: 1, red, blue: blueWith("S-1"),
+      judge: '```json\n{"verdicts":{}}\n```',
+    }, {});
+    assert.deepEqual(reading.outcome.found, []);
+  });
+});
+
+describe("L4 · 缺模板节 = 挡闸门，但不丢这一轮", () => {
+  const base = { sections: templateFor("PRD")!, round: 2, docPath: "docs/x/PRD-r2.md" };
+
+  it("缺一节就开一条挡门的，位置和它该回答什么都带着", () => {
+    const next = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, -1)) });
+    assert.equal(next.length, 1);
+    const [gap] = next;
+    assert.equal(gap!.id, `TEMPLATE-${base.sections.at(-1)!.key}`);
+    assert.equal(gap!.kind, "finding");
+    assert.equal(gap!.severity, "P1", "P0 不可豁免 —— 人可能真不想要那一节");
+    assert.ok(gap!.title.includes(base.sections.at(-1)!.title));
+    assert.equal(gap!.where, "docs/x/PRD-r2.md");
+    assert.ok(gap!.why !== null && gap!.why.length > 0, "该回答什么要带着");
+    assert.equal(gap!.openedRound, 2);
+  });
+
+  it("六节齐了一条都不开", () => {
+    assert.deepEqual(templateGaps([], { ...base, markdown: filled(allTitles) }), []);
+  });
+
+  it("**下一轮补上了就机械地关掉** —— 不用裁判表态", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, -1)) });
+    const next = templateGaps(opened, { ...base, round: 3, markdown: filled(allTitles) });
+    assert.equal(next.length, 1);
+    assert.equal(next[0]!.status, "closed");
+    assert.equal(next[0]!.closedBy, null, "是这一轮判它没了，不是人驳的");
+    assert.ok(next[0]!.resolution !== null && next[0]!.resolution.trim() !== "");
+  });
+
+  it("还缺着就保持 open，不重复开第二条", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, -1)) });
+    const next = templateGaps(opened, { ...base, round: 3, markdown: filled(allTitles.slice(0, -1)) });
+    assert.equal(next.length, 1);
+    assert.equal(next[0]!.status, "open");
+    assert.equal(next[0]!.openedRound, 2, "还是当初那一条，轮次不许被改写");
+  });
+
+  it("**人 waive 掉的不再碰** —— 他说了「我接受没有这一节」", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, -1)) });
+    const waived = opened.map((gap) => ({
+      ...gap, status: "waived" as const, resolution: "这一节我不要",
+    }));
+    assert.deepEqual(
+      templateGaps(waived, { ...base, round: 3, markdown: filled(allTitles.slice(0, -1)) }),
+      waived,
+    );
+  });
+
+  it("**人驳回掉的也不再碰**，但一轮关掉的会重开", () => {
+    const opened = templateGaps([], { ...base, markdown: filled(allTitles.slice(0, -1)) });
+    const short = filled(allTitles.slice(0, -1));
+
+    const dismissed = opened.map((gap) => ({
+      ...gap, status: "closed" as const, resolution: "不要这节", closedBy: "human" as const,
+    }));
+    assert.deepEqual(templateGaps(dismissed, { ...base, round: 3, markdown: short }), dismissed);
+
+    const closedByRound = opened.map((gap) => ({
+      ...gap, status: "closed" as const, resolution: "上一轮有了", closedBy: null,
+    }));
+    const reopened = templateGaps(closedByRound, { ...base, round: 3, markdown: short });
+    assert.equal(reopened[0]!.status, "open");
+    assert.equal(reopened[0]!.openedRound, 3, "重开算新一轮发现的");
+  });
+
+  it("产出压根不在（红方什么都没写）—— 每一节都开", () => {
+    assert.equal(templateGaps([], { ...base, markdown: null }).length, base.sections.length);
+  });
+
+  it("别人的 gap 一个字都不碰", () => {
+    const other = gap("SPEC-1", "反方报的");
+    const next = templateGaps([other], { ...base, markdown: filled(allTitles) });
+    assert.deepEqual(next, [other]);
+  });
+});
+
+describe("L4 · 产出模板", () => {
+  const base = { phase: "PRD" as const, round: 1, task: "写需求", openGaps: [] };
+
+  it("PRD 的提示词里带模板原文，抬头写明转达给正方", () => {
+    const prompt = judgePrompt({ ...base, template: templateFor("PRD")! });
+    for (const section of templateFor("PRD")!) {
+      assert.ok(prompt.includes(section.title), `缺这一节：${section.title}`);
+    }
+    // 抬头。理由和任务、契约、rubric 那几处一样：只有原文加收件人才到得了。
+    assert.match(prompt, new RegExp(`原样转达给${RED}[\\s\\S]{0,200}要解决谁的什么问题`));
+  });
+
+  it("**明说了哪些东西不在这个阶段定** —— 越界的来路就是没人说过这句话", () => {
+    const prompt = judgePrompt({ ...base, template: templateFor("PRD")! });
+    assert.match(prompt, /架构、技术栈、模块划分、接口、测试用例、实现步骤/);
+    assert.ok(prompt.includes("留给下游决定的"));
+  });
+
+  it("没有模板的阶段一个字都不印 —— 空小节会让裁判去猜", () => {
+    // Build 交的是 commit 不是文档，所以它没有模板（见 phase-template.ts）。
+    const without = judgePrompt({ ...base, phase: "Build" });
+    assert.ok(!without.includes("必须照这个模板写"), "没有模板却印了那一节");
   });
 });
 

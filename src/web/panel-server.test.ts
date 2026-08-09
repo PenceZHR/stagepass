@@ -30,7 +30,7 @@ import type { PtySession } from "./pty-session";
 /**
  * The panel over a real socket, with a fake pty in place of Codex.
  *
- * What is proved here is the half with no Codex in it: eleven phases offered,
+ * What is proved here is the half with no Codex in it: twelve phases offered,
  * bytes reaching the browser unchanged, keystrokes reaching the pty, and a
  * phase never getting a second live process.
  *
@@ -132,6 +132,10 @@ async function withPanel(
     recoverEveryMs?: PanelOptions["recoverEveryMs"];
     repo?: PanelOptions["repo"];
     trust?: PanelOptions["trust"];
+    /** Codex 会话目录。默认一个空的临时目录 —— 测试不走真 ~/.codex/sessions。 */
+    sessionsDir?: string;
+    /** brief 草稿和工作稿的目录（批 2）。测试不摸真的 ~/.stagepass。 */
+    briefsDir?: string;
     /**
      * 项目的目录。默认 `/tmp`。
      *
@@ -192,6 +196,7 @@ async function withPanel(
     // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
     // 测试会陪着默认的 30 分钟一起等。
     database, session: { cwd: "/tmp" }, start, turnTimeoutMs: 200,
+    ...(extra.briefsDir === undefined ? {} : { briefsDir: extra.briefsDir }),
     // 问人那条路的截止时间。生产是 15 分钟 —— 在测试里那意味着一条没答对形状的
     // 用例会坐等到框架超时（300 秒）。写错的代价应该是 1 秒，不是 5 分钟。
     askTimeoutMs: 4_000,
@@ -230,6 +235,14 @@ async function withPanel(
      * 加这一层之前的行为，别的测试原来验的东西一个字都不变。
      */
     trust: extra.trust ?? { isTrusted: () => null },
+    /*
+     * **默认指向一个空目录。**
+     *
+     * 不注入的话「turn 已死」探测会去走用户真的 `~/.codex/sessions` —— 测试跑一遍
+     * 就把他整棵会话树扫一遍。空目录 = 认不出线程 = 探测关着，别的测试原来验的
+     * 东西一个字都不变。
+     */
+    sessionsDir: extra.sessionsDir ?? mkdtempSync(join(tmpdir(), "stagepass-sessions-")),
   });
   await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -256,13 +269,15 @@ async function withPanel(
 }
 
 describe("panel · what it offers", () => {
-  it("offers eleven phases, and never Done", async () => {
+  it("offers eleven phases, and never Done or a retired one", async () => {
     await withPanel(async ({ open }) => {
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
         phases: PhaseEntry[];
       };
       assert.equal(panel.phases.length, 11);
       assert.ok(!panel.phases.some((entry) => entry.phase === "Done"));
+      // 退休的阶段不画 —— 环上摆一个永远走不到的节点等于一个假选项。
+      assert.ok(!panel.phases.some((entry) => entry.phase === "TechSpec"));
       // A fresh Change sits at PRD, so that is the one node that may be run.
       // Nothing has passed or failed yet, so no node carries a mark.
       assert.deepEqual(panel.phases[0], {
@@ -280,6 +295,8 @@ describe("panel · what it offers", () => {
         lastOutcome: null,
         // 一轮都没跑过。环上那个节点因此一个刻度都不画（§5.9.4）。
         rounds: 0,
+        // null = 没开并行座位（批 3）。
+        seat: null,
       });
       assert.ok(!panel.phases.slice(1).some((entry) => entry.current));
       assert.ok(!panel.phases.some((entry) => entry.mark !== null));
@@ -468,7 +485,7 @@ describe("panel · pass and fail per phase", () => {
       assert.deepEqual(forPhase("PRD").map((gap) => [gap.id, gap.status]),
         [["G1", "open"], ["G2", "closed"]]);
       assert.deepEqual(forPhase("Spec").map((gap) => gap.id), ["S1"]);
-      assert.deepEqual(forPhase("TechSpec"), []);
+      assert.deepEqual(forPhase("Arch"), []);
     });
   });
 });
@@ -1638,7 +1655,9 @@ describe("panel · Codex 没信任过这个目录就别派", () => {
       assert.equal(ran.reason, "workspace_not_trusted");
       assert.equal(ran.workspace, "/tmp", "没说是哪个目录，人无从下手");
       assert.equal(pty.started.length, 0, "起了一个注定停在提问上的 Codex");
-      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+      // 一轮都没排出去（拦在排队之前）；账本上只许留下这次拒绝本身。
+      assert.equal((database.prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'phase_turn'")
         .get() as { n: number }).n, 0, "拦在排队之前，不是跑起来再失败");
     }, { trust: { isTrusted: () => false } });
   });
@@ -1722,6 +1741,364 @@ describe("panel · 派发立刻返回，不把一轮的时长压在一个 HTTP �
   });
 });
 
+describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 真机）", () => {
+  /**
+   * 那天的现场：闸门只放行 `retry`，人走「请 Codex 问我」在选择器里选了它，
+   * 题成功落地 —— 然后干净树预检 36 毫秒把这一轮拒掉，Change 回到 blocked，
+   * 而 `rerun` 那条路派发前先关掉了那个阶段的终端。人眼前只剩一个死终端，
+   * 屏幕上事先一个字都没说「这个阶段现在根本派不出去」。
+   *
+   * **闸门放行的动作，预检必拒** —— 两处判据从不对话。这一条钉住它们现在对话了。
+   */
+  it("**/api/panel 带上 blocked** —— 判据和派发那条路是同一份", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "Build");
+
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: { reason: string; dirty?: string[] } | null };
+      assert.equal(view.blocked?.reason, "workspace_dirty");
+      assert.deepEqual(view.blocked?.dirty, ["半成品.md"],
+        "路障说不出是哪几个文件，人还是没法动手");
+
+      // 而它确实和派发那条路判得一样 —— 同一份判据，不是两份拷贝。
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.reason, view.blocked?.reason);
+    }, {
+      repo: {
+        dirtyPaths: () => ["半成品.md"], commitAll: () => null,
+        commitPaths: () => null, show: () => null,
+      },
+    });
+  });
+
+  it("路障清掉之后 blocked 就是 null —— 只读，一行都不写", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const before = (database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n;
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: unknown };
+      assert.equal(view.blocked, null);
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n, before, "读那一屏写了账本");
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0, "读那一屏落了 job");
+    });
+  });
+
+  it("没录需求时，路障说的是 change_has_no_brief", async () => {
+    await withPanel(async ({ open }) => {
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: { reason: string } | null };
+      assert.equal(view.blocked?.reason, "change_has_no_brief");
+    });
+  });
+});
+
+describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.3）", () => {
+  it("**一轮在飞的时候旁路窗口照样开** —— 这正是它存在的理由", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean };
+      assert.equal(ran.ran, true);
+
+      const aside = await (await open(`/api/aside?change=${CHANGE}`,
+        { method: "POST" })).json() as { opened: boolean };
+      assert.equal(aside.opened, true, "被正在跑的一轮挡住了 —— 抢了同一把椅子");
+      // 旁路进程真的起来了，坐在自己的座位上。
+      assert.ok(pty.started.some((entry) => entry.phase === "aside"),
+        "没有起旁路进程");
+    });
+  });
+
+  it("反过来也成立：旁路开着，派发照走 —— 它不占阶段的座", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, true,
+        `旁路会话把派发挡住了：${ran.reason ?? ""}`);
+    });
+  });
+
+  it("绑过线程的旁路，重开是 resume 同一条 —— 闲聊的历史续得上", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new BindingStore(database).bindAside(CHANGE, "T-ASIDE-1");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const started = pty.started.find((entry) => entry.phase === "aside");
+      assert.ok(started, "没有起旁路进程");
+      assert.deepEqual(started?.argv.slice(0, 2), ["resume", "T-ASIDE-1"],
+        "没有 resume 绑定的线程 —— 每次都是新对话，收敛 brief 就没有对话可读");
+    });
+  });
+
+  it("旁路的流走同一条 /pty 机制，关它走同一个 /api/close", async () => {
+    await withPanel(async ({ open, database, sessions }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const stream = await open(`/pty/${CHANGE}/aside`);
+      assert.equal(stream.status, 200, "旁路的终端流打不开");
+
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=aside`,
+        { method: "POST" })).json() as { closed: boolean; aborted?: string };
+      assert.equal(closed.closed, true);
+      assert.equal(closed.aborted, undefined, "旁路没有账，不该有中止可言");
+      assert.equal(sessions.has(CHANGE, "aside"), false);
+    });
+  });
+});
+
+describe("panel · 并行座位的入口撤回了（2026-08-07）", () => {
+  /**
+   * 真机验收前的审计在它身上找出十二个问题，六个落在它被设计出来的那个默认场景
+   * （TestPlan ∥ Build）上：两条并行的轮共用一条 worklist 队列（裁判把 A 的理由
+   * 答进 B 的 gap）、跳过式批准甩出的孤儿座位能在 closed 的 Change 上跑真轮、
+   * 座位 blocked 之后没有任何出路、sendBack 会当场收编 settled 座位、两个整树
+   * commit 的阶段共用一个工作区、Done 也能开座位并把 Change 锁死。
+   *
+   * 前五条各自都要动地基，第五条更是设计层没答的问题 —— 而这些洞都能烧真的
+   * Codex、写真的库。所以入口撤回，收编那一段留着（已存在的座位仍然收得掉）。
+   */
+  it("**开不出新座位了** —— 说得出是撤回，不是「参数不对」", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "TestPlan");
+      const outcome = await (await open(
+        `/api/parallel?change=${CHANGE}&phase=Build`, { method: "POST" }))
+        .json() as { opened: boolean; reason?: string };
+      assert.equal(outcome.opened, false);
+      assert.equal(outcome.reason, "parallel_seats_withdrawn");
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_states")
+        .get() as { n: number }).n, 0, "撤回了却还是把座位建了出来");
+    });
+  });
+
+  it("既不在主线、也没开座位的阶段 —— 拒，说 phase_not_active", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}&phase=Build`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, false);
+      assert.equal(ran.reason, "phase_not_active");
+    });
+  });
+});
+
+describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 真机）", () => {
+  /**
+   * 那天的现场：闸门只放行 `retry`，人走「请 Codex 问我」在选择器里选了它，
+   * 题成功落地 —— 然后干净树预检 36 毫秒把这一轮拒掉，Change 回到 blocked，
+   * 而 `rerun` 那条路派发前先关掉了那个阶段的终端。人眼前只剩一个死终端，
+   * 屏幕上事先一个字都没说「这个阶段现在根本派不出去」。
+   *
+   * **闸门放行的动作，预检必拒** —— 两处判据从不对话。这一条钉住它们现在对话了。
+   */
+  it("**/api/panel 带上 blocked** —— 判据和派发那条路是同一份", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "Build");
+
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: { reason: string; dirty?: string[] } | null };
+      assert.equal(view.blocked?.reason, "workspace_dirty");
+      assert.deepEqual(view.blocked?.dirty, ["半成品.md"],
+        "路障说不出是哪几个文件，人还是没法动手");
+
+      // 而它确实和派发那条路判得一样 —— 同一份判据，不是两份拷贝。
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.reason, view.blocked?.reason);
+    }, {
+      repo: {
+        dirtyPaths: () => ["半成品.md"], commitAll: () => null,
+        commitPaths: () => null, show: () => null,
+      },
+    });
+  });
+
+  it("路障清掉之后 blocked 就是 null —— 只读，一行都不写", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const before = (database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n;
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: unknown };
+      assert.equal(view.blocked, null);
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n, before, "读那一屏写了账本");
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+        .get() as { n: number }).n, 0, "读那一屏落了 job");
+    });
+  });
+
+  it("没录需求时，路障说的是 change_has_no_brief", async () => {
+    await withPanel(async ({ open }) => {
+      const view = await (await open(`/api/panel?change=${CHANGE}`)).json() as
+        { blocked: { reason: string } | null };
+      assert.equal(view.blocked?.reason, "change_has_no_brief");
+    });
+  });
+});
+
+describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.3）", () => {
+  it("**一轮在飞的时候旁路窗口照样开** —— 这正是它存在的理由", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean };
+      assert.equal(ran.ran, true);
+
+      const aside = await (await open(`/api/aside?change=${CHANGE}`,
+        { method: "POST" })).json() as { opened: boolean };
+      assert.equal(aside.opened, true, "被正在跑的一轮挡住了 —— 抢了同一把椅子");
+      // 旁路进程真的起来了，坐在自己的座位上。
+      assert.ok(pty.started.some((entry) => entry.phase === "aside"),
+        "没有起旁路进程");
+    });
+  });
+
+  it("反过来也成立：旁路开着，派发照走 —— 它不占阶段的座", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, true,
+        `旁路会话把派发挡住了：${ran.reason ?? ""}`);
+    });
+  });
+
+  it("绑过线程的旁路，重开是 resume 同一条 —— 闲聊的历史续得上", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      new BindingStore(database).bindAside(CHANGE, "T-ASIDE-1");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const started = pty.started.find((entry) => entry.phase === "aside");
+      assert.ok(started, "没有起旁路进程");
+      assert.deepEqual(started?.argv.slice(0, 2), ["resume", "T-ASIDE-1"],
+        "没有 resume 绑定的线程 —— 每次都是新对话，收敛 brief 就没有对话可读");
+    });
+  });
+
+  it("旁路的流走同一条 /pty 机制，关它走同一个 /api/close", async () => {
+    await withPanel(async ({ open, database, sessions }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await open(`/api/aside?change=${CHANGE}`, { method: "POST" });
+      const stream = await open(`/pty/${CHANGE}/aside`);
+      assert.equal(stream.status, 200, "旁路的终端流打不开");
+
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=aside`,
+        { method: "POST" })).json() as { closed: boolean; aborted?: string };
+      assert.equal(closed.closed, true);
+      assert.equal(closed.aborted, undefined, "旁路没有账，不该有中止可言");
+      assert.equal(sessions.has(CHANGE, "aside"), false);
+    });
+  });
+});
+
+describe("panel · 闲聊起草 brief 的两个端点（批 2）", () => {
+  it("没有旁路对话 —— /api/brief-draft 说清楚，不跑任何 turn", async () => {
+    await withPanel(async ({ open, pty }) => {
+      const outcome = await (await open(`/api/brief-draft?change=${CHANGE}`,
+        { method: "POST" })).json() as { kind: string };
+      assert.equal(outcome.kind, "no_aside_conversation");
+      assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
+    });
+  });
+
+  it("定稿走同一个 briefs 目录：未编辑拒、编辑过录", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "stagepass-briefs-"));
+    try {
+      await withPanel(async ({ open, database }) => {
+        // 摆出「起草过」的样子 —— 起草本身要真 Codex，这里只考定稿那半。
+        writeFileSync(join(directory, `${CHANGE}-draft.md`), "草稿", "utf-8");
+        writeFileSync(join(directory, `${CHANGE}.md`), "草稿", "utf-8");
+        const unedited = await (await open(`/api/brief-confirm?change=${CHANGE}`,
+          { method: "POST" })).json() as { kind: string };
+        assert.equal(unedited.kind, "draft_unedited");
+
+        writeFileSync(join(directory, `${CHANGE}.md`), "改过的需求正文", "utf-8");
+        const recorded = await (await open(`/api/brief-confirm?change=${CHANGE}`,
+          { method: "POST" })).json() as { kind: string };
+        assert.equal(recorded.kind, "recorded");
+        assert.equal(new ChangeStore(database).read(CHANGE).brief, "改过的需求正文");
+      }, { briefsDir: directory });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("panel · 「中止这一轮」是真的出口（交接 §5.5.2）", () => {
+  /**
+   * 光杀进程不算出口：账本上那一轮还挂着，Change 停在 `running` 等满 30 分钟
+   * 超时，这段时间里人一个能按的都没有。出口要两个来源都收 —— 进程照旧 kill，
+   * 账本上的活儿记成 `aborted_by_human`、Change 收回 `blocked`（可以 retry）。
+   */
+  it("**/api/close 连账本一起收** —— job 记中止、Change 回 blocked、retry 有路", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { ran: boolean; jobId?: string };
+      assert.equal(ran.ran, true);
+
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=PRD`,
+        { method: "POST" })).json() as { closed: boolean; aborted?: string };
+      assert.equal(closed.aborted, ran.jobId,
+        "没收账 —— 那一轮还挂着，人要陪它等满 30 分钟超时");
+
+      const job = new JobStore(database).latestFor(CHANGE);
+      assert.equal(job?.status, "failed");
+      assert.equal(job?.error, "aborted_by_human");
+      const changes = new ChangeStore(database);
+      assert.equal(changes.read(CHANGE).state.status, "blocked");
+      assert.doesNotThrow(() => changes.apply(CHANGE, "retry"));
+    });
+  });
+
+  /**
+   * 中止之后人立刻 retry —— 后台那条 transport 随后才超时。迟到的失败不许把
+   * 人刚 retry 出来的状态打回去，也不许把「中止」这句话盖掉（`TurnLoop.runOnce`
+   * 的「谁先收尾谁说了算」）。
+   */
+  it("**迟到的超时不翻账** —— 中止后转手 retry，新状态留得住", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      await (await open(`/api/run?change=${CHANGE}`, { method: "POST" })).json();
+      await open(`/api/close?change=${CHANGE}&phase=PRD`, { method: "POST" });
+      new ChangeStore(database).apply(CHANGE, "retry");
+
+      // transport 的超时（200ms + 1s 轮询步长）在这之后才落地 —— 等它过去。
+      await new Promise((resolve) => { setTimeout(resolve, 1_600); });
+      assert.equal(new ChangeStore(database).read(CHANGE).state.status, "running",
+        "迟到的失败把人刚 retry 出来的 running 打回了 blocked");
+      assert.equal(new JobStore(database).latestFor(CHANGE)?.error,
+        "aborted_by_human", "中止的原因被迟到的超时盖掉了");
+    });
+  });
+
+  it("关一个**不是当前阶段**的闲终端 —— 不碰账本", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).setBrief(CHANGE, "需求");
+      const ran = await (await open(`/api/run?change=${CHANGE}`,
+        { method: "POST" })).json() as { jobId?: string };
+      // Change 停在 PRD；人关的是 Spec 上一个看过就走的终端。
+      const closed = await (await open(`/api/close?change=${CHANGE}&phase=Spec`,
+        { method: "POST" })).json() as { aborted?: string };
+      assert.equal(closed.aborted, undefined, "把正在跑的那一轮顺手打掉了");
+      const row = database.prepare("SELECT status FROM jobs WHERE id = ?")
+        .get(ran.jobId) as { status: string } | undefined;
+      assert.notEqual(row?.status, "failed");
+    });
+  });
+});
+
 describe("panel · Build 要在干净的工作树上跑", () => {
   /**
    * Build 的产出是 commit，而 StagePass 提交的是「工作树里所有的改动」—— 它分不出
@@ -1753,8 +2130,17 @@ describe("panel · Build 要在干净的工作树上跑", () => {
       assert.deepEqual(ran.dirty, ["半成品.md"], "没说是哪几个文件，人无从下手");
       assert.equal(pty.started.length, 0, "一个 Codex 都不该起");
       // 而且一轮都没排出去 —— 拦在排队之前，不是让它跑起来再失败。
-      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM jobs")
+      assert.equal((database.prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'phase_turn'")
         .get() as { n: number }).n, 0);
+      /*
+       * 而拒绝本身要进账本（§5.5.4 / §5.5.5）：不记的话，库里最近的 error 还是
+       * 上一轮的旧话，人看到的原因是假的。文件名单也要在 —— 「树脏了」这句话
+       * 本身没法让人动手。
+       */
+      const refusal = new JobStore(database).latestFor(CHANGE);
+      assert.equal(refusal?.status, "failed");
+      assert.match(refusal?.error ?? "", /workspace_dirty：半成品\.md/);
       // pending 的拒绝不动状态：它没说过自己在跑，没有谎要圆。
       assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
     }, { repo: dirty });
@@ -1993,12 +2379,17 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const schema = JSON.parse(asked?.schema_json ?? "{}") as {
         required: string[]; properties: Record<string, { title: string }>;
       };
+      /*
+       * `U` 是 §8.10 加的「批准之后进哪」—— 它也是选项格，默认「按推荐走」，
+       * 一路回车的人一个字都不用打。**`decision` 仍然排最后**，那是硬要求：
+       * 最后一格必须是选项格，整张表才提交得动（客户端的坑，见 `compose`）。
+       */
       assert.deepEqual(Object.keys(schema.properties),
-        ["R01", "R02", "RY", "decision"]);
-      // 自己写和提新问题都可以留空；四个选项和裁决必填。
+        ["R01", "R02", "RY", "U", "decision"]);
+      // 自己写和提新问题都可以留空；选项格和裁决必填。
       // RY 也进 required —— 它现在是选项格（「没有了」/「有，我来提」），
       // 而选项格必答不会挡住回车。
-      assert.deepEqual(schema.required, ["R01", "R02", "RY", "decision"]);
+      assert.deepEqual(schema.required, ["R01", "R02", "RY", "U", "decision"]);
       assert.match(schema.properties.R01!.title, /SPEC-1/);
       // 2026-08-03 起第一趟里一个自由文本格都没有 —— 理由挪到第二趟去问，
       // 而且只问那几条语义上真的需要理由的（同意的那些不问）。
@@ -2799,5 +3190,35 @@ describe("panel · 问人超时，题也要收掉", () => {
         "超时之后还留着一道 open 的题 —— 下一个调 stagepass_ask 的会被端出这道死题",
       );
     });
+  });
+});
+
+describe("「turn 已死」探测的 rollout 那半（AskSessions.recordCount / turnEnded）", () => {
+  it("认线程、认提示词；认不出线程就说 null / false，绝不当 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "stagepass-rollout-"));
+    const thread = "0199aaaa-0000-7000-8000-000000000001";
+    writeFileSync(join(dir, `rollout-2026-08-09T00-00-00-${thread}.jsonl`), [
+      JSON.stringify({ timestamp: "t1", type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        timestamp: "t2", type: "response_item",
+        payload: { type: "message", content: [{ type: "input_text", text: "把问题端给人来选" }] },
+      }),
+      JSON.stringify({ timestamp: "t3", type: "event_msg", payload: { type: "task_complete" } }),
+    ].join("\n"));
+
+    await withPanel(async ({ database, sessions }) => {
+      // 没绑线程：认不出 —— null 不是 0（0 会被当成「整个文件都是新的」）。
+      assert.equal(sessions.recordCount(CHANGE, "PRD"), null);
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "把问题端给人来选"), false);
+
+      new BindingStore(database).bind(CHANGE, "PRD", thread);
+      assert.equal(sessions.recordCount(CHANGE, "PRD"), 3);
+      // 装着这句话的那一轮已经 task_complete 了。
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "把问题端给人来选"), true);
+      // 起点之后没有这一轮 —— 老记录不算新一轮的证据。
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 3, "把问题端给人来选"), false);
+      // 别人的话不算我们的轮。
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "一句没送进去过的话"), false);
+    }, { sessionsDir: dir });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * The twelve phases a Change moves through, and where approval leads.
+ * The thirteen phases a Change moves through, and where approval leads.
  *
  * ## One phase, one name
  *
@@ -20,6 +20,15 @@
 export const PHASES = [
   "PRD",
   "Spec",
+  /*
+   * Arch：先划骨架，再填数据（用户 2026-08-06 拍位置：TechSpec **之前**）。
+   *
+   * 它给 BACKLOG §5.5 那条反馈链路第一次提供落点 ——「要新增图上没有的依赖边
+   * 就停手，攒进架构那一批」，攒到的就是这儿。产出四节：动哪几个模块 / 新增哪些
+   * 依赖边（每条写为什么非加不可）/ 边界划在哪 / 想过但没选的划法。
+   * 「架构在脑子里」对 AI 不成立：写不下来就不存在，所以它有产出、有闸门。
+   */
+  "Arch",
   "TechSpec",
   "Plan",
   "TestPlan",
@@ -64,15 +73,115 @@ export interface PhaseGraph {
   readonly order: readonly Phase[];
 }
 
-/** 默认图：除 Fix 外的 11 个阶段，全序。 */
+/**
+ * **退休的阶段**：名字还在（库里有它的历史），但主线上没有它了。
+ *
+ * ## 为什么不是从 `PHASES` 里删掉
+ *
+ * 十几张表的 `phase` 列都有 `CHECK (phase IN (…PHASES…))`，而真库里有它的
+ * evidence、gap、逐条判定、绑定、题。名字一删，那些行连读都读不出来
+ * （`ChangeStore.read` 抛「Unknown phase」），一条 Change 会变得既看不了也删不掉
+ * —— 2026-08-08 合并前查实：CHG-001 当时正卡在 TechSpec 上。
+ *
+ * 所以退休 = **从主线图上拿掉**，名字留着给历史用。`Fix` 早就是这个形状
+ * （在 `PHASES` 里、不在 `DEFAULT_GRAPH.order` 里），只是它退的理由是
+ * 「不在主线上」，而不是「不再用了」。
+ *
+ * ## TechSpec 为什么退休（2026-08-08 用户拍）
+ *
+ * 它和 Arch 是同一批决定的粗细两版：Arch 的「新增哪些依赖边」「边界露什么」
+ * 就是 TechSpec 的「谁调谁、传什么、返回什么」，Arch 的「想过但没选的划法」
+ * 就是 TechSpec 的「选择和它的代价」。真正只属于 TechSpec 的只有「数据怎么存」
+ * 一节，而那撑不起一个独立阶段。
+ *
+ * 一旦 Arch 按要求写到**文件与函数**一级，重叠从「粗细两版」变成完全同一件事
+ * —— 而同一条规则的两份拷贝必然漂移（真机证据：Arch 那份产出里出现七次
+ * 「留给 TechSpec」，人读完拿不到完整图景）。所以合并，`data` 节并进 Arch。
+ */
+const RETIRED_PHASES: ReadonlySet<Phase> = new Set<Phase>(["TechSpec"]);
+
+export function isRetired(phase: string): boolean {
+  return isPhase(phase) && RETIRED_PHASES.has(phase);
+}
+
+/** 默认图：主线上的阶段，全序。Fix 不在线上，退休的也不在。 */
 export const DEFAULT_GRAPH: PhaseGraph = {
-  order: PHASES.filter((phase) => phase !== "Fix"),
+  order: PHASES.filter((phase) => phase !== "Fix" && !RETIRED_PHASES.has(phase)),
+};
+
+/**
+ * **每个阶段真正消费谁的产物。**「上游」按这张表算，不按顺序上谁在前面（§8.6·①）。
+ *
+ * ## 为什么顺序前缀是错的
+ *
+ * `upstreamOf` 原来取的是主线顺序的前缀，于是 `upstreamOf("TestPlan")` 里有
+ * `Plan` —— 面板今天就摆着「从 TestPlan 打回 Plan」这个选项，而 **TestPlan 从来
+ * 没消费过 Plan 的任何东西**。一个必然说不通的打回摆在人眼前，和一个假选项没有
+ * 区别（§5.4：选项里不许出现选不动的东西）。
+ *
+ * 同一个错误有第二份拷贝：任务书里「已批准的上游产物」也是按顺序前缀取的
+ * （`work/round-turn-runner.ts`），于是 TestPlan 的红方还会收到一份 Plan 的文档
+ * 当输入。**两处现在读同一张表。**
+ *
+ * ## 顺序没有变松
+ *
+ * 这张表只改「谁是谁的上游」，**不改执行顺序** —— 主线仍然是全序，一个 Change
+ * 仍然一次只在一个阶段上。让 Plan 和 TestPlan 真正并行是 §8.6·③，那要动
+ * `ChangeState.phase` 是单数这件事，是另一回事。
+ *
+ * ## 只有 TestPlan 那一行改变了行为
+ *
+ * 其余逐条和顺序前缀一致：Build 消费 Plan 和 TestPlan，传递下去仍然够得着
+ * TechSpec / Spec / PRD；Review 之后的每一个都通过 Build 够得着全部。
+ *
+ * `Fix` 是空的，**不是漏了**：它不在主线上，`sendBack` 对它从来就不合法（它的
+ * 出口是弹栈还债）。给它填上游会让打回从 Fix 变得合法，而那要求 Fix 进
+ * `returnStack` —— 正是 `assertStateValid` 明令禁止的。
+ */
+const CONSUMES: Readonly<Record<Phase, readonly Phase[]>> = {
+  PRD: [],
+  Spec: ["PRD"],
+  /*
+   * Arch 消费 Spec，而**它现在是完整的技术架构**（2026-08-08 合并，见
+   * `RETIRED_PHASES`）：模块、文件与函数、数据与状态、接口与契约都在这一份里。
+   */
+  Arch: ["Spec"],
+  // 退休了（并进 Arch）。这一行留着只为让历史读得出来 —— 它不在主线图上，
+  // `upstreamOf` 会按图过滤掉它，没有任何 Change 会再走到这儿。
+  TechSpec: ["Arch"],
+  Plan: ["Arch"],
+  // **不含 Plan**：两者都只消费 Arch，互不消费（BACKLOG §8.6·①/③）。
+  TestPlan: ["Arch"],
+  Build: ["Plan", "TestPlan"],
+
+  /*
+   * ── 下面这四行**没有验证过**（2026-08-06 用户拍：等真走到那儿再填）─────────
+   *
+   * 填的是线性链，理由是**它让行为和改这张表之前逐字一致**，不是因为我知道它对。
+   * CHG-001 到今天只走到 Build —— Review / QA / Merge / Retro 从来没产出过任何
+   * 东西，所以一条经验依据都没有。
+   *
+   * **承重的那个问题：从 QA 能不能打回 Review。** 现在能（`QA ← Review`）。而
+   * 审查阶段产出的是 findings 不是文档，「打回 Review 说它错了」可能根本没有
+   * 含义 —— 重审的出口是 `rerun`，代码错的出口是 `reject`→Fix。真是那样的话，
+   * 这几行该改成 `QA ← Build + TestPlan`、`Merge ← Build`，Review / QA 就掉出
+   * 各自下游的上游名单。
+   *
+   * **走到那儿的那一轮，回来把这四行定了。** 在那之前它们是有意的过渡，不是遗漏。
+   */
+  Review: ["Build"],
+  Fix: [],
+  QA: ["Review"],
+  Merge: ["QA"],
+  Retro: ["Merge"],
+  Done: ["Retro"],
 };
 
 export class InvalidPhaseGraphError extends Error {
   constructor(readonly code:
     | "must_end_with_done"
     | "fix_not_on_the_line"
+    | "retired_phase"
     | "unknown_phase"
     | "not_a_subsequence",
   readonly detail: string) {
@@ -94,6 +203,12 @@ export function phaseGraphOf(order: readonly string[]): PhaseGraph {
     if (!isPhase(name)) throw new InvalidPhaseGraphError("unknown_phase", name);
     if (name === "Fix") {
       throw new InvalidPhaseGraphError("fix_not_on_the_line", order.join(","));
+    }
+    // 退休的阶段不许排进任何一张图 —— 它的名字只为读历史而留着。
+    // 下面那道子序列判定其实也会拒（它不在 DEFAULT_GRAPH 里），但那句报错说的是
+    // 「顺序不对」，而真因是「这个阶段已经没了」。报错要指着真正挡住它的那一条。
+    if (RETIRED_PHASES.has(name)) {
+      throw new InvalidPhaseGraphError("retired_phase", name);
     }
     phases.push(name);
   }
@@ -133,7 +248,12 @@ export function advancesTo(
 }
 
 /**
- * `phase` 的严格上游，按主线顺序 —— sendBack（长回边，§5.9.1）的合法目标名单。
+ * `phase` 真正的上游 —— **它消费的，以及它消费的东西所消费的**（`CONSUMES` 的
+ * 传递闭包）。sendBack（长回边，§5.9.1）的合法目标名单就是它。
+ *
+ * 出去的按**主线顺序**排 —— 调用方靠这个取「最近的那个上游」（`journey.ts` 画环
+ * 时用 `.at(-1)`）。跳过的阶段不出现在名单里，但它的上游照样传递得过来：把
+ * TechSpec 跳掉，Plan 的上游仍然是 Spec / PRD。
  *
  * 第一个阶段和 Fix 都是空名单：前者没有上游，后者不在主线上。空名单的含义由
  * 调用方判 —— 一道没有选项的题不该问出去（domain/question.ts 那条规矩）。
@@ -142,9 +262,23 @@ export function upstreamOf(
   phase: Phase,
   graph: PhaseGraph = DEFAULT_GRAPH,
 ): Phase[] {
-  const index = graph.order.indexOf(phase);
-  if (index <= 0) return [];
-  return graph.order.slice(0, index);
+  const seen = new Set<Phase>();
+  const walk = (each: Phase): void => {
+    for (const source of CONSUMES[each]) {
+      if (seen.has(source)) continue;
+      seen.add(source);
+      walk(source);   // 传递：消费的东西所消费的，也是上游
+    }
+  };
+  walk(phase);
+  /*
+   * **按这个 Change 自己的图过滤并排序。**
+   *
+   * 过滤：跳过的阶段没有产出，打回到它没有含义。
+   * 排序：名单的顺序是有语义的（`.at(-1)` = 最近的那个上游），而闭包的遍历顺序
+   * 不是 —— 靠遍历顺序等于靠巧合。
+   */
+  return graph.order.filter((each) => seen.has(each));
 }
 
 /**
@@ -218,7 +352,24 @@ export const TERMINAL_PHASE: Phase = "Done";
  * 而一个 StagePass 独占的目录就是那条分界。意思是「整树提交」的名单，仍然精确
  * 等于意思是「要求干净树」的名单。
  */
-const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>(["Build", "Fix"]);
+/*
+ * ## 2026-08-06：TestPlan 进来了，而它带来一条更正
+ *
+ * 用户拍板「Build 不许自己写测试，测试都是前面阶段写好的」（BACKLOG §8.4）。
+ * 而在这之前 **TestPlan 结构上交不出测试** —— 它不在这个名单里，轮末走
+ * `commitPaths` 只提交 `docs/stagepass/<change>/`，写了测试代码也会被静默丢掉。
+ *
+ * 它进来是语义自洽的：TestPlan 从此写代码，那它**正好也该查干净树** ——
+ * 上面那条「两件事同一个名单不许分开」原样成立。
+ *
+ * **顺带更正了一处混淆**：`work/round-turn-runner.ts` 原来拿这个名单决定
+ * 「给不给文档路径」，于是名单里的阶段一份文档都交不出来。那是第三件事，
+ * 不在这条约束里 —— 现在每个阶段都给路径。Build 交 commit **和**施工报告，
+ * TestPlan 交测试代码**和**测试方案。
+ */
+const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>([
+  "Build", "Fix", "TestPlan",
+]);
 
 export function producesCommit(phase: string): boolean {
   return isPhase(phase) && PRODUCES_COMMIT.has(phase);

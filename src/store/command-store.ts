@@ -42,7 +42,10 @@ export interface CommandRequest {
   readonly idempotencyKey: string;
   /** The gate snapshot the caller decided against. */
   readonly expectedSnapshot: string;
-  /** `sendBack` 的目标（打回哪一份上游文档）。别的动作不带。 */
+  /**
+   * 动作的目标阶段：`sendBack` 打回哪一份上游文档，`approve` 之后进哪个阶段
+   * （§8.10 —— 不给就是走推荐那条）。别的动作不带。
+   */
   readonly to?: Phase;
   /** 这一步为什么发生，人的话。进账本，环上历史箭头读它。 */
   readonly reason?: string;

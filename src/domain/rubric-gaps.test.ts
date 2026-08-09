@@ -26,7 +26,7 @@ const judged = (patch: Partial<Assessment> = {}): Assessment => ({
   verdict: "no",
   evidence: "第 2 条只写了「要快」",
   criterionText: "每条需求都有可测的验收标准",
-  blockingThen: true,
+  blockingThen: true, section: null,
   ...patch,
 });
 
@@ -59,7 +59,7 @@ describe("L5 · 判定变成挡门的标准", () => {
   });
 
   it("不阻断的条目判 no —— 只是没有 gap，不挡", () => {
-    assert.deepEqual(apply([], [judged({ blockingThen: false })]), []);
+    assert.deepEqual(apply([], [judged({ blockingThen: false, section: null })]), []);
   });
 
   it("同一条再判一次 no —— 还是那一条，不会开出第二条", () => {
@@ -84,7 +84,7 @@ describe("L5 · 什么能让一条标准不再挡", () => {
 
   it("这一轮里这条标准已经不阻断了 —— 关掉，理由是标准撤下了", () => {
     // 判定当时它已经不是阻断项，那就是「标准被撤下」在这一轮留下的正面证据。
-    const [gap] = apply([openStandard()], [judged({ blockingThen: false })], 2);
+    const [gap] = apply([openStandard()], [judged({ blockingThen: false, section: null })], 2);
     assert.equal(gap?.status, "closed");
     assert.match(gap?.resolution ?? "", /不再/);
   });

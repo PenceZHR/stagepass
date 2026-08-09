@@ -104,6 +104,33 @@ export const RESULT_CONTRACT = `Reply with one \`\`\`json block and nothing that
 Report every problem you found as a blocker. An empty list means you found none.`;
 
 /**
+ * 有模板的阶段，反方的契约：**没有问题清单，但仍然要 `artifactIds`。**
+ *
+ * 它这一阶段的判断全部走 rubric 逐条判定（写进另一个文件，见 `blueRubricLines`）。
+ * 这里之所以还留着一个围栏，是因为 `overall` 在里面 —— 而 `parseTurnResult` 读不到
+ * 围栏就是整轮作废。
+ *
+ * ## `artifactIds` 那一格是 2026-08-06 真机撞回来的
+ *
+ * 它第一版只有 `overall`，于是**每一轮都整轮作废**：`parseTurnResult` 要求
+ * `artifactIds`，而反方按新契约答出来的东西里没有那一格 ——
+ * `turn_result_artifacts_invalid: blue: undefined`。
+ *
+ * 单元测试一条都没红，因为夹具里的反方答复**每次都带着 `artifactIds`** ——
+ * 它们测的是「去掉 blockers 之后会怎样」，从没测过「照这份契约原样答会怎样」。
+ * 下面那条护栏（`turn.test.ts`：契约自己的示例必须解析得了）就是补这个的。
+ *
+ * 而反方**确实**产出一份文件（`<Phase>-r<N>-opposition.md`），所以这一格不是
+ * 凑数：它本来就该在。
+ *
+ * 和 `RESULT_CONTRACT` 一样**不许走文件**：判据是「缺了会怎样」——
+ * 形状没被读到，它答出来的东西解析不了。
+ */
+export const BLUE_VERDICT_ONLY_CONTRACT =
+  `Reply with one \`\`\`json block and nothing that contradicts it:
+{"artifactIds": ["<path you wrote your opinion to>"], "overall": "<one sentence on whether this round is good enough, and why>"}`;
+
+/**
  * 各字段是什么意思。**这一半走文件**（`judgePrompt` 的 `contractNotesPath`）。
  *
  * 缺了它，模型照样答得出合法形状 —— 只是 `where` / `why` 会写得糙，而那两样
@@ -294,7 +321,19 @@ export function parseTurnResult(
     const blocker = value as Record<string, unknown>;
     if (
       typeof blocker?.id !== "string" || blocker.id.trim() === ""
-      || typeof blocker.title !== "string"
+      /*
+       * **标题也要非空**，和 id 同一条。
+       *
+       * 只查类型的后果不是「标题难看」：空标题一路流到 `GapStore.write`，撞上
+       * `gaps.title CHECK (length(trim(title)) > 0)`，整笔 upsert 回滚、
+       * `settleRound` 抛 SqliteError，于是**一轮跑了半小时的对抗被判为失败作废**，
+       * 而账本里记下的原因是一句既不说哪一条、也不说哪个字段的 SQLite 报错。
+       *
+       * 在这里拦住，那一轮仍然作废（信封坏了就是坏了），但报的是
+       * `turn_result_blockers_invalid` 并附上那一条的原文 —— 人看得出是谁写坏了。
+       * `domain/gap.ts` 的 `raise` 早就这么守着同一条 CHECK，这里是补齐的那半。
+       */
+      || typeof blocker.title !== "string" || blocker.title.trim() === ""
       || typeof blocker.severity !== "string"
       || !(BLOCKER_SEVERITIES as readonly string[]).includes(blocker.severity)
     ) {

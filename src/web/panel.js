@@ -92,6 +92,9 @@ const enterButton = button("enter");
 const waiveButton = button("waive");
 const briefButton = button("brief");
 const closeTermButton = button("close-term");
+const asideTermButton = button("aside-term");
+const briefDraftButton = button("brief-draft");
+const briefConfirmButton = button("brief-confirm");
 const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
@@ -159,8 +162,22 @@ function resize(phase) {
   return fetch(path(phase, `/resize?cols=${term.cols}&rows=${term.rows}`), { method: "POST" });
 }
 
+const SEAT_WORDS = {
+  pending: "并行座位开着，还没跑",
+  running: "并行座位上一轮在跑",
+  settled: "并行座位跑完了，等主线走到时收编",
+  blocked: "并行座位上一轮失败了",
+};
+
 function statusOf(entry) {
   if (entry.live) return { short: "进程活着", long: "线程活着，点开直接接上去。" };
+  // 并行座位（批 3）：主线在别处，这一格自己在攒轮次。
+  if (entry.seat) {
+    return {
+      short: `并行·${entry.seat}`,
+      long: `${SEAT_WORDS[entry.seat] ?? entry.seat}。主线走到这儿时会把进度收编进来。`,
+    };
+  }
   if (entry.threadId) return { short: "有线程", long: "有线程，点开会恢复它的历史。" };
   if (entry.current) return { short: "待运行", long: "Change 就停在这个阶段。跑它会派发一次真的 turn。" };
   return { short: "未开始", long: "还没轮到它。点开只是打开一个终端看看。" };
@@ -257,10 +274,16 @@ function contextWords(progress) {
 async function pollProgress() {
   let progress;
   try {
-    progress = await (await fetch(
-      `/api/progress?change=${encodeURIComponent(changeId)}`)).json();
+    const response = await fetch(
+      `/api/progress?change=${encodeURIComponent(changeId)}`);
+    // 404（Change 没了）不算失联 —— 别拿它去触发重连。
+    if (!response.ok) return;
+    progress = await response.json();
   } catch {
-    return; // 一次没拉到不说话，下一次再说 —— 报「读不到进度」比没有进度更吵
+    // 连 fetch 都失败，多半是面板在重启 —— 交给自愈那条路（§5.5.3），
+    // 它会说一声、按间隔重试，回来时整屏一起刷新。
+    void loadOrReconnect();
+    return;
   }
   paintRoundProgress(progress);
   const words = progressWords(progress);
@@ -293,6 +316,11 @@ function stopProgress() {
  * 所以服务端把它一起给了过来。
  */
 function unansweredWords(result) {
+  if (result.reason === "ask_turn_ended_without_answer") {
+    // 补问过一次还是没端出问题来 —— 两次都是模型抽风，不是人没答。
+    return `${result.phase} 的 Codex 把那一轮跑完了，却没把问题交给你`
+      + "（补问过一次也一样）。会话已收 —— 再点一次就重新问。";
+  }
   if (result.reason !== "session_died_before_answering") {
     return "问题已经在终端里了，等你在 Codex 的选择器里选。";
   }
@@ -315,8 +343,13 @@ function crashed(result) {
 /** 没派起来时说清是哪一种。原样吐一个 reason 等于没说。 */
 function runRefusal(result) {
   if (result.reason === "phase_already_running") {
-    return `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
-      + "先「结束这个终端」。";
+    // `busy` 说的是挡路的是什么：一个闲终端，还是账本上没了结的一轮 ——
+    // 两者的出路不同，一句话不能混着说。
+    return result.busy === "terminal"
+      ? `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
+        + "先「结束这个终端」。"
+      : `${result.phase} 有一轮没了结（${result.busy ?? "?"}）。等它跑完，`
+        + "或者按「中止这一轮」。";
   }
   if ((result.reason ?? "").startsWith("phase_cannot_queue:")) {
     const status = result.reason.slice("phase_cannot_queue:".length);
@@ -377,6 +410,13 @@ function runRefusal(result) {
  * the Change is actually at.
  */
 async function run() {
+  /*
+   * 跑的是哪个座位（批 3）：主线的格子不带 phase（老语义）；开着并行座位的
+   * 格子把自己的阶段带上 —— 服务端按它路由到座位。
+   */
+  const at = phases.find((each) => each.phase === sheetPhase);
+  const seatParam = at && !at.current && at.seat !== null
+    ? `&phase=${encodeURIComponent(at.phase)}` : "";
   runButton.disabled = true;
   runButton.textContent = "派发中…";
   /*
@@ -387,7 +427,8 @@ async function run() {
   startProgress();
   try {
     const result = await (await fetch(
-      `/api/run?change=${encodeURIComponent(changeId)}`, { method: "POST" },
+      `/api/run?change=${encodeURIComponent(changeId)}${seatParam}`,
+      { method: "POST" },
     )).json();
     const broke = crashed(result);
     if (broke !== null) {
@@ -402,7 +443,7 @@ async function run() {
   } finally {
     stopProgress();
     runButton.textContent = "跑这个阶段";
-    await load();
+    await loadOrReconnect();
   }
 }
 
@@ -451,9 +492,15 @@ function saidWhat(result) {
   }
   // 「再来一轮」会当场续跑，不用人再按一次「跑这个阶段」—— 所以要说出来它已经在跑了。
   if (result.continued) {
+    /*
+     * §5.5.5：没派出去的原因要**整句**上屏，不是光吐一个 reason 码 ——
+     * `runRound` 带回来的 dirty 文件名单、没被信任的目录、缺的上游产物都在
+     * `continued` 里，`runRefusal` 正是给它们配的那套人话。真机现场：retry 被
+     * 干净树预检拒掉，代码里带着文件名单，人看到的只有「点了没反应」。
+     */
     parts.push(result.continued.ran
       ? "下一轮已经派出去了"
-      : `下一轮没派出去：${result.continued.reason}`);
+      : `下一轮没派出去 —— ${runRefusal(result.continued)}`);
   }
   return parts.join("；");
 }
@@ -485,7 +532,7 @@ async function ask() {
     }
   } finally {
     askButton.textContent = "请 Codex 问我";
-    await load();
+    await loadOrReconnect();
   }
 }
 
@@ -576,7 +623,7 @@ async function recordBrief() {
     }
   } finally {
     briefButton.textContent = "说清楚我要什么";
-    if (!briefLanded) await load();
+    if (!briefLanded) await loadOrReconnect();
   }
 }
 
@@ -613,7 +660,7 @@ async function waive() {
     }
   } finally {
     waiveButton.textContent = "接受风险";
-    await load();
+    await loadOrReconnect();
   }
 }
 
@@ -1155,6 +1202,32 @@ async function load() {
 }
 
 /**
+ * §5.5.3 自愈：`load()` 挂了（最常见：面板正在重启的那几秒）不许让页面从此
+ * 冻在旧状态 —— 原来一抛循环就死，服务器回来之后按钮不变灰、点了没反应、
+ * 终端不动，人第一反应是「系统坏了」，而其实只差一次刷新。
+ *
+ * 所以：抓住、把失败原样说出来（不翻译 —— 它也可能是这一屏自己画不出来，
+ * 那时原样的报错正是要给人看的）、按固定间隔重试，成的那一刻整屏刷新并说一声。
+ */
+const RELOAD_RETRY_MS = 2_000;
+let reloadTimer = null;
+async function loadOrReconnect() {
+  try {
+    await load();
+    if (reloadTimer !== null) {
+      clearInterval(reloadTimer);
+      reloadTimer = null;
+      say("面板回来了，这一屏已经刷新。");
+    }
+  } catch (error) {
+    if (reloadTimer !== null) return; // 已经在重试了，别叠着说
+    say(`这一屏刷新失败（${error?.message ?? error}）—— 会自动重试，`
+      + "面板回来会自己刷新。");
+    reloadTimer = setInterval(() => { void loadOrReconnect(); }, RELOAD_RETRY_MS);
+  }
+}
+
+/**
  * 闸门里**要人裁决**的那几项。
  *
  * 只有这三个会被拿去问人。`start` / `settle` / `fail` 是系统在陈述发生了什么，
@@ -1204,7 +1277,20 @@ const GATE_REFUSAL_WORDS = {
  * 一条横幅，警示色就不再意味着警示。null = 没什么要挂的。
  */
 function lastOutcomeWords(outcome) {
-  if (!outcome || outcome.kind !== "refused") return null;
+  if (!outcome) return null;
+  if (outcome.kind === "unanswered") {
+    // 「没答上」也是下场（§3.2·5）—— 不写出来，一次静默流产的裁决就没有任何痕迹。
+    const at = typeof outcome.at === "string"
+      ? `（${new Date(outcome.at).toLocaleString()}）` : "";
+    const why = {
+      ask_turn_ended_without_answer: "Codex 跑完那一轮却没把问题端出来（补问过一次也一样）",
+      session_died_before_answering: "那边的进程在你答之前就没了",
+      session_died_before_asking: "会话在把题送进去之前就没了",
+      no_answer_in_time: "等到超时也没人答",
+    }[outcome.reason] ?? outcome.reason;
+    return `⚠ 上次那道题没答上${at}：${why}。再点一次就重新问。`;
+  }
+  if (outcome.kind !== "refused") return null;
   const reason = GATE_REFUSAL_WORDS[outcome.reason] ?? outcome.reason;
   const at = typeof outcome.at === "string"
     ? `（${new Date(outcome.at).toLocaleString()}）` : "";
@@ -1407,9 +1493,14 @@ function drawSheet(phase) {
   const needsBrief = panelState?.brief === null;
   briefButton.hidden = !entry.current;
   briefButton.disabled = entry.live;
+  // 批 2 的两步跟着 brief 那个按钮走同一个可见性：都是「说清这次要什么」的入口。
+  // 不随 entry.live 禁用 —— 它们走旁路线程，不占这个阶段的座。
+  briefDraftButton.hidden = !entry.current;
+  briefConfirmButton.hidden = !entry.current;
 
   const decidable = decidableActions();
-  runButton.hidden = !entry.current;
+  // 并行座位开着的格子也能跑（批 3）——「跑」发给座位，不发给主线。
+  runButton.hidden = !(entry.current || entry.seat !== null);
   /*
    * **能派的只有 `pending` 和 `running`**，和服务端 `runRound` 那份名单同一份。
    *
@@ -1419,16 +1510,41 @@ function drawSheet(phase) {
    * 2026-07-30 实测：在 `blocked` 上按下去回来的是 HTTP 500、空 body，界面显示
    * 「没跑起来：undefined」—— 亮着的按钮、按下去什么也没有，正是老树那种病。
    */
-  const status = panelState?.status ?? "pending";
-  runButton.disabled = entry.live || needsBrief
+  const status = entry.seat ?? panelState?.status ?? "pending";
+  /*
+   * 预检已经说了会拒，就别摆一个按下去必然失败的按钮（2026-08-07 真机的那一课）。
+   * 判据来自服务端那份 `dispatchPrecheck`，不是这里另算的。
+   */
+  const barred = entry.current && Boolean(panelState?.blocked);
+  runButton.disabled = entry.live || needsBrief || barred
     || (status !== "pending" && status !== "running");
   askButton.hidden = !entry.current;
-  askButton.disabled = decidable.length === 0 || entry.live;
+  /*
+   * **预检会拒的时候，连问都别问**（2026-08-07 真机）。
+   *
+   * 那天闸门只放行 `retry`，而 retry 落地之后必然要派一轮 —— 派发被预检拒掉，
+   * 人白走一趟选择器、白烧一个 Codex 会话，末了眼前是个被关掉的终端。
+   *
+   * **只在「唯一能裁决的动作都要靠派发才有意义」时才挡**：blocked 上只有 retry，
+   * 而 retry 就是「再派一轮」。settled 上还有批准/打回，那些不派轮，照旧能问。
+   */
+  const onlyRetry = decidable.length > 0 && decidable.every((each) => each === "retry");
+  askButton.disabled = decidable.length === 0 || entry.live
+    || (onlyRetry && barred);
 
-  // 出口：有活进程时才出现。没有它，上面每一个 disabled 都是一个没有出路的死结。
-  closeTermButton.hidden = !entry.live;
+  /*
+   * 出口：**两个来源都问**（交接 §5.5.2）。注册表里有活进程，或者账本上有一轮
+   * 在飞（queued / running 的 job）—— 后者在进程死了、或面板重启过之后照样成立，
+   * 而那正是原来出口被藏、人一个能按的都没有的那个死结。
+   * 没有出口，上面每一个 disabled 都是一个没有出路的死结。
+   */
+  const flying = roundInFlight(entry);
+  closeTermButton.hidden = !(entry.live || flying);
+  // 有一轮在飞时，这个出口收的不只是进程，还有账本上的那一轮（job 记失败、
+  // Change 回 blocked、retry 有路）—— 名字要说实话。
+  closeTermButton.textContent = flying ? "中止这一轮" : "结束这个终端";
   // 「开一个」和「结束这个」互斥：一个阶段同时只许一个进程。
-  openTermButton.hidden = entry.live;
+  openTermButton.hidden = entry.live || flying;
 
   drawNextStep(entry);
 }
@@ -1462,8 +1578,48 @@ function drawNextStep(entry) {
   nextStepLine.append(what, why);
 }
 
+/**
+ * 这一格上有一轮在飞吗 —— 按**账本**判（queued / running 的 job），不按注册表。
+ * 出口的判据（§5.5.2）和「下一步」的话术都读它，两处必须是同一份。
+ */
+function roundInFlight(entry) {
+  const job = panelState?.job ?? null;
+  if (job?.status !== "queued" && job?.status !== "running") return false;
+  // 活儿自己说它在哪个座位（批 3）；老行没有这一格，按主线算。
+  const at = job.phase ?? panelState?.currentPhase;
+  return entry.phase === at && (entry.current || entry.seat !== null);
+}
+
 function nextStep(entry) {
   // 顺序 = 优先级。第一条命中的就是答案。
+  /*
+   * **派发前的五条预检，摆在人按下去之前**（2026-08-07 真机）。
+   *
+   * 那天：闸门只放行 retry，人在选择器里选了它，题落地了，然后干净树预检当场
+   * 把这一轮拒掉、终端被关，人眼前只剩一个死终端 —— 而屏幕上事先一个字都没说
+   * 「这个阶段现在根本派不出去」。它排在最前面：别的「下一步」都建立在
+   * 「这个阶段派得出去」上，而这一条正说它派不出去。
+   */
+  if (entry.current && panelState?.blocked) {
+    return {
+      what: "先清掉这个路障",
+      why: runRefusal(panelState.blocked)
+        + "（这一条在你按任何按钮之前就成立 —— 现在去跑、或者去 retry，都会被它拒掉。）",
+    };
+  }
+  if (roundInFlight(entry)) {
+    return entry.live
+      ? {
+          what: "等这一轮跑完",
+          why: "红蓝对抗在跑，进度看上面那条。不想等了就按「中止这一轮」——"
+            + "它会把这一轮记成失败（可以 retry），不会推动任何闸门。",
+        }
+      : {
+          what: "按「中止这一轮」",
+          why: "账本记着一轮在飞，可它的进程不在了（进程死了，或面板重启过）——"
+            + "等下去只会等到超时。中止把这一轮当场记成失败，然后就能 retry。",
+        };
+  }
   if (entry.live) {
     return {
       what: "先结束这个终端",
@@ -1486,12 +1642,20 @@ function nextStep(entry) {
     };
   }
   if (panelState?.status === "blocked") {
+    /*
+     * §5.5.4：失败原因一直写在 jobs.error 里，屏幕上原来一个字都没有 ——
+     * 这里原来说「失败的原因在『问题』里」，而那是假话：超时、树脏这类原因
+     * 从来不进 gaps。拒绝的派发现在也落账（`recordRefusal`），所以「最近一条」
+     * 就是这一次的真原因，不再是上一轮的旧话。
+     */
+    const error = panelState?.job?.error;
     return {
       what: "请 Codex 问我",
       // 这一行是当成纯文本渲染的（`textContent`），所以不写 markdown 的星号 ——
       // 界面上会原样出现两个 `**`。
       why: "上一轮跑失败了。这个阶段现在只接受 retry，而 retry 是你的裁决 ——"
-        + "所以它在 Codex 的选择器里问，不在这个按钮上。失败的原因在「问题」里。",
+        + "所以它在 Codex 的选择器里问，不在这个按钮上。"
+        + (error ? `这一次失败的原因：${error}` : "原因没被记下来。"),
     };
   }
   if (panelState?.status === "settled") {
@@ -1541,7 +1705,7 @@ async function openTerminal() {
       + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
     );
     const result = response.ok ? await response.json() : { opened: false };
-    await load();
+    await loadOrReconnect();
     // 起成了就直接进去 —— 人要的是那个终端，不是「已开启」四个字。
     if (result.opened) { closeSheet(); await enter(phase); return; }
     if (sheetPhase) drawSheet(sheetPhase);
@@ -1555,11 +1719,17 @@ async function closeTerminal() {
   if (!phase) return;
   closeTermButton.disabled = true;
   try {
-    await fetch(
+    const result = await (await fetch(
       `/api/close?change=${encodeURIComponent(changeId)}`
       + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
-    );
-    await load();
+    )).json();
+    // 连账本一起收掉了一轮，就要说出来 —— job 记了失败、Change 回了 blocked，
+    // 静默的话人不知道现在已经可以 retry 了。
+    if (result.aborted) {
+      say(`这一轮中止了（${result.aborted}）。`
+        + "现在可以 retry ——「请 Codex 问我」，在选择器里选。");
+    }
+    await loadOrReconnect();
     if (sheetPhase) drawSheet(sheetPhase);
   } finally {
     closeTermButton.disabled = false;
@@ -1787,7 +1957,7 @@ async function leave() {
   await wait(300);
   moving = false;
 
-  await load();
+  await loadOrReconnect();
 }
 
 async function attach(phase, reattaching = false) {
@@ -1883,7 +2053,105 @@ async function attach(phase, reattaching = false) {
   }
 }
 
+/**
+ * 旁路窗口：不属于任何阶段的 Codex 聊天（DESIGN §3.3）。
+ *
+ * **永远能按** —— 一轮对抗跑着的时候想问个名词，不用等它跑完。服务端不查
+ * phaseBusy（这正是旁路的定义），所以这里也没有 disabled 逻辑可写。
+ */
+async function openAside() {
+  asideTermButton.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/aside?change=${encodeURIComponent(changeId)}`, { method: "POST" });
+    if (!response.ok) {
+      say(`旁路窗口没开成：${await response.text()}`);
+      return;
+    }
+    closeSheet();
+    await enter("aside");
+  } finally {
+    asideTermButton.disabled = false;
+  }
+}
+
+/**
+ * 批 2「模型起草，人改」的两步。中间那段（人在编辑器里改文件）不经过这个页面 ——
+ * 它本来就是人的活儿。机械判据（未经修改不算）在服务端。
+ */
+const DRAFT_REFUSAL_WORDS = {
+  no_aside_conversation: "还没有旁路对话可整理 —— 先按「旁路窗口」谈这次要什么，"
+    + "谈完再来起草。",
+  // 2026-08-06 真机：判据原来是「有没有会话」，而按一下「旁路窗口」会话当场就建好，
+  // 于是模型交回一份四节全是「本会话尚未谈到」的草稿，还被当成草稿写进了文件。
+  no_conversation_yet: "那个窗口开着，但你还没在里面说过话 —— 没有对话就只能编一份"
+    + "需求出来。先去旁路窗口聊清楚这次要做什么，再回来起草。",
+};
+
+async function draftBriefFromAside() {
+  briefDraftButton.disabled = true;
+  /*
+   * 起草那一轮要跑几分钟（xhigh），而它跑在旁路窗口里 —— 把人送进去看着，
+   * 比让他对着一个「整理中…」的按钮干等强。这也是 2026-08-06 那个「卡住」的
+   * 另一半：屏幕上没有任何东西说它在跑。
+   */
+  briefDraftButton.textContent = "模型在整理那段对话…";
+  const pending = fetch(
+    `/api/brief-draft?change=${encodeURIComponent(changeId)}`, { method: "POST" });
+  closeSheet();
+  await enter("aside");
+  stageNote.textContent = "正在让模型把这段对话整理成 brief 草稿 ——"
+    + "它就在这个窗口里跑，几分钟。写好之后这行会给出草稿文件的路径。";
+  try {
+    const result = await (await pending).json();
+    if (result.kind === "drafted") {
+      say(`草稿写好了：${result.editPath} —— 在编辑器里改它（未经修改不算数），`
+        + "改完回阶段卡片按「brief 定稿」。");
+    } else {
+      say(DRAFT_REFUSAL_WORDS[result.kind] ?? `没起草成：${result.detail ?? result.kind}`);
+    }
+  } finally {
+    briefDraftButton.disabled = false;
+    briefDraftButton.textContent = "闲聊起草 brief";
+  }
+}
+
+const CONFIRM_BRIEF_WORDS = {
+  nothing_drafted: "还没起草过（或者草稿文件被删了）。先按「闲聊起草 brief」。",
+  edit_missing: "工作稿不见了 —— 先重新起草一份。",
+  draft_unedited: "这份和模型的草稿逐字相同 —— 未经你编辑的草稿不算 brief。"
+    + "在文件里改成你的话（删掉不对的、补上你真正要的），再来定稿。",
+  empty_brief: "文件被改成了一片空白 —— 一段空 brief 等于回到编出来的需求。",
+};
+
+async function confirmBriefEdit() {
+  briefConfirmButton.disabled = true;
+  try {
+    const result = await (await fetch(
+      `/api/brief-confirm?change=${encodeURIComponent(changeId)}`,
+      { method: "POST" })).json();
+    if (result.kind === "recorded") {
+      // 顶掉一份已经存在的 brief = 换掉下游每个阶段的地基。**必须说出来。**
+      say(`brief 定稿了（${result.brief.length} 字）。现在可以跑这个阶段 ——`
+        + "红方拿的是你改过的那份，不是模型猜的。"
+        + (result.replaced
+          ? `⚠ 它顶掉了原来那份 brief（${result.replaced.length} 字）——`
+            + "下游每个阶段的任务书从此读的是新的这份。"
+          : ""));
+      await loadOrReconnect();
+      if (sheetPhase) drawSheet(sheetPhase);
+    } else {
+      say(CONFIRM_BRIEF_WORDS[result.kind] ?? `没定稿成：${result.kind}`);
+    }
+  } finally {
+    briefConfirmButton.disabled = false;
+  }
+}
+
 button("back").addEventListener("click", () => { void leave(); });
+asideTermButton.addEventListener("click", () => { void openAside(); });
+briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
+briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
@@ -2076,7 +2344,7 @@ addEventListener("resize", () => {
   else placeNodes();
 });
 
-void load();
+void loadOrReconnect();
 
 /*
  * ── 标准编辑器 ────────────────────────────────────────────
@@ -2130,6 +2398,10 @@ async function loadRubric(phase, role) {
     saved: mine?.criteria ?? [],
     drafts: (mine?.criteria ?? []).map((entry) => ({
       key: entry.key, text: entry.text, blocking: entry.blocking,
+      // **section 必须原样带回去。** 少了它，保存一次就把这一份和产出模板脱钩了
+      // （`domain/rubric.ts` 的 section 那一格 = 「越界」的机械判据），而界面上
+      // 什么都看不出来。人在这里编辑的是文字，不是这条挂接关系。
+      section: entry.section ?? null,
     })),
     note: null,
   };
@@ -2164,6 +2436,15 @@ function drawRubric() {
   }
   parts.push(roles);
 
+  /*
+   * 升级排在**判定和标准之前**。
+   *
+   * 它原来跟在这一轮的判定后面，于是被那一长串顶到折叠线以外 —— 2026-08-06 真机
+   * 实测：DOM 里有、屏幕上看不见，和「这个按钮不存在」对使用者是同一件事。
+   *
+   * 而且位置本身也是错的：它是**项目级**的动作，和你正在看哪个阶段、哪个角色
+   * 没有关系。埋在某一个阶段的判定底下，等于说它属于那个阶段。
+   */
   parts.push(drawVerdicts());
 
   const scope = document.createElement("p");
@@ -2392,7 +2673,7 @@ async function saveRubric() {
     bad: false,
   };
   drawRubric();
-  await load(); // 环上的颜色可能变了
+  await loadOrReconnect(); // 环上的颜色可能变了
 }
 
 tabGaps.addEventListener("click", () => { showTab("gaps"); });

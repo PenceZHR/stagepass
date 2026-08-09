@@ -94,6 +94,48 @@ BEGIN
 END;
 `;
 
+/**
+ * `change_bindings` 的表定义，单独一份 —— 和 `CHANGES_TABLE_SQL` 同一个理由：
+ * 迁移（加 `kind`、`phase` 放开可空，SQLite 改不了 CHECK/PK，只能整表重建）
+ * 用的必须和建新库用的是同一份。
+ *
+ * ## Which Codex thread work happens in
+ *
+ * `kind = 'round'`：一个阶段的对抗线程，一线程一 (Change, phase)。按对儿建键
+ * 而不是按 Change，理由是 fence：一线程一 Change 的话，阶段的判断有一部分
+ * 停在模型对更早阶段的记忆里 —— 那记忆在 Codex 的会话历史里，任何 StagePass
+ * 快照都罩不住。按阶段分线程逼着跨阶段信息走文档，而文档才能被快照、被哈希、
+ * 被 fence（重建 PRD §6.5）。重进一个阶段复用它的线程（Fix 第三轮最需要的
+ * 正是前两轮改了什么、为什么还不行）。
+ *
+ * `kind = 'aside'`：旁路会话（DESIGN-phase-not-the-only-axis §3.3）—— 人在
+ * 里面问问题、聊需求。**不属于任何阶段、不产出、不推闸门、不占「一个阶段
+ * 一个进程」的座位**，所以 `phase` 是 NULL。一个 Change 一条 aside：它是
+ * 「这个 Change 的闲聊」，两条并存只会让「把闲聊收敛成 brief」不知道读哪条。
+ */
+const CHANGE_BINDINGS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS change_bindings (
+  change_id   TEXT NOT NULL REFERENCES changes(id),
+  kind        TEXT NOT NULL DEFAULT 'round' CHECK (kind IN ('round','aside')),
+  phase       TEXT     NULL CHECK (phase IS NULL OR phase IN (${quoted(PHASES)})),
+  thread_id   TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
+  bound_at    TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  -- round 挂在一个阶段上，aside 不挂 —— 错配的行不可存
+  -- （和 gaps 的 kind/severity 配对是同一个路子）。
+  CHECK ((kind = 'round') = (phase IS NOT NULL))
+)`;
+
+/** 同上，迁移重建时要当场重建，不能等下一次重启的 SCHEMA_SQL。 */
+const CHANGE_BINDINGS_INDEXES_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_round
+  ON change_bindings (change_id, phase) WHERE kind = 'round';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_aside
+  ON change_bindings (change_id) WHERE kind = 'aside';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_thread
+  ON change_bindings (thread_id) WHERE status = 'bound';
+`;
+
 export const SCHEMA_SQL = `
 -- What a Change belongs to. One row per body of work a person thinks of as a
 -- thing: it carries a name, and nothing else. No status, no phase, no gate --
@@ -195,6 +237,30 @@ CREATE TABLE IF NOT EXISTS commands (
   at                TEXT NOT NULL
 );
 
+-- 并行座位（批 3，DESIGN-phase-not-the-only-axis §3.1 的第一阶段）。
+--
+-- ## 主线不动，这张表只放「同时活着的第二个阶段」
+--
+-- changes.phase 仍然是主状态（账本触发器、fence、seq 全部原样）——「TestPlan 和
+-- Build 同时 active」落成：主线停在 TestPlan，Build 在这张表里有一行，各自跑轮、
+-- 各自积累 evidence / gaps / rubric（那三张表本来就按 (change, phase) 建键）。
+--
+-- ## 出口：主线走到时**收编**（ChangeStore.apply）
+--
+-- 并行座位没有自己的裁决面 —— 主线推进到这个阶段时，把这一行的 status 原样
+-- 收编进主状态、删掉这一行，之后走正常的裁决流。于是「人只在状态的出口表一次态」
+-- 保持成立，网页上也不用长出第二个裁决入口（PRD §1）。
+--
+-- status 没有 closed：座位不会自己关掉，它的终点是被收编。
+CREATE TABLE IF NOT EXISTS change_states (
+  change_id  TEXT NOT NULL REFERENCES changes(id),
+  phase      TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  status     TEXT NOT NULL CHECK (status IN ('pending','running','settled','blocked')),
+  opened_at  TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase)
+);
+
 -- Long-running work and who owns it.
 CREATE TABLE IF NOT EXISTS jobs (
   id            TEXT PRIMARY KEY,
@@ -208,6 +274,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   expires_at    INTEGER NULL,
   deadline_at   INTEGER NOT NULL,
   error         TEXT NULL,
+  -- 这条活儿跑在哪个阶段（批 3：并行座位的轮和主线的轮要分得开）。
+  -- NULL = 加这一列之前的老行 —— 按「挡所有阶段」保守对待，别猜它是谁的。
+  phase         TEXT NULL CHECK (phase IS NULL OR phase IN (${quoted(PHASES)})),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   -- A running job has an owner; a job that is not running has none. Without
@@ -225,35 +294,8 @@ CREATE INDEX IF NOT EXISTS ix_jobs_claimable ON jobs (status, created_at);
 -- L2
 -- ---------------------------------------------------------------------------
 
--- Which Codex thread a phase's work happens in: one thread per (Change, phase).
---
--- Keyed by the pair rather than by the Change, because with one thread per
--- Change part of a phase's decision rests on what the model remembers from
--- EARLIER phases -- and that memory lives in Codex's conversation history,
--- inside no StagePass snapshot. The fence cannot reach it. Per-phase threads
--- force cross-phase information through documents, which can be snapshotted,
--- hashed and fenced. See the rebuild PRD section 6.5.
---
--- The price, paid deliberately: each phase opens on a conversation that knows
--- nothing about the earlier ones, so every phase's opening prompt has to carry
--- its upstream documents itself.
---
--- Re-entering a phase reuses its thread rather than starting another. Fix can
--- be entered many times, so the pair is not unique in TIME; what a third round
--- of Fix most needs is what the first two changed and why it still failed, and
--- that is in this same thread.
-CREATE TABLE IF NOT EXISTS change_bindings (
-  change_id   TEXT NOT NULL REFERENCES changes(id),
-  phase       TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
-  thread_id   TEXT NOT NULL,
-  status      TEXT NOT NULL CHECK (status IN ('bound','detached')),
-  bound_at    TEXT NOT NULL,
-  updated_at  TEXT NOT NULL,
-  PRIMARY KEY (change_id, phase)
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_change_bindings_thread
-  ON change_bindings (thread_id) WHERE status = 'bound';
+${CHANGE_BINDINGS_TABLE_SQL};
+${CHANGE_BINDINGS_INDEXES_SQL}
 
 -- Every turn StagePass asks for, written down BEFORE it is dispatched.
 --
@@ -461,6 +503,14 @@ CREATE TABLE IF NOT EXISTS rubric_criteria (
   ordinal        INTEGER NOT NULL,
   text           TEXT NOT NULL CHECK (length(trim(text)) > 0),
   blocking       INTEGER NOT NULL CHECK (blocking IN (0, 1)),
+  -- 它判的是产出模板的哪一节（domain/phase-template.ts 的 key）。
+  --
+  -- NULL = 不挂节，那是老数据和还没有模板的十一个阶段。挂节是「越界」唯一的机械
+  -- 判据：一条标准说得清自己管哪一节，才谈得上「这个问题不归这个阶段管」。
+  --
+  -- 不加外键：模板住在代码里（和 phase-play 同一条纪律，每阶段独自变），库里没有
+  -- 可引用的表。悬空由 store 在存的时候拦（人改 rubric 时挂一个不存在的节）。
+  section        TEXT NULL,
   PRIMARY KEY (rubric_id, criterion_key)
 );
 
@@ -594,6 +644,32 @@ CREATE INDEX IF NOT EXISTS ix_worklist_open
 `;
 
 /**
+ * 把一个库准备好 —— **建表和迁移的顺序在这里定死，调用方不许自己排。**
+ *
+ * ## 顺序是承重的，而它 2026-08-06 真机上炸过一次
+ *
+ * `SCHEMA_SQL` 里有引用**新列**的部分索引（`change_bindings` 那三个带
+ * `WHERE kind = ...`）。旧库里那张表还没有 `kind` —— 它是 `migrate` 才补的，
+ * 而 `CREATE TABLE IF NOT EXISTS` 对一张已经存在的表是空操作。于是
+ * 「先 SCHEMA_SQL 后 migrate」在旧库上必然抛 `no such column: kind`，
+ * 面板压根起不来。全新库不会撞上，所以离线测试全绿也不代表它对。
+ *
+ * 正确的顺序是**先把旧形状拉平，再补齐新东西**：`migrate` 对全新库是空操作
+ * （每一步都先问 `table_info`，表不在就返回），所以这个顺序两种库都成立。
+ *
+ * 做成一个函数而不是在文档里写一句「记得先 migrate」：一条只能靠人记得的规则
+ * 是一条撑到第二个调用者出现的规则，而这棵树一直在删这种东西。
+ */
+export function prepareSchema(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown; all(): unknown };
+}): void {
+  migrate(database);
+  database.exec(SCHEMA_SQL);
+}
+
+/**
  * 给已经存在的库补上后来才加的列。
  *
  * ## 为什么 SCHEMA_SQL 一个人不够
@@ -612,7 +688,7 @@ CREATE INDEX IF NOT EXISTS ix_worklist_open
 export function migrate(database: {
   pragma(sql: string): unknown;
   exec(sql: string): unknown;
-  prepare(sql: string): { get(): unknown };
+  prepare(sql: string): { get(): unknown; all(): unknown };
 }): void {
   const added: [table: string, column: string, type: string][] = [
     ["projects", "path", "TEXT"],
@@ -623,6 +699,8 @@ export function migrate(database: {
     ["gaps", "found_why", "TEXT"],
     ["questions", "outcome_json", "TEXT"],
     ["change_events", "reason", "TEXT"],
+    ["rubric_criteria", "section", "TEXT"],
+    ["jobs", "phase", "TEXT"],
   ];
   for (const [table, column, type] of added) {
     const columns = database.pragma(`table_info(${table})`) as { name: string }[];
@@ -632,6 +710,252 @@ export function migrate(database: {
   }
 
   migrateReturnStack(database);
+  migrateBindingsKind(database);
+  migrateStaleChecks(database);
+  migrateRetiredPhases(database);
+}
+
+/**
+ * 停在**退休阶段**上的 Change，挪回主线（2026-08-08：TechSpec 并进 Arch）。
+ *
+ * ## 为什么非挪不可
+ *
+ * 退休只是把名字从主线图上拿掉，历史照旧读得出来（见 `domain/phase.ts` 的
+ * `RETIRED_PHASES`）。但**正停在那儿的 Change 走不动了**：`advancesTo` 对一个
+ * 不在图上的阶段直接抛，于是批准这条路整个没有出口 —— 人在界面上一个能按的
+ * 都没有，而这正是这棵树反复在治的那种死结。
+ *
+ * 合并前查实：CHG-001 当时就停在 `TechSpec/blocked`。
+ *
+ * ## 挪去哪、怎么记
+ *
+ * 挪到那个退休阶段**并进去的那一个**（`ABSORBED_BY`）。状态回 `pending` ——
+ * 它要用新模板重跑一轮，上一轮的 `blocked` 说的是老阶段的事。
+ *
+ * **账本照记**（`sendBack`，带理由）：账本是这个产品的地基，一次静默的
+ * UPDATE 会被 `ck_changes_ledger` 当场拒掉，而就算能绕过去也不该绕 ——
+ * 人回头看时必须看得出这一步是谁、为什么把它挪走的。
+ *
+ * `returnStack` 原样不动：栈里记的是「回来之后去哪」，那笔债和阶段退休无关。
+ * 退休阶段本身不许在栈里（`assertStateValid` 会拒），而它从来也进不去 ——
+ * 压栈的只有 sendBack 的发起方和 Review/QA 的送修。
+ */
+function migrateRetiredPhases(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(...args: unknown[]): unknown; all?(...args: unknown[]): unknown };
+}): void {
+  const ABSORBED_BY: Readonly<Record<string, string>> = { TechSpec: "Arch" };
+  const at = new Date().toISOString();
+  for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
+    let rows: { id: string; seq: number }[];
+    try {
+      rows = (database.prepare(
+        "SELECT id, seq FROM changes WHERE phase = ?",
+      ).all?.(retired) ?? []) as { id: string; seq: number }[];
+    } catch {
+      return;   // changes 表还不存在（全新库）
+    }
+    for (const row of rows) {
+      const seq = row.seq + 1;
+      database.exec("BEGIN");
+      try {
+        // 账本先写 —— `ck_changes_ledger` 在下面那句 UPDATE 触发时会找它。
+        (database.prepare(
+          `INSERT INTO change_events
+             (change_id, seq, action, from_phase, from_status, to_phase, to_status, reason, at)
+           SELECT id, ?, 'sendBack', phase, status, ?, 'pending', ?, ?
+             FROM changes WHERE id = ?`,
+        ) as unknown as { run(...args: unknown[]): unknown }).run(
+          seq, absorbedBy,
+          `${retired} 并进 ${absorbedBy}（阶段退休），这个 Change 退回 ${absorbedBy} 重写`,
+          at, row.id,
+        );
+        (database.prepare(
+          "UPDATE changes SET phase = ?, status = 'pending', seq = ?, updated_at = ? WHERE id = ?",
+        ) as unknown as { run(...args: unknown[]): unknown }).run(
+          absorbedBy, seq, at, row.id,
+        );
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    }
+  }
+}
+
+/**
+ * 旧库的 phase CHECK 名单里补上 `Arch`（批 5，2026-08-06）。
+ *
+ * ## 为什么是「整表重建 × N」
+ *
+ * 十几张表的 `CHECK (phase IN (...))` 是建表时从 PHASES 生成的 —— 旧库里那份
+ * 名单没有 Arch，新代码一写 `phase = 'Arch'` 就被旧约束当场拒掉。SQLite 改不了
+ * CHECK，只能按官方十二步重建；表多，所以判据和过程都做成**通用的**：
+ *
+ * - 判据：`sqlite_master.sql` 里有 `'PRD'`（说明带 phase 名单）而没有 `'Arch'`
+ * - 新定义从 `SCHEMA_SQL` 里按表名截出来 —— 建新库和迁旧库用的必须是同一份
+ * - 列按旧表的名单拷（`added` 那批列的迁移排在这之前，所以两边列一致）
+ * - 索引和触发器随旧表消失，重建完把 `SCHEMA_SQL` 整篇补一遍（全是 IF NOT
+ *   EXISTS，幂等）—— 不能等下一次重启，中间这段时间账本没人守
+ */
+function migrateStaleChecks(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown; all(): unknown };
+}): void {
+  const count = (table: string): number =>
+    (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+  const definitionOf = (name: string): string | null => {
+    const found = new RegExp(
+      `CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\)`,
+    ).exec(SCHEMA_SQL);
+    // SCHEMA_SQL 里没有的表不归这里迁（有人在库里手建过表，或者它是迁移的中间产物）。
+    return found === null ? null : found[0];
+  };
+  /**
+   * 一段建表 SQL 归一化成「可比的形状」。
+   *
+   * 三处不许参与比较，都是 SQLite 或迁移自己造成的差异，不是库落后：
+   *
+   * - **`IF NOT EXISTS` 被 SQLite 丢掉** —— 存进 `sqlite_master` 的没有它。
+   * - **重建改名之后表名带引号** —— `ALTER TABLE … RENAME TO t` 存的是
+   *   `CREATE TABLE "t" (`。不抹掉这一处，每次启动都会重建一遍同一张表。
+   * - **注释和空白** —— 改一句注释不该触发整表重建；而注释里一个英文所有格
+   *   （`model's`）会让按引号配对的比较整体错位，先删掉就没有这回事。
+   *
+   * 上面这三条都是 2026-08-07 用一个探针在真 SQLite 上量出来的，不是推测。
+   */
+  const shapeOf = (sql: string): string => sql
+    .replace(/--[^\n]*/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/CREATE TABLE (?:IF NOT EXISTS )?"?([A-Za-z_]+)"?/, "CREATE TABLE $1")
+    .trim();
+
+  /**
+   * **库里那张表和代码现在说的不一样** —— 差一个字就重建。
+   *
+   * 判据走过两版，都是被真机推着走的：
+   *
+   * 1. 「有 `'PRD'` 却没有 `'Arch'`」—— 只认阶段名。2026-08-07 栽在
+   *    `change_events.action` 上：老库的名单里没有 `sendBack`，于是人选了
+   *    「打回上游」，账本写不进去、事务回滚、`apply` 抛 SqliteError，
+   *    最后是一个 500。**那个库物理上记不下这个动作。**
+   * 2. 「代码允许而库里没有的字面量」—— 覆盖了全部枚举，可是**一个字面量都
+   *    没有的表它永远看不见**。真库实测：`projects` / `change_briefs` /
+   *    `rubric_criteria` 三张表因此从没被迁过，而 `projects.path` 那条
+   *    `CHECK (length(trim(path)) > 0)` 至今不在库里 —— 空路径存得进去，
+   *    而 `ensure` 的 COALESCE 让它永不自愈。
+   *
+   * 所以第三版直接比整段定义：枚举、CHECK、类型、主键、外键，一次全在里面。
+   * 代价是「注释改了也重建」，而那已经被 `shapeOf` 抹掉了。
+   */
+  const stale = (database.prepare(
+    "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL",
+  ).all() as { name: string; sql: string }[])
+    .filter((table) => {
+      const canonical = definitionOf(table.name);
+      return canonical !== null && shapeOf(canonical) !== shapeOf(table.sql);
+    });
+  if (stale.length === 0) return;
+
+  database.pragma("foreign_keys=OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      /*
+       * **重建期间先摘掉账本触发器。**
+       *
+       * 它们挂在 `changes` 上、引用 `change_events` —— 而 `change_events` 自己
+       * 也可能在这一批待重建的表里（2026-08-07：`action` 的名单缺 `sendBack`）。
+       * 表一 DROP，触发器就悬空，下一条语句撞上
+       * 「error in trigger ck_changes_ledger: no such table: main.change_events」。
+       *
+       * 摘掉是安全的：整段包在一个事务里，而结尾的 `exec(SCHEMA_SQL)` 用**同一份
+       * 定义**把它们装回来（`CHANGES_TRIGGERS_SQL`）。失败则整体回滚，触发器跟着
+       * 一起回来 —— 任何一条路上都不存在「账本没人守」的时刻。
+       */
+      database.exec(
+        "DROP TRIGGER IF EXISTS ck_changes_ledger;"
+        + "DROP TRIGGER IF EXISTS ck_changes_seq_advances;",
+      );
+      for (const { name } of stale) {
+        const columns = (database.pragma(`table_info(${name})`) as { name: string }[])
+          .map((column) => column.name).join(", ");
+        const rows = count(name);
+        database.exec(definitionOf(name)!.replace(
+          `CREATE TABLE IF NOT EXISTS ${name} (`,
+          `CREATE TABLE ${name}_migrating (`,
+        ));
+        database.exec(
+          `INSERT INTO ${name}_migrating (${columns}) SELECT ${columns} FROM ${name}`,
+        );
+        if (count(`${name}_migrating`) !== rows) {
+          throw new Error(`check migration lost rows in ${name}; rolling back`);
+        }
+        database.exec(`DROP TABLE ${name}`);
+        database.exec(`ALTER TABLE ${name}_migrating RENAME TO ${name}`);
+      }
+      database.exec(SCHEMA_SQL);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.pragma("foreign_keys=ON");
+  }
+}
+
+/**
+ * `change_bindings` 加 `kind`、`phase` 放开可空（DESIGN-phase-not-the-only-axis §3.3）。
+ *
+ * 和 `migrateReturnStack` 同一个形状：旧列绑在 CHECK 和 PRIMARY KEY 里，SQLite
+ * 改不了约束，只能整表重建。老数据无损：已有的行全是阶段线程，`kind = 'round'`。
+ * 索引随旧表一起消失，当场用同一份定义重建。
+ */
+function migrateBindingsKind(database: {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  prepare(sql: string): { get(): unknown };
+}): void {
+  const columns = database.pragma("table_info(change_bindings)") as { name: string }[];
+  if (columns.length === 0) return;                       // 新库，SCHEMA_SQL 会建
+  if (columns.some((entry) => entry.name === "kind")) return;   // 已迁移
+
+  const count = (table: string): number =>
+    (database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+
+  database.pragma("foreign_keys=OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      const rows = count("change_bindings");
+      database.exec(CHANGE_BINDINGS_TABLE_SQL.replace(
+        "CREATE TABLE IF NOT EXISTS change_bindings (",
+        "CREATE TABLE change_bindings_migrating (",
+      ));
+      database.exec(`
+        INSERT INTO change_bindings_migrating
+          (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+        SELECT change_id, 'round', phase, thread_id, status, bound_at, updated_at
+        FROM change_bindings;
+      `);
+      if (count("change_bindings_migrating") !== rows) {
+        throw new Error("bindings kind migration lost rows; rolling back");
+      }
+      database.exec("DROP TABLE change_bindings");
+      database.exec("ALTER TABLE change_bindings_migrating RENAME TO change_bindings");
+      database.exec(CHANGE_BINDINGS_INDEXES_SQL);
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    database.pragma("foreign_keys=ON");
+  }
 }
 
 /**

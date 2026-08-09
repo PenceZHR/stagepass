@@ -60,9 +60,10 @@ export class ThreadAlreadyBoundError extends Error {
   constructor(
     readonly threadId: string,
     readonly changeId: string,
-    readonly phase: Phase,
+    /** null = 占着它的是那条旁路会话（aside），不属于任何阶段。 */
+    readonly phase: Phase | null,
   ) {
-    super(`Thread ${threadId} is already bound to ${changeId} at ${phase}`);
+    super(`Thread ${threadId} is already bound to ${changeId} at ${phase ?? "aside"}`);
     this.name = "ThreadAlreadyBoundError";
   }
 }
@@ -96,21 +97,17 @@ export class BindingStore {
         // conversation the human is watching. Detach first, deliberately.
         throw new ThreadAlreadyBoundError(existing.threadId, changeId, phase);
       }
-      // A thread belongs to exactly one (Change, phase). The same thread turning
-      // up under a second phase would mean two phases appending to one rollout,
-      // which is the interleaving that makes "which turn was mine" unanswerable.
-      const holder = this.database.prepare(
-        "SELECT change_id, phase FROM change_bindings WHERE thread_id = ? AND status = 'bound'",
-      ).get(threadId) as { change_id: string; phase: Phase } | undefined;
-      if (holder && !(holder.change_id === changeId && holder.phase === phase)) {
-        throw new ThreadAlreadyBoundError(threadId, holder.change_id, holder.phase);
-      }
+      // A thread belongs to exactly one seat. The same thread turning up under
+      // a second phase (or doubling as an aside) would mean two callers
+      // appending to one rollout, which is the interleaving that makes "which
+      // turn was mine" unanswerable.
+      this.assertThreadFree(threadId, changeId, phase);
 
       this.database.prepare(
         `INSERT INTO change_bindings
-           (change_id, phase, thread_id, status, bound_at, updated_at)
-         VALUES (?, ?, ?, 'bound', ?, ?)
-         ON CONFLICT (change_id, phase) DO UPDATE SET
+           (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+         VALUES (?, 'round', ?, ?, 'bound', ?, ?)
+         ON CONFLICT (change_id, phase) WHERE kind = 'round' DO UPDATE SET
            thread_id = excluded.thread_id,
            status = 'bound',
            bound_at = excluded.bound_at,
@@ -120,10 +117,22 @@ export class BindingStore {
     })();
   }
 
+  /** 这条线程还没被别的座位占着。占着就抛 —— 静默共用一条 rollout 更糟。 */
+  private assertThreadFree(
+    threadId: string, changeId: string, phase: Phase | null,
+  ): void {
+    const holder = this.database.prepare(
+      "SELECT change_id, phase FROM change_bindings WHERE thread_id = ? AND status = 'bound'",
+    ).get(threadId) as { change_id: string; phase: Phase | null } | undefined;
+    if (holder && !(holder.change_id === changeId && holder.phase === phase)) {
+      throw new ThreadAlreadyBoundError(threadId, holder.change_id, holder.phase);
+    }
+  }
+
   find(changeId: string, phase: Phase): Binding | null {
     const row = this.database.prepare(
       `SELECT change_id, phase, thread_id, status FROM change_bindings
-        WHERE change_id = ? AND phase = ?`,
+        WHERE change_id = ? AND phase = ? AND kind = 'round'`,
     ).get(changeId, phase) as BindingRow | undefined;
     return row
       ? {
@@ -147,7 +156,53 @@ export class BindingStore {
   detach(changeId: string, phase: Phase): void {
     this.database.prepare(
       `UPDATE change_bindings SET status = 'detached', updated_at = ?
-        WHERE change_id = ? AND phase = ?`,
+        WHERE change_id = ? AND phase = ? AND kind = 'round'`,
     ).run(this.now().toISOString(), changeId, phase);
+  }
+
+  /*
+   * ── 旁路会话（aside，DESIGN-phase-not-the-only-axis §3.3）──────────────
+   *
+   * 一个 Change 一条：它是「这个 Change 的闲聊」，不属于任何阶段、不产出、
+   * 不推闸门。批 2 的「把闲聊收敛成 brief」按它找到那段对话 —— 两条并存就
+   * 不知道读哪条，所以 schema 用部分唯一索引钉死一条。
+   */
+
+  /** 绑定这个 Change 的旁路线程，或确认已有的那条。和 `bind` 同一套幂等契约。 */
+  bindAside(changeId: string, threadId: string): void {
+    const at = this.now().toISOString();
+    this.database.transaction((): void => {
+      const existing = this.findAside(changeId);
+      if (existing?.status === "bound" && existing.threadId === threadId) return;
+      this.assertThreadFree(threadId, changeId, null);
+      this.database.prepare(
+        `INSERT INTO change_bindings
+           (change_id, kind, phase, thread_id, status, bound_at, updated_at)
+         VALUES (?, 'aside', NULL, ?, 'bound', ?, ?)
+         ON CONFLICT (change_id) WHERE kind = 'aside' DO UPDATE SET
+           thread_id = excluded.thread_id,
+           status = 'bound',
+           bound_at = excluded.bound_at,
+           updated_at = excluded.updated_at`,
+      ).run(changeId, threadId, at, at);
+    })();
+  }
+
+  findAside(changeId: string): {
+    readonly threadId: string;
+    readonly status: BindingStatus;
+  } | null {
+    const row = this.database.prepare(
+      `SELECT thread_id, status FROM change_bindings
+        WHERE change_id = ? AND kind = 'aside'`,
+    ).get(changeId) as { thread_id: string; status: BindingStatus } | undefined;
+    return row ? { threadId: row.thread_id, status: row.status } : null;
+  }
+
+  detachAside(changeId: string): void {
+    this.database.prepare(
+      `UPDATE change_bindings SET status = 'detached', updated_at = ?
+        WHERE change_id = ? AND kind = 'aside'`,
+    ).run(this.now().toISOString(), changeId);
   }
 }

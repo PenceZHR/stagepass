@@ -44,9 +44,37 @@ export type PhaseInstructions = Readonly<Record<Phase, string>>;
 export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   PRD: "Write the product requirement for this change: who it is for, what outcome it must produce, and what is out of scope.",
   Spec: "Turn the approved PRD into a product specification. Name every behaviour a user can observe, and every case the PRD leaves undecided.",
-  TechSpec: "Turn the approved specification into a technical design: system behaviour, constraints, blast radius, and the main risks.",
+  /*
+   * Arch **是这次改动的完整技术架构**（2026-08-08 TechSpec 并进来，见
+   * domain/phase.ts 的 RETIRED_PHASES）。十节见 ARCH_SECTIONS。
+   *
+   * 这段话里的 "down to file paths and function names" 是承重的：老的那一版说的是
+   * "which modules it touches"，而**问到哪一层就只会答到哪一层** —— 真机产出因此
+   * 停在模块层，人看完说「太宽泛」。
+   */
+  Arch: "Design the complete technical architecture for this change, down to file paths"
+    + " and function names: which modules and files it touches or adds (with paths), what"
+    + " each file exports (by name) and who calls it, how data is stored and how state"
+    + " moves, the signature of every cross-module function, which dependency edges are"
+    + " new (as file-imports-file, each with why it cannot be avoided), what each module"
+    + " does and does not expose, at least one considered-but-rejected alternative plus"
+    + " the price of the one you chose, the single riskiest part, and how each decision"
+    + " traces back to the approved Spec."
+    + " Leave only step ordering and code-writing to the downstream phases -- function"
+    + " names, signatures and data structures belong in this document.",
+  // 退休了（并进 Arch）。留一句话是因为 PhaseInstructions 要每个阶段都有；
+  // 没有 Change 会再走到它。
+  TechSpec: "This phase has been merged into Arch and is no longer used.",
   Plan: "Break the approved design into executable steps, each with its expected blast radius and how it will be verified.",
-  TestPlan: "State what must be verified before this change can ship, and how -- automated where possible, manual where not.",
+  /*
+   * §8.7·1（用户 2026-08-06 拍）：TestPlan 交方案**和测试代码**，自己不跑 ——
+   * 「肯定是 build 做完了跑 test」。执行在 Build 的蓝方，时点在红方写完之后，
+   * 所以「怎么跑」那一节必须细到不在场的人照着能跑。
+   */
+  TestPlan: "State what must be verified before this change can ship, and deliver both"
+    + " the test plan and the test code -- automated where possible, manual where not."
+    + " Do NOT run the tests: they are executed after Build, by someone else, following"
+    + " your own how-to-run instructions.",
   // 「跑一遍并交出证据」是被 rubric 判的（domain/rubric-defaults.ts 的 Build 那几条），
   // 所以它必须**被要求**。判它的蓝方跑不了东西 —— 不写在这里，就是在罚模型没做一件
   // 没人让它做的事，而那正是「模型答不出它没被问过的题」。
@@ -54,15 +82,26 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   // 2026-08-04 同一条规矩又用了一次：Build 的 rubric 加了四条编码规范（风格一致、
   // 命名对齐上游、一处定义、不明显的决定写为什么），**所以这四件事也必须在这里被
   // 要求**。只加判据不加要求，就是回到上面那句话要防的事。
+  /*
+   * ## 2026-08-06 拍的 Build 分工：红方**看不到测试**
+   *
+   * 测试是 TestPlan 交的，跑它们的是这一轮的蓝方（红方写完之后）—— 红方拿到的
+   * 反馈是「哪条失败、输出是什么」，对着一个不可见的判据做 TDD。所以这里明令
+   * 不读、不改、不跑测试代码；「自己跑一遍」保留，但跑的是改动本身（编译、
+   * 启动、手动走一遍改的路径），不是测试套件。
+   */
   Build: "Implement the approved plan. Change nothing outside the files the plan allows."
+    + " Do NOT read, modify, delete or run any test code: the tests were delivered by"
+    + " TestPlan and are executed by someone else after you finish -- you will be told"
+    + " which cases failed and what they printed."
     + " Match the surrounding code and its direct callers: naming, error handling and file"
     + " placement follow what is already there -- do not start a second style in the same repo."
     + " Use the words the approved Spec and TechSpec already use; do not invent a second name"
     + " for a concept they have named. Keep one definition per rule -- where the logic already"
     + " exists, call it instead of copying it. Wherever a decision is not obvious, leave the"
     + " reason in the code."
-    + " Run what you changed and report the exact command and its output --"
-    + " the reviewer cannot run anything, so unreported means unverified.",
+    + " Run what you changed (build it, start it, walk the changed path) and report the"
+    + " exact command and its output -- unreported means unverified.",
   // Review 的产出是一份**报告**，而它必须写清审的是哪个 commit —— 审 A 不等于审 B，
   // 而下一轮、下一个阶段都要知道这份意见是对着哪一版说的。
   // 缺陷本身另有去处：Review 里红方报的 blockers 会进 gaps（domain/phase.ts 的

@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
+/*
+ * **夹具阶段是 Fix**（2026-08-06 二改）。
+ *
+ * 这里验的是「一轮怎么变成 gap」那条机械链路，用哪个阶段无所谓 —— 但反方的
+ * 自由 blockers 只在**够得着代码**的阶段还算数（`blue.investigates`）。
+ * 先从 Spec 换到 Build；Build 当天也收口了（它有了施工报告模板），所以再换到
+ * Fix —— 它是这条通道最后留着的那几个之一。
+ */
+
 import { SCHEMA_SQL } from "../db/schema";
 import { standardGapId } from "../domain/rubric-gaps";
 import { ScriptedCodexTransport } from "../codex/transport";
@@ -74,7 +83,7 @@ const asJudge = (body: string) => body;
 const deliveredAll = (context: ReturnType<typeof open>) => (): string =>
   (["producer", "critic", "verdict"] as const)
     .flatMap((role) =>
-      context.rubrics.effective(PROJECT, CHANGE, "Spec", role)?.criteria ?? [])
+      context.rubrics.effective(PROJECT, CHANGE, "Fix", role)?.criteria ?? [])
     .map((each) => each.key)
     .join(" ");
 
@@ -114,7 +123,7 @@ async function run(context: ReturnType<typeof open>, input: {
     ...Array.from({ length: 4 }, () => ""),
   ]);
   return runRubricRound({
-    projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+    projectId: PROJECT, changeId: CHANGE, phase: "Fix",
     round: input.round ?? 1, task: "写 Spec", judgeThreadId: null,
   }, {
     worklist,
@@ -150,7 +159,7 @@ async function run(context: ReturnType<typeof open>, input: {
 
 const seedProducer = (context: ReturnType<typeof open>, blocking = true) =>
   context.rubrics.save(
-    { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+    { projectId: PROJECT, changeId: null, phase: "Fix", role: "producer" },
     [{ text: "每条需求都有可测的验收标准", blocking }],
   );
 
@@ -174,7 +183,7 @@ const seedProducer = (context: ReturnType<typeof open>, blocking = true) =>
 describe("L5 · 没有人给自己打分", () => {
   const seedCritic = (context: ReturnType<typeof open>) =>
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "critic" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "critic" },
       [{ text: "每条问题都指向正方产出里的具体位置", blocking: true }]);
 
   it("**producer 的判定读蓝方的话，不读红方的**", async () => {
@@ -195,7 +204,7 @@ describe("L5 · 没有人给自己打分", () => {
     seedProducer(context);
     const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
     await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
@@ -229,12 +238,12 @@ describe("L5 · 没有人给自己打分", () => {
   it("**verdict 那份不进对抗** —— 谁的提示词里都没有，也不产生判定", async () => {
     const context = open();
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "verdict" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "verdict" },
       [{ text: "关闭一个问题必须写清它为什么不再成立", blocking: true }]);
 
     const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
     const settled = await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
@@ -326,7 +335,7 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     const context = open();
     seedProducer(context);
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "critic" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "critic" },
       [{ text: "每条问题都指向正方产出里的具体位置", blocking: true }]);
 
     const settled = await run(context, {
@@ -344,14 +353,14 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     const context = open();
     seedProducer(context);
     await run(context, { blueAnswers: [["no", "缺"]], round: 1 });
-    assert.equal(context.gaps.blockers(CHANGE, "Spec").length, 1);
+    assert.equal(context.gaps.blockers(CHANGE, "Fix").length, 1);
 
     const settled = await run(context, {
       blueAnswers: [["yes", "补上了"]], round: 2,
     });
     const standard = settled.gaps.find((gap) => gap.id === standardGapId("producer", "K1"));
     assert.equal(standard?.status, "closed");
-    assert.equal(context.gaps.blockers(CHANGE, "Spec").length, 0);
+    assert.equal(context.gaps.blockers(CHANGE, "Fix").length, 0);
   });
 
   it("判定按轮存下来了 —— 后面读得到", async () => {
@@ -359,11 +368,11 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
     seedProducer(context);
     await run(context, { blueAnswers: [["no", "缺"]], round: 3 });
 
-    const stored = context.rubrics.assessments(CHANGE, "Spec", "producer", 3);
+    const stored = context.rubrics.assessments(CHANGE, "Fix", "producer", 3);
     assert.equal(stored[0]?.verdict, "no");
     assert.equal(stored[0]?.blockingThen, true);
     assert.equal(stored[0]?.criterionText, "每条需求都有可测的验收标准");
-    assert.equal(context.rubrics.assessments(CHANGE, "Spec", "producer", 4).length, 0);
+    assert.equal(context.rubrics.assessments(CHANGE, "Fix", "producer", 4).length, 0);
   });
 
 });
@@ -380,10 +389,10 @@ describe("L5 · rubric 判定接进一轮对抗", () => {
 describe("L5 · 没判上的时候，说清楚是哪一种", () => {
   const seedBoth = (context: ReturnType<typeof open>) => {
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "producer" },
       [{ text: "每条需求都有可测的验收标准", blocking: false }]);
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "critic" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "critic" },
       [{ text: "每条问题都指向具体位置", blocking: false }]);
     // producer -> K1（蓝方答），critic -> K2（裁判答）
   };
@@ -480,7 +489,7 @@ describe("L5 · 裁判的结论与反方的整体判断", () => {
 describe("L5 · 反方那份标准走文件", () => {
   const seedOne = (context: ReturnType<typeof open>) =>
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "producer" },
       [{ text: "每条需求都有可测的验收标准", blocking: false }]);
 
   it("**答上了就落成真判定，evidence 是它自己写的依据**", async () => {
@@ -504,7 +513,7 @@ describe("L5 · 反方那份标准走文件", () => {
   it("**数不对就整份作废** —— 一条也不采信", async () => {
     const context = open();
     context.rubrics.save(
-      { projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" },
+      { projectId: PROJECT, changeId: null, phase: "Fix", role: "producer" },
       [
         { text: "每条需求都有可测的验收标准", blocking: false },
         { text: "写清楚了这次不做什么", blocking: false },
@@ -523,7 +532,7 @@ describe("L5 · 反方那份标准走文件", () => {
     const context = open();
     seedOne(context);
     const key = context.rubrics
-      .current({ projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" })!
+      .current({ projectId: PROJECT, changeId: null, phase: "Fix", role: "producer" })!
       .criteria[0]!.key;
 
     const transport = new ScriptedCodexTransport([
@@ -531,7 +540,7 @@ describe("L5 · 反方那份标准走文件", () => {
       ...Array.from({ length: 8 }, () => ""),
     ]);
     await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport,
@@ -555,12 +564,12 @@ describe("L5 · 反方那份标准走文件", () => {
     const context = open();
     seedOne(context);
     const key = context.rubrics
-      .current({ projectId: PROJECT, changeId: null, phase: "Spec", role: "producer" })!
+      .current({ projectId: PROJECT, changeId: null, phase: "Fix", role: "producer" })!
       .criteria[0]!.key;
 
     const written = new Map<string, string>();
     await runRubricRound({
-      projectId: PROJECT, changeId: CHANGE, phase: "Spec",
+      projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport: new ScriptedCodexTransport([

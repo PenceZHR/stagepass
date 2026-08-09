@@ -1,7 +1,7 @@
-import type { ChangeAction, ChangeState } from "./change-state";
+import { recommendedApproval, type ChangeAction, type ChangeState } from "./change-state";
 import type { Gate } from "./gate";
 import {
-  advancesTo, DEFAULT_GRAPH, sendsToFix, upstreamOf,
+  DEFAULT_GRAPH, sendsToFix, upstreamOf,
   type Phase, type PhaseGraph,
 } from "./phase";
 import { roundFromLedger } from "./round";
@@ -117,14 +117,28 @@ export function optionsFrom(
   const owed = state.returnStack[state.returnStack.length - 1];
 
   if (gate.permitted.includes("approve")) {
-    // 欠着回程就还债，不沿主线走 —— 和 `transition` 的 approve 同一条规则。
-    const to = owed ?? advancesTo(state.phase, graph);
+    /*
+     * 沿主线走一步，走到发起方就还债（§8.9）。
+     *
+     * 这里原来自己写了一遍 `owed ?? advancesTo(...)`，注释写着「和 `transition`
+     * 的 approve 同一条规则」—— 一句只能靠人记得的话。现在两边读**同一个**
+     * `recommendedApproval`，那句话变成了机械的（§8.10 顺手清的）。
+     */
+    const to = recommendedApproval(state, graph);
     if (to !== null) {
       edges.push({
         action: "approve", to, kind: kindOf(state.phase, to),
-        why: owed
-          ? `批准 → 弹回 ${owed}（它在等这份改完）`
-          : `批准 → ${to}（闸门放行，进下一个阶段）`,
+        why: owed === undefined
+          ? `批准 → ${to}（闸门放行，进下一个阶段）`
+          : to === owed
+            // 走到发起方了 —— 这一步既是前进也是还债。
+            ? `批准 → 回到 ${owed}（它一直在等这份改完，债还清）`
+            /*
+             * 还在还债的路上（§8.9）。**要说出「谁还在等」**，否则人看到的是
+             * 一步平常的前进，看不出这条路是因为打回才走的 —— 而重走的那一轮
+             * 该做的是「按这条改动更新你已有的产物」，不是重写一份。
+             */
+            : `批准 → ${to}（它的产物基于旧版上游，要重走一遍；${owed} 还在等）`,
       });
     } else {
       edges.push({

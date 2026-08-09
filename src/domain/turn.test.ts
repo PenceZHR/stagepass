@@ -7,6 +7,7 @@ import {
   InvalidTurnRequestError,
   parseTurnResult,
   requestHash,
+  BLUE_VERDICT_ONLY_CONTRACT,
   RESULT_CONTRACT,
   TurnResultUnparsableError,
 } from "./turn";
@@ -272,4 +273,55 @@ describe("turn · 没围栏时，认最后那个完整的 JSON 对象", () => {
   it("压根没有 JSON —— 照旧报 no_json", () => {
     assert.throws(() => parseTurnResult("我写完了，没别的。"), TurnResultUnparsableError);
   });
+});
+
+/*
+ * **每一份契约自己的示例，必须解析得了。**
+ *
+ * 2026-08-06 真机撞回来的：`BLUE_VERDICT_ONLY_CONTRACT` 第一版只有 `overall`，
+ * 而 `parseTurnResult` 要求 `artifactIds` —— 于是有模板的阶段**每一轮都整轮作废**
+ * （`turn_result_artifacts_invalid: blue: undefined`），跑了 22 分钟才报出来。
+ *
+ * 单元测试一条都没红，因为夹具里的答复每次都是**手写的**、每次都带着 `artifactIds`。
+ * 它们测的是「去掉 blockers 之后会怎样」，从没测过「照这份契约原样答会怎样」。
+ *
+ * 所以这条护栏不拿夹具测，**它拿契约正文里那个示例测** —— 那正是模型会照抄的东西。
+ */
+describe("L2 · 契约里印的那个示例，自己必须解析得了", () => {
+  /** 把契约正文里那个 `{...}` 挖出来，占位符换成合法的值。 */
+  const exampleIn = (contract: string): string => {
+    const shape = /\{[\s\S]*\}/.exec(contract)?.[0];
+    assert.ok(shape, `这份契约里没有 json 示例：${contract}`);
+    return "```json\n"
+      + shape!
+        .replaceAll(/"<[^"]*>"/g, '"填了点什么"')
+        .replaceAll(/"P0\|P1\|P2"/g, '"P1"')
+        .replaceAll(/"\.\.\."/g, '"填了点什么"')
+      + "\n```";
+  };
+
+  it("正方 / Build 那份（RESULT_CONTRACT）", () => {
+    const read = parseTurnResult(exampleIn(RESULT_CONTRACT));
+    assert.equal(read.artifactIds.length, 1);
+    assert.equal(read.blockers.length, 1);
+  });
+
+  it("**有模板的阶段那份（BLUE_VERDICT_ONLY_CONTRACT）**", () => {
+    // 照生产的调法传 `discardBlockers` —— `readRound` 对有模板的阶段就是这么调的。
+    // 这一格必须跟着一起测：契约里没有 `blockers`，不传它就走进另一条错误分支，
+    // 那测的就不是生产会走的那条路。
+    const read = parseTurnResult(
+      exampleIn(BLUE_VERDICT_ONLY_CONTRACT), { discardBlockers: true });
+    assert.equal(read.artifactIds.length, 1, "反方也产出一份文件，这一格本来就该在");
+    assert.deepEqual(read.blockers, [], "这一阶段它不交问题清单");
+  });
+
+  it("**去掉 artifactIds 就会整轮作废** —— 2026-08-06 真机撞的就是这一下", () => {
+    assert.throws(
+      () => parseTurnResult('```json\n{"overall":"还行"}\n```', { discardBlockers: true }),
+      (error: unknown) => error instanceof TurnResultUnparsableError
+        && error.code === "turn_result_artifacts_invalid",
+    );
+  });
+
 });

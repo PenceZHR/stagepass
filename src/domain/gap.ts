@@ -116,6 +116,20 @@ export const isHumanGap = (gap: { readonly id: string }): boolean =>
   gap.id.startsWith(HUMAN_GAP_PREFIX);
 
 /**
+ * StagePass 自己开的那一类：**红方的产出没照模板写**。
+ *
+ * 和 `HUMAN-` 同一个先例 —— **区分靠前缀**，因为「谁开的」决定该怎么对待它：
+ * 模型报的可以被裁判判掉，人提的不许当建议，而这一类**根本不经模型的嘴**：
+ * 缺没缺是数出来的（`domain/phase-template.ts` 的 `missingSections`），
+ * 补上了也是数出来的。让裁判去表态就是把一个机械事实交回给模型判。
+ */
+const TEMPLATE_GAP_PREFIX = "TEMPLATE-";
+
+/** 模板节的 key → 它那条 gap 的 id。 */
+export const templateGapId = (sectionKey: string): string =>
+  `${TEMPLATE_GAP_PREFIX}${sectionKey}`;
+
+/**
  * 人自己提一个问题。
  *
  * ## 它和一轮报出来的问题差在哪

@@ -4,7 +4,8 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import {
-  decisionLabel, DECISION_FIELD, RESPONSE_AGREE, RESPONSE_DISMISS,
+  APPROVE_AS_RECOMMENDED, decisionLabel, DECISION_FIELD,
+  RESPONSE_AGREE, RESPONSE_DISMISS,
 } from "../domain/question";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
@@ -205,6 +206,50 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
   });
 
   /**
+   * §8.10 的端到端：**人选了一条系统没推荐的路，Change 真的去了那儿。**
+   *
+   * 这一条穿过整条链子 —— 题面那一格、答案、`approveTargetFrom`、
+   * `questions.apply`、command 层、状态机。链子上任何一环没接上，它都会红。
+   */
+  it("**批准时选一条非推荐的路** —— 中间的阶段真的被跳过了", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    // 推荐是 Spec（主线下一步）。人选 TestPlan —— 这次改动不需要重写技术方案。
+    const { sessions, answerOpen } = answerer(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      U: "TestPlan",
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+    });
+    const result = await decideGate({
+      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    });
+
+    assert.equal(result.outcome.kind, "decided");
+    assert.equal(
+      new ChangeStore(database).read(CHANGE).state.phase, "TestPlan",
+      "人选的是 TestPlan，不是推荐的 Spec",
+    );
+  });
+
+  it("不选就走推荐那条 —— 这一格的存在不该改变默认", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    const { sessions, answerOpen } = answerer(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      U: APPROVE_AS_RECOMMENDED,
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+    });
+    await decideGate({
+      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    });
+    assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "Spec");
+  });
+
+  /**
    * 选了「再来一轮」就**直接续跑** —— 用户 2026-07-30：「把现在的两步合成一步。」
    * 中间那一步看不出来还需要它，人会以为下一轮已经在跑了。
    */
@@ -230,6 +275,79 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
         expected, `${action} 的续跑行为`);
       database.close();
     }
+  });
+
+  /**
+   * §5.5.1：裁决把 Change 送出了这个阶段，这个阶段的 Codex 会话就该跟着收掉。
+   *
+   * 真机 2026-08-06：批准之后那个 `codex resume` 进程活了 22 分钟（父进程就是
+   * 面板），下一阶段起轮时 `awaitNewThread` 在一堆新会话里认不出自己的，整轮作废
+   * （`codex_unavailable: … another Codex is probably running`）。
+   *
+   * 反面同样承重：「再来一轮」刚在同一个 (Change, 阶段) 上派出了新会话，这时
+   * 关会话就是杀掉刚派出去的那一轮。
+   */
+  it("裁决送走了 Change 就关会话；留在本阶段的裁决不关", async () => {
+    for (const [action, closed] of [
+      ["approve", true],  // PRD -> Spec：换了阶段，旧会话再没人要它了
+      ["rerun", false],   // 续跑同一阶段：rerun 自己管会话，这里关就是杀新轮
+    ] as const) {
+      const database = freshDatabase();
+      settledWithGaps(database);
+      const { sessions, answerOpen } = answerer(database, {
+        R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+        R01x: "不成立", R02x: "不成立",
+        [DECISION_FIELD]: decisionLabel(action, "PRD"),
+      });
+      const result = await decideGate({
+        database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+        timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+      });
+      assert.equal(result.outcome.kind, "decided");
+      assert.equal(result.closeSession, closed, `${action} 之后关不关会话`);
+      database.close();
+    }
+  });
+
+  /**
+   * **裁决落不了地的时候，人要看得见为什么** —— 2026-08-07 真机那一次。
+   *
+   * `questions.apply` 抛了 SqliteError（老库的账本记不下 `sendBack`），而当时
+   * 只接得住 `GateRefusedError`：异常穿到 HTTP 层变成 500，题永远停在 `answered`
+   * （既没落地也没被收掉），人在界面上只看到「点了没反应」。**他已经答完走了，
+   * 一次静默失败等于他的话被扔了。**
+   */
+  it("**闸门那一步炸了 —— 说出来，别 500**，题要收掉、原因要留住", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    const { sessions, answerOpen } = answerer(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+    });
+    // 摆出那天的形状：账本记不下这次转移（老库的 CHECK 名单落后了）。
+    database.exec(
+      "CREATE TRIGGER boom BEFORE INSERT ON change_events"
+      + " WHEN NEW.action = 'approve'"
+      + " BEGIN SELECT RAISE(ABORT, 'action_not_allowed_in_this_database'); END",
+    );
+
+    const result = await decideGate({
+      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
+      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    });
+
+    assert.equal(result.outcome.kind, "decided", "异常穿出去了 —— 那就是一个 500");
+    const outcome = result.outcome.kind === "decided"
+      ? result.outcome.outcome as { kind?: string; error?: string } : null;
+    assert.equal(outcome?.kind, "failed");
+    assert.match(outcome?.error ?? "", /action_not_allowed_in_this_database/,
+      "没把真实原因交出来 —— 人还是不知道为什么没落地");
+    // 题不许停在 answered：那是「答了但没人收」，屏幕上一个字都没有。
+    assert.equal(new QuestionStore(database).open(CHANGE), null);
+    // 下场要留得住（§3.2·5）：刷新之后卡片上还看得见。
+    assert.ok(new QuestionStore(database).latestOutcomeFor(CHANGE, "PRD") !== null);
+    database.close();
   });
 
   /**

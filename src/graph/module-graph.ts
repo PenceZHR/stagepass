@@ -244,10 +244,23 @@ export function dependenciesOf(graph: ModuleGraph, path: string): string[] {
 }
 
 /**
- * 传递闭包，**含它自己** —— 「改这个模块，最多波及多远」。
+ * 传递闭包，**含它自己** —— 「改这个模块，我得读多远」。
+ *
+ * **这不是爆炸半径。** 它走的是「我依赖谁」，答的是「要动它得先看懂多少东西」。
+ * 「改它会砸到谁」在反方向，是 `blastRadiusOf` —— 两者在这棵树上几乎是反的：
+ *
+ * ```
+ *                       closureOf   blastRadiusOf
+ * domain/phase.ts             1          39      谁都不依赖，但改它砸 39 个
+ * web/panel-server.ts        51           0      读半棵树，但没人依赖它
+ * ```
+ *
+ * 这段注释原来写的是「改这个模块，最多波及多远」—— 而那句话描述的是另一个函数
+ * （2026-08-06 撞见）。一个量错方向的指标比没有指标更贵：`panel-server` 会显得
+ * 「碰不得」，而真正碰不得的 `domain/phase.ts` 看着人畜无害。
  *
  * 环不抛：环是这棵树里真实可能存在的东西（架构护栏另有一条盯着它），
- * 遇到访问过的就停。一个量爆炸半径的函数不该因为量到了环就死掉。
+ * 遇到访问过的就停。
  */
 export function closureOf(graph: ModuleGraph, path: string): string[] {
   const seen = new Set<string>();
@@ -259,4 +272,41 @@ export function closureOf(graph: ModuleGraph, path: string): string[] {
     queue.push(...dependenciesOf(graph, current));
   }
   return [...seen];
+}
+
+/** 谁**直接** import 了这个模块。改它的签名，这些人当场编译不过。 */
+export function dependentsOf(graph: ModuleGraph, path: string): string[] {
+  return graph.modules
+    .filter((module) => module.imports.some((edge) => edge.to === path))
+    .map((module) => module.path)
+    .sort();
+}
+
+/**
+ * **爆炸半径：改这个模块会波及谁**（传递的反向闭包，**不含它自己**）。
+ *
+ * `closureOf` 答的是「要动它我得读多少」，这个答的是「动了它谁会疼」——
+ * 一个模块可以两头都小（干净的叶子），也可以一头大一头小。这棵树上最典型的
+ * 就是 `domain/phase.ts`：`closureOf` 是 1，爆炸半径是 39。
+ *
+ * ## 为什么它不该有上限
+ *
+ * 一个共享的类型模块**天生**爆炸半径大，那不是病 —— `domain/phase.ts` 波及
+ * 三分之二棵树是对的，把 `Phase` 拆开才是病。所以这个数是**给人看的排序依据**
+ * （改哪个最贵），不是护栏（§5.7 早就记着「分布极不均」）。
+ *
+ * 不含自己：问的是「会波及谁」，而自己不是被波及的人。`closureOf` 含自己是因为
+ * 它答的是「要读多少」，自己当然要读。**两个语义不一样，所以不强行对齐。**
+ */
+export function blastRadiusOf(graph: ModuleGraph, path: string): string[] {
+  const seen = new Set<string>();
+  const queue = [path];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    queue.push(...dependentsOf(graph, current));
+  }
+  seen.delete(path);
+  return [...seen].sort();
 }

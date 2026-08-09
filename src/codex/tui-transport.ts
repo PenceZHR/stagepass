@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { codexArgv, codexFlags } from "./invocation";
 import {
-  findCompletedTurn,
+  findOwnCompletedTurn,
   parseRollout,
   threadIdFromRolloutName,
 } from "./rollout";
@@ -107,12 +107,17 @@ export interface CodexTuiTransportOptions {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-const DEFAULT_SESSIONS = join(
+export const DEFAULT_SESSIONS = join(
   process.env.HOME ?? "", ".codex", "sessions",
 );
 
-/** Every rollout under the sessions tree, by thread id. */
-function rollouts(root: string): Map<string, string> {
+/**
+ * Every rollout under the sessions tree, by thread id.
+ *
+ * 导出是给 `PanelSessions` 的「turn 已死」探测用的（`AskSessions.turnEnded`）——
+ * 它要按线程 id 找到同一份文件，和这里认线程是同一个约定，两份拷贝迟早漂移。
+ */
+export function rollouts(root: string): Map<string, string> {
   const found = new Map<string, string>();
   const walk = (directory: string): void => {
     let entries: string[];
@@ -176,7 +181,7 @@ export class CodexTuiTransport implements CodexTransport {
           this.options.nudge?.({ bytes: new TextEncoder().encode("\r") });
         }
         : undefined;
-      const text = await this.awaitTurn(threadId, priorRecords, nudge);
+      const text = await this.awaitTurn(threadId, priorRecords, dispatch.prompt, nudge);
       return { threadId, text };
     } finally {
       /*
@@ -292,6 +297,7 @@ export class CodexTuiTransport implements CodexTransport {
   private async awaitTurn(
     threadId: string,
     fromIndex: number,
+    prompt: string,
     nudge?: () => void,
   ): Promise<string> {
     const deadline = this.now() + this.timeoutMs;
@@ -302,9 +308,16 @@ export class CodexTuiTransport implements CodexTransport {
       if (path) {
         let outcome: { text: string } | null = null;
         try {
-          outcome = findCompletedTurn(
+          /*
+           * **认自己那句提示词**（`findOwnCompletedTurn`），不认「起点之后第一个
+           * 跑完的轮」。起点是我们数出来的，而数错一次就会把线程历史上任何一轮的
+           * 答复当成这一轮的 —— 2026-08-08 真机上就是这么把一轮好好的 Arch
+           * 判死的（详见那个函数的注释）。
+           */
+          outcome = findOwnCompletedTurn(
             parseRollout(readFileSync(path, "utf-8")),
             fromIndex,
+            prompt,
           );
         } catch {
           // Being written to right now; read it again.

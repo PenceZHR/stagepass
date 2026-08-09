@@ -113,6 +113,73 @@ export function contextUsageOf(
  * question -- a rollout accumulates every turn the thread has ever had, and
  * `codex resume` appends to the same file.
  */
+/**
+ * **我们自己问出去的那一轮**跑完了没有 —— 认提示词，不认「谁先完成」。
+ *
+ * ## 为什么不能只靠「派发前有几条记录」
+ *
+ * `findCompletedTurn(records, fromIndex)` 认的是「起点之后第一个跑完的轮」，
+ * 而那个起点是调用方数出来的。**数错一次，它就会把线程历史上任何一轮的答复
+ * 当成这一轮的**：2026-08-08 真机上，Arch 第 3 轮派出去 2.6 秒就被判失败
+ * （`round_agents_not_found`），而那条线程里唯一一个「完成的轮」在索引 116 ——
+ * 只有从 ≤1 开始扫才碰得到它。起点变 0 的路只有一条：`recordCount` 读不到
+ * 文件时返回 0，**「读不出来」被当成了「整个文件都是新的」**。
+ *
+ * 那一轮的裁判其实好好的：提示词比失败晚 10 秒才送达，之后它照常派了子 Agent。
+ * StagePass 认下的是**上一轮**的答复，然后因为「这一轮没派出子 Agent」把活儿
+ * 判死了。
+ *
+ * 所以判据换成：**先在 rollout 里找到我们这一次问出去的那句话，从它之后再找
+ * 完成的轮。** 和 `CodexTuiTransport.awaitNewThread` 逐字同一条纪律（那边认线程
+ * 也是靠提示词，不靠「谁先出现」）。起点数错不再是灾难 —— 最坏是多等一会儿。
+ *
+ * 取**最后一次**出现：一条线程会被反复 resume，而每一轮的提示词里都带着轮次，
+ * 所以最后一次就是这一次。
+ */
+export function findOwnCompletedTurn(
+  records: readonly RolloutRecord[],
+  fromIndex: number,
+  prompt: string,
+): TurnOutcome | null {
+  // 转义后的形式：rollout 是 JSON 行，换行和引号都不是原样。
+  const needle = JSON.stringify(prompt).slice(1, -1);
+  /*
+   * **找的是「装着我们这句话的那一轮」，不是「提示词之后的第一轮」。**
+   *
+   * rollout 里 `task_started` 落在 `user_message` **之前**（真机实测：轮起于
+   * 134，提示词在 139）。所以不能从提示词那一格起扫 —— 那会把轮的开头跳掉，
+   * `started` 永远为假，什么都认不出来。
+   */
+  let started = false;
+  let mine = false;
+  const said: string[] = [];
+
+  for (let index = Math.max(0, fromIndex); index < records.length; index += 1) {
+    const record = records[index]!;
+    const type = eventType(record);
+    if (type === "task_started") {
+      started = true;
+      mine = false;
+      said.length = 0;
+      continue;
+    }
+    if (!started) continue;
+    if (!mine && JSON.stringify(record).includes(needle)) mine = true;
+    if (type === "agent_message") {
+      const message = record.payload?.message;
+      if (typeof message === "string" && message !== "") said.push(message);
+      continue;
+    }
+    if (type === "task_complete") {
+      if (mine) return { text: said.join("\n") };
+      // 别人那一轮跑完了 —— 接着往后找我们自己那一轮。
+      started = false;
+      said.length = 0;
+    }
+  }
+  return null;
+}
+
 export function findCompletedTurn(
   records: readonly RolloutRecord[],
   fromIndex: number,
@@ -240,6 +307,33 @@ export function allTextIn(records: readonly RolloutRecord[]): string {
     }
   }
   return said.join("\n");
+}
+
+/**
+ * 这条线程上**人（或 StagePass）打进去的那些话**，按先后。
+ *
+ * ## 和 `allTextIn` 的分工
+ *
+ * `allTextIn` 是「这条线程经历过的全部文本」——问的是「找得到吗」，所以它把模型
+ * 说的、被告知的一起捞。这里问的是另一个问题：**谁开的口。** 一条只有 StagePass
+ * 自己发过提示词的线程，和一条人真聊过十句的线程，在 `allTextIn` 里长得一样长，
+ * 而「能不能拿它起草 brief」正好取决于这个区别（`app/converge-brief.ts`）。
+ *
+ * ## 判据是 `user_message`，不是「谁的口气像人」
+ *
+ * 只收 `event_msg / user_message`（`payload.message`）——那是输入侧的记录，模型的
+ * 回答不在里面。`response_item` 那一路不收：它的 role 要再判一次，而多一个判据就
+ * 多一处会漂的地方。StagePass 自己打进去的提示词也落在这里，所以调用方要能认出
+ * 它们——那由发的人负责标记（`STAGEPASS_SAID`），不由这里猜。
+ */
+export function userMessagesIn(records: readonly RolloutRecord[]): string[] {
+  const said: string[] = [];
+  for (const record of records) {
+    if (record.payload?.type !== "user_message") continue;
+    const message = record.payload?.message;
+    if (typeof message === "string" && message !== "") said.push(message);
+  }
+  return said;
 }
 
 /**

@@ -93,7 +93,8 @@ export interface PtySessionOptions {
 
 export interface PtySession {
   readonly changeId: string;
-  readonly phase: Phase;
+  /** 阶段，或 "aside"（旁路会话 —— 不属于任何阶段的那个座位）。 */
+  readonly phase: Phase | "aside";
   /** Raw pty output. Forwarded, never read. */
   onBytes(listener: (bytes: Uint8Array) => void): void;
   onExit(listener: (exitCode: number) => void): void;
@@ -114,7 +115,7 @@ export interface PtySession {
  */
 export function startPtySession(input: {
   changeId: string;
-  phase: Phase;
+  phase: Phase | "aside";
   argv: string[];
   options: PtySessionOptions;
 }): PtySession {

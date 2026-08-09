@@ -59,7 +59,13 @@ export type WaiveOutcome =
     readonly kind: "waived";
     readonly phase: Phase;
     readonly questionId: string;
+    /** 真的接下来了的那几条。 */
     readonly gapIds: readonly string[];
+    /**
+     * 想接却没接成的（在他答题的那十几分钟里被别处关掉了之类）。
+     * **人已经答完走了** —— 他以为四条都接了，少接一条这件事必须有人告诉他。
+     */
+    readonly refused?: readonly { readonly id: string; readonly why: string }[];
   };
 
 /** 问完人之后要不要把那个会话关掉 —— 见每个返回点上的理由。 */
@@ -114,15 +120,15 @@ export async function waive(input: {
     question, expectedSnapshot: gate.snapshot,
   });
 
-  input.launch({
-    phase,
-    prompt: launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
-      "不要替我做决定，不要评价这些风险，调用完就停下。"),
-  });
+  const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
+    "不要替我做决定，不要评价这些风险，调用完就停下。");
+  input.launch({ phase, prompt: askPrompt });
 
   const waited = await waitForAnswer({
     database, questions, sessions, changeId, phase, questionId,
     timeoutMs: input.timeoutMs,
+    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
+    prompt: askPrompt,
   });
   if (!waited.answered) {
     /*
@@ -187,14 +193,36 @@ export async function waive(input: {
     return { outcome: { kind: "gate_moved", phase, questionId }, closeSession: false };
   }
 
-  // 一次能接多条 —— 用户 2026-08-04：接四条不该走四遍完整流程。
+  /*
+   * 一次能接多条 —— 用户 2026-08-04：接四条不该走四遍完整流程。
+   *
+   * **逐条兜住，而且无论如何都要把题收掉。** `accepted` 是 15 分钟前那一刻的
+   * 名单快照（人还要经过两趟选择器），而 `GapStore.waive` 重新读的是现在：中间
+   * 有一条被别处关掉了，它就抛 `unknown_gap`。原来那个循环裸奔，于是第 k 条抛
+   * 出去时前 k-1 条已经豁免了、题永远停在 `answered`、浏览器拿到一个 500 ——
+   * 和 2026-08-07 裁决那条路上栽的是同一个形状。
+   *
+   * 落不下去的逐条报上去（`refused`），因为**人已经答完走了**：他以为四条都接了，
+   * 而实际只接了三条，这件事必须有人告诉他。
+   */
+  const waived: string[] = [];
+  const refused: { id: string; why: string }[] = [];
   for (const each of accepted) {
-    gaps.waive(changeId, phase, each.gapId, each.reason);
+    try {
+      gaps.waive(changeId, phase, each.gapId, each.reason);
+      waived.push(each.gapId);
+    } catch (error: unknown) {
+      refused.push({
+        id: each.gapId,
+        why: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      });
+    }
   }
   questions.settle(questionId);
   return {
     outcome: {
-      kind: "waived", phase, questionId, gapIds: accepted.map((each) => each.gapId),
+      kind: "waived", phase, questionId, gapIds: waived,
+      ...(refused.length === 0 ? {} : { refused }),
     },
     closeSession: false,
   };

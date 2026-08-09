@@ -99,6 +99,7 @@ interface CriterionRow {
   ordinal: number;
   text: string;
   blocking: number;
+  section: string | null;
 }
 
 interface AssessmentRow {
@@ -109,6 +110,7 @@ interface AssessmentRow {
   evidence: string | null;
   criterion_text: string;
   blocking_then: number;
+  section: string | null;
 }
 
 export interface RubricStoreOptions {
@@ -116,6 +118,15 @@ export interface RubricStoreOptions {
   /** 注入进来，好让版本内容在测试里是确定的。 */
   mintKey?: () => string;
 }
+
+/**
+ * 升级动作写在 `rubrics.reason` 上的标记。
+ *
+ * **它是「这一版是机器写的」的唯一判据** —— 人自己保存时理由是他写的话或者 null，
+ * 两种都对不上。别改这句话的措辞：改了之后，所有已经升过的那些会在下一次升级里
+ * 被当成「人改过的」跳过。
+ */
+export const FACTORY_UPGRADE_REASON = "出厂标准升级（这一份从未被人改过）";
 
 export class RubricStore {
   private readonly now: () => Date;
@@ -153,6 +164,71 @@ export class RubricStore {
       }
     }
     return installed;
+  }
+
+  /**
+   * 把**没被人碰过**的出厂标准升到当前出厂版。
+   *
+   * ## 为什么需要它
+   *
+   * `installDefaults` 只补空缺（那条语义是对的，别动它）—— 于是改一次
+   * `rubric-defaults.ts` 对**已经存在的项目零效果**，它留着建项目那天装上的那一版。
+   * 2026-07-31 真机栽过一次：Review 那条早就改掉的旧措辞还留在老项目里，裁判拿它
+   * 判了个假阳性的 `no`。
+   *
+   * ## 判据：这一版是谁写的
+   *
+   * 两种算「没被人碰过」：
+   *
+   * - `version === 1` —— 从来没人按过保存，还是装上那天那份
+   * - 当前版本的 `reason` 是 `FACTORY_UPGRADE_REASON` —— **上一次升级自己写的**
+   *
+   * 第二条 2026-08-06 加的，起因是第一条把自己锁死了：升一次版本就变 2，
+   * 下一次出厂标准再改，同一份**永远升不上去了** —— 而它从头到尾没有人碰过。
+   * 一个只能用一次的同步动作不是同步动作。
+   *
+   * 人自己保存的那一版，`reason` 要么是他写的理由、要么是 null，两种都对不上这个
+   * 标记 —— 所以**人改过的照旧一个字都不碰**。
+   *
+   * 漏判的情况：人保存时恰好把理由写成了那句一模一样的话。可以接受 —— 那句话是
+   * 括号带说明的完整句子，不是人会随手打出来的。
+   */
+  upgradeDefaults(projectId: string): {
+    upgraded: string[];
+    skipped: { scope: string; why: string }[];
+  } {
+    const upgraded: string[] = [];
+    const skipped: { scope: string; why: string }[] = [];
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        const scope = { projectId, changeId: null, phase, role };
+        const current = this.current(scope);
+        const drafts = defaultCriteria(phase, role);
+        if (current === null || drafts.length === 0) continue;
+        const name = `${phase}/${role}`;
+        const untouched = current.version === 1
+          || current.reason === FACTORY_UPGRADE_REASON;
+        if (!untouched) {
+          skipped.push({ scope: name, why: "你改过它" });
+          continue;
+        }
+        // 已经和出厂版逐字相同就不动 —— 白升一版会让「v1 = 没人碰过」这条判据失效。
+        const same = current.criteria.length === drafts.length
+          && current.criteria.every((each, index) =>
+            each.text === drafts[index]!.text
+            && each.blocking === drafts[index]!.blocking
+            && each.section === (drafts[index]!.section ?? null));
+        if (same) continue;
+        /*
+         * **必须带理由** —— 升级会把旧条目整批换掉，其中标着阻断的那些会退休，
+         * 而 `save` 对那件事要一句话（`ReasonRequiredError`）。理由写清是**谁**
+         * 换的：人回头看版本历史时，「出厂标准升级」和「我那天改的」得分得开。
+         */
+        this.save(scope, drafts, FACTORY_UPGRADE_REASON);
+        upgraded.push(name);
+      }
+    }
+    return { upgraded, skipped };
   }
 
   /** 这个 scope 当前生效的版本，没有就 null。 */
@@ -230,11 +306,14 @@ export class RubricStore {
         version, reason ?? null, at,
       );
       const insert = this.database.prepare(
-        `INSERT INTO rubric_criteria (rubric_id, criterion_key, ordinal, text, blocking)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO rubric_criteria
+           (rubric_id, criterion_key, ordinal, text, blocking, section)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       );
       for (const entry of criteria) {
-        insert.run(id, entry.key, entry.ordinal, entry.text, entry.blocking ? 1 : 0);
+        insert.run(
+          id, entry.key, entry.ordinal, entry.text, entry.blocking ? 1 : 0,
+          entry.section);
       }
     })();
 
@@ -328,10 +407,21 @@ export class RubricStore {
     changeId: string, phase: Phase, role: RubricRole, round: number,
   ): StoredAssessment[] {
     const rows = this.database.prepare(
-      `SELECT round, rubric_id, criterion_key, verdict, evidence, criterion_text, blocking_then
-         FROM rubric_assessments
-        WHERE change_id = ? AND phase = ? AND role = ? AND round = ?
-        ORDER BY criterion_key`,
+      /*
+       * `section` **join 出来，不另存一列** —— `rubric_id` 记的就是判定当时那一版，
+       * 所以 join 到的 section 天然是快照，和 `criterion_text` 同一个语义。
+       * 存第二份只会多一个会漂的地方。
+       *
+       * LEFT JOIN：那一版被删掉的极端情况下读出 NULL，而不是整行消失 ——
+       * 少一行判定，人看到的「几条没勾上」就是错的。
+       */
+      `SELECT a.round, a.rubric_id, a.criterion_key, a.verdict, a.evidence,
+              a.criterion_text, a.blocking_then, c.section
+         FROM rubric_assessments a
+         LEFT JOIN rubric_criteria c
+           ON c.rubric_id = a.rubric_id AND c.criterion_key = a.criterion_key
+        WHERE a.change_id = ? AND a.phase = ? AND a.role = ? AND a.round = ?
+        ORDER BY a.criterion_key`,
     ).all(changeId, phase, role, round) as AssessmentRow[];
 
     return rows.map((row) => ({
@@ -342,12 +432,13 @@ export class RubricStore {
       evidence: row.evidence,
       criterionText: row.criterion_text,
       blockingThen: row.blocking_then === 1,
+      section: row.section ?? null,
     }));
   }
 
   private hydrate(row: RubricRow): RubricVersion {
     const criteria = this.database.prepare(
-      `SELECT criterion_key, ordinal, text, blocking
+      `SELECT criterion_key, ordinal, text, blocking, section
          FROM rubric_criteria WHERE rubric_id = ? ORDER BY ordinal`,
     ).all(row.id) as CriterionRow[];
 
@@ -367,6 +458,8 @@ export class RubricStore {
         ordinal: entry.ordinal,
         text: entry.text,
         blocking: entry.blocking === 1,
+        // 老行读回来可能是 undefined（列是后加的），统一成 null。
+        section: entry.section ?? null,
       })),
     };
   }

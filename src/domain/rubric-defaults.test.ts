@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
+import { PHASES, isRetired } from "./phase";
+import { reportsFreeFormBlockers } from "./phase-play";
+import { templateFor } from "./phase-template";
+import { RUBRIC_ROLES } from "./rubric";
 import { defaultCriteria } from "./rubric-defaults";
 
 /**
@@ -17,7 +21,9 @@ import { defaultCriteria } from "./rubric-defaults";
 describe("出厂标准 · 要求的东西必须先被要求", () => {
   it("**Build 要「运行证据」，任务书里就得让红方交**", () => {
     const wantsEvidence = defaultCriteria("Build", "producer")
-      .some((entry) => entry.text.includes("运行证据"));
+      // 2026-08-06 措辞变了：Build 的报告有了 `tests` 那一节，标准跟着改成
+      // 「跑的是 TestPlan 交的用例，贴了命令和输出」—— 要的还是同一样东西。
+      .some((entry) => entry.text.includes("贴了命令和输出"));
     assert.ok(wantsEvidence, "Build 的标准里没有运行证据这条了 —— 这条测试该跟着改");
     assert.match(
       MINIMAL_PHASE_INSTRUCTIONS.Build, /output/,
@@ -33,10 +39,73 @@ describe("出厂标准 · 要求的东西必须先被要求", () => {
     }
   });
 
-  it("出厂的一条都不阻断 —— 这是拍过板的，别顺手翻掉", () => {
-    for (const phase of ["PRD", "Build", "Review"] as const) {
+  /*
+   * 「出厂一律不阻断」是 2026-07-31 拍的，2026-08-06 **只被挂了模板节的那些narrowly
+   * 例外掉**。所以这条护栏改成钉那个例外的边界，而不是放宽 ——
+   * 判据是**结构性的**：阻断 ⟺ 挂了节，两个方向都要成立。
+   */
+  it("阻断 ⟺ 挂了模板节，一条都不许多", () => {
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        for (const entry of defaultCriteria(phase, role)) {
+          assert.equal(
+            entry.blocking, entry.section !== null && entry.section !== undefined,
+            `${phase}/${role}：${entry.text}`,
+          );
+        }
+      }
+    }
+  });
+
+  it("没有模板的阶段，出厂仍然一条都不阻断 —— 那条拍板没被翻", () => {
+    for (const phase of ["Fix"] as const) {
+      for (const role of RUBRIC_ROLES) {
+        for (const entry of defaultCriteria(phase, role)) {
+          assert.equal(entry.blocking, false, `${phase}/${role}：${entry.text}`);
+        }
+      }
+    }
+  });
+
+  it("**critic / verdict 那两份永远不挂节** —— 它们讲的是方法，和产物无关", () => {
+    for (const phase of PHASES) {
+      for (const role of ["critic", "verdict"] as const) {
+        for (const entry of defaultCriteria(phase, role)) {
+          assert.equal(entry.section, null, `${phase}/${role}：${entry.text}`);
+          assert.equal(entry.blocking, false, `${phase}/${role}：${entry.text}`);
+        }
+      }
+    }
+  });
+
+  it("有模板的阶段：producer 每条都挂在一个真实存在的节上", () => {
+    for (const phase of PHASES) {
+      const sections = templateFor(phase);
+      if (sections === null) continue;
+      const keys = new Set(sections.map((each) => each.key));
       for (const entry of defaultCriteria(phase, "producer")) {
-        assert.equal(entry.blocking, false, `${phase}：${entry.text}`);
+        assert.ok(entry.section != null, `${phase} 没挂节：${entry.text}`);
+        assert.ok(keys.has(entry.section!), `${phase} 挂到了不存在的节 ${entry.section}`);
+      }
+    }
+  });
+
+  it("**每一节都至少有一条标准** —— 没人判的节等于没有那一节", () => {
+    for (const phase of PHASES) {
+      const sections = templateFor(phase);
+      if (sections === null) continue;
+      const covered = new Set(defaultCriteria(phase, "producer").map((each) => each.section));
+      for (const section of sections) {
+        assert.ok(covered.has(section.key), `${phase} 没人判这一节：${section.key}`);
+      }
+    }
+  });
+
+  it("没有模板的阶段，producer 一条都不许挂节 —— 挂了就是悬空", () => {
+    for (const phase of PHASES) {
+      if (templateFor(phase) !== null) continue;
+      for (const entry of defaultCriteria(phase, "producer")) {
+        assert.equal(entry.section, null, `${phase} 挂到了不存在的模板：${entry.text}`);
       }
     }
   });
@@ -62,3 +131,41 @@ describe("出厂标准 · 共用的 critic 不许和某个阶段的规矩打架"
     assert.ok(defaultCriteria("Review", "critic").length >= 3);
   });
 });
+
+/*
+ * **收走一样能力，就要回头看有没有哪条标准在要它。**
+ *
+ * 2026-08-06 真机：08-06 那一刀砍掉了有模板的阶段里反方的 blockers 通道，而
+ * `CRITIC` 里「沿用同一个 id」「每条问题指向具体位置」两条还在 —— 裁判照着判，
+ * 两条当场 no，理由是「反方的返回 JSON 里没有携带既有问题的 id」。
+ * 一条建在已经没有的能力上的标准，每一轮都给出一个没有依据的 no。
+ */
+describe("出厂标准 · critic 那份不许要一个这阶段没有的能力", () => {
+  it("**不交问题清单的阶段，标准里不许提「问题的 id」或「每条问题」**", () => {
+    for (const phase of PHASES) {
+      if (phase === "Done" || reportsFreeFormBlockers(phase)) continue;
+      for (const entry of defaultCriteria(phase, "critic")) {
+        assert.doesNotMatch(entry.text, /同一个 id|每条问题/,
+          `${phase} 的反方没有这个通道，这条永远判 no：${entry.text}`);
+      }
+    }
+  });
+
+  it("交问题清单的阶段照旧要判那几条 —— 别把它们一起删了", () => {
+    for (const phase of ["Fix", "Review", "QA", "Merge"] as const) {
+      const texts = defaultCriteria(phase, "critic").map((each) => each.text);
+      assert.ok(texts.some((t) => t.includes("同一个 id")), `${phase} 少了 id 那条`);
+      assert.ok(texts.some((t) => t.includes("每条问题都指向")), `${phase} 少了位置那条`);
+    }
+  });
+
+  it("**两边都不许只剩一条** —— 反方在哪个阶段都有实打实的活儿要被判", () => {
+    for (const phase of PHASES) {
+      // Done 没有 turn；退休的阶段没人会再走到（`RETIRED_PHASES`）。
+      if (phase === "Done" || isRetired(phase)) continue;
+      assert.ok(defaultCriteria(phase, "critic").length >= 3,
+        `${phase} 的 critic 只剩 ${defaultCriteria(phase, "critic").length} 条`);
+    }
+  });
+});
+

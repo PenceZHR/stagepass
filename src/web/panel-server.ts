@@ -1,16 +1,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
-import { PHASES, isPhase, producesCommit, type Phase } from "../domain/phase";
+import {
+  PHASES, isPhase, producesCommit, upstreamOf, type Phase,
+} from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
-import { CodexTuiTransport } from "../codex/tui-transport";
+import { CodexTuiTransport, DEFAULT_SESSIONS, rollouts } from "../codex/tui-transport";
+import { findOwnCompletedTurn, parseRollout } from "../codex/rollout";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
-  childThreadsOf, readThreadTranscript, readThreadWholeText,
+  childThreadsOf, readThreadTranscript, readThreadUserMessages, readThreadWholeText,
 } from "../codex/subagent";
 import {
   archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
@@ -21,6 +26,7 @@ import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
+import { ParallelStore } from "../store/parallel-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { WorklistStore } from "../store/worklist-store";
@@ -36,6 +42,7 @@ import {
   createChange, createProject, deleteChange, deleteProject,
 } from "../app/workspace";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
+import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
@@ -70,6 +77,20 @@ import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * 旁路会话的座位名（DESIGN-phase-not-the-only-axis §3.3）。
+ *
+ * 一个 Change 的注册表座位从「十一个阶段」变成「十一个阶段 + 这一个」：旁路会话
+ * 不属于任何阶段、不产出、不推闸门，**也不占任何阶段的座**（`cannotAskNow` 和
+ * 派发的守卫都按阶段问，永远问不到它）——「问个名词」和「跑一轮对抗」从此不抢
+ * 同一把椅子。
+ *
+ * 它是字符串 `"aside"` 而不是一个 Phase：把它塞进 PHASES 会让每一张按阶段铺开的
+ * 表（模板、rubric、闸门）都得回答「aside 那一格填什么」，而答案全是「不适用」。
+ */
+export const ASIDE = "aside" as const;
+type Seat = Phase | typeof ASIDE;
+
+/**
  * 把 StagePass 的插件挂给一次 Codex 启动。
  *
  * **每次启动都带，从不写进人的全局配置** —— 那样一个跑砸的实验会留在他机器上。
@@ -100,8 +121,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const phaseBusy = (
   database: Database.Database,
   changeId: string,
+  /** 只问这个阶段（批 3：并行座位互不打断）。不给 = 任何阶段的活儿都算。 */
+  phase?: Phase,
 ): { reason: "phase_already_running"; busy: string; jobId: string } | null => {
-  const job = new JobStore(database).busyFor(changeId);
+  const job = new JobStore(database).busyFor(changeId, phase);
   return job === null
     ? null
     // `reason` 是**界面在精确匹配的那个字符串**（`panel.js`），不许改。要说得更细
@@ -126,7 +149,7 @@ const cannotAskNow = (
   changeId: string,
   phase: Phase,
 ): { reason: "phase_already_running"; busy: string; jobId?: string } | null =>
-  phaseBusy(database, changeId)
+  phaseBusy(database, changeId, phase)
   ?? (sessions.has(changeId, phase)
     // 同上：`reason` 保持界面认识的那个，细节走 `busy`。
     ? { reason: "phase_already_running" as const, busy: "terminal" }
@@ -176,6 +199,11 @@ const ARTIFACT_MAX_BYTES = 2_000_000;
 export interface PanelOptions {
   readonly database: Database.Database;
   readonly session: PtySessionOptions;
+  /**
+   * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
+   * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
+   */
+  readonly briefsDir?: string;
   /** Injected so the routing half is provable without spawning Codex. */
   readonly start?: typeof startPtySession;
   /** 同理：归档那一层也要能在不碰 Codex 的情况下证明。 */
@@ -187,6 +215,11 @@ export interface PanelOptions {
   readonly repo?: RepoOps;
   /** Codex 的目录信任。同一个路子 —— 真的那一套会去读用户的 `~/.codex/config.toml`。 */
   readonly trust?: TrustOps;
+  /**
+   * Codex 的会话目录（「turn 已死」探测要按线程 id 找 rollout）。
+   * 默认和 transport 同一个 `~/.codex/sessions`；可注入是为了测试不摸真目录。
+   */
+  readonly sessionsDir?: string;
   /**
    * 一轮最多等多久。默认 30 分钟。
    *
@@ -301,7 +334,7 @@ export class PanelSessions {
   }
 
 
-  private static key(changeId: string, phase: Phase): string {
+  private static key(changeId: string, phase: Seat): string {
     return `${changeId}${phase}`;
   }
 
@@ -320,9 +353,53 @@ export class PanelSessions {
     }
   }
 
-  has(changeId: string, phase: Phase): boolean {
+  has(changeId: string, phase: Seat): boolean {
     const found = this.live.get(PanelSessions.key(changeId, phase));
     return found !== undefined && found.session.alive;
+  }
+
+  /**
+   * 这个座位绑的线程的 rollout 文件，找不到就 null。
+   *
+   * 「turn 已死」探测（`AskSessions`）的地基：探测认的是**这条线程自己的文件**，
+   * 认线程的约定和 transport 同一份（`rollouts` 就是从那边导出的）。
+   */
+  private rolloutPathFor(changeId: string, phase: Seat): string | null {
+    const bindings = new BindingStore(this.options.database);
+    const bound = phase === ASIDE
+      ? bindings.findAside(changeId)
+      : bindings.find(changeId, phase);
+    if (!bound || bound.status !== "bound") return null;
+    return rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
+      .get(bound.threadId) ?? null;
+  }
+
+  /**
+   * rollout 现在有几条记录。**认不出线程、读不到文件都是 null，不是 0** ——
+   * 0 会被下游当成「整个文件都是新的」，那正是 2026-08-08 `recordCount`
+   * 那个 bug 的形状（`codex/rollout.ts`）。
+   */
+  recordCount(changeId: string, phase: Seat): number | null {
+    const path = this.rolloutPathFor(changeId, phase);
+    if (path === null) return null;
+    try {
+      return parseRollout(readFileSync(path, "utf-8")).length;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 从 `fromIndex` 起，装着这句提示词的那一轮已经跑完了没有（`AskSessions`）。 */
+  turnEnded(changeId: string, phase: Seat, fromIndex: number, prompt: string): boolean {
+    const path = this.rolloutPathFor(changeId, phase);
+    if (path === null) return false;
+    try {
+      return findOwnCompletedTurn(
+        parseRollout(readFileSync(path, "utf-8")), fromIndex, prompt,
+      ) !== null;
+    } catch {
+      return false; // 正在写；下一秒再看。
+    }
   }
 
   /**
@@ -331,7 +408,7 @@ export class PanelSessions {
    * 「死了」和「从没跑过」在屏幕上必须分得开：前者要让人看见它是怎么死的
    * （`corpses` 存在的全部理由），后者该说「还没有进程」而不是给一片空白。
    */
-  lastScreen(changeId: string, phase: Phase): readonly Uint8Array[] {
+  lastScreen(changeId: string, phase: Seat): readonly Uint8Array[] {
     return this.corpses.get(PanelSessions.key(changeId, phase)) ?? [];
   }
 
@@ -342,7 +419,7 @@ export class PanelSessions {
    * 一个进程来接收那几个字节（而且是浏览用的那种，手上没有插件）。
    * 「已经在跑就给我，没有就是没有」—— 补按键、查状态都该用这一条。
    */
-  current(changeId: string, phase: Phase): LiveSession | undefined {
+  current(changeId: string, phase: Seat): LiveSession | undefined {
     const found = this.live.get(PanelSessions.key(changeId, phase));
     return found !== undefined && found.session.alive ? found : undefined;
   }
@@ -392,7 +469,7 @@ export class PanelSessions {
    * than applied. That is the guarantee from the top of this file: a second
    * `codex resume` on the same rollout interleaves turn boundaries.
    */
-  launchInto(changeId: string, phase: Phase, argv: string[]): LiveSession {
+  launchInto(changeId: string, phase: Seat, argv: string[]): LiveSession {
     const key = PanelSessions.key(changeId, phase);
     const existing = this.live.get(key);
     if (existing && existing.session.alive) return existing;
@@ -556,7 +633,7 @@ export class PanelSessions {
    * 所以这个方法是 async 的。别为了「看起来干净」把它改回同步一次写 —— 那会静默地
    * 什么都不做。
    */
-  async type(changeId: string, phase: Phase, line: string): Promise<boolean> {
+  async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
     if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
     const entry = this.live.get(PanelSessions.key(changeId, phase));
     if (!entry || !entry.session.alive) return false;
@@ -569,7 +646,7 @@ export class PanelSessions {
     return true;
   }
 
-  close(changeId: string, phase: Phase): void {
+  close(changeId: string, phase: Seat): void {
     const key = PanelSessions.key(changeId, phase);
     const entry = this.live.get(key);
     entry?.session.kill();
@@ -612,7 +689,8 @@ export class PanelSessions {
    * 精确的 key 就没有这个问题。
    */
   forget(changeId: string): void {
-    for (const phase of PHASES) {
+    // 旁路会话也是这个 Change 的座位 —— 阶段之外的那一个，删 Change 一样要收。
+    for (const phase of [...PHASES, ASIDE] as const) {
       const key = PanelSessions.key(changeId, phase);
       // 先立标记再 kill：`onExit` 是异步的，晚于下面那句 `corpses.delete`。
       const entry = this.live.get(key);
@@ -712,12 +790,23 @@ async function runRound(input: {
    * 所以两个都查（`phaseBusy`）：账本说有活儿，或者注册表里还有个活进程。
    * 都不忙时，把那个闲窗口关掉再派 —— `close` 会主动通知正在看的人，不留死画面。
    */
-  const busy = phaseBusy(database, changeId);
+  const busy = phaseBusy(database, changeId, phase);
   if (busy) {
     return { ran: false, phase, ...busy };
   }
   if (sessions.has(changeId, phase)) {
     sessions.close(changeId, phase);
+  }
+  /*
+   * **这一轮跑在哪个座位上**（批 3）：主线，或者一个开着的并行座位。
+   * 都不是就拒 —— 一个既不在主线上、也没开座位的阶段没有「跑它」这回事。
+   */
+  const mainPhase = new ChangeStore(database).read(changeId).state.phase;
+  const seat = phase === mainPhase
+    ? null
+    : new ParallelStore(database).find(changeId, phase);
+  if (phase !== mainPhase && seat === null) {
+    return { ran: false, phase, reason: "phase_not_active" };
   }
   /*
    * **只有 `pending` 和 `running` 能派。这份名单和 `TurnLoop.queueTurn` 是同一份。**
@@ -734,7 +823,10 @@ async function runRound(input: {
    * **第一版我写成了「只有 pending」，那是错的** —— 那会把 retry 之后那一步堵死：
    * `retry` 把 Change 推到 `running`，而那时正需要派一轮。名单要跟着 `queueTurn` 走。
    */
-  const status = new ChangeStore(database).read(changeId).state.status;
+  // 并行座位看座位自己的状态，主线看主线的 —— 同一份名单，两个座。
+  const status = seat === null
+    ? new ChangeStore(database).read(changeId).state.status
+    : seat.status;
   if (status !== "pending" && status !== "running") {
     return { ran: false, phase, reason: `phase_cannot_queue:${status}` };
   }
@@ -754,95 +846,29 @@ async function runRound(input: {
    * 拒绝的那一刻已经破了；fail 把它修回 blocked，人清完路障还能 retry。
    * 拒绝的理由本身跟着 HTTP 响应回去（`runRefusal` 那套人话），这里只管状态不说谎。
    */
-  const refuse = <T extends { readonly ran: false }>(refusal: T): T => {
-    if (status === "running") new ChangeStore(database).apply(changeId, "fail");
+  const refuse = <T extends {
+    readonly ran: false; readonly reason: string;
+  }>(refusal: T): T => {
+    /*
+     * **拒绝也要进账本**（交接 §5.5.4 / §5.5.5）。不记的话，库里最近的 error
+     * 还是上一轮的旧话（实测：retry 被干净树拒掉，屏幕上挂着的还是 30 分钟前的
+     * 超时）—— 界面读「最近一条」，那一条必须是这一次的真话。
+     */
+    new JobStore(database).recordRefusal({
+      id: `JOB-${changeId}-${phase}-${Date.now()}-refused`,
+      changeId, phase, reason: refusalError(refusal), at: Date.now(),
+    });
+    if (status === "running") {
+      // 回滚落在拒绝的那个座位上：并行座位收座位，主线收主线（批 3）。
+      if (seat === null) new ChangeStore(database).apply(changeId, "fail");
+      else new ParallelStore(database).apply(changeId, phase, "fail");
+    }
     return refusal;
   };
-  /*
-   * 没有录入需求就不跑。**在排队之前拦住，不是让它跑起来再失败。**
-   *
-   * RoundTurnRunner 里也有同一条检查（防御在两层），但只靠那一层是不够的：
-   * TurnLoop 会把 runner 抛的错当成「这一轮跑失败了」，于是给 Change 应用 fail、
-   * 标成 blocked。而「还没录需求」是前置条件不满足，**不是这一轮失败** —— 因为它
-   * 把 Change 打成阻塞，就得再去 retry 才能恢复，白折腾一圈。
-   */
-  if (new ChangeStore(database).read(changeId).brief === null) {
-    return refuse({ ran: false, phase, reason: "change_has_no_brief" });
-  }
-  /*
-   * 项目没写路径也不跑。
-   *
-   * 和上面那条同一个形状、同一个理由：**前置条件不满足不该把 Change 打成 blocked**。
-   * `PanelSessions.launchInto` 里也会拒（防御在两层），但那一层抛出来会被 TurnLoop
-   * 当成「这一轮跑失败了」。
-   */
-  if (sessions.workspaceFor(changeId) === null) {
-    return refuse({ ran: false, phase, reason: "project_has_no_path" });
-  }
-  /*
-   * **Codex 没信任过这个目录就别派。**
-   *
-   * 2026-07-30 实测：派下去之后 30 分钟拿到 `no new Codex session appeared`。真实
-   * 情况是 Codex 起来了、停在「Do you trust the contents of this directory?」上等人
-   * 按，而这一侧看得见的只有「没有新线程」——**界面上它和「在跑」一模一样**，正是
-   * 这个产品从头到尾在防的那一类。而且每加一个新项目都会撞一次。
-   *
-   * **只有明确的 `false` 才拦。** 查不出来（配置读不到、Codex 换了格式）就照旧往下
-   * 走 —— 和归档那一层同一条规矩：不因为读不到别人的东西就不干活。
-   *
-   * **不替人答那个提问。** 答一次就往用户的 `~/.codex/config.toml` 里写一条信任，
-   * 而信任是人对一个目录的授权，不是 StagePass 的决定（我 2026-07-30 越过这条线一次，
-   * 后来要清理）。所以这里只说清楚，让他自己去答。
-   */
-  if (sessions.trust.isTrusted(sessions.workspaceFor(changeId)!) === false) {
-    return refuse({
-      ran: false, phase, reason: "workspace_not_trusted",
-      workspace: sessions.workspaceFor(changeId)!,
-    });
-  }
-  /*
-   * **Build 要在干净的工作树上跑。**
-   *
-   * Build 一轮的产出是一个 commit（用户 2026-07-30），而 StagePass 提交的是「工作树里
-   * 所有的改动」—— 它分不出哪一行是红方写的、哪一行是人自己写了一半的。树脏就跑，
-   * 这一次 commit 会**把人没提交的活儿一起卷进去**，而那是不该替他做的事。
-   *
-   * 干净之后，「这一轮改了什么」才有唯一定义：commit 边界严格等于轮次边界。
-   *
-   * **只有产出 commit 的阶段查这个**（Build / Fix，见 `producesCommit`）：别的阶段
-   * 产出一份文档、一个路径就说全了，人手里有没有没提交的东西和写文档无关，
-   * 拦它只会让人没法干活。
-   *
-   * 把文件列出来，因为「树脏了」这句话本身没法让人动手 —— 他得知道是哪几个。
-   */
-  if (producesCommit(phase)) {
-    const dirty = sessions.repo.dirtyPaths(sessions.workspaceFor(changeId)!);
-    if (dirty.length > 0) {
-      return refuse({ ran: false, phase, reason: "workspace_dirty", dirty });
-    }
-  }
-  /*
-   * **第五道预检：这个阶段的上游产物还在不在**（交接文档 C1）。
-   *
-   * 任务书会把上游产物列给红方当输入（`round-turn-runner.ts`）。列一个磁盘上没有的
-   * 东西，红方到 rollout 里才发现「输入不见了」—— 实测烧过一整轮几分钟只换来这一句
-   * （2026-07-31 Review 那次：红方报了 `RV-index-html`，磁盘上没有，QA 和 Merge 的
-   * 四个角色各自又发现了一遍）。下游兜得住，但这几分钟可以省。
-   *
-   * 判据和 `/api/artifact` **同一个**（`locateArtifact`）：sha 问 git，路径查磁盘。
-   * 把缺的逐条列出来 —— 「上游产物不见了」这句话本身没法让人动手。
-   */
-  const missing = PHASES.slice(0, PHASES.indexOf(phase))
-    .flatMap((each) =>
-      new EvidenceStore(database).read(changeId, each).artifactIds
-        .map((id) => ({ phase: each, id })))
-    .filter(({ id }) =>
-      !locateArtifact({
-        root: sessions.workspaceFor(changeId)!, id, repo: sessions.repo,
-      }).ok);
-  if (missing.length > 0) {
-    return refuse({ ran: false, phase, reason: "upstream_artifact_missing", missing });
-  }
+  // 五条预检（brief / path / trust / dirty / upstream）—— 判据全在
+  // `dispatchPrecheck` 里，这里只管把拒绝按 `refuse` 的规矩落账、回滚状态。
+  const refused = dispatchPrecheck(database, sessions, changeId, phase);
+  if (refused !== null) return refuse(refused);
 
   const loop = new TurnLoop({
     database,
@@ -902,6 +928,9 @@ async function runRound(input: {
       },
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({ threadId }),
+      // 并行座位的轮次从活儿数（批 3）：座位的 start 不进账本。
+      parallelRound: (each, seatPhase) =>
+        new JobStore(database).countFor(each, seatPhase),
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
       // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。
       readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
@@ -931,7 +960,7 @@ async function runRound(input: {
    * Codex 还在动。
    */
   const turnMs = options.turnTimeoutMs ?? 30 * 60_000;
-  loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1 });
+  loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1, phase });
 
   /*
    * **排完队就返回，不把一轮的时长压在一个 HTTP 请求上**（BACKLOG §3.4）。
@@ -947,6 +976,84 @@ async function runRound(input: {
    */
   void runToCompletion({ loop, database, changeId, phase, jobId, at, turnMs });
   return { ran: true, phase, jobId };
+}
+
+/**
+ * 派发前的五条预检（brief / path / trust / dirty / upstream）。
+ * 拒 = 返回那个说得清的拒绝对象；null = 五条都过。**纯判据，不动任何状态** ——
+ * 落账和回滚归 `runRound` 里的 `refuse`。从 runRound 抽出来是函数上限
+ * （300 行）逼的，判据一个字没变。
+ *
+ * - **没有录入需求就不跑**：能绕过的录入等于装饰（用户 2026-07-29 的洞）。
+ *   RoundTurnRunner 里有同一条（防御在两层），但那层抛出来会被 TurnLoop 记成
+ *   「这一轮失败了」—— 而前置条件不满足不是失败。
+ * - **项目没写路径也不跑**：同一个形状，`launchInto` 那层抛出来同样会被记错。
+ * - **Codex 没信任过这个目录就别派**（2026-07-30 实测：Codex 停在信任提问上，
+ *   这一侧等满 30 分钟只拿到「没有新线程」）。只有明确的 `false` 才拦；不替人
+ *   答那个提问 —— 信任是人对目录的授权，不是 StagePass 的决定。
+ * - **产出 commit 的阶段要干净树**（`producesCommit` —— 两件事同一个名单）：
+ *   StagePass 提交整树，分不出哪行是红方写的、哪行是人写了一半的。文件要列出来。
+ * - **上游产物还在不在**（C1）：判据和 `/api/artifact` 同一个（`locateArtifact`），
+ *   名单和任务书同一份（`upstreamOf`）。缺的逐条列出来。
+ */
+function dispatchPrecheck(
+  database: Database.Database,
+  sessions: PanelSessions,
+  changeId: string,
+  phase: Phase,
+):
+  | { ran: false; phase: Phase; reason: string }
+  | { ran: false; phase: Phase; reason: string; workspace: string }
+  | { ran: false; phase: Phase; reason: string; dirty: readonly string[] }
+  | { ran: false; phase: Phase; reason: string; missing: readonly { phase: Phase; id: string }[] }
+  | null {
+  if (new ChangeStore(database).read(changeId).brief === null) {
+    return { ran: false, phase, reason: "change_has_no_brief" };
+  }
+  const root = sessions.workspaceFor(changeId);
+  if (root === null) {
+    return { ran: false, phase, reason: "project_has_no_path" };
+  }
+  if (sessions.trust.isTrusted(root) === false) {
+    return { ran: false, phase, reason: "workspace_not_trusted", workspace: root };
+  }
+  if (producesCommit(phase)) {
+    const dirty = sessions.repo.dirtyPaths(root);
+    if (dirty.length > 0) {
+      return { ran: false, phase, reason: "workspace_dirty", dirty };
+    }
+  }
+  const missing = upstreamOf(phase, new ChangeStore(database).graphOf(changeId))
+    .flatMap((each) =>
+      new EvidenceStore(database).read(changeId, each).artifactIds
+        .map((id) => ({ phase: each, id })))
+    .filter(({ id }) => !locateArtifact({ root, id, repo: sessions.repo }).ok);
+  if (missing.length > 0) {
+    return { ran: false, phase, reason: "upstream_artifact_missing", missing };
+  }
+  return null;
+}
+
+/**
+ * 一次预检拒绝，落进账本的那句话。
+ *
+ * 细节（哪几个文件、哪个目录、缺哪几份）都要在 —— 「树脏了」这句话本身没法让人
+ * 动手，这正是那几个字段被加进返回值的理由，落账时不能又把它们丢掉。
+ */
+function refusalError(refusal: {
+  readonly reason: string;
+  readonly dirty?: readonly string[];
+  readonly workspace?: string;
+  readonly missing?: readonly { phase: Phase; id: string }[];
+}): string {
+  const detail = refusal.dirty !== undefined && refusal.dirty.length > 0
+    ? refusal.dirty.join("、")
+    : refusal.workspace !== undefined
+      ? refusal.workspace
+      : refusal.missing !== undefined && refusal.missing.length > 0
+        ? refusal.missing.map((each) => `${each.phase} 的 ${each.id}`).join("、")
+        : "";
+  return detail === "" ? refusal.reason : `${refusal.reason}：${detail}`;
 }
 
 /**
@@ -1170,6 +1277,470 @@ function waiveBody(outcome: Exclude<WaiveOutcome, { kind: "no_such_change" }>): 
  *
  * Split out from the server so the routing can be tested without a socket.
  */
+
+/**
+ * `/api/rubric` 的 POST 转发体，以及下面那条升级。
+ *
+ * 抽出来的理由不是审美：`handle()` 背着 §4.1 的棘轮，**只许缩不许涨**
+ * （`architecture.test.ts` 的 `FUNCTION_RATCHET`）。这两段本来就是纯转发。
+ */
+async function serveRubricSave(
+  database: Database.Database,
+  url: URL,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+    const changeId = url.searchParams.get("change") ?? "";
+    const phase = url.searchParams.get("phase") ?? "";
+    const role = url.searchParams.get("role") ?? "";
+    if (!isPhase(phase) || !(RUBRIC_ROLES as readonly string[]).includes(role)) {
+      response.writeHead(400).end("bad phase or role");
+      return;
+    }
+
+    // 解码住在 domain/rubric-edit.ts，不在这里 —— 第五条常驻护栏禁止 src/web/ 把
+    // 字节变成字符串。那条规则是面板被接受的前提，不是可以绕的风格问题。
+    let edit;
+    try {
+      edit = parseRubricEdit(await readBody(request));
+    } catch (error: unknown) {
+      if (!(error instanceof UnreadableEditError)) throw error;
+      response.writeHead(400).end(error.code);
+      return;
+    }
+
+    const outcome = saveRubric({
+      database, changeId, phase, role: role as RubricRole, edit,
+    });
+    if (outcome.kind === "no_such_change") {
+      response.writeHead(404).end("no such change, or it belongs to no project");
+      return;
+    }
+    // 三种拒绝，都要说清是哪一种 —— 前端要分别提示。
+    json(response, outcome.kind === "saved"
+      ? { saved: true, version: outcome.version, retired: outcome.retired }
+      : outcome.kind === "reason_required"
+        ? { saved: false, reason: "reason_required", retired: outcome.retired }
+        : outcome.kind === "untrusted_key"
+          ? { saved: false, reason: "untrusted_key", key: outcome.key }
+          : { saved: false, reason: outcome.code });
+    return;
+  }
+
+/**
+ * 打开（或接上）这个 Change 的旁路会话 —— 一个不属于任何阶段的 Codex 聊天窗口。
+ *
+ * ## 为什么它不查 `phaseBusy`
+ *
+ * 这正是它存在的理由（DESIGN §3.3）：一个阶段正在跑轮的时候，人中途想问个名词，
+ * 原来只能等整轮跑完 ——「问个名词」和「跑一轮」抢同一把椅子。旁路会话有自己的
+ * 座位（`ASIDE`），不产出、不推闸门，所以什么都不用等。
+ *
+ * ## 线程怎么被认出来、绑定
+ *
+ * 聊天没有「turn 跑完」这回事，但线程要能跨窗口续（批 2 的「把闲聊收敛成 brief」
+ * 要按它找到那段对话）。所以第一次打开带一句开场提示词，走 transport 的
+ * `awaitNewThread`（按提示词认线程，不认「谁先出现」）；`onThread` 一认出来就
+ * 绑进 `change_bindings (kind='aside')`，之后每次打开都 resume 同一条。
+ * 认线程在后台跑，不挡这个响应 —— 人要的是窗口，不是绑定回执。
+ */
+async function serveAside(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+  options: PanelOptions,
+): Promise<void> {
+  const changeId = url.searchParams.get("change") ?? "";
+  try {
+    new ChangeStore(database).read(changeId);
+  } catch {
+    response.writeHead(404).end("no such change");
+    return;
+  }
+  // 已经开着就原样接上，不起第二个 —— 和 /api/terminal 同一个幂等契约。
+  if (sessions.has(changeId, ASIDE)) {
+    json(response, { opened: true });
+    return;
+  }
+
+  const bound = new BindingStore(database).findAside(changeId);
+  if (bound?.status === "bound") {
+    sessions.launchInto(changeId, ASIDE, codexArgv({
+      threadId: bound.threadId,
+      sandbox: options.session.sandbox,
+      approval: options.session.approval,
+      model: options.session.model,
+      reasoningEffort: options.session.reasoningEffort,
+      // 人要跟它说话，手上得有 StagePass 的工具 —— 和 openForChat 同一条理由。
+      config: pluginConfigFor(database, changeId),
+    }));
+    json(response, { opened: true });
+    return;
+  }
+
+  const transport = new CodexTuiTransport({
+    ...options.session,
+    ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
+    config: pluginConfigFor(database, changeId),
+    launch: ({ argv }) => { sessions.launchInto(changeId, ASIDE, argv); },
+  });
+  void transport.runTurn({
+    threadId: null,
+    /*
+     * 开场词带 changeId 和时刻：awaitNewThread 按它认线程，两个 Change 同时
+     * 开旁路、或同一个 Change 关了重开，都不许认错。
+     *
+     * **开头那个标记是承重的**（`STAGEPASS_SAID`）：起草前要数「人说过几句」，
+     * 而这句话也落在 rollout 的 `user_message` 里 —— 不标记它就会被算成人说的，
+     * 那道闸当场失效（2026-08-06 真机上就是这么放过一份空草稿的）。
+     */
+    prompt: `${STAGEPASS_SAID} 这是 StagePass 里 ${changeId} 的旁路会话`
+      + `（${new Date().toISOString()}）。`
+      + "人会在这里问问题、聊这次改动要什么。你不产出任何阶段的东西、不推动任何"
+      + "闸门。回答要基于这个仓库的真实代码，不知道就说不知道。收到请简短回应。",
+    onThread: (threadId) => {
+      try {
+        new BindingStore(database).bindAside(changeId, threadId);
+      } catch (error: unknown) {
+        console.error(`[panel] ${changeId} 旁路线程绑定失败：${String(error)}`);
+      }
+    },
+  }).catch((error: unknown) => {
+    // 认不出线程只丢「续得上」这件事，窗口本身好好开着 —— 说一声，别带走面板。
+    console.error(`[panel] ${changeId} 旁路会话认线程失败：${String(error)}`);
+  });
+  json(response, { opened: true });
+}
+
+/**
+ * 批 2 的两步：起草（POST /api/brief-draft）和定稿（POST /api/brief-confirm）。
+ *
+ * 用例在 `app/converge-brief.ts`（含那条机械判据）；这里只提供它不认识的三样：
+ * 在旁路线程上跑一个 turn、和 briefs 目录的读写。
+ */
+function briefFiles(options: PanelOptions): {
+  write: (name: string, content: string) => string;
+  read: (name: string) => string | null;
+} {
+  const directory = options.briefsDir
+    ?? join(homedir(), ".stagepass", "briefs");
+  return {
+    write: (name, content) => {
+      mkdirSync(directory, { recursive: true });
+      const path = join(directory, name);
+      writeFileSync(path, content, "utf-8");
+      return path;
+    },
+    read: (name) => {
+      try {
+        return readFileSync(join(directory, name), "utf-8");
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+async function serveBriefDraft(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+  options: PanelOptions,
+): Promise<void> {
+  const changeId = url.searchParams.get("change") ?? "";
+  const outcome = await draftBrief({
+    database, changeId,
+    saidIn: (threadId) => readThreadUserMessages({ threadId }),
+    runTurn: async (threadId, prompt) => {
+      const transport = new CodexTuiTransport({
+        ...options.session,
+        ...(options.turnTimeoutMs === undefined
+          ? {} : { timeoutMs: options.turnTimeoutMs }),
+        config: pluginConfigFor(database, changeId),
+        /*
+         * **窗口开着就把提示词打进去，绝不 close 再起。**
+         *
+         * 2026-08-06 真机上我犯的就是这个错：先 `close(ASIDE)` 再 spawn 一个
+         * 带提示词的 resume。从人那边看，他正在聊的窗口当场死掉重开，而起草那一轮
+         * 要跑几分钟 —— 屏幕上就是「卡住」。`PanelSessions.type` 那段注释早写着
+         * 这条（「先 close 再 launchInto 会掐断浏览器正在读的那条流」），
+         * 录需求那条路一直是打字的，起草这条当时没跟上。
+         *
+         * 打字要求提示词是**一行**（composer 里一个换行就是提交），
+         * `draftPrompt` 因此是一行。没有活窗口时才 resume 一个带提示词的。
+         */
+        launch: ({ argv }) => {
+          if (sessions.has(changeId, ASIDE)) void sessions.type(changeId, ASIDE, prompt);
+          else sessions.launchInto(changeId, ASIDE, argv);
+        },
+      });
+      return (await transport.runTurn({ threadId, prompt })).text;
+    },
+    writeBriefFile: briefFiles(options).write,
+  });
+  json(response, outcome);
+}
+
+function serveBriefConfirm(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  options: PanelOptions,
+): void {
+  json(response, confirmBrief({
+    database,
+    changeId: url.searchParams.get("change") ?? "",
+    readBriefFile: briefFiles(options).read,
+  }));
+}
+
+/**
+ * 结束一个阶段的终端 —— 以及，有一轮在飞时，**把那一轮当场收掉**。
+ *
+ * ## 光杀进程不算出口（交接 §5.5.2）
+ *
+ * 「这个 (Change, 阶段) 上有没有活儿」有两个来源：注册表里的进程，和账本里
+ * queued / running 的 job。原来这条路只问注册表 —— 杀掉进程，账本上那一轮照旧
+ * 挂着，Change 停在 `running` 等满 30 分钟超时，这段时间里人一个能按的都没有；
+ * 面板重启过的话连进程都不在注册表里，出口整个被藏。
+ *
+ * 所以两个都收：进程照旧 kill，账本上的活儿记成 `aborted_by_human`、Change 收回
+ * `blocked`（可以 retry）。迟到的工人失败由 `TurnLoop.runOnce` 的「谁先收尾谁
+ * 说了算」兜住，不会把账翻回去。
+ *
+ * ## 这仍然不是网页上的裁决入口
+ *
+ * 中止一轮和结束一个进程同一类：不推动闸门、不对任何产物下判断，只陈述
+ * 「人把这一轮停了」—— 和收尸人对过期租约做的是同一件事，只是由人当场触发。
+ */
+function serveClose(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+): void {
+  const changeId = url.searchParams.get("change") ?? "";
+  const phase = url.searchParams.get("phase") ?? "";
+  // 旁路会话也从这儿关：只有进程可收，没有账 —— 它不产出、不占座、没有 job。
+  if (phase === ASIDE) {
+    const had = sessions.has(changeId, ASIDE);
+    sessions.close(changeId, ASIDE);
+    json(response, { closed: had, phase });
+    return;
+  }
+  if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
+  const was = sessions.has(changeId, phase);
+  sessions.close(changeId, phase);
+
+  // 只收「这个阶段」的账（批 3 起 busy 按阶段问）——
+  // 人关一个历史阶段的闲终端，不该顺手把正在跑的那一轮打掉。
+  const busy = phaseBusy(database, changeId, phase);
+  let aborted: string | null = null;
+  if (busy !== null) {
+    let state: { phase: Phase; status: string } | null = null;
+    try {
+      const read = new ChangeStore(database).read(changeId).state;
+      state = { phase: read.phase, status: read.status };
+    } catch { /* Change 已经没了 —— 没有账可收 */ }
+    const seat = state !== null && state.phase !== phase
+      ? new ParallelStore(database).find(changeId, phase)
+      : null;
+    if (state !== null && (state.phase === phase || seat !== null)) {
+      new JobStore(database).abort(busy.jobId, "aborted_by_human");
+      // 中止落在这一轮的座位上：主线收主线，并行座位收座位（批 3）。
+      if (state.phase === phase) {
+        if (state.status === "running") {
+          new ChangeStore(database).apply(changeId, "fail");
+        }
+      } else if (seat?.status === "running") {
+        new ParallelStore(database).apply(changeId, phase, "fail");
+      }
+      aborted = busy.jobId;
+    }
+  }
+  json(response, {
+    closed: was, phase, ...(aborted === null ? {} : { aborted }),
+  });
+}
+
+/**
+ * 开一个并行座位（POST /api/parallel，批 3）—— **这个入口 2026-08-07 撤回了。**
+ *
+ * ## 为什么撤，而不是补
+ *
+ * 真机验收前的一轮审计（`:memory:` 库上逐条实跑）在它身上找出十二个问题，
+ * 其中六个落在它被设计出来的那个默认场景（TestPlan ∥ Build）上：
+ *
+ * 1. **两条并行的轮共用一条 worklist 队列** —— `WorklistStore.open/next` 按
+ *    Change 关、按 Change 取（插件手上只有 `STAGEPASS_CHANGE`，拿不到阶段）。
+ *    实测：TestPlan 的裁判把理由答进了 Build 的 gap，TestPlan 那两条静默作废。
+ * 2. **跳过式批准甩出孤儿座位** —— 收编只在「到达那个阶段」时发生，而人可以
+ *    批准着跳过它。实测在一个 `Done/closed` 的 Change 上照样起 Codex、排 job、
+ *    写 evidence，且清不掉。
+ * 3. **座位 blocked 之后没有任何出路** —— `ParallelStore.retry` 全树没有调用者，
+ *    `decideGate` 只认主线阶段，界面上一个按钮都没有。
+ * 4. **`sendBack` 会当场收编一个 settled 座位** —— 打回的意见一轮都没跑就变成
+ *    「可以批准了」，正是 §8.9 要挡的形状。
+ * 5. **两个整树 commit 的阶段共用一个工作区** —— TestPlan 和 Build 都在
+ *    `PRODUCES_COMMIT` 里，先收工的那条把另一条的半成品 commit 进自己的 sha。
+ * 6. **`Done` 也能开座位**，而 `Done` 在界面上没有格子 —— 收编成 `Done/blocked`
+ *    之后这个 Change 永远关不掉。
+ *
+ * 前五条各自都要动地基（worklist 换键、座位要有关闭和 retry、收编要覆盖跳过、
+ * 并行的 commit 阶段要有工作区隔离），第五条更是**设计层没答的问题**，不是补丁
+ * 能收的。而这些洞全都能烧真的 Codex、写真的库 —— 留一个「大概能用」的入口在
+ * 那儿，比没有这个功能糟得多。
+ *
+ * ## 留下的是什么
+ *
+ * `change_states` 那张表、`ParallelStore`、收编那一段照旧在：**已经存在的座位
+ * 仍然收编得掉**（真库里一个都没有，但语义不该随入口一起消失），而新的开不出来。
+ * 重新开张要跟着上面那六条一起来，见 docs/PLAN-2026-08-06.md 批 3。
+ */
+function serveParallel(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+): void {
+  void database;
+  void url;
+  json(response, { opened: false, reason: "parallel_seats_withdrawn" });
+}
+
+/**
+ * 主屏那一份（GET /api/panel）：环、工作区两栏，外加**现在派得出去吗**。
+ *
+ * ## 为什么路障要在这一屏上
+ *
+ * 2026-08-07 真机：闸门只放行 `retry`，人走「请 Codex 问我」在选择器里选了它，
+ * 题成功落地 —— 然后干净树预检 36 毫秒把这一轮拒掉，Change 回到 blocked，而
+ * `rerun` 那条路派发前先关掉了那个阶段的终端。人眼前只剩一个死终端，屏幕上事先
+ * 一个字都没说「这个阶段现在根本派不出去」。
+ *
+ * **闸门放行的动作，预检必拒**，两处判据从不对话 —— 那正是「亮着的按钮，按下去
+ * 什么都没有」，这个产品存在的理由就是不许出现它。
+ *
+ * 判据不另算一份：调的就是派发那条路自己用的 `dispatchPrecheck`。它是纯读的
+ * （状态和落账都归 `runRound` 的 `refuse`），所以这一屏仍然一个字都不写（M5）。
+ */
+function servePanel(
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+  options: PanelOptions,
+): void {
+  const database = options.database;
+  const changeId = url.searchParams.get("change") ?? "";
+  let blocked: unknown = null;
+  try {
+    const state = new ChangeStore(database).read(changeId).state;
+    blocked = dispatchPrecheck(database, sessions, changeId, state.phase);
+  } catch {
+    blocked = null;   // 没有这个 Change —— 那一屏本来就空着
+  }
+  json(response, {
+    ...panelView({
+      database, sessions, changeId,
+      askedProject: url.searchParams.get("project"),
+      workspace: basename(options.session.cwd),
+    }) as object,
+    /** 现在派这个阶段会被哪一条预检拒。null = 五条都过。 */
+    blocked,
+  });
+}
+
+/**
+ * 一份产出的正文（GET /api/artifact）—— 从 `handle()` 抽出来还棘轮的债
+ * （§4.1：加一条路由必须先还等量的债）。语义一个字没变，注释跟着正文走。
+ *
+ * ## 为什么这一条最要紧
+ *
+ * 在它之前弹窗只显示 artifactIds 里的**文件名**。用户 2026-07-30 的原话：
+ * 「他们把 PRD 和建议一起带回给我 —— 现在只有建议，我拿不到那份 PRD。」
+ * 五步场景的第 ④ 步就断在这儿：红蓝对抗跑完了，蓝方挑的毛病看得见，**被挑的那
+ * 份东西看不见** —— 那份建议是悬着的，人没法判断该不该接受。
+ *
+ * ## 这不违反 §9.3
+ *
+ * 那条护栏管的是**pty 的字节**：不许读懂 Codex 画在终端里的东西。这里读的是模型
+ * **落在磁盘上的产物**，和 `codex/rollout.ts` 读 rollout、`codex/subagent.ts` 读
+ * 子 Agent 的文件同一类动作。区别是判据性的：pty 输出是「界面」，产物是「文档」。
+ *
+ * ## 只读，而且只读这个阶段自己报出来的那些
+ *
+ * 路径必须出现在这个 (Change, 阶段) 的 `artifactIds` 里，而且落在项目目录内 ——
+ * 两道都不省。`artifactIds` 是模型写的，一个想歪的模型可以往里放
+ * `~/.ssh/id_rsa`；「只读库里列着的」挡不住那个，「必须在项目目录内」才挡得住。
+ *
+ * 读接口不写任何东西（M5）。
+ */
+function serveArtifact(
+  database: Database.Database,
+  url: URL,
+  response: ServerResponse,
+  sessions: PanelSessions,
+): void {
+  const changeId = url.searchParams.get("change") ?? "";
+  const phaseName = url.searchParams.get("phase") ?? "";
+  const wanted = url.searchParams.get("id") ?? "";
+  if (!isPhase(phaseName)) { response.writeHead(404).end("no_such_phase"); return; }
+
+  const listed = new EvidenceStore(database).read(changeId, phaseName).artifactIds;
+  if (!listed.includes(wanted)) {
+    // 不是这个阶段报出来的东西。**不猜、不去别处找。**
+    json(response, { path: wanted, readable: false, reason: "not_produced_here" });
+    return;
+  }
+  const root = sessions.workspaceFor(changeId);
+  if (root === null) {
+    json(response, { path: wanted, readable: false, reason: "project_has_no_path" });
+    return;
+  }
+
+  /*
+   * 产出是一个 commit（Build 走这条，见 `work/repo.ts`）。
+   *
+   * 判据是**这一格长得像不像 sha**，而不是「这是不是 Build 阶段」：一个阶段产出
+   * 什么形态是那一轮的事实，不该由读的人按阶段去猜 —— 猜错的那一天，Build 的
+   * commit 会被当成路径去磁盘上找，回来一句「这份产出不见了」。
+   *
+   * 「必须在 artifactIds 里」的闸照旧管着这一条：一个不是这个阶段报出来的 sha，
+   * 走不到这里。
+   */
+  // 判据在 `locateArtifact` 里，和派发前预检（C1）**同一份** —— 别在这儿另算。
+  const located = locateArtifact({ root, id: wanted, repo: sessions.repo });
+  if (!located.ok) {
+    // 「文件被移走了」要说出来 —— 一个空白的正文框和「这份产出不见了」是
+    // 两件完全不同的事（M7）。
+    json(response, {
+      path: wanted, readable: false, reason: located.reason,
+      ...(located.kind === undefined ? {} : { kind: located.kind }),
+    });
+    return;
+  }
+  if (located.kind === "commit") {
+    json(response, {
+      path: wanted, readable: true, kind: "commit",
+      bytes: located.text.length, text: located.text,
+    });
+    return;
+  }
+  if (located.bytes > ARTIFACT_MAX_BYTES) {
+    json(response, {
+      path: wanted, readable: false, reason: "too_big", bytes: located.bytes,
+    });
+    return;
+  }
+  json(response, {
+    path: wanted,
+    readable: true,
+    bytes: located.bytes,
+    text: readFileSync(located.real, "utf-8"),
+  });
+}
+
 export async function handle(
   request: IncomingMessage,
   response: ServerResponse,
@@ -1192,12 +1763,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/panel" && request.method === "GET") {
-    json(response, panelView({
-      database, sessions,
-      changeId: url.searchParams.get("change") ?? "",
-      askedProject: url.searchParams.get("project"),
-      workspace: basename(options.session.cwd),
-    }));
+    servePanel(url, response, sessions, options);
     return;
   }
 
@@ -1210,88 +1776,8 @@ export async function handle(
     return;
   }
 
-  /*
-   * 一份产出的正文。
-   *
-   * ## 为什么这一条最要紧
-   *
-   * 在这之前弹窗只显示 artifactIds 里的**文件名**。用户 2026-07-30 的原话：
-   * 「他们把 PRD 和建议一起带回给我 —— 现在只有建议，我拿不到那份 PRD。」
-   * 五步场景的第 ④ 步就断在这儿：红蓝对抗跑完了，蓝方挑的毛病看得见，**被挑的那
-   * 份东西看不见** —— 那份建议是悬着的，人没法判断该不该接受。
-   *
-   * ## 这不违反 §9.3
-   *
-   * 那条护栏管的是**pty 的字节**：不许读懂 Codex 画在终端里的东西。这里读的是模型
-   * **落在磁盘上的产物**，和 `codex/rollout.ts` 读 rollout、`codex/subagent.ts` 读
-   * 子 Agent 的文件同一类动作。区别是判据性的：pty 输出是「界面」，产物是「文档」。
-   *
-   * ## 只读，而且只读这个阶段自己报出来的那些
-   *
-   * 路径必须出现在这个 (Change, 阶段) 的 `artifactIds` 里，而且落在项目目录内 ——
-   * 两道都不省。`artifactIds` 是模型写的，一个想歪的模型可以往里放
-   * `~/.ssh/id_rsa`；「只读库里列着的」挡不住那个，「必须在项目目录内」才挡得住。
-   *
-   * 读接口不写任何东西（M5）。
-   */
   if (url.pathname === "/api/artifact" && request.method === "GET") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phaseName = url.searchParams.get("phase") ?? "";
-    const wanted = url.searchParams.get("id") ?? "";
-    if (!isPhase(phaseName)) { response.writeHead(404).end("no_such_phase"); return; }
-
-    const listed = new EvidenceStore(database).read(changeId, phaseName).artifactIds;
-    if (!listed.includes(wanted)) {
-      // 不是这个阶段报出来的东西。**不猜、不去别处找。**
-      json(response, { path: wanted, readable: false, reason: "not_produced_here" });
-      return;
-    }
-    const root = sessions.workspaceFor(changeId);
-    if (root === null) {
-      json(response, { path: wanted, readable: false, reason: "project_has_no_path" });
-      return;
-    }
-
-    /*
-     * 产出是一个 commit（Build 走这条，见 `work/repo.ts`）。
-     *
-     * 判据是**这一格长得像不像 sha**，而不是「这是不是 Build 阶段」：一个阶段产出
-     * 什么形态是那一轮的事实，不该由读的人按阶段去猜 —— 猜错的那一天，Build 的
-     * commit 会被当成路径去磁盘上找，回来一句「这份产出不见了」。
-     *
-     * 上面那道「必须在 artifactIds 里」的闸照旧管着这一条：一个不是这个阶段报出来的
-     * sha，走不到这里。
-     */
-    // 判据在 `locateArtifact` 里，和派发前预检（C1）**同一份** —— 别在这儿另算。
-    const located = locateArtifact({ root, id: wanted, repo: sessions.repo });
-    if (!located.ok) {
-      // 「文件被移走了」要说出来 —— 一个空白的正文框和「这份产出不见了」是
-      // 两件完全不同的事（M7）。
-      json(response, {
-        path: wanted, readable: false, reason: located.reason,
-        ...(located.kind === undefined ? {} : { kind: located.kind }),
-      });
-      return;
-    }
-    if (located.kind === "commit") {
-      json(response, {
-        path: wanted, readable: true, kind: "commit",
-        bytes: located.text.length, text: located.text,
-      });
-      return;
-    }
-    if (located.bytes > ARTIFACT_MAX_BYTES) {
-      json(response, {
-        path: wanted, readable: false, reason: "too_big", bytes: located.bytes,
-      });
-      return;
-    }
-    json(response, {
-      path: wanted,
-      readable: true,
-      bytes: located.bytes,
-      text: readFileSync(located.real, "utf-8"),
-    });
+    serveArtifact(database, url, response, sessions);
     return;
   }
 
@@ -1399,40 +1885,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/rubric" && request.method === "POST") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phase = url.searchParams.get("phase") ?? "";
-    const role = url.searchParams.get("role") ?? "";
-    if (!isPhase(phase) || !(RUBRIC_ROLES as readonly string[]).includes(role)) {
-      response.writeHead(400).end("bad phase or role");
-      return;
-    }
-
-    // 解码住在 domain/rubric-edit.ts，不在这里 —— 第五条常驻护栏禁止 src/web/ 把
-    // 字节变成字符串。那条规则是面板被接受的前提，不是可以绕的风格问题。
-    let edit;
-    try {
-      edit = parseRubricEdit(await readBody(request));
-    } catch (error: unknown) {
-      if (!(error instanceof UnreadableEditError)) throw error;
-      response.writeHead(400).end(error.code);
-      return;
-    }
-
-    const outcome = saveRubric({
-      database, changeId, phase, role: role as RubricRole, edit,
-    });
-    if (outcome.kind === "no_such_change") {
-      response.writeHead(404).end("no such change, or it belongs to no project");
-      return;
-    }
-    // 三种拒绝，都要说清是哪一种 —— 前端要分别提示。
-    json(response, outcome.kind === "saved"
-      ? { saved: true, version: outcome.version, retired: outcome.retired }
-      : outcome.kind === "reason_required"
-        ? { saved: false, reason: "reason_required", retired: outcome.retired }
-        : outcome.kind === "untrusted_key"
-          ? { saved: false, reason: "untrusted_key", key: outcome.key }
-          : { saved: false, reason: outcome.code });
+    await serveRubricSave(database, url, request, response);
     return;
   }
 
@@ -1597,14 +2050,29 @@ export async function handle(
 
   if (url.pathname === "/api/run" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
+    /*
+     * `&phase=` 指定跑哪个座位（批 3）。不给 = 主线当前阶段（老语义）。
+     * 给了一个既不在主线、也没开座位的阶段，`runRound` 会拒（phase_not_active）。
+     */
+    const asked = url.searchParams.get("phase");
     let phase: Phase;
     try {
-      phase = new ChangeStore(database).read(changeId).state.phase;
+      const main = new ChangeStore(database).read(changeId).state.phase;
+      if (asked !== null && !isPhase(asked)) {
+        response.writeHead(400).end("no such phase");
+        return;
+      }
+      phase = asked === null ? main : asked;
     } catch {
       response.writeHead(404).end("no such change");
       return;
     }
     json(response, await runRound({ changeId, phase, sessions, options }));
+    return;
+  }
+
+  if (url.pathname === "/api/parallel" && request.method === "POST") {
+    serveParallel(database, url, response);
     return;
   }
 
@@ -1636,8 +2104,8 @@ export async function handle(
       return;
     }
     // 账本闲着才许起：一个阶段同时只许一个进程（PRD §6.5 规则 5），而正在跑的
-    // 那一轮拥有这个座位。
-    const busy = phaseBusy(database, changeId);
+    // 那一轮拥有这个座位。批 3 起按阶段问 —— 并行座位的轮不挡别的阶段开终端。
+    const busy = phaseBusy(database, changeId, phase);
     if (busy) { json(response, { opened: false, ...busy }); return; }
     try {
       sessions.openForChat(changeId, phase, pluginConfigFor(database, changeId));
@@ -1650,24 +2118,37 @@ export async function handle(
     return;
   }
 
+  if (url.pathname === "/api/aside" && request.method === "POST") {
+    await serveAside(database, url, response, sessions, options);
+    return;
+  }
+
+  if (url.pathname === "/api/brief-draft" && request.method === "POST") {
+    await serveBriefDraft(database, url, response, sessions, options);
+    return;
+  }
+
+  if (url.pathname === "/api/brief-confirm" && request.method === "POST") {
+    serveBriefConfirm(database, url, response, options);
+    return;
+  }
+
   if (url.pathname === "/api/close" && request.method === "POST") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phase = url.searchParams.get("phase") ?? "";
-    if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
-    const was = sessions.has(changeId, phase);
-    sessions.close(changeId, phase);
-    json(response, { closed: was, phase });
+    serveClose(database, url, response, sessions);
     return;
   }
 
   const pty = /^\/pty\/([^/]+)\/([^/]+)(\/in|\/resize)?$/.exec(url.pathname);
   if (pty) {
     const changeId = decodeURIComponent(pty[1]!);
-    const phase = decodeURIComponent(pty[2]!);
-    if (!isPhase(phase) || phase === "Done") {
+    const seat = decodeURIComponent(pty[2]!);
+    // 旁路会话（ASIDE）和十个能开终端的阶段共用这一条流的机制 —— 它只是
+    // 注册表里多出来的那一个座位，字节进出的规矩一个字都不变。
+    if (seat !== ASIDE && (!isPhase(seat) || seat === "Done")) {
       response.writeHead(404).end("no such phase");
       return;
     }
+    const phase = seat as Seat;
     const action = pty[3];
 
     if (action === undefined && request.method === "GET") {

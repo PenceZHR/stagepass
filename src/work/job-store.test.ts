@@ -279,6 +279,68 @@ describe("L1 · work whose owner vanished is always resolved", () => {
   });
 });
 
+describe("L1 · 人的出口：中止与拒绝都要进账本", () => {
+  /**
+   * `abort` 绕开租约的所有权 —— 租约防的是两个工人互相抢，而这里是人对着一条
+   * 看得见的活儿说停（交接 §5.5.2：出口不该被一个死进程手里的 token 挡住）。
+   */
+  it("abort 收得掉 queued 和 running，两次按下去不炸", () => {
+    const { database, jobs } = open();
+    try {
+      enqueue(jobs, "JOB-Q");
+      assert.equal(jobs.abort("JOB-Q", "aborted_by_human").status, "failed");
+
+      enqueue(jobs, "JOB-R");
+      jobs.claimNext({ owner: "w", token: "t", now: T0, ttlMs: TTL });
+      const running = jobs.abort("JOB-R", "aborted_by_human");
+      assert.equal(running.status, "failed");
+      assert.equal(running.error, "aborted_by_human");
+      // 幂等：已经收过尾的原样返回，原因不被第二次盖掉。
+      assert.equal(jobs.abort("JOB-R", "别的话").error, "aborted_by_human");
+    } finally {
+      database.close();
+    }
+  });
+
+  /**
+   * §5.5.4 / §5.5.5：retry 被预检拒掉时原来没有任何新记录，库里最近的 error
+   * 还是上一轮的超时 —— 人看到的原因是假的。拒绝也是「这一次发生了什么」。
+   */
+  it("recordRefusal 落成一条失败的活儿，「最近一条」从此说的是这一次", () => {
+    const { database, jobs } = open();
+    try {
+      enqueue(jobs, "JOB-OLD");
+      jobs.claimNext({ owner: "w", token: "t", now: T0, ttlMs: TTL });
+      jobs.fail({ jobId: "JOB-OLD", owner: "w", token: "t", reason: "老超时" });
+
+      jobs.recordRefusal({
+        id: "JOB-REFUSED", changeId: "CHG-1", phase: "Build",
+        reason: "workspace_dirty：半成品.md", at: T0,
+      });
+      const latest = jobs.latestFor("CHG-1");
+      assert.equal(latest?.id, "JOB-REFUSED");
+      assert.equal(latest?.error, "workspace_dirty：半成品.md");
+      // 拒的是哪个阶段要记上 —— 界面靠它把原因挂在对的那张卡片上。
+      assert.equal(latest?.phase, "Build");
+      // 拒绝不是活儿：闸门问「有没有没了结的」时它不许占座。
+      assert.equal(jobs.busyFor("CHG-1"), null);
+
+      /*
+       * **同一个 id 再来一次不许炸。** 调用方拿 `Date.now()` 拼 id，同一毫秒里
+       * 来两次拒绝是可能的（人手快点两下）—— 主键冲突会让一次「树脏了」变成
+       * 一句「出错了：SqliteError」，而这条路正在替一次已经失败的派发记账。
+       */
+      assert.doesNotThrow(() => jobs.recordRefusal({
+        id: "JOB-REFUSED", changeId: "CHG-1", phase: "Build",
+        reason: "同一毫秒的第二次拒绝", at: T0,
+      }));
+      assert.equal(jobs.latestFor("CHG-1")?.error, "同一毫秒的第二次拒绝");
+    } finally {
+      database.close();
+    }
+  });
+});
+
 describe("L1 · the schema refuses a job row that cannot be true", () => {
   it("refuses running with no owner", () => {
     const { database } = open();

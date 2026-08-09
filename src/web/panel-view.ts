@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-import { PHASES, type Phase } from "../domain/phase";
+import { PHASES, isRetired, type Phase } from "../domain/phase";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
@@ -8,6 +8,7 @@ import { roundFromLedger } from "../domain/round";
 import { createSubAgentLookup, threadContextUsage } from "../codex/subagent";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore, type LedgerEntry } from "../store/change-store";
+import { ParallelStore } from "../store/parallel-store";
 import { CommandStore } from "../store/command-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
@@ -45,14 +46,18 @@ export interface LiveSessions {
 }
 
 /**
- * The phases that can hold a thread: eleven of the twelve.
+ * The phases that can hold a thread: twelve of the thirteen.
  *
  * `Done` is excluded because it is terminal -- nothing is dispatched there, so
- * a terminal for it would be a tab that can never show anything. Eleven is a
+ * a terminal for it would be a tab that can never show anything. Twelve is a
  * fixed number, which is what lets the panel be enumerated rather than being a
  * list that grows (PRD §6.5 rule 1). Do not introduce a third count.
  */
-const THREADED_PHASES: readonly Phase[] = PHASES.filter((phase) => phase !== "Done");
+const THREADED_PHASES: readonly Phase[] = PHASES.filter(
+  // 退休的阶段不画（2026-08-08：TechSpec 并进 Arch）。名字还在 PHASES 里是为了
+  // 让历史读得出来，但环上画一个永远走不到的节点，等于摆一个假选项。
+  (phase) => phase !== "Done" && !isRetired(phase),
+);
 
 /** Passed, failed, or neither yet. */
 type PhaseMark = "approved" | "problem" | null;
@@ -123,6 +128,11 @@ function phasesFor(input: {
   const evidence = new EvidenceStore(database);
   const rubricRounds = new RubricStore(database);
   const questions = new QuestionStore(database);
+  // 开着的并行座位（批 3）。一次读全，十一个格子各认各的。
+  const seats = new Map(
+    new ParallelStore(database).list(changeId)
+      .map((seat) => [seat.phase, seat.status]),
+  );
 
   return THREADED_PHASES.map((phase) => {
     /*
@@ -157,6 +167,11 @@ function phasesFor(input: {
       })(),
       live: input.sessions.has(changeId, phase),
       current: state?.phase === phase,
+      /**
+       * 这一格开着的并行座位的状态（批 3）。null = 没开。
+       * 界面靠它：座位开着的格子亮「跑这个阶段」（带 &phase=）、显示「并行」。
+       */
+      seat: seats.get(phase) ?? null,
       mark: markOf(phase, ledger, state, gaps),
       gaps,
       /**
@@ -249,6 +264,20 @@ export function panelView(input: {
     status: state?.status ?? null,
     /** 人答出来的需求，null = 还没录。界面靠它决定能不能跑。 */
     brief,
+    /**
+     * 这个 Change 最近的一条活儿（跑过的轮、或被预检拒掉的派发）。null = 一条
+     * 都没有。界面靠它做两件事：`blocked` 时说出**这一次**失败的真原因（交接
+     * §5.5.4 —— 原来 `jobs.error` 屏幕上一个字都没有），以及判断「有一轮在飞」
+     * 好把出口亮出来（§5.5.2 —— 出口原来只看注册表）。
+     */
+    job: (() => {
+      const job = new JobStore(database).latestFor(changeId);
+      return job === null ? null : {
+        id: job.id, status: job.status, error: job.error, createdAt: job.createdAt,
+        // 哪个座位的活儿（批 3）——「有一轮在飞」要亮在对的格子上。
+        phase: job.phase,
+      };
+    })(),
     // Read-only, and it stays that way. The panel shows what the gate says;
     // it never offers a control that changes it (PRD §1).
     //

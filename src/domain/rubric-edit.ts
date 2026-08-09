@@ -51,7 +51,15 @@ const isDraft = (value: unknown): value is CriterionDraft => {
   const entry = value as Record<string, unknown>;
   return typeof entry.text === "string"
     && typeof entry.blocking === "boolean"
-    && (entry.key === undefined || entry.key === null || typeof entry.key === "string");
+    && (entry.key === undefined || entry.key === null || typeof entry.key === "string")
+    /*
+     * **`section` 必须能原样走这一趟。** 它缺席时 `nextVersion` 会把这一条的
+     * section 置成 null —— 于是人在面板上按一次保存，整份 rubric 就和模板脱钩了，
+     * 而「越界」那条机械判据是建在这一格上的。没有任何测试会因此变红，
+     * 所以它只能在这儿被挡住。
+     */
+    && (entry.section === undefined || entry.section === null
+      || typeof entry.section === "string");
 };
 
 export function parseRubricEdit(bytes: Uint8Array): RubricEdit {

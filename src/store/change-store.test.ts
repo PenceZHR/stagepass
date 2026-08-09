@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { IllegalTransitionError } from "../domain/change-state";
+import { IllegalTransitionError, type ChangeState } from "../domain/change-state";
 import { ChangeNotFoundError, ChangeStore } from "./change-store";
 
 /**
@@ -66,6 +66,7 @@ describe("L0 · 打回上游落库：栈、理由、账本一次到位（§5.9.1
   /** 把一个 Change 推到 Build/settled。 */
   const toBuildSettled = (store: ChangeStore, id: string) => {
     store.create(id);
+    // 主线 11 站（TechSpec 2026-08-08 并进 Arch）：到 Build 要过 5 道批准。
     for (let step = 0; step < 5; step += 1) {
       store.apply(id, "start");
       store.apply(id, "settle");
@@ -96,15 +97,32 @@ describe("L0 · 打回上游落库：栈、理由、账本一次到位（§5.9.1
     }
   });
 
-  it("被打回的阶段批准后弹栈回去 —— 不沿主线前进", () => {
+  /**
+   * §8.9（2026-08-06 反转）：被打回的阶段批准之后**沿主线重走**，栈原样带着，
+   * 走到发起方才还清。原来是直接弹回发起方，于是中间那几个阶段的产物（全是照
+   * 旧上游建的）一个都没重跑。
+   */
+  it("被打回的阶段批准后沿主线重走 —— 栈带着，走到发起方才还清", () => {
     const { database, store } = open();
     try {
       toBuildSettled(store, "CHG-1");
       store.apply("CHG-1", "sendBack", { to: "Spec", reason: "r" });
       store.apply("CHG-1", "start");
       store.apply("CHG-1", "settle");
-      const back = store.apply("CHG-1", "approve");
-      assert.deepEqual(back.state, {
+      const next = store.apply("CHG-1", "approve");
+      assert.deepEqual(next.state, {
+        phase: "Arch", status: "pending", returnStack: ["Build"],
+      });
+
+      // 一路走回 Build，债才还清 —— 每一步都真的落进账本。
+      // 显式标类型：上面那句 `assert.deepEqual` 是 assertion 签名，会收窄 `next.state`。
+      let state: ChangeState = next.state;
+      while (state.returnStack.length > 0) {
+        store.apply("CHG-1", "start");
+        store.apply("CHG-1", "settle");
+        state = store.apply("CHG-1", "approve").state;
+      }
+      assert.deepEqual(state, {
         phase: "Build", status: "pending", returnStack: [],
       });
     } finally {
@@ -201,7 +219,8 @@ describe("L0 · every transition lands in the ledger", () => {
       const record = store.read("CHG-1");
       assert.equal(record.state.phase, "Done");
       assert.equal(record.state.status, "closed");
-      // 11 phases x 3 actions, plus the creation entry.
+      // 12 phases x 3 actions, plus the creation entry（主线含 Arch）.
+      // 主线 11 站（TechSpec 已退休），每站 start/settle/approve 三步，加建档那一条。
       assert.equal(store.ledger("CHG-1").length, 11 * 3 + 1);
       assert.equal(record.seq, 11 * 3);
     } finally {

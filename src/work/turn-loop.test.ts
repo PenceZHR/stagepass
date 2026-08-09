@@ -282,6 +282,119 @@ describe("L1 · a failed turn is failed in both places", () => {
   });
 });
 
+describe("L1 · 并行座位的轮（批 3）", () => {
+  it("**start / settle 落在座位上，主线一步都不动** —— 而 evidence 落在座位的阶段", async () => {
+    const { database, changes, jobs, loop } = open([
+      { artifactIds: ["build.diff"], blockers: [] },
+    ]);
+    try {
+      // 主线站在 PRD；给 Build 开一个并行座位。
+      const { ParallelStore } = await import("../store/parallel-store");
+      const seats = new ParallelStore(database, () => new Date(AT));
+      seats.open("CHG-1", "Build");
+
+      loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-SEAT",
+        deadlineAt: DEADLINE, maxAttempts: 1, phase: "Build",
+      });
+      assert.equal(seats.find("CHG-1", "Build")?.status, "running");
+      assert.equal(changes.read("CHG-1").state.status, "pending",
+        "座位的 start 跑到主线头上去了");
+      assert.equal(jobs.read("JOB-SEAT").phase, "Build");
+
+      const result = await loop.runOnce(WORKER);
+      assert.equal(result.kind, "settled");
+      assert.equal(seats.find("CHG-1", "Build")?.status, "settled");
+      assert.equal(changes.read("CHG-1").state.status, "pending",
+        "座位的 settle 跑到主线头上去了");
+      // 成果落在座位的阶段，不是主线的。
+      const evidence = database.prepare(
+        "SELECT phase FROM change_evidence WHERE change_id = 'CHG-1'",
+      ).all() as { phase: string }[];
+      assert.deepEqual(evidence.map((row) => row.phase), ["Build"]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("座位没开就排不了 —— 抛出来，不是静默落到主线上", () => {
+    const { database, loop } = open([]);
+    try {
+      assert.throws(() => loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-X",
+        deadlineAt: DEADLINE, maxAttempts: 1, phase: "Build",
+      }), /not open/);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("座位的轮失败 —— 座位 blocked，主线原样；收尸人也只收座位", async () => {
+    const { database, changes, loop } = open([new Error("seat_turn_died")]);
+    try {
+      const { ParallelStore } = await import("../store/parallel-store");
+      const seats = new ParallelStore(database, () => new Date(AT));
+      seats.open("CHG-1", "Build");
+      loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-SEAT",
+        deadlineAt: DEADLINE, maxAttempts: 1, phase: "Build",
+      });
+      const result = await loop.runOnce(WORKER);
+      assert.equal(result.kind, "failed");
+      assert.equal(seats.find("CHG-1", "Build")?.status, "blocked");
+      assert.equal(changes.read("CHG-1").state.status, "pending",
+        "座位的失败把主线打翻了");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("L1 · 谁先收尾谁说了算", () => {
+  /**
+   * 人从面板上中止一轮（`JobStore.abort`）之后立刻 retry —— 后台那条 turn 随后
+   * 才超时。迟到的失败不许把人刚 retry 出来的 running 打回 blocked，也不许把
+   * 「中止」这句话盖掉。这扇窗是「中止」这个出口打开的：没有它之前，busy 的 job
+   * 挡着 retry，这个竞态在结构上不存在。
+   */
+  it("**迟到的失败不翻账** —— job 已被人收尾时，Change 一个字都不动", async () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    const now = () => new Date(AT);
+    const changes = new ChangeStore(database, { now });
+    changes.create("CHG-1");
+    const jobs = new JobStore(database, now);
+    const loop = new TurnLoop({
+      database,
+      runner: {
+        run: async (job) => {
+          // turn 还在飞的那段时间里：人按了「中止这一轮」，又立刻 retry 开了新局。
+          jobs.abort(job.id, "aborted_by_human");
+          changes.apply("CHG-1", "fail");
+          changes.apply("CHG-1", "retry");
+          throw new Error("codex_unavailable: 迟到的超时");
+        },
+      },
+      now,
+    });
+    try {
+      loop.queueTurn({
+        changeId: "CHG-1", jobId: "JOB-LATE",
+        deadlineAt: DEADLINE, maxAttempts: 1,
+      });
+      const result = await loop.runOnce(WORKER);
+      assert.equal(result.kind, "failed");
+      assert.equal(changes.read("CHG-1").state.status, "running",
+        "迟到的失败把人刚 retry 出来的 running 打回了 blocked");
+      assert.equal(jobs.read("JOB-LATE").error, "aborted_by_human",
+        "中止的原因被迟到的超时盖掉了");
+    } finally {
+      database.close();
+    }
+  });
+});
+
 describe("L1 · a re-run replaces artifacts but never resolves a problem", () => {
   /**
    * This test used to assert the opposite -- that a second round finding
