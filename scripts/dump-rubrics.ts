@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 
-import { PHASES } from "../src/domain/phase";
+import { isRetired, PHASES } from "../src/domain/phase";
 import { reportsFreeFormBlockers } from "../src/domain/phase-play";
 import { renderTemplate, templateFor } from "../src/domain/phase-template";
 import { defaultCriteria } from "../src/domain/rubric-defaults";
@@ -27,7 +27,7 @@ const OUT = "docs/RUBRICS-AND-TEMPLATES.md";
 const lines: string[] = [];
 const p = (line = ""): void => { lines.push(line); };
 
-p("# 九个阶段的产出模板与评分标准");
+p("# 环 v3 八个阶段的产出模板与评分标准");
 p();
 p("> **这份文档是从代码生成的**（`domain/phase-template.ts` + `domain/rubric-defaults.ts`），");
 p("> 不是手抄的。改了代码就重新生成：`node --import tsx scripts/dump-rubrics.ts`");
@@ -45,19 +45,17 @@ p("| **producer 标准** | 反方逐条判 yes/no，**挂了节的出厂就阻�
 p("| **critic / verdict 标准** | 讲的是**方法**不是产物，十二个阶段共用一份，永远不挂节、永远不阻断 |");
 p();
 
-const withTemplate = PHASES.filter((phase) => templateFor(phase) !== null);
-const without = PHASES.filter(
-  (phase) => phase !== "Done" && templateFor(phase) === null);
-p(`**有模板的**：${withTemplate.join(" / ")}`);
+const live = PHASES.filter((phase) => !isRetired(phase));
+p(`**主线八个阶段每个都有模板**：${live.join(" / ")}`);
 p();
-p(`**没有模板的**：${without.join(" / ")} —— 它们交的是 commit 不是文档，`
-  + "套模板等于造一份永远缺齐所有节的产出。");
+p("**退休的不在这份文档里**（TechSpec / Plan / Review / Fix / Merge / Retro / Done）——"
+  + "名字只为读历史而留着，没有 Change 会再走到它们。");
 p();
 p("---");
 p();
 
 for (const phase of PHASES) {
-  if (phase === "Done") continue;
+  if (isRetired(phase)) continue;
   const sections = templateFor(phase);
   const producer = defaultCriteria(phase, "producer");
 
