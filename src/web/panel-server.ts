@@ -1088,6 +1088,9 @@ async function runToCompletion(input: {
       owner: "panel", token: jobId, now: input.at, ttlMs: input.turnMs,
     });
   } catch (error: unknown) {
+    // 库已经关了 = 面板在退场（生产不关库，只有测试的 teardown 会）。这时的
+    // 「抛了」全是同一句 not open —— 在全量输出里刷十几行，把真的红淹掉。
+    if (!database.open) return;
     console.error(`[panel] ${changeId}/${phase} 这一轮抛了：${String(error)}`);
   }
   /*
@@ -1112,6 +1115,7 @@ async function runToCompletion(input: {
       new BindingStore(database).detach(changeId, phase);
     }
   } catch (error: unknown) {
+    if (!database.open) return; // 同上：退场中，没有可收的尾。
     console.error(`[panel] ${changeId}/${phase} 收尾失败：${String(error)}`);
   }
 }
@@ -2303,9 +2307,16 @@ export function createPanelServer(options: PanelOptions): {
       const detail = error instanceof Error
         ? `${error.name}: ${error.message}`
         : String(error);
-      console.error(`[panel] ${request.method ?? "?"} ${request.url ?? "?"} —— ${detail}`);
-      if (error instanceof Error && error.stack !== undefined) {
-        console.error(error.stack);
+      /*
+       * 唯一不说的：库已经关了。那是退场（生产不关库，测试的 teardown 关）——
+       * 这时飞着的每个请求都摔在同一句 not open 上，只会把全量输出里真的红
+       * 淹掉。浏览器那份照回：万一真有人看着，它仍然是实话。
+       */
+      if (options.database.open) {
+        console.error(`[panel] ${request.method ?? "?"} ${request.url ?? "?"} —— ${detail}`);
+        if (error instanceof Error && error.stack !== undefined) {
+          console.error(error.stack);
+        }
       }
       if (response.headersSent) { response.end(); return; }
       response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
