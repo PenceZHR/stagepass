@@ -855,48 +855,98 @@ function orbitAround(at) {
 }
 
 /*
- * ── 回跳 = 轨道转移（用户 2026-08-09 定的画法，第三版重做）───────
+ * ── 回跳 = 一次完整的航天任务（用户 2026-08-09 定的画法，第四版重做）──
  *
- * 小火箭贴着起点的 RIM 轨道滑行蓄力（60°），切线脱离、走向环心弯的转移曲线
- * （「穿心 = 回头」的旧语义还在），再切进目标的 RIM 轨道滑小半圈（120°），
- * 熄火淡出，从头再来。上一版的淡红发丝 + 三个红 V 被用户判丑：回跳是这一屏
- * 最有戏的事件，配得上一次完整的起飞—入轨。
+ * 发射（从 stage 圆的地表斜升入轨）→ 绕起点轨道整两圈 → 切线脱离、走向环心
+ * 弯的转移曲线（「穿心 = 回头」的旧语义还在）→ 切入目的轨道再绕整两圈 →
+ * 出轨降落到 stage 圆地表，触地熄灭，停一拍从头再来。
  *
- * 切线是免费的：二次贝塞尔在起点的切向指向控制点、在终点的切向来自控制点，
- * 所以把脱离点选在「轨道切线正对 apex」的地方（atan2），起飞就顺滑；入轨同理。
- * rimPoint 的参数角和 nodeAt 同一套：0 = 正上方，顺时针增，速度方向恰好是
- * (cos a, sin a) —— 弧、贝塞尔、再入弧连成一笔，rotate="auto" 全程不跳。
+ * 第三版只在两端各滑一小段弧就走，用户说「我要的是发射、绕几圈、再降落」——
+ * 圈数不到，戏就不完整。
+ *
+ * 切线是免费的：二次贝塞尔在起点的切向指向控制点、在终点的切向来自控制点。
+ * 发射/降落的控制点用 tangentJoin 解出来（两端切向的交点），地表和轨道之间
+ * 就没有折角；绕圈是整数圈，出入轨都在同一点上，切向自然对上转移曲线。
+ * ringPoint 的参数角和 nodeAt 同一套：0 = 正上方，顺时针增，速度方向恰好是
+ * (cos a, sin a) —— 整条路一笔连成，rotate="auto" 全程不跳。
  */
-const LAUNCH_ARC = Math.PI / 3;       // 起飞段贴轨道滑行 60°
-const INSERT_ARC = (Math.PI * 2) / 3; // 入轨段滑行 120°
+const ORBIT_TURNS = 2;      // 两端各绕两圈
+const TOUCH_ARC = 0.96;     // 发射台/着陆场相对出入轨点的地面提前量（≈55°）
+const NODE_R = 4.86;        // 节点圆半径 —— RIM 上面那张实测地盘图里的 0~4.86
+
+/** centre 半径 radius 的圆上参数角 a 处的点。 */
+function ringPoint(centre, radius, a) {
+  return { x: centre.x + radius * Math.sin(a), y: centre.y - radius * Math.cos(a) };
+}
 
 /** centre 的 RIM 轨道上参数角 a 处的点。 */
 function rimPoint(centre, a) {
-  return { x: centre.x + RIM * Math.sin(a), y: centre.y - RIM * Math.cos(a) };
+  return ringPoint(centre, RIM, a);
+}
+
+/** 绕 centre 的 RIM 轨道从角 a 起顺时针转 turns 整圈（半圈一段拼出来）。 */
+function orbitTurns(centre, a, turns) {
+  let d = "";
+  for (let half = 1; half <= turns * 2; half += 1) {
+    const p = rimPoint(centre, a + half * Math.PI);
+    d += `A ${RIM} ${RIM} 0 0 1 ${p.x} ${p.y} `;
+  }
+  return d;
+}
+
+/**
+ * 二次贝塞尔的控制点：起点沿 fromDir、终点沿 toDir 的两条切线的交点。
+ * 两端切向都对得上，地表和轨道的接缝才不打折 —— 流畅就流畅在这儿。
+ */
+function tangentJoin(fromPoint, fromDir, toPoint, toDir) {
+  const dx = toPoint.x - fromPoint.x;
+  const dy = toPoint.y - fromPoint.y;
+  const det = fromDir.x * toDir.y - fromDir.y * toDir.x;
+  const t = det === 0 ? -1 : (dx * toDir.y - dy * toDir.x) / det;
+  if (t <= 0) {   // 切线不相交（几何退化）就退回中点，宁可略钝不要突刺
+    return { x: (fromPoint.x + toPoint.x) / 2, y: (fromPoint.y + toPoint.y) / 2 };
+  }
+  return { x: fromPoint.x + fromDir.x * t, y: fromPoint.y + fromDir.y * t };
 }
 
 function rocketFlight(from, to) {
   const apex = chordApex(from, to);
-  const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 脱离角
+  const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 出轨角
   const aA = Math.atan2(to.y - apex.y, to.x - apex.x);      // 入轨角
-  const launch = rimPoint(from, aD - LAUNCH_ARC);
-  const depart = rimPoint(from, aD);
+  // 发射：地表 → 斜升 → 在 aD 切进轨道（径向起竖，切向入轨）
+  const padA = aD - TOUCH_ARC;
+  const pad = ringPoint(from, NODE_R, padA);
+  const join = rimPoint(from, aD);
+  const lift = tangentJoin(
+    pad, { x: Math.sin(padA), y: -Math.cos(padA) },
+    join, { x: Math.cos(aD), y: Math.sin(aD) },
+  );
+  // 降落：绕完整圈后在 aA 出轨，切向离轨、径向触地
   const arrive = rimPoint(to, aA);
-  const parked = rimPoint(to, aA + INSERT_ARC);
-  const d = `M ${launch.x} ${launch.y} `
-    + `A ${RIM} ${RIM} 0 0 1 ${depart.x} ${depart.y} `
+  const siteA = aA + TOUCH_ARC;
+  const site = ringPoint(to, NODE_R, siteA);
+  const drop = tangentJoin(
+    arrive, { x: Math.cos(aA), y: Math.sin(aA) },
+    site, { x: -Math.sin(siteA), y: Math.cos(siteA) },
+  );
+  const d = `M ${pad.x} ${pad.y} `
+    + `Q ${lift.x} ${lift.y} ${join.x} ${join.y} `
+    + orbitTurns(from, aD, ORBIT_TURNS)
     + `Q ${apex.x} ${apex.y} ${arrive.x} ${arrive.y} `
-    + `A ${RIM} ${RIM} 0 0 1 ${parked.x} ${parked.y}`;
+    + orbitTurns(to, aA, ORBIT_TURNS)
+    + `Q ${drop.x} ${drop.y} ${site.x} ${site.y}`;
   /*
-   * keyPoints 按**路程占比**分段，速度感才对：转移段的长度用「弦长和经停
-   * apex 的折线长取平均」近似 —— 对二次贝塞尔这个近似误差 <2%，够用。
+   * keyPoints 按**路程占比**分段，速度感才对。二次贝塞尔的长度用「弦长和经停
+   * 控制点的折线长取平均」近似 —— 误差 <2%，够用。
    */
-  const hop = Math.hypot(arrive.x - depart.x, arrive.y - depart.y);
-  const viaApex = Math.hypot(apex.x - depart.x, apex.y - depart.y)
-    + Math.hypot(arrive.x - apex.x, arrive.y - apex.y);
-  const legs = [RIM * LAUNCH_ARC, (hop + viaApex) / 2, RIM * INSERT_ARC];
-  const total = legs[0] + legs[1] + legs[2];
-  return { d, p1: legs[0] / total, p2: (legs[0] + legs[1]) / total };
+  const quad = (p0, p1, p2) => (Math.hypot(p2.x - p0.x, p2.y - p0.y)
+    + Math.hypot(p1.x - p0.x, p1.y - p0.y) + Math.hypot(p2.x - p1.x, p2.y - p1.y)) / 2;
+  const loop = ORBIT_TURNS * 2 * Math.PI * RIM;
+  const legs = [quad(pad, lift, join), loop, quad(join, apex, arrive), loop, quad(arrive, drop, site)];
+  const total = legs.reduce((sum, leg) => sum + leg, 0);
+  let run = 0;
+  const stops = legs.map((leg) => (run += leg) / total);
+  return { d, stops };   // stops = 五段各自结束时的路程占比（最后一个是 1）
 }
 
 /**
@@ -953,19 +1003,26 @@ function rocketRide(rocket, pathId, flight, seconds) {
   motion.setAttribute("dur", `${seconds}s`);
   motion.setAttribute("repeatCount", "indefinite");
   /*
-   * 节奏就是「火箭感」的一大半：起飞段占 30% 时间只走 p1 的路（慢），转移段
-   * 前半 12% 时间冲一半路（最快），后半开始收，入轨段用 24% 时间滑完最后一段
-   * （减速），.82 之后抱着终点不动 —— 那一拍里透明度已经是 0，瞬移回起点
-   * 不穿帮。
+   * 节奏就是「火箭感」的一大半，而**流畅**靠 spline：第三版用 calcMode=linear，
+   * 每过一个 keyPoint 速度硬切一档，看起来一顿一顿的（用户 2026-08-09 点名）。
+   * 现在每段配一条 keySplines 缓动，段与段的交接处速度收进曲线里。
+   *
+   * 时间分配（路程占比在 flight.stops 里）：发射 8% 缓起 → 绕起点两圈 22% →
+   * 转移 18%（路最长，也就最快）→ 绕目的两圈 22% → 降落 8% 收尾减速 →
+   * .78 之后抱着着陆点不动 —— 那一拍里透明度已经是 0，瞬移回发射台不穿帮。
    */
-  const mid = (flight.p1 + flight.p2) / 2;
-  motion.setAttribute("keyPoints", `0;${flight.p1};${mid};${flight.p2};1;1`);
-  motion.setAttribute("keyTimes", "0;.3;.42;.58;.82;1");
+  const [lift, orbitOut, transfer, orbitIn] = flight.stops;
+  motion.setAttribute("calcMode", "spline");
+  motion.setAttribute("keyPoints", `0;${lift};${orbitOut};${transfer};${orbitIn};1;1`);
+  motion.setAttribute("keyTimes", "0;.08;.3;.48;.7;.78;1");
+  motion.setAttribute("keySplines",
+    ".55 0 .8 .5;.25 .15 .75 .85;.35 0 .65 1;.25 .15 .75 .85;.3 .5 .5 1;0 0 1 1");
   rocket.append(motion);
   const fade = document.createElementNS("http://www.w3.org/2000/svg", "animate");
   fade.setAttribute("attributeName", "opacity");
+  // 触地（.78）之后才熄灭 —— 落在场上停一瞬再消失，是着陆；半空变淡是失踪。
   fade.setAttribute("values", "0;1;1;0;0");
-  fade.setAttribute("keyTimes", "0;.06;.74;.82;1");
+  fade.setAttribute("keyTimes", "0;.04;.78;.84;1");
   fade.setAttribute("dur", `${seconds}s`);
   fade.setAttribute("repeatCount", "indefinite");
   rocket.append(fade);
@@ -1023,7 +1080,7 @@ function drawMap(panel) {
     const ghostId = "map-ghost";
     const flight = rocketFlight(lastTrip.from, lastTrip.to);
     map.append(svgNode("path", { id: ghostId, class: "rail", d: flight.d }));
-    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, flight, 6.5));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, flight, 11));
   }
 
   /*
@@ -1063,7 +1120,7 @@ function drawMap(panel) {
        */
       const flight = rocketFlight(from, nodeAt(to, total));
       map.append(svgNode("path", { id, class: "flight", d: flight.d }, edge.why));
-      map.append(rocketRide(rocketGlyph("rocket"), id, flight, 6.5));
+      map.append(rocketRide(rocketGlyph("rocket"), id, flight, 11));
       return;
     }
     map.append(svgNode("path", {
