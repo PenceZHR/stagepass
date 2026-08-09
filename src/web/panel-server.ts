@@ -39,7 +39,7 @@ import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { decideGate, type DecideOutcome } from "../app/decide-gate";
 import { rubricFor, saveRubric } from "../app/edit-rubric";
 import {
-  createChange, createProject, deleteChange, deleteProject,
+  createChange, createProject, deleteChange, deleteProject, type BusyCheck,
 } from "../app/workspace";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief";
@@ -1180,6 +1180,52 @@ function json(response: ServerResponse, body: unknown): void {
 }
 
 /**
+ * 删掉一个 Change，或者一个项目（连同它底下的全部 Change）。
+ *
+ * 用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
+ * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
+ * 从 `handle()` 里搬出来（函数上限逼的），行为一个字没变。
+ */
+function handleWorkspaceDelete(
+  url: URL,
+  response: ServerResponse,
+  database: Database.Database,
+  sessions: PanelSessions,
+): void {
+  const isBusy = (id: string): ReturnType<BusyCheck> => phaseBusy(database, id);
+  const forget = (id: string): void => { sessions.forget(id); };
+  // 删掉的 Change 不该在 Codex 里留活线程 —— 归档的理由在 `app/workspace.ts`。
+  const archive = (threadId: string): void => { sessions.archive.archive(threadId); };
+
+  if (url.pathname === "/api/change") {
+    const outcome = deleteChange({
+      database, changeId: url.searchParams.get("change") ?? "",
+      isBusy, forget, archive,
+    });
+    if (outcome.kind === "no_such_change") {
+      response.writeHead(404).end("no such change");
+      return;
+    }
+    json(response, outcome.kind === "busy"
+      ? { deleted: false, ...outcome.busy }
+      : { deleted: true, changeId: outcome.changeId });
+    return;
+  }
+
+  const outcome = deleteProject({
+    database, projectId: url.searchParams.get("project") ?? "",
+    isBusy, forget, archive,
+  });
+  if (outcome.kind === "no_such_project") {
+    response.writeHead(404).end("no_such_project");
+    return;
+  }
+  json(response, outcome.kind === "busy"
+    ? { deleted: false, changeId: outcome.changeId, ...outcome.busy }
+    : { deleted: true, projectId: outcome.projectId, changes: outcome.changes });
+}
+
+/**
  * 裁决那个用例的下场，翻成网页认识的那份 JSON。
  *
  * 三个 `*Body` 是同一个形状：**下场是用例的词汇，`asked / answered` 是界面的**。
@@ -1814,42 +1860,9 @@ export async function handle(
     return;
   }
 
-  /*
-   * 删掉一个 Change，或者一个项目（连同它底下的全部 Change）。
-   *
-   * 用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
-   * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
-   */
-  if (url.pathname === "/api/change" && request.method === "DELETE") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const outcome = deleteChange({
-      database, changeId,
-      isBusy: (id) => phaseBusy(database, id),
-      forget: (id) => { sessions.forget(id); },
-    });
-    if (outcome.kind === "no_such_change") {
-      response.writeHead(404).end("no such change");
-      return;
-    }
-    json(response, outcome.kind === "busy"
-      ? { deleted: false, ...outcome.busy }
-      : { deleted: true, changeId: outcome.changeId });
-    return;
-  }
-
-  if (url.pathname === "/api/project" && request.method === "DELETE") {
-    const outcome = deleteProject({
-      database, projectId: url.searchParams.get("project") ?? "",
-      isBusy: (id) => phaseBusy(database, id),
-      forget: (id) => { sessions.forget(id); },
-    });
-    if (outcome.kind === "no_such_project") {
-      response.writeHead(404).end("no_such_project");
-      return;
-    }
-    json(response, outcome.kind === "busy"
-      ? { deleted: false, changeId: outcome.changeId, ...outcome.busy }
-      : { deleted: true, projectId: outcome.projectId, changes: outcome.changes });
+  if (request.method === "DELETE"
+    && (url.pathname === "/api/change" || url.pathname === "/api/project")) {
+    handleWorkspaceDelete(url, response, database, sessions);
     return;
   }
 

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
+import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
@@ -201,6 +202,79 @@ describe("app · 新建和删除（不经过 HTTP）", () => {
       assert.equal(forgotten.length, 2, "每条 Change 的尸体都要跟着走");
       assert.deepEqual(new ProjectStore(database).list(), []);
       assert.equal(new ChangeStore(database).list().length, 0);
+    });
+    database.close();
+  });
+});
+
+describe("app · 删除时归档绑着的线程", () => {
+  /**
+   * 删掉的 Change 不该在 Codex 里留一堆活线程 —— 它们指向一个已经不存在的账本。
+   * 和「批准之后归档那个阶段的线程」（用户 2026-07-30 拍板）是同一个卫生标准。
+   * `detached` 的不归档：解绑说明别处已经处置过它。
+   */
+  it("删 Change：bound 的线程逐条归档，detached 的不动", () => {
+    const database = freshDatabase();
+    withTempDir((dir) => {
+      const project = createProject({ database, name: "p", path: dir });
+      const projectId = project.kind === "created" ? project.id : "";
+      const change = createChange({ database, projectId, title: "t" });
+      const changeId = change.kind === "created" ? change.id : "";
+
+      const bindings = new BindingStore(database);
+      bindings.bind(changeId, "PRD", "THREAD-PRD");
+      bindings.bind(changeId, "Spec", "THREAD-SPEC");
+      bindings.detach(changeId, "Spec");         // 解绑的不归档
+      bindings.bindAside(changeId, "THREAD-ASIDE");
+
+      const archived: string[] = [];
+      const gone = deleteChange({
+        database, changeId, isBusy: NOT_BUSY, forget: nothingToForget,
+        archive: (threadId) => { archived.push(threadId); },
+      });
+      assert.equal(gone.kind, "deleted");
+      assert.deepEqual(archived.sort(), ["THREAD-ASIDE", "THREAD-PRD"]);
+    });
+    database.close();
+  });
+
+  it("归档失败不挡删除 —— 删是主事，归档是卫生", () => {
+    const database = freshDatabase();
+    withTempDir((dir) => {
+      const project = createProject({ database, name: "p", path: dir });
+      const projectId = project.kind === "created" ? project.id : "";
+      const change = createChange({ database, projectId, title: "t" });
+      const changeId = change.kind === "created" ? change.id : "";
+      new BindingStore(database).bind(changeId, "PRD", "THREAD-PRD");
+
+      const gone = deleteChange({
+        database, changeId, isBusy: NOT_BUSY, forget: nothingToForget,
+        archive: () => { throw new Error("codex 不在"); },
+      });
+      assert.equal(gone.kind, "deleted");
+      assert.equal(new ChangeStore(database).list().length, 0);
+    });
+    database.close();
+  });
+
+  it("删项目：每条 Change 绑着的线程都归档", () => {
+    const database = freshDatabase();
+    withTempDir((dir) => {
+      const project = createProject({ database, name: "p", path: dir });
+      const projectId = project.kind === "created" ? project.id : "";
+      const one = createChange({ database, projectId, title: "一" });
+      const two = createChange({ database, projectId, title: "二" });
+      const bindings = new BindingStore(database);
+      bindings.bind(one.kind === "created" ? one.id : "", "PRD", "THREAD-1");
+      bindings.bind(two.kind === "created" ? two.id : "", "PRD", "THREAD-2");
+
+      const archived: string[] = [];
+      const gone = deleteProject({
+        database, projectId, isBusy: NOT_BUSY, forget: nothingToForget,
+        archive: (threadId) => { archived.push(threadId); },
+      });
+      assert.equal(gone.kind, "deleted");
+      assert.deepEqual(archived.sort(), ["THREAD-1", "THREAD-2"]);
     });
     database.close();
   });

@@ -464,7 +464,7 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
   // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）；
   // 同日再抽 `serveParallel`、撤掉并行座位的入口（553 → 517）。
-  "web/panel-server.ts#handle": 517,
+  "web/panel-server.ts#handle": 484,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
