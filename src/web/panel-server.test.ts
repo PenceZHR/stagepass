@@ -132,6 +132,8 @@ async function withPanel(
     recoverEveryMs?: PanelOptions["recoverEveryMs"];
     repo?: PanelOptions["repo"];
     trust?: PanelOptions["trust"];
+    /** Codex 会话目录。默认一个空的临时目录 —— 测试不走真 ~/.codex/sessions。 */
+    sessionsDir?: string;
     /** brief 草稿和工作稿的目录（批 2）。测试不摸真的 ~/.stagepass。 */
     briefsDir?: string;
     /**
@@ -233,6 +235,14 @@ async function withPanel(
      * 加这一层之前的行为，别的测试原来验的东西一个字都不变。
      */
     trust: extra.trust ?? { isTrusted: () => null },
+    /*
+     * **默认指向一个空目录。**
+     *
+     * 不注入的话「turn 已死」探测会去走用户真的 `~/.codex/sessions` —— 测试跑一遍
+     * 就把他整棵会话树扫一遍。空目录 = 认不出线程 = 探测关着，别的测试原来验的
+     * 东西一个字都不变。
+     */
+    sessionsDir: extra.sessionsDir ?? mkdtempSync(join(tmpdir(), "stagepass-sessions-")),
   });
   await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -3180,5 +3190,35 @@ describe("panel · 问人超时，题也要收掉", () => {
         "超时之后还留着一道 open 的题 —— 下一个调 stagepass_ask 的会被端出这道死题",
       );
     });
+  });
+});
+
+describe("「turn 已死」探测的 rollout 那半（AskSessions.recordCount / turnEnded）", () => {
+  it("认线程、认提示词；认不出线程就说 null / false，绝不当 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "stagepass-rollout-"));
+    const thread = "0199aaaa-0000-7000-8000-000000000001";
+    writeFileSync(join(dir, `rollout-2026-08-09T00-00-00-${thread}.jsonl`), [
+      JSON.stringify({ timestamp: "t1", type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        timestamp: "t2", type: "response_item",
+        payload: { type: "message", content: [{ type: "input_text", text: "把问题端给人来选" }] },
+      }),
+      JSON.stringify({ timestamp: "t3", type: "event_msg", payload: { type: "task_complete" } }),
+    ].join("\n"));
+
+    await withPanel(async ({ database, sessions }) => {
+      // 没绑线程：认不出 —— null 不是 0（0 会被当成「整个文件都是新的」）。
+      assert.equal(sessions.recordCount(CHANGE, "PRD"), null);
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "把问题端给人来选"), false);
+
+      new BindingStore(database).bind(CHANGE, "PRD", thread);
+      assert.equal(sessions.recordCount(CHANGE, "PRD"), 3);
+      // 装着这句话的那一轮已经 task_complete 了。
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "把问题端给人来选"), true);
+      // 起点之后没有这一轮 —— 老记录不算新一轮的证据。
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 3, "把问题端给人来选"), false);
+      // 别人的话不算我们的轮。
+      assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "一句没送进去过的话"), false);
+    }, { sessionsDir: dir });
   });
 });

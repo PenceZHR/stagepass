@@ -316,6 +316,11 @@ function stopProgress() {
  * 所以服务端把它一起给了过来。
  */
 function unansweredWords(result) {
+  if (result.reason === "ask_turn_ended_without_answer") {
+    // 补问过一次还是没端出问题来 —— 两次都是模型抽风，不是人没答。
+    return `${result.phase} 的 Codex 把那一轮跑完了，却没把问题交给你`
+      + "（补问过一次也一样）。会话已收 —— 再点一次就重新问。";
+  }
   if (result.reason !== "session_died_before_answering") {
     return "问题已经在终端里了，等你在 Codex 的选择器里选。";
   }
@@ -1272,7 +1277,20 @@ const GATE_REFUSAL_WORDS = {
  * 一条横幅，警示色就不再意味着警示。null = 没什么要挂的。
  */
 function lastOutcomeWords(outcome) {
-  if (!outcome || outcome.kind !== "refused") return null;
+  if (!outcome) return null;
+  if (outcome.kind === "unanswered") {
+    // 「没答上」也是下场（§3.2·5）—— 不写出来，一次静默流产的裁决就没有任何痕迹。
+    const at = typeof outcome.at === "string"
+      ? `（${new Date(outcome.at).toLocaleString()}）` : "";
+    const why = {
+      ask_turn_ended_without_answer: "Codex 跑完那一轮却没把问题端出来（补问过一次也一样）",
+      session_died_before_answering: "那边的进程在你答之前就没了",
+      session_died_before_asking: "会话在把题送进去之前就没了",
+      no_answer_in_time: "等到超时也没人答",
+    }[outcome.reason] ?? outcome.reason;
+    return `⚠ 上次那道题没答上${at}：${why}。再点一次就重新问。`;
+  }
+  if (outcome.kind !== "refused") return null;
   const reason = GATE_REFUSAL_WORDS[outcome.reason] ?? outcome.reason;
   const at = typeof outcome.at === "string"
     ? `（${new Date(outcome.at).toLocaleString()}）` : "";

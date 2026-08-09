@@ -175,6 +175,10 @@ export async function recordBrief(input: {
     const waited = await waitForAnswer({
       database, questions, sessions, changeId, phase, questionId,
       timeoutMs: input.timeoutMs,
+      // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）；
+      // 补问也要用这一句 —— ask-human 那句对录需求不对题。
+      prompt: BRIEF_ASK_LINE,
+      retypeLine: BRIEF_ASK_LINE,
     });
     if (!waited.answered) {
       // 题已经被 waitForAnswer 收掉了。

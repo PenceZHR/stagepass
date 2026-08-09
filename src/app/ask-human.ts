@@ -32,6 +32,20 @@ export interface AskSessions {
   type(changeId: string, phase: Phase, line: string): Promise<boolean>;
   /** 那个进程还活着吗。判据是**进程状态**，不是 pty 的输出（PRD §9.3）。 */
   has(changeId: string, phase: Phase): boolean;
+  /**
+   * 这个阶段绑的线程，rollout 现在有几条记录。**认不出线程就说 null** ——
+   * 「读不出来」返回 0 会被当成「整个文件都是新的」，那正是 2026-08-08
+   * `recordCount` 那个 bug 的形状（`codex/rollout.ts` 的 `findOwnCompletedTurn`）。
+   *
+   * 可选：读得到 rollout 的实现（`PanelSessions`）才有；测试的假会话可以不给，
+   * 不给就等于探不了，`waitForAnswer` 退回「答案 + 进程」两个判据。
+   */
+  recordCount?(changeId: string, phase: Phase): number | null;
+  /**
+   * 从 `fromIndex` 起，**装着这句提示词的那一轮**在 rollout 里已经跑完了没有。
+   * 判据和 transport 认轮一字不差（认提示词，不认「谁先出现」）。
+   */
+  turnEnded?(changeId: string, phase: Phase, fromIndex: number, prompt: string): boolean;
 }
 
 /**
@@ -39,7 +53,7 @@ export interface AskSessions {
  *
  * **必须是一行** —— composer 里一个换行就是提交（`PanelSessions.type`）。
  */
-const ASK_TOOL_LINE =
+export const ASK_TOOL_LINE =
   "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——"
   + "问哪一个由 StagePass 决定。不要替我做决定、不要猜我想选什么，调用完就停下。";
 
@@ -61,7 +75,16 @@ export const launchAskPrompt = (hands: string, dont: string): string => [
  * 没答上的两种。**它们要做的事完全不同** —— 一种是人还没去答，另一种是那边的
  * 进程早就没了；原来两种回来的都是同一个空结果。
  */
-export type Unanswered = "session_died_before_answering" | "no_answer_in_time";
+export type Unanswered =
+  | "session_died_before_answering"
+  | "no_answer_in_time"
+  /**
+   * ask 那一轮自己结束了，一个答案都没留下 —— 模型抽风（2026-08-09 真机：
+   * 一个工具都没调、吐了条空 agent_message 就完了 turn）。人对表单的任何动作
+   * （含 Esc）都会落一条答案（`plugin/protocol.ts`），所以这个形状**只可能**是
+   * 上游抽风，不可能是人的决定。
+   */
+  | "ask_turn_ended_without_answer";
 
 /** `waitForAnswer` 的下场。没答上时连「为什么」和解药需要的线程 id 一起给出去。 */
 export type AnswerWait =
@@ -108,21 +131,72 @@ export async function waitForAnswer(input: {
   phase: Phase;
   questionId: string;
   timeoutMs: number;
+  /**
+   * 把这道题送进会话的**那句话**（argv 的提示词，或打进 composer 的 ask 行）。
+   * 给了才开「turn 已死」探测 —— 探测认的就是这句话装在哪一轮里。
+   */
+  prompt?: string;
+  /**
+   * 补问时打进 composer 的那一行。默认 `ASK_TOOL_LINE`；录需求要递自己那句 ——
+   * 两句调的是同一个工具，但措辞对着不同的事，混用会让模型收到一句不对题的指令
+   * （`record-brief.ts` 顶上的理由）。**必须是一行**：composer 里换行就是提交。
+   */
+  retypeLine?: string;
 }): Promise<AnswerWait> {
   const { questions, sessions, changeId, phase, questionId } = input;
   const deadline = Date.now() + input.timeoutMs;
-  let sessionDied = false;
+  let reason: Unanswered = "no_answer_in_time";
+  /*
+   * **「turn 结束了而题没答」是第三种死法**，前两个判据都看不见它：进程活着
+   * （TUI 跑完不退），答案永远不会来（人对表单的任何动作都会落答案，所以没答案
+   * = 模型压根没把题端给人）。2026-08-09 真机：模型一个工具都没调、吐了条空话
+   * 就完了 turn，人对着静止的 composer 干等了 12 分钟。
+   *
+   * 治法和 transport 的「补一下回车」同一个形状，三重闸：那一轮**确实结束**
+   * （rollout 里有它的 task_complete）、答案**确实没有**、只补一次。补的那句是
+   * `ASK_TOOL_LINE` —— 新的一轮，探测的起点和认的话都要跟着换。
+   */
+  let needle = input.prompt ?? null;
+  let from = needle !== null
+    ? sessions.recordCount?.(changeId, phase) ?? null
+    : null;
+  let retyped = false;
   while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
-    if (!sessions.has(changeId, phase)) { sessionDied = true; break; }
+    if (!sessions.has(changeId, phase)) {
+      reason = "session_died_before_answering";
+      break;
+    }
+    if (from !== null && needle !== null
+      && sessions.turnEnded?.(changeId, phase, from, needle) === true
+      // 答案和 task_complete 之间隔着模型收尾的那几秒，但还是再看一眼 —— 有了
+      // 答案就不该补，多打的那一轮只会白白弹一次「此刻没有在等任何问题」。
+      && !questions.readAnswerFor(questionId)) {
+      if (retyped) {
+        reason = "ask_turn_ended_without_answer";
+        break;
+      }
+      retyped = true;
+      const line = input.retypeLine ?? ASK_TOOL_LINE;
+      // 起点先取、再打字：打进去的那句话之后的记录才算新一轮的。
+      from = sessions.recordCount?.(changeId, phase) ?? from;
+      needle = line;
+      if (!await sessions.type(changeId, phase, line)) {
+        reason = "session_died_before_answering";
+        break;
+      }
+    }
     await new Promise((resolve) => { setTimeout(resolve, 1_000); });
   }
   const answer = questions.readAnswerFor(questionId);
   if (answer) return { answered: true, answer };
   questions.settle(questionId);
+  // 「没答上」也是下场，必须留得住（§3.2·5）—— `applied` + 空下场和一次正常
+  // 落地在库里长得一模一样，事后谁也说不清这道题发生过什么。
+  questions.recordOutcome(questionId, { kind: "unanswered", reason });
   return {
     answered: false,
-    reason: sessionDied ? "session_died_before_answering" : "no_answer_in_time",
-    threadId: sessionDied
+    reason,
+    threadId: reason === "session_died_before_answering"
       ? new BindingStore(input.database).find(changeId, phase)?.threadId ?? null
       : null,
   };
@@ -154,9 +228,12 @@ export async function askFollowUp(input: {
   });
   if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
     questions.settle(questionId);
+    questions.recordOutcome(questionId,
+      { kind: "unanswered", reason: "session_died_before_asking" });
     return "session_died_before_asking";
   }
-  const waited = await waitForAnswer({ ...input });
+  // 第二趟是打进 composer 的那句 ask 行送出去的 —— 探测认它。
+  const waited = await waitForAnswer({ ...input, prompt: ASK_TOOL_LINE });
   if (!waited.answered) return waited.reason;
   // 第二趟的答案没有下一步要拿着这道题走，所以这里就收掉。
   questions.settle(questionId);

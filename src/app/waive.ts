@@ -120,15 +120,15 @@ export async function waive(input: {
     question, expectedSnapshot: gate.snapshot,
   });
 
-  input.launch({
-    phase,
-    prompt: launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
-      "不要替我做决定，不要评价这些风险，调用完就停下。"),
-  });
+  const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
+    "不要替我做决定，不要评价这些风险，调用完就停下。");
+  input.launch({ phase, prompt: askPrompt });
 
   const waited = await waitForAnswer({
     database, questions, sessions, changeId, phase, questionId,
     timeoutMs: input.timeoutMs,
+    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
+    prompt: askPrompt,
   });
   if (!waited.answered) {
     /*

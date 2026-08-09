@@ -298,15 +298,15 @@ export async function decideGate(input: {
     question, expectedSnapshot: gate.snapshot,
   });
 
-  input.launch({
-    phase,
-    prompt: launchAskPrompt("它会把 StagePass 的问题交给我来选。",
-      "不要替我做决定，不要解释我该选什么，调用完就停下。"),
-  });
+  const askPrompt = launchAskPrompt("它会把 StagePass 的问题交给我来选。",
+    "不要替我做决定，不要解释我该选什么，调用完就停下。");
+  input.launch({ phase, prompt: askPrompt });
 
   const waited = await waitForAnswer({
     database, questions, sessions, changeId, phase, questionId,
     timeoutMs: input.timeoutMs,
+    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
+    prompt: askPrompt,
   });
   if (!waited.answered) {
     // 题已经被 waitForAnswer 收掉了（那条规则只此一份）。

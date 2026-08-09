@@ -11,7 +11,8 @@ import {
   PHASES, isPhase, producesCommit, upstreamOf, type Phase,
 } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
-import { CodexTuiTransport } from "../codex/tui-transport";
+import { CodexTuiTransport, DEFAULT_SESSIONS, rollouts } from "../codex/tui-transport";
+import { findOwnCompletedTurn, parseRollout } from "../codex/rollout";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
   childThreadsOf, readThreadTranscript, readThreadUserMessages, readThreadWholeText,
@@ -215,6 +216,11 @@ export interface PanelOptions {
   /** Codex 的目录信任。同一个路子 —— 真的那一套会去读用户的 `~/.codex/config.toml`。 */
   readonly trust?: TrustOps;
   /**
+   * Codex 的会话目录（「turn 已死」探测要按线程 id 找 rollout）。
+   * 默认和 transport 同一个 `~/.codex/sessions`；可注入是为了测试不摸真目录。
+   */
+  readonly sessionsDir?: string;
+  /**
    * 一轮最多等多久。默认 30 分钟。
    *
    * 不只是给测试用的旋钮：一轮对抗真的会停在审批上等人（PRD §6.6），而
@@ -350,6 +356,50 @@ export class PanelSessions {
   has(changeId: string, phase: Seat): boolean {
     const found = this.live.get(PanelSessions.key(changeId, phase));
     return found !== undefined && found.session.alive;
+  }
+
+  /**
+   * 这个座位绑的线程的 rollout 文件，找不到就 null。
+   *
+   * 「turn 已死」探测（`AskSessions`）的地基：探测认的是**这条线程自己的文件**，
+   * 认线程的约定和 transport 同一份（`rollouts` 就是从那边导出的）。
+   */
+  private rolloutPathFor(changeId: string, phase: Seat): string | null {
+    const bindings = new BindingStore(this.options.database);
+    const bound = phase === ASIDE
+      ? bindings.findAside(changeId)
+      : bindings.find(changeId, phase);
+    if (!bound || bound.status !== "bound") return null;
+    return rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
+      .get(bound.threadId) ?? null;
+  }
+
+  /**
+   * rollout 现在有几条记录。**认不出线程、读不到文件都是 null，不是 0** ——
+   * 0 会被下游当成「整个文件都是新的」，那正是 2026-08-08 `recordCount`
+   * 那个 bug 的形状（`codex/rollout.ts`）。
+   */
+  recordCount(changeId: string, phase: Seat): number | null {
+    const path = this.rolloutPathFor(changeId, phase);
+    if (path === null) return null;
+    try {
+      return parseRollout(readFileSync(path, "utf-8")).length;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 从 `fromIndex` 起，装着这句提示词的那一轮已经跑完了没有（`AskSessions`）。 */
+  turnEnded(changeId: string, phase: Seat, fromIndex: number, prompt: string): boolean {
+    const path = this.rolloutPathFor(changeId, phase);
+    if (path === null) return false;
+    try {
+      return findOwnCompletedTurn(
+        parseRollout(readFileSync(path, "utf-8")), fromIndex, prompt,
+      ) !== null;
+    } catch {
+      return false; // 正在写；下一秒再看。
+    }
   }
 
   /**

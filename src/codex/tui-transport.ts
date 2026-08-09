@@ -107,12 +107,17 @@ export interface CodexTuiTransportOptions {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-const DEFAULT_SESSIONS = join(
+export const DEFAULT_SESSIONS = join(
   process.env.HOME ?? "", ".codex", "sessions",
 );
 
-/** Every rollout under the sessions tree, by thread id. */
-function rollouts(root: string): Map<string, string> {
+/**
+ * Every rollout under the sessions tree, by thread id.
+ *
+ * 导出是给 `PanelSessions` 的「turn 已死」探测用的（`AskSessions.turnEnded`）——
+ * 它要按线程 id 找到同一份文件，和这里认线程是同一个约定，两份拷贝迟早漂移。
+ */
+export function rollouts(root: string): Map<string, string> {
   const found = new Map<string, string>();
   const walk = (directory: string): void => {
     let entries: string[];
