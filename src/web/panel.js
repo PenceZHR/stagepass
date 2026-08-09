@@ -59,10 +59,6 @@ const orbitView = pick("orbit-view");
 const stageView = pick("stage-view");
 const wrap = pick("orbit-wrap");
 const portal = pick("portal");
-const centerKicker = pick("center-kicker");
-const centerTitle = pick("center-title");
-const centerLine = pick("center-line");
-const centerCount = pick("center-count");
 const columns = pick("columns");
 const stageName = pick("stage-name");
 const stageThread = pick("stage-thread");
@@ -1145,7 +1141,7 @@ async function load() {
   drawOrbit();
   drawMap(panel);
 
-  drawCenter();
+  drawProgress();
   renderStatus(null);
   // run / ask 走完都会 load()，闸门和问题可能已经变了 —— 弹窗还开着就重画它。
   if (sheetPhase) drawSheet(sheetPhase);
@@ -1328,36 +1324,18 @@ function renderStatus(entry) {
 }
 
 /**
- * 环心：Change 这一层的锚点，**不随悬停变**。
+ * 进度圆弧走到当前阶段，不是走到「批准了几个」。
  *
- * 悬停已经由左边那块面板负责了；中心再跟着变一次，就是同一份信息在一屏上写两遍
- * —— 那正是 §5.0 第 4 条说的"污染"。所以这里放的是整条 Change 的进度。
+ * 问的是「走到哪了」，而那是 Change 的位置 —— 一个阶段可以正在跑、还没批准，
+ * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
+ *
+ * 原来这里还画环心的圆盘（阶段名 / Gate 状态 / approved 计数）——2026-08-09
+ * 用户删掉了它：左侧面板和节点本身都有这些，纯重复，还压着环内的弦。
  */
-function drawCenter() {
+function drawProgress() {
   const at = phases.find((entry) => entry.current);
-
-  /*
-   * 进度圆弧走到当前阶段，不是走到「批准了几个」。
-   *
-   * 问的是「走到哪了」，而那是 Change 的位置 —— 一个阶段可以正在跑、还没批准，
-   * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
-   */
   const reached = at === undefined ? 0 : phases.indexOf(at) / phases.length;
   pick("progress").style.setProperty("--progress", String(reached));
-  const approved = phases.filter((entry) => entry.mark === "approved").length;
-
-  centerKicker.textContent = panelState?.status
-    ? `Gate · ${panelState.status}` : "Stage Orbit";
-  centerTitle.textContent = at ? at.phase : "—";
-  centerLine.textContent = at
-    ? `${phases.length} 个阶段，停在第 ${phases.indexOf(at) + 1} 个。`
-    : "十一个阶段，每个阶段一个 Codex 线程。";
-  centerCount.replaceChildren(
-    document.createTextNode(`${approved} / ${phases.length}`),
-  );
-  const unit = document.createElement("em");
-  unit.textContent = "Approved";
-  centerCount.append(unit);
 }
 
 /*

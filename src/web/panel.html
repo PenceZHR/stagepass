@@ -571,29 +571,6 @@ body::after {
   50%      { box-shadow: 0 0 0 12px rgba(212,178,139,.05), 0 0 40px rgba(228,207,173,.48); }
 }
 
-/* 中心信息锚点 */
-.center {
-  position: absolute; inset: 27%; z-index: 4;
-  border: 1px solid rgba(255,255,255,.22); border-radius: 50%;
-  background: rgba(39,36,47,.3); backdrop-filter: blur(22px) saturate(115%);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; padding: 9%;
-  box-shadow: 0 22px 64px rgba(31,24,37,.22);
-  animation: centerFloat 6s ease-in-out infinite;
-}
-@keyframes centerFloat { 50% { transform: translateY(-5px); } }
-.center small {
-  font: 850 9px/1 ui-sans-serif, sans-serif; letter-spacing: .13em;
-  text-transform: uppercase; color: var(--sand); white-space: nowrap;
-}
-.center h3 { margin: 10px 0 7px; font: 560 clamp(26px, 3.4vh, 40px)/1 var(--serif); letter-spacing: -.04em; }
-.center p { margin: 0; color: rgba(255,255,255,.6); font-size: 12px; line-height: 1.7; }
-.center b { display: block; margin-top: 12px; color: var(--sand-deep); font: 500 38px/1 Georgia, serif; }
-.center b em {
-  display: block; margin-top: 6px; font: 700 9px/1 ui-sans-serif, sans-serif;
-  font-style: normal; letter-spacing: .16em; color: rgba(255,255,255,.44);
-}
-
 /*
  * ── 阶段弹窗 ──────────────────────────────────────────────
  *
@@ -952,7 +929,7 @@ body::after {
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 
 @media (prefers-reduced-motion: reduce) {
-  body::before, .halo::before, .center, .live-flag i,
+  body::before, .halo::before, .live-flag i,
   .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
@@ -1011,12 +988,6 @@ body::after {
             否则弦会连到轨道外面去。
           -->
           <svg class="orbit-map" id="orbit-map" viewBox="0 0 100 100" aria-hidden="true"></svg>
-          <div class="center">
-            <small id="center-kicker">Stage Orbit</small>
-            <h3 id="center-title">—</h3>
-            <p id="center-line">十一个阶段，每个阶段一个 Codex 线程。</p>
-            <b id="center-count">0<em>Approved</em></b>
-          </div>
           <div class="portal" id="portal"></div>
         </div>
       </div>
