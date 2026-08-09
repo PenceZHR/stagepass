@@ -758,12 +758,6 @@ function rimEdgePoint(centre, towards) {
   };
 }
 
-/** 只剩 backward 选项分支在用；Task 3 换掉那个调用方后，连这层薄壳一起删。 */
-function chordPath(from, to) {
-  const apex = chordApex(from, to);
-  return `M ${from.x} ${from.y} Q ${apex.x} ${apex.y} ${to.x} ${to.y}`;
-}
-
 /**
  * 沿着**环**走的一段弧 —— 向前推进就该长这样（§5.9.3④）。
  *
@@ -773,6 +767,10 @@ function chordPath(from, to) {
 function arcAlongRing(from, to) {
   return `M ${from.x} ${from.y} A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y}`;
 }
+
+/** SMIL 不受 CSS 的 `animation: none` 管，所以每个造动画的函数都要自己问它。 */
+const reducedMotion = () =>
+  window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 /**
  * 一枚会动的小箭头，沿着一条路径走 —— 用户 2026-08-05 定的画法：
@@ -806,7 +804,7 @@ function flyingArrow(pathId, seconds, className, offset = 0) {
    * panel.html 末尾那个 media query），所以这里自己问一次。箭头照样画出来、
    * 照样停在路径起点，方向仍然看得出 —— 只是不动。
    */
-  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+  if (reducedMotion()) {
     const still = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
     still.setAttribute("dur", "1s");
     still.setAttribute("repeatCount", "1");
@@ -854,6 +852,124 @@ function flyingArrow(pathId, seconds, className, offset = 0) {
 function orbitAround(at) {
   return `M ${at.x} ${at.y - RIM} `
     + `A ${RIM} ${RIM} 0 1 1 ${at.x - 0.01} ${at.y - RIM} Z`;
+}
+
+/*
+ * ── 回跳 = 轨道转移（用户 2026-08-09 定的画法，第三版重做）───────
+ *
+ * 小火箭贴着起点的 RIM 轨道滑行蓄力（60°），切线脱离、走向环心弯的转移曲线
+ * （「穿心 = 回头」的旧语义还在），再切进目标的 RIM 轨道滑小半圈（120°），
+ * 熄火淡出，从头再来。上一版的淡红发丝 + 三个红 V 被用户判丑：回跳是这一屏
+ * 最有戏的事件，配得上一次完整的起飞—入轨。
+ *
+ * 切线是免费的：二次贝塞尔在起点的切向指向控制点、在终点的切向来自控制点，
+ * 所以把脱离点选在「轨道切线正对 apex」的地方（atan2），起飞就顺滑；入轨同理。
+ * rimPoint 的参数角和 nodeAt 同一套：0 = 正上方，顺时针增，速度方向恰好是
+ * (cos a, sin a) —— 弧、贝塞尔、再入弧连成一笔，rotate="auto" 全程不跳。
+ */
+const LAUNCH_ARC = Math.PI / 3;       // 起飞段贴轨道滑行 60°
+const INSERT_ARC = (Math.PI * 2) / 3; // 入轨段滑行 120°
+
+/** centre 的 RIM 轨道上参数角 a 处的点。 */
+function rimPoint(centre, a) {
+  return { x: centre.x + RIM * Math.sin(a), y: centre.y - RIM * Math.cos(a) };
+}
+
+function rocketFlight(from, to) {
+  const apex = chordApex(from, to);
+  const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 脱离角
+  const aA = Math.atan2(to.y - apex.y, to.x - apex.x);      // 入轨角
+  const launch = rimPoint(from, aD - LAUNCH_ARC);
+  const depart = rimPoint(from, aD);
+  const arrive = rimPoint(to, aA);
+  const parked = rimPoint(to, aA + INSERT_ARC);
+  const d = `M ${launch.x} ${launch.y} `
+    + `A ${RIM} ${RIM} 0 0 1 ${depart.x} ${depart.y} `
+    + `Q ${apex.x} ${apex.y} ${arrive.x} ${arrive.y} `
+    + `A ${RIM} ${RIM} 0 0 1 ${parked.x} ${parked.y}`;
+  /*
+   * keyPoints 按**路程占比**分段，速度感才对：转移段的长度用「弦长和经停
+   * apex 的折线长取平均」近似 —— 对二次贝塞尔这个近似误差 <2%，够用。
+   */
+  const hop = Math.hypot(arrive.x - depart.x, arrive.y - depart.y);
+  const viaApex = Math.hypot(apex.x - depart.x, apex.y - depart.y)
+    + Math.hypot(arrive.x - apex.x, arrive.y - apex.y);
+  const legs = [RIM * LAUNCH_ARC, (hop + viaApex) / 2, RIM * INSERT_ARC];
+  const total = legs[0] + legs[1] + legs[2];
+  return { d, p1: legs[0] / total, p2: (legs[0] + legs[1]) / total };
+}
+
+/**
+ * 描边小火箭，头朝 +x、原点在箭身中心 —— rotate="auto" 才能让它顺着路径扭。
+ * 和 V 字同一种笔触：细描边、圆头、无填充。喷焰单独一条 path，只有它在闪。
+ */
+function rocketGlyph(className) {
+  const rocket = svgNode("g", { class: className });
+  rocket.append(
+    svgNode("path", {
+      class: "hull",
+      d: "M 1.35 0 C 0.95 -0.5 0.1 -0.52 -0.7 -0.3 L -0.7 0.3 C 0.1 0.52 0.95 0.5 1.35 0 Z",
+    }),
+    svgNode("path", {
+      class: "hull",
+      d: "M -0.45 -0.38 L -0.95 -0.78 M -0.45 0.38 L -0.95 0.78",
+    }),
+  );
+  const flame = svgNode("path", {
+    class: "flame",
+    d: "M -0.85 -0.16 L -1.7 0 L -0.85 0.16",
+  });
+  if (!reducedMotion()) {
+    const flicker = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+    flicker.setAttribute("attributeName", "opacity");
+    flicker.setAttribute("values", "1;.3;1");
+    flicker.setAttribute("dur", "0.55s");
+    flicker.setAttribute("repeatCount", "indefinite");
+    flame.append(flicker);
+  }
+  rocket.append(flame);
+  return rocket;
+}
+
+/** 让火箭骑上飞行路径：起飞慢 → 转移快 → 入轨减速 → 熄火停一拍再从头来。 */
+function rocketRide(rocket, pathId, flight, seconds) {
+  const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
+  motion.setAttribute("rotate", "auto");
+  motion.setAttribute("calcMode", "linear");
+  const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
+  mpath.setAttribute("href", `#${pathId}`);
+  mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
+  motion.append(mpath);
+  if (reducedMotion()) {
+    // 停在起飞点，朝向仍由 rotate="auto" 给出 —— 和 flyingArrow 同一套处理。
+    motion.setAttribute("dur", "1s");
+    motion.setAttribute("repeatCount", "1");
+    motion.setAttribute("fill", "freeze");
+    motion.setAttribute("keyPoints", "0;0");
+    motion.setAttribute("keyTimes", "0;1");
+    rocket.append(motion);
+    return rocket;
+  }
+  motion.setAttribute("dur", `${seconds}s`);
+  motion.setAttribute("repeatCount", "indefinite");
+  /*
+   * 节奏就是「火箭感」的一大半：起飞段占 30% 时间只走 p1 的路（慢），转移段
+   * 前半 12% 时间冲一半路（最快），后半开始收，入轨段用 24% 时间滑完最后一段
+   * （减速），.82 之后抱着终点不动 —— 那一拍里透明度已经是 0，瞬移回起点
+   * 不穿帮。
+   */
+  const mid = (flight.p1 + flight.p2) / 2;
+  motion.setAttribute("keyPoints", `0;${flight.p1};${mid};${flight.p2};1;1`);
+  motion.setAttribute("keyTimes", "0;.3;.42;.58;.82;1");
+  rocket.append(motion);
+  const fade = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+  fade.setAttribute("attributeName", "opacity");
+  fade.setAttribute("values", "0;1;1;0;0");
+  fade.setAttribute("keyTimes", "0;.06;.74;.82;1");
+  fade.setAttribute("dur", `${seconds}s`);
+  fade.setAttribute("repeatCount", "indefinite");
+  rocket.append(fade);
+  return rocket;
 }
 
 function drawMap(panel) {
@@ -919,17 +1035,22 @@ function drawMap(panel) {
     }
     const to = indexOf(edge.to);
     if (to < 0) return;
-    /*
-     * **形状带语义，两种边不共用一个画法**（§5.9.3④）：沿着环走 = 正常推进，
-     * 穿过中心的弦 = 回头。第一版两种都画成弦，那条语义当场失效。
-     */
     const id = `map-live-${order}`;
+    if (edge.kind === "backward") {
+      /*
+       * **回跳 = 小火箭轨道转移**。路线本身退成极淡发丝（只承接 hover 的
+       * tooltip），方向、事件感全交给火箭 —— 形状带语义这条没丢（§5.9.3④）：
+       * 转移段还是那条向心弯的弦，沿环走的推进照旧是弧。
+       */
+      const flight = rocketFlight(from, nodeAt(to, total));
+      map.append(svgNode("path", { id, class: "flight", d: flight.d }, edge.why));
+      map.append(rocketRide(rocketGlyph("rocket"), id, flight, 6.5));
+      return;
+    }
     map.append(svgNode("path", {
       id,
-      class: `live${edge.kind === "backward" ? " back" : ""}`,
-      d: edge.kind === "forward"
-        ? arcAlongRing(from, nodeAt(to, total))
-        : chordPath(from, nodeAt(to, total)),
+      class: "live",
+      d: arcAlongRing(from, nodeAt(to, total)),
     }, edge.why));
     /*
      * **一串 V 飞向目标 stage**（用户 2026-08-05 定的画法，第二版重做）。
@@ -939,13 +1060,9 @@ function drawMap(panel) {
      * 三个 V 错开出发 —— 「往那边流」这件事由队形说出来。
      */
     const trip = 2.8;
-    map.append(flyingArrow(id, trip, `arrow${edge.kind === "backward" ? " back" : ""}`));
+    map.append(flyingArrow(id, trip, "arrow"));
     for (const behind of [0.34, 0.68]) {
-      map.append(flyingArrow(
-        id, trip,
-        `arrow trail${edge.kind === "backward" ? " back" : ""}`,
-        behind,
-      ));
+      map.append(flyingArrow(id, trip, "arrow trail", behind));
     }
   });
 }

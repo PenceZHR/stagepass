@@ -374,12 +374,13 @@ body::after {
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
 /*
- * 环上的地图层：回头的弦、能去的虚线（§5.9.3）。轮次不在这层 —— 它是节点圆
+ * 环上的地图层：回头的烟迹、能去的边（§5.9.3）。轮次不在这层 —— 它是节点圆
  * 自己的颜色深浅（§5.9.4，见 .stage-node button 的 --depth）。
  *
- * **两种画法必须一眼分得开**（§5.9.3②）：走过的是实线，永久留着 —— 那是这个
- * Change 的病历，「被 Build 打回来过两次」应当一眼看得出；能去的是虚线，随状态
- * 变。混成一种，历史和可能性就分不清了。
+ * **两种画法必须一眼分得开**（§5.9.3②）：走过的回头路是凝结尾迹（圆点虚线，
+ * 永久留着）—— 那是这个 Change 的病历，「被 Build 打回来过两次」应当一眼看得出；
+ * 能去的随状态变：向前 = 发丝弧 + 一串 V，回跳 = 发丝 + 小火箭起飞入轨
+ * （2026-08-09 用户定的画法）。混成一种，历史和可能性就分不清了。
  *
  * 不吃鼠标事件：节点那一层的悬停和点击照旧（pointer-events 只在 <title> 需要的
  * 那几条线上开）。
@@ -402,9 +403,22 @@ body::after {
   fill: none; stroke: rgba(226,200,164,.17); stroke-width: .35;
   stroke-linecap: round; pointer-events: stroke;
 }
-.orbit-map .live.back { stroke: rgba(255,146,128,.2); }
 /** 自环那条轨道：只给 V 骑，本身不画（画出来就是节点外又套一个圈）。 */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
+/* 回跳的飞行路径：极淡发丝，只承接 hover（理由在 tooltip 上），方向全交给火箭。 */
+.orbit-map .flight {
+  fill: none; stroke: rgba(255,178,150,.14); stroke-width: .35;
+  stroke-linecap: round; pointer-events: stroke;
+}
+/* 小火箭：和 V 字同一种笔触。喷焰略暖，是整条边上唯一的一点「火」。 */
+.orbit-map .rocket .hull {
+  fill: none; stroke: rgba(240,220,190,.95); stroke-width: .45;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.orbit-map .rocket .flame {
+  fill: none; stroke: rgba(255,166,120,.9); stroke-width: .4;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 /*
  * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
  * 才和这一屏别的东西是同一种笔触。跟在后面的两个淡下去 —— 队形本身就是箭头。
@@ -414,8 +428,6 @@ body::after {
   stroke-linecap: round; stroke-linejoin: round;
 }
 .orbit-map .arrow.trail { stroke: rgba(240,220,190,.42); stroke-width: .42; }
-.orbit-map .arrow.back { stroke: rgba(255,152,134,.95); }
-.orbit-map .arrow.back.trail { stroke: rgba(255,152,134,.4); }
 /*
  * `--progress` 必须注册才过渡得了。
  *
