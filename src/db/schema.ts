@@ -192,7 +192,9 @@ CREATE TABLE IF NOT EXISTS change_briefs (
 CREATE TABLE IF NOT EXISTS change_events (
   change_id   TEXT NOT NULL REFERENCES changes(id),
   seq         INTEGER NOT NULL,
-  action      TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)},'create')),
+  -- 'rerun' 是历史席位（环 v3 删掉的动作）：域层再也写不出它，但老账本里的行
+  -- 在整表重建时要原样搬得回来 —— 和退休阶段名留在 PHASES 里同一条原则。
+  action      TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)},'create','rerun')),
   from_phase  TEXT     NULL,
   from_status TEXT     NULL,
   to_phase    TEXT NOT NULL,
@@ -229,7 +231,8 @@ CREATE TABLE IF NOT EXISTS change_evidence (
 CREATE TABLE IF NOT EXISTS commands (
   idempotency_key   TEXT PRIMARY KEY,
   change_id         TEXT NOT NULL REFERENCES changes(id),
-  action            TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)})),
+  -- 'rerun'：历史席位，理由同 change_events.action。
+  action            TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)},'rerun')),
   request_hash      TEXT NOT NULL,
   expected_snapshot TEXT NOT NULL,
   result_seq        INTEGER NOT NULL,
@@ -746,7 +749,23 @@ function migrateRetiredPhases(database: {
   exec(sql: string): unknown;
   prepare(sql: string): { get(...args: unknown[]): unknown; all?(...args: unknown[]): unknown };
 }): void {
-  const ABSORBED_BY: Readonly<Record<string, string>> = { TechSpec: "Arch" };
+  /*
+   * 环 v3（2026-08-09）一次退了六个，逐个给落点：Plan 是改名（BuildPlan 顶替，
+   * 语义逐字相同）；Review 被 QA 收编；Merge / Retro / Done 在新环里是
+   * 「QA 之后」的位置 —— 停在那儿的 Change 退回 QA 重验一遍再关，保守但不错。
+   *
+   * **Fix 故意不在表里**：进过 Fix 的前提是 Review/QA 送修过，而那两个阶段在
+   * 任何真库上都没跑过一轮 —— 结构上不存在停在 Fix 上的行。真出现了，读照样
+   * 读得出（校验放行退休阶段），走不动就报到人跟前，那是人该做的决定。
+   */
+  const ABSORBED_BY: Readonly<Record<string, string>> = {
+    TechSpec: "Arch",
+    Plan: "BuildPlan",
+    Review: "QA",
+    Merge: "QA",
+    Retro: "QA",
+    Done: "QA",
+  };
   const at = new Date().toISOString();
   for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
     let rows: { id: string; seq: number }[];

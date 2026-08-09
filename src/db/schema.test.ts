@@ -364,6 +364,80 @@ describe("L0 · 旧库的 phase 名单补上 Arch", () => {
   });
 });
 
+describe("L0 · 环 v3：新阶段名存得进去，rerun 历史行搬得回来", () => {
+  /**
+   * 照环 v3 之前（2026-08-08 那版树）的样子搭旧库：phase 名单没有 BuildPlan /
+   * Test、closed 钉在 Done、账本动作名单里还有 rerun —— 而账本里**真的有一行
+   * rerun**。重建绝不许被历史噎死：'rerun' 在新 CHECK 里留了历史席位。
+   */
+  const oldShape = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(`
+      CREATE TABLE changes (
+        id TEXT PRIMARY KEY, project_id TEXT NULL, title TEXT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('PRD','Spec','Arch','TechSpec','Plan','TestPlan','Build','Review','Fix','QA','Merge','Retro','Done')),
+        status TEXT NOT NULL,
+        return_stack TEXT NOT NULL DEFAULT '[]',
+        seq INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        CHECK (phase <> 'Fix' OR return_stack <> '[]'),
+        CHECK (status <> 'closed' OR return_stack = '[]'),
+        CHECK (status <> 'closed' OR phase = 'Done'));
+      CREATE TABLE change_events (
+        change_id TEXT NOT NULL REFERENCES changes(id),
+        seq INTEGER NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('start','settle','fail','retry','approve','reject','sendBack','rerun','create')),
+        from_phase TEXT NULL, from_status TEXT NULL,
+        to_phase TEXT NOT NULL, to_status TEXT NOT NULL,
+        reason TEXT NULL, at TEXT NOT NULL,
+        PRIMARY KEY (change_id, seq));
+    `);
+    database.prepare(
+      "INSERT INTO changes VALUES ('CHG-V3',NULL,NULL,'Build','running','[]',2,'t','t')").run();
+    database.prepare(
+      `INSERT INTO change_events VALUES ('CHG-V3', 1, 'create', NULL, NULL, 'PRD', 'pending', NULL, 't')`,
+    ).run();
+    // 送修时代留下的一行 rerun —— 它必须原样搬进新表。
+    database.prepare(
+      `INSERT INTO change_events VALUES ('CHG-V3', 2, 'rerun', 'Review', 'settled', 'Review', 'pending', NULL, 't')`,
+    ).run();
+    return database;
+  };
+
+  it("**没迁移之前，BuildPlan 行存不进去** —— 这一条钉住为什么必须迁", () => {
+    const database = oldShape();
+    assert.throws(() => database.prepare(
+      "INSERT INTO changes VALUES ('CHG-N',NULL,NULL,'BuildPlan','pending','[]',0,'t','t')",
+    ).run(), /CHECK constraint failed/);
+    database.close();
+  });
+
+  it("prepareSchema 之后：老账一行不少（含 rerun），新阶段名和 QA closed 都存得进去", () => {
+    const database = oldShape();
+    prepareSchema(database);
+    // rerun 那行历史原样在 —— 重建没被它噎死，也没把它偷偷洗掉。
+    assert.equal((database.prepare(
+      "SELECT COUNT(*) AS n FROM change_events WHERE action = 'rerun'",
+    ).get() as { n: number }).n, 1, "rerun 历史行丢了");
+    // 新阶段名存得进去（账本触发器重建后在场，所以两张表一起写）。
+    assert.doesNotThrow(() => {
+      database.exec("BEGIN");
+      database.prepare(
+        "INSERT INTO changes VALUES ('CHG-N',NULL,NULL,'BuildPlan','pending','[]',0,'t','t')").run();
+      database.prepare(
+        `INSERT INTO change_events VALUES ('CHG-N', 0, 'create', NULL, NULL, 'BuildPlan', 'pending', NULL, 't')`,
+      ).run();
+      database.exec("COMMIT");
+    });
+    // 终点换到 QA：closed 的 CHECK 跟着走了。
+    assert.throws(() => database.prepare(
+      "INSERT INTO changes VALUES ('CHG-D',NULL,NULL,'Done','closed','[]',0,'t','t')",
+    ).run(), /CHECK constraint failed/, "closed 还钉在 Done 上");
+    assert.doesNotThrow(() => { prepareSchema(database); });
+    database.close();
+  });
+});
+
 /**
  * `change_bindings` 加 `kind`、`phase` 放开可空（DESIGN-phase-not-the-only-axis
  * §3.3）：第二次整表重建，和 return_stack 那次同一个理由 —— 旧列绑在 CHECK
