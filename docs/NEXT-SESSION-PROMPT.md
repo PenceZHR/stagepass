@@ -45,9 +45,9 @@
 ## 当前状态（快照，先查库核实）
 
 - 分支 `build-the-base-2026-08-05`，`pnpm check` **1136 全绿**
-- **批 7（UI）没做**：钻石画法、closed 后自由终端、退休阶段历史显示 ——
-  panel.js / panel.html / panel-view.ts 上有**用户未提交的改动**（轮次刻度改
-  颜色深浅），动这三个文件前先问他
+- **批 7 部分落地**（当晚）：回跳火箭计划四任务全落（删圆盘 f953308、凝结尾迹
+  0b83935、小火箭 e05cc6f，真面板目检全过）。还欠：钻石画法（并行座位并排）、
+  座位状态上环、closed 后自由终端的 UI 入口（后端已通有测试钉）
 - 真库 `~/.stagepass/panel.db`：我查时 CHG-001 在 **`Build/running`**（上午的
   旧代码面板还在跑）。**重启面板 = 吃到环 v3 + 自动迁库** —— 老 Plan 历史行
   照旧可读，账本里的 rerun 有历史席位
@@ -60,9 +60,10 @@ cd ~/Desktop/stagepass && node --import tsx scripts/panel.ts --db ~/.stagepass/p
 
 ## 第一件事
 
-等手头那一轮收尾，**重启面板**（旧进程跑的还是环 v2 的代码）。然后真机验收
-环 v3：CHG-001 接着走（它已过 Arch，会走进新的 BuildPlan∥TestPlan 分叉）。
-批 4 设计文档末尾两个只有真机能答的点：git index 锁重试够不够、挡门吵不吵。
+面板已重启过、活库已迁移（三条验收全过：CHECK 换新、证据搬家、账本无损）。
+CHG-001 在 `Build/blocked` 等人 retry —— 按下去就是环 v3 第一轮真轮，核两条：
+任务书带 Plan-r3.md、一个字不提测试。注意 CHG-001 走不到 BuildPlan∥TestPlan
+分叉（它已过那段），第一次钻石要新开一条 Change。
 
 ## 还欠着人拍的事
 
