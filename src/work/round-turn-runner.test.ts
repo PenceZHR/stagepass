@@ -468,6 +468,44 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     assert.deepEqual(
       new EvidenceStore(context.db).read(CHANGE, "Test").artifactIds,
       ["7e57c0dec0mm17"], "Test 的产出还是红方报的路径");
+    /*
+     * **而且走的是窄提交**（批 4 · 案 B）：产物目录 + 红方声明的落点，逐个点名 ——
+     * 结构上卷不走别人的半成品，这正是它不要求干净树、能和 Build 并行的机械前提。
+     * 走了 commitAll 就是把等式改回「两个整树阶段共用一个工作区」那个洞。
+     */
+    assert.match(repo.calls[0] ?? "", /^commitPaths/,
+      "Test 走了整树提交 —— 案 B 的窄提交被丢了");
+    assert.match(repo.calls[0] ?? "", /prd\.md/, "红方声明的落点没进提交名单");
+  });
+
+  it("**Build 撞上对轨 mid-round —— 响亮失败，不静默卷**（批 4 · 案 B 挡门）", async () => {
+    const context = open();
+    const evidence = new EvidenceStore(context.db);
+    for (const phase of ["PRD", "Spec", "Arch", "BuildPlan", "TestPlan"] as const) {
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, phase, {
+        artifactIds: [`${phase}.md`], blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+    assert.equal(context.changes.read(CHANGE).state.phase, "Build");
+
+    const repo = fakeRepo("bu1lds4a");
+    const base = runner(context, new ScriptedCodexTransport([judgeSays]),
+      () => answer(), repo);
+    // 对轨（Test 座）正在跑一轮 —— 树上有它写了一半的文件。
+    const guarded = new RoundTurnRunner({
+      ...(base as unknown as { options: ConstructorParameters<typeof RoundTurnRunner>[0] }).options,
+      seatStatus: (_change, seatPhase) => seatPhase === "Test" ? "running" : null,
+    });
+    const loop = new TurnLoop({ database: context.db, runner: guarded });
+    await dispatchRound(loop, "J1");
+
+    // 这一轮失败、Change 落到 blocked，错误里说得出是对轨挡的 —— 人等对轨收工再 retry。
+    assert.equal(context.changes.read(CHANGE).state.status, "blocked");
+    assert.ok(!repo.calls.some((call) => call.startsWith("commit ")),
+      "挡门没拦住 —— 整树提交把对轨的半成品卷进去了");
   });
 
   it("设计阶段不换 sha —— 产出仍然是红方报的那个路径", async () => {

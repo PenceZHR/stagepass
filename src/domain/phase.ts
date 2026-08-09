@@ -403,3 +403,37 @@ const PRODUCES_COMMIT: ReadonlySet<Phase> = new Set<Phase>([
 export function producesCommit(phase: string): boolean {
   return isPhase(phase) && PRODUCES_COMMIT.has(phase);
 }
+
+/**
+ * 产 commit 的阶段里，**谁提交整树**（批 4 · 案 B 把那条等式拆成两半）。
+ *
+ * - **Build 整树**（`commitAll`）：独占树是它的语义 —— 它分不出哪行是红方写的、
+ *   哪行是别人的半成品，所以它同时是唯一**要求干净树**的阶段（dispatchPrecheck
+ *   的 dirty 预检按这个名单走，不再按 `producesCommit`）。
+ * - **Test 窄提交**（`commitPaths`：产物目录 + 红方声明的落点文件）：逐个点名，
+ *   结构上卷不走没点到的东西 —— 所以它不要求干净树，也就能和 Build 并行。
+ *
+ * 「整树名单 = 干净树名单」那条等式依然精确成立，只是名单缩成了一个。
+ */
+const COMMITS_WHOLE_TREE: ReadonlySet<Phase> = new Set<Phase>(["Build"]);
+
+export function commitsWholeTree(phase: string): boolean {
+  return isPhase(phase) && COMMITS_WHOLE_TREE.has(phase);
+}
+
+/**
+ * 钻石的两次分叉（批 4）：主线**批准落到**键上那个阶段时，给值上那个孪生阶段
+ * 开一个并行座位 —— BuildPlan∥TestPlan、Build∥Test。
+ *
+ * 只在 approve 到达时开（`ChangeStore.apply`）：sendBack 到达是打回重开，
+ * 那时孪生阶段自己该不该重跑由人裁（它不消费被打回的这个，见 `CONSUMES`）——
+ * 自动给它开座位就是替人决定「你也得重来」。
+ */
+const PARALLEL_TWINS: Readonly<Partial<Record<Phase, Phase>>> = {
+  BuildPlan: "TestPlan",
+  Build: "Test",
+};
+
+export function parallelTwinOf(phase: string): Phase | null {
+  return isPhase(phase) ? PARALLEL_TWINS[phase] ?? null : null;
+}

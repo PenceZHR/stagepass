@@ -205,3 +205,39 @@ describe("L3 · 裁判逐条表态的名单", () => {
     assert.equal(store.read(CHANGE, "PRD", 1).length, 1);
   });
 });
+
+/**
+ * 批 4 · P0 第 1 条：并行的两条轨各答各的。
+ *
+ * 真机烧过的形状：TestPlan ∥ Build 各开一份名单，按 Change 关把先开的关了，
+ * TestPlan 的裁判把理由答进了 Build 的 gap。现在开与取都按 (Change, 阶段)。
+ */
+describe("worklist · 两条并行轨互不相扰", () => {
+  it("开 B 轨的名单不关 A 轨正在用的；各自 next 各自答", () => {
+    const { store } = open();
+    store.open(CHANGE, "Build", 1, [gap("T-A", "Build 的第一条")]);
+    store.open(CHANGE, "Test", 1, [gap("T-B", "Test 的第一条")]);
+    // A 轨的名单还开着 —— 按阶段取各拿各的。
+    assert.equal(store.next(CHANGE, "Build")?.prompt, "Build 的第一条");
+    assert.equal(store.next(CHANGE, "Test")?.prompt, "Test 的第一条");
+    // 答案落在自己轨上，不落到对方头上。
+    const outcome = store.answer(CHANGE, "closed", "Build 侧的理由", "Build");
+    assert.equal(outcome.kind, "recorded");
+    assert.equal(store.next(CHANGE, "Build"), null, "Build 答完还剩东西");
+    assert.equal(store.next(CHANGE, "Test")?.prompt, "Test 的第一条",
+      "Test 的条目被 Build 的答案吃掉了");
+  });
+
+  it("不给阶段（旁路/老启动）退回按 Change 取 —— 行为照旧", () => {
+    const { store } = open();
+    store.open(CHANGE, "Spec", 1, [gap("T-C", "唯一的一条")]);
+    assert.equal(store.next(CHANGE)?.prompt, "唯一的一条");
+  });
+
+  it("同一轨重开才关旧的 —— 上一轮的剩饭不许漏到下一轮", () => {
+    const { store } = open();
+    store.open(CHANGE, "Build", 1, [gap("T-D", "第一轮的")]);
+    store.open(CHANGE, "Build", 2, [gap("T-E", "第二轮的")]);
+    assert.equal(store.next(CHANGE, "Build")?.prompt, "第二轮的");
+  });
+});

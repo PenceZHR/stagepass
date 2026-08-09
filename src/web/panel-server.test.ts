@@ -1850,29 +1850,42 @@ describe("panel · 旁路会话不和任何阶段抢椅子（批 1，DESIGN §3.
   });
 });
 
-describe("panel · 并行座位的入口撤回了（2026-08-07）", () => {
+describe("panel · 并行座位（批 4 重开）：分叉自动开座，入口只读", () => {
   /**
-   * 真机验收前的审计在它身上找出十二个问题，六个落在它被设计出来的那个默认场景
-   * （TestPlan ∥ Build）上：两条并行的轮共用一条 worklist 队列（裁判把 A 的理由
-   * 答进 B 的 gap）、跳过式批准甩出的孤儿座位能在 closed 的 Change 上跑真轮、
-   * 座位 blocked 之后没有任何出路、sendBack 会当场收编 settled 座位、两个整树
-   * commit 的阶段共用一个工作区、Done 也能开座位并把 Change 锁死。
-   *
-   * 前五条各自都要动地基，第五条更是设计层没答的问题 —— 而这些洞都能烧真的
-   * Codex、写真的库。所以入口撤回，收编那一段留着（已存在的座位仍然收得掉）。
+   * 批 3 的 POST 入口撤回后（审计 12 问题 6 P0），批 4 把开座做成结构的事：
+   * 批准落到 BuildPlan / Build 时，`ChangeStore.apply` 自动给孪生阶段
+   * （TestPlan / Test）开座。手动开座的门不回来 —— 它正是孤儿座位当初进来的门。
    */
-  it("**开不出新座位了** —— 说得出是撤回，不是「参数不对」", async () => {
+  it("**POST 开不了座** —— 方法不对就是 404，一个座位都不建", async () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       changes.setBrief(CHANGE, "需求");
       advanceTo(changes, "TestPlan");
-      const outcome = await (await open(
-        `/api/parallel?change=${CHANGE}&phase=Build`, { method: "POST" }))
-        .json() as { opened: boolean; reason?: string };
-      assert.equal(outcome.opened, false);
-      assert.equal(outcome.reason, "parallel_seats_withdrawn");
-      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_states")
-        .get() as { n: number }).n, 0, "撤回了却还是把座位建了出来");
+      const response = await open(
+        `/api/parallel?change=${CHANGE}&phase=Build`, { method: "POST" });
+      assert.equal(response.status, 404);
+      // 到达 BuildPlan 时分叉开过 TestPlan 的座，主线走到 TestPlan 又把它收编
+      // 掉了 —— 所以现在一个座位都没有，而这个 POST 也没建出任何一个。
+      const seats = (database.prepare(
+        "SELECT phase FROM change_states ORDER BY phase").all() as { phase: string }[])
+        .map((row) => row.phase);
+      assert.deepEqual(seats, []);
+    });
+  });
+
+  it("**GET 是只读一览** —— 座位如实报，一行都不写", async () => {
+    await withPanel(async ({ open, database }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "BuildPlan");   // 到达 BuildPlan 的那一步开了 TestPlan 座
+      const before = (database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n;
+      const view = await (await open(`/api/parallel?change=${CHANGE}`)).json() as
+        { seats: { phase: string; status: string }[] };
+      assert.deepEqual(view.seats.map((seat) => [seat.phase, seat.status]),
+        [["TestPlan", "pending"]]);
+      assert.equal((database.prepare("SELECT COUNT(*) AS n FROM change_events")
+        .get() as { n: number }).n, before, "读一览写了账本");
     });
   });
 

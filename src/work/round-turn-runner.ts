@@ -4,7 +4,9 @@ import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
 import { join } from "node:path";
 
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
-import { producesCommit, upstreamOf, type Phase } from "../domain/phase";
+import {
+  commitsWholeTree, parallelTwinOf, producesCommit, upstreamOf, type Phase,
+} from "../domain/phase";
 import { pendingSendBack } from "../domain/journey";
 import { templateFor } from "../domain/phase-template";
 import type { Gap } from "../domain/gap";
@@ -58,6 +60,11 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
    * 不给就退回账本那条路（老调用点一个字不用改）。
    */
   readonly parallelRound?: (changeId: string, phase: Phase) => number;
+  /**
+   * 对轨座位现在什么状态（批 4 · 案 B 的挡门取数口）。不给 = 不挡 ——
+   * 离线测试和没开并行的部署都走这条，行为和挡门出现之前逐字一致。
+   */
+  readonly seatStatus?: (changeId: string, phase: Phase) => string | null;
   /**
    * 只写给人看的一行去哪（缺省 console）。目前唯一的客户是越界报告 ——
    * 它进不了 `round_notes`：那张表的 `source` CHECK 建表时定死，加新值会让
@@ -513,6 +520,27 @@ export class RoundTurnRunner implements TurnRunner {
       this.options.repo.commitPaths(
         cwd, [artifactHome(changeId)], `StagePass ${changeId} ${phase} 第 ${round} 轮`);
       return reported;
+    }
+    /*
+     * **Test 窄提交**（批 4 · 案 B）：产物目录 + 红方报的落点文件，逐个点名 ——
+     * 结构上卷不走别人的半成品，所以它不要求干净树、能和 Build 并行。
+     * 证据换成 sha：它交的是代码，commit 才说得出「改了什么、基于哪一版」。
+     */
+    if (!commitsWholeTree(phase)) {
+      const sha = this.options.repo.commitPaths(
+        cwd, [artifactHome(changeId), ...reported],
+        `StagePass ${changeId} ${phase} 第 ${round} 轮`);
+      return sha === null ? [] : [sha];
+    }
+    /*
+     * **Build 整树提交前的挡门**（批 4 · 案 B）：对轨（Test）正在跑一轮时，
+     * 树上有它写了一半的文件 —— commitAll 会把它们卷进 Build 的 sha，两条轨的
+     * 产出从此说不清谁是谁。不静默卷走、不静默排除：这一轮响亮失败，人等对轨
+     * 收工再 retry（阻断归人管）。
+     */
+    const twin = parallelTwinOf(phase);
+    if (twin !== null && this.options.seatStatus?.(changeId, twin) === "running") {
+      throw new Error(`twin_track_midflight:${twin}`);
     }
     const sha = this.options.repo.commitAll(
       cwd, `StagePass ${changeId} ${phase} 第 ${round} 轮`);
