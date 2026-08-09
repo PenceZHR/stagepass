@@ -44,19 +44,15 @@ function open() {
 }
 
 /**
- * 把 Change 一路推到 Review（离线手段，L1 的假答案纪律）。
+ * 把 Change 一路推到 QA（离线手段，L1 的假答案纪律）。
  *
- * **2026-08-06 起「轮次号」那两条测试必须在 Build 上跑**：它们靠反方的自由 blockers
- * 当载体，而那条通道只在**反方够得着代码**的阶段还留着（`blue.investigates`）——
- * 前五个阶段现在走逐条判定。它们要证的是「轮次从账本数、不用 job.attempt」，
- * 和哪个阶段无关。
+ * **「轮次号」那两条测试要在 QA 上跑**：它们靠反方的自由 blockers 当载体，而那条
+ * 通道只在**反方够得着代码**的阶段还留着（`blue.investigates`）—— 环 v3 里主线上
+ * 只剩 QA 一个（Review 收编进它了）。测的事情没变：轮次从账本数，和哪个阶段无关。
  */
-function toBuild(context: ReturnType<typeof open>): void {
+function toQA(context: ReturnType<typeof open>): void {
   const evidence = new EvidenceStore(context.db);
-  // 2026-08-06 二改：推到 **Review**。Build 那天也收口了（它有了施工报告模板），
-  // 而这两条测试拿反方的自由 blockers 当载体 —— Review 是主线上还留着那条通道的
-  // 第一个阶段。测的事情没变：轮次从账本数，和哪个阶段无关。
-  while (context.changes.read(CHANGE).state.phase !== "Review") {
+  while (context.changes.read(CHANGE).state.phase !== "QA") {
     const phase = context.changes.read(CHANGE).state.phase;
     context.changes.apply(CHANGE, "start");
     context.changes.apply(CHANGE, "settle");
@@ -143,7 +139,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
    */
   it("驳回之后再跑 —— 第二轮发现的问题记在第 2 轮", async () => {
     const context = open();
-    toBuild(context);
+    toQA(context);
     const blueSays = [
       answer([{ id: "S-1", severity: "P1", title: "第一轮发现的" }]),
       answer([{ id: "S-2", severity: "P1", title: "第二轮发现的" }]),
@@ -159,16 +155,13 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
     });
 
     await dispatchRound(loop, "J1");
-    /*
-     * 「再来一轮」在 Review 上是 `rerun`，不是 `reject` —— 后者在 Review/QA 是
-     * **送修**（→ Fix，`SENDS_TO_FIX`）。2026-08-06 夹具从 Build 挪到 Review 时
-     * 撞上这条：照抄 reject 的话 Change 会跑去 Fix，第二轮根本不在 Review 上。
-     */
-    context.changes.apply(CHANGE, "rerun");
+    // 「再来一轮」就是 `reject`：环 v3 里它在每个阶段都是原地重开（送修 → Fix
+    // 那条路连同 rerun 一起拆了），QA 也不例外。
+    context.changes.apply(CHANGE, "reject");
     await dispatchRound(loop, "J2");
 
     const opened = Object.fromEntries(
-      context.gaps.all(CHANGE, "Review").map((gap) => [gap.id, gap.openedRound]),
+      context.gaps.all(CHANGE, "QA").map((gap) => [gap.id, gap.openedRound]),
     );
     assert.equal(opened["S-1"], 1);
     assert.equal(opened["S-2"], 2, "第二轮发现的问题被记成了第 1 轮");
@@ -176,7 +169,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
 
   it("失败重跑也算得进去 —— retry 之后那一轮是第 2 轮", async () => {
     const context = open();
-    toBuild(context);
+    toQA(context);
     const loop = new TurnLoop({
       database: context.db,
       runner: runner(
@@ -195,7 +188,7 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
     await dispatchRound(loop, "J2");
 
     assert.equal(
-      context.gaps.all(CHANGE, "Review").find((gap) => gap.id === "S-1")?.openedRound,
+      context.gaps.all(CHANGE, "QA").find((gap) => gap.id === "S-1")?.openedRound,
       2,
       "失败后的重跑没算进轮次",
     );
@@ -245,8 +238,8 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
       });
       context.changes.apply(CHANGE, "approve");
     }
-    // 把 Change 从 TechSpec 一路推到 Build（中间几段不带产物，够用）。
-    for (const phase of ["Arch", "Plan", "TestPlan"] as const) {
+    // 把 Change 一路推到 Build（中间几段不带产物，够用）。
+    for (const phase of ["Arch", "BuildPlan", "TestPlan"] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
       evidence.put(CHANGE, phase, { artifactIds: ["x.md"], blockers: [], waivedBlockerIds: [] });
@@ -275,16 +268,16 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
   /**
    * §8.6·①：任务书里列的是**真正的上游**，不是主线顺序的前缀。
    *
-   * TestPlan 从来没消费过 Plan 的任何东西（两者都只消费 TechSpec，互不消费），
-   * 所以 Plan 的文档不该出现在 TestPlan 红方的输入里 —— 多喂一份它用不上的文档，
-   * 既占上下文又暗示「你该照着它做」。
+   * 两轨互盲（环 v3）：TestPlan 和 BuildPlan 都只消费 Arch，互不消费 ——
+   * BuildPlan 的文档不该出现在 TestPlan 红方的输入里。多喂一份它用不上的文档，
+   * 既占上下文又暗示「你该照着它做」，而测试照着施工计划写，独立性就没了。
    */
-  it("走到 TestPlan 时，**真正的**上游按线的顺序全在，Plan 不在", async () => {
+  it("走到 TestPlan 时，**真正的**上游按线的顺序全在，BuildPlan 不在", async () => {
     const context = open();
     const evidence = new EvidenceStore(context.db);
     const line: [string, string][] = [
       ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"],
-      ["Arch", "docs/arch.md"], ["Plan", "docs/plan.md"],
+      ["Arch", "docs/arch.md"], ["BuildPlan", "docs/buildplan.md"],
     ];
     for (const [phase, artifact] of line) {
       context.changes.apply(CHANGE, "start");
@@ -304,16 +297,16 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     await dispatchRound(loop, "J1");
 
     const prompt = transport.dispatches[0]?.prompt ?? "";
-    const real = line.filter(([phase]) => phase !== "Plan");
+    const real = line.filter(([phase]) => phase !== "BuildPlan");
     const positions = real.map(([, artifact]) => prompt.indexOf(artifact));
     assert.ok(positions.every((at) => at >= 0),
       `有上游没进任务书：${JSON.stringify(positions)}`);
     // 顺序就是线的顺序 —— 读的人按它从头到尾走一遍。
     assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
-    // **Plan 不在。** 它产出过、也被批准过，就是不属于 TestPlan 的上游。
+    // **BuildPlan 不在。** 它产出过、也被批准过，就是不属于 TestPlan 的上游。
     assert.equal(
-      prompt.includes("docs/plan.md"), false,
-      "TestPlan 收到了 Plan 的文档 —— 它从来没消费过 Plan 的任何东西",
+      prompt.includes("docs/buildplan.md"), false,
+      "TestPlan 收到了 BuildPlan 的文档 —— 互盲被投递层破掉了",
     );
   });
 
@@ -327,8 +320,9 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     const evidence = new EvidenceStore(context.db);
     for (const [phase, artifact] of [
       ["PRD", "docs/prd.md"], ["Spec", "docs/spec.md"], ["Arch", "docs/arch.md"],
-      ["Plan", "docs/plan.md"], ["TestPlan", "docs/tp.md"],
+      ["BuildPlan", "docs/buildplan.md"], ["TestPlan", "docs/tp.md"],
       ["Build", "349c17d7d10414882f2c91f3241fda2645534645"],
+      ["Test", "docs/tests-r1.md"],
     ] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
@@ -337,7 +331,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
       });
       context.changes.apply(CHANGE, "approve");
     }
-    assert.equal(context.changes.read(CHANGE).state.phase, "Review");
+    assert.equal(context.changes.read(CHANGE).state.phase, "QA");
 
     const transport = new ScriptedCodexTransport([judgeSays]);
     const loop = new TurnLoop({
@@ -381,7 +375,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
    */
   const atBuild = (context: ReturnType<typeof open>): void => {
     const evidence = new EvidenceStore(context.db);
-    for (const phase of ["PRD", "Spec", "Arch", "Plan", "TestPlan"] as const) {
+    for (const phase of ["PRD", "Spec", "Arch", "BuildPlan", "TestPlan"] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
       evidence.put(CHANGE, phase, {
@@ -445,24 +439,25 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
       new EvidenceStore(context.db).read(CHANGE, "Build").artifactIds, []);
   });
 
-  it("**Fix 也记 commit** —— 它和 Build 同形状：红方写的是代码", async () => {
+  it("**Test 也记 commit** —— 它和 Build 同形状：红方写的是（测试）代码", async () => {
     /*
-     * 用户 2026-07-30 的通则把 Fix 的形状定了：红方写代码（改的是被报出来的问题），
-     * 所以它和 Build 一样 —— 一组改动天然对应一个 commit，文件列表说不出「改了什么」。
+     * 用户 2026-07-30 的通则判据：红方在这一阶段写的是代码，产出就是 commit。
+     * 环 v3 把「写测试代码」从 TestPlan 拆给 Test —— 名单换成 {Build, Test}
+     * （Fix 退休、TestPlan 收窄成纯文档），这条钉的就是新名单的 Test 那半。
      */
     const context = open();
     const evidence = new EvidenceStore(context.db);
-    for (const phase of ["PRD", "Spec", "Arch", "Plan", "TestPlan", "Build", "Review"] as const) {
+    for (const phase of ["PRD", "Spec", "Arch", "BuildPlan", "TestPlan", "Build"] as const) {
       context.changes.apply(CHANGE, "start");
       context.changes.apply(CHANGE, "settle");
       evidence.put(CHANGE, phase, {
         artifactIds: [`${phase}.md`], blockers: [], waivedBlockerIds: [],
       });
-      context.changes.apply(CHANGE, phase === "Review" ? "reject" : "approve");
+      context.changes.apply(CHANGE, "approve");
     }
-    assert.equal(context.changes.read(CHANGE).state.phase, "Fix");
+    assert.equal(context.changes.read(CHANGE).state.phase, "Test");
 
-    const repo = fakeRepo("f1x0000c0mm1t");
+    const repo = fakeRepo("7e57c0dec0mm17");
     const loop = new TurnLoop({
       database: context.db,
       runner: runner(context, new ScriptedCodexTransport([judgeSays]),
@@ -471,8 +466,8 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     await dispatchRound(loop, "J1");
 
     assert.deepEqual(
-      new EvidenceStore(context.db).read(CHANGE, "Fix").artifactIds,
-      ["f1x0000c0mm1t"], "Fix 的产出还是红方报的路径");
+      new EvidenceStore(context.db).read(CHANGE, "Test").artifactIds,
+      ["7e57c0dec0mm17"], "Test 的产出还是红方报的路径");
   });
 
   it("设计阶段不换 sha —— 产出仍然是红方报的那个路径", async () => {

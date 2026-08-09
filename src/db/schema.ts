@@ -1,4 +1,4 @@
-import { PHASES } from "../domain/phase";
+import { PHASES, TERMINAL_PHASE } from "../domain/phase";
 import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
 import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
 import { GAP_STATUSES } from "../domain/gap";
@@ -52,17 +52,18 @@ const CHANGES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS changes (
   phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
   status        TEXT NOT NULL CHECK (status IN (${quoted(PHASE_STATUSES)})),
   -- 回程栈（domain/change-state.ts 的 returnStack，§5.9.2）：JSON 数组，'[]' =
-  -- 沿主线走。打回上游（sendBack）和 Review/QA 送修共用它。形状不变量（严格递减、
-  -- 每层在当前阶段下游）由 domain 判；这里只钉数据库说得清的两条。
+  -- 沿主线走。只有打回上游（sendBack）压它（环 v3 拆掉了送修那条路）。形状
+  -- 不变量（严格递减、每层在当前阶段下游）由 domain 判；这里只钉数据库说得清的。
   return_stack  TEXT NOT NULL DEFAULT '[]',
   seq           INTEGER NOT NULL,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   -- The same invariants the domain enforces, restated where the data lives.
   -- A row that could not have come from transition() must not be storable.
-  CHECK (phase <> 'Fix' OR return_stack <> '[]'),
+  -- （Fix 那条历史 CHECK 撤了：环 v3 里 transition 根本写不出 phase = 'Fix' 的
+  -- 行，而老库的 Fix 历史行要在迁移重建时原样搬得回来。）
   CHECK (status <> 'closed' OR return_stack = '[]'),
-  CHECK (status <> 'closed' OR phase = 'Done')
+  CHECK (status <> 'closed' OR phase = '${TERMINAL_PHASE}')
 )`;
 
 /**

@@ -269,15 +269,16 @@ async function withPanel(
 }
 
 describe("panel · what it offers", () => {
-  it("offers eleven phases, and never Done or a retired one", async () => {
+  it("offers the eight ring-v3 phases, and never a retired one", async () => {
     await withPanel(async ({ open }) => {
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as {
         phases: PhaseEntry[];
       };
-      assert.equal(panel.phases.length, 11);
-      assert.ok(!panel.phases.some((entry) => entry.phase === "Done"));
+      assert.equal(panel.phases.length, 8);
       // 退休的阶段不画 —— 环上摆一个永远走不到的节点等于一个假选项。
-      assert.ok(!panel.phases.some((entry) => entry.phase === "TechSpec"));
+      for (const retired of ["Done", "TechSpec", "Plan", "Review", "Fix", "Merge", "Retro"]) {
+        assert.ok(!panel.phases.some((entry) => entry.phase === retired), retired);
+      }
       // A fresh Change sits at PRD, so that is the one node that may be run.
       // Nothing has passed or failed yet, so no node carries a mark.
       assert.deepEqual(panel.phases[0], {
@@ -293,7 +294,7 @@ describe("panel · what it offers", () => {
         produced: [],
         // null = 这个阶段还没有裁决落过 —— 不许编一个下场出来（§3.2·5）。
         lastOutcome: null,
-        // 一轮都没跑过。环上那个节点因此一个刻度都不画（§5.9.4）。
+        // 一轮都没跑过。环上那个节点因此还是底色，不加深（§5.9.4）。
         rounds: 0,
         // null = 没开并行座位（批 3）。
         seat: null,
@@ -416,44 +417,40 @@ describe("panel · pass and fail per phase", () => {
     });
   });
 
-  it("marks a rejected Review as a problem while the work sits in Fix", async () => {
+  it("marks a rejected QA as a problem while it reruns in place", async () => {
+    // 环 v3：reject 处处是原地再来一轮 —— 标记落在阶段自己头上，别人不动。
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       changes.setBrief(CHANGE, "本地排行榜");
-      advanceTo(changes, "Review");
+      advanceTo(changes, "QA");
       changes.apply(CHANGE, "start");
       changes.apply(CHANGE, "settle");
       changes.apply(CHANGE, "reject");
-      assert.equal(changes.read(CHANGE).state.phase, "Fix");
+      assert.equal(changes.read(CHANGE).state.phase, "QA");
 
       const marks = await marksOf(open);
-      assert.equal(marks["Review"], "problem");
-      // The phases that got Review this far are still passed.
+      assert.equal(marks["QA"], "problem");
+      // The phases that got QA this far are still passed.
       assert.equal(marks["Build"], "approved");
     });
   });
 
-  it("takes the green off Fix when the work comes back to it", async () => {
+  it("takes the green off a sent-back phase when the work comes back to it", async () => {
+    // 打回重开 = Fix 交互（环 v3）：被重开的阶段是主线上会被再次进入的地方，
+    // 上一次的绿是上一次的新闻 —— mark 不能是「曾经批准过」。
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       changes.setBrief(CHANGE, "本地排行榜");
-      advanceTo(changes, "Review");
-      changes.apply(CHANGE, "start");
-      changes.apply(CHANGE, "settle");
-      changes.apply(CHANGE, "reject");          // -> Fix
-      changes.apply(CHANGE, "start");
-      changes.apply(CHANGE, "settle");
-      changes.apply(CHANGE, "approve");         // Fix passed, back to Review
-      assert.equal((await marksOf(open))["Fix"], "approved");
+      advanceTo(changes, "QA");
+      assert.equal((await marksOf(open))["Build"], "approved");
 
-      // Review sends it back a second time. Fix is where the work is now, so
-      // the green from the previous visit is stale -- Fix is the one phase the
-      // line can re-enter, which is why the mark cannot be "was ever approved".
       changes.apply(CHANGE, "start");
       changes.apply(CHANGE, "settle");
-      changes.apply(CHANGE, "reject");
-      assert.equal(changes.read(CHANGE).state.phase, "Fix");
-      assert.equal((await marksOf(open))["Fix"], null);
+      changes.apply(CHANGE, "sendBack", { to: "Build" });
+      assert.equal(changes.read(CHANGE).state.phase, "Build");
+      assert.equal((await marksOf(open))["Build"], null);
+      // 没被打回的那条轨还绿着。
+      assert.equal((await marksOf(open))["Test"], "approved");
     });
   });
 
@@ -781,7 +778,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
       database.prepare(
         "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
       ).run(questionId, "accept",
-        JSON.stringify({ decision: decisionLabel("approve", "PRD") }),
+        JSON.stringify({ decision: decisionLabel("approve") }),
         new Date().toISOString());
       await asking;
 
@@ -810,7 +807,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
       database.prepare(
         "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
       ).run(questionId, "accept",
-        JSON.stringify({ decision: decisionLabel("reject", "PRD") }),
+        JSON.stringify({ decision: decisionLabel("reject") }),
         new Date().toISOString());
       await asking;
 
@@ -2238,7 +2235,7 @@ describe("panel · 裁决前看得见这一轮的标准判定", () => {
     database.prepare(
       "INSERT INTO answers (question_id, action, content_json, answered_at) VALUES (?,?,?,?)",
     ).run(row.id, "accept",
-      JSON.stringify({ decision: decisionLabel("approve", "PRD") }),
+      JSON.stringify({ decision: decisionLabel("approve") }),
       new Date().toISOString());
     await asking;
     return `${row.message}\n${row.schema_json}`;
@@ -2407,7 +2404,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       // 第一趟：纯选项。
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
-        RY: RAISE_SOMETHING, decision: decisionLabel("reject", "PRD"),
+        RY: RAISE_SOMETHING, decision: decisionLabel("reject"),
       });
       // 第二趟：只有需要理由的那几条 —— R01 驳回了要理由，R02 同意不用，
       // RY 点了「有」所以要写正文。
@@ -2445,7 +2442,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
-        RY: RAISE_NOTHING, decision: decisionLabel("reject", "PRD"),
+        RY: RAISE_NOTHING, decision: decisionLabel("reject"),
       });
       await answerNext(database, { R01x: "" });
 
@@ -2478,7 +2475,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       }]);
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
-        RY: RAISE_NOTHING, decision: decisionLabel("reject", "PRD"),
+        RY: RAISE_NOTHING, decision: decisionLabel("reject"),
       });
       await answerNext(database, { R01x: "不成立" });
 
@@ -2502,7 +2499,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_WAIVE,
-        RY: RAISE_NOTHING, decision: decisionLabel("approve", "PRD"),
+        RY: RAISE_NOTHING, decision: decisionLabel("approve"),
       });
       // 驳回和接受风险都要理由 —— 那是实质内容，会落进 resolution。
       await answerNext(database, {
@@ -2524,7 +2521,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
-        RY: RAISE_SOMETHING, decision: decisionLabel("approve", "PRD"),
+        RY: RAISE_SOMETHING, decision: decisionLabel("approve"),
       });
       await answerNext(database, {
         R01x: "不成立", R02x: "也不成立",
@@ -2560,7 +2557,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
 
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
-      answer(database, { T: "PRD", decision: decisionLabel("sendBack", "Spec") });
+      answer(database, { T: "PRD", decision: decisionLabel("sendBack") });
       // 第二趟只有一格：为什么打回。
       await answerNext(database, { Tx: "验收口径在 PRD 里就写反了" });
 
@@ -2603,7 +2600,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       // 目标格留在「不打回」上 —— 半个决定。没有第二趟（没选目标就不问理由）。
-      answer(database, { T: "不打回", decision: decisionLabel("sendBack", "Spec") });
+      answer(database, { T: "不打回", decision: decisionLabel("sendBack") });
 
       const result = await (await asking).json() as { outcome: unknown };
       assert.deepEqual(result.outcome,
@@ -2626,7 +2623,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       await new Promise((resolve) => { setTimeout(resolve, 150); });
       answer(database, {
         R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
-        decision: decisionLabel("approve", "PRD"),
+        decision: decisionLabel("approve"),
       });
       await (await asking).json();
 
@@ -2663,7 +2660,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       answer(database, {
         R01: RESPONSE_AGREE, R01x: "按第 3 节那种写法改",
         R02: RESPONSE_AGREE,
-        decision: decisionLabel("reject", "PRD"),
+        decision: decisionLabel("reject"),
       });
 
       const result = await (await asking).json() as {
@@ -2701,7 +2698,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
 
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
-      answer(database, { decision: decisionLabel("retry", "PRD") });
+      answer(database, { decision: decisionLabel("retry") });
 
       const result = await (await asking).json() as {
         continued: { ran: boolean } | null;
@@ -2712,25 +2709,27 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
     });
   });
 
-  it("「打回去修」不续跑 —— 那时 Change 已经在 Fix 了", async () => {
+  it("「打回上游」不续跑 —— 那时 Change 已经在上游那个阶段了", async () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       changes.setBrief(CHANGE, "本地排行榜");
-      advanceTo(changes, "Review");
-      new EvidenceStore(database).put(CHANGE, "Review", {
-        artifactIds: ["review.md"], blockers: [], waivedBlockerIds: [],
+      advanceTo(changes, "Spec");
+      new EvidenceStore(database).put(CHANGE, "Spec", {
+        artifactIds: ["spec.md"], blockers: [], waivedBlockerIds: [],
       });
       changes.apply(CHANGE, "start");
       changes.apply(CHANGE, "settle");
 
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
-      answer(database, { decision: decisionLabel("reject", "Review") });
+      answer(database, { decision: decisionLabel("sendBack"), T: "PRD" });
+      // 第二趟只有一格：为什么打回。
+      await answerNext(database, { Tx: "需求本身就写错了" });
 
       const result = await (await asking).json() as { continued: unknown };
       assert.equal(result.continued, null);
-      // 活确实送到 Fix 去了。自动在一个刚到的阶段上开跑，等于替人决定 Fix 该做什么。
-      assert.equal(changes.read(CHANGE).state.phase, "Fix");
+      // 活确实送回上游了。自动在一个刚到的阶段上开跑，等于替人决定那儿该做什么。
+      assert.equal(changes.read(CHANGE).state.phase, "PRD");
     });
   });
 
@@ -2771,7 +2770,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
 
       const asking = open(`/api/ask?change=${CHANGE}`, { method: "POST" });
       await new Promise((resolve) => { setTimeout(resolve, 150); });
-      answer(database, { decision: decisionLabel("approve", "PRD") });
+      answer(database, { decision: decisionLabel("approve") });
 
       const result = await (await asking).json() as {
         responses: Record<string, unknown>; raised: string | null;
@@ -3030,7 +3029,7 @@ describe("panel · 派发前查上游产物", () => {
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       changes.setBrief(CHANGE, "本地排行榜");
-      advanceTo(changes, "Review");
+      advanceTo(changes, "QA");
       new EvidenceStore(database).put(CHANGE, "Build", {
         artifactIds: ["0123456789abcdef0123456789abcdef01234567"],
         blockers: [], waivedBlockerIds: [],

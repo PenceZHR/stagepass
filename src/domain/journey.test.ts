@@ -186,7 +186,7 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
      * 不是选单。
      */
     assert.deepEqual(edges.map((edge) => [edge.action, edge.to, edge.kind]), [
-      ["approve", "Plan", "forward"],
+      ["approve", "BuildPlan", "forward"],
       ["reject", "Arch", "self"],
       ["sendBack", "Spec", "backward"],
     ]);
@@ -199,10 +199,10 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
     assert.ok(optionsOf(settled("Spec")).some((edge) => edge.kind === "self"));
   });
 
-  it("Review 的驳回指向 Fix，不是指向自己 —— 同一个动作两句话", () => {
-    const back = optionsOf(settled("Review")).find((edge) => edge.action === "reject")!;
-    assert.equal(back.to, "Fix");
-    assert.equal(back.kind, "backward");
+  it("QA 的驳回也是自环 —— 环 v3 拆掉了「送修 → Fix」，reject 处处一句话", () => {
+    const back = optionsOf(settled("QA")).find((edge) => edge.action === "reject")!;
+    assert.equal(back.to, "QA");
+    assert.equal(back.kind, "self");
   });
 
   /**
@@ -237,7 +237,7 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
     assert.deepEqual(
       optionsFrom(blocked, computeGate(blocked, EMPTY_EVIDENCE)).map((e) => e.action),
       ["retry"]);
-    const done: ChangeState = { phase: "Done", status: "closed", returnStack: [] };
+    const done: ChangeState = { phase: "QA", status: "closed", returnStack: [] };
     assert.deepEqual(optionsFrom(done, computeGate(done, EMPTY_EVIDENCE)), []);
   });
 

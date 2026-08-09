@@ -65,16 +65,17 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   // 退休了（并进 Arch）。留一句话是因为 PhaseInstructions 要每个阶段都有；
   // 没有 Change 会再走到它。
   TechSpec: "This phase has been merged into Arch and is no longer used.",
-  Plan: "Break the approved design into executable steps, each with its expected blast radius and how it will be verified.",
+  // 退休了（环 v3 改名成 BuildPlan）。同上，留一句话给类型，没有 Change 会走到。
+  Plan: "This phase has been renamed to BuildPlan and is no longer used.",
+  BuildPlan: "Break the approved design into executable steps, each with its expected blast radius and how it will be verified.",
   /*
-   * §8.7·1（用户 2026-08-06 拍）：TestPlan 交方案**和测试代码**，自己不跑 ——
-   * 「肯定是 build 做完了跑 test」。执行在 Build 的蓝方，时点在红方写完之后，
-   * 所以「怎么跑」那一节必须细到不在场的人照着能跑。
+   * 环 v3（2026-08-09）：TestPlan 收窄成**纯方案**，测试代码归 Test 阶段。
+   * 两轨互盲 —— 它只从 Arch 推导，看不到 BuildPlan/Build；跑测试的是 QA。
    */
-  TestPlan: "State what must be verified before this change can ship, and deliver both"
-    + " the test plan and the test code -- automated where possible, manual where not."
-    + " Do NOT run the tests: they are executed after Build, by someone else, following"
-    + " your own how-to-run instructions.",
+  TestPlan: "State what must be verified before this change can ship, as a test plan:"
+    + " map every acceptance criterion to concrete cases (each with an id, its inputs,"
+    + " expected output, and the file it will land in). Do NOT write or run test code:"
+    + " the Test phase writes it from this plan, and QA executes it.",
   // 「跑一遍并交出证据」是被 rubric 判的（domain/rubric-defaults.ts 的 Build 那几条），
   // 所以它必须**被要求**。判它的蓝方跑不了东西 —— 不写在这里，就是在罚模型没做一件
   // 没人让它做的事，而那正是「模型答不出它没被问过的题」。
@@ -83,42 +84,55 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
   // 命名对齐上游、一处定义、不明显的决定写为什么），**所以这四件事也必须在这里被
   // 要求**。只加判据不加要求，就是回到上面那句话要防的事。
   /*
-   * ## 2026-08-06 拍的 Build 分工：红方**看不到测试**
+   * ## 环 v3（2026-08-09）：两轨互盲，Build 对测试**全盲**
    *
-   * 测试是 TestPlan 交的，跑它们的是这一轮的蓝方（红方写完之后）—— 红方拿到的
-   * 反馈是「哪条失败、输出是什么」，对着一个不可见的判据做 TDD。所以这里明令
-   * 不读、不改、不跑测试代码；「自己跑一遍」保留，但跑的是改动本身（编译、
-   * 启动、手动走一遍改的路径），不是测试套件。
+   * 2026-08-06 那版还许诺「你会被告知哪条失败」（蓝方跑测试）—— v3 里跑测试整个
+   * 挪到 QA，Build 侧从写到判都看不见测试：看得见就会向测试过拟合，QA 的绿就从
+   * 证据退化成靶子。所以明令不读、不写、不跑任何测试代码；「自己跑一遍」保留，
+   * 但跑的是改动本身（编译、启动、手动走一遍改的路径），不是测试套件。
    */
   Build: "Implement the approved plan. Change nothing outside the files the plan allows."
-    + " Do NOT read, modify, delete or run any test code: the tests were delivered by"
-    + " TestPlan and are executed by someone else after you finish -- you will be told"
-    + " which cases failed and what they printed."
+    + " Do NOT read, write, modify, delete or run any test code: tests are written on a"
+    + " separate track you cannot see, and are executed against your code later, at QA."
     + " Match the surrounding code and its direct callers: naming, error handling and file"
     + " placement follow what is already there -- do not start a second style in the same repo."
-    + " Use the words the approved Spec and TechSpec already use; do not invent a second name"
+    + " Use the words the approved Spec and Arch already use; do not invent a second name"
     + " for a concept they have named. Keep one definition per rule -- where the logic already"
     + " exists, call it instead of copying it. Wherever a decision is not obvious, leave the"
     + " reason in the code."
     + " Run what you changed (build it, start it, walk the changed path) and report the"
     + " exact command and its output -- unreported means unverified.",
-  // Review 的产出是一份**报告**，而它必须写清审的是哪个 commit —— 审 A 不等于审 B，
-  // 而下一轮、下一个阶段都要知道这份意见是对着哪一版说的。
-  // 缺陷本身另有去处：Review 里红方报的 blockers 会进 gaps（domain/phase.ts 的
-  // `redReviewsOthers`），所以这里要它「报出来」而不是「写进正文」。
-  Review: "Review the code produced by Build, independently. Write a review report"
-    + " naming the commit you reviewed, and report every defect you find as a blocker,"
-    + " by severity -- each one naming the file and position.",
-  Fix: "Fix the blocking problems that were reported. Change nothing beyond what they require.",
-  // QA 的产出是一份**报告**，而它必须写清测的是哪个 commit —— 和 Review 同一个理由。
-  // 失败的用例另有去处：QA 里红方报的 blockers 会进 gaps（`redReviewsOthers`）。
-  // 反方在这一阶段可以自己跑，所以「我跑了」这句话是**会被复核的**。
-  QA: "Run the approved test plan against the code produced by Build. Write a QA report"
-    + " naming the commit you tested and the exact commands you ran, and report every"
-    + " failure as a blocker -- each one with the case it came from and the actual output.",
-  Merge: "Summarise requirements, design, implementation, review and test facts, and state whether anything still blocks delivery.",
-  Retro: "Record what worked, what went wrong, and what should carry into the next change.",
-  Done: "Write the delivery note: what was built, how to use it, what changed, and what is knowingly still open.",
+  /*
+   * Test = 测试轨的施工阶段（环 v3）。镜像互盲：只从 TestPlan 推导，不许读实现 ——
+   * 测试读了实现就继承实现的盲区，QA 对撞出的一致就没有信息量了。
+   * 「证明测试自己站得住」不等于跑实现：语法、依赖、fixture 齐不齐，干跑就知道。
+   */
+  Test: "Write the test code that the approved test plan specifies, case by case, each"
+    + " landing in the file the plan names. Do NOT read the implementation being tested:"
+    + " it is built on a separate track you cannot see, and your tests meet it later, at QA."
+    + " Assert the expected outputs the plan wrote down, not whatever the code happens to do."
+    + " Verify your test code stands on its own (syntax, dependencies, fixtures) without"
+    + " running it against the implementation, and report exactly what you checked.",
+  // 退休了（环 v3 收编进 QA）。留一句话给类型，没有 Change 会走到。
+  Review: "This phase has been absorbed into QA and is no longer used.",
+  // 退休了（环 v3：修复 = 打回重开的阶段自己的下一轮）。同上。
+  Fix: "This phase has been retired; fixes are new rounds of the reopened phase.",
+  /*
+   * QA = 两轨对撞点（环 v3）：读（收编旧 Review 的静态审查）+ 跑（执行 Test 轨
+   * 的测试）。变异那一攻批 5 进来。失败的用例进 blockers（`redReviewsOthers`）。
+   * 反方在这一阶段可以自己跑，所以「我跑了」这句话是**会被复核的**。
+   */
+  QA: "This is where the two blind tracks collide. First review the code produced by"
+    + " Build against its upstream documents, naming the commit you reviewed, and report"
+    + " every defect you find as a blocker naming the file and position. Then run the"
+    + " tests produced by Test against that code, following the test plan's how-to-run,"
+    + " and report every failure as a blocker -- each one with the case it came from and"
+    + " the actual output. When code and tests disagree, say which side you believe is"
+    + " wrong and why -- the human decides where it gets sent back.",
+  // 退休了（环 v3：合并是 git 动作、复盘不承重、Done 是状态）。各留一句给类型。
+  Merge: "This phase has been retired; merging is a git action guarded by the QA stamp.",
+  Retro: "This phase has been retired; the ledger and rubric amendments are the retro.",
+  Done: "This phase has been retired; QA approval closes the change.",
 };
 
 export interface CodexTurnRunnerOptions {

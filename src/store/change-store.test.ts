@@ -148,7 +148,7 @@ describe("L0 · 项目的阶段图是数据（§4.5）", () => {
     try {
       database.prepare(
         "INSERT INTO projects (id, name, phase_order, created_at) VALUES ('PRJ-S', 'p', ?, ?)",
-      ).run(JSON.stringify(["PRD", "Build", "Review", "Done"]), AT);
+      ).run(JSON.stringify(["PRD", "Build", "QA"]), AT);
       const created = store.create("CHG-S", { projectId: "PRJ-S" });
       assert.equal(created.state.phase, "PRD");
 
@@ -217,12 +217,11 @@ describe("L0 · every transition lands in the ledger", () => {
         guard += 1;
       }
       const record = store.read("CHG-1");
-      assert.equal(record.state.phase, "Done");
+      assert.equal(record.state.phase, "QA");
       assert.equal(record.state.status, "closed");
-      // 12 phases x 3 actions, plus the creation entry（主线含 Arch）.
-      // 主线 11 站（TechSpec 已退休），每站 start/settle/approve 三步，加建档那一条。
-      assert.equal(store.ledger("CHG-1").length, 11 * 3 + 1);
-      assert.equal(record.seq, 11 * 3);
+      // 环 v3 主线 8 站，每站 start/settle/approve 三步，加建档那一条。
+      assert.equal(store.ledger("CHG-1").length, 8 * 3 + 1);
+      assert.equal(record.seq, 8 * 3);
     } finally {
       database.close();
     }
@@ -291,12 +290,12 @@ describe("L0 · the ledger cannot be bypassed", () => {
   it("refuses a stored state the machine could not have produced", () => {
     const { database } = open();
     try {
-      // Fix without a return stack, inserted straight past the store.
+      // 一个不存在的阶段名，绕过 store 直接写。
       assert.throws(
         () => database.prepare(
           `INSERT INTO changes
              (id, phase, status, return_stack, seq, created_at, updated_at)
-           VALUES ('CHG-BAD', 'Fix', 'pending', '[]', 0, ?, ?)`,
+           VALUES ('CHG-BAD', 'Implement', 'pending', '[]', 0, ?, ?)`,
         ).run(AT, AT),
         /CHECK constraint failed/,
       );

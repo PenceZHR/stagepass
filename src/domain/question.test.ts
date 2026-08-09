@@ -60,7 +60,7 @@ describe("L3 · the question offers exactly what the gate permits", () => {
     // enum 里是**人看见的那句话**，不是动作名 —— `reject` 这个词没人猜得到它是重跑。
     assert.deepEqual(
       question.requestedSchema.properties[DECISION_FIELD]?.enum,
-      [decisionLabel("approve", "Spec"), decisionLabel("reject", "Spec")],
+      [decisionLabel("approve"), decisionLabel("reject")],
     );
     assert.equal(question.requestedSchema.required[0], DECISION_FIELD);
     assert.match(question.message, /Spec/);
@@ -79,7 +79,7 @@ describe("L3 · the question offers exactly what the gate permits", () => {
   it("还有问题挡着时 approve 照样提供 —— 人能在同一次回答里清掉它", () => {
     assert.deepEqual(
       ask(SETTLED, WITH_P0)!.requestedSchema.properties[DECISION_FIELD]?.enum,
-      [decisionLabel("approve", "Spec"), decisionLabel("reject", "Spec")],
+      [decisionLabel("approve"), decisionLabel("reject")],
     );
   });
 
@@ -91,13 +91,13 @@ describe("L3 · the question offers exactly what the gate permits", () => {
       summary: "s",
     })!;
     assert.deepEqual(nothing.requestedSchema.properties[DECISION_FIELD]?.enum,
-      [decisionLabel("reject", "Spec")]);
+      [decisionLabel("reject")]);
   });
 
   it("offers retry, and only retry, on a blocked phase", () => {
     assert.deepEqual(
       ask(BLOCKED, WITH_P0)!.requestedSchema.properties[DECISION_FIELD]?.enum,
-      [decisionLabel("retry", "Spec")],
+      [decisionLabel("retry")],
     );
   });
 
@@ -107,7 +107,7 @@ describe("L3 · the question offers exactly what the gate permits", () => {
    */
   it("asks nothing when no decision is available", () => {
     assert.equal(ask({ ...SETTLED, status: "running" }, CLEAN), null);
-    assert.equal(ask({ phase: "Done", status: "closed", returnStack: [] }, CLEAN), null);
+    assert.equal(ask({ phase: "QA", status: "closed", returnStack: [] }, CLEAN), null);
   });
 
   /**
@@ -138,29 +138,26 @@ describe("L3 · 裁决那一格说人话", () => {
     assert.ok(offered.some((label) => label.includes("批准")));
   });
 
-  it("**Review / QA 的 reject 写「打回去修」** —— 同一个动作，两句不同的话", () => {
-    // 驳回 Review 不是重跑 Review，是把活送到 Fix（`sendsToFix`）。用「再来一轮」
-    // 去说它就是在界面上撒谎。
-    for (const phase of ["Review", "QA"] as const) {
-      const offered = gateDecisionQuestion({
-        phase,
-        gate: computeGate({ phase, status: "settled", returnStack: [] }, CLEAN),
-        summary: "s",
-      })!.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
-      assert.ok(offered.some((label) => label.includes("打回去修")), `${phase}: ${offered}`);
-      assert.ok(!offered.some((label) => label.includes("再来一轮")), phase);
-    }
+  it("**QA 的 reject 也写「再来一轮」** —— 环 v3 拆掉送修后，处处同一句话", () => {
+    // 「代码错了」不再借 reject 的壳：它是 sendBack（三向归因）。
+    const offered = gateDecisionQuestion({
+      phase: "QA",
+      gate: computeGate({ phase: "QA", status: "settled", returnStack: [] }, CLEAN),
+      summary: "s",
+    })!.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+    assert.ok(offered.some((label) => label.includes("再来一轮")), `QA: ${offered}`);
+    assert.ok(!offered.some((label) => /打回去修|送到 Fix/.test(String(label))), "还留着送修时代的话");
   });
 
-  it("那句话回来之后映射回动作 —— 两种 reject 说法都是 reject", () => {
-    for (const phase of ["Spec", "Review"] as const) {
+  it("那句话回来之后映射回动作 —— 每个阶段的说法都是同一句", () => {
+    for (const phase of ["Spec", "QA"] as const) {
       const question = gateDecisionQuestion({
         phase,
         gate: computeGate({ phase, status: "settled", returnStack: [] }, CLEAN),
         summary: "s",
       })!;
       assert.equal(decisionFrom(question, {
-        action: "accept", content: { decision: decisionLabel("reject", phase) },
+        action: "accept", content: { decision: decisionLabel("reject") },
       }), "reject");
     }
   });
@@ -174,12 +171,12 @@ describe("L3 · 裁决那一格说人话", () => {
 
   it("`runsAgainHere`：活儿留在这个阶段的那两句都算", () => {
     // 「再来一轮」和「重跑一次」都是「阶段一步没动，再跑一次」，中间那一步一样
-    // 看不出来。「打回去修」不算：那时 Change 已经换到 Fix 了，自动在一个刚到的
-    // 阶段上开跑，等于替人决定了 Fix 该做什么。
-    assert.equal(runsAgainHere(decisionLabel("reject", "Spec")), true);
-    assert.equal(runsAgainHere(decisionLabel("retry", "Spec")), true);
-    assert.equal(runsAgainHere(decisionLabel("reject", "Review")), false);
-    assert.equal(runsAgainHere(decisionLabel("approve", "Spec")), false);
+    // 看不出来。「打回上游」不算：那时 Change 已经换到上游那个阶段了，自动开跑
+    // 等于替人决定了那儿该做什么。
+    assert.equal(runsAgainHere(decisionLabel("reject")), true);
+    assert.equal(runsAgainHere(decisionLabel("retry")), true);
+    assert.equal(runsAgainHere(decisionLabel("sendBack")), false);
+    assert.equal(runsAgainHere(decisionLabel("approve")), false);
     assert.equal(runsAgainHere(undefined), false);
   });
 });
@@ -427,7 +424,7 @@ describe("L3 · 打回上游进裁决表（§5.9.1 长回边的人机面）", ()
   it("给了目标名单才提供「打回上游」，目标格摆在裁决那格上面", () => {
     const question = askWithTargets(["PRD", "Spec"]);
     const labels = question.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
-    assert.ok(labels.includes(decisionLabel("sendBack", "Build")), labels.join(" / "));
+    assert.ok(labels.includes(decisionLabel("sendBack")), labels.join(" / "));
     assert.deepEqual(question.requestedSchema.properties.T?.enum,
       [SEND_BACK_NONE, "PRD", "Spec"]);
     const fields = Object.keys(question.requestedSchema.properties);
@@ -439,14 +436,14 @@ describe("L3 · 打回上游进裁决表（§5.9.1 长回边的人机面）", ()
       phase: "Build", gate: computeGate(BUILD_SETTLED, CLEAN), summary: "s",
     })!;
     const labels = question.requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
-    assert.ok(!labels.includes(decisionLabel("sendBack", "Build")));
+    assert.ok(!labels.includes(decisionLabel("sendBack")));
     assert.equal(question.requestedSchema.properties.T, undefined);
   });
 
   it("标签映射回动作，目标从 T 格读回来 —— 对着问题自己的 enum 校验", () => {
     const question = askWithTargets(["PRD", "Spec"]);
     const answer: Answer = { action: "accept", content: {
-      T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack", "Build"),
+      T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack"),
     } };
     assert.equal(decisionFrom(question, answer), "sendBack");
     assert.equal(sendBackTargetFrom(question, answer), "Spec");
@@ -464,7 +461,7 @@ describe("L3 · 打回上游进裁决表（§5.9.1 长回边的人机面）", ()
 
   it("第二趟只在真选了打回时问理由 —— 那句话进账本，历史箭头写它", () => {
     const chose: Answer = { action: "accept", content: {
-      T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack", "Build"),
+      T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack"),
     } };
     const followUp = responseFollowUpQuestion([], chose)!;
     assert.deepEqual(Object.keys(followUp.requestedSchema.properties),
@@ -476,7 +473,7 @@ describe("L3 · 打回上游进裁决表（§5.9.1 长回边的人机面）", ()
     // 没选打回 —— 不问。
     assert.equal(responseFollowUpQuestion([], {
       action: "accept",
-      content: { [DECISION_FIELD]: decisionLabel("approve", "Build") },
+      content: { [DECISION_FIELD]: decisionLabel("approve") },
     }), null);
   });
 });
@@ -553,7 +550,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     assert.deepEqual(answered({
       R01: RESPONSE_DISMISS, R01x: "验收标准在第 3 节，反方没读到",
       R02: RESPONSE_AGREE, R02x: "范围要按 PRD 收窄",
-      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      [DECISION_FIELD]: decisionLabel("reject"),
     }).responses, {
       "SPEC-1": { kind: "dismiss", reason: "验收标准在第 3 节，反方没读到" },
       "SPEC-2": { kind: "agree", note: "范围要按 PRD 收窄" },
@@ -562,7 +559,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     assert.deepEqual(answered({
       R01: RESPONSE_WAIVE, R01x: "这一版先带着它走",
       R02: RESPONSE_OWN, R02x: "我要的是另一个意思",
-      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+      [DECISION_FIELD]: decisionLabel("approve"),
     }).responses, {
       "SPEC-1": { kind: "waive", reason: "这一版先带着它走" },
       // 「我自己说」等同「同意」：他的文字进下一轮，这一条留着。
@@ -572,7 +569,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
 
   it("同意但什么也没写 —— 也是一次表态，只是没有话要带", () => {
     assert.deepEqual(answered({
-      R01: RESPONSE_AGREE, R02: RESPONSE_AGREE, [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      R01: RESPONSE_AGREE, R02: RESPONSE_AGREE, [DECISION_FIELD]: decisionLabel("reject"),
     }).responses, {
       "SPEC-1": { kind: "agree", note: "" },
       "SPEC-2": { kind: "agree", note: "" },
@@ -580,7 +577,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
   });
 
   it("一条都没选 —— 什么都不做，不猜", () => {
-    assert.deepEqual(answered({ [DECISION_FIELD]: decisionLabel("reject", "PRD") }).responses, {});
+    assert.deepEqual(answered({ [DECISION_FIELD]: decisionLabel("reject") }).responses, {});
   });
 
   it("按了 Esc —— 一条表态都不落，人的意思是「我先不决定」", () => {
@@ -594,7 +591,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     const read = answered({
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
       RY: RAISE_SOMETHING, RYx: "没说清楚失败时回滚到哪",
-      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      [DECISION_FIELD]: decisionLabel("reject"),
     });
     assert.equal(read.raised, "没说清楚失败时回滚到哪");
   });
@@ -602,7 +599,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
   it("**全点「同意」就没有第二趟** —— 一个字都不用打", () => {
     const first = { action: "accept" as const, content: {
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE, RY: RAISE_NOTHING,
-      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      [DECISION_FIELD]: decisionLabel("reject"),
     } };
     assert.equal(responseFollowUpQuestion(GAPS, first), null);
   });
@@ -615,7 +612,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
      */
     const first = { action: "accept" as const, content: {
       R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE, RY: RAISE_SOMETHING,
-      [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      [DECISION_FIELD]: decisionLabel("reject"),
     } };
     const more = responseFollowUpQuestion(GAPS, first)!;
     assert.ok(more);
@@ -629,7 +626,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
   it("点了「有」却没写 —— 就当没提", () => {
     const read = answered({
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
-      RY: RAISE_SOMETHING, [DECISION_FIELD]: decisionLabel("reject", "PRD"),
+      RY: RAISE_SOMETHING, [DECISION_FIELD]: decisionLabel("reject"),
     });
     assert.equal(read.raised, "");
   });
@@ -642,7 +639,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     })!;
     assert.deepEqual(responsesFrom({
       question: plain,
-      answer: { action: "accept", content: { [DECISION_FIELD]: decisionLabel("approve", "PRD") } },
+      answer: { action: "accept", content: { [DECISION_FIELD]: decisionLabel("approve") } },
       openGaps: GAPS,
     }), { responses: {}, raised: "" });
   });
@@ -698,7 +695,7 @@ describe("L3 · turning an answer into a decision", () => {
   it("returns the action the human picked", () => {
     const question = ask(SETTLED, CLEAN)!;
     assert.equal(
-      decisionFrom(question, { action: "accept", content: { decision: decisionLabel("approve", "Spec") } }),
+      decisionFrom(question, { action: "accept", content: { decision: decisionLabel("approve") } }),
       "approve",
     );
   });
@@ -712,7 +709,7 @@ describe("L3 · turning an answer into a decision", () => {
     // 什么都没产出 —— 那时 approve 真的没被提供（那个拒清不掉，见上面那条）。
     const question = ask(SETTLED, EMPTY_EVIDENCE)!;
     assert.equal(
-      decisionFrom(question, { action: "accept", content: { decision: decisionLabel("approve", "Spec") } }),
+      decisionFrom(question, { action: "accept", content: { decision: decisionLabel("approve") } }),
       null,
     );
     assert.equal(
@@ -825,37 +822,35 @@ describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
   });
 });
 
-describe("L3 · Review/QA 的裁决表里有「再审一次」（旧账 F）", () => {
+/**
+ * 环 v3：**reject 在每个阶段都是「再来一轮」，QA 也不例外。**
+ *
+ * 旧账 F（Review/QA 的 reject 被「送修 → Fix」占用，原地重跑只好另设 rerun）
+ * 随 Fix 退休整个了结：送修的标签、rerun 的动作、按阶段变文案的分支全拆了。
+ * 「代码错了」现在是 sendBack（三向归因），不再借 reject 的壳。
+ */
+describe("L3 · reject 处处同一句话，QA 的裁决表也不例外", () => {
   const settledAt = (phase: Phase): ChangeState =>
     ({ phase, status: "settled", returnStack: [] });
   const askAt = (phase: Phase): Question => gateDecisionQuestion({
     phase, gate: computeGate(settledAt(phase), CLEAN), summary: "s",
   })!;
 
-  for (const phase of ["Review", "QA"] as const) {
-    it(`${phase}：送修和再审是两个选项，不是一个`, () => {
-      const offered = askAt(phase).requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
-      assert.ok(offered.includes(decisionLabel("reject", phase)), "少了送修");
-      assert.ok(offered.includes(decisionLabel("rerun", phase)), "少了再审");
-      // 两句话说的是两件事：代码有问题 vs 这一轮审得不对。
-      assert.match(decisionLabel("reject", phase), /送到 Fix/);
-      assert.match(decisionLabel("rerun", phase), /代码不动、不送 Fix/);
-    });
-  }
-
-  it("设计阶段没有这一项 —— 那儿的「再来一轮」已经是它（§5.4：必被拒的不许摆）", () => {
-    const offered = askAt("Spec").requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
-    assert.ok(!offered.includes(decisionLabel("rerun", "Spec")));
+  it("QA 的裁决表：再来一轮 + 打回上游，没有第三种「送修」", () => {
+    const offered = askAt("QA").requestedSchema.properties[DECISION_FIELD]?.enum ?? [];
+    assert.ok(offered.includes(decisionLabel("reject")), "少了再来一轮");
+    assert.ok(!offered.some((label) => /Fix|送修|再审/.test(String(label))),
+      "还留着送修/再审时代的选项");
   });
 
-  it("那句话回来映射成 rerun，而且算「活儿留在这个阶段」—— 答完直接续跑", () => {
-    const question = askAt("Review");
+  it("「再来一轮」回来映射成 reject，而且算「活儿留在这个阶段」—— 答完直接续跑", () => {
+    const question = askAt("QA");
     assert.equal(decisionFrom(question, {
-      action: "accept", content: { [DECISION_FIELD]: decisionLabel("rerun", "Review") },
-    }), "rerun");
-    assert.equal(runsAgainHere(decisionLabel("rerun", "Review")), true);
-    // 「打回去修」照旧不算：那时 Change 已经换到 Fix 了。
-    assert.equal(runsAgainHere(decisionLabel("reject", "Review")), false);
+      action: "accept", content: { [DECISION_FIELD]: decisionLabel("reject") },
+    }), "reject");
+    assert.equal(runsAgainHere(decisionLabel("reject")), true);
+    // 打回上游不续：那时 Change 已经换到上游那个阶段了。
+    assert.equal(runsAgainHere(decisionLabel("sendBack")), false);
   });
 });
 

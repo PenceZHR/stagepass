@@ -473,8 +473,8 @@ export async function decideGate(input: {
    * **批准了就归档这个阶段的线程。**
    *
    * `phase` 是转移**之前**的那个，也就是刚被批准的那个，正好是要归档的那一条。
-   * Fix 会被反复进入（§6.5 规则 2），但它被批准时活儿也确实完了；下次再进 Fix，
-   * `launchInto` 那边会自动把它解开。
+   * 被打回重开的阶段会被反复进入（§6.5 规则 2），但它被批准时活儿也确实完了；
+   * 下次再进来，`launchInto` 那边会自动把线程解开。
    */
   if (
     typeof outcome === "object" && outcome !== null
@@ -493,8 +493,8 @@ export async function decideGate(input: {
    * 任何东西说「还差一次派发」，人会以为下一轮已经在跑了。
    *
    * 「再来一轮」和「重跑一次」都续 —— 两条路上活儿都留在这个阶段，中间那一步一样
-   * 看不出来。**「打回去修」不续**：那时 Change 已经换到 Fix 了，自动在一个刚到的
-   * 阶段上开跑，等于替人决定了 Fix 该做什么。
+   * 看不出来。**「打回上游」不续**：那时 Change 已经换到上游那个阶段了，自动在一个
+   * 刚到的阶段上开跑，等于替人决定了那儿该做什么。
    */
   const decided = answer.content[DECISION_FIELD];
   const continued = runsAgainHere(decided) ? await input.rerun(phase) : null;
