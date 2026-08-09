@@ -374,7 +374,8 @@ body::after {
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
 /*
- * 环上的地图层：回头的弦、能去的虚线、节点的轮次刻度（§5.9.3 / §5.9.4）。
+ * 环上的地图层：回头的弦、能去的虚线（§5.9.3）。轮次不在这层 —— 它是节点圆
+ * 自己的颜色深浅（§5.9.4，见 .stage-node button 的 --depth）。
  *
  * **两种画法必须一眼分得开**（§5.9.3②）：走过的是实线，永久留着 —— 那是这个
  * Change 的病历，「被 Build 打回来过两次」应当一眼看得出；能去的是虚线，随状态
@@ -401,7 +402,7 @@ body::after {
   stroke-linecap: round; pointer-events: stroke;
 }
 .orbit-map .live.back { stroke: rgba(255,146,128,.2); }
-/** 自环那条轨道：只给 V 骑，本身不画（画出来就和刻度打架了）。 */
+/** 自环那条轨道：只给 V 骑，本身不画（画出来就是节点外又套一个圈）。 */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
 /*
  * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
@@ -414,16 +415,6 @@ body::after {
 .orbit-map .arrow.trail { stroke: rgba(240,220,190,.42); stroke-width: .42; }
 .orbit-map .arrow.back { stroke: rgba(255,152,134,.95); }
 .orbit-map .arrow.back.trail { stroke: rgba(255,152,134,.4); }
-/*
- * 刻度要**一眼看得见**才有意义（§5.9.4：节点上花的轮数比它在环上的位置更能说明
- * 「你在哪」）。第一版 stroke-width .9、长 1.8 单位，实测在真尺寸下是 4×8 像素 ——
- * DOM 里在、几何也对，屏幕上等于没画。这一版按「能一眼数出几段」定粗细。
- */
-.orbit-map .tick {
-  fill: none; stroke: rgba(226,200,164,.9); stroke-width: 1.5; stroke-linecap: round;
-}
-.orbit-map .tick.done { stroke: rgba(150,214,168,.9); }
-
 /*
  * `--progress` 必须注册才过渡得了。
  *
@@ -468,7 +459,27 @@ body::after {
   position: absolute; left: -28px; top: -28px;
   width: 56px; height: 56px; padding: 0; display: grid; place-items: center;
   border: 1px solid rgba(255,255,255,.28); border-radius: 50%;
-  background: rgba(42,39,50,.36); backdrop-filter: blur(16px);
+  /*
+   * 跑过几轮 = 圆被点亮的程度（§5.9.4，2026-08-09 从分段刻度改过来的）。
+   * `--depth`（0–1）由 panel.js 的 drawOrbit 写在节点上：0 轮是原来的底色，
+   * 轮数越多这盏越亮。
+   *
+   * **光感渐变，不是平涂。** 走过两版弯路（都是用户 2026-08-09 毙的）：
+   * ① color-mix(in oklch) 混底色 —— oklch 色相绕圈插值，绿(152°)混深紫(298°)
+   *   路过蓝灰，一屏泥色；② 色相固定的纯色叠层 —— 色对了，但实心平涂像贴纸。
+   * 现在是香槟金到古铜的径向渐变：高光偏左上、往边缘落深，透明度整体跟着
+   * --depth 走 —— 读起来是「这个盘被点亮了几分」，和整屏的暖金质感同族。
+   *
+   * 批准态不再单独换绿的填色（平涂的绿正是「贴纸感」的大头）—— 绿勾和绿边框
+   * 已经在说「批准过」，填色只说「跑过几轮」，一层信息一个载体。
+   */
+  background:
+    radial-gradient(120% 120% at 34% 26%,
+      oklch(0.88 0.04 86 / calc(var(--depth, 0) * .38)) 0%,
+      oklch(0.74 0.07 68 / calc(var(--depth, 0) * .26)) 46%,
+      oklch(0.52 0.08 50 / calc(var(--depth, 0) * .20)) 100%),
+    rgba(42,39,50,.36);
+  backdrop-filter: blur(16px);
   cursor: pointer; font: inherit;
   transition: transform .28s cubic-bezier(.2,.8,.2,1),
               background .28s, border-color .28s, box-shadow .28s;
@@ -481,10 +492,10 @@ body::after {
 /*
  * 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。
  *
- * **64px → 80px（2026-08-05）**：圆外面那一圈现在住着轮次刻度和绕圈的箭头
- * （§5.9.3/§5.9.4），而它们只能待在「圆的边缘」和「标签顶」之间。原来那条缝
- * 只有 36px，圈大不起来 —— 用户要的是「起码包裹住 stage 的圆」。
- * 节点之间隔着约 150px，多让 16px 不会挤到邻居。
+ * **64px → 80px（2026-08-05）**：圆外面那一圈住着绕圈的箭头（§5.9.3），
+ * 它只能待在「圆的边缘」和「标签顶」之间。原来那条缝只有 36px，圈大不起来
+ * —— 用户要的是「起码包裹住 stage 的圆」。节点之间隔着约 150px，多让 16px
+ * 不会挤到邻居。
  */
 .stage-node button span {
   position: absolute; top: 80px; left: 50%; transform: translateX(-50%);
@@ -535,6 +546,7 @@ body::after {
  * 实心点。设计稿 §3 要求"不依赖颜色作为唯一状态表达"，删掉形状就违反它。
  */
 .stage-node.approved button {
+  /* 填色不换：轮数的亮度照常，「批准过」由这条绿边和下面的绿勾说。 */
   border-color: color-mix(in oklch, var(--approved) 52%, transparent);
 }
 .stage-node.approved button i {
@@ -992,7 +1004,7 @@ body::after {
           <!--
             环上的地图层（§5.9.3）。**它不是第五个装饰圈** —— §5.0.1 那条「只留
             一个大环」管的是同心圆，这里画的是环**内部**的关系：回头的弦、能去的
-            虚线、节点的轮次刻度。
+            虚线。轮次不在这层，是节点圆自己的颜色深浅。
 
             viewBox 用 0–100 的方格，圆心 (50,50)、轨道半径 45.5 —— 那个 45.5 和
             CSS 的 `inset: 4.5%`、panel.js 的 0.455 是同一个数。改一个就要改三个，

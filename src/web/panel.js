@@ -683,7 +683,7 @@ function placeNodes() {
  * ```
  * 向前的历史   已经是那道进度弧了       这儿不画（画了就是同一件事说两遍）
  * 回头的历史   穿过中心的弦，实线永久     §5.9.3④：形状本身带语义
- * 自环的历史   节点上的刻度，一轮一格     §5.9.4：真实形状是「各自带自环的节点」
+ * 自环的历史   节点圆的颜色深浅，越跑越深   §5.9.4；画在节点上（drawOrbit 的 --depth）
  * 能去的边     虚线 + 流动，随状态变      §5.9.3②：和历史必须一眼分得开
  * ```
  *
@@ -711,7 +711,7 @@ function nodeAt(index, total) {
  *
  * ```
  * 0 ~ 4.86    节点那个圆自己
- * 4.86 ~ 9.0  空的 —— 刻度和绕圈箭头住在这里（标签让开之后腾出来的）
+ * 4.86 ~ 9.0  空的 —— 绕圈箭头住在这里（标签让开之后腾出来的）
  * 9.0 ~ 11.1  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
  * ```
  *
@@ -719,15 +719,10 @@ function nodeAt(index, total) {
  * 可以大一点，起码包裹住 stage 的圆」—— 所以 `panel.html` 把标签从 64px 推到
  * 80px，这条带子才够住人。**改这里就要改那边**，两个数是同一件事的两半。
  *
- * 刻度和箭头**共用同一条轨道**：一个节点周围只有一圈东西，读起来是「这个盘
- * 走过几格、指针正在再走一圈」，而不是套了两三个同心圆。
- *
- * 第一版刻度画在 7.1 且按「环的内侧」摆，对**上半圈**的节点正好压在字上
- * （PRD 那一圈就是）—— 内侧对上半圈就是下方。所以改成按**屏幕正上方**摆：
- * 字永远在正下方，避开它才是绝对的，跟着环转的相对方位不是。
+ * 这条轨道上原来还有轮次刻度（一轮一段的分段弧）。用户 2026-08-09：刻度去掉，
+ * 轮数改用**节点圆自己的颜色深浅**表达 —— 见 drawOrbit 里的 `--depth`。
  */
-const RIM = 7.5;          // 刻度和绕圈箭头共用这条轨道（节点圆半径 4.86）
-const TICK_SPAN = 150;    // 刻度占正上方这 150°，正下方那块留给阶段名
+const RIM = 7.5;          // 绕圈箭头的轨道（节点圆半径 4.86）
 
 function svgNode(tag, attributes, tooltip) {
   const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -765,18 +760,6 @@ function chordPath(from, to) {
  */
 function arcAlongRing(from, to) {
   return `M ${from.x} ${from.y} A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y}`;
-}
-
-/** 圆心 `at`、半径 `radius` 上从 `startDeg` 到 `endDeg` 的一段弧（0° = 十二点）。 */
-function arcSegment(at, radius, startDeg, endDeg) {
-  const point = (degrees) => {
-    const radians = degrees * Math.PI / 180;
-    return { x: at.x + radius * Math.sin(radians), y: at.y - radius * Math.cos(radians) };
-  };
-  const a = point(startDeg);
-  const b = point(endDeg);
-  const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
-  return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${large} 1 ${b.x} ${b.y}`;
 }
 
 /**
@@ -887,47 +870,10 @@ function drawMap(panel) {
   }
 
   /*
-   * ② 每个节点跑过几轮，画成刻度（§5.9.4）。
-   *
-   * 「真实形状不是 12 个节点的环，是 12 个各自带自环的节点」—— 节点上花的轮数
-   * 比它在环上的位置更能说明「你在哪」。批准过的用绿色：那是「这几轮换来了一次
-   * 放行」，和「跑了三轮还卡着」是两回事。
+   * ② 每个节点跑过几轮 —— 不在这儿画。轮数是**节点圆自己的颜色深浅**
+   * （§5.9.4，2026-08-09 从分段刻度改过来的），在 drawOrbit 里以 `--depth`
+   * 写到节点上，精确数字挂在节点的 tooltip 上。
    */
-  /*
-   * 「再来一轮」那条边不画成线，画成**这个节点盘上的下一格空刻度**（见
-   * `selfLoopPath` 被删掉的地方那段注释）。所以先把它从边里挑出来。
-   */
-  const selfEdge = (panel.options ?? []).find((edge) => edge.kind === "self");
-
-  phases.forEach((entry, index) => {
-    const at = nodeAt(index, total);
-    const rounds = Math.min(entry.rounds ?? 0, 8);   // 画得下才有意义，8 段封顶
-    for (let tick = 0; tick < rounds; tick += 1) {
-      /*
-       * **一段一段的弧，不是放射状的短线。**
-       *
-       * 放射线那一版实测长得像爪子 —— 而这里要的是「带刻度的圆」（§5.9.4），
-       * 也就是一圈分段的表盘。分段弧还有一个好处：段数一眼数得出来，而放射线
-       * 越多越糊成一片。
-       *
-       * 摆在节点**内侧**那 150°：外侧要留给阶段名，而且顶上那个节点朝外就是
-       * 画布外面（第一版实测 y 是负的）。
-       */
-      /*
-       * **段占一格的一半多一点，缝要看得见。** 第一版占 76%，实测 6 段连成了
-       * 一道实心月牙 —— 数不出来，那「跑了几轮」这件事就白标了。
-       *
-       * 摆在**屏幕正上方**那 150°（不是环的内侧）：阶段名永远在正下方，
-       * 避开它的规则必须是绝对的 —— 见 RIM 上面那段实测。
-       */
-      const each = TICK_SPAN / rounds;
-      const base = -TICK_SPAN / 2 + tick * each;
-      map.append(svgNode("path", {
-        class: `tick${entry.mark === "approved" ? " done" : ""}`,
-        d: arcSegment(at, RIM, base + each * 0.22, base + each * 0.78),
-      }, `${entry.phase} 跑了 ${entry.rounds} 轮`));
-    }
-  });
 
   /*
    * ③ 现在能去哪，虚线 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
@@ -938,8 +884,8 @@ function drawMap(panel) {
   panel.options?.forEach((edge, order) => {
     /*
      * **自环：一枚小箭头绕着这个 stage 转圈**（用户 2026-08-05 定的画法）。
-     * 轨道就是刻度那一圈 —— 于是它读起来是「指针再走一圈这个盘」，而不是
-     * 环上又多了一样东西。轨道本身不画，只有箭头在动。
+     * 轨道贴着节点圆的外缘（RIM）—— 于是它读起来是「再绕这个节点一圈」，
+     * 而不是环上又多了一样东西。轨道本身不画，只有箭头在动。
      */
     if (edge.kind === "self") {
       const id = "map-self";
@@ -1002,12 +948,24 @@ function drawOrbit() {
       + (entry.mark ? ` ${entry.mark}` : "");
     node.style.setProperty("--a", `${angle}deg`);
 
+    /*
+     * 跑过几轮 = 圆的颜色深浅（§5.9.4，2026-08-09 从分段刻度改过来的）。
+     *
+     * 0 轮就是底色；跑过至少一轮要**一眼看得出和没跑过不一样**，所以给个
+     * 0.35 的地板，再往上按轮数爬，8 轮封顶（和刻度时代同一个上限 ——
+     * 再深也深不出区别）。深浅数不出精确轮数，精确数字在 tooltip 上。
+     */
+    const rounds = entry.rounds ?? 0;
+    node.style.setProperty("--depth",
+      rounds === 0 ? "0" : String(0.35 + 0.65 * Math.min(rounds, 8) / 8));
+
     if (entry.current) node.classList.add("current");
 
     const status = statusOf(entry);
     const button = document.createElement("button");
     button.type = "button";
-    button.title = entry.threadId ? `线程 ${entry.threadId}` : "还没有线程";
+    button.title = (entry.threadId ? `线程 ${entry.threadId}` : "还没有线程")
+      + (rounds > 0 ? `\n跑了 ${rounds} 轮` : "");
 
     const pip = document.createElement("i");
     const name = document.createElement("span");
