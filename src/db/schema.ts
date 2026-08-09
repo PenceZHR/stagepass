@@ -766,6 +766,29 @@ function migrateRetiredPhases(database: {
     Retro: "QA",
     Done: "QA",
   };
+  /*
+   * **证据跟着退休走**（环 v3 迁移的第二半）。搬 Change 的那半只管「停在退休
+   * 阶段上的」，而证据的洞打在**已经走过去的**身上：CHG-001 带着老 Plan 的产物
+   * 走到了 Build，v3 里 Build 的上游叫 BuildPlan —— `upstreamOf` 按新名取证据，
+   * 取到一个空行，红方的任务书里就没有它该读的计划文档。
+   *
+   * 只在承接方还没有自己证据时拷贝：TechSpec 并进 Arch 那种**合并**里，Arch
+   * 自己的产物才是权威，拷过去反而是把两份说法摆在一起让下游挑一个信。
+   */
+  for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
+    try {
+      database.exec(
+        `INSERT INTO change_evidence
+           (change_id, phase, artifact_ids, blockers, waived_ids, updated_at)
+         SELECT change_id, '${absorbedBy}', artifact_ids, blockers, waived_ids, updated_at
+           FROM change_evidence AS retiring WHERE phase = '${retired}'
+           AND NOT EXISTS (SELECT 1 FROM change_evidence
+             WHERE change_id = retiring.change_id AND phase = '${absorbedBy}')`,
+      );
+    } catch {
+      return;   // change_evidence 表还不存在（全新库）
+    }
+  }
   const at = new Date().toISOString();
   for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
     let rows: { id: string; seq: number }[];

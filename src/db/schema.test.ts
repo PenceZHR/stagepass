@@ -412,6 +412,39 @@ describe("L0 · 环 v3：新阶段名存得进去，rerun 历史行搬得回来"
     database.close();
   });
 
+  it("**证据跟着退休走**：Plan 的产物迁成 BuildPlan 的，合并进的不覆盖权威", () => {
+    const database = oldShape();
+    database.exec(`
+      CREATE TABLE change_evidence (
+        change_id TEXT NOT NULL REFERENCES changes(id),
+        phase TEXT NOT NULL CHECK (phase IN ('PRD','Spec','Arch','TechSpec','Plan','TestPlan','Build','Review','Fix','QA','Merge','Retro','Done')),
+        artifact_ids TEXT NOT NULL, blockers TEXT NOT NULL,
+        waived_ids TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (change_id, phase));
+    `);
+    // CHG-V3 已经走过 Plan / TechSpec / Arch —— 正是真库 CHG-001 的形状。
+    for (const [phase, artifact] of [
+      ["Plan", "Plan-r3.md"], ["TechSpec", "TechSpec-r2.md"], ["Arch", "Arch-r7.md"],
+    ]) {
+      database.prepare(
+        "INSERT INTO change_evidence VALUES ('CHG-V3', ?, ?, '[]', '[]', 't')",
+      ).run(phase, JSON.stringify([artifact]));
+    }
+    prepareSchema(database);
+    const read = (phase: string): string | undefined => (database.prepare(
+      "SELECT artifact_ids FROM change_evidence WHERE change_id = 'CHG-V3' AND phase = ?",
+    ).get(phase) as { artifact_ids: string } | undefined)?.artifact_ids;
+    // 改名：BuildPlan 接住 Plan 的产物 —— Build 的任务书按新名取证据，不能取空。
+    assert.equal(read("BuildPlan"), JSON.stringify(["Plan-r3.md"]));
+    // 合并：Arch 自己的产物是权威，TechSpec 的不许拷过去把它顶掉。
+    assert.equal(read("Arch"), JSON.stringify(["Arch-r7.md"]));
+    // 老行原样留着给历史读。
+    assert.equal(read("Plan"), JSON.stringify(["Plan-r3.md"]));
+    // 跑两次幂等：NOT EXISTS 挡住第二遍。
+    assert.doesNotThrow(() => { prepareSchema(database); });
+    database.close();
+  });
+
   it("prepareSchema 之后：老账一行不少（含 rerun），新阶段名和 QA closed 都存得进去", () => {
     const database = oldShape();
     prepareSchema(database);
