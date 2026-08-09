@@ -127,7 +127,10 @@ export const MINIMAL_PHASE_INSTRUCTIONS: PhaseInstructions = {
     + " every defect you find as a blocker naming the file and position. Then run the"
     + " tests produced by Test against that code, following the test plan's how-to-run,"
     + " and report every failure as a blocker -- each one with the case it came from and"
-    + " the actual output. When code and tests disagree, say which side you believe is"
+    + " the actual output. Then attack the tests themselves, both directions, with"
+    + " evidence: temporarily revert Build's change and the must-pass cases MUST go red"
+    + " (restore afterwards); apply a behaviour-preserving mutation and the cases MUST"
+    + " stay green. When code and tests disagree, say which side you believe is"
     + " wrong and why -- the human decides where it gets sent back.",
   // 退休了（环 v3：合并是 git 动作、复盘不承重、Done 是状态）。各留一句给类型。
   Merge: "This phase has been retired; merging is a git action guarded by the QA stamp.",

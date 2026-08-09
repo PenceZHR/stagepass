@@ -318,12 +318,21 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
    * QA 这几条判得了，是因为**反方在这一阶段可以自己跑**（domain/round.ts 的
    * `blueReach`）—— 「按 TestPlan 逐条执行了」和「别人能重现」这两条，只有一个跑得动
    * 东西的人核对得了。在 Build 那边同样的话就只能靠猜，所以那边写的是「交出运行证据」。
+   *
+   * 批 5：三攻各有判据 —— 读（against/findings，收编旧 Review 的那几条）、
+   * 跑（executed/failures）、变（mutation，两方向变异是对**测试**的攻击）。
+   * 「必过用例全部通过」那条从 Build 挪过来了：只有跑得动东西的人判得了它。
    */
   QA: [
-    { section: "subject", text: "写清楚测的是哪一个 commit，而不是笼统地说「当前代码」" },
+    { section: "subject", text: "写清楚测的是哪两个 commit（Build 的代码、Test 的测试），而不是笼统地说「当前代码」" },
+    { section: "against", text: "逐条对照了 Spec 和 Arch，每条都点到了上游那一条和它在代码里的落点（文件加函数），没有一条只给结论不给这两样" },
+    { section: "findings", text: "读出来的每条问题位置到了文件路径加函数名或行号，并写出了它在什么输入或状态下会真的出问题；没有发现时明写了没有" },
     { section: "executed", text: "按 TestPlan 逐条执行了，没有跳过，跳过的写明了为什么" },
+    { section: "executed", text: "TestPlan 标为「必须通过」的用例在这一轮的代码上全部通过，没通过的每条都对得上原因" },
     { section: "failures", text: "失败的用例记下了实际输出和它来自哪一条用例，而不只是「没过」" },
     { section: "regression", text: "确认过这一轮的改动没有让别处退化，并写了是怎么确认的" },
+    { section: "mutation", text: "还原方向做了并贴了证据：临时还原 Build 的改动后必过用例变红了 —— 全绿说明测试没测到这次改动" },
+    { section: "mutation", text: "no-op 方向做了并贴了证据：不改行为的变异之后用例仍然全绿 —— 红了说明测试钉的是源码文本不是行为" },
     { section: "repro", text: "跑的命令和环境写下来了，别人照着能重现" },
     { section: "executed", text: "按 TestPlan 的用例 id 逐条列了结果，每条写了跑的命令和过没过；没有把多条并成一句「全部通过」" },
     { section: "failures", text: "失败的用例贴了输出原文（报错那几行、实际值和期望值），而不是转述一句「结果不对」" },
