@@ -133,6 +133,20 @@ export class TurnStore {
     return row ? toRecord(row) : null;
   }
 
+  /**
+   * 这个阶段最近分派的那条 turn。
+   *
+   * 「上一轮死而复生」的探测从它起步（`decide-gate.ts`）：它带着当时的提示词和
+   * 线程 id —— 判「那条线程后来把活儿跑完了没有」要的正是这两样。
+   */
+  latest(changeId: string, phase: Phase): TurnRecord | null {
+    const row = this.database.prepare(
+      `SELECT * FROM turns WHERE change_id = ? AND phase = ?
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(changeId, phase) as TurnRow | undefined;
+    return row ? toRecord(row) : null;
+  }
+
   read(turnId: string): TurnRecord {
     const record = this.find(turnId);
     if (!record) throw new TurnNotFoundError(turnId);

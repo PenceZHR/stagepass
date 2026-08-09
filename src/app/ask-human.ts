@@ -46,6 +46,11 @@ export interface AskSessions {
    * 判据和 transport 认轮一字不差（认提示词，不认「谁先出现」）。
    */
   turnEnded?(changeId: string, phase: Phase, fromIndex: number, prompt: string): boolean;
+  /**
+   * 同一个判据，按**线程 id** 找文件 —— 「上一轮死而复生」的探测用（那条 turn
+   * 记着自己当时跑在哪条线程上，而阶段的绑定此后可能已经换了）。
+   */
+  threadTurnEnded?(threadId: string, fromIndex: number, prompt: string): boolean;
 }
 
 /**

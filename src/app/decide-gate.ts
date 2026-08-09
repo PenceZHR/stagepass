@@ -13,12 +13,13 @@ import {
 import { roundFromLedger, summariseConvergence, summariseRoundNotes } from "../domain/round";
 import { summariseAssessments } from "../domain/rubric";
 import { BindingStore } from "../store/binding-store";
-import { ChangeStore } from "../store/change-store";
+import { ChangeStore, type LedgerEntry } from "../store/change-store";
 import { CommandStore } from "../store/command-store";
 import { GapStore } from "../store/gap-store";
 import { QuestionStore } from "../store/question-store";
 import { RoundNoteStore } from "../store/round-note-store";
 import { RubricStore } from "../store/rubric-store";
+import { TurnStore } from "../store/turn-store";
 import {
   askFollowUp, launchAskPrompt, waitForAnswer, type AskSessions, type Unanswered,
 } from "./ask-human";
@@ -177,6 +178,66 @@ function landDecision(input: {
   return { responded, applied, raised, outcome, stopped: false };
 }
 
+/** 人看的时刻。ISO 是 UTC，直接上屏会和人手表差好几个小时。 */
+function whenWords(at: string): string {
+  return new Date(at).toLocaleString("zh-CN", { hour12: false });
+}
+
+/**
+ * **上面的判定是旧的吗** —— 落库之后上游又结算过新产出，就要说出来。
+ *
+ * 2026-08-09 真机：Plan 的裁决题写着「标准 9 条全部满足，裁判：可以了」，而那是
+ * 三天前旧轮的判定 —— 上游 Arch 在那之后整个重写过（四节 → 十节）。人按下按钮
+ * 那一刻眼前只有这张表（§5.2b），表上不说，人就拿着旧话裁新局。
+ *
+ * 判据是机械的：这一轮判定的落库时刻 vs 账本里上游阶段的 `settle`。settle 才算
+ * 「上游动过」—— 只有它产出新东西；approve / retry 动的是状态不是产物。
+ */
+function staleAssessmentsNote(input: {
+  readonly assessedAt: string | null;
+  readonly round: number;
+  readonly ledger: readonly LedgerEntry[];
+  readonly upstream: readonly Phase[];
+}): string {
+  if (input.assessedAt === null) return "";
+  const at = input.assessedAt;
+  const moved = input.ledger.filter((entry) =>
+    entry.action === "settle" && entry.at > at
+    && input.upstream.includes(entry.to.phase));
+  if (moved.length === 0) return "";
+  const last = moved[moved.length - 1]!;
+  return `\n\n⚠ 上面的判定和结论落库于 ${whenWords(at)}（第 ${input.round} 轮）。`
+    + `在那之后上游 ${last.to.phase} 又结算过新产出（${whenWords(last.at)}）——`
+    + `这些判定评的是上游变动**之前**的东西。`;
+}
+
+/**
+ * **上一轮死而复生了吗** —— 被判失败的那条线程后来把整轮跑完了，就要说出来。
+ *
+ * 2026-08-09 真机两次：Arch 第 5 轮 3 小时超时被判 `codex_unavailable`，正方
+ * 又跑了 77 分钟，`Arch-r5.md` 落盘无人认领，最后被下一轮的整树 commit 顺手
+ * 卷走；Plan 那次 2 秒误判，真裁判照常派了子 Agent。两次人都是在**不知道磁盘上
+ * 已经有成果**的情况下选的重跑。
+ *
+ * 只做知情，不做自动收编 —— 要不要认那份产出、怎么认，归人管。判据走 rollout
+ * （认那条 turn 自己的提示词），和 transport 认轮同一份纪律。
+ */
+function revivedTurnNote(input: {
+  readonly turns: TurnStore;
+  readonly sessions: AskSessions;
+  readonly changeId: string;
+  readonly phase: Phase;
+}): string {
+  const last = input.turns.latest(input.changeId, input.phase);
+  if (!last || last.status !== "failed" || last.threadId === null) return "";
+  if (input.sessions.threadTurnEnded?.(last.threadId, 0, last.prompt) !== true) {
+    return "";
+  }
+  const why = (last.error ?? "原因不明").slice(0, 80);
+  return `\n\n⚠ 上一轮虽被判失败（${why}），但那条线程后来把整轮跑完了 ——`
+    + `产出可能已经落在工作区。重跑会另起一轮、不会用它；先看一眼再选。`;
+}
+
 export async function decideGate(input: {
   database: Database.Database;
   sessions: AskSessions;
@@ -265,6 +326,15 @@ export async function decideGate(input: {
     // （§3.2：判据和闸门同一份）。这里只拼「这一轮判成什么样」。
     summary: summariseAssessments(assessed?.byRole ?? null)
       + summariseRoundNotes(notes)
+      // 判定可能是旧轮的（上游在它落库之后又结算过）—— 紧跟着它说。
+      + staleAssessmentsNote({
+        assessedAt: assessed?.at ?? null, round: assessed?.round ?? 0,
+        ledger: changes.ledger(changeId), upstream: upstreamOf(phase, graph),
+      })
+      // 上一轮可能死而复生（判了失败、线程后来跑完了）—— 人选重跑之前要知道。
+      + revivedTurnNote({
+        turns: new TurnStore(database), sessions, changeId, phase,
+      })
       + summariseConvergence({
         round, budget: input.roundBudget,
         raised: allGaps.length, open: blockers.length,

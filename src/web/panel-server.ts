@@ -39,7 +39,7 @@ import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { decideGate, type DecideOutcome } from "../app/decide-gate";
 import { rubricFor, saveRubric } from "../app/edit-rubric";
 import {
-  createChange, createProject, deleteChange, deleteProject,
+  createChange, createProject, deleteChange, deleteProject, type BusyCheck,
 } from "../app/workspace";
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief";
@@ -391,7 +391,17 @@ export class PanelSessions {
 
   /** 从 `fromIndex` 起，装着这句提示词的那一轮已经跑完了没有（`AskSessions`）。 */
   turnEnded(changeId: string, phase: Seat, fromIndex: number, prompt: string): boolean {
-    const path = this.rolloutPathFor(changeId, phase);
+    return this.completedIn(this.rolloutPathFor(changeId, phase), fromIndex, prompt);
+  }
+
+  /** 同一个判据，按线程 id 找文件 ——「上一轮死而复生」的探测用（`AskSessions`）。 */
+  threadTurnEnded(threadId: string, fromIndex: number, prompt: string): boolean {
+    const path = rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
+      .get(threadId) ?? null;
+    return this.completedIn(path, fromIndex, prompt);
+  }
+
+  private completedIn(path: string | null, fromIndex: number, prompt: string): boolean {
     if (path === null) return false;
     try {
       return findOwnCompletedTurn(
@@ -1078,6 +1088,9 @@ async function runToCompletion(input: {
       owner: "panel", token: jobId, now: input.at, ttlMs: input.turnMs,
     });
   } catch (error: unknown) {
+    // 库已经关了 = 面板在退场（生产不关库，只有测试的 teardown 会）。这时的
+    // 「抛了」全是同一句 not open —— 在全量输出里刷十几行，把真的红淹掉。
+    if (!database.open) return;
     console.error(`[panel] ${changeId}/${phase} 这一轮抛了：${String(error)}`);
   }
   /*
@@ -1102,6 +1115,7 @@ async function runToCompletion(input: {
       new BindingStore(database).detach(changeId, phase);
     }
   } catch (error: unknown) {
+    if (!database.open) return; // 同上：退场中，没有可收的尾。
     console.error(`[panel] ${changeId}/${phase} 收尾失败：${String(error)}`);
   }
 }
@@ -1167,6 +1181,52 @@ function readBody(request: IncomingMessage): Promise<Uint8Array> {
 function json(response: ServerResponse, body: unknown): void {
   response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+/**
+ * 删掉一个 Change，或者一个项目（连同它底下的全部 Change）。
+ *
+ * 用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
+ * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
+ * 从 `handle()` 里搬出来（函数上限逼的），行为一个字没变。
+ */
+function handleWorkspaceDelete(
+  url: URL,
+  response: ServerResponse,
+  database: Database.Database,
+  sessions: PanelSessions,
+): void {
+  const isBusy = (id: string): ReturnType<BusyCheck> => phaseBusy(database, id);
+  const forget = (id: string): void => { sessions.forget(id); };
+  // 删掉的 Change 不该在 Codex 里留活线程 —— 归档的理由在 `app/workspace.ts`。
+  const archive = (threadId: string): void => { sessions.archive.archive(threadId); };
+
+  if (url.pathname === "/api/change") {
+    const outcome = deleteChange({
+      database, changeId: url.searchParams.get("change") ?? "",
+      isBusy, forget, archive,
+    });
+    if (outcome.kind === "no_such_change") {
+      response.writeHead(404).end("no such change");
+      return;
+    }
+    json(response, outcome.kind === "busy"
+      ? { deleted: false, ...outcome.busy }
+      : { deleted: true, changeId: outcome.changeId });
+    return;
+  }
+
+  const outcome = deleteProject({
+    database, projectId: url.searchParams.get("project") ?? "",
+    isBusy, forget, archive,
+  });
+  if (outcome.kind === "no_such_project") {
+    response.writeHead(404).end("no_such_project");
+    return;
+  }
+  json(response, outcome.kind === "busy"
+    ? { deleted: false, changeId: outcome.changeId, ...outcome.busy }
+    : { deleted: true, projectId: outcome.projectId, changes: outcome.changes });
 }
 
 /**
@@ -1804,42 +1864,9 @@ export async function handle(
     return;
   }
 
-  /*
-   * 删掉一个 Change，或者一个项目（连同它底下的全部 Change）。
-   *
-   * 用户 2026-08-03：「每个 change 每个 project 我需要可以删除，我现在没法删。」
-   * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
-   */
-  if (url.pathname === "/api/change" && request.method === "DELETE") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const outcome = deleteChange({
-      database, changeId,
-      isBusy: (id) => phaseBusy(database, id),
-      forget: (id) => { sessions.forget(id); },
-    });
-    if (outcome.kind === "no_such_change") {
-      response.writeHead(404).end("no such change");
-      return;
-    }
-    json(response, outcome.kind === "busy"
-      ? { deleted: false, ...outcome.busy }
-      : { deleted: true, changeId: outcome.changeId });
-    return;
-  }
-
-  if (url.pathname === "/api/project" && request.method === "DELETE") {
-    const outcome = deleteProject({
-      database, projectId: url.searchParams.get("project") ?? "",
-      isBusy: (id) => phaseBusy(database, id),
-      forget: (id) => { sessions.forget(id); },
-    });
-    if (outcome.kind === "no_such_project") {
-      response.writeHead(404).end("no_such_project");
-      return;
-    }
-    json(response, outcome.kind === "busy"
-      ? { deleted: false, changeId: outcome.changeId, ...outcome.busy }
-      : { deleted: true, projectId: outcome.projectId, changes: outcome.changes });
+  if (request.method === "DELETE"
+    && (url.pathname === "/api/change" || url.pathname === "/api/project")) {
+    handleWorkspaceDelete(url, response, database, sessions);
     return;
   }
 
@@ -2280,9 +2307,16 @@ export function createPanelServer(options: PanelOptions): {
       const detail = error instanceof Error
         ? `${error.name}: ${error.message}`
         : String(error);
-      console.error(`[panel] ${request.method ?? "?"} ${request.url ?? "?"} —— ${detail}`);
-      if (error instanceof Error && error.stack !== undefined) {
-        console.error(error.stack);
+      /*
+       * 唯一不说的：库已经关了。那是退场（生产不关库，测试的 teardown 关）——
+       * 这时飞着的每个请求都摔在同一句 not open 上，只会把全量输出里真的红
+       * 淹掉。浏览器那份照回：万一真有人看着，它仍然是实话。
+       */
+      if (options.database.open) {
+        console.error(`[panel] ${request.method ?? "?"} ${request.url ?? "?"} —— ${detail}`);
+        if (error instanceof Error && error.stack !== undefined) {
+          console.error(error.stack);
+        }
       }
       if (response.headersSent) { response.end(); return; }
       response.writeHead(500, { "content-type": "application/json; charset=utf-8" });

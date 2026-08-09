@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import type Database from "better-sqlite3";
 
 import type { Phase } from "../domain/phase";
+import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
@@ -121,6 +122,12 @@ export function deleteChange(input: {
    * 下一个重名的 Change 会继承这一个的最后一屏（见 `PanelSessions.forget`）。
    */
   forget: (changeId: string) => void;
+  /**
+   * 归档一条线程（`codex archive`）。删掉的 Change 不该在 Codex 里留活线程 ——
+   * 它们指向一个已经不存在的账本。和「批准之后归档那个阶段的线程」（用户
+   * 2026-07-30 拍板）是同一个卫生标准。可选：测试和不带 Codex 的环境不给。
+   */
+  archive?: (threadId: string) => void;
 }): DeleteChangeOutcome {
   const changes = new ChangeStore(input.database);
   try {
@@ -133,8 +140,31 @@ export function deleteChange(input: {
   if (busy) return { kind: "busy", busy };
 
   input.forget(input.changeId);
+  archiveBoundThreads(input.database, input.changeId, input.archive);
   changes.delete(input.changeId);
   return { kind: "deleted", changeId: input.changeId };
+}
+
+/**
+ * 归档这个 Change 还绑着的线程。**枚举必须在 `changes.delete` 之前** ——
+ * 绑定行跟着 Change 一起删，删完就数不出来了。
+ *
+ * 逐条兜错：删是主事，归档是卫生 —— `codex` 不在、线程已被人删掉，都不该
+ * 把删除挡下来，也不该让后面的线程没人管。
+ */
+function archiveBoundThreads(
+  database: Database.Database,
+  changeId: string,
+  archive: ((threadId: string) => void) | undefined,
+): void {
+  if (!archive) return;
+  for (const threadId of new BindingStore(database).boundThreads(changeId)) {
+    try {
+      archive(threadId);
+    } catch {
+      // 说不上话的地方：这是网页 DELETE 的深处，失败的下场就是「没归档成」。
+    }
+  }
 }
 
 export type DeleteProjectOutcome =
@@ -155,6 +185,8 @@ export function deleteProject(input: {
   projectId: string;
   isBusy: BusyCheck;
   forget: (changeId: string) => void;
+  /** 同 `deleteChange.archive`。 */
+  archive?: (threadId: string) => void;
 }): DeleteProjectOutcome {
   if (!hasProject(input.database, input.projectId)) return { kind: "no_such_project" };
 
@@ -165,8 +197,11 @@ export function deleteProject(input: {
     const busy = input.isBusy(each.id);
     if (busy) return { kind: "busy", changeId: each.id, busy };
   }
-  // 删项目就是把它底下每条 Change 都删掉，尸体一样要跟着走。
-  for (const each of mine) input.forget(each.id);
+  // 删项目就是把它底下每条 Change 都删掉，尸体和线程一样要跟着走。
+  for (const each of mine) {
+    input.forget(each.id);
+    archiveBoundThreads(input.database, each.id, input.archive);
+  }
   new ProjectStore(input.database).delete(input.projectId, changes);
   return { kind: "deleted", projectId: input.projectId, changes: mine.length };
 }

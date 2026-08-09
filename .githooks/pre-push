@@ -3,5 +3,32 @@
 #
 # CI 在 GitHub 上跑同一条 pnpm check，但它只在推完之后才说话 —— 这里把红灯
 # 挡在推之前。跳过的口子留着（--no-verify），紧急时人自己负责。
+#
+# ## 2026-08-09 撞到的坑：钩子太慢，push 会被远端掐死
+#
+# 全量要 60 秒＋，而 SSH 连接在钩子跑的时候开着空转 —— GitHub 把它掐掉，push
+# 以 SIGPIPE 静默失败：本地看起来测试跑完了，远端什么都没收到，只有核对
+# origin 的 ref 才发现。所以给「刚绿过的那棵树」记一个印章：同一棵树再推直接
+# 放行（<1 秒，连接活得到传输）。第一次推就算被掐，印章已经留下，立刻重推
+# 必然成功。
+#
+# 印章只在**工作区干净**时落 —— pnpm check 跑的是工作区，工作区和 HEAD 不是
+# 同一棵树时，绿的是工作区，不能替 HEAD 作保。
+set -e
+cd "$(git rev-parse --show-toplevel)"
+tree=$(git rev-parse 'HEAD^{tree}')
+stamp_dir=$(git rev-parse --git-dir)
+stamp="$stamp_dir/stagepass-green-$tree"
+
+if [ -f "$stamp" ]; then
+  echo "[pre-push] 这棵树刚绿过（tree $tree），直接放行"
+  exit 0
+fi
+
 echo "[pre-push] pnpm check（要跳过：git push --no-verify）"
-cd "$(git rev-parse --show-toplevel)" && pnpm check
+pnpm check
+
+if [ -z "$(git status --porcelain)" ]; then
+  rm -f "$stamp_dir"/stagepass-green-*   # 只留最新的一枚，别攒尸体
+  : > "$stamp"
+fi

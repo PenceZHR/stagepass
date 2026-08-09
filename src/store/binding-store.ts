@@ -199,6 +199,20 @@ export class BindingStore {
     return row ? { threadId: row.thread_id, status: row.status } : null;
   }
 
+  /**
+   * 这个 Change 还绑着（`bound`）的全部线程，round 和 aside 一起，去重。
+   *
+   * 删除用（`app/workspace.ts`）：删掉的 Change 不该在 Codex 里留活线程。
+   * `detached` 的不算 —— 解绑说明别处已经处置过它。
+   */
+  boundThreads(changeId: string): string[] {
+    const rows = this.database.prepare(
+      `SELECT DISTINCT thread_id FROM change_bindings
+        WHERE change_id = ? AND status = 'bound'`,
+    ).all(changeId) as { thread_id: string }[];
+    return rows.map((row) => row.thread_id);
+  }
+
   detachAside(changeId: string): void {
     this.database.prepare(
       `UPDATE change_bindings SET status = 'detached', updated_at = ?
