@@ -385,11 +385,12 @@ body::after {
  * 那几条线上开）。
  */
 .orbit-map { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.orbit-map .chord {
-  fill: none; stroke: rgba(226,200,164,.5); stroke-width: .5;
-  stroke-linecap: round; pointer-events: stroke;
+.orbit-map .vapor {
+  fill: none; stroke: rgba(226,200,164,.32); stroke-width: .5;
+  stroke-linecap: round; stroke-dasharray: .05 1.15; pointer-events: stroke;
 }
-.orbit-map .chord.hot { stroke: rgba(255,146,128,.62); stroke-width: .7; }
+/* sendBack 比其它回跳略暖略亮一档 —— 语义分层保留，只是不再报警。 */
+.orbit-map .vapor.hot { stroke: rgba(255,178,150,.42); }
 /*
  * 能去的那条路：**一根极淡的发丝**，只说「走哪条道」。
  *

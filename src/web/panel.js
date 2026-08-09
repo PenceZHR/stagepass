@@ -736,16 +736,32 @@ function svgNode(tag, attributes, tooltip) {
 }
 
 /**
- * 回头的那一跳画成一条**穿过中心方向**的弦。
- *
- * 二次贝塞尔，控制点拉向圆心 —— 直线也能连上，但一堆直线会和轨道缠在一起；
- * 往圆心弯一下，回边就天然落在环的内部，和沿环走的推进泾渭分明（§5.9.3④）。
+ * 回头那条曲线的「顶点」：控制点拉向圆心 —— 直线也能连上，但一堆直线会和轨道
+ * 缠在一起；往圆心弯一下，回边就天然落在环的内部，和沿环走的推进泾渭分明
+ * （§5.9.3④）。烟迹（历史）和火箭的转移段（选项）共用这一个弯 —— 火箭飞的
+ * 就是烟迹说的那条路，两样东西才对得上。
  */
-function chordPath(from, to) {
+function chordApex(from, to) {
   const bend = 0.45;   // 0 = 直线，1 = 顶到圆心
-  const cx = from.x + (50 - from.x) * bend + (to.x - from.x) / 2 * (1 - bend);
-  const cy = from.y + (50 - from.y) * bend + (to.y - from.y) / 2 * (1 - bend);
-  return `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`;
+  return {
+    x: from.x + (50 - from.x) * bend + (to.x - from.x) / 2 * (1 - bend),
+    y: from.y + (50 - from.y) * bend + (to.y - from.y) / 2 * (1 - bend),
+  };
+}
+
+/** 从节点圆心朝 towards 方向缩到 RIM 轨道上的点 —— 尾迹不压着节点画。 */
+function rimEdgePoint(centre, towards) {
+  const len = Math.hypot(towards.x - centre.x, towards.y - centre.y) || 1;
+  return {
+    x: centre.x + (towards.x - centre.x) / len * RIM,
+    y: centre.y + (towards.y - centre.y) / len * RIM,
+  };
+}
+
+/** 只剩 backward 选项分支在用；Task 3 换掉那个调用方后，连这层薄壳一起删。 */
+function chordPath(from, to) {
+  const apex = chordApex(from, to);
+  return `M ${from.x} ${from.y} Q ${apex.x} ${apex.y} ${to.x} ${to.y}`;
 }
 
 /**
@@ -858,9 +874,19 @@ function drawMap(panel) {
     const from = indexOf(jump.fromPhase);
     const to = indexOf(jump.toPhase);
     if (from < 0 || to < 0) continue;
+    /*
+     * 走过的回头路 = 火箭飞过残留的**凝结尾迹**：圆点虚线，端点缩到两个 RIM
+     * 轨道上。上一版是红实线弦，用户 2026-08-09 判丑 —— 病历要留着，但它是
+     * 烟，不是伤口。
+     */
+    const a = nodeAt(from, total);
+    const b = nodeAt(to, total);
+    const apex = chordApex(a, b);
+    const start = rimEdgePoint(a, apex);
+    const end = rimEdgePoint(b, apex);
     map.append(svgNode("path", {
-      class: `chord${jump.action === "sendBack" ? " hot" : ""}`,
-      d: chordPath(nodeAt(from, total), nodeAt(to, total)),
+      class: `vapor${jump.action === "sendBack" ? " hot" : ""}`,
+      d: `M ${start.x} ${start.y} Q ${apex.x} ${apex.y} ${end.x} ${end.y}`,
     }, `第 ${jump.round} 轮：${jump.fromPhase} → ${jump.toPhase}`
       + (jump.reason ? `\n理由：${jump.reason}` : "")));
   }
