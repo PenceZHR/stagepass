@@ -824,99 +824,144 @@ function ringPoint(centre, radius, a) {
 }
 
 /**
- * 绕 centre 顺时针转 turns 整圈的**螺旋**：半径随角度从 r0 线性变到 r1。
+ * 绕 centre 从角 aStart 顺时针扫过 sweep 弧度的**螺旋**，半径由 r0 线性到 r1。
  *
- * SVG 没有螺旋原语，用四分之一圈一段的三次贝塞尔逼近（K 是圆弧的贝塞尔魔数）。
- * 每个接缝处两侧的切向都是纯周向 —— 拼起来 G1 连续，看不出段。半径外推/内收
- * 本身就是「越来越远 / 越来越近」那半句设计语言。
+ * SVG 没有螺旋原语，切成 ≤90° 一段的三次贝塞尔逼近。每段的控制点长度是
+ * `(4/3)·tan(θ/4)·r`（θ=90° 时正好是那个眼熟的 0.5523）—— 按实际步长算，
+ * 不是拿 90° 的常数硬套，否则非整圈的那一段会鼓出去。
+ *
+ * **扫角是任意的，不必是整圈**：回程要从「上一段结束的那个角」转到「转移弦要求
+ * 的那个角」，差多少补多少，路径才接得上（见 rocketFlight）。每个接缝两侧的切向
+ * 都是纯周向，拼起来 G1 连续，看不出段。
  */
-function spiralTurns(centre, aStart, turns, r0, r1) {
-  const K = 0.5523;
-  const quarters = turns * 4;
+function spiralArc(centre, aStart, sweep, r0, r1) {
+  const steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
+  const step = sweep / steps;
+  const k = (4 / 3) * Math.tan(step / 4);
   let d = "";
-  for (let i = 0; i < quarters; i += 1) {
-    const a0 = aStart + i * (Math.PI / 2);
-    const a1 = a0 + Math.PI / 2;
-    const rA = r0 + (r1 - r0) * (i / quarters);
-    const rB = r0 + (r1 - r0) * ((i + 1) / quarters);
+  for (let i = 0; i < steps; i += 1) {
+    const a0 = aStart + i * step;
+    const a1 = a0 + step;
+    const rA = r0 + (r1 - r0) * (i / steps);
+    const rB = r0 + (r1 - r0) * ((i + 1) / steps);
     const p0 = ringPoint(centre, rA, a0);
     const p3 = ringPoint(centre, rB, a1);
-    const c1x = p0.x + K * rA * Math.cos(a0);
-    const c1y = p0.y + K * rA * Math.sin(a0);
-    const c2x = p3.x - K * rB * Math.cos(a1);
-    const c2y = p3.y - K * rB * Math.sin(a1);
+    const c1x = p0.x + k * rA * Math.cos(a0);
+    const c1y = p0.y + k * rA * Math.sin(a0);
+    const c2x = p3.x - k * rB * Math.cos(a1);
+    const c2y = p3.y - k * rB * Math.sin(a1);
     d += `C ${c1x} ${c1y} ${c2x} ${c2y} ${p3.x} ${p3.y} `;
   }
   return d;
 }
 
 /**
- * 回程那一笔的控制点：把弦的中点朝**去程弯的反面**推出去。
+ * 回程那条转移弦的控制点：把去程的控制点**关于弦翻到另一侧**。
  *
- * 去程向心弯、回程向外鼓，两条道就分得开 —— 是一个环路，不是原路折返。夹在
- * viewBox 里，免得贴边的节点把回程甩出画面（和 outerOrbit 同一个顾虑）。
+ * 去程向心弯，回程就得走另一条道，否则是原路折返。用镜像而不是「中点推一个
+ * 固定距离」：镜像自动跟着去程的弯度走，两条道天然对称成一只眼睛的形状。
+ *
+ * 两个退化要挡住：
+ * - **对径跳转**时去程控制点正好压在弦上（chordApex 算出来就是环心），镜像和它
+ *   重合 —— 两条道又叠回一条。这时改成朝法向让开一段。
+ * - 镜像可能被甩到环外老远（相邻两个节点的弦很短，翻过去就出画）。按半径收回
+ *   环内，和 outerOrbit 是同一个顾虑。
  */
 function returnApex(from, to, awayFrom) {
-  const mx = (from.x + to.x) / 2;
-  const my = (from.y + to.y) / 2;
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const len = Math.hypot(dx, dy) || 1;
-  const nx = -dy / len;
-  const ny = dx / len;
-  const side = (awayFrom.x - mx) * nx + (awayFrom.y - my) * ny >= 0 ? -1 : 1;
-  const bow = 22;
-  const clamp = (v) => Math.min(94, Math.max(6, v));
-  return { x: clamp(mx + nx * bow * side), y: clamp(my + ny * bow * side) };
+  const t = ((awayFrom.x - from.x) * dx + (awayFrom.y - from.y) * dy) / (len * len);
+  const foot = { x: from.x + t * dx, y: from.y + t * dy };
+  let apex = { x: 2 * foot.x - awayFrom.x, y: 2 * foot.y - awayFrom.y };
+  if (Math.hypot(apex.x - awayFrom.x, apex.y - awayFrom.y) < 10) {
+    apex = { x: foot.x - dy / len * 18, y: foot.y + dx / len * 18 };
+  }
+  const radius = Math.hypot(apex.x - 50, apex.y - 50);
+  const cap = 43;
+  return radius <= cap ? apex : {
+    x: 50 + (apex.x - 50) * cap / radius,
+    y: 50 + (apex.y - 50) * cap / radius,
+  };
+}
+
+/** 把角度归一化到 [0, 2π) —— 补角用，别让它算出负的扫角把螺旋倒着画。 */
+function wrapAngle(radians) {
+  const turn = Math.PI * 2;
+  return ((radians % turn) + turn) % turn;
 }
 
 /**
- * 整条飞行路线的 `d` —— **一个闭环：飞出去，还飞回来**（用户 2026-08-09）。
+ * 整条飞行路线的 `d` —— **一次完整的往返，六段**（用户 2026-08-09 第六次拍板）。
  *
- * 去程：在起点螺旋外扩两圈 → 向心弯的转移弦 → 在目标螺旋内收两圈，贴到它的
- * 圆边上。回程：从那儿直接一笔鼓向弦的另一侧，回到出发点的圆边。
+ * ```
+ * ① 起点地表 → 螺旋升到起点轨道
+ * ② 转移到目标轨道（向心弯的弦）
+ * ③ 螺旋降到目标地表
+ * ④ 螺旋从目标地表再升回目标轨道
+ * ⑤ 转移回起点轨道（弦的另一侧，不是原路）
+ * ⑥ 螺旋降回起点地表 —— 正好是 ① 的出发点，闭环
+ * ```
  *
- * 闭环有个额外好处：**没有瞬移，也就不需要淡出**。上一版是单程，跑到头得靠
- * opacity 抹掉再从头开始 —— 现在起点就是终点，`repeatCount=indefinite` 接得
- * 严丝合缝。匀速跑（paced）不需要分段路程，所以只回一个字符串。
+ * 上一版的回程是从目标**地表直接拉一条线**回起点地表 —— 用户原话：「你是直接从
+ * 球里出来，那是不对的，两个都是有轨道的过程」。去和回是对称的两趟任务，不是一趟
+ * 任务加一条捷径。
+ *
+ * ## 角度怎么接上
+ *
+ * 转移弦的两头要和螺旋相切，切点的角度是弦自己定的（`atan2`），而螺旋走完整圈会
+ * 回到原角。所以 ①③ 走整圈就够；**④⑥ 要在整圈之外补上一个差角** —— 从「上一段
+ * 停在的角」补到「这一段的弦要求的角」。补角用 `wrapAngle` 取正值：取负会让螺旋
+ * 倒着画，路径当场自交。
+ *
+ * 闭环的额外好处：**没有瞬移，也就不需要淡出**，`repeatCount=indefinite` 接得严丝
+ * 合缝。匀速跑（paced）不需要分段路程，所以只回一个字符串。
  */
-function rocketFlight(from, to) {
-  const apex = chordApex(from, to);
-  const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 出轨角
-  const aA = Math.atan2(to.y - apex.y, to.x - apex.x);      // 入轨角
+function rocketFlight(from, to, apexOut, apexBack) {
   const outFrom = outerOrbit(from);   // 两头各按自己的余量放大，贴边的收窄
   const outTo = outerOrbit(to);
-  const pad = ringPoint(from, NODE_R, aD);    // 从 stage 圆边上直接起旋
-  const arrive = ringPoint(to, outTo, aA);    // 绕完两圈后从最外圈同角切入
-  const touch = ringPoint(to, NODE_R, aA);    // 内收两圈之后贴到目标圆边
-  const home = returnApex(touch, pad, apex);
+  const aD = Math.atan2(apexOut.y - from.y, apexOut.x - from.x);   // 去程出轨角
+  const aA = Math.atan2(to.y - apexOut.y, to.x - apexOut.x);       // 去程入轨角
+  const bD = Math.atan2(apexBack.y - to.y, apexBack.x - to.x);     // 回程出轨角
+  const bA = Math.atan2(from.y - apexBack.y, from.x - apexBack.x); // 回程入轨角
+  const full = ORBIT_TURNS * 2 * Math.PI;
+
+  const pad = ringPoint(from, NODE_R, aD);        // ① 的起点，也是 ⑥ 的终点
+  const arrive = ringPoint(to, outTo, aA);
+  const back = ringPoint(from, outFrom, bA);
+
   return `M ${pad.x} ${pad.y} `
-    + spiralTurns(from, aD, ORBIT_TURNS, NODE_R, outFrom)
-    + `Q ${apex.x} ${apex.y} ${arrive.x} ${arrive.y} `
-    + spiralTurns(to, aA, ORBIT_TURNS, outTo, NODE_R)
-    + `Q ${home.x} ${home.y} ${pad.x} ${pad.y} Z`;
+    + spiralArc(from, aD, full, NODE_R, outFrom)
+    + `Q ${apexOut.x} ${apexOut.y} ${arrive.x} ${arrive.y} `
+    + spiralArc(to, aA, full, outTo, NODE_R)
+    + spiralArc(to, aA, full + wrapAngle(bD - aA), NODE_R, outTo)
+    + `Q ${apexBack.x} ${apexBack.y} ${back.x} ${back.y} `
+    + spiralArc(from, bA, full + wrapAngle(aD - bA), outFrom, NODE_R)
+    + "Z";
 }
 
 /**
- * 沿环推进的一趟**来回**：外道去、内道回，两头各半个 U 弯接上（跑道形）。
+ * 沿**环**走的那条转移弦的控制点：中间角上，半径放大到 `R / cos(Δ/2)`。
  *
- * U 弯的圆心摆在内外两道的正中间，于是接口处两侧的切向都是纯周向 —— 拼起来
- * 不打折。内道走环内 8 个单位：往外让会顶到阶段名那行字。
+ * 这是二次贝塞尔逼近圆弧的标准控制点 —— 曲线因此贴着环走，「沿环走 = 推进 /
+ * 穿心 = 回头」那条语义（§5.9.3④）靠它保住：两种边共用同一套六段飞行，**差别
+ * 只在这两条转移弦怎么弯**。
+ *
+ * 推进恒取顺时针那一边（`delta <= 0` 就 +2π）：走「近的那边」会让跳过好几格的
+ * 前进边倒着画。
+ *
+ * **放大量必须封顶。** 那个 `1/cos(Δ/2)` 是给「两端正好落在环上」算的，而这里
+ * 两端其实在各自节点的轨道上（离环心又偏出去 7~12）。跨两格时 `1/cos(45°)=1.41`
+ * 把控制点顶到半径 64，曲线鼓出去老远 —— 实测路径左边界跑到 x = -17，整段飞出
+ * 画面。封在 30° 上（放大 1.155 封顶）够贴着环走，又不会甩出去。
  */
-function forwardLoop(from, to) {
-  const inner = MAP_RADIUS - 8;
-  const u = (MAP_RADIUS - inner) / 2;
-  const pull = (p) => ({
-    x: 50 + (p.x - 50) * (inner / MAP_RADIUS),
-    y: 50 + (p.y - 50) * (inner / MAP_RADIUS),
-  });
-  const a2 = pull(from);
-  const b2 = pull(to);
-  return `M ${from.x} ${from.y} `
-    + `A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y} `
-    + `A ${u} ${u} 0 0 1 ${b2.x} ${b2.y} `
-    + `A ${inner} ${inner} 0 0 0 ${a2.x} ${a2.y} `
-    + `A ${u} ${u} 0 0 1 ${from.x} ${from.y} Z`;
+function ringArcApex(fromIndex, toIndex, total, radius) {
+  const step = (Math.PI * 2) / total;
+  let delta = (toIndex - fromIndex) * step;
+  if (delta <= 0) delta += Math.PI * 2;
+  const half = delta / 2;
+  const swell = 1 / Math.cos(Math.min(half, Math.PI / 6));
+  return ringPoint({ x: 50, y: 50 }, radius * swell, fromIndex * step + half);
 }
 
 /**
@@ -1044,15 +1089,19 @@ function drawMap(panel) {
    * 用户第一眼就问「火箭怎么没有」。所以病历的最后一笔由一枚淡一级的火箭
    * 循环重演，环上随时看得到「它是怎么回去的」；更老的账保持静态，环不变机场。
    *
-   * 路径本身不画（rail）：烟迹已经在那儿说了路线。若活边恰好同路，两枚火箭
-   * 完全同相叠住 —— 看起来就是一枚，不算噪音。
+   * 路径本身不画（rail）。周期和活边那枚（22s）故意不整除，两枚就算同路也不会
+   * 长期同相叠住 —— 叠住看起来只有一枚，那是白飞。
    */
   if (lastTrip !== null) {
     const ghostId = "map-ghost";
+    const apexOut = chordApex(lastTrip.from, lastTrip.to);
     map.append(svgNode("path", {
-      id: ghostId, class: "rail", d: rocketFlight(lastTrip.from, lastTrip.to),
+      id: ghostId,
+      class: "rail",
+      d: rocketFlight(lastTrip.from, lastTrip.to, apexOut,
+        returnApex(lastTrip.to, lastTrip.from, apexOut)),
     }));
-    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, 15));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, 27));
   }
 
   /*
@@ -1097,19 +1146,27 @@ function drawMap(panel) {
     const to = indexOf(edge.to);
     if (to < 0) return;
     const id = `map-live-${order}`;
+    const target = nodeAt(to, total);
     /*
-     * 两种边都是**一枚火箭跑一个闭环**，跑道本身不画也不吃鼠标（`rail`）——
-     * 用户要的是「轨道不要画出来」。形状仍然带语义（§5.9.3④）：回跳绕出去、
-     * 穿过环内转移再绕回来；推进沿着环走一趟来回。
+     * 两种边共用同一趟**六段往返**（地表→轨道→转移→地表→轨道→转移→地表），
+     * 差别只在两条转移弦怎么弯 —— 形状带语义那条没丢（§5.9.3④）：
+     *
+     *   回跳  去程向心弯的弦，回程翻到弦的另一侧
+     *   推进  去程贴着环走，回程走环内 12 个单位的内道
+     *
+     * 跑道本身不画也不吃鼠标（`rail`）—— 用户要的是「轨道不要画出来」。
      */
+    const back = edge.kind === "backward";
+    const apexOut = back
+      ? chordApex(from, target)
+      : ringArcApex(here, to, total, MAP_RADIUS);
+    const apexBack = back
+      ? returnApex(target, from, apexOut)
+      : ringArcApex(to, here, total, MAP_RADIUS - 12);
     map.append(svgNode("path", {
-      id,
-      class: "rail",
-      d: edge.kind === "backward"
-        ? rocketFlight(from, nodeAt(to, total))
-        : forwardLoop(from, nodeAt(to, total)),
+      id, class: "rail", d: rocketFlight(from, target, apexOut, apexBack),
     }));
-    map.append(rocketRide(rocketGlyph("rocket"), id, edge.kind === "backward" ? 13 : 9));
+    map.append(rocketRide(rocketGlyph("rocket"), id, back ? 22 : 18));
   });
 }
 
