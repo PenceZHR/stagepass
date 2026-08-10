@@ -757,100 +757,20 @@ function chordApex(from, to) {
   };
 }
 
-/**
- * 沿着**环**走的一段弧 —— 向前推进就该长这样（§5.9.3④）。
- *
- * 第一版把向前的边也画成了穿心的弦，于是「沿环走 = 推进 / 穿心 = 回头」这条
- * 语义当场失效：两种边长得一模一样。形状本身要带语义，就不能两边共用一个画法。
- */
-function arcAlongRing(from, to) {
-  return `M ${from.x} ${from.y} A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y}`;
-}
-
 /** SMIL 不受 CSS 的 `animation: none` 管，所以每个造动画的函数都要自己问它。 */
 const reducedMotion = () =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 /**
- * 一枚会动的小箭头，沿着一条路径走 —— 用户 2026-08-05 定的画法：
- * 「自循环的动画设置成一个绕着这个 stage 的小箭头在绕圈，stage 间的就做成
- * 小箭头飞向目标 stage」。
+ * 绕着一个节点转一整圈的轨道，半径自己给。
  *
- * **动本身就说明了方向**，所以路径可以画得很淡：静态那条只说「能去哪」，
- * 箭头说「往哪边走」。第一版靠虚线流动来表达方向，而一条流动的虚线两头
- * 长得一样 —— 人得盯着看一会儿才知道它在往哪流。
- *
- * 走 SVG 原生的 `animateMotion` + `mpath`：路径改了动画自动跟着改，不用 JS
- * 每帧算位置（那种一定会和 `drawMap` 的重画打架）。`rotate="auto"` 让箭头
- * 自己扭向前进方向。
+ * 「再来一轮」放**两枚火箭在两条不同半径的圈上**，周期还不一样 —— 用户
+ * 2026-08-09：「小火箭不要追着，要在不同轨道」。同一条圈上前后跟两枚，读起来
+ * 是排队；分层各转各的，读起来才是这个节点在自转。
  */
-function flyingArrow(pathId, seconds, className, offset = 0) {
-  const arrow = svgNode("path", {
-    class: className,
-    /*
-     * **一个 V 字，不是实心三角。**
-     *
-     * 实心三角在这个尺寸上是一个小黑块，方向要凑近了才看得出，而且和整屏
-     * 那种细线质感打架（用户 2026-08-05：「stage 间的动画和 UI 不好看」）。
-     * 描边的 V 字轻、尖端明确，一眼就知道朝哪飞。
-     */
-    d: "M -0.85 -0.85 L 0.35 0 L -0.85 0.85",
-  });
-  /*
-   * **说了不要动效就真的不动。**
-   *
-   * SMIL 不受 CSS 的 `animation: none` 管（那一条只关得掉 CSS 动画，见
-   * panel.html 末尾那个 media query），所以这里自己问一次。箭头照样画出来、
-   * 照样停在路径起点，方向仍然看得出 —— 只是不动。
-   */
-  if (reducedMotion()) {
-    const still = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
-    still.setAttribute("dur", "1s");
-    still.setAttribute("repeatCount", "1");
-    still.setAttribute("fill", "freeze");
-    still.setAttribute("rotate", "auto");
-    still.setAttribute("keyPoints", "0;0");
-    still.setAttribute("keyTimes", "0;1");
-    still.setAttribute("calcMode", "linear");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
-    path.setAttribute("href", `#${pathId}`);
-    path.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
-    still.append(path);
-    arrow.append(still);
-    return arrow;
-  }
-  const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
-  motion.setAttribute("dur", `${seconds}s`);
-  motion.setAttribute("repeatCount", "indefinite");
-  motion.setAttribute("rotate", "auto");
-  /*
-   * 一条路上前后跟着几个 V，才读得出「一股往那边流的劲」，而不是「有个小东西
-   * 在爬」。**错的是相位，不是出发时刻。**
-   *
-   * 用 `begin="1.9s"` 那一版实测出一个 bug：轮到它之前，这个 V 停在 viewBox 的
-   * 原点上 —— 也就是环左上角外面凭空多两个小勾，而页面刚打开那两秒正好看得见。
-   * 改成让它从路径的 34%／68% 处起跑、跑到头瞬回起点：所有 V 都在 t=0 就位，
-   * 没有「还没开始」这个状态。
-   */
-  if (offset > 0) {
-    const turn = (1 - offset).toFixed(4);
-    motion.setAttribute("calcMode", "linear");
-    motion.setAttribute("keyPoints", `${offset};1;0;${offset}`);
-    motion.setAttribute("keyTimes", `0;${turn};${turn};1`);
-  }
-  const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
-  // 两种写法都设上：`href` 是现在的规范，`xlink:href` 是老引擎唯一认的那个。
-  mpath.setAttribute("href", `#${pathId}`);
-  mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
-  motion.append(mpath);
-  arrow.append(motion);
-  return arrow;
-}
-
-/** 绕着一个节点转一圈的轨道。箭头骑着它，就是「再来一轮」。 */
-function orbitAround(at) {
-  return `M ${at.x} ${at.y - RIM} `
-    + `A ${RIM} ${RIM} 0 1 1 ${at.x - 0.01} ${at.y - RIM} Z`;
+function circleAround(at, radius) {
+  return `M ${at.x} ${at.y - radius} `
+    + `A ${radius} ${radius} 0 1 1 ${at.x - 0.01} ${at.y - radius} Z`;
 }
 
 /*
@@ -868,6 +788,7 @@ function orbitAround(at) {
  * (cos a, sin a) —— 螺旋、贝塞尔连成一笔，rotate="auto" 全程不跳。
  */
 const ORBIT_TURNS = 2;      // 两端各绕两圈
+const ROCKET_SCALE = 1.45;  // 剪纸版比原来的细描边壳大一号，形状才读得出来
 const NODE_R = 4.86;        // 节点圆半径 —— RIM 上面那张实测地盘图里的 0~4.86
 /**
  * 螺旋的外圈半径。故意比 RIM(7.5) 大出一截 —— 用户 2026-08-09：「轨道可以
@@ -929,55 +850,126 @@ function spiralTurns(centre, aStart, turns, r0, r1) {
   return d;
 }
 
-/** 整条飞行路线的 `d`。匀速跑（paced）不需要分段路程，所以只回一个字符串。 */
+/**
+ * 回程那一笔的控制点：把弦的中点朝**去程弯的反面**推出去。
+ *
+ * 去程向心弯、回程向外鼓，两条道就分得开 —— 是一个环路，不是原路折返。夹在
+ * viewBox 里，免得贴边的节点把回程甩出画面（和 outerOrbit 同一个顾虑）。
+ */
+function returnApex(from, to, awayFrom) {
+  const mx = (from.x + to.x) / 2;
+  const my = (from.y + to.y) / 2;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const side = (awayFrom.x - mx) * nx + (awayFrom.y - my) * ny >= 0 ? -1 : 1;
+  const bow = 22;
+  const clamp = (v) => Math.min(94, Math.max(6, v));
+  return { x: clamp(mx + nx * bow * side), y: clamp(my + ny * bow * side) };
+}
+
+/**
+ * 整条飞行路线的 `d` —— **一个闭环：飞出去，还飞回来**（用户 2026-08-09）。
+ *
+ * 去程：在起点螺旋外扩两圈 → 向心弯的转移弦 → 在目标螺旋内收两圈，贴到它的
+ * 圆边上。回程：从那儿直接一笔鼓向弦的另一侧，回到出发点的圆边。
+ *
+ * 闭环有个额外好处：**没有瞬移，也就不需要淡出**。上一版是单程，跑到头得靠
+ * opacity 抹掉再从头开始 —— 现在起点就是终点，`repeatCount=indefinite` 接得
+ * 严丝合缝。匀速跑（paced）不需要分段路程，所以只回一个字符串。
+ */
 function rocketFlight(from, to) {
   const apex = chordApex(from, to);
   const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 出轨角
   const aA = Math.atan2(to.y - apex.y, to.x - apex.x);      // 入轨角
   const outFrom = outerOrbit(from);   // 两头各按自己的余量放大，贴边的收窄
   const outTo = outerOrbit(to);
-  const pad = ringPoint(from, NODE_R, aD);   // 从 stage 圆边上直接起旋
-  const arrive = ringPoint(to, outTo, aA);   // 绕完两圈后从最外圈同角切入
+  const pad = ringPoint(from, NODE_R, aD);    // 从 stage 圆边上直接起旋
+  const arrive = ringPoint(to, outTo, aA);    // 绕完两圈后从最外圈同角切入
+  const touch = ringPoint(to, NODE_R, aA);    // 内收两圈之后贴到目标圆边
+  const home = returnApex(touch, pad, apex);
   return `M ${pad.x} ${pad.y} `
     + spiralTurns(from, aD, ORBIT_TURNS, NODE_R, outFrom)
     + `Q ${apex.x} ${apex.y} ${arrive.x} ${arrive.y} `
-    + spiralTurns(to, aA, ORBIT_TURNS, outTo, NODE_R);
+    + spiralTurns(to, aA, ORBIT_TURNS, outTo, NODE_R)
+    + `Q ${home.x} ${home.y} ${pad.x} ${pad.y} Z`;
 }
 
 /**
- * 描边小火箭，头朝 +x、原点在箭身中心 —— rotate="auto" 才能让它顺着路径扭。
- * 和 V 字同一种笔触：细描边、圆头、无填充。喷焰单独一条 path，只有它在闪。
+ * 沿环推进的一趟**来回**：外道去、内道回，两头各半个 U 弯接上（跑道形）。
  *
- * **不给它挂 tooltip。** 试过把 `edge.why` 挂在这儿（跑道不画之后它是那条边上
- * 唯一看得见的东西），但 `.orbit-map` 整层是 `pointer-events: none`，那个
- * `<title>` 谁也悬停不到 —— 一个装作能用的东西。回跳能不能走、为什么，左边那块
- * 常驻面板的「闸门」那行已经在说了。
+ * U 弯的圆心摆在内外两道的正中间，于是接口处两侧的切向都是纯周向 —— 拼起来
+ * 不打折。内道走环内 8 个单位：往外让会顶到阶段名那行字。
+ */
+function forwardLoop(from, to) {
+  const inner = MAP_RADIUS - 8;
+  const u = (MAP_RADIUS - inner) / 2;
+  const pull = (p) => ({
+    x: 50 + (p.x - 50) * (inner / MAP_RADIUS),
+    y: 50 + (p.y - 50) * (inner / MAP_RADIUS),
+  });
+  const a2 = pull(from);
+  const b2 = pull(to);
+  return `M ${from.x} ${from.y} `
+    + `A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y} `
+    + `A ${u} ${u} 0 0 1 ${b2.x} ${b2.y} `
+    + `A ${inner} ${inner} 0 0 0 ${a2.x} ${a2.y} `
+    + `A ${u} ${u} 0 0 1 ${from.x} ${from.y} Z`;
+}
+
+/**
+ * 剪纸小火箭，头朝 +x、原点在箭身中心 —— rotate="auto" 才能让它顺着路径扭。
+ *
+ * **和太阳同一种语言**（用户 2026-08-09：「整体风格统一一下」）：平涂的色块、
+ * 没有描边、窗户是挖空的一个洞。上一版是细描边的空心壳，那是给环上那些发丝
+ * 线条配的；线全撤掉、环心又放了一颗剪纸太阳之后，它成了屏幕上唯一一个还在说
+ * 旧方言的东西。
+ *
+ * **不给它挂 tooltip。** 试过把 `edge.why` 挂在这儿，但 `.orbit-map` 整层是
+ * `pointer-events: none`，那个 `<title>` 谁也悬停不到 —— 一个装作能用的东西。
+ * 回跳能不能走、为什么，左边那块常驻面板的「闸门」那行已经在说了。
  */
 function rocketGlyph(className) {
+  /*
+   * 两层 g 是**必须的**：外层归 `animateMotion` 用（它自己往上写 transform），
+   * 内层放缩放。写在同一个 g 上会被 animateMotion 的 transform 顶掉，火箭就回到
+   * 原始尺寸 —— 而原始尺寸是照着细描边那一版定的，填色之后小得看不出形状。
+   */
   const rocket = svgNode("g", { class: className });
-  rocket.append(
-    svgNode("path", {
-      class: "hull",
-      d: "M 1.35 0 C 0.95 -0.5 0.1 -0.52 -0.7 -0.3 L -0.7 0.3 C 0.1 0.52 0.95 0.5 1.35 0 Z",
-    }),
-    svgNode("path", {
-      class: "hull",
-      d: "M -0.45 -0.38 L -0.95 -0.78 M -0.45 0.38 L -0.95 0.78",
-    }),
-  );
+  const shell = svgNode("g", { transform: `scale(${ROCKET_SCALE})` });
+  /*
+   * 叠放顺序就是剪纸的贴纸顺序：火苗在最底下，然后两片鳍，再盖上机身，最后挖窗。
+   * 第一版把火苗贴在最上面，它压在机身尾巴上；而火苗和鳍又同一个橙 —— 两样东西
+   * 糊成一整块楔形，看不出哪是鳍哪是火。现在火苗**更亮更黄**（和太阳的脸同族）
+   * 且从鳍后面探出去，一眼分得开。
+   */
   const flame = svgNode("path", {
     class: "flame",
-    d: "M -0.85 -0.16 L -1.7 0 L -0.85 0.16",
+    d: "M -1.0 -0.3 C -1.7 -0.22 -2.35 -0.08 -2.35 0 C -2.35 0.08 -1.7 0.22 -1.0 0.3 Z",
   });
   if (!reducedMotion()) {
     const flicker = document.createElementNS("http://www.w3.org/2000/svg", "animate");
     flicker.setAttribute("attributeName", "opacity");
-    flicker.setAttribute("values", "1;.3;1");
+    flicker.setAttribute("values", "1;.35;1");
     flicker.setAttribute("dur", "0.55s");
     flicker.setAttribute("repeatCount", "indefinite");
     flame.append(flicker);
   }
-  rocket.append(flame);
+  shell.append(
+    flame,
+    svgNode("path", {
+      class: "fin",
+      d: "M -0.26 -0.54 L -1.16 -1.2 L -0.98 -0.32 Z M -0.26 0.54 L -1.16 1.2 L -0.98 0.32 Z",
+    }),
+    svgNode("path", {
+      class: "body",
+      d: "M 1.39 0 C 1.01 -0.71 0.26 -0.79 -0.86 -0.59 L -0.86 0.59 C 0.26 0.79 1.01 0.71 1.39 0 Z",
+    }),
+    svgNode("circle", { class: "port", cx: 0.38, cy: 0, r: 0.32 }),
+  );
+  rocket.append(shell);
   return rocket;
 }
 
@@ -990,8 +982,10 @@ function rocketGlyph(className) {
  * 人眼看得出的换挡。
  *
  * 现在什么都不设：`animateMotion` 的默认 calcMode 是 **paced**，按弧长匀速走完
- * 整条路。没有 keyPoints 就没有档可换，也没有终点那一拍停顿 —— 它一路飞出画面
- * 之外（靠 opacity 收尾），下一轮再从发射台起旋。
+ * 整条路。没有 keyPoints 就没有档可换，也没有终点那一拍停顿。
+ *
+ * 路线都是闭环（去了要回来），所以**连淡入淡出也不需要了** —— 起点就是终点，
+ * 一圈接一圈接得严丝合缝。上一版靠 opacity 抹掉单程的瞬移，那笔现在是多余的。
  */
 function rocketRide(rocket, pathId, seconds) {
   const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
@@ -1001,8 +995,8 @@ function rocketRide(rocket, pathId, seconds) {
   mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
   motion.append(mpath);
   if (reducedMotion()) {
-    // 停在起飞点，朝向仍由 rotate="auto" 给出 —— 和 flyingArrow 同一套处理。
-    // 这一支要 keyPoints，所以它（也只有它）得把 calcMode 掰回 linear。
+    // 停在路径起点，朝向仍由 rotate="auto" 给出。这一支要 keyPoints，
+    // 所以它（也只有它）得把 calcMode 从默认的 paced 掰回 linear。
     motion.setAttribute("calcMode", "linear");
     motion.setAttribute("dur", "1s");
     motion.setAttribute("repeatCount", "1");
@@ -1015,17 +1009,6 @@ function rocketRide(rocket, pathId, seconds) {
   motion.setAttribute("dur", `${seconds}s`);
   motion.setAttribute("repeatCount", "indefinite");
   rocket.append(motion);
-  const fade = document.createElementNS("http://www.w3.org/2000/svg", "animate");
-  fade.setAttribute("attributeName", "opacity");
-  /*
-   * 两头各留一小段淡入淡出，**中间整段都是满的**：火箭在飞行途中变淡就成了
-   * 「失踪」。收尾这 10% 里它还在动，所以看起来是飞远了，不是停住了。
-   */
-  fade.setAttribute("values", "0;1;1;0");
-  fade.setAttribute("keyTimes", "0;.05;.9;1");
-  fade.setAttribute("dur", `${seconds}s`);
-  fade.setAttribute("repeatCount", "indefinite");
-  rocket.append(fade);
   return rocket;
 }
 
@@ -1069,7 +1052,7 @@ function drawMap(panel) {
     map.append(svgNode("path", {
       id: ghostId, class: "rail", d: rocketFlight(lastTrip.from, lastTrip.to),
     }));
-    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, 11));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, 15));
   }
 
   /*
@@ -1091,46 +1074,42 @@ function drawMap(panel) {
      * 而不是环上又多了一样东西。轨道本身不画，只有箭头在动。
      */
     if (edge.kind === "self") {
-      const id = "map-self";
-      map.append(svgNode("path", { id, class: "rail", d: orbitAround(from) }, edge.why));
-      // 两个 V 分处半圈，读起来是「这一圈在转」而不是「有个东西在爬」。
-      map.append(flyingArrow(id, 5, "arrow"));
-      map.append(flyingArrow(id, 5, "arrow trail", 0.5));
+      /*
+       * **自环：两枚火箭，两条不同半径的圈，两个不同的周期。**
+       *
+       * 上一版是两枚同路的 V 前后相隔半圈 —— 那读起来是排队跟飞。分层各转各的，
+       * 周期又不整除，它们永远错开、永远不成队形，读起来才是「这个节点在自转」
+       * （用户 2026-08-09：「小火箭不要追着，要在不同轨道」）。
+       */
+      const outer = outerOrbit(from);
+      [
+        { radius: NODE_R + (outer - NODE_R) * 0.45, seconds: 6.5 },
+        { radius: outer, seconds: 10 },
+      ].forEach((lane, laneIndex) => {
+        const id = `map-self-${laneIndex}`;
+        map.append(svgNode("path", {
+          id, class: "rail", d: circleAround(from, lane.radius),
+        }));
+        map.append(rocketRide(rocketGlyph("rocket"), id, lane.seconds));
+      });
       return;
     }
     const to = indexOf(edge.to);
     if (to < 0) return;
     const id = `map-live-${order}`;
-    if (edge.kind === "backward") {
-      /*
-       * **回跳 = 小火箭螺旋转移**。这条 path 只是火箭的跑道（mpath 要按 id 引
-       * 它），本身**不画也不吃鼠标**（`rail`）—— 用户要的是「轨道不要画出来」。
-       * 形状带语义这条没丢（§5.9.3④）：转移段还是那条向心弯的弦，沿环走的推进
-       * 照旧是弧。
-       */
-      map.append(svgNode("path", {
-        id, class: "rail", d: rocketFlight(from, nodeAt(to, total)),
-      }));
-      map.append(rocketRide(rocketGlyph("rocket"), id, 11));
-      return;
-    }
+    /*
+     * 两种边都是**一枚火箭跑一个闭环**，跑道本身不画也不吃鼠标（`rail`）——
+     * 用户要的是「轨道不要画出来」。形状仍然带语义（§5.9.3④）：回跳绕出去、
+     * 穿过环内转移再绕回来；推进沿着环走一趟来回。
+     */
     map.append(svgNode("path", {
       id,
-      class: "live",
-      d: arcAlongRing(from, nodeAt(to, total)),
-    }, edge.why));
-    /*
-     * **一串 V 飞向目标 stage**（用户 2026-08-05 定的画法，第二版重做）。
-     *
-     * 第一版是一条流动的虚线 + 一个实心小三角：虚线两头长得一样、看不出方向，
-     * 三角在这个尺寸上是个小黑块。现在路线退成极淡的发丝（只说「走哪条道」），
-     * 三个 V 错开出发 —— 「往那边流」这件事由队形说出来。
-     */
-    const trip = 2.8;
-    map.append(flyingArrow(id, trip, "arrow"));
-    for (const behind of [0.34, 0.68]) {
-      map.append(flyingArrow(id, trip, "arrow trail", behind));
-    }
+      class: "rail",
+      d: edge.kind === "backward"
+        ? rocketFlight(from, nodeAt(to, total))
+        : forwardLoop(from, nodeAt(to, total)),
+    }));
+    map.append(rocketRide(rocketGlyph("rocket"), id, edge.kind === "backward" ? 13 : 9));
   });
 }
 

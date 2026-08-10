@@ -479,55 +479,25 @@ body::after {
  * 那几条线上开）。
  */
 .orbit-map { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-/*
- * 走过的回头路：**不画线**（用户 2026-08-09：「轨道不要画出来」）。
- *
- * 留着这条 path 是为了 hover —— 透明的粗描边只吃鼠标不显形，第几轮、什么理由
- * 仍然挂在它的 <title> 上。环那一屏因此只剩一样在动的东西：火箭。
+/**
+ * 所有的跑道都不画：`mpath` 要按 id 引一条 path 才跑得起来，但它本身既不显形也
+ * 不吃鼠标（用户 2026-08-09：「轨道不要画出来」）。这一屏看得见的只有火箭。
  */
-.orbit-map .vapor {
-  fill: none; stroke: transparent; stroke-width: 2;
-  stroke-linecap: round; pointer-events: stroke;
-}
-/*
- * 能去的那条路：**一根极淡的发丝**，只说「走哪条道」。
- *
- * 方向整个交给飞在上面那串 V（用户 2026-08-05 第二次看后重做）。上一版是流动的
- * 虚线 + 实心小三角：虚线两头长得一样、看不出往哪流，而虚线本身在这一屏的细线
- * 质感里显得又粗又碎。**减，不是加。**
- */
-.orbit-map .live {
-  fill: none; stroke: rgba(226,200,164,.17); stroke-width: .35;
-  stroke-linecap: round; pointer-events: stroke;
-}
-/** 自环那条轨道：只给 V 骑，本身不画（画出来就是节点外又套一个圈）。 */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
-/* 回跳的飞行路径：同样不画，只承接 hover —— 看得见的只有火箭本身。 */
-.orbit-map .flight {
-  fill: none; stroke: transparent; stroke-width: 2;
-  stroke-linecap: round; pointer-events: stroke;
-}
-/* 小火箭：和 V 字同一种笔触。喷焰略暖，是整条边上唯一的一点「火」。 */
-.orbit-map .rocket .hull {
-  fill: none; stroke: rgba(240,220,190,.95); stroke-width: .45;
-  stroke-linecap: round; stroke-linejoin: round;
-}
-.orbit-map .rocket .flame {
-  fill: none; stroke: rgba(255,166,120,.9); stroke-width: .4;
-  stroke-linecap: round; stroke-linejoin: round;
-}
-/* 幽灵火箭：最近一跳的重演，比活边上的火箭淡一级 —— 它是回忆，不是事件。 */
-.orbit-map .rocket.ghost .hull { stroke: rgba(240,220,190,.5); }
-.orbit-map .rocket.ghost .flame { stroke: rgba(255,166,120,.45); }
 /*
- * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
- * 才和这一屏别的东西是同一种笔触。跟在后面的两个淡下去 —— 队形本身就是箭头。
+ * 剪纸小火箭：**平涂色块，没有描边**，和环心那颗太阳同一种语言（用户
+ * 2026-08-09：「整体风格统一一下」）。上一版是细描边的空心壳 —— 那是给环上
+ * 那些发丝线条配的，线撤掉之后它成了唯一还在说旧方言的东西。
+ *
+ * 窗户填的是背景色，读起来像纸上挖掉的一个洞，不是画上去的一块蓝。
  */
-.orbit-map .arrow {
-  fill: none; stroke: rgba(240,220,190,.95); stroke-width: .5;
-  stroke-linecap: round; stroke-linejoin: round;
-}
-.orbit-map .arrow.trail { stroke: rgba(240,220,190,.42); stroke-width: .42; }
+.orbit-map .rocket .body  { fill: #FFE3B8; }
+.orbit-map .rocket .fin   { fill: #DE8546; }
+.orbit-map .rocket .port  { fill: rgba(39,36,47,.88); }
+/* 火苗比鳍更亮更黄（和太阳的脸 #FFD070 同族）—— 同色会糊成一整块楔形。 */
+.orbit-map .rocket .flame { fill: #FFC658; }
+/* 幽灵火箭：最近一跳的重演，整枚淡一级 —— 它是回忆，不是事件。 */
+.orbit-map .rocket.ghost { opacity: .5; }
 /*
  * `--progress` 必须注册才过渡得了。
  *
