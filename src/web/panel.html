@@ -340,6 +340,8 @@ body::after {
 .orbit-wrap {
   position: relative; flex: 0 0 auto;
   width: min(100cqw, 100cqh); aspect-ratio: 1;
+  /* 一圈 300s。要的是「看久了才发现它在动」，不是转盘。 */
+  animation: ringTurn 300s linear infinite;
 }
 
 /*
@@ -478,7 +480,15 @@ body::after {
  * 不吃鼠标事件：节点那一层的悬停和点击照旧（pointer-events 只在 <title> 需要的
  * 那几条线上开）。
  */
-.orbit-map { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+/*
+ * 地图层跟着环转。viewBox 是 `0 0 100 100`，中心就是 (50,50)，所以这里
+ * `transform-origin: center` 是对的 —— 别照搬太阳那边的 `0 0`，那是给
+ * `-50 -50 100 100` 那种中心在原点的 viewBox 写的。
+ */
+.orbit-map {
+  position: absolute; inset: 0; pointer-events: none; overflow: visible;
+  transform-box: view-box; transform-origin: center; transform: rotate(var(--spin));
+}
 /**
  * 所有的跑道都不画：`mpath` 要按 id 引一条 path 才跑得起来，但它本身既不显形也
  * 不吃鼠标（用户 2026-08-09：「轨道不要画出来」）。这一屏看得见的只有火箭。
@@ -521,6 +531,28 @@ body::after {
 }
 
 /*
+ * ── 外圈缓慢自转（用户 2026-08-09：「外圈的 stage 环能缓慢地转动」）──
+ *
+ * `--spin` 由 `.orbit-wrap` 上一条 300s 的动画从 0 转到 360°，**继承**给环里那三样
+ * 要一起转的东西：节点、地图层（火箭和卫星都在里面）、进度弧。
+ *
+ * `inherits: true` 是这条的全部机关：自定义属性要注册过才插得出中间值（不注册的话
+ * 那条 animation **一声不响地什么都不做**，和 `--progress` 上面那段注释是同一个
+ * 坑），而要让子元素读得到又必须让它继承。
+ *
+ * **太阳和状态卡不跟着转**：太阳是被绕的那个，它自己有日冕在转；卡是给人读字的。
+ *
+ * 转动不破坏「火箭不许穿过 stage 和太阳」那条：整块地图是绕 viewBox 中心刚体旋转，
+ * 而太阳正好在那个中心 —— 到圆心的距离一个都没变，节点和路径又同在旋转坐标系里。
+ */
+@property --spin {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+@keyframes ringTurn { to { --spin: 360deg; } }
+
+/*
  * 进度圆弧：绕着轨道的那道沙金弧线，标已经走到哪（设计稿要的东西之一）。
  *
  * 从十二点开始顺时针，长度由 `--progress`（0–1）给 —— 和节点的摆法同一个起点、
@@ -539,12 +571,16 @@ body::after {
   mask: radial-gradient(transparent 68.5%, #000 69.5% 70.5%, transparent 71.5%);
   opacity: .85;
   transition: --progress .6s ease;
+  transform: rotate(var(--spin));   /* 弧要跟着节点转，不然进度和阶段对不上 */
 }
 
-/* 节点：圆。旋出去再转回来，圆始终正对。 */
+/* 节点：圆。旋出去再转回来，圆始终正对 —— `--spin` 一起算进去，环转字不歪。 */
 .stage-node {
   position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 6;
-  transform: rotate(var(--a)) translateY(calc(-1 * var(--r))) rotate(calc(-1 * var(--a)));
+  transform:
+    rotate(calc(var(--a) + var(--spin)))
+    translateY(calc(-1 * var(--r)))
+    rotate(calc(-1 * (var(--a) + var(--spin))));
 }
 .stage-node button {
   position: absolute; left: -28px; top: -28px;
@@ -1024,7 +1060,7 @@ body::after {
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 
 @media (prefers-reduced-motion: reduce) {
-  body::before, .halo::before, .live-flag i,
+  body::before, .halo::before, .live-flag i, .orbit-wrap,
   .sun-corona, .rays-long, .rays-short, .sun-card,
   .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
