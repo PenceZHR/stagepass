@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import type { Gap } from "./gap";
 import type { Assessment } from "./rubric";
-import { applyAssessments, retireStandards, standardGapId } from "./rubric-gaps";
+import { applyAssessments, orphanedStandardKeys, retireStandards, standardGapId } from "./rubric-gaps";
 
 /**
  * 一轮 rubric 判定怎么变成挡门的东西，以及怎么不再挡。
@@ -142,5 +142,41 @@ describe("L5 · 撤下标准时退休它派生的阻断项", () => {
   it("退休名单是空的就什么都不做", () => {
     const before = [openStandard()];
     assert.deepEqual(retireStandards(before, "producer", [], "随便"), before);
+  });
+});
+
+describe("L5 · 对账：标准已经不在名单上的阻断项", () => {
+  const gap = (id: string, status: "open" | "closed" = "open"): Gap => ({
+    id, kind: "finding", severity: "P1", title: id, status,
+    openedRound: 1, resolution: null, note: null, closedBy: null,
+    where: null, why: null,
+  });
+
+  it("**认出孤儿** —— 开着、是自己派生的、而 key 不在当前名单里", () => {
+    const gaps = [
+      gap(standardGapId("producer", "K-live")),
+      gap(standardGapId("producer", "K-gone")),
+      gap(standardGapId("producer", "K-closed-gone"), "closed"),
+      gap("HUMAN-1"),
+      gap("TEMPLATE-steps"),
+      gap(standardGapId("critic", "K-other-role")),
+    ];
+    assert.deepEqual(
+      orphanedStandardKeys(gaps, "producer", ["K-live"]),
+      ["K-gone"],
+      "人提的、模板的、别的角色的、已关的，一律不该算进来",
+    );
+  });
+
+  it("名单齐全时一条都不报 —— 不报没发生的事", () => {
+    const gaps = [gap(standardGapId("producer", "K1")), gap(standardGapId("producer", "K2"))];
+    assert.deepEqual(orphanedStandardKeys(gaps, "producer", ["K1", "K2"]), []);
+  });
+
+  it("**幂等**：退休之后再对账，同一条不会被报第二次", () => {
+    const gaps = [gap(standardGapId("producer", "K-gone"))];
+    const keys = orphanedStandardKeys(gaps, "producer", []);
+    const after = retireStandards(gaps, "producer", keys, "标准撤了");
+    assert.deepEqual(orphanedStandardKeys(after, "producer", []), []);
   });
 });

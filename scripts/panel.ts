@@ -17,7 +17,9 @@ import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
 import { prepareSchema } from "../src/db/schema";
-import { retireStandards } from "../src/domain/rubric-gaps";
+import { PHASES } from "../src/domain/phase";
+import { RUBRIC_ROLES } from "../src/domain/rubric";
+import { orphanedStandardKeys, retireStandards } from "../src/domain/rubric-gaps";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
@@ -180,25 +182,35 @@ for (const each of new ProjectStore(database).list()) {
     console.log(`[rubric] ${each.id} ${skip.scope} 没升 —— ${skip.why}`);
   }
   /*
-   * **撤下一条标准，它派生的阻断项跟着退休** —— 和人手动改标准那条路
-   * （`app/edit-rubric.ts`）逐字同一条规则，只是那儿的理由是人写的话，这儿是
-   * 「出厂标准升级」。
+   * **对账：标准已经不在名单上的阻断项，退休掉。**
    *
-   * 2026-08-10 真机顶出来的洞：这一步原来不做，于是升级留下**谁也关不掉的
-   * 孤儿**（标准没了，反方不会再判它；红方又不可能满足一条已经退休的要求）。
-   * 逐条打出来 —— 关掉一个问题必须让人看得见是谁关的、为什么。
+   * 和人手动改标准那条路（`app/edit-rubric.ts`）同一条规则，但判据不同：那儿是
+   * 事件驱动（这次编辑撤下了谁），这儿是**状态驱动**（现在开着的，标准还在不在）。
+   *
+   * 两条都要，因为事件会漏 —— 2026-08-10 真机：两条孤儿是**上一次**升级留下的，
+   * 而这一次启动没有升级发生（rubric 已是最新），事件驱动那条一次也走不到它们
+   * 身上。代价是那两条谁也关不掉：标准没了，反方不会再判它；红方又不可能满足
+   * 一条已退休的要求（「TestPlan 必须通过」留在 Build 上，而任务书禁止 Build
+   * 碰测试）—— 它就永远挡着闸门。
+   *
+   * 幂等：退休过的不再是 open，下一次对账看不见它。
    */
-  for (const { phase, role, keys } of upgraded.retired) {
-    for (const change of changeIndex.list(each.id)) {
-      const before = gaps.all(change.id, phase);
-      const after = retireStandards(before, role, keys, FACTORY_UPGRADE_REASON);
-      const closed = after.filter((gap, index) =>
-        gap.status === "closed" && before[index]?.status === "open");
-      if (closed.length === 0) continue;
-      gaps.replace(change.id, phase, after);
-      for (const gap of closed) {
-        console.log(`[rubric] ${change.id}/${phase} 退休了一条阻断项：${
-          gap.title.slice(0, 40)}`);
+  for (const change of changeIndex.list(each.id)) {
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        const live = rubrics.effective(each.id, change.id, phase, role);
+        if (live === null) continue;
+        const before = gaps.all(change.id, phase);
+        const orphans = orphanedStandardKeys(
+          before, role, live.criteria.map((entry) => entry.key));
+        if (orphans.length === 0) continue;
+        gaps.replace(change.id, phase, retireStandards(
+          before, role, orphans, FACTORY_UPGRADE_REASON));
+        for (const key of orphans) {
+          const gap = before.find((each2) => each2.id === `RB:${role}:${key}`);
+          console.log(`[rubric] ${change.id}/${phase} 退休了一条阻断项（标准已不在名单上）：${
+            (gap?.title ?? key).slice(0, 44)}`);
+        }
       }
     }
   }
