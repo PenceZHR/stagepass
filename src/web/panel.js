@@ -876,6 +876,27 @@ const NODE_R = 4.86;        // 节点圆半径 —— RIM 上面那张实测地�
  * 火箭一闪而过，不是常驻笔画，压不住字。
  */
 const ORBIT_MAX = 12;
+/**
+ * 允许溢出 viewBox 的那一点点。
+ *
+ * **实测**（2026-08-09，1280 宽窗口）：环那一格的右边界在 1266px、窗口 1280px，
+ * 也就是 viewBox 只铺得到 x≈103.2；`overflow` 一路都是 visible，裁掉火箭的不是
+ * CSS 而是**窗口边缘**。用 12 的外圈画三点钟方向的节点，路径要跑到 106.6 ——
+ * 火箭在那一段整个消失。3 是留够安全的溢出量。
+ */
+const ORBIT_BLEED = 3;
+
+/**
+ * 这个节点的外圈能放多大：贴边的节点收窄，够宽的照样飞满 ORBIT_MAX。
+ *
+ * 三点钟／九点钟那两个节点离 viewBox 边只有 4.5，装不下夸张的外圈；与其让火箭
+ * 飞出屏幕不见，不如让它们的圈小一号 —— **看得见**比**一样大**要紧。地板是 RIM，
+ * 再小就不成其为「越来越远」了。
+ */
+function outerOrbit(at) {
+  const room = Math.min(at.x, 100 - at.x, at.y, 100 - at.y) + ORBIT_BLEED;
+  return Math.max(RIM, Math.min(ORBIT_MAX, room));
+}
 
 /** centre 半径 radius 的圆上参数角 a 处的点。 */
 function ringPoint(centre, radius, a) {
@@ -913,23 +934,29 @@ function rocketFlight(from, to) {
   const apex = chordApex(from, to);
   const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 出轨角
   const aA = Math.atan2(to.y - apex.y, to.x - apex.x);      // 入轨角
-  const pad = ringPoint(from, NODE_R, aD);          // 从 stage 圆边上直接起旋
-  const depart = ringPoint(from, ORBIT_MAX, aD);    // 两圈之后爬到最外圈，同角切出
-  const arrive = ringPoint(to, ORBIT_MAX, aA);      // 从最外圈同角切入
+  const outFrom = outerOrbit(from);   // 两头各按自己的余量放大，贴边的收窄
+  const outTo = outerOrbit(to);
+  const pad = ringPoint(from, NODE_R, aD);        // 从 stage 圆边上直接起旋
+  const depart = ringPoint(from, outFrom, aD);    // 两圈之后爬到最外圈，同角切出
+  const arrive = ringPoint(to, outTo, aA);        // 从最外圈同角切入
   const d = `M ${pad.x} ${pad.y} `
-    + spiralTurns(from, aD, ORBIT_TURNS, NODE_R, ORBIT_MAX)
+    + spiralTurns(from, aD, ORBIT_TURNS, NODE_R, outFrom)
     + `Q ${apex.x} ${apex.y} ${arrive.x} ${arrive.y} `
-    + spiralTurns(to, aA, ORBIT_TURNS, ORBIT_MAX, NODE_R);
+    + spiralTurns(to, aA, ORBIT_TURNS, outTo, NODE_R);
   /*
    * keyPoints 按**路程占比**分段，速度感才对。螺旋长 ≈ 圈数 × π × (r0+r1)；
    * 转移的二次贝塞尔用「弦长和经停控制点的折线长取平均」近似 —— 误差 <2%。
    */
-  const spiral = ORBIT_TURNS * Math.PI * (NODE_R + ORBIT_MAX);
+  const spiralOut = ORBIT_TURNS * Math.PI * (NODE_R + outFrom);
+  const spiralIn = ORBIT_TURNS * Math.PI * (NODE_R + outTo);
   const transfer = (Math.hypot(arrive.x - depart.x, arrive.y - depart.y)
     + Math.hypot(apex.x - depart.x, apex.y - depart.y)
     + Math.hypot(arrive.x - apex.x, arrive.y - apex.y)) / 2;
-  const total = spiral + transfer + spiral;
-  return { d, stops: [spiral / total, (spiral + transfer) / total, 1] };
+  const total = spiralOut + transfer + spiralIn;
+  return {
+    d,
+    stops: [spiralOut / total, (spiralOut + transfer) / total, 1],
+  };
 }
 
 /**
