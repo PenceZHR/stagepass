@@ -789,6 +789,7 @@ function circleAround(at, radius) {
  */
 const ORBIT_TURNS = 2;      // 两端各绕两圈
 const ROCKET_SCALE = 1.45;  // 剪纸版比原来的细描边壳大一号，形状才读得出来
+const SATELLITE_SCALE = 1.4;    // 摊平之后径向只占 1.8，放得大才认得出是卫星
 const NODE_R = 4.86;        // 节点圆半径 —— RIM 上面那张实测地盘图里的 0~4.86
 /**
  * 螺旋的外圈半径。故意比 RIM(7.5) 大出一截 —— 用户 2026-08-09：「轨道可以
@@ -1019,6 +1020,64 @@ function rocketGlyph(className) {
 }
 
 /**
+ * 剪纸小卫星：中间一个机身，上下伸出两片太阳能板，前头一盏信标灯。
+ *
+ * **「再来一轮」是绕着自己转，那是卫星干的事**（用户 2026-08-09）。火箭要点火、
+ * 要变轨，它属于跨阶段那趟旅行；一个原地打转的阶段配的是一颗待在那儿一圈一圈
+ * 绕的卫星。所以它没有尾焰，改成信标灯一明一暗 —— 会动，但不是在推进。
+ *
+ * `rotate="auto"` 让机身始终朝切线、板子朝径向，正好是真卫星对地定向的姿态，
+ * 不用另外算。两层 g 的理由和火箭那边一样：外层归 animateMotion，内层放缩放。
+ */
+function satelliteGlyph() {
+  const sat = svgNode("g", { class: "sat" });
+  const shell = svgNode("g", { transform: `scale(${SATELLITE_SCALE})` });
+  const beacon = svgNode("circle", { class: "beacon", cx: 0, cy: 0.66, r: 0.26 });
+  if (!reducedMotion()) {
+    const blink = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+    blink.setAttribute("attributeName", "opacity");
+    blink.setAttribute("values", "1;.2;1");
+    blink.setAttribute("dur", "1.9s");
+    blink.setAttribute("repeatCount", "indefinite");
+    beacon.append(blink);
+  }
+  /*
+   * **板子沿飞行方向左右展开，不是径向立着。**
+   *
+   * 立着那一版径向要占 3.4 个单位，而正轴那四个节点从地表到轨道只剩 2.6 —— 放大
+   * 到读得出形状就会压到节点圆，不放大就是一个 14px 的橙点，谁也认不出是卫星。
+   * 摊平之后径向只占 1.8，可以放大到 22px 长，塞进那条窄缝还有富余。真卫星侧视
+   * 本来也是这个样子。
+   *
+   * 桁架用**机身那个奶油色**，不是板子的橙：三样都是橙的时候整枚糊成一条，
+   * 现在读起来是「机身两边各伸一根支架挑着一片板」。
+   *
+   * 碟子朝 local +y。`rotate="auto"` 之下 local +y 正好指向节点圆心 —— 对地定向，
+   * 不用另外算。
+   */
+  shell.append(
+    svgNode("path", {
+      class: "boom",
+      d: "M 0.5 -0.08 L 1.0 -0.08 L 1.0 0.08 L 0.5 0.08 Z"
+        + " M -1.0 -0.08 L -0.5 -0.08 L -0.5 0.08 L -1.0 0.08 Z",
+    }),
+    svgNode("path", {
+      class: "panel",
+      d: "M 0.98 -0.62 L 1.86 -0.62 L 1.86 0.62 L 0.98 0.62 Z"
+        + " M -1.86 -0.62 L -0.98 -0.62 L -0.98 0.62 L -1.86 0.62 Z",
+    }),
+    svgNode("path", {
+      class: "body",
+      d: "M -0.5 -0.42 L 0.3 -0.42 Q 0.54 -0.42 0.54 -0.18 L 0.54 0.18"
+        + " Q 0.54 0.42 0.3 0.42 L -0.5 0.42 Z",
+    }),
+    beacon,
+  );
+  sat.append(shell);
+  return sat;
+}
+
+/**
  * 让火箭骑上飞行路径，**从头到尾一个速度**。
  *
  * 用户 2026-08-09 第四次看后定的：「小火箭不要急停，线性的速度变化」。前一版
@@ -1117,29 +1176,32 @@ function drawMap(panel) {
   if (here < 0) return;
   const from = nodeAt(here, total);
   panel.options?.forEach((edge, order) => {
-    /*
-     * **自环：一枚小箭头绕着这个 stage 转圈**（用户 2026-08-05 定的画法）。
-     * 轨道贴着节点圆的外缘（RIM）—— 于是它读起来是「再绕这个节点一圈」，
-     * 而不是环上又多了一样东西。轨道本身不画，只有箭头在动。
-     */
     if (edge.kind === "self") {
       /*
-       * **自环：两枚火箭，两条不同半径的圈，两个不同的周期。**
+       * **自环 = 卫星环绕**（用户 2026-08-09）。跨阶段那趟旅行才配火箭：要点火、
+       * 要变轨；「再来一轮」是原地绕着自己转，那是卫星干的事。
        *
-       * 上一版是两枚同路的 V 前后相隔半圈 —— 那读起来是排队跟飞。分层各转各的，
-       * 周期又不整除，它们永远错开、永远不成队形，读起来才是「这个节点在自转」
-       * （用户 2026-08-09：「小火箭不要追着，要在不同轨道」）。
+       * 两颗分处不同半径、周期还不整除，于是永远错开、永远不成队形 —— 排成一队
+       * 跟飞读起来是「有个东西在爬」，分层各转各的读起来才是这个节点在自转。
+       *
+       * **地方不够就只放一颗。** 正轴那四个节点（三点/九点/十二点/六点）的轨道
+       * 被 outerOrbit 收到 RIM，从节点边缘到轨道只剩 2.6 —— 硬塞两条道，两颗卫星
+       * 会叠在一起，那还不如一颗。
        */
       const outer = outerOrbit(from);
-      [
-        { radius: NODE_R + (outer - NODE_R) * 0.45, seconds: 6.5 },
-        { radius: outer, seconds: 10 },
-      ].forEach((lane, laneIndex) => {
+      const room = outer - NODE_R;
+      const lanes = room >= 4.5
+        ? [
+            { radius: NODE_R + room * 0.38, seconds: 6.5 },
+            { radius: outer, seconds: 10 },
+          ]
+        : [{ radius: NODE_R + room * 0.62, seconds: 8 }];
+      lanes.forEach((lane, laneIndex) => {
         const id = `map-self-${laneIndex}`;
         map.append(svgNode("path", {
           id, class: "rail", d: circleAround(from, lane.radius),
         }));
-        map.append(rocketRide(rocketGlyph("rocket"), id, lane.seconds));
+        map.append(rocketRide(satelliteGlyph(), id, lane.seconds));
       });
       return;
     }

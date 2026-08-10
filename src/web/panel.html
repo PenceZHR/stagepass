@@ -499,6 +499,14 @@ body::after {
 /* 幽灵火箭：最近一跳的重演，整枚淡一级 —— 它是回忆，不是事件。 */
 .orbit-map .rocket.ghost { opacity: .5; }
 /*
+ * 卫星（自环那两颗）：同一套剪纸色系，但**没有尾焰** —— 它不在推进，只是绕。
+ * 会动的是那盏信标灯。板子比机身深一档，两片纸才分得开。
+ */
+.orbit-map .sat .boom   { fill: #FFE3B8; }
+.orbit-map .sat .panel  { fill: #C98A4B; }
+.orbit-map .sat .body   { fill: #FFE3B8; }
+.orbit-map .sat .beacon { fill: #FFC658; }
+/*
  * `--progress` 必须注册才过渡得了。
  *
  * 自定义属性默认是「无类型的字符串」，浏览器不知道 0.3 到 0.6 中间是什么，于是
