@@ -743,19 +743,6 @@ function svgNode(tag, attributes, tooltip) {
   return element;
 }
 
-/**
- * 回头那条曲线的「顶点」：控制点拉向圆心 —— 直线也能连上，但一堆直线会和轨道
- * 缠在一起；往圆心弯一下，回边就天然落在环的内部，和沿环走的推进泾渭分明
- * （§5.9.3④）。烟迹（历史）和火箭的转移段（选项）共用这一个弯 —— 火箭飞的
- * 就是烟迹说的那条路，两样东西才对得上。
- */
-function chordApex(from, to) {
-  const bend = 0.45;   // 0 = 直线，1 = 顶到圆心
-  return {
-    x: from.x + (50 - from.x) * bend + (to.x - from.x) / 2 * (1 - bend),
-    y: from.y + (50 - from.y) * bend + (to.y - from.y) / 2 * (1 - bend),
-  };
-}
 
 /** SMIL 不受 CSS 的 `animation: none` 管，所以每个造动画的函数都要自己问它。 */
 const reducedMotion = () =>
@@ -856,34 +843,83 @@ function spiralArc(centre, aStart, sweep, r0, r1) {
   return d;
 }
 
-/**
- * 回程那条转移弦的控制点：把去程的控制点**关于弦翻到另一侧**。
+/*
+ * ── 禁飞区（用户 2026-08-09：「小火箭绝对不能穿过任何 stage 和太阳」）──
  *
- * 去程向心弯，回程就得走另一条道，否则是原路折返。用镜像而不是「中点推一个
- * 固定距离」：镜像自动跟着去程的弯度走，两条道天然对称成一只眼睛的形状。
+ * 这两个数是**路径中心线**的禁入半径，所以要把火箭自己的身长算进去：剪纸火箭
+ * 缩放后从头到尾约 5.6，半身 2.8。
  *
- * 两个退化要挡住：
- * - **对径跳转**时去程控制点正好压在弦上（chordApex 算出来就是环心），镜像和它
- *   重合 —— 两条道又叠回一条。这时改成朝法向让开一段。
- * - 镜像可能被甩到环外老远（相邻两个节点的弦很短，翻过去就出画）。按半径收回
- *   环内，和 outerOrbit 是同一个顾虑。
+ *   太阳   `.sun` 占 21% 宽 → 半径 10.5（光芒到 9.2）+ 2.8 + 空气 2.2 = 15.5
+ *   stage  节点圆 4.86 + 2.8 + 空气 2.3 = 10
+ *
+ * 螺旋段天生安全，不用查：它绕着自己那个节点转，最远 12 —— 离环心还有 33.5，
+ * 离最近的邻居还有 22.8。会闯祸的只有两条转移弦。
  */
-function returnApex(from, to, awayFrom) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const t = ((awayFrom.x - from.x) * dx + (awayFrom.y - from.y) * dy) / (len * len);
-  const foot = { x: from.x + t * dx, y: from.y + t * dy };
-  let apex = { x: 2 * foot.x - awayFrom.x, y: 2 * foot.y - awayFrom.y };
-  if (Math.hypot(apex.x - awayFrom.x, apex.y - awayFrom.y) < 10) {
-    apex = { x: foot.x - dy / len * 18, y: foot.y + dx / len * 18 };
+const SUN_KEEPOUT = 15.5;
+const NODE_KEEPOUT = 10;
+
+/**
+ * 转移弦的控制点：摆在两点角平分线上，**深度选到让曲线中点正好落在 lane 上**。
+ *
+ * 二次贝塞尔在 t=0.5 的径向分量是 `0.5·R·cos(Δ/2) + 0.5·Rc`，令它等于 lane 就
+ * 解出 `Rc = 2·lane − R·cos(Δ/2)`。Rc 允许是负的 —— 那表示控制点翻到角平分线的
+ * 反侧，曲线照样被拉到 lane 那么深，公式不用分情况。
+ *
+ * 有了这个，「转移弦有多深」就是一个可以直接说出口的数，而不是一个弯度系数的
+ * 副作用 —— 躲太阳、躲别的 stage 才有得调。
+ */
+function transferApex(fromIndex, toIndex, total, lane) {
+  const step = (Math.PI * 2) / total;
+  let delta = (toIndex - fromIndex) * step;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta <= -Math.PI) delta += Math.PI * 2;
+  return ringPoint(
+    { x: 50, y: 50 },
+    2 * lane - MAP_RADIUS * Math.cos(delta / 2),
+    fromIndex * step + delta / 2,
+  );
+}
+
+/**
+ * 这条转移弦躲不躲得开太阳和 `blocked` 里那些 stage。采样查，别推公式。
+ *
+ * **60 个采样点不是随便取的。** 25 点那一版实测漏过一条：真实最小余量 8.98，
+ * 而它在采样点上量到的都 ≥ 9，于是放行 —— 采样太疏就是这么骗人的。
+ */
+function transferClears(p0, apex, p1, blocked) {
+  for (let i = 0; i <= 60; i += 1) {
+    const t = i / 60;
+    const u = 1 - t;
+    const x = u * u * p0.x + 2 * u * t * apex.x + t * t * p1.x;
+    const y = u * u * p0.y + 2 * u * t * apex.y + t * t * p1.y;
+    if (Math.hypot(x - 50, y - 50) < SUN_KEEPOUT) return false;
+    for (const node of blocked) {
+      if (Math.hypot(x - node.x, y - node.y) < NODE_KEEPOUT) return false;
+    }
   }
-  const radius = Math.hypot(apex.x - 50, apex.y - 50);
-  const cap = 43;
-  return radius <= cap ? apex : {
-    x: 50 + (apex.x - 50) * cap / radius,
-    y: 50 + (apex.y - 50) * cap / radius,
-  };
+  return true;
+}
+
+/**
+ * 从几条候选内道里挑第一条**飞得过去**的。
+ *
+ * 转移弦的两头不是节点圆心，是各自轨道上的切点，而切点又由控制点定 —— 所以
+ * 每条候选都得按 rocketFlight 里同一套算出真实两头再查，不能拿圆心糊弄。
+ *
+ * 一条都不过就用最后一条（最深的那条）：那时候环上大概率是别的地方出了问题，
+ * 让它贴着太阳飞也比不画强 —— 但候选表要保证正常拓扑下第一条就过。
+ */
+function safeApex(from, to, candidates, blocked) {
+  const outFrom = outerOrbit(from);
+  const outTo = outerOrbit(to);
+  for (const apex of candidates) {
+    const aD = Math.atan2(apex.y - from.y, apex.x - from.x);
+    const aA = Math.atan2(to.y - apex.y, to.x - apex.x);
+    if (transferClears(
+      ringPoint(from, outFrom, aD), apex, ringPoint(to, outTo, aA), blocked,
+    )) return apex;
+  }
+  return candidates[candidates.length - 1];
 }
 
 /** 把角度归一化到 [0, 2π) —— 补角用，别让它算出负的扫角把螺旋倒着画。 */
@@ -941,29 +977,46 @@ function rocketFlight(from, to, apexOut, apexBack) {
     + "Z";
 }
 
-/**
- * 沿**环**走的那条转移弦的控制点：中间角上，半径放大到 `R / cos(Δ/2)`。
+/*
+ * 两条转移弦各自的候选内道，由浅到深。**第一条是常态，后面几条是让路用的。**
  *
- * 这是二次贝塞尔逼近圆弧的标准控制点 —— 曲线因此贴着环走，「沿环走 = 推进 /
- * 穿心 = 回头」那条语义（§5.9.3④）靠它保住：两种边共用同一套六段飞行，**差别
- * 只在这两条转移弦怎么弯**。
+ * 回跳挖得深（22/32）：那是「穿过环内回头」；推进走得浅（40/30）：那是「沿着环
+ * 往前」。同一趟里去和回不同深度，两条道就分得开，不会看成原路折返。
  *
- * 推进恒取顺时针那一边（`delta <= 0` 就 +2π）：走「近的那边」会让跳过好几格的
- * 前进边倒着画。
- *
- * **放大量必须封顶。** 那个 `1/cos(Δ/2)` 是给「两端正好落在环上」算的，而这里
- * 两端其实在各自节点的轨道上（离环心又偏出去 7~12）。跨两格时 `1/cos(45°)=1.41`
- * 把控制点顶到半径 64，曲线鼓出去老远 —— 实测路径左边界跑到 x = -17，整段飞出
- * 画面。封在 30° 上（放大 1.155 封顶）够贴着环走，又不会甩出去。
+ * 深度上下都有硬界：太阳在 14 以内不许进，别的 stage 骑在 45.5 上、圆边 40.6 ——
+ * 所以安全带大约是 14~39，候选全落在里面。
  */
-function ringArcApex(fromIndex, toIndex, total, radius) {
-  const step = (Math.PI * 2) / total;
-  let delta = (toIndex - fromIndex) * step;
-  if (delta <= 0) delta += Math.PI * 2;
-  const half = delta / 2;
-  const swell = 1 / Math.cos(Math.min(half, Math.PI / 6));
-  return ringPoint({ x: 50, y: 50 }, radius * swell, fromIndex * step + half);
+const TRANSFER_LANES = {
+  backwardOut: [22, 26, 19, 30, 16],
+  backwardHome: [32, 28, 35, 24, 18],
+  forwardOut: [38, 33, 27, 22, 17],
+  forwardHome: [29, 24, 34, 20, 16],
+};
+
+/**
+ * 把「哪两个节点、哪种边」翻成 `rocketFlight` 要的四个参数，顺带**挑一条飞得过去
+ * 的内道** —— 用户 2026-08-09：「小火箭绝对不能穿过任何 stage 和太阳」。
+ *
+ * 挡路的名单是**除这两头之外的所有节点**：自己那两个不算，火箭本来就要绕着它们
+ * 转。太阳是所有边都要躲的，写在 transferClears 里。
+ */
+function tripArgs(fromIndex, toIndex, total, backward) {
+  const from = nodeAt(fromIndex, total);
+  const to = nodeAt(toIndex, total);
+  const blocked = phases
+    .map((entry, index) => index)
+    .filter((index) => index !== fromIndex && index !== toIndex)
+    .map((index) => nodeAt(index, total));
+  const lanes = backward ? TRANSFER_LANES.backwardOut : TRANSFER_LANES.forwardOut;
+  const homeLanes = backward ? TRANSFER_LANES.backwardHome : TRANSFER_LANES.forwardHome;
+  return [
+    from,
+    to,
+    safeApex(from, to, lanes.map((lane) => transferApex(fromIndex, toIndex, total, lane)), blocked),
+    safeApex(to, from, homeLanes.map((lane) => transferApex(toIndex, fromIndex, total, lane)), blocked),
+  ];
 }
+
 
 /**
  * 剪纸小火箭，头朝 +x、原点在箭身中心 —— rotate="auto" 才能让它顺着路径扭。
@@ -1138,7 +1191,7 @@ function drawMap(panel) {
     const from = indexOf(jump.fromPhase);
     const to = indexOf(jump.toPhase);
     if (from < 0 || to < 0) continue;
-    lastTrip = { from: nodeAt(from, total), to: nodeAt(to, total) };
+    lastTrip = { from, to };
   }
 
   /*
@@ -1152,15 +1205,12 @@ function drawMap(panel) {
    * 长期同相叠住 —— 叠住看起来只有一枚，那是白飞。
    */
   if (lastTrip !== null) {
-    const ghostId = "map-ghost";
-    const apexOut = chordApex(lastTrip.from, lastTrip.to);
     map.append(svgNode("path", {
-      id: ghostId,
+      id: "map-ghost",
       class: "rail",
-      d: rocketFlight(lastTrip.from, lastTrip.to, apexOut,
-        returnApex(lastTrip.to, lastTrip.from, apexOut)),
+      d: rocketFlight(...tripArgs(lastTrip.from, lastTrip.to, total, true)),
     }));
-    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, 27));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), "map-ghost", 27));
   }
 
   /*
@@ -1208,7 +1258,6 @@ function drawMap(panel) {
     const to = indexOf(edge.to);
     if (to < 0) return;
     const id = `map-live-${order}`;
-    const target = nodeAt(to, total);
     /*
      * 两种边共用同一趟**六段往返**（地表→轨道→转移→地表→轨道→转移→地表），
      * 差别只在两条转移弦怎么弯 —— 形状带语义那条没丢（§5.9.3④）：
@@ -1219,14 +1268,8 @@ function drawMap(panel) {
      * 跑道本身不画也不吃鼠标（`rail`）—— 用户要的是「轨道不要画出来」。
      */
     const back = edge.kind === "backward";
-    const apexOut = back
-      ? chordApex(from, target)
-      : ringArcApex(here, to, total, MAP_RADIUS);
-    const apexBack = back
-      ? returnApex(target, from, apexOut)
-      : ringArcApex(to, here, total, MAP_RADIUS - 12);
     map.append(svgNode("path", {
-      id, class: "rail", d: rocketFlight(from, target, apexOut, apexBack),
+      id, class: "rail", d: rocketFlight(...tripArgs(here, to, total, back)),
     }));
     map.append(rocketRide(rocketGlyph("rocket"), id, back ? 22 : 18));
   });
