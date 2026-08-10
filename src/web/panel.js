@@ -74,6 +74,14 @@ const statusLine = pick("status-line");
 const statusFacts = pick("status-facts");
 const statusFoot = pick("status-foot");
 
+// 环心的太阳，和点它翻出来的那张状态卡
+const sunButton = button("sun");
+const sunCard = pick("sun-card");
+const sunKicker = pick("sun-kicker");
+const sunTitle = pick("sun-title");
+const sunLine = pick("sun-line");
+const sunCount = pick("sun-count");
+
 // 点小环打开的弹窗
 const sheet = dialog("sheet");
 const sheetKicker = pick("sheet-kicker");
@@ -749,15 +757,6 @@ function chordApex(from, to) {
   };
 }
 
-/** 从节点圆心朝 towards 方向缩到 RIM 轨道上的点 —— 尾迹不压着节点画。 */
-function rimEdgePoint(centre, towards) {
-  const len = Math.hypot(towards.x - centre.x, towards.y - centre.y) || 1;
-  return {
-    x: centre.x + (towards.x - centre.x) / len * RIM,
-    y: centre.y + (towards.y - centre.y) / len * RIM,
-  };
-}
-
 /**
  * 沿着**环**走的一段弧 —— 向前推进就该长这样（§5.9.3④）。
  *
@@ -930,38 +929,29 @@ function spiralTurns(centre, aStart, turns, r0, r1) {
   return d;
 }
 
+/** 整条飞行路线的 `d`。匀速跑（paced）不需要分段路程，所以只回一个字符串。 */
 function rocketFlight(from, to) {
   const apex = chordApex(from, to);
   const aD = Math.atan2(apex.y - from.y, apex.x - from.x);  // 出轨角
   const aA = Math.atan2(to.y - apex.y, to.x - apex.x);      // 入轨角
   const outFrom = outerOrbit(from);   // 两头各按自己的余量放大，贴边的收窄
   const outTo = outerOrbit(to);
-  const pad = ringPoint(from, NODE_R, aD);        // 从 stage 圆边上直接起旋
-  const depart = ringPoint(from, outFrom, aD);    // 两圈之后爬到最外圈，同角切出
-  const arrive = ringPoint(to, outTo, aA);        // 从最外圈同角切入
-  const d = `M ${pad.x} ${pad.y} `
+  const pad = ringPoint(from, NODE_R, aD);   // 从 stage 圆边上直接起旋
+  const arrive = ringPoint(to, outTo, aA);   // 绕完两圈后从最外圈同角切入
+  return `M ${pad.x} ${pad.y} `
     + spiralTurns(from, aD, ORBIT_TURNS, NODE_R, outFrom)
     + `Q ${apex.x} ${apex.y} ${arrive.x} ${arrive.y} `
     + spiralTurns(to, aA, ORBIT_TURNS, outTo, NODE_R);
-  /*
-   * keyPoints 按**路程占比**分段，速度感才对。螺旋长 ≈ 圈数 × π × (r0+r1)；
-   * 转移的二次贝塞尔用「弦长和经停控制点的折线长取平均」近似 —— 误差 <2%。
-   */
-  const spiralOut = ORBIT_TURNS * Math.PI * (NODE_R + outFrom);
-  const spiralIn = ORBIT_TURNS * Math.PI * (NODE_R + outTo);
-  const transfer = (Math.hypot(arrive.x - depart.x, arrive.y - depart.y)
-    + Math.hypot(apex.x - depart.x, apex.y - depart.y)
-    + Math.hypot(arrive.x - apex.x, arrive.y - apex.y)) / 2;
-  const total = spiralOut + transfer + spiralIn;
-  return {
-    d,
-    stops: [spiralOut / total, (spiralOut + transfer) / total, 1],
-  };
 }
 
 /**
  * 描边小火箭，头朝 +x、原点在箭身中心 —— rotate="auto" 才能让它顺着路径扭。
  * 和 V 字同一种笔触：细描边、圆头、无填充。喷焰单独一条 path，只有它在闪。
+ *
+ * **不给它挂 tooltip。** 试过把 `edge.why` 挂在这儿（跑道不画之后它是那条边上
+ * 唯一看得见的东西），但 `.orbit-map` 整层是 `pointer-events: none`，那个
+ * `<title>` 谁也悬停不到 —— 一个装作能用的东西。回跳能不能走、为什么，左边那块
+ * 常驻面板的「闸门」那行已经在说了。
  */
 function rocketGlyph(className) {
   const rocket = svgNode("g", { class: className });
@@ -991,17 +981,29 @@ function rocketGlyph(className) {
   return rocket;
 }
 
-/** 让火箭骑上飞行路径：起飞慢 → 转移快 → 入轨减速 → 熄火停一拍再从头来。 */
-function rocketRide(rocket, pathId, flight, seconds) {
+/**
+ * 让火箭骑上飞行路径，**从头到尾一个速度**。
+ *
+ * 用户 2026-08-09 第四次看后定的：「小火箭不要急停，线性的速度变化」。前一版
+ * 用 keyPoints + keySplines 分段调速（起旋慢／转移快／着陆前收），再抱着终点
+ * 停 16% 的时长 —— 那个停顿就是「急停」，而分段无论怎么配缓动，交接处总归是
+ * 人眼看得出的换挡。
+ *
+ * 现在什么都不设：`animateMotion` 的默认 calcMode 是 **paced**，按弧长匀速走完
+ * 整条路。没有 keyPoints 就没有档可换，也没有终点那一拍停顿 —— 它一路飞出画面
+ * 之外（靠 opacity 收尾），下一轮再从发射台起旋。
+ */
+function rocketRide(rocket, pathId, seconds) {
   const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
   motion.setAttribute("rotate", "auto");
-  motion.setAttribute("calcMode", "linear");
   const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
   mpath.setAttribute("href", `#${pathId}`);
   mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
   motion.append(mpath);
   if (reducedMotion()) {
     // 停在起飞点，朝向仍由 rotate="auto" 给出 —— 和 flyingArrow 同一套处理。
+    // 这一支要 keyPoints，所以它（也只有它）得把 calcMode 掰回 linear。
+    motion.setAttribute("calcMode", "linear");
     motion.setAttribute("dur", "1s");
     motion.setAttribute("repeatCount", "1");
     motion.setAttribute("fill", "freeze");
@@ -1012,26 +1014,15 @@ function rocketRide(rocket, pathId, flight, seconds) {
   }
   motion.setAttribute("dur", `${seconds}s`);
   motion.setAttribute("repeatCount", "indefinite");
-  /*
-   * 节奏就是「火箭感」的一大半，而**流畅**靠 spline：早先用 calcMode=linear，
-   * 每过一个 keyPoint 速度硬切一档，看起来一顿一顿的（用户 2026-08-09 点名）。
-   * 每段配一条 keySplines 缓动，段与段的交接处速度收进曲线里。
-   *
-   * 时间分配（路程占比在 flight.stops 里）：螺旋出轨 34%（起旋慢、越飞越快）→
-   * 转移 18%（路最长，也就最快）→ 螺旋入轨 32%（进场快、着陆前收）→
-   * .84 之后抱着着陆点不动 —— 那一拍里透明度已经是 0，瞬移回发射台不穿帮。
-   */
-  const [spiralOut, transfer] = flight.stops;
-  motion.setAttribute("calcMode", "spline");
-  motion.setAttribute("keyPoints", `0;${spiralOut};${transfer};1;1`);
-  motion.setAttribute("keyTimes", "0;.34;.52;.84;1");
-  motion.setAttribute("keySplines", ".5 0 .75 .6;.35 0 .65 1;.3 .45 .55 1;0 0 1 1");
   rocket.append(motion);
   const fade = document.createElementNS("http://www.w3.org/2000/svg", "animate");
   fade.setAttribute("attributeName", "opacity");
-  // 触地（.84）之后才熄灭 —— 落在场上停一瞬再消失，是着陆；半空变淡是失踪。
-  fade.setAttribute("values", "0;1;1;0;0");
-  fade.setAttribute("keyTimes", "0;.04;.84;.9;1");
+  /*
+   * 两头各留一小段淡入淡出，**中间整段都是满的**：火箭在飞行途中变淡就成了
+   * 「失踪」。收尾这 10% 里它还在动，所以看起来是飞远了，不是停住了。
+   */
+  fade.setAttribute("values", "0;1;1;0");
+  fade.setAttribute("keyTimes", "0;.05;.9;1");
   fade.setAttribute("dur", `${seconds}s`);
   fade.setAttribute("repeatCount", "indefinite");
   rocket.append(fade);
@@ -1045,34 +1036,22 @@ function drawMap(panel) {
   const indexOf = (phase) => phases.findIndex((entry) => entry.phase === phase);
 
   /*
-   * ① 走过的回头路，实线，**永久留着**。
+   * ① 走过的回头路：**一条线都不画**（用户 2026-08-09：「轨道不要画出来」）。
    *
-   * Fix 不在环上（它没有节点），所以送修那一跳画不出来 —— 那不是遗漏：Fix 的
-   * 节点确实在环上（THREADED_PHASES 含它），indexOf 找得到就画。找不到就跳过，
-   * 不去猜一个坐标。
+   * 先前留过一条全透明的粗描边当 hover 命中区，好把「第几轮、什么理由」保在
+   * tooltip 上。撤掉了，两个理由：看不见的悬停目标没人找得到；而它那条弦正好
+   * 横穿环心，会把太阳的点击吃掉 —— 而太阳现在是**要点的**。
+   *
+   * 这一趟历史唯一的去处是幽灵火箭：最近一跳由它重飞。Fix 不在环上时 indexOf
+   * 找不到，跳过就是了，不去猜一个坐标。
    */
-  let lastTrip = null;   // 最近一次画得出来的回跳 —— 幽灵火箭要重飞它
+  let lastTrip = null;   // 最近一次认得出的回跳 —— 幽灵火箭要重飞它
   for (const jump of panel.journey ?? []) {
     if (jump.kind !== "backward") continue;
     const from = indexOf(jump.fromPhase);
     const to = indexOf(jump.toPhase);
     if (from < 0 || to < 0) continue;
-    /*
-     * 走过的回头路 = 火箭飞过残留的**凝结尾迹**：圆点虚线，端点缩到两个 RIM
-     * 轨道上。上一版是红实线弦，用户 2026-08-09 判丑 —— 病历要留着，但它是
-     * 烟，不是伤口。
-     */
-    const a = nodeAt(from, total);
-    const b = nodeAt(to, total);
-    const apex = chordApex(a, b);
-    const start = rimEdgePoint(a, apex);
-    const end = rimEdgePoint(b, apex);
-    map.append(svgNode("path", {
-      class: `vapor${jump.action === "sendBack" ? " hot" : ""}`,
-      d: `M ${start.x} ${start.y} Q ${apex.x} ${apex.y} ${end.x} ${end.y}`,
-    }, `第 ${jump.round} 轮：${jump.fromPhase} → ${jump.toPhase}`
-      + (jump.reason ? `\n理由：${jump.reason}` : "")));
-    lastTrip = { from: a, to: b };
+    lastTrip = { from: nodeAt(from, total), to: nodeAt(to, total) };
   }
 
   /*
@@ -1087,9 +1066,10 @@ function drawMap(panel) {
    */
   if (lastTrip !== null) {
     const ghostId = "map-ghost";
-    const flight = rocketFlight(lastTrip.from, lastTrip.to);
-    map.append(svgNode("path", { id: ghostId, class: "rail", d: flight.d }));
-    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, flight, 11));
+    map.append(svgNode("path", {
+      id: ghostId, class: "rail", d: rocketFlight(lastTrip.from, lastTrip.to),
+    }));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), ghostId, 11));
   }
 
   /*
@@ -1123,13 +1103,15 @@ function drawMap(panel) {
     const id = `map-live-${order}`;
     if (edge.kind === "backward") {
       /*
-       * **回跳 = 小火箭轨道转移**。路线本身退成极淡发丝（只承接 hover 的
-       * tooltip），方向、事件感全交给火箭 —— 形状带语义这条没丢（§5.9.3④）：
-       * 转移段还是那条向心弯的弦，沿环走的推进照旧是弧。
+       * **回跳 = 小火箭螺旋转移**。这条 path 只是火箭的跑道（mpath 要按 id 引
+       * 它），本身**不画也不吃鼠标**（`rail`）—— 用户要的是「轨道不要画出来」。
+       * 形状带语义这条没丢（§5.9.3④）：转移段还是那条向心弯的弦，沿环走的推进
+       * 照旧是弧。
        */
-      const flight = rocketFlight(from, nodeAt(to, total));
-      map.append(svgNode("path", { id, class: "flight", d: flight.d }, edge.why));
-      map.append(rocketRide(rocketGlyph("rocket"), id, flight, 11));
+      map.append(svgNode("path", {
+        id, class: "rail", d: rocketFlight(from, nodeAt(to, total)),
+      }));
+      map.append(rocketRide(rocketGlyph("rocket"), id, 11));
       return;
     }
     map.append(svgNode("path", {
@@ -1559,14 +1541,45 @@ function renderStatus(entry) {
  *
  * 问的是「走到哪了」，而那是 Change 的位置 —— 一个阶段可以正在跑、还没批准，
  * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
- *
- * 原来这里还画环心的圆盘（阶段名 / Gate 状态 / approved 计数）——2026-08-09
- * 用户删掉了它：左侧面板和节点本身都有这些，纯重复，还压着环内的弦。
  */
 function drawProgress() {
   const at = phases.find((entry) => entry.current);
   const reached = at === undefined ? 0 : phases.indexOf(at) / phases.length;
   pick("progress").style.setProperty("--progress", String(reached));
+  // 卡开着的时候数字得跟着轮询走，否则它停在点开那一刻，越看越不对。
+  if (!sunCard.hidden) fillSunCard();
+}
+
+/**
+ * 环心状态卡的内容。
+ *
+ * 这几行字本来常驻在环心圆盘上，2026-08-09 用户嫌它占地方删掉了；同一天他又要
+ * 回来 —— 但要的是「点一下才看」。所以内容和当初一模一样，**出场方式不同**：
+ * 平时环心只有一颗太阳，问了才答。
+ */
+function fillSunCard() {
+  const at = phases.find((entry) => entry.current);
+  const approved = phases.filter((entry) => entry.mark === "approved").length;
+  sunKicker.textContent = panelState?.status
+    ? `Gate · ${panelState.status}` : "Stage Orbit";
+  sunTitle.textContent = at ? at.phase : "—";
+  sunLine.textContent = at
+    ? `${phases.length} 个阶段，停在第 ${phases.indexOf(at) + 1} 个。`
+    : `${phases.length} 个阶段，每个阶段一个 Codex 线程。`;
+  sunCount.replaceChildren(
+    document.createTextNode(`${approved} / ${phases.length}`),
+  );
+  const unit = document.createElement("em");
+  unit.textContent = "Approved";
+  sunCount.append(unit);
+}
+
+/** 点太阳：开，或者关。卡摆在太阳下方不盖住它，所以一个开关管两头。 */
+function toggleSunCard() {
+  const opening = sunCard.hidden;
+  sunCard.hidden = !opening;
+  sunButton.setAttribute("aria-expanded", String(opening));
+  if (opening) fillSunCard();
 }
 
 /*
@@ -2845,4 +2858,5 @@ async function saveRubric() {
 
 tabGaps.addEventListener("click", () => { showTab("gaps"); });
 tabRubric.addEventListener("click", () => { showTab("rubric"); });
+sunButton.addEventListener("click", () => { toggleSunCard(); });
 
