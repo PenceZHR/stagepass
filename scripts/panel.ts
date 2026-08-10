@@ -17,9 +17,11 @@ import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
 import { prepareSchema } from "../src/db/schema";
+import { retireStandards } from "../src/domain/rubric-gaps";
 import { ChangeStore } from "../src/store/change-store";
+import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
-import { RubricStore } from "../src/store/rubric-store";
+import { FACTORY_UPGRADE_REASON, RubricStore } from "../src/store/rubric-store";
 import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 
@@ -165,6 +167,8 @@ const project = new ProjectStore(database).ensure(
  * 而这是他唯一会看到它的地方。
  */
 const rubrics = new RubricStore(database);
+const gaps = new GapStore(database);
+const changeIndex = new ChangeStore(database);
 for (const each of new ProjectStore(database).list()) {
   rubrics.installDefaults(each.id);
   const upgraded = rubrics.upgradeDefaults(each.id);
@@ -174,6 +178,29 @@ for (const each of new ProjectStore(database).list()) {
   }
   for (const skip of upgraded.skipped) {
     console.log(`[rubric] ${each.id} ${skip.scope} 没升 —— ${skip.why}`);
+  }
+  /*
+   * **撤下一条标准，它派生的阻断项跟着退休** —— 和人手动改标准那条路
+   * （`app/edit-rubric.ts`）逐字同一条规则，只是那儿的理由是人写的话，这儿是
+   * 「出厂标准升级」。
+   *
+   * 2026-08-10 真机顶出来的洞：这一步原来不做，于是升级留下**谁也关不掉的
+   * 孤儿**（标准没了，反方不会再判它；红方又不可能满足一条已经退休的要求）。
+   * 逐条打出来 —— 关掉一个问题必须让人看得见是谁关的、为什么。
+   */
+  for (const { phase, role, keys } of upgraded.retired) {
+    for (const change of changeIndex.list(each.id)) {
+      const before = gaps.all(change.id, phase);
+      const after = retireStandards(before, role, keys, FACTORY_UPGRADE_REASON);
+      const closed = after.filter((gap, index) =>
+        gap.status === "closed" && before[index]?.status === "open");
+      if (closed.length === 0) continue;
+      gaps.replace(change.id, phase, after);
+      for (const gap of closed) {
+        console.log(`[rubric] ${change.id}/${phase} 退休了一条阻断项：${
+          gap.title.slice(0, 40)}`);
+      }
+    }
   }
 }
 
