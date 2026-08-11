@@ -543,8 +543,8 @@ async function ask() {
 /**
  * One shared centre, one shared radius.
  *
- * 0.455 和 CSS 里 `.halo { inset: 4.5% }` 是同一个数：轨道半径也是
- * (1 - 2×0.045) / 2 = 0.455 倍环宽，节点因此正好骑在轨道上。**改一个就要改另一个**，
+ * 0.40 和 CSS 里 `.halo { inset: 10% }` 是同一个数：轨道半径也是
+ * (1 - 2×0.10) / 2 = 0.40 倍环宽，节点因此正好骑在轨道上。**改一个就要改另一个**，
  * 否则节点会浮在轨道内侧或外侧。
  */
 /**
@@ -669,7 +669,7 @@ async function waive() {
 }
 
 function placeNodes() {
-  const radius = wrap.clientWidth * 0.455;
+  const radius = wrap.clientWidth * 0.40;
   // querySelectorAll 给的是 Element；只有 HTMLElement 才有 style。
   wrap.querySelectorAll(".stage-node").forEach((node) => {
     if (node instanceof HTMLElement) node.style.setProperty("--r", `${radius}px`);
@@ -697,7 +697,15 @@ function placeNodes() {
  * **两样都不在这儿算** —— 前端自己推第二份判据，就会画出闸门不认的箭头，那正是
  * 老树那五个死按钮的形状（§5.4）。
  */
-const MAP_RADIUS = 45.5;   // 和 CSS 的 inset:4.5%、placeNodes 的 0.455 是同一个数
+/*
+ * 环有多大。**这个数、CSS 的 `.halo/.progress { inset: 10% }`、placeNodes 的 0.40
+ * 是同一件事的三处写法，改一处就要改三处。**
+ *
+ * 2026-08-09 从 45.5 收到 40：45.5 的环把节点顶到了栏的边上 —— 三点/九点方向的
+ * 节点盘边离窗口只剩 5px，**周围根本没有地方放轨道和阶段名**。症状是火箭连着字
+ * 一起飞、贴边那几个节点的轨道被窗口切掉。环小一档，节点周围才腾得出那圈地盘。
+ */
+const MAP_RADIUS = 40;
 
 /** 第 n 个阶段在方格里的坐标。十二点起、顺时针 —— 和节点的摆法同一套。 */
 function nodeAt(index, total) {
@@ -709,24 +717,60 @@ function nodeAt(index, total) {
 }
 
 /*
- * ── 节点周围那一圈的地盘（实测，别凭感觉改）────────────────
+ * ── 节点周围那一圈的地盘：**每次重画按真实像素量，不许写死** ──────
  *
- * 2026-08-05 在真尺寸上量的（1 viewBox 单位 ≈ 5.8px）：
+ * 这里有一个会咬人的单位错配：
  *
  * ```
- * 0 ~ 4.86    节点那个圆自己
- * 4.86 ~ 9.0  空的 —— 绕圈箭头住在这里（标签让开之后腾出来的）
- * 9.0 ~ 11.1  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
+ * 节点圆      CSS 固定 56px（半径 28）      —— 像素
+ * 阶段名      CSS 固定在圆心下 70px          —— 像素
+ * 轨道 / 火箭 画在 viewBox 里                —— 100 分之一个环宽
  * ```
  *
- * 标签原来卡在 6.25，那条缝窄得圈根本大不起来。用户 2026-08-05：「自循环的圈
- * 可以大一点，起码包裹住 stage 的圆」—— 所以 `panel.html` 把标签从 64px 推到
- * 80px，这条带子才够住人。**改这里就要改那边**，两个数是同一件事的两半。
+ * 一个 viewBox 单位有多少像素**随环的大小变**（1280 宽的窗口上是 4.32px）。所以
+ * 「节点圆半径是几个单位」不是常数：写死的那一版填的是 4.86，而实测是 6.48 ——
+ * 火箭的「地表」因此落在节点圆**里面**，看起来是从盘子底下钻出来的；卫星的内道
+ * 也正好骑在盘边上。同一批数在别的窗口尺寸下只会错得更多。
  *
- * 这条轨道上原来还有轮次刻度（一轮一段的分段弧）。用户 2026-08-09：刻度去掉，
- * 轮数改用**节点圆自己的颜色深浅**表达 —— 见 drawOrbit 里的 `--depth`。
+ * `nodeGeometry()` 每次重画量一遍，下面所有半径都从它派生。**改 panel.html 里
+ * 那两个 px 就要改这里的两个 px**，它们是同一件事的两半。
  */
-const RIM = 7.5;          // 绕圈箭头的轨道（节点圆半径 4.86）
+const NODE_DISC_PX = 28;    // .stage-node button 是 56px 见方
+const LABEL_TOP_PX = 52;    // .stage-node button span 的 top:80px 减去 button 的 -28px
+const LABEL_BOTTOM_PX = 64; // 再加那行 12px 的字高
+/** 火箭/卫星自己的径向半展（viewBox 单位，跟着 SCALE 走，与窗口大小无关）。 */
+const GLYPH_RADIAL = 1.75;
+/** 图形和盘边／字之间留的空气。 */
+const GLYPH_AIR = 0.6;
+
+/**
+ * 上一次量到的「一个 viewBox 单位有多少像素」。
+ *
+ * **量不到时绝不能拿 100 当环宽兜底。** 那样 unit 变成 1，盘半径就成了 28 个
+ * viewBox 单位（比整个环还大），轨道跟着膨胀 —— 2026-08-09 实测过一次：卫星
+ * 直接飞到环外面去了。而量不到是常事：标签页在后台没绘制、环所在的那一栏正被
+ * 切走，`clientWidth` 都会是 0。记住上一次的真值，下一次重画自己就纠正回来。
+ */
+let ringUnit = 4.3;
+
+function nodeGeometry() {
+  const measured = wrap.clientWidth / 100;
+  if (measured > 0) ringUnit = measured;
+  const unit = ringUnit;
+  const disc = NODE_DISC_PX / unit;
+  const label = LABEL_TOP_PX / unit;
+  const surface = disc + GLYPH_RADIAL + GLYPH_AIR;   // 贴着盘边能飞的最内圈
+  /*
+   * 天花板按阶段名的**下沿**算，不是上沿。
+   *
+   * 节点那一层（盘 + 字）z-index 6，地图层是 auto —— 火箭是从字**背后**过去的，
+   * 属于遮挡不是压字。按上沿算那一版把轨道带压到只剩 1.5 个单位：两颗卫星塞不下，
+   * 螺旋也几乎不扩张，「越来越远」那句话就没了。让它飞到字的另一头，中间那一下
+   * 是「钻到牌子后面」。
+   */
+  const ceiling = LABEL_BOTTOM_PX / unit - GLYPH_RADIAL - GLYPH_AIR;
+  return { disc, label, surface, ceiling: Math.max(surface + 1.5, ceiling) };
+}
 
 function svgNode(tag, attributes, tooltip) {
   const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -765,11 +809,10 @@ function circleAround(at, radius) {
  *
  * 「就做到直接绕圈，但是绕圈的时候轨道要越来越远，降落的轨道越来越近直到着陆。」
  *
- * 火箭从 stage 圆的边上起旋，绕圈且**一圈比一圈远**（螺旋向外），爬到 RIM 轨道
- * 切线脱离、走向环心弯的转移曲线（「穿心 = 回头」的旧语义还在）；到目的 stage
- * 从 RIM 切入，绕圈且**一圈比一圈近**（螺旋向内），贴到 stage 圆上就是着陆，
- * 停一瞬熄灭，从头再来。第四版在两端加了垂直起竖/降落的贝塞尔，被用户否掉 ——
- * 那两笔和绕圈不是一种语言，还会甩出难看的尖刺。
+ * 火箭从 stage 圆的**边上**（nodeGeometry().surface，贴着盘边再留出自己半个身位）
+ * 起旋，绕圈且一圈比一圈远，爬到 outerOrbit 切线脱离、走转移弦；到目的 stage 从
+ * 外圈切入，绕圈且一圈比一圈近，贴回盘边。第四版在两端加了垂直起竖/降落的贝塞尔，
+ * 被用户否掉 —— 那两笔和绕圈不是一种语言，还会甩出难看的尖刺。
  *
  * ringPoint 的参数角和 nodeAt 同一套：0 = 正上方，顺时针增，速度方向恰好是
  * (cos a, sin a) —— 螺旋、贝塞尔连成一笔，rotate="auto" 全程不跳。
@@ -777,33 +820,28 @@ function circleAround(at, radius) {
 const ORBIT_TURNS = 2;      // 两端各绕两圈
 const ROCKET_SCALE = 1.45;  // 剪纸版比原来的细描边壳大一号，形状才读得出来
 const SATELLITE_SCALE = 1.4;    // 摊平之后径向只占 1.8，放得大才认得出是卫星
-const NODE_R = 4.86;        // 节点圆半径 —— RIM 上面那张实测地盘图里的 0~4.86
-/**
- * 螺旋的外圈半径。故意比 RIM(7.5) 大出一截 —— 用户 2026-08-09：「轨道可以
- * 大一点夸张一点」。最外圈会扫过阶段名那条带（9.0~11.1），但那是一枚发丝
- * 火箭一闪而过，不是常驻笔画，压不住字。
- */
-const ORBIT_MAX = 12;
 /**
  * 允许溢出 viewBox 的那一点点。
  *
  * **实测**（2026-08-09，1280 宽窗口）：环那一格的右边界在 1266px、窗口 1280px，
  * 也就是 viewBox 只铺得到 x≈103.2；`overflow` 一路都是 visible，裁掉火箭的不是
- * CSS 而是**窗口边缘**。用 12 的外圈画三点钟方向的节点，路径要跑到 106.6 ——
- * 火箭在那一段整个消失。3 是留够安全的溢出量。
+ * CSS 而是**窗口边缘**。3 是留够安全的溢出量。
  */
 const ORBIT_BLEED = 3;
 
 /**
- * 这个节点的外圈能放多大：贴边的节点收窄，够宽的照样飞满 ORBIT_MAX。
+ * 这个节点的外圈能放多大。**两条上限，取小的那条**：
  *
- * 三点钟／九点钟那两个节点离 viewBox 边只有 4.5，装不下夸张的外圈；与其让火箭
- * 飞出屏幕不见，不如让它们的圈小一号 —— **看得见**比**一样大**要紧。地板是 RIM，
- * 再小就不成其为「越来越远」了。
+ * - 阶段名那行字（`nodeGeometry().ceiling`）—— 越过去火箭就从字上飞过；
+ * - 到 viewBox 边的余量 —— 越过去火箭飞出窗口不见（三点/九点那两个节点只剩 4.5）。
+ *
+ * 地板是「贴着盘边能飞的最内圈」再往外一点，否则「越来越远」这句话就没了。
  */
 function outerOrbit(at) {
-  const room = Math.min(at.x, 100 - at.x, at.y, 100 - at.y) + ORBIT_BLEED;
-  return Math.max(RIM, Math.min(ORBIT_MAX, room));
+  const geo = nodeGeometry();
+  // 余量要**减掉火箭自己的半展**：路径在界内不等于图形在界内。
+  const room = Math.min(at.x, 100 - at.x, at.y, 100 - at.y) + ORBIT_BLEED - GLYPH_RADIAL;
+  return Math.max(geo.surface + 1.5, Math.min(geo.ceiling, room));
 }
 
 /** centre 半径 radius 的圆上参数角 a 处的点。 */
@@ -846,17 +884,19 @@ function spiralArc(centre, aStart, sweep, r0, r1) {
 /*
  * ── 禁飞区（用户 2026-08-09：「小火箭绝对不能穿过任何 stage 和太阳」）──
  *
- * 这两个数是**路径中心线**的禁入半径，所以要把火箭自己的身长算进去：剪纸火箭
- * 缩放后从头到尾约 5.6，半身 2.8。
+ * 这是**路径中心线**的禁入半径，所以要把火箭自己的身长算进去：剪纸火箭缩放后
+ * 从头到尾约 5.6，半身 2.8。
  *
- *   太阳   `.sun` 占 21% 宽 → 半径 10.5（光芒到 9.2）+ 2.8 + 空气 2.2 = 15.5
- *   stage  节点圆 4.86 + 2.8 + 空气 2.3 = 10
+ * 太阳是环宽的百分比（`.sun` 占 21% → 半径 10.5，光芒到 9.2），所以它可以是常数；
+ * **别的 stage 不行** —— 节点圆是固定 56px，换算成 viewBox 单位随窗口变，只能问
+ * `nodeGeometry()`。写死 10 那一版在 1280 宽的窗口上就已经比真值小了一圈。
  *
- * 螺旋段天生安全，不用查：它绕着自己那个节点转，最远 12 —— 离环心还有 33.5，
- * 离最近的邻居还有 22.8。会闯祸的只有两条转移弦。
+ * 螺旋段天生安全，不用查：它绕着自己那个节点转，最远也就十几个单位 —— 离环心还有
+ * 三十多，离最近的邻居还有二十多。会闯祸的只有两条转移弦。
  */
 const SUN_KEEPOUT = 15.5;
-const NODE_KEEPOUT = 10;
+const KEEPOUT_AIR = 2.3;
+const nodeKeepout = () => nodeGeometry().disc + 2.8 + KEEPOUT_AIR;
 
 /**
  * 转移弦的控制点：摆在两点角平分线上，**深度选到让曲线中点正好落在 lane 上**。
@@ -887,6 +927,7 @@ function transferApex(fromIndex, toIndex, total, lane) {
  * 而它在采样点上量到的都 ≥ 9，于是放行 —— 采样太疏就是这么骗人的。
  */
 function transferClears(p0, apex, p1, blocked) {
+  const keepout = nodeKeepout();
   for (let i = 0; i <= 60; i += 1) {
     const t = i / 60;
     const u = 1 - t;
@@ -894,7 +935,7 @@ function transferClears(p0, apex, p1, blocked) {
     const y = u * u * p0.y + 2 * u * t * apex.y + t * t * p1.y;
     if (Math.hypot(x - 50, y - 50) < SUN_KEEPOUT) return false;
     for (const node of blocked) {
-      if (Math.hypot(x - node.x, y - node.y) < NODE_KEEPOUT) return false;
+      if (Math.hypot(x - node.x, y - node.y) < keepout) return false;
     }
   }
   return true;
@@ -957,41 +998,56 @@ function wrapAngle(radians) {
 function rocketFlight(from, to, apexOut, apexBack) {
   const outFrom = outerOrbit(from);   // 两头各按自己的余量放大，贴边的收窄
   const outTo = outerOrbit(to);
+  const surface = nodeGeometry().surface;
   const aD = Math.atan2(apexOut.y - from.y, apexOut.x - from.x);   // 去程出轨角
   const aA = Math.atan2(to.y - apexOut.y, to.x - apexOut.x);       // 去程入轨角
   const bD = Math.atan2(apexBack.y - to.y, apexBack.x - to.x);     // 回程出轨角
   const bA = Math.atan2(from.y - apexBack.y, from.x - apexBack.x); // 回程入轨角
   const full = ORBIT_TURNS * 2 * Math.PI;
 
-  const pad = ringPoint(from, NODE_R, aD);        // ① 的起点，也是 ⑥ 的终点
+  const pad = ringPoint(from, surface, aD);       // ① 的起点，也是 ⑥ 的终点
   const arrive = ringPoint(to, outTo, aA);
   const back = ringPoint(from, outFrom, bA);
 
   return `M ${pad.x} ${pad.y} `
-    + spiralArc(from, aD, full, NODE_R, outFrom)
+    + spiralArc(from, aD, full, surface, outFrom)
     + `Q ${apexOut.x} ${apexOut.y} ${arrive.x} ${arrive.y} `
-    + spiralArc(to, aA, full, outTo, NODE_R)
-    + spiralArc(to, aA, full + wrapAngle(bD - aA), NODE_R, outTo)
+    + spiralArc(to, aA, full, outTo, surface)
+    + spiralArc(to, aA, full + wrapAngle(bD - aA), surface, outTo)
     + `Q ${apexBack.x} ${apexBack.y} ${back.x} ${back.y} `
-    + spiralArc(from, bA, full + wrapAngle(aD - bA), outFrom, NODE_R)
+    + spiralArc(from, bA, full + wrapAngle(aD - bA), outFrom, surface)
     + "Z";
 }
 
 /*
- * 两条转移弦各自的候选内道，由浅到深。**第一条是常态，后面几条是让路用的。**
+ * 转移弦想走的深度（**首选**，不是唯一选择）。
  *
- * 回跳挖得深（22/32）：那是「穿过环内回头」；推进走得浅（40/30）：那是「沿着环
- * 往前」。同一趟里去和回不同深度，两条道就分得开，不会看成原路折返。
- *
- * 深度上下都有硬界：太阳在 14 以内不许进，别的 stage 骑在 45.5 上、圆边 40.6 ——
- * 所以安全带大约是 14~39，候选全落在里面。
+ * 回跳挖得深（去 22 / 回 30）：那是「穿过环内回头」；推进走得浅（去 34 / 回 26）：
+ * 那是「沿着环往前」。同一趟里去和回不同深度，两条道就分得开，不会看成原路折返。
  */
 const TRANSFER_LANES = {
-  backwardOut: [22, 26, 19, 30, 16],
-  backwardHome: [32, 28, 35, 24, 18],
-  forwardOut: [38, 33, 27, 22, 17],
-  forwardHome: [29, 24, 34, 20, 16],
+  backwardOut: 22, backwardHome: 30,
+  forwardOut: 34, forwardHome: 26,
 };
+/** 安全带：太阳那头进不去，节点那头（环在 40）也贴不上。 */
+const LANE_MIN = 12;
+const LANE_MAX = 36;
+
+/**
+ * 候选深度，**按离首选的远近排**：先试首选，不行就往两边一格一格挪。
+ *
+ * 手写五个数那一版栽在对径跳上：回程那串最深只到 18，而实测那个方向要 16 以内
+ * 才躲得开两个邻居 —— 五条全不过，`safeApex` 只好用最后一条，余量 10.95 < 11.61。
+ * 排成阶梯就不会再有「表里正好没有那一档」这种事。
+ */
+function laneLadder(preferred) {
+  const lanes = [];
+  for (let step = 0; step <= LANE_MAX - LANE_MIN; step += 2) {
+    if (preferred + step <= LANE_MAX) lanes.push(preferred + step);
+    if (step > 0 && preferred - step >= LANE_MIN) lanes.push(preferred - step);
+  }
+  return lanes;
+}
 
 /**
  * 把「哪两个节点、哪种边」翻成 `rocketFlight` 要的四个参数，顺带**挑一条飞得过去
@@ -1007,8 +1063,8 @@ function tripArgs(fromIndex, toIndex, total, backward) {
     .map((entry, index) => index)
     .filter((index) => index !== fromIndex && index !== toIndex)
     .map((index) => nodeAt(index, total));
-  const lanes = backward ? TRANSFER_LANES.backwardOut : TRANSFER_LANES.forwardOut;
-  const homeLanes = backward ? TRANSFER_LANES.backwardHome : TRANSFER_LANES.forwardHome;
+  const lanes = laneLadder(backward ? TRANSFER_LANES.backwardOut : TRANSFER_LANES.forwardOut);
+  const homeLanes = laneLadder(backward ? TRANSFER_LANES.backwardHome : TRANSFER_LANES.forwardHome);
   return [
     from,
     to,
@@ -1234,18 +1290,18 @@ function drawMap(panel) {
        * 两颗分处不同半径、周期还不整除，于是永远错开、永远不成队形 —— 排成一队
        * 跟飞读起来是「有个东西在爬」，分层各转各的读起来才是这个节点在自转。
        *
-       * **地方不够就只放一颗。** 正轴那四个节点（三点/九点/十二点/六点）的轨道
-       * 被 outerOrbit 收到 RIM，从节点边缘到轨道只剩 2.6 —— 硬塞两条道，两颗卫星
-       * 会叠在一起，那还不如一颗。
+       * **地方不够就只放一颗。** 贴着 viewBox 边的那几个节点外圈被收窄，从盘边到
+       * 轨道剩不下两条道 —— 硬塞两颗会叠在一起，那还不如一颗。
        */
       const outer = outerOrbit(from);
-      const room = outer - NODE_R;
-      const lanes = room >= 4.5
+      const inner = nodeGeometry().surface;
+      const room = outer - inner;
+      const lanes = room >= 3.5
         ? [
-            { radius: NODE_R + room * 0.38, seconds: 6.5 },
+            { radius: inner + room * 0.3, seconds: 6.5 },
             { radius: outer, seconds: 10 },
           ]
-        : [{ radius: NODE_R + room * 0.62, seconds: 8 }];
+        : [{ radius: inner + room * 0.5, seconds: 8 }];
       lanes.forEach((lane, laneIndex) => {
         const id = `map-self-${laneIndex}`;
         map.append(svgNode("path", {
