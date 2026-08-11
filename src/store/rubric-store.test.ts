@@ -47,6 +47,54 @@ describe("rubric store · 把没被人碰过的出厂标准升上来", () => {
     assert.ok(after.criteria.every((each) => each.blocking), "升上来的还是不阻断");
   });
 
+  it("**撤下的标准交得出来** —— 调用方要拿它去退休遗留的阻断项", () => {
+    const { rubrics, database } = open();
+    rubrics.installDefaults(PROJECT);
+    /*
+     * 装一条出厂版里**没有**的标准（模拟一条后来被撤掉的旧标准）：升级时它会被
+     * 换掉，而它派生的、还开着的阻断项必须有人去关 —— 那需要它的 key。
+     *
+     * 2026-08-10 真机：这个返回值原来不存在，于是后台升级留下谁也关不掉的孤儿
+     * （「TestPlan 必须通过」留在 Build 上，而任务书禁止 Build 碰测试）。
+     */
+    const scope = { projectId: PROJECT, changeId: null, phase: "PRD" as const, role: "producer" as const };
+    const before = rubrics.current(scope)!;
+    database.prepare(
+      "INSERT INTO rubric_criteria (rubric_id, criterion_key, ordinal, text, blocking, section)"
+      + " VALUES (?, 'RBC-going-away', 99, '一条马上要被撤下的旧标准', 1, NULL)",
+    ).run(before.id);
+
+    const result = rubrics.upgradeDefaults(PROJECT);
+    assert.ok(result.upgraded.includes("PRD/producer"), "该升的没升");
+    const retired = result.retired.find(
+      (each) => each.phase === "PRD" && each.role === "producer");
+    assert.ok(retired, `撤下的没交出来：${JSON.stringify(result.retired)}`);
+    assert.ok(retired.keys.includes("RBC-going-away"),
+      `撤下的 key 不在名单里：${JSON.stringify(retired.keys)}`);
+  });
+
+  it("**改一条标准的措辞 = 撤下旧的**，所以旧 key 也要交出来（真机那两条孤儿的成因）", () => {
+    const { rubrics, database } = open();
+    rubrics.installDefaults(PROJECT);
+    const before = rubrics.current(
+      { projectId: PROJECT, changeId: null, phase: "PRD", role: "producer" })!;
+    const firstKey = before.criteria[0]!.key;
+    /*
+     * `nextVersion` 按**正文**认「是不是同一条标准」，所以改措辞就是「旧的撤下、
+     * 新的加入」—— 这正是真机上「改动范围和 Plan 一致」变成「…和 BuildPlan 一致」
+     * 之后，旧那条的 gap 成为孤儿的机制。撤下的 key 必须交出来，否则没人关得掉它。
+     */
+    database.prepare(
+      "UPDATE rubric_criteria SET text = ? WHERE rubric_id = ? AND criterion_key = ?",
+    ).run("这是上一版的措辞", before.id, firstKey);
+
+    const result = rubrics.upgradeDefaults(PROJECT);
+    const retired = result.retired.find(
+      (each) => each.phase === "PRD" && each.role === "producer");
+    assert.ok(retired?.keys.includes(firstKey),
+      `改措辞撤下的旧 key 没交出来：${JSON.stringify(result.retired)}`);
+  });
+
   it("**人改过的一个字都不碰**，而且说得出为什么", () => {
     const { rubrics } = open();
     rubrics.installDefaults(PROJECT);

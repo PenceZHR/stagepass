@@ -3,43 +3,54 @@
 > 直接把下面整段贴给新会话。**这份每次交接都要重写** —— 它是新会话第一眼看的
 > 东西，过期一句就会误导一整个会话（上上版整篇过期了半个月没人发现）。
 >
-> 本版写于 2026-08-09 07:00（美东)，当时 Plan 正在跑一轮 —— 读到这里先查库里
-> 的真状态，别拿下面的快照当现在。
+> 本版写于 2026-08-09 晚（美东）。**当天下午环 v3 六批全部落地** —— 而面板
+> 大概率还跑着上午的旧代码。读到这里先查库里的真状态，别拿快照当现在。
 
 ---
 
-接手 StagePass。**先读这两份，别跳过：**
+接手 StagePass。**先读这三份，别跳过：**
 
-1. `docs/HANDOFF-2026-08-08.md` —— 最近一次的大账：三个真机 bug、撤回并行座位、
-   TechSpec 并进 Arch、「输出太宽泛」的治法。
-2. `docs/PLAN-2026-08-06.md` —— 五批的总纲（批 0/1/2/5 已落，批 3 撤回，批 4 待）
+1. `docs/PLAN-2026-08-09-ring-v3.md` —— 环 v3 总纲：一整轮谈话的八条拍板 + 七批
+2. `docs/ARCH-ring-v3-2026-08-09.md` —— 环 v3 技术架构，细到文件与函数
+3. `docs/HANDOFF-2026-08-08.md` —— 更早的账（真机 bug 与撤回并行的背景）
 
 要挖背景再读：`PRD-stagepass-rebuild-2026-07-28.md`（唯一权威）、
 `DESIGN-phase-not-the-only-axis-2026-08-06.md`（地基改动）、
-`RUBRICS-AND-TEMPLATES.md`（十份模板和标准的现状，**从代码生成**，改完跑
+`RUBRICS-AND-TEMPLATES.md`（模板和标准，**从代码生成**，改完跑
 `node --import tsx scripts/dump-rubrics.ts`）。
 
-## 2026-08-09 这天做了什么（快照）
+## 2026-08-09 这天做了什么
 
-- **面板已经重启过了**：`bc956c6`（认自己提示词）从 06:39 起生效。此前它没生效时
-  又付了两次学费：Arch 第 5 轮 3 小时超时被判死（线程后来跑完，`Arch-r5.md`
-  落盘无人认领，被第 6 轮 commit 卷走）；Plan 派发 2 秒被误判。
-- **Arch 重写收工并批准**（seq 79，`Arch → Plan`）：7 轮，从「11 条全 yes 但人说
-  太宽泛」到「20 条含粒度挡门全过」。「输出太宽泛」的治法在真机上立住了。
-- **`8938e1b`**：裁决会话模型抽风（turn 结束了却没把题端给人）不再让人干等 ——
-  waitForAnswer 加第三个活性判据 + 自动补问一次 + 所有「没答上」的下场落库。
-- **裁决题面加了两条真机注记**（这天最后一个 commit）：
-  ① 上一轮判了失败而线程后来跑完了 → 题面说「产出可能已落盘，先看一眼再选」；
-  ② 判定落库之后上游又结算过 → 题面标「这些判定评的是上游变动之前的东西」
-  （Plan 那道「9 条全部满足」其实是三天前旧轮的判定，人差点拿着旧话裁新局）。
+**上午（旧环上的真机）**：面板重启吃到 `bc956c6`；Arch 重写七轮收工批准
+（「输出太宽泛」的治法立住了）；`8938e1b` 裁决会话抽风不再干等；裁决题面
+加两条真机注记（死而复生的轮、评旧产出的判定）。
 
-## 当时的状态（快照，先查库核实）
+**下午（环 v3 六批，217df86..b8ed59f，每批一个 commit、`pnpm check` 全绿）**：
 
-- 分支 `build-the-base-2026-08-05`，`pnpm check` 全绿，工作树干净
-- 阶段 11 个：`PRD → Spec → Arch → Plan → TestPlan → Build → Review → QA →
-  Merge → Retro → Done`（TechSpec/Fix 退休在册）
-- 真库 `~/.stagepass/panel.db`：`CHG-001` 在 **`Plan/running`**（对着 Arch-r7
-  重写计划的那一轮），`returnStack: ["Build"]` —— Plan 之后沿 TestPlan 回 Build
+- **批 1 域层**：主线换成八阶段
+  `PRD → Spec → Arch → [BuildPlan∥TestPlan] → [Build∥Test] → QA`，QA 批准即
+  closed。退休七个（TechSpec/Plan/Review/Fix/Merge/Retro/Done），名字留给历史。
+  两轨互盲写进 CONSUMES；reject 处处=原地再来一轮，rerun/送修连根拆除。
+- **批 2 模板**：TestPlan 收窄成纯方案（测试代码归 Test），落点从记录变**声明**。
+- **批 3 迁移**：活库自动迁（rerun 给历史留席位；停在退休阶段的 Change 按
+  ABSORBED_BY 搬家，Plan→BuildPlan、Review/Merge/Retro/Done→QA）。
+- **批 4 并行重开**：分叉自动开座（批准落到 BuildPlan/Build 给孪生开座）；
+  案 B 落地（Test 窄提交、Build 挡门 `twin_track_midflight`）；撤回审计的六条
+  P0 逐条还清；插件多一个 `STAGEPASS_PHASE`。
+- **批 5 QA 三攻**：读（收编旧 Review 的静态审查）/ 跑（必过判据挪过来）/
+  变（还原必红 + no-op 仍绿）。案卷=任务书的上游投递，不另建装订器。
+- **批 6 Arch 编辑过门**：EDIT-1（P1 gap）轮末必开；`/api/ask` 检测产出文件的
+  未提交改动即关门；模型看不见这道门；人可 waive/驳回（要理由）。
+
+## 当前状态（快照，先查库核实）
+
+- 分支 `build-the-base-2026-08-05`，`pnpm check` **1136 全绿**
+- **批 7 部分落地**（当晚）：回跳火箭计划四任务全落（删圆盘 f953308、凝结尾迹
+  0b83935、小火箭 e05cc6f，真面板目检全过）。还欠：钻石画法（并行座位并排）、
+  座位状态上环、closed 后自由终端的 UI 入口（后端已通有测试钉）
+- 真库 `~/.stagepass/panel.db`：我查时 CHG-001 在 **`Build/running`**（上午的
+  旧代码面板还在跑）。**重启面板 = 吃到环 v3 + 自动迁库** —— 老 Plan 历史行
+  照旧可读，账本里的 rerun 有历史席位
 
 ## 起面板（**必须从真终端起**，别用 Run 按钮 —— 那样起的面板 spawn codex 必 EPERM 秒死）
 
@@ -47,13 +58,21 @@
 cd ~/Desktop/stagepass && node --import tsx scripts/panel.ts --db ~/.stagepass/panel.db --change CHG-001 --effort xhigh --turn-timeout 180
 ```
 
-## 还欠着人拍的四件事
+## 第一件事
 
-1. **并行的 commit 阶段怎么隔离工作区** —— 批 3 重新开张的前提
-   （TestPlan 和 Build 都产 commit，共用一个工作区会互相卷进对方的半成品）
-2. **Review 有没有自己的闸门** —— 方案默认「没有，作为 Build 出口那一次表态的输入」
-3. **删除一个 Change 的语义** —— 库 / 工作树 / git 历史三层，删到哪一层
-4. **批 4（Review/Fix 联动）** —— 按计划留到 Review 真跑过一轮之后
+面板已重启过、活库已迁移（三条验收全过：CHECK 换新、证据搬家、账本无损）。
+CHG-001 在 `Build/blocked` 等人 retry —— 按下去就是环 v3 第一轮真轮，核两条：
+任务书带 Plan-r3.md、一个字不提测试。注意 CHG-001 走不到 BuildPlan∥TestPlan
+分叉（它已过那段），第一次钻石要新开一条 Change。
+
+## 还欠着人拍的事
+
+1. **删除一个 Change 的语义** —— 库 / 工作树 / git 历史三层，删到哪一层
+2. **批 7 那三个 UI 文件** —— 你未提交的改动怎么处理（自己提交，还是让下一轮
+   基于它续做钻石画法）
+
+（原清单的另外三件已被环 v3 收掉：工作区隔离=案 B 落地；Review 闸门=并入
+Build/QA；批 4 联动=Fix 退休后由通用 sendBack 覆盖。）
 
 ---
 
@@ -71,5 +90,7 @@ cd ~/Desktop/stagepass && node --import tsx scripts/panel.ts --db ~/.stagepass/p
 - **绝对不许 exec，只走面板 TUI** —— 验证性实验也算：要证什么就用生产代码那条路证。
 - **精确标识符绝不许手抄** —— 凡是 StagePass 会拿去做精确匹配的字符串，都不许出现在
   模型必须生成的文本里（`DESIGN-no-hand-transcription-2026-08-02.md`）。
-- **AI 的软开和人的不一样**（PLAN §八那张表）：不要按「正常软件流程」把模板、
-  机械闸门、离散判定这些细节简化掉 —— 每一条背后都有一次真机取证。
+- **两轨互盲不许开后门** —— Build 的题面里不得出现测试，Test 的不得出现实现；
+  有测试钉着，别为「方便」绕。
+- **AI 的软开和人的不一样**（PLAN-2026-08-06 §八那张表）：不要按「正常软件流程」
+  把模板、机械闸门、离散判定这些细节简化掉 —— 每一条背后都有一次真机取证。

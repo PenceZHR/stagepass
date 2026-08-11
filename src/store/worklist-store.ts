@@ -68,16 +68,16 @@ export class WorklistStore {
    * 空名单也照开（然后立刻就是「没有下一项」）—— 「这一轮没什么要表态的」和
    * 「这一轮的名单没开出来」是两件事，而后者会让裁判去答上一轮的剩饭。
    *
-   * ## 关的范围只到这个 Change 为止
+   * ## 关的范围只到这个 (Change, 阶段) 为止
    *
-   * 原来这一句是 `WHERE status = 'open'`，**全库**。2026-08-03 真机撞出来的：一轮正
-   * 等着裁判逐条表态，同一个面板里给另一个 Change 派了一轮，那句话把这一份**正在用
-   * 的**名单一起关了。表现是「裁判一条都没答」（于是记 `worklist_unanswered`、放开
-   * 线程），而它其实是被 StagePass 自己掐掉的 —— 最难查的那一类。
+   * 走过两版，都是真机撞出来的：第一版 `WHERE status = 'open'` **全库** ——
+   * 2026-08-03 另一个 Change 派轮把正在用的名单关了；第二版按 Change 关 ——
+   * 批 3 审计 P0 第 1 条：TestPlan ∥ Build 两条并行的轮各开一份，后开的把先开的
+   * 关了，TestPlan 的裁判把理由答进了 Build 的 gap。
    *
-   * 全库关是早期设计的遗留：那时插件只能猜「全库唯一开着的那一份」，所以必须保证
-   * 唯一。现在读那一侧按 `changeId` 取（`next`，id 来自 `STAGEPASS_CHANGE`），
-   * 唯一性只在一个 Change 内部需要。
+   * 唯一性真正需要的范围就是一个 (Change, 阶段)：读那一侧现在也按这两个键取
+   * （`next`，都来自环境变量 `STAGEPASS_CHANGE` / `STAGEPASS_PHASE`，
+   * 不经模型的嘴）。
    */
   open(
     changeId: string,
@@ -87,8 +87,8 @@ export class WorklistStore {
   ): void {
     const write = this.database.transaction(() => {
       this.database.prepare(
-        "UPDATE round_worklist SET status = 'closed' WHERE change_id = ? AND status = 'open'",
-      ).run(changeId);
+        "UPDATE round_worklist SET status = 'closed' WHERE change_id = ? AND phase = ? AND status = 'open'",
+      ).run(changeId, phase);
       this.database.prepare(
         "DELETE FROM round_worklist WHERE change_id = ? AND phase = ? AND round = ?",
       ).run(changeId, phase, round);
@@ -122,8 +122,8 @@ export class WorklistStore {
    * 加一列 audience 又要重建表。追加是最小的那条路：序号接着排，`next` 自然轮到
    * 新的这几条，旧的连同答案原样留着。
    *
-   * 和 `open` 一样会把这个 Change 别处开着的关掉 —— 同一时刻只该有一批在等答，
-   * 否则 `next` 就得猜。
+   * 和 `open` 一样把这个 (Change, 阶段) 别处开着的关掉 —— 同一个座位同一时刻
+   * 只该有一批在等答，否则 `next` 就得猜。并行的另一条轨不受影响（批 4）。
    */
   append(
     changeId: string,
@@ -134,8 +134,8 @@ export class WorklistStore {
     if (items.length === 0) return;
     const write = this.database.transaction(() => {
       this.database.prepare(
-        "UPDATE round_worklist SET status = 'closed' WHERE change_id = ? AND status = 'open'",
-      ).run(changeId);
+        "UPDATE round_worklist SET status = 'closed' WHERE change_id = ? AND phase = ? AND status = 'open'",
+      ).run(changeId, phase);
       const last = this.database.prepare(
         `SELECT COALESCE(MAX(ordinal), 0) AS n FROM round_worklist
           WHERE change_id = ? AND phase = ? AND round = ?`,
@@ -176,12 +176,20 @@ export class WorklistStore {
    * 不这么做的话只能猜「全库唯一开着的那一份」，而两个 Change 各开一份的时候，
    * 猜错一次就是把答案记到别人的条目上 —— 静默的、事后查不出来的那一种错。
    */
-  next(changeId: string): WorkItem | null {
-    const row = this.database.prepare(
-      `SELECT * FROM round_worklist
-        WHERE change_id = ? AND status = 'open' AND answer IS NULL
-        ORDER BY phase, round, ordinal LIMIT 1`,
-    ).get(changeId) as Row | undefined;
+  next(changeId: string, phase?: Phase | null): WorkItem | null {
+    // 有阶段就按 (Change, 阶段) 取 —— 并行的两条轨各答各的（批 4 · P0 第 1 条）。
+    // 没有（旁路会话、老启动方式）退回按 Change 取，行为和之前逐字一致。
+    const row = (phase == null
+      ? this.database.prepare(
+        `SELECT * FROM round_worklist
+          WHERE change_id = ? AND status = 'open' AND answer IS NULL
+          ORDER BY phase, round, ordinal LIMIT 1`,
+      ).get(changeId)
+      : this.database.prepare(
+        `SELECT * FROM round_worklist
+          WHERE change_id = ? AND phase = ? AND status = 'open' AND answer IS NULL
+          ORDER BY round, ordinal LIMIT 1`,
+      ).get(changeId, phase)) as Row | undefined;
     if (!row) return null;
     return this.hydrate(row);
   }
@@ -193,8 +201,10 @@ export class WorklistStore {
    * 一个极小的枚举里做选择）；后者是这个产品一贯的要求 —— 关掉一个问题必须写清楚
    * 它为什么不再成立，一句「已修复」和沉默的信息量是一样的。
    */
-  answer(changeId: string, answer: string, reason: string): AnswerOutcome {
-    const item = this.next(changeId);
+  answer(
+    changeId: string, answer: string, reason: string, phase?: Phase | null,
+  ): AnswerOutcome {
+    const item = this.next(changeId, phase);
     if (!item) return { kind: "nothing_open" };
     if (!item.choices.includes(answer)) {
       return { kind: "bad_answer", choices: item.choices };

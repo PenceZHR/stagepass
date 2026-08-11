@@ -1,7 +1,7 @@
 import type { ChangeAction } from "./change-state";
 import { isHumanGap, type Gap, type GapResponse } from "./gap";
 import type { BlockerKind, BlockerSeverity, Gate } from "./gate";
-import { isPhase, sendsToFix, type Phase } from "./phase";
+import { isPhase, type Phase } from "./phase";
 
 /**
  * A question StagePass puts to the human, and the answer it will accept.
@@ -167,7 +167,7 @@ export function gateDecisionQuestion(input: {
   // `start`, `settle` and `fail` are the system reporting what happened. Only
   // these four are ever put to a person.
   const decisions: readonly ChangeAction[] =
-    ["approve", "reject", "rerun", "retry", "sendBack"];
+    ["approve", "reject", "retry", "sendBack"];
   const targets = input.sendBackTargets ?? [];
   const alternatives = input.approveAlternatives ?? [];
   const offered = decisions
@@ -211,7 +211,7 @@ export function gateDecisionQuestion(input: {
     {
       id: DECISION_FIELD,
       title: "请裁决",
-      options: offered.map((action) => decisionLabel(action, input.phase)),
+      options: offered.map((action) => decisionLabel(action)),
     },
   ]);
 }
@@ -244,52 +244,39 @@ function clearableByAnswer(action: ChangeAction, gate: Gate): boolean {
  * 一个设计阶段的意思是「在这儿再来一轮」，`transition` 里写着
  * `{ ...state, status: "pending" }`，阶段一步都没动。
  *
- * ## 同一个动作，两个阶段两句话
+ * ## 每个阶段同一句话
  *
- * 驳回 Review / QA 不是重跑那个阶段，是**把活打回 Fix**（`sendsToFix`）。用同一句
- * 「再来一轮」去说它，就是在界面上撒谎。所以文案跟着阶段走，判据用的是那个已经存在
- * 的谓词 —— 不在这里另算一套（E3）。
+ * 环 v3 之前 Review/QA 的 reject 是「送修 → Fix」，文案要跟着阶段变。Fix 退休后
+ * reject 在所有阶段都是「就在这儿再来一轮」，一句话说全 ——「代码错了」是另一个
+ * 动作（sendBack，三向归因），不再借 reject 的壳。
  */
 const APPROVE_LABEL = "就这样批准，进下一个阶段";
 const RETRY_LABEL = "重跑一次（上一轮跑失败了）";
 const ANOTHER_ROUND_LABEL = "再来一轮（红蓝在这个阶段重新跑）";
-const BACK_TO_FIX_LABEL = "打回去修（送到 Fix）";
 /**
- * 长回边（§5.9.1）。和「打回去修」是两句不同的话：那个说**代码**错了（送 Fix），
- * 这个说**上游文档**错了（回那个设计阶段重跑，改完弹回这儿）。
+ * 长回边（§5.9.1）。和「再来一轮」是两句不同的话：那个说**这一轮不够好**（原地
+ * 重跑），这个说**上游产物错了**（回产它的那个阶段重做，改完沿主线重走回来）。
  */
-const SEND_BACK_LABEL = "打回上游（哪一份文档错了，上面那格选）";
-/**
- * Review/QA 的「就在这儿再来一轮」（旧账 F）。
- *
- * 和「打回去修」是两句不同的话：那个说**代码**有问题（送 Fix 改），这个说
- * **这一轮审得不对**（代码先不动，重新审一次）。在这之前后者没有动作，人只能
- * 绕道 Fix —— 在一份没问题的代码上跑一轮修理，只为了回到 Review 再审一次。
- */
-const RERUN_LABEL = "再审一次（这个阶段重新跑，代码不动、不送 Fix）";
+const SEND_BACK_LABEL = "打回上游（哪一份产物错了，上面那格选）";
 
-export function decisionLabel(action: ChangeAction, phase: string): string {
+export function decisionLabel(action: ChangeAction): string {
   if (action === "approve") return APPROVE_LABEL;
   if (action === "retry") return RETRY_LABEL;
   if (action === "sendBack") return SEND_BACK_LABEL;
-  if (action === "rerun") return RERUN_LABEL;
-  return isPhase(phase) && sendsToFix(phase) ? BACK_TO_FIX_LABEL : ANOTHER_ROUND_LABEL;
+  return ANOTHER_ROUND_LABEL;
 }
 
 /**
  * 人看见的那句话 → 动作。
  *
- * **enum 里的值就是人看见的字**（§5.2b），所以要有一张回来的表。它是全的：四个标签
- * 各自对应一个动作，两个 reject 的说法指向同一个动作。`decisionFrom` 之外没有第二处
- * 解释这些字符串。
+ * **enum 里的值就是人看见的字**（§5.2b），所以要有一张回来的表。它是全的：每个标签
+ * 各自对应一个动作。`decisionFrom` 之外没有第二处解释这些字符串。
  */
 const ACTION_BY_LABEL: Readonly<Record<string, ChangeAction>> = {
   [APPROVE_LABEL]: "approve",
   [RETRY_LABEL]: "retry",
   [ANOTHER_ROUND_LABEL]: "reject",
-  [BACK_TO_FIX_LABEL]: "reject",
   [SEND_BACK_LABEL]: "sendBack",
-  [RERUN_LABEL]: "rerun",
 };
 
 /** 打回目标那一格。`T` 排在 `R…` 后、小写 `decision` 前 —— 名字是挑的。 */
@@ -361,7 +348,7 @@ export function sendBackReasonFrom(answer: Answer): string {
  * 等于替人决定了 Fix 该做什么。
  */
 export const runsAgainHere = (label: unknown): boolean =>
-  label === ANOTHER_ROUND_LABEL || label === RETRY_LABEL || label === RERUN_LABEL;
+  label === ANOTHER_ROUND_LABEL || label === RETRY_LABEL;
 
 /**
  * 「回应蓝方」那四个选项。

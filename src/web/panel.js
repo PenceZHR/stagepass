@@ -59,10 +59,6 @@ const orbitView = pick("orbit-view");
 const stageView = pick("stage-view");
 const wrap = pick("orbit-wrap");
 const portal = pick("portal");
-const centerKicker = pick("center-kicker");
-const centerTitle = pick("center-title");
-const centerLine = pick("center-line");
-const centerCount = pick("center-count");
 const columns = pick("columns");
 const stageName = pick("stage-name");
 const stageThread = pick("stage-thread");
@@ -77,6 +73,14 @@ const statusMark = pick("status-mark");
 const statusLine = pick("status-line");
 const statusFacts = pick("status-facts");
 const statusFoot = pick("status-foot");
+
+// 环心的太阳，和点它翻出来的那张状态卡
+const sunButton = button("sun");
+const sunCard = pick("sun-card");
+const sunKicker = pick("sun-kicker");
+const sunTitle = pick("sun-title");
+const sunLine = pick("sun-line");
+const sunCount = pick("sun-count");
 
 // 点小环打开的弹窗
 const sheet = dialog("sheet");
@@ -539,8 +543,8 @@ async function ask() {
 /**
  * One shared centre, one shared radius.
  *
- * 0.455 和 CSS 里 `.halo { inset: 4.5% }` 是同一个数：轨道半径也是
- * (1 - 2×0.045) / 2 = 0.455 倍环宽，节点因此正好骑在轨道上。**改一个就要改另一个**，
+ * 0.40 和 CSS 里 `.halo { inset: 10% }` 是同一个数：轨道半径也是
+ * (1 - 2×0.10) / 2 = 0.40 倍环宽，节点因此正好骑在轨道上。**改一个就要改另一个**，
  * 否则节点会浮在轨道内侧或外侧。
  */
 /**
@@ -665,7 +669,7 @@ async function waive() {
 }
 
 function placeNodes() {
-  const radius = wrap.clientWidth * 0.455;
+  const radius = wrap.clientWidth * 0.40;
   // querySelectorAll 给的是 Element；只有 HTMLElement 才有 style。
   wrap.querySelectorAll(".stage-node").forEach((node) => {
     if (node instanceof HTMLElement) node.style.setProperty("--r", `${radius}px`);
@@ -683,7 +687,7 @@ function placeNodes() {
  * ```
  * 向前的历史   已经是那道进度弧了       这儿不画（画了就是同一件事说两遍）
  * 回头的历史   穿过中心的弦，实线永久     §5.9.3④：形状本身带语义
- * 自环的历史   节点上的刻度，一轮一格     §5.9.4：真实形状是「各自带自环的节点」
+ * 自环的历史   节点圆的颜色深浅，越跑越深   §5.9.4；画在节点上（drawOrbit 的 --depth）
  * 能去的边     虚线 + 流动，随状态变      §5.9.3②：和历史必须一眼分得开
  * ```
  *
@@ -693,7 +697,15 @@ function placeNodes() {
  * **两样都不在这儿算** —— 前端自己推第二份判据，就会画出闸门不认的箭头，那正是
  * 老树那五个死按钮的形状（§5.4）。
  */
-const MAP_RADIUS = 45.5;   // 和 CSS 的 inset:4.5%、placeNodes 的 0.455 是同一个数
+/*
+ * 环有多大。**这个数、CSS 的 `.halo/.progress { inset: 10% }`、placeNodes 的 0.40
+ * 是同一件事的三处写法，改一处就要改三处。**
+ *
+ * 2026-08-09 从 45.5 收到 40：45.5 的环把节点顶到了栏的边上 —— 三点/九点方向的
+ * 节点盘边离窗口只剩 5px，**周围根本没有地方放轨道和阶段名**。症状是火箭连着字
+ * 一起飞、贴边那几个节点的轨道被窗口切掉。环小一档，节点周围才腾得出那圈地盘。
+ */
+const MAP_RADIUS = 40;
 
 /** 第 n 个阶段在方格里的坐标。十二点起、顺时针 —— 和节点的摆法同一套。 */
 function nodeAt(index, total) {
@@ -705,29 +717,60 @@ function nodeAt(index, total) {
 }
 
 /*
- * ── 节点周围那一圈的地盘（实测，别凭感觉改）────────────────
+ * ── 节点周围那一圈的地盘：**每次重画按真实像素量，不许写死** ──────
  *
- * 2026-08-05 在真尺寸上量的（1 viewBox 单位 ≈ 5.8px）：
+ * 这里有一个会咬人的单位错配：
  *
  * ```
- * 0 ~ 4.86    节点那个圆自己
- * 4.86 ~ 9.0  空的 —— 刻度和绕圈箭头住在这里（标签让开之后腾出来的）
- * 9.0 ~ 11.1  阶段名那行字（**永远在正下方**，和节点在环上的位置无关）
+ * 节点圆      CSS 固定 56px（半径 28）      —— 像素
+ * 阶段名      CSS 固定在圆心下 70px          —— 像素
+ * 轨道 / 火箭 画在 viewBox 里                —— 100 分之一个环宽
  * ```
  *
- * 标签原来卡在 6.25，那条缝窄得圈根本大不起来。用户 2026-08-05：「自循环的圈
- * 可以大一点，起码包裹住 stage 的圆」—— 所以 `panel.html` 把标签从 64px 推到
- * 80px，这条带子才够住人。**改这里就要改那边**，两个数是同一件事的两半。
+ * 一个 viewBox 单位有多少像素**随环的大小变**（1280 宽的窗口上是 4.32px）。所以
+ * 「节点圆半径是几个单位」不是常数：写死的那一版填的是 4.86，而实测是 6.48 ——
+ * 火箭的「地表」因此落在节点圆**里面**，看起来是从盘子底下钻出来的；卫星的内道
+ * 也正好骑在盘边上。同一批数在别的窗口尺寸下只会错得更多。
  *
- * 刻度和箭头**共用同一条轨道**：一个节点周围只有一圈东西，读起来是「这个盘
- * 走过几格、指针正在再走一圈」，而不是套了两三个同心圆。
- *
- * 第一版刻度画在 7.1 且按「环的内侧」摆，对**上半圈**的节点正好压在字上
- * （PRD 那一圈就是）—— 内侧对上半圈就是下方。所以改成按**屏幕正上方**摆：
- * 字永远在正下方，避开它才是绝对的，跟着环转的相对方位不是。
+ * `nodeGeometry()` 每次重画量一遍，下面所有半径都从它派生。**改 panel.html 里
+ * 那两个 px 就要改这里的两个 px**，它们是同一件事的两半。
  */
-const RIM = 7.5;          // 刻度和绕圈箭头共用这条轨道（节点圆半径 4.86）
-const TICK_SPAN = 150;    // 刻度占正上方这 150°，正下方那块留给阶段名
+const NODE_DISC_PX = 28;    // .stage-node button 是 56px 见方
+const LABEL_TOP_PX = 52;    // .stage-node button span 的 top:80px 减去 button 的 -28px
+const LABEL_BOTTOM_PX = 64; // 再加那行 12px 的字高
+/** 火箭/卫星自己的径向半展（viewBox 单位，跟着 SCALE 走，与窗口大小无关）。 */
+const GLYPH_RADIAL = 1.75;
+/** 图形和盘边／字之间留的空气。 */
+const GLYPH_AIR = 0.6;
+
+/**
+ * 上一次量到的「一个 viewBox 单位有多少像素」。
+ *
+ * **量不到时绝不能拿 100 当环宽兜底。** 那样 unit 变成 1，盘半径就成了 28 个
+ * viewBox 单位（比整个环还大），轨道跟着膨胀 —— 2026-08-09 实测过一次：卫星
+ * 直接飞到环外面去了。而量不到是常事：标签页在后台没绘制、环所在的那一栏正被
+ * 切走，`clientWidth` 都会是 0。记住上一次的真值，下一次重画自己就纠正回来。
+ */
+let ringUnit = 4.3;
+
+function nodeGeometry() {
+  const measured = wrap.clientWidth / 100;
+  if (measured > 0) ringUnit = measured;
+  const unit = ringUnit;
+  const disc = NODE_DISC_PX / unit;
+  const label = LABEL_TOP_PX / unit;
+  const surface = disc + GLYPH_RADIAL + GLYPH_AIR;   // 贴着盘边能飞的最内圈
+  /*
+   * 天花板按阶段名的**下沿**算，不是上沿。
+   *
+   * 节点那一层（盘 + 字）z-index 6，地图层是 auto —— 火箭是从字**背后**过去的，
+   * 属于遮挡不是压字。按上沿算那一版把轨道带压到只剩 1.5 个单位：两颗卫星塞不下，
+   * 螺旋也几乎不扩张，「越来越远」那句话就没了。让它飞到字的另一头，中间那一下
+   * 是「钻到牌子后面」。
+   */
+  const ceiling = LABEL_BOTTOM_PX / unit - GLYPH_RADIAL - GLYPH_AIR;
+  return { disc, label, surface, ceiling: Math.max(surface + 1.5, ceiling) };
+}
 
 function svgNode(tag, attributes, tooltip) {
   const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -744,121 +787,442 @@ function svgNode(tag, attributes, tooltip) {
   return element;
 }
 
+
+/** SMIL 不受 CSS 的 `animation: none` 管，所以每个造动画的函数都要自己问它。 */
+const reducedMotion = () =>
+  window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+
 /**
- * 回头的那一跳画成一条**穿过中心方向**的弦。
+ * 绕着一个节点转一整圈的轨道，半径自己给。
  *
- * 二次贝塞尔，控制点拉向圆心 —— 直线也能连上，但一堆直线会和轨道缠在一起；
- * 往圆心弯一下，回边就天然落在环的内部，和沿环走的推进泾渭分明（§5.9.3④）。
+ * 「再来一轮」放**两枚火箭在两条不同半径的圈上**，周期还不一样 —— 用户
+ * 2026-08-09：「小火箭不要追着，要在不同轨道」。同一条圈上前后跟两枚，读起来
+ * 是排队；分层各转各的，读起来才是这个节点在自转。
  */
-function chordPath(from, to) {
-  const bend = 0.45;   // 0 = 直线，1 = 顶到圆心
-  const cx = from.x + (50 - from.x) * bend + (to.x - from.x) / 2 * (1 - bend);
-  const cy = from.y + (50 - from.y) * bend + (to.y - from.y) / 2 * (1 - bend);
-  return `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`;
+function circleAround(at, radius) {
+  return `M ${at.x} ${at.y - radius} `
+    + `A ${radius} ${radius} 0 1 1 ${at.x - 0.01} ${at.y - radius} Z`;
+}
+
+/*
+ * ── 回跳 = 螺旋出轨 → 转移 → 螺旋入轨（用户 2026-08-09 定的设计语言，第五版）──
+ *
+ * 「就做到直接绕圈，但是绕圈的时候轨道要越来越远，降落的轨道越来越近直到着陆。」
+ *
+ * 火箭从 stage 圆的**边上**（nodeGeometry().surface，贴着盘边再留出自己半个身位）
+ * 起旋，绕圈且一圈比一圈远，爬到 outerOrbit 切线脱离、走转移弦；到目的 stage 从
+ * 外圈切入，绕圈且一圈比一圈近，贴回盘边。第四版在两端加了垂直起竖/降落的贝塞尔，
+ * 被用户否掉 —— 那两笔和绕圈不是一种语言，还会甩出难看的尖刺。
+ *
+ * ringPoint 的参数角和 nodeAt 同一套：0 = 正上方，顺时针增，速度方向恰好是
+ * (cos a, sin a) —— 螺旋、贝塞尔连成一笔，rotate="auto" 全程不跳。
+ */
+const ORBIT_TURNS = 2;      // 两端各绕两圈
+const ROCKET_SCALE = 1.45;  // 剪纸版比原来的细描边壳大一号，形状才读得出来
+const SATELLITE_SCALE = 1.4;    // 摊平之后径向只占 1.8，放得大才认得出是卫星
+/**
+ * 允许溢出 viewBox 的那一点点。
+ *
+ * **实测**（2026-08-09，1280 宽窗口）：环那一格的右边界在 1266px、窗口 1280px，
+ * 也就是 viewBox 只铺得到 x≈103.2；`overflow` 一路都是 visible，裁掉火箭的不是
+ * CSS 而是**窗口边缘**。3 是留够安全的溢出量。
+ */
+const ORBIT_BLEED = 3;
+
+/**
+ * 这个节点的外圈能放多大。**两条上限，取小的那条**：
+ *
+ * - 阶段名那行字（`nodeGeometry().ceiling`）—— 越过去火箭就从字上飞过；
+ * - 到 viewBox 边的余量 —— 越过去火箭飞出窗口不见（三点/九点那两个节点只剩 4.5）。
+ *
+ * 地板是「贴着盘边能飞的最内圈」再往外一点，否则「越来越远」这句话就没了。
+ */
+function outerOrbit(at) {
+  const geo = nodeGeometry();
+  // 余量要**减掉火箭自己的半展**：路径在界内不等于图形在界内。
+  const room = Math.min(at.x, 100 - at.x, at.y, 100 - at.y) + ORBIT_BLEED - GLYPH_RADIAL;
+  return Math.max(geo.surface + 1.5, Math.min(geo.ceiling, room));
+}
+
+/** centre 半径 radius 的圆上参数角 a 处的点。 */
+function ringPoint(centre, radius, a) {
+  return { x: centre.x + radius * Math.sin(a), y: centre.y - radius * Math.cos(a) };
 }
 
 /**
- * 沿着**环**走的一段弧 —— 向前推进就该长这样（§5.9.3④）。
+ * 绕 centre 从角 aStart 顺时针扫过 sweep 弧度的**螺旋**，半径由 r0 线性到 r1。
  *
- * 第一版把向前的边也画成了穿心的弦，于是「沿环走 = 推进 / 穿心 = 回头」这条
- * 语义当场失效：两种边长得一模一样。形状本身要带语义，就不能两边共用一个画法。
+ * SVG 没有螺旋原语，切成 ≤90° 一段的三次贝塞尔逼近。每段的控制点长度是
+ * `(4/3)·tan(θ/4)·r`（θ=90° 时正好是那个眼熟的 0.5523）—— 按实际步长算，
+ * 不是拿 90° 的常数硬套，否则非整圈的那一段会鼓出去。
+ *
+ * **扫角是任意的，不必是整圈**：回程要从「上一段结束的那个角」转到「转移弦要求
+ * 的那个角」，差多少补多少，路径才接得上（见 rocketFlight）。每个接缝两侧的切向
+ * 都是纯周向，拼起来 G1 连续，看不出段。
  */
-function arcAlongRing(from, to) {
-  return `M ${from.x} ${from.y} A ${MAP_RADIUS} ${MAP_RADIUS} 0 0 1 ${to.x} ${to.y}`;
+function spiralArc(centre, aStart, sweep, r0, r1) {
+  const steps = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2)));
+  const step = sweep / steps;
+  const k = (4 / 3) * Math.tan(step / 4);
+  let d = "";
+  for (let i = 0; i < steps; i += 1) {
+    const a0 = aStart + i * step;
+    const a1 = a0 + step;
+    const rA = r0 + (r1 - r0) * (i / steps);
+    const rB = r0 + (r1 - r0) * ((i + 1) / steps);
+    const p0 = ringPoint(centre, rA, a0);
+    const p3 = ringPoint(centre, rB, a1);
+    const c1x = p0.x + k * rA * Math.cos(a0);
+    const c1y = p0.y + k * rA * Math.sin(a0);
+    const c2x = p3.x - k * rB * Math.cos(a1);
+    const c2y = p3.y - k * rB * Math.sin(a1);
+    d += `C ${c1x} ${c1y} ${c2x} ${c2y} ${p3.x} ${p3.y} `;
+  }
+  return d;
 }
 
-/** 圆心 `at`、半径 `radius` 上从 `startDeg` 到 `endDeg` 的一段弧（0° = 十二点）。 */
-function arcSegment(at, radius, startDeg, endDeg) {
-  const point = (degrees) => {
-    const radians = degrees * Math.PI / 180;
-    return { x: at.x + radius * Math.sin(radians), y: at.y - radius * Math.cos(radians) };
-  };
-  const a = point(startDeg);
-  const b = point(endDeg);
-  const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
-  return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${large} 1 ${b.x} ${b.y}`;
+/*
+ * ── 禁飞区（用户 2026-08-09：「小火箭绝对不能穿过任何 stage 和太阳」）──
+ *
+ * 这是**路径中心线**的禁入半径，所以要把火箭自己的身长算进去：剪纸火箭缩放后
+ * 从头到尾约 5.6，半身 2.8。
+ *
+ * 太阳是环宽的百分比（`.sun` 占 21% → 半径 10.5，光芒到 9.2），所以它可以是常数；
+ * **别的 stage 不行** —— 节点圆是固定 56px，换算成 viewBox 单位随窗口变，只能问
+ * `nodeGeometry()`。写死 10 那一版在 1280 宽的窗口上就已经比真值小了一圈。
+ *
+ * 螺旋段天生安全，不用查：它绕着自己那个节点转，最远也就十几个单位 —— 离环心还有
+ * 三十多，离最近的邻居还有二十多。会闯祸的只有两条转移弦。
+ */
+const SUN_KEEPOUT = 15.5;
+const KEEPOUT_AIR = 2.3;
+const nodeKeepout = () => nodeGeometry().disc + 2.8 + KEEPOUT_AIR;
+
+/**
+ * 转移弦的控制点：摆在两点角平分线上，**深度选到让曲线中点正好落在 lane 上**。
+ *
+ * 二次贝塞尔在 t=0.5 的径向分量是 `0.5·R·cos(Δ/2) + 0.5·Rc`，令它等于 lane 就
+ * 解出 `Rc = 2·lane − R·cos(Δ/2)`。Rc 允许是负的 —— 那表示控制点翻到角平分线的
+ * 反侧，曲线照样被拉到 lane 那么深，公式不用分情况。
+ *
+ * 有了这个，「转移弦有多深」就是一个可以直接说出口的数，而不是一个弯度系数的
+ * 副作用 —— 躲太阳、躲别的 stage 才有得调。
+ */
+function transferApex(fromIndex, toIndex, total, lane) {
+  const step = (Math.PI * 2) / total;
+  let delta = (toIndex - fromIndex) * step;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta <= -Math.PI) delta += Math.PI * 2;
+  return ringPoint(
+    { x: 50, y: 50 },
+    2 * lane - MAP_RADIUS * Math.cos(delta / 2),
+    fromIndex * step + delta / 2,
+  );
 }
 
 /**
- * 一枚会动的小箭头，沿着一条路径走 —— 用户 2026-08-05 定的画法：
- * 「自循环的动画设置成一个绕着这个 stage 的小箭头在绕圈，stage 间的就做成
- * 小箭头飞向目标 stage」。
+ * 这条转移弦躲不躲得开太阳和 `blocked` 里那些 stage。采样查，别推公式。
  *
- * **动本身就说明了方向**，所以路径可以画得很淡：静态那条只说「能去哪」，
- * 箭头说「往哪边走」。第一版靠虚线流动来表达方向，而一条流动的虚线两头
- * 长得一样 —— 人得盯着看一会儿才知道它在往哪流。
- *
- * 走 SVG 原生的 `animateMotion` + `mpath`：路径改了动画自动跟着改，不用 JS
- * 每帧算位置（那种一定会和 `drawMap` 的重画打架）。`rotate="auto"` 让箭头
- * 自己扭向前进方向。
+ * **60 个采样点不是随便取的。** 25 点那一版实测漏过一条：真实最小余量 8.98，
+ * 而它在采样点上量到的都 ≥ 9，于是放行 —— 采样太疏就是这么骗人的。
  */
-function flyingArrow(pathId, seconds, className, offset = 0) {
-  const arrow = svgNode("path", {
-    class: className,
-    /*
-     * **一个 V 字，不是实心三角。**
-     *
-     * 实心三角在这个尺寸上是一个小黑块，方向要凑近了才看得出，而且和整屏
-     * 那种细线质感打架（用户 2026-08-05：「stage 间的动画和 UI 不好看」）。
-     * 描边的 V 字轻、尖端明确，一眼就知道朝哪飞。
-     */
-    d: "M -0.85 -0.85 L 0.35 0 L -0.85 0.85",
+function transferClears(p0, apex, p1, blocked) {
+  const keepout = nodeKeepout();
+  for (let i = 0; i <= 60; i += 1) {
+    const t = i / 60;
+    const u = 1 - t;
+    const x = u * u * p0.x + 2 * u * t * apex.x + t * t * p1.x;
+    const y = u * u * p0.y + 2 * u * t * apex.y + t * t * p1.y;
+    if (Math.hypot(x - 50, y - 50) < SUN_KEEPOUT) return false;
+    for (const node of blocked) {
+      if (Math.hypot(x - node.x, y - node.y) < keepout) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 从几条候选内道里挑第一条**飞得过去**的。
+ *
+ * 转移弦的两头不是节点圆心，是各自轨道上的切点，而切点又由控制点定 —— 所以
+ * 每条候选都得按 rocketFlight 里同一套算出真实两头再查，不能拿圆心糊弄。
+ *
+ * 一条都不过就用最后一条（最深的那条）：那时候环上大概率是别的地方出了问题，
+ * 让它贴着太阳飞也比不画强 —— 但候选表要保证正常拓扑下第一条就过。
+ */
+function safeApex(from, to, candidates, blocked) {
+  const outFrom = outerOrbit(from);
+  const outTo = outerOrbit(to);
+  for (const apex of candidates) {
+    const aD = Math.atan2(apex.y - from.y, apex.x - from.x);
+    const aA = Math.atan2(to.y - apex.y, to.x - apex.x);
+    if (transferClears(
+      ringPoint(from, outFrom, aD), apex, ringPoint(to, outTo, aA), blocked,
+    )) return apex;
+  }
+  return candidates[candidates.length - 1];
+}
+
+/** 把角度归一化到 [0, 2π) —— 补角用，别让它算出负的扫角把螺旋倒着画。 */
+function wrapAngle(radians) {
+  const turn = Math.PI * 2;
+  return ((radians % turn) + turn) % turn;
+}
+
+/**
+ * 整条飞行路线的 `d` —— **一次完整的往返，六段**（用户 2026-08-09 第六次拍板）。
+ *
+ * ```
+ * ① 起点地表 → 螺旋升到起点轨道
+ * ② 转移到目标轨道（向心弯的弦）
+ * ③ 螺旋降到目标地表
+ * ④ 螺旋从目标地表再升回目标轨道
+ * ⑤ 转移回起点轨道（弦的另一侧，不是原路）
+ * ⑥ 螺旋降回起点地表 —— 正好是 ① 的出发点，闭环
+ * ```
+ *
+ * 上一版的回程是从目标**地表直接拉一条线**回起点地表 —— 用户原话：「你是直接从
+ * 球里出来，那是不对的，两个都是有轨道的过程」。去和回是对称的两趟任务，不是一趟
+ * 任务加一条捷径。
+ *
+ * ## 角度怎么接上
+ *
+ * 转移弦的两头要和螺旋相切，切点的角度是弦自己定的（`atan2`），而螺旋走完整圈会
+ * 回到原角。所以 ①③ 走整圈就够；**④⑥ 要在整圈之外补上一个差角** —— 从「上一段
+ * 停在的角」补到「这一段的弦要求的角」。补角用 `wrapAngle` 取正值：取负会让螺旋
+ * 倒着画，路径当场自交。
+ *
+ * 闭环的额外好处：**没有瞬移，也就不需要淡出**，`repeatCount=indefinite` 接得严丝
+ * 合缝。匀速跑（paced）不需要分段路程，所以只回一个字符串。
+ */
+function rocketFlight(from, to, apexOut, apexBack) {
+  const outFrom = outerOrbit(from);   // 两头各按自己的余量放大，贴边的收窄
+  const outTo = outerOrbit(to);
+  const surface = nodeGeometry().surface;
+  const aD = Math.atan2(apexOut.y - from.y, apexOut.x - from.x);   // 去程出轨角
+  const aA = Math.atan2(to.y - apexOut.y, to.x - apexOut.x);       // 去程入轨角
+  const bD = Math.atan2(apexBack.y - to.y, apexBack.x - to.x);     // 回程出轨角
+  const bA = Math.atan2(from.y - apexBack.y, from.x - apexBack.x); // 回程入轨角
+  const full = ORBIT_TURNS * 2 * Math.PI;
+
+  const pad = ringPoint(from, surface, aD);       // ① 的起点，也是 ⑥ 的终点
+  const arrive = ringPoint(to, outTo, aA);
+  const back = ringPoint(from, outFrom, bA);
+
+  return `M ${pad.x} ${pad.y} `
+    + spiralArc(from, aD, full, surface, outFrom)
+    + `Q ${apexOut.x} ${apexOut.y} ${arrive.x} ${arrive.y} `
+    + spiralArc(to, aA, full, outTo, surface)
+    + spiralArc(to, aA, full + wrapAngle(bD - aA), surface, outTo)
+    + `Q ${apexBack.x} ${apexBack.y} ${back.x} ${back.y} `
+    + spiralArc(from, bA, full + wrapAngle(aD - bA), outFrom, surface)
+    + "Z";
+}
+
+/*
+ * 转移弦想走的深度（**首选**，不是唯一选择）。
+ *
+ * 回跳挖得深（去 22 / 回 30）：那是「穿过环内回头」；推进走得浅（去 34 / 回 26）：
+ * 那是「沿着环往前」。同一趟里去和回不同深度，两条道就分得开，不会看成原路折返。
+ */
+const TRANSFER_LANES = {
+  backwardOut: 22, backwardHome: 30,
+  forwardOut: 34, forwardHome: 26,
+};
+/** 安全带：太阳那头进不去，节点那头（环在 40）也贴不上。 */
+const LANE_MIN = 12;
+const LANE_MAX = 36;
+
+/**
+ * 候选深度，**按离首选的远近排**：先试首选，不行就往两边一格一格挪。
+ *
+ * 手写五个数那一版栽在对径跳上：回程那串最深只到 18，而实测那个方向要 16 以内
+ * 才躲得开两个邻居 —— 五条全不过，`safeApex` 只好用最后一条，余量 10.95 < 11.61。
+ * 排成阶梯就不会再有「表里正好没有那一档」这种事。
+ */
+function laneLadder(preferred) {
+  const lanes = [];
+  for (let step = 0; step <= LANE_MAX - LANE_MIN; step += 2) {
+    if (preferred + step <= LANE_MAX) lanes.push(preferred + step);
+    if (step > 0 && preferred - step >= LANE_MIN) lanes.push(preferred - step);
+  }
+  return lanes;
+}
+
+/**
+ * 把「哪两个节点、哪种边」翻成 `rocketFlight` 要的四个参数，顺带**挑一条飞得过去
+ * 的内道** —— 用户 2026-08-09：「小火箭绝对不能穿过任何 stage 和太阳」。
+ *
+ * 挡路的名单是**除这两头之外的所有节点**：自己那两个不算，火箭本来就要绕着它们
+ * 转。太阳是所有边都要躲的，写在 transferClears 里。
+ */
+function tripArgs(fromIndex, toIndex, total, backward) {
+  const from = nodeAt(fromIndex, total);
+  const to = nodeAt(toIndex, total);
+  const blocked = phases
+    .map((entry, index) => index)
+    .filter((index) => index !== fromIndex && index !== toIndex)
+    .map((index) => nodeAt(index, total));
+  const lanes = laneLadder(backward ? TRANSFER_LANES.backwardOut : TRANSFER_LANES.forwardOut);
+  const homeLanes = laneLadder(backward ? TRANSFER_LANES.backwardHome : TRANSFER_LANES.forwardHome);
+  return [
+    from,
+    to,
+    safeApex(from, to, lanes.map((lane) => transferApex(fromIndex, toIndex, total, lane)), blocked),
+    safeApex(to, from, homeLanes.map((lane) => transferApex(toIndex, fromIndex, total, lane)), blocked),
+  ];
+}
+
+
+/**
+ * 剪纸小火箭，头朝 +x、原点在箭身中心 —— rotate="auto" 才能让它顺着路径扭。
+ *
+ * **和太阳同一种语言**（用户 2026-08-09：「整体风格统一一下」）：平涂的色块、
+ * 没有描边、窗户是挖空的一个洞。上一版是细描边的空心壳，那是给环上那些发丝
+ * 线条配的；线全撤掉、环心又放了一颗剪纸太阳之后，它成了屏幕上唯一一个还在说
+ * 旧方言的东西。
+ *
+ * **不给它挂 tooltip。** 试过把 `edge.why` 挂在这儿，但 `.orbit-map` 整层是
+ * `pointer-events: none`，那个 `<title>` 谁也悬停不到 —— 一个装作能用的东西。
+ * 回跳能不能走、为什么，左边那块常驻面板的「闸门」那行已经在说了。
+ */
+function rocketGlyph(className) {
+  /*
+   * 两层 g 是**必须的**：外层归 `animateMotion` 用（它自己往上写 transform），
+   * 内层放缩放。写在同一个 g 上会被 animateMotion 的 transform 顶掉，火箭就回到
+   * 原始尺寸 —— 而原始尺寸是照着细描边那一版定的，填色之后小得看不出形状。
+   */
+  const rocket = svgNode("g", { class: className });
+  const shell = svgNode("g", { transform: `scale(${ROCKET_SCALE})` });
+  /*
+   * 叠放顺序就是剪纸的贴纸顺序：火苗在最底下，然后两片鳍，再盖上机身，最后挖窗。
+   * 第一版把火苗贴在最上面，它压在机身尾巴上；而火苗和鳍又同一个橙 —— 两样东西
+   * 糊成一整块楔形，看不出哪是鳍哪是火。现在火苗**更亮更黄**（和太阳的脸同族）
+   * 且从鳍后面探出去，一眼分得开。
+   */
+  const flame = svgNode("path", {
+    class: "flame",
+    d: "M -1.0 -0.3 C -1.7 -0.22 -2.35 -0.08 -2.35 0 C -2.35 0.08 -1.7 0.22 -1.0 0.3 Z",
   });
-  /*
-   * **说了不要动效就真的不动。**
-   *
-   * SMIL 不受 CSS 的 `animation: none` 管（那一条只关得掉 CSS 动画，见
-   * panel.html 末尾那个 media query），所以这里自己问一次。箭头照样画出来、
-   * 照样停在路径起点，方向仍然看得出 —— 只是不动。
-   */
-  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-    const still = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
-    still.setAttribute("dur", "1s");
-    still.setAttribute("repeatCount", "1");
-    still.setAttribute("fill", "freeze");
-    still.setAttribute("rotate", "auto");
-    still.setAttribute("keyPoints", "0;0");
-    still.setAttribute("keyTimes", "0;1");
-    still.setAttribute("calcMode", "linear");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
-    path.setAttribute("href", `#${pathId}`);
-    path.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
-    still.append(path);
-    arrow.append(still);
-    return arrow;
+  if (!reducedMotion()) {
+    const flicker = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+    flicker.setAttribute("attributeName", "opacity");
+    flicker.setAttribute("values", "1;.35;1");
+    flicker.setAttribute("dur", "0.55s");
+    flicker.setAttribute("repeatCount", "indefinite");
+    flame.append(flicker);
   }
+  shell.append(
+    flame,
+    svgNode("path", {
+      class: "fin",
+      d: "M -0.26 -0.54 L -1.16 -1.2 L -0.98 -0.32 Z M -0.26 0.54 L -1.16 1.2 L -0.98 0.32 Z",
+    }),
+    svgNode("path", {
+      class: "body",
+      d: "M 1.39 0 C 1.01 -0.71 0.26 -0.79 -0.86 -0.59 L -0.86 0.59 C 0.26 0.79 1.01 0.71 1.39 0 Z",
+    }),
+    svgNode("circle", { class: "port", cx: 0.38, cy: 0, r: 0.32 }),
+  );
+  rocket.append(shell);
+  return rocket;
+}
+
+/**
+ * 剪纸小卫星：中间一个机身，上下伸出两片太阳能板，前头一盏信标灯。
+ *
+ * **「再来一轮」是绕着自己转，那是卫星干的事**（用户 2026-08-09）。火箭要点火、
+ * 要变轨，它属于跨阶段那趟旅行；一个原地打转的阶段配的是一颗待在那儿一圈一圈
+ * 绕的卫星。所以它没有尾焰，改成信标灯一明一暗 —— 会动，但不是在推进。
+ *
+ * `rotate="auto"` 让机身始终朝切线、板子朝径向，正好是真卫星对地定向的姿态，
+ * 不用另外算。两层 g 的理由和火箭那边一样：外层归 animateMotion，内层放缩放。
+ */
+function satelliteGlyph() {
+  const sat = svgNode("g", { class: "sat" });
+  const shell = svgNode("g", { transform: `scale(${SATELLITE_SCALE})` });
+  const beacon = svgNode("circle", { class: "beacon", cx: 0, cy: 0.66, r: 0.26 });
+  if (!reducedMotion()) {
+    const blink = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+    blink.setAttribute("attributeName", "opacity");
+    blink.setAttribute("values", "1;.2;1");
+    blink.setAttribute("dur", "1.9s");
+    blink.setAttribute("repeatCount", "indefinite");
+    beacon.append(blink);
+  }
+  /*
+   * **板子沿飞行方向左右展开，不是径向立着。**
+   *
+   * 立着那一版径向要占 3.4 个单位，而正轴那四个节点从地表到轨道只剩 2.6 —— 放大
+   * 到读得出形状就会压到节点圆，不放大就是一个 14px 的橙点，谁也认不出是卫星。
+   * 摊平之后径向只占 1.8，可以放大到 22px 长，塞进那条窄缝还有富余。真卫星侧视
+   * 本来也是这个样子。
+   *
+   * 桁架用**机身那个奶油色**，不是板子的橙：三样都是橙的时候整枚糊成一条，
+   * 现在读起来是「机身两边各伸一根支架挑着一片板」。
+   *
+   * 碟子朝 local +y。`rotate="auto"` 之下 local +y 正好指向节点圆心 —— 对地定向，
+   * 不用另外算。
+   */
+  shell.append(
+    svgNode("path", {
+      class: "boom",
+      d: "M 0.5 -0.08 L 1.0 -0.08 L 1.0 0.08 L 0.5 0.08 Z"
+        + " M -1.0 -0.08 L -0.5 -0.08 L -0.5 0.08 L -1.0 0.08 Z",
+    }),
+    svgNode("path", {
+      class: "panel",
+      d: "M 0.98 -0.62 L 1.86 -0.62 L 1.86 0.62 L 0.98 0.62 Z"
+        + " M -1.86 -0.62 L -0.98 -0.62 L -0.98 0.62 L -1.86 0.62 Z",
+    }),
+    svgNode("path", {
+      class: "body",
+      d: "M -0.5 -0.42 L 0.3 -0.42 Q 0.54 -0.42 0.54 -0.18 L 0.54 0.18"
+        + " Q 0.54 0.42 0.3 0.42 L -0.5 0.42 Z",
+    }),
+    beacon,
+  );
+  sat.append(shell);
+  return sat;
+}
+
+/**
+ * 让火箭骑上飞行路径，**从头到尾一个速度**。
+ *
+ * 用户 2026-08-09 第四次看后定的：「小火箭不要急停，线性的速度变化」。前一版
+ * 用 keyPoints + keySplines 分段调速（起旋慢／转移快／着陆前收），再抱着终点
+ * 停 16% 的时长 —— 那个停顿就是「急停」，而分段无论怎么配缓动，交接处总归是
+ * 人眼看得出的换挡。
+ *
+ * 现在什么都不设：`animateMotion` 的默认 calcMode 是 **paced**，按弧长匀速走完
+ * 整条路。没有 keyPoints 就没有档可换，也没有终点那一拍停顿。
+ *
+ * 路线都是闭环（去了要回来），所以**连淡入淡出也不需要了** —— 起点就是终点，
+ * 一圈接一圈接得严丝合缝。上一版靠 opacity 抹掉单程的瞬移，那笔现在是多余的。
+ */
+function rocketRide(rocket, pathId, seconds) {
   const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion");
-  motion.setAttribute("dur", `${seconds}s`);
-  motion.setAttribute("repeatCount", "indefinite");
   motion.setAttribute("rotate", "auto");
-  /*
-   * 一条路上前后跟着几个 V，才读得出「一股往那边流的劲」，而不是「有个小东西
-   * 在爬」。**错的是相位，不是出发时刻。**
-   *
-   * 用 `begin="1.9s"` 那一版实测出一个 bug：轮到它之前，这个 V 停在 viewBox 的
-   * 原点上 —— 也就是环左上角外面凭空多两个小勾，而页面刚打开那两秒正好看得见。
-   * 改成让它从路径的 34%／68% 处起跑、跑到头瞬回起点：所有 V 都在 t=0 就位，
-   * 没有「还没开始」这个状态。
-   */
-  if (offset > 0) {
-    const turn = (1 - offset).toFixed(4);
-    motion.setAttribute("calcMode", "linear");
-    motion.setAttribute("keyPoints", `${offset};1;0;${offset}`);
-    motion.setAttribute("keyTimes", `0;${turn};${turn};1`);
-  }
   const mpath = document.createElementNS("http://www.w3.org/2000/svg", "mpath");
-  // 两种写法都设上：`href` 是现在的规范，`xlink:href` 是老引擎唯一认的那个。
   mpath.setAttribute("href", `#${pathId}`);
   mpath.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `#${pathId}`);
   motion.append(mpath);
-  arrow.append(motion);
-  return arrow;
-}
-
-/** 绕着一个节点转一圈的轨道。箭头骑着它，就是「再来一轮」。 */
-function orbitAround(at) {
-  return `M ${at.x} ${at.y - RIM} `
-    + `A ${RIM} ${RIM} 0 1 1 ${at.x - 0.01} ${at.y - RIM} Z`;
+  if (reducedMotion()) {
+    // 停在路径起点，朝向仍由 rotate="auto" 给出。这一支要 keyPoints，
+    // 所以它（也只有它）得把 calcMode 从默认的 paced 掰回 linear。
+    motion.setAttribute("calcMode", "linear");
+    motion.setAttribute("dur", "1s");
+    motion.setAttribute("repeatCount", "1");
+    motion.setAttribute("fill", "freeze");
+    motion.setAttribute("keyPoints", "0;0");
+    motion.setAttribute("keyTimes", "0;1");
+    rocket.append(motion);
+    return rocket;
+  }
+  motion.setAttribute("dur", `${seconds}s`);
+  motion.setAttribute("repeatCount", "indefinite");
+  rocket.append(motion);
+  return rocket;
 }
 
 function drawMap(panel) {
@@ -868,117 +1232,124 @@ function drawMap(panel) {
   const indexOf = (phase) => phases.findIndex((entry) => entry.phase === phase);
 
   /*
-   * ① 走过的回头路，实线，**永久留着**。
+   * ① 走过的回头路：**一条线都不画**（用户 2026-08-09：「轨道不要画出来」）。
    *
-   * Fix 不在环上（它没有节点），所以送修那一跳画不出来 —— 那不是遗漏：Fix 的
-   * 节点确实在环上（THREADED_PHASES 含它），indexOf 找得到就画。找不到就跳过，
-   * 不去猜一个坐标。
+   * 先前留过一条全透明的粗描边当 hover 命中区，好把「第几轮、什么理由」保在
+   * tooltip 上。撤掉了，两个理由：看不见的悬停目标没人找得到；而它那条弦正好
+   * 横穿环心，会把太阳的点击吃掉 —— 而太阳现在是**要点的**。
+   *
+   * 这一趟历史唯一的去处是幽灵火箭：最近一跳由它重飞。Fix 不在环上时 indexOf
+   * 找不到，跳过就是了，不去猜一个坐标。
    */
+  let lastTrip = null;   // 最近一次认得出的回跳 —— 幽灵火箭要重飞它
   for (const jump of panel.journey ?? []) {
     if (jump.kind !== "backward") continue;
     const from = indexOf(jump.fromPhase);
     const to = indexOf(jump.toPhase);
     if (from < 0 || to < 0) continue;
-    map.append(svgNode("path", {
-      class: `chord${jump.action === "sendBack" ? " hot" : ""}`,
-      d: chordPath(nodeAt(from, total), nodeAt(to, total)),
-    }, `第 ${jump.round} 轮：${jump.fromPhase} → ${jump.toPhase}`
-      + (jump.reason ? `\n理由：${jump.reason}` : "")));
+    lastTrip = { from, to };
   }
 
   /*
-   * ② 每个节点跑过几轮，画成刻度（§5.9.4）。
+   * **幽灵火箭：最近一跳定期重飞**（用户 2026-08-09 第二次拍板）。
    *
-   * 「真实形状不是 12 个节点的环，是 12 个各自带自环的节点」—— 节点上花的轮数
-   * 比它在环上的位置更能说明「你在哪」。批准过的用绿色：那是「这几轮换来了一次
-   * 放行」，和「跑了三轮还卡着」是两回事。
+   * 回跳选项开着的时刻很短，只给活边配火箭的话，它 99% 的时间没有出场机会 ——
+   * 用户第一眼就问「火箭怎么没有」。所以病历的最后一笔由一枚淡一级的火箭
+   * 循环重演，环上随时看得到「它是怎么回去的」；更老的账保持静态，环不变机场。
+   *
+   * 路径本身不画（rail）。周期和活边那枚（22s）故意不整除，两枚就算同路也不会
+   * 长期同相叠住 —— 叠住看起来只有一枚，那是白飞。
    */
-  /*
-   * 「再来一轮」那条边不画成线，画成**这个节点盘上的下一格空刻度**（见
-   * `selfLoopPath` 被删掉的地方那段注释）。所以先把它从边里挑出来。
-   */
-  const selfEdge = (panel.options ?? []).find((edge) => edge.kind === "self");
+  if (lastTrip !== null) {
+    map.append(svgNode("path", {
+      id: "map-ghost",
+      class: "rail",
+      d: rocketFlight(...tripArgs(lastTrip.from, lastTrip.to, total, true)),
+    }));
+    map.append(rocketRide(rocketGlyph("rocket ghost"), "map-ghost", 27));
+  }
 
+  /*
+   * ② 每个节点跑过几轮 —— 不在这儿画。轮数是**节点圆自己的颜色深浅**
+   * （§5.9.4，2026-08-09 从分段刻度改过来的），在 drawOrbit 里以 `--depth`
+   * 写到节点上，精确数字挂在节点的 tooltip 上。
+   */
+
+  /*
+   * ③ **正在跑的阶段：卫星绕着它转**（用户 2026-08-09：「在跑 Stage 的小卫星呢」）。
+   *
+   * 判据是 `entry.live` —— 那个阶段有活着的进程。卫星是「这儿正在干活」的状态灯，
+   * 所以它跟着进程走，不跟着闸门的选项走。
+   *
+   * **遍历而不是只看 current**：并行座位可以同时有两个阶段在跑（BuildPlan∥TestPlan、
+   * Build∥Test），两个都该有卫星。而且它必须排在下面那个「没有当前阶段就收工」的
+   * 早返回**之前** —— 在跑就该看得见，跟环上有没有当前阶段无关。
+   */
   phases.forEach((entry, index) => {
-    const at = nodeAt(index, total);
-    const rounds = Math.min(entry.rounds ?? 0, 8);   // 画得下才有意义，8 段封顶
-    for (let tick = 0; tick < rounds; tick += 1) {
-      /*
-       * **一段一段的弧，不是放射状的短线。**
-       *
-       * 放射线那一版实测长得像爪子 —— 而这里要的是「带刻度的圆」（§5.9.4），
-       * 也就是一圈分段的表盘。分段弧还有一个好处：段数一眼数得出来，而放射线
-       * 越多越糊成一片。
-       *
-       * 摆在节点**内侧**那 150°：外侧要留给阶段名，而且顶上那个节点朝外就是
-       * 画布外面（第一版实测 y 是负的）。
-       */
-      /*
-       * **段占一格的一半多一点，缝要看得见。** 第一版占 76%，实测 6 段连成了
-       * 一道实心月牙 —— 数不出来，那「跑了几轮」这件事就白标了。
-       *
-       * 摆在**屏幕正上方**那 150°（不是环的内侧）：阶段名永远在正下方，
-       * 避开它的规则必须是绝对的 —— 见 RIM 上面那段实测。
-       */
-      const each = TICK_SPAN / rounds;
-      const base = -TICK_SPAN / 2 + tick * each;
-      map.append(svgNode("path", {
-        class: `tick${entry.mark === "approved" ? " done" : ""}`,
-        d: arcSegment(at, RIM, base + each * 0.22, base + each * 0.78),
-      }, `${entry.phase} 跑了 ${entry.rounds} 轮`));
-    }
+    if (!entry.live) return;
+    drawSatellites(map, nodeAt(index, total), index);
   });
 
   /*
-   * ③ 现在能去哪，虚线 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
+   * ④ 现在能去哪 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
    */
   const here = phases.findIndex((entry) => entry.current);
   if (here < 0) return;
   const from = nodeAt(here, total);
   panel.options?.forEach((edge, order) => {
     /*
-     * **自环：一枚小箭头绕着这个 stage 转圈**（用户 2026-08-05 定的画法）。
-     * 轨道就是刻度那一圈 —— 于是它读起来是「指针再走一圈这个盘」，而不是
-     * 环上又多了一样东西。轨道本身不画，只有箭头在动。
+     * 「再来一轮」这条自环**环上不画**。
+     *
+     * 它是一个**选项**（你可以让这个阶段再跑一次），而卫星说的是**状态**（这个
+     * 阶段此刻正在跑）—— 见下面 ④。挂在这条选项上那一版把两者搞反了：闸门在等人
+     * 裁决时卫星在转，真正在跑的时候环上反而一动不动（闸门 running 时 options
+     * 是空的）。这条选项由左边那块面板的「闸门」那行和弹窗里的按钮说。
      */
-    if (edge.kind === "self") {
-      const id = "map-self";
-      map.append(svgNode("path", { id, class: "rail", d: orbitAround(from) }, edge.why));
-      // 两个 V 分处半圈，读起来是「这一圈在转」而不是「有个东西在爬」。
-      map.append(flyingArrow(id, 5, "arrow"));
-      map.append(flyingArrow(id, 5, "arrow trail", 0.5));
-      return;
-    }
+    if (edge.kind === "self") return;
     const to = indexOf(edge.to);
     if (to < 0) return;
-    /*
-     * **形状带语义，两种边不共用一个画法**（§5.9.3④）：沿着环走 = 正常推进，
-     * 穿过中心的弦 = 回头。第一版两种都画成弦，那条语义当场失效。
-     */
     const id = `map-live-${order}`;
-    map.append(svgNode("path", {
-      id,
-      class: `live${edge.kind === "backward" ? " back" : ""}`,
-      d: edge.kind === "forward"
-        ? arcAlongRing(from, nodeAt(to, total))
-        : chordPath(from, nodeAt(to, total)),
-    }, edge.why));
     /*
-     * **一串 V 飞向目标 stage**（用户 2026-08-05 定的画法，第二版重做）。
+     * 两种边共用同一趟**六段往返**（地表→轨道→转移→地表→轨道→转移→地表），
+     * 差别只在两条转移弦怎么弯 —— 形状带语义那条没丢（§5.9.3④）：
      *
-     * 第一版是一条流动的虚线 + 一个实心小三角：虚线两头长得一样、看不出方向，
-     * 三角在这个尺寸上是个小黑块。现在路线退成极淡的发丝（只说「走哪条道」），
-     * 三个 V 错开出发 —— 「往那边流」这件事由队形说出来。
+     *   回跳  去程向心弯的弦，回程翻到弦的另一侧
+     *   推进  去程贴着环走，回程走环内 12 个单位的内道
+     *
+     * 跑道本身不画也不吃鼠标（`rail`）—— 用户要的是「轨道不要画出来」。
      */
-    const trip = 2.8;
-    map.append(flyingArrow(id, trip, `arrow${edge.kind === "backward" ? " back" : ""}`));
-    for (const behind of [0.34, 0.68]) {
-      map.append(flyingArrow(
-        id, trip,
-        `arrow trail${edge.kind === "backward" ? " back" : ""}`,
-        behind,
-      ));
-    }
+    const back = edge.kind === "backward";
+    map.append(svgNode("path", {
+      id, class: "rail", d: rocketFlight(...tripArgs(here, to, total, back)),
+    }));
+    map.append(rocketRide(rocketGlyph("rocket"), id, back ? 22 : 18));
+  });
+}
+
+/**
+ * 一个阶段头上的卫星：两颗分处不同半径、周期还不整除，于是永远错开、永远不成
+ * 队形 —— 排成一队跟飞读起来是「有个东西在爬」，分层各转各的读起来才是这个节点
+ * 在自转。
+ *
+ * **地方不够就只放一颗。** 贴着 viewBox 边的那几个节点外圈被收窄，从盘边到轨道
+ * 剩不下两条道 —— 硬塞两颗会叠在一起，那还不如一颗。
+ */
+function drawSatellites(map, at, key) {
+  const outer = outerOrbit(at);
+  const inner = nodeGeometry().surface;
+  const room = outer - inner;
+  const lanes = room >= 3.5
+    ? [
+        { radius: inner + room * 0.3, seconds: 6.5 },
+        { radius: outer, seconds: 10 },
+      ]
+    : [{ radius: inner + room * 0.5, seconds: 8 }];
+  lanes.forEach((lane, laneIndex) => {
+    const id = `map-sat-${key}-${laneIndex}`;
+    map.append(svgNode("path", {
+      id, class: "rail", d: circleAround(at, lane.radius),
+    }));
+    map.append(rocketRide(satelliteGlyph(), id, lane.seconds));
   });
 }
 
@@ -996,18 +1367,33 @@ function drawOrbit() {
     const node = document.createElement("div");
     // mark 放在最后，CSS 里对应的规则也排在 .bound / .live 之后 —— 一个阶段可以
     // 同时有线程、有进程、又被批准过，颜色以裁决为准。
+    // parallel：这一格开着并行座位（批 4 的分叉）—— 环的形状不变（用户
+    // 2026-08-09 拍：不要钻石画法，就要圆环），并行只用节点自己的记号说。
     node.className = "stage-node"
       + (entry.threadId ? " bound" : "")
       + (entry.live ? " live" : "")
+      + (entry.seat ? " parallel" : "")
       + (entry.mark ? ` ${entry.mark}` : "");
     node.style.setProperty("--a", `${angle}deg`);
+
+    /*
+     * 跑过几轮 = 圆的颜色深浅（§5.9.4，2026-08-09 从分段刻度改过来的）。
+     *
+     * 0 轮就是底色；跑过至少一轮要**一眼看得出和没跑过不一样**，所以给个
+     * 0.35 的地板，再往上按轮数爬，8 轮封顶（和刻度时代同一个上限 ——
+     * 再深也深不出区别）。深浅数不出精确轮数，精确数字在 tooltip 上。
+     */
+    const rounds = entry.rounds ?? 0;
+    node.style.setProperty("--depth",
+      rounds === 0 ? "0" : String(0.35 + 0.65 * Math.min(rounds, 8) / 8));
 
     if (entry.current) node.classList.add("current");
 
     const status = statusOf(entry);
     const button = document.createElement("button");
     button.type = "button";
-    button.title = entry.threadId ? `线程 ${entry.threadId}` : "还没有线程";
+    button.title = (entry.threadId ? `线程 ${entry.threadId}` : "还没有线程")
+      + (rounds > 0 ? `\n跑了 ${rounds} 轮` : "");
 
     const pip = document.createElement("i");
     const name = document.createElement("span");
@@ -1187,7 +1573,7 @@ async function load() {
   drawOrbit();
   drawMap(panel);
 
-  drawCenter();
+  drawProgress();
   renderStatus(null);
   // run / ask 走完都会 load()，闸门和问题可能已经变了 —— 弹窗还开着就重画它。
   if (sheetPhase) drawSheet(sheetPhase);
@@ -1370,36 +1756,49 @@ function renderStatus(entry) {
 }
 
 /**
- * 环心：Change 这一层的锚点，**不随悬停变**。
+ * 进度圆弧走到当前阶段，不是走到「批准了几个」。
  *
- * 悬停已经由左边那块面板负责了；中心再跟着变一次，就是同一份信息在一屏上写两遍
- * —— 那正是 §5.0 第 4 条说的"污染"。所以这里放的是整条 Change 的进度。
+ * 问的是「走到哪了」，而那是 Change 的位置 —— 一个阶段可以正在跑、还没批准，
+ * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
  */
-function drawCenter() {
+function drawProgress() {
   const at = phases.find((entry) => entry.current);
-
-  /*
-   * 进度圆弧走到当前阶段，不是走到「批准了几个」。
-   *
-   * 问的是「走到哪了」，而那是 Change 的位置 —— 一个阶段可以正在跑、还没批准，
-   * 弧线该已经到它那儿。用批准数会让弧线永远落后一格，看着像卡住了。
-   */
   const reached = at === undefined ? 0 : phases.indexOf(at) / phases.length;
   pick("progress").style.setProperty("--progress", String(reached));
-  const approved = phases.filter((entry) => entry.mark === "approved").length;
+  // 卡开着的时候数字得跟着轮询走，否则它停在点开那一刻，越看越不对。
+  if (!sunCard.hidden) fillSunCard();
+}
 
-  centerKicker.textContent = panelState?.status
+/**
+ * 环心状态卡的内容。
+ *
+ * 这几行字本来常驻在环心圆盘上，2026-08-09 用户嫌它占地方删掉了；同一天他又要
+ * 回来 —— 但要的是「点一下才看」。所以内容和当初一模一样，**出场方式不同**：
+ * 平时环心只有一颗太阳，问了才答。
+ */
+function fillSunCard() {
+  const at = phases.find((entry) => entry.current);
+  const approved = phases.filter((entry) => entry.mark === "approved").length;
+  sunKicker.textContent = panelState?.status
     ? `Gate · ${panelState.status}` : "Stage Orbit";
-  centerTitle.textContent = at ? at.phase : "—";
-  centerLine.textContent = at
+  sunTitle.textContent = at ? at.phase : "—";
+  sunLine.textContent = at
     ? `${phases.length} 个阶段，停在第 ${phases.indexOf(at) + 1} 个。`
-    : "十一个阶段，每个阶段一个 Codex 线程。";
-  centerCount.replaceChildren(
+    : `${phases.length} 个阶段，每个阶段一个 Codex 线程。`;
+  sunCount.replaceChildren(
     document.createTextNode(`${approved} / ${phases.length}`),
   );
   const unit = document.createElement("em");
   unit.textContent = "Approved";
-  centerCount.append(unit);
+  sunCount.append(unit);
+}
+
+/** 点太阳：开，或者关。卡摆在太阳下方不盖住它，所以一个开关管两头。 */
+function toggleSunCard() {
+  const opening = sunCard.hidden;
+  sunCard.hidden = !opening;
+  sunButton.setAttribute("aria-expanded", String(opening));
+  if (opening) fillSunCard();
 }
 
 /*
@@ -2678,4 +3077,5 @@ async function saveRubric() {
 
 tabGaps.addEventListener("click", () => { showTab("gaps"); });
 tabRubric.addEventListener("click", () => { showTab("rubric"); });
+sunButton.addEventListener("click", () => { toggleSunCard(); });
 

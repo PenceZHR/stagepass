@@ -1,4 +1,4 @@
-import { PHASES } from "../domain/phase";
+import { PHASES, TERMINAL_PHASE } from "../domain/phase";
 import { CHANGE_ACTIONS, PHASE_STATUSES } from "../domain/change-state";
 import { ANSWER_ACTIONS, QUESTION_KINDS } from "../domain/question";
 import { GAP_STATUSES } from "../domain/gap";
@@ -52,17 +52,18 @@ const CHANGES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS changes (
   phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
   status        TEXT NOT NULL CHECK (status IN (${quoted(PHASE_STATUSES)})),
   -- 回程栈（domain/change-state.ts 的 returnStack，§5.9.2）：JSON 数组，'[]' =
-  -- 沿主线走。打回上游（sendBack）和 Review/QA 送修共用它。形状不变量（严格递减、
-  -- 每层在当前阶段下游）由 domain 判；这里只钉数据库说得清的两条。
+  -- 沿主线走。只有打回上游（sendBack）压它（环 v3 拆掉了送修那条路）。形状
+  -- 不变量（严格递减、每层在当前阶段下游）由 domain 判；这里只钉数据库说得清的。
   return_stack  TEXT NOT NULL DEFAULT '[]',
   seq           INTEGER NOT NULL,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   -- The same invariants the domain enforces, restated where the data lives.
   -- A row that could not have come from transition() must not be storable.
-  CHECK (phase <> 'Fix' OR return_stack <> '[]'),
+  -- （Fix 那条历史 CHECK 撤了：环 v3 里 transition 根本写不出 phase = 'Fix' 的
+  -- 行，而老库的 Fix 历史行要在迁移重建时原样搬得回来。）
   CHECK (status <> 'closed' OR return_stack = '[]'),
-  CHECK (status <> 'closed' OR phase = 'Done')
+  CHECK (status <> 'closed' OR phase = '${TERMINAL_PHASE}')
 )`;
 
 /**
@@ -191,7 +192,9 @@ CREATE TABLE IF NOT EXISTS change_briefs (
 CREATE TABLE IF NOT EXISTS change_events (
   change_id   TEXT NOT NULL REFERENCES changes(id),
   seq         INTEGER NOT NULL,
-  action      TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)},'create')),
+  -- 'rerun' 是历史席位（环 v3 删掉的动作）：域层再也写不出它，但老账本里的行
+  -- 在整表重建时要原样搬得回来 —— 和退休阶段名留在 PHASES 里同一条原则。
+  action      TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)},'create','rerun')),
   from_phase  TEXT     NULL,
   from_status TEXT     NULL,
   to_phase    TEXT NOT NULL,
@@ -228,7 +231,8 @@ CREATE TABLE IF NOT EXISTS change_evidence (
 CREATE TABLE IF NOT EXISTS commands (
   idempotency_key   TEXT PRIMARY KEY,
   change_id         TEXT NOT NULL REFERENCES changes(id),
-  action            TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)})),
+  -- 'rerun'：历史席位，理由同 change_events.action。
+  action            TEXT NOT NULL CHECK (action IN (${quoted(CHANGE_ACTIONS)},'rerun')),
   request_hash      TEXT NOT NULL,
   expected_snapshot TEXT NOT NULL,
   result_seq        INTEGER NOT NULL,
@@ -745,7 +749,46 @@ function migrateRetiredPhases(database: {
   exec(sql: string): unknown;
   prepare(sql: string): { get(...args: unknown[]): unknown; all?(...args: unknown[]): unknown };
 }): void {
-  const ABSORBED_BY: Readonly<Record<string, string>> = { TechSpec: "Arch" };
+  /*
+   * 环 v3（2026-08-09）一次退了六个，逐个给落点：Plan 是改名（BuildPlan 顶替，
+   * 语义逐字相同）；Review 被 QA 收编；Merge / Retro / Done 在新环里是
+   * 「QA 之后」的位置 —— 停在那儿的 Change 退回 QA 重验一遍再关，保守但不错。
+   *
+   * **Fix 故意不在表里**：进过 Fix 的前提是 Review/QA 送修过，而那两个阶段在
+   * 任何真库上都没跑过一轮 —— 结构上不存在停在 Fix 上的行。真出现了，读照样
+   * 读得出（校验放行退休阶段），走不动就报到人跟前，那是人该做的决定。
+   */
+  const ABSORBED_BY: Readonly<Record<string, string>> = {
+    TechSpec: "Arch",
+    Plan: "BuildPlan",
+    Review: "QA",
+    Merge: "QA",
+    Retro: "QA",
+    Done: "QA",
+  };
+  /*
+   * **证据跟着退休走**（环 v3 迁移的第二半）。搬 Change 的那半只管「停在退休
+   * 阶段上的」，而证据的洞打在**已经走过去的**身上：CHG-001 带着老 Plan 的产物
+   * 走到了 Build，v3 里 Build 的上游叫 BuildPlan —— `upstreamOf` 按新名取证据，
+   * 取到一个空行，红方的任务书里就没有它该读的计划文档。
+   *
+   * 只在承接方还没有自己证据时拷贝：TechSpec 并进 Arch 那种**合并**里，Arch
+   * 自己的产物才是权威，拷过去反而是把两份说法摆在一起让下游挑一个信。
+   */
+  for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
+    try {
+      database.exec(
+        `INSERT INTO change_evidence
+           (change_id, phase, artifact_ids, blockers, waived_ids, updated_at)
+         SELECT change_id, '${absorbedBy}', artifact_ids, blockers, waived_ids, updated_at
+           FROM change_evidence AS retiring WHERE phase = '${retired}'
+           AND NOT EXISTS (SELECT 1 FROM change_evidence
+             WHERE change_id = retiring.change_id AND phase = '${absorbedBy}')`,
+      );
+    } catch {
+      return;   // change_evidence 表还不存在（全新库）
+    }
+  }
   const at = new Date().toISOString();
   for (const [retired, absorbedBy] of Object.entries(ABSORBED_BY)) {
     let rows: { id: string; seq: number }[];

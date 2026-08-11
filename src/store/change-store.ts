@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_GRAPH,
   isPhase,
+  parallelTwinOf,
   phaseGraphOf,
   type Phase,
   type PhaseGraph,
@@ -275,9 +276,10 @@ export class ChangeStore {
     } = {},
   ): ChangeRecord {
     const current = this.read(changeId);
+    const graph = this.graphFor(current.projectId);
     const next = transition(current.state, action, {
       ...(options.to === undefined ? {} : { to: options.to }),
-      graph: this.graphFor(current.projectId),
+      graph,
     });
     const at = this.now().toISOString();
     const seq = current.seq + 1;
@@ -293,6 +295,11 @@ export class ChangeStore {
      * 只在**到达**（换了阶段、落点是 pending）时收编：start/settle/fail/retry
      * 不换阶段，closed 是终点，都轮不到它。ledger 的 to_status 记收编后的值 ——
      * 账本说的必须是真发生的那一步。
+     *
+     * **sendBack 到达不收编 status**（批 4 · 审计 P0 第 4 条）：打回的意思是
+     * 「这份产物错了，重做」，把座位攒下的 settled 直接接过来，打回的意见一轮
+     * 没跑就变成「可以批准了」。座位那一行照样删（一个阶段只有一个座），攒下的
+     * evidence / gaps 都在各自的表里 —— 重开的那一轮对着它们干活。
      */
     const arriving = next.phase !== current.state.phase && next.status === "pending";
     const seat = arriving
@@ -300,7 +307,7 @@ export class ChangeStore {
           "SELECT status FROM change_states WHERE change_id = ? AND phase = ?",
         ).get(changeId, next.phase) as { status: PhaseStatus } | undefined) ?? null
       : null;
-    const landed = seat?.status ?? next.status;
+    const landed = action === "sendBack" ? next.status : seat?.status ?? next.status;
 
     this.database.transaction(() => {
       // Ledger first: `ck_changes_ledger` looks for this row when the update
@@ -324,6 +331,41 @@ export class ChangeStore {
         this.database.prepare(
           "DELETE FROM change_states WHERE change_id = ? AND phase = ?",
         ).run(changeId, next.phase);
+      }
+      /*
+       * **关掉的 Change 一个座位都不许留**（批 4 · 审计 P0 第 2/6 条）：
+       * closed 之后没有任何一条路会再收编它们，留着就是一个能起 Codex、写
+       * evidence、而且永远清不掉的孤儿。
+       *
+       * **主线越过去的座位一并清**：人跳过式批准（§8.10 选远目标）把一个开着的
+       * 座位甩在主线身后 —— 它的阶段已经不在「主线还会到达」的名单里，永远等不到
+       * 收编。清的是座位那一行（阶段的 evidence / gaps 原样在表里），人的跳过
+       * 本身就在账本上，这一步是它的直接后果，不是第二个决定。
+       */
+      if (next.status === "closed") {
+        this.database.prepare(
+          "DELETE FROM change_states WHERE change_id = ?",
+        ).run(changeId);
+      } else if (next.phase !== current.state.phase) {
+        const ahead = graph.order.slice(graph.order.indexOf(next.phase) + 1);
+        this.database.prepare(
+          `DELETE FROM change_states WHERE change_id = ?
+             AND phase NOT IN (${ahead.map(() => "?").join(",") || "''"})`,
+        ).run(changeId, ...ahead);
+      }
+      /*
+       * **钻石的分叉**（批 4）：批准落到 BuildPlan / Build 时，给孪生阶段
+       * （TestPlan / Test）开座位 —— 两轨从这儿开始并行。只在 approve 到达时开
+       * （sendBack 到达是打回重开，孪生该不该跟着重来由人裁）；孪生不在这个
+       * Change 的图上就不开（跳过阶段是合法的，§4.5）。
+       */
+      const twin = action === "approve" && arriving ? parallelTwinOf(next.phase) : null;
+      if (twin !== null && graph.order.includes(twin)) {
+        this.database.prepare(
+          `INSERT OR IGNORE INTO change_states
+             (change_id, phase, status, opened_at, updated_at)
+           VALUES (?, ?, 'pending', ?, ?)`,
+        ).run(changeId, twin, at, at);
       }
       const changed = this.database.prepare(
         `UPDATE changes

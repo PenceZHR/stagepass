@@ -1,7 +1,6 @@
 import {
   advancesTo,
   DEFAULT_GRAPH,
-  sendsToFix,
   upstreamOf,
   FIRST_PHASE,
   TERMINAL_PHASE,
@@ -51,24 +50,22 @@ export const CHANGE_ACTIONS = [
   "settle",
   "fail",
   "retry",
+  /**
+   * `reject` 在**每个**阶段都是「就在这儿再来一轮」。
+   *
+   * 环 v3 之前 Review/QA 的 reject 被「送修」（→ Fix）占用，于是原地重跑只好
+   * 另设一个 `rerun` 动作。Fix 退休后 reject 恢复本义，rerun 变成它的第二个
+   * 名字 —— 两条路一个意思，是这棵树一直在删的东西，所以 rerun 一起删了。
+   * QA 的「代码错了」走 `sendBack`（三向归因：Build / Test / Arch，人选目标）。
+   */
   "approve",
   "reject",
   /**
-   * 打回上游（长回边，§5.9.1）：这个阶段发现某份**上游文档**错了，把工作送回去改。
+   * 打回上游（长回边，§5.9.1）：这个阶段发现某份**上游产物**错了，把工作送回去改。
    * 带目标（`TransitionOptions.to`），目标必须在严格上游。
+   * 环 UI 上它就是「Fix 交互」：打回箭头 + 重开座位，不占站位。
    */
   "sendBack",
-  /**
-   * 就在这儿再来一轮 —— **只有 Review/QA 有**（2026-08-02 记的旧账 F）。
-   *
-   * 那两个阶段的 `reject` 语义是**送修**（→ Fix），于是「这一轮方法不对，
-   * 再跑一次」没有自己的动作：唯一出路是绕道 Fix，在一份根本没问题的代码上
-   * 跑一轮修理，只为了回到 Review 再审一次。
-   *
-   * **别的阶段没有这个动作**：那儿的 `reject` 已经就是这个意思，两条路一个
-   * 意思是这棵树一直在删的东西。
-   */
-  "rerun",
 ] as const;
 
 export type ChangeAction = (typeof CHANGE_ACTIONS)[number];
@@ -79,15 +76,15 @@ export interface ChangeState {
   /**
    * 回程栈：「这儿完了之后回哪去」，后进先出（§5.9.2）。
    *
-   * 空栈 = 正常沿主线走。两种动作压栈：打回上游（`sendBack`，压发起的阶段），
-   * 和 Review/QA 送修（`reject` → Fix，压发起的阶段）—— **同一个机制，不是两个**。
-   * 被打回/送修的阶段 approve 时弹栈回去，而不是沿主线前进。
+   * 空栈 = 正常沿主线走。只有一种动作压栈：打回上游（`sendBack`，压发起的
+   * 阶段）。被打回的阶段 approve 时沿主线重走（§8.9），走到栈顶就是还债。
+   * （环 v3 之前 Review/QA 送修 → Fix 也压这个栈 —— Fix 退休后那条路没了。）
    *
    * 原来是单字段 `returnPhase`，而单字段存不下嵌套回跳：Build 打回 Spec 之后，
    * Spec 又发现 PRD 错了 —— 这时「回来之后去哪」有两个答案要记（§5.9.2 的例子）。
    *
    * 不变量（`assertStateValid`）：自底向顶严格递减（后压进来的必然更靠上游）、
-   * 每一层都在当前阶段的严格下游、Fix 的栈非空且顶是 Review/QA、closed 时栈空。
+   * 每一层都在当前阶段的严格下游、closed 时栈空。
    */
   readonly returnStack: readonly Phase[];
 }
@@ -98,13 +95,12 @@ export interface ChangeState {
  * whether it was allowed.
  *
  * `sendBack` 在表里挂在 `settled` 下，但它还多一道判据：**当前阶段得有上游**
- * （PRD 没有，Fix 不在主线上）—— 那一半在 `isLegal` 里，因为它取决于阶段，
- * 不取决于状态。
+ * （PRD 没有）—— 那一半在 `isLegal` 里，因为它取决于阶段，不取决于状态。
  */
 const ACCEPTS: Readonly<Record<PhaseStatus, readonly ChangeAction[]>> = {
   pending: ["start"],
   running: ["settle", "fail"],
-  settled: ["approve", "reject", "sendBack", "rerun"],
+  settled: ["approve", "reject", "sendBack"],
   blocked: ["retry"],
   closed: [],
 };
@@ -129,9 +125,7 @@ export class IllegalTransitionError extends Error {
       `${action} is not legal in ${state.phase}/${state.status}`
       + (acceptsIt
         ? ` (${state.status} accepts it, but ${state.phase} does not:`
-          + ` ${action === "sendBack"
-            ? "no upstream to send back to -- PRD has none, Fix is not on the line"
-            : "only Review/QA can rerun in place"})`
+          + " no upstream to send back to -- the first phase has none)"
         : ` (accepts: ${ACCEPTS[state.status].join(", ") || "nothing"})`),
     );
     this.name = "IllegalTransitionError";
@@ -226,12 +220,7 @@ export function approvalTargets(
   graph: PhaseGraph = DEFAULT_GRAPH,
 ): Phase[] {
   const top = state.returnStack[state.returnStack.length - 1];
-  /*
-   * **主线的下一步只有一份实现**（`advancesTo`），这里从它接着往下数。
-   *
-   * 它同时替我们处理了 Fix：`advancesTo("Fix")` 是 null —— Fix 不在主线上，
-   * 没有「往下一个阶段走」可言，唯一的出口就是还债。
-   */
+  // **主线的下一步只有一份实现**（`advancesTo`），这里从它接着往下数。
   const next = advancesTo(state.phase, graph);
   if (next === null) return top === undefined ? [] : [top];
 
@@ -265,11 +254,11 @@ export function approvalTargets(
  * 「沿主线前进会把等的人晾在原地」。**那个理由是错的**，代价是：
  *
  * ```
- * Review --sendBack--> TestPlan --approve--> Review        ← Build 被跳过
+ * QA --sendBack--> TestPlan --approve--> QA        ← Test 被跳过
  * ```
  *
- * 测试改了，而 **Build 从来没对着新测试重跑过**，Review 接着审的就是那个用旧
- * 测试建出来的 commit。不止 TestPlan 这一处：主线本身是一条依赖链，打回到任何
+ * 测试方案改了，而 **Test 从来没对着新方案重写过测试**，QA 接着跑的就是那套
+ * 按旧方案写出来的用例。不止 TestPlan 这一处：主线本身是一条依赖链，打回到任何
  * 阶段，中间被跳过的阶段**没有任何「你的产物过期了」的标记**。
  *
  * 用户 2026-08-06 的原话定的这一条：
@@ -279,12 +268,9 @@ export function approvalTargets(
  * 跳回正是那个「默认它们是对的」。所以改成沿主线重走 —— 走到栈顶时 `advancesTo`
  * 自然就等于栈顶，那一步同时也是还债，不用特判。
  *
- * **Fix 因此重新变成特例，而这个特例有理由**：`advancesTo("Fix")` 是 null ——
- * 它不在主线上，没有「重走」可言，唯一的出口就是还债。
- *
- * **代价是越早打回越贵**：打回到 Spec 就要重走 TechSpec / Plan / TestPlan / Build
- * 再回 Review。缓解不在这一层，在**提示词**：重走那一轮的题面该说「按这条改动
- * **更新**你已有的产物」，而不是「重写一份」（BACKLOG §8.9）。
+ * **代价是越早打回越贵**：QA 打回到 Spec 就要重走 Arch / BuildPlan / TestPlan /
+ * Build / Test 再回 QA。缓解不在这一层，在**提示词**：重走那一轮的题面该说
+ * 「按这条改动**更新**你已有的产物」，而不是「重写一份」（BACKLOG §8.9）。
  */
 export function recommendedApproval(
   state: ChangeState,
@@ -306,12 +292,9 @@ export function isLegal(
   graph: PhaseGraph = DEFAULT_GRAPH,
 ): boolean {
   if (!ACCEPTS[state.status].includes(action)) return false;
-  // 打回要有地方可回：PRD 没有上游，Fix 不在主线上。这一半是阶段的属性，
+  // 打回要有地方可回：PRD 没有上游。这一半是阶段的属性，
   // 不是状态的属性，所以不在 ACCEPTS 表里。
   if (action === "sendBack") return upstreamOf(state.phase, graph).length > 0;
-  // 原地再来一轮只有 Review/QA 有 —— 别处的 `reject` 已经就是这个意思。
-  // 同一个判据（`sendsToFix`）在这儿和 `reject` 的落点上各用一次，不另算一套。
-  if (action === "rerun") return sendsToFix(state.phase);
   return true;
 }
 
@@ -325,28 +308,18 @@ const ORDER_INDEX: ReadonlyMap<Phase, number> =
  * point and the machine's guarantees stop meaning anything.
  */
 export function assertStateValid(state: ChangeState): void {
-  if (state.phase === "Fix") {
-    const top = state.returnStack[state.returnStack.length - 1];
-    if (top === undefined) {
-      throw new InvalidStateError(
-        "Fix has an empty returnStack, so nothing can say where approving it leads",
-      );
-    }
-    // 只有 Review 和 QA 送修。栈顶是别人，说明这一行不是 transition 写出来的。
-    if (!sendsToFix(top)) {
-      throw new InvalidStateError(`Fix's return target is ${top}; only Review/QA send work there`);
-    }
-  }
   /*
    * 栈的形状：自底向顶严格递减（后压进来的必然更靠上游），且每一层都在当前阶段
-   * 的严格下游（Fix 不在主线上，跳过和当前阶段的比较）。破了任何一条，弹栈就是
-   * 往回抄近道 —— 一个「从 Spec 打回到 Build」的状态必须造不出来。
+   * 的严格下游。破了任何一条，弹栈就是往回抄近道 —— 一个「从 Spec 打回到
+   * Build」的状态必须造不出来。
+   * （环 v3 之前这里还有一段 Fix 专属校验 —— 栈非空、栈顶必须 Review/QA。
+   * Fix 退休后它成了普通的「不在主线上」，下面那句通用报错接管。）
    */
   /*
-   * 不在主线图上的阶段（`Fix`，以及退休的）没有下标 —— 用 -1，让栈上每一层都
-   * 算在它下游。原来写的是 `state.phase === "Fix" ? -1 : ORDER_INDEX.get(...)!`，
-   * 那个 `!` 在退休阶段上会拿到 undefined，于是下面每次比较都是 false ——
-   * **整条栈序校验被静默关掉**，而它守的正是「弹栈不许往回抄近道」。
+   * 不在主线图上的阶段（退休的）没有下标 —— 用 -1，让栈上每一层都算在它下游。
+   * 原来写的是 `ORDER_INDEX.get(...)!`，那个 `!` 在退休阶段上会拿到 undefined，
+   * 于是下面每次比较都是 false —— **整条栈序校验被静默关掉**，而它守的正是
+   * 「弹栈不许往回抄近道」。
    */
   let below = ORDER_INDEX.get(state.phase) ?? -1;
   for (let level = state.returnStack.length - 1; level >= 0; level -= 1) {
@@ -397,25 +370,14 @@ export function transition(
     case "start":
     case "retry":
       return { ...state, status: "running" };
-    case "rerun":
-      // 阶段不动、栈不动 —— 和设计阶段的 `reject` 落点逐字一样。被打回来的
-      // Review 原地再跑一轮，它欠着的回程照旧欠着。
-      return { ...state, status: "pending" };
     case "settle":
       return { ...state, status: "settled" };
     case "fail":
       return { ...state, status: "blocked" };
     case "reject":
-      // Rejecting a design phase means "run another round here". Rejecting
-      // Review or QA means the code is wrong, which is Fix's job -- and the
-      // way back rides the same return stack every send-back rides.
-      return sendsToFix(state.phase)
-        ? {
-            phase: "Fix",
-            status: "pending",
-            returnStack: [...state.returnStack, state.phase],
-          }
-        : { ...state, status: "pending" };
+      // 每个阶段的 reject 都是「就在这儿再来一轮」：阶段不动、栈不动 ——
+      // 欠着的回程照旧欠着。「产物没错、是别人错了」不走这儿，走 sendBack。
+      return { ...state, status: "pending" };
     case "sendBack": {
       const to = options?.to;
       if (to === undefined) {
@@ -451,8 +413,8 @@ export function transition(
       /*
        * **走到栈顶就是还债，弹掉它；没走到就是沿路重走，栈原样带着。**
        *
-       * 后者是 §8.10 补出来的新路：`Review --sendBack--> TestPlan`，批准 TestPlan
-       * 时选 Build 而不是 Review，于是 Build 会对着改过的测试重跑一次，再回 Review。
+       * 后者是 §8.10 补出来的新路：`QA --sendBack--> TestPlan`，批准 TestPlan
+       * 时选 Test 而不是 QA，于是 Test 会对着改过的方案重写一次，再回 QA。
        * 那正是 §8.9 想要的形状 —— 现在它是**人可以选的一条**，还不是默认。
        */
       const top = state.returnStack[state.returnStack.length - 1];

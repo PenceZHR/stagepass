@@ -17,9 +17,13 @@ import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
 import { prepareSchema } from "../src/db/schema";
+import { PHASES } from "../src/domain/phase";
+import { RUBRIC_ROLES } from "../src/domain/rubric";
+import { orphanedStandardKeys, retireStandards } from "../src/domain/rubric-gaps";
 import { ChangeStore } from "../src/store/change-store";
+import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
-import { RubricStore } from "../src/store/rubric-store";
+import { FACTORY_UPGRADE_REASON, RubricStore } from "../src/store/rubric-store";
 import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 
@@ -165,6 +169,8 @@ const project = new ProjectStore(database).ensure(
  * 而这是他唯一会看到它的地方。
  */
 const rubrics = new RubricStore(database);
+const gaps = new GapStore(database);
+const changeIndex = new ChangeStore(database);
 for (const each of new ProjectStore(database).list()) {
   rubrics.installDefaults(each.id);
   const upgraded = rubrics.upgradeDefaults(each.id);
@@ -174,6 +180,39 @@ for (const each of new ProjectStore(database).list()) {
   }
   for (const skip of upgraded.skipped) {
     console.log(`[rubric] ${each.id} ${skip.scope} 没升 —— ${skip.why}`);
+  }
+  /*
+   * **对账：标准已经不在名单上的阻断项，退休掉。**
+   *
+   * 和人手动改标准那条路（`app/edit-rubric.ts`）同一条规则，但判据不同：那儿是
+   * 事件驱动（这次编辑撤下了谁），这儿是**状态驱动**（现在开着的，标准还在不在）。
+   *
+   * 两条都要，因为事件会漏 —— 2026-08-10 真机：两条孤儿是**上一次**升级留下的，
+   * 而这一次启动没有升级发生（rubric 已是最新），事件驱动那条一次也走不到它们
+   * 身上。代价是那两条谁也关不掉：标准没了，反方不会再判它；红方又不可能满足
+   * 一条已退休的要求（「TestPlan 必须通过」留在 Build 上，而任务书禁止 Build
+   * 碰测试）—— 它就永远挡着闸门。
+   *
+   * 幂等：退休过的不再是 open，下一次对账看不见它。
+   */
+  for (const change of changeIndex.list(each.id)) {
+    for (const phase of PHASES) {
+      for (const role of RUBRIC_ROLES) {
+        const live = rubrics.effective(each.id, change.id, phase, role);
+        if (live === null) continue;
+        const before = gaps.all(change.id, phase);
+        const orphans = orphanedStandardKeys(
+          before, role, live.criteria.map((entry) => entry.key));
+        if (orphans.length === 0) continue;
+        gaps.replace(change.id, phase, retireStandards(
+          before, role, orphans, FACTORY_UPGRADE_REASON));
+        for (const key of orphans) {
+          const gap = before.find((each2) => each2.id === `RB:${role}:${key}`);
+          console.log(`[rubric] ${change.id}/${phase} 退休了一条阻断项（标准已不在名单上）：${
+            (gap?.title ?? key).slice(0, 44)}`);
+        }
+      }
+    }
   }
 }
 

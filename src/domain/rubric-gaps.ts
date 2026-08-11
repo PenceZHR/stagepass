@@ -126,6 +126,38 @@ export function applyAssessments(
  * 所以这里直接把它带进 resolution：**关掉一个问题必须说明理由**，rubric 这条路也
  * 不例外。
  */
+/**
+ * **对账**：开着的 rubric 阻断项里，哪几条的标准已经不在名单上了。
+ *
+ * ## 为什么不能只在「升级那一刻」清
+ *
+ * `retireStandards` 是**事件驱动**的（这次编辑撤下了谁），而事件会漏：
+ * 2026-08-10 真机上，两条孤儿是**上一次**升级留下的，下一次启动时已经没有
+ * 升级发生（rubric 已是最新），于是那条路一次也不会走到它们身上 ——
+ * 一个只在事情发生那一刻才对的机制，对已经发生过的事无能为力。
+ *
+ * 这个函数问的是**状态**：现在开着的这些，标准还在不在。幂等、不依赖历史，
+ * 每次启动跑一遍都得到同样的答案。
+ *
+ * ## 只认自己派生的那些
+ *
+ * id 形如 `RB:<role>:<key>` 的才算（`standardGapId`）。人提的 `HUMAN-`、反方
+ * 报的 finding、模板缺节的 `TEMPLATE-` 一概不碰 —— 它们不是标准派生的，
+ * 标准换不换和它们没关系。
+ */
+export function orphanedStandardKeys(
+  gaps: readonly Gap[],
+  role: RubricRole,
+  liveKeys: readonly string[],
+): string[] {
+  const live = new Set(liveKeys);
+  const prefix = standardGapId(role, "");
+  return gaps
+    .filter((gap) => gap.status === "open" && gap.id.startsWith(prefix))
+    .map((gap) => gap.id.slice(prefix.length))
+    .filter((key) => !live.has(key));
+}
+
 export function retireStandards(
   before: readonly Gap[],
   role: RubricRole,

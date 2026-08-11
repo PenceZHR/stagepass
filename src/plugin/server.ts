@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import Database from "better-sqlite3";
 
+import { isPhase } from "../domain/phase";
 import { QuestionStore } from "../store/question-store";
 import { WorklistStore } from "../store/worklist-store";
 import {
@@ -45,6 +46,14 @@ import {
 const DB_PATH = process.env.STAGEPASS_DB;
 /** 这一次插件是为哪个 Change 起的。缺席时三个工具一律说「没有」，不猜。 */
 const CHANGE_ID = process.env.STAGEPASS_CHANGE;
+/**
+ * 为哪个**阶段**起的（批 4 · P0 第 1 条）。并行的两条轨各有一个裁判会话，
+ * worklist 按 (Change, 阶段) 取 —— 少了它，TestPlan 的裁判会把理由答进
+ * Build 的 gap。和 Change 同一条路：面板启动时注入，不经模型的嘴。
+ * 缺席（旁路会话、老启动方式）就按 Change 取，行为照旧。
+ */
+const PHASE = ((value) => value !== undefined && isPhase(value) ? value : null)(
+  process.env.STAGEPASS_PHASE);
 
 function send(message: JsonRpcMessage): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -87,11 +96,11 @@ function main(): void {
     },
     nextItem() {
       if (!CHANGE_ID) return null;
-      return worklist.next(CHANGE_ID);
+      return worklist.next(CHANGE_ID, PHASE);
     },
     recordItem(answer, reason) {
       if (!CHANGE_ID) return { kind: "nothing_open" };
-      return worklist.answer(CHANGE_ID, answer, reason);
+      return worklist.answer(CHANGE_ID, answer, reason, PHASE);
     },
     elicit(question) {
       const id = nextId++;

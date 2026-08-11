@@ -340,6 +340,8 @@ body::after {
 .orbit-wrap {
   position: relative; flex: 0 0 auto;
   width: min(100cqw, 100cqh); aspect-ratio: 1;
+  /* 一圈 300s。要的是「看久了才发现它在动」，不是转盘。 */
+  animation: ringTurn 300s linear infinite;
 }
 
 /*
@@ -353,14 +355,14 @@ body::after {
  */
 .halo, .halo::before { position: absolute; border-radius: 50%; pointer-events: none; }
 /*
- * inset 决定轨道半径 = (1 - 2×inset) / 2 × 环宽 = 0.455 × 环宽。
+ * inset 决定轨道半径 = (1 - 2×inset) / 2 × 环宽 = 0.40 × 环宽。
  *
- * **这个 0.455 必须和 panel.js 里 placeNodes 的系数一样**，节点就骑在轨道上；
+ * **这个 0.40 必须和 panel.js 里 placeNodes 的系数、MAP_RADIUS 一样**，节点才骑在轨道上；
  * 两边任何一个单独改，节点就会浮在轨道内外。原来两边都是 0.43（inset 7%），
  * 切成 60% 的列之后一起外推，把环在剩下的宽度里做到最大。
  */
 .halo {
-  inset: 4.5%; border: 1px solid rgba(255,255,255,.19);
+  inset: 10%; border: 1px solid rgba(255,255,255,.19);
   box-shadow: inset 0 0 54px rgba(225,195,166,.07);
 }
 .halo::before {
@@ -374,56 +376,146 @@ body::after {
 @keyframes ringSweep { to { transform: rotate(360deg); } }
 
 /*
- * 环上的地图层：回头的弦、能去的虚线、节点的轮次刻度（§5.9.3 / §5.9.4）。
+ * ── 环心那颗太阳 ────────────────────────────────────────────
  *
- * **两种画法必须一眼分得开**（§5.9.3②）：走过的是实线，永久留着 —— 那是这个
- * Change 的病历，「被 Build 打回来过两次」应当一眼看得出；能去的是虚线，随状态
- * 变。混成一种，历史和可能性就分不清了。
+ * 圆盘删掉之后中间空了一块（用户 2026-08-09：「中间太空了，我想插入一个太阳」）。
+ * 放太阳而不是把信息面板搬回来：环本来就是轨道，八个阶段绕着它转 —— 中心该是
+ * 被绕的那个东西，不是又一块字。**它不带信息，所以也不和信息抢注意力**，
+ * §5.0 第 4 条那条「环这一屏不加东西」说的是别加第二份状态，不是别有光。
+ *
+ * 尺寸只有 14%：老圆盘是 inset 27%（占了 46%），那么大是因为它要装四行字。
+ * 一颗不写字的太阳可以小得多，环内那圈留白反而是它该有的空间感。
+ */
+/*
+ * **剪纸，不是写实**（用户 2026-08-09：「卡片可爱剪纸风格的，不要这种写实的」）。
+ * 上一版是一团 radial-gradient 的光球 —— 那是照片的语言。剪纸的语言是：平涂的
+ * 色块、看得见的边、几层纸错开露出的厚度。所以这里没有一处渐变。
+ */
+.sun {
+  position: absolute; left: 50%; top: 50%; z-index: 2;
+  width: 21%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  padding: 0; border: 0; background: none; cursor: pointer;
+  filter: drop-shadow(0 0 16px rgba(255,176,96,.28));
+  transition: transform .25s ease, filter .25s ease;
+}
+.sun:hover, .sun:focus-visible {
+  transform: translate(-50%, -50%) scale(1.06);
+  filter: drop-shadow(0 0 22px rgba(255,186,110,.45));
+}
+.sun:focus-visible { outline: 2px solid var(--sand); outline-offset: 6px; border-radius: 50%; }
+.sun svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+/*
+ * 日冕的小动画：整组慢慢转 + 长短两组光芒**反相**呼吸。
+ *
+ * 反相是关键 —— 两组同相就成了整体忽明忽暗（像坏了的灯），反相才读得出
+ * 「光在向外吐」。
+ *
+ * **`transform-origin: 0 0` 不许改成 `center`。** viewBox 是 `-50 -50 100 100`，
+ * 太阳中心就是用户坐标的原点，所以 `0 0` 才是圆心。写 `center` 实测（2026-08-09
+ * Chrome）解析成 `50px 50px` —— 日冕会绕着一个偏出去的点公转，症状是**太阳裂成
+ * 两半**：脸留在环心，光芒飘到右边。
+ */
+.sun-corona {
+  transform-box: view-box; transform-origin: 0 0;
+  animation: sunSpin 44s linear infinite;
+}
+.rays-long  { fill: rgba(246,169,76,.92); animation: rayLong 3.8s ease-in-out infinite; }
+.rays-short { fill: rgba(255,203,126,.55); animation: rayShort 3.8s ease-in-out infinite; }
+@keyframes sunSpin  { to { transform: rotate(360deg); } }
+@keyframes rayLong  { 50% { opacity: .62; } }
+@keyframes rayShort { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+/* 三层纸：底下那张深色的错开 3.2 露出厚度，中间是脸，上面点一块高光。 */
+.sun-shade { fill: rgba(150,76,36,.62); }
+.sun-face  { fill: #FFD070; stroke: rgba(116,56,22,.28); stroke-width: 1.4; }
+.sun-gloss { fill: rgba(255,247,219,.72); }
+
+/*
+ * 点太阳翻出来的状态卡。
+ *
+ * 这几行字本来常驻在环心圆盘上，2026-08-09 用户嫌它占地方删掉了；同一天他又要
+ * 回来 —— 但要的是「点一下才看」。所以内容和当初一模一样，**出场方式不同**：
+ * 平时环心只有一颗太阳，问了才答。摆在太阳下方，不盖住它，于是再点一次就收。
+ */
+/*
+ * 位置和高度是**量出来的，不是估的**：环心在 50%，六点钟那个节点的上沿落在
+ * 约 83%（半径 0.40 + 节点自己那 6.5%）。卡从 60% 起、压在 123px 上下，正好
+ * 落在太阳光芒的下沿和那个节点之间。
+ *
+ * z-index 13 是安全网：`.stage-node` 是 6、悬停时窜到 12，卡片必须在它们之上，
+ * 否则窄窗口下一挤，「Approved」那行就被节点圆盖掉（2026-08-09 实测过一次）。
+ */
+.sun-card {
+  position: absolute; left: 50%; top: 60%; z-index: 13;
+  transform: translateX(-50%); min-width: 182px; padding: 11px 19px 13px;
+  border: 1px solid rgba(255,255,255,.2); border-radius: 15px;
+  background: rgba(39,36,47,.86); backdrop-filter: blur(20px) saturate(115%);
+  box-shadow: 0 18px 52px rgba(31,24,37,.46);
+  text-align: center; animation: sunCardIn .22s ease-out;
+}
+@keyframes sunCardIn { from { opacity: 0; transform: translateX(-50%) translateY(-6px); } }
+.sun-card small {
+  font: 850 9px/1 ui-sans-serif, sans-serif; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--sand); white-space: nowrap;
+}
+.sun-card h3 { margin: 7px 0 4px; font: 560 24px/1 var(--serif); letter-spacing: -.04em; }
+.sun-card p { margin: 0; color: rgba(255,255,255,.6); font-size: 11.5px; line-height: 1.6; }
+/* 计数排成一行 —— 竖着摆那一版把卡撑高了 30px，正好撞上六点钟的节点。 */
+.sun-card b { display: block; margin-top: 8px; color: var(--sand-deep); font: 500 21px/1 Georgia, serif; }
+.sun-card b em {
+  margin-left: 7px; font: 700 9px/1 ui-sans-serif, sans-serif;
+  font-style: normal; letter-spacing: .16em; color: rgba(255,255,255,.44);
+}
+
+/*
+ * 环上的地图层：回头的烟迹、能去的边（§5.9.3）。轮次不在这层 —— 它是节点圆
+ * 自己的颜色深浅（§5.9.4，见 .stage-node button 的 --depth）。
+ *
+ * **两种画法必须一眼分得开**（§5.9.3②）：走过的回头路是凝结尾迹（圆点虚线，
+ * 永久留着）—— 那是这个 Change 的病历，「被 Build 打回来过两次」应当一眼看得出；
+ * 能去的随状态变：向前 = 发丝弧 + 一串 V，回跳 = 发丝 + 小火箭起飞入轨
+ * （2026-08-09 用户定的画法）。混成一种，历史和可能性就分不清了。
  *
  * 不吃鼠标事件：节点那一层的悬停和点击照旧（pointer-events 只在 <title> 需要的
  * 那几条线上开）。
  */
-.orbit-map { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.orbit-map .chord {
-  fill: none; stroke: rgba(226,200,164,.5); stroke-width: .5;
-  stroke-linecap: round; pointer-events: stroke;
-}
-.orbit-map .chord.hot { stroke: rgba(255,146,128,.62); stroke-width: .7; }
 /*
- * 能去的那条路：**一根极淡的发丝**，只说「走哪条道」。
- *
- * 方向整个交给飞在上面那串 V（用户 2026-08-05 第二次看后重做）。上一版是流动的
- * 虚线 + 实心小三角：虚线两头长得一样、看不出往哪流，而虚线本身在这一屏的细线
- * 质感里显得又粗又碎。**减，不是加。**
+ * 地图层跟着环转。viewBox 是 `0 0 100 100`，中心就是 (50,50)，所以这里
+ * `transform-origin: center` 是对的 —— 别照搬太阳那边的 `0 0`，那是给
+ * `-50 -50 100 100` 那种中心在原点的 viewBox 写的。
  */
-.orbit-map .live {
-  fill: none; stroke: rgba(226,200,164,.17); stroke-width: .35;
-  stroke-linecap: round; pointer-events: stroke;
+.orbit-map {
+  position: absolute; inset: 0; pointer-events: none; overflow: visible;
+  transform-box: view-box; transform-origin: center; transform: rotate(var(--spin));
 }
-.orbit-map .live.back { stroke: rgba(255,146,128,.2); }
-/** 自环那条轨道：只给 V 骑，本身不画（画出来就和刻度打架了）。 */
+/**
+ * 所有的跑道都不画：`mpath` 要按 id 引一条 path 才跑得起来，但它本身既不显形也
+ * 不吃鼠标（用户 2026-08-09：「轨道不要画出来」）。这一屏看得见的只有火箭。
+ */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
 /*
- * 飞着的那个 V。**它是唯一表达方向的东西**，所以要亮；描边而不是实心，
- * 才和这一屏别的东西是同一种笔触。跟在后面的两个淡下去 —— 队形本身就是箭头。
+ * 剪纸小火箭：**平涂色块，没有描边**，和环心那颗太阳同一种语言（用户
+ * 2026-08-09：「整体风格统一一下」）。上一版是细描边的空心壳 —— 那是给环上
+ * 那些发丝线条配的，线撤掉之后它成了唯一还在说旧方言的东西。
+ *
+ * 窗户填的是背景色，读起来像纸上挖掉的一个洞，不是画上去的一块蓝。
  */
-.orbit-map .arrow {
-  fill: none; stroke: rgba(240,220,190,.95); stroke-width: .5;
-  stroke-linecap: round; stroke-linejoin: round;
-}
-.orbit-map .arrow.trail { stroke: rgba(240,220,190,.42); stroke-width: .42; }
-.orbit-map .arrow.back { stroke: rgba(255,152,134,.95); }
-.orbit-map .arrow.back.trail { stroke: rgba(255,152,134,.4); }
+.orbit-map .rocket .body  { fill: #FFE3B8; }
+.orbit-map .rocket .fin   { fill: #DE8546; }
+.orbit-map .rocket .port  { fill: rgba(39,36,47,.88); }
+/* 火苗比鳍更亮更黄（和太阳的脸 #FFD070 同族）—— 同色会糊成一整块楔形。 */
+.orbit-map .rocket .flame { fill: #FFC658; }
+/* 幽灵火箭：最近一跳的重演，整枚淡一级 —— 它是回忆，不是事件。 */
+.orbit-map .rocket.ghost { opacity: .5; }
 /*
- * 刻度要**一眼看得见**才有意义（§5.9.4：节点上花的轮数比它在环上的位置更能说明
- * 「你在哪」）。第一版 stroke-width .9、长 1.8 单位，实测在真尺寸下是 4×8 像素 ——
- * DOM 里在、几何也对，屏幕上等于没画。这一版按「能一眼数出几段」定粗细。
+ * 卫星（自环那两颗）：同一套剪纸色系，但**没有尾焰** —— 它不在推进，只是绕。
+ * 会动的是那盏信标灯。板子比机身深一档，两片纸才分得开。
  */
-.orbit-map .tick {
-  fill: none; stroke: rgba(226,200,164,.9); stroke-width: 1.5; stroke-linecap: round;
-}
-.orbit-map .tick.done { stroke: rgba(150,214,168,.9); }
-
+.orbit-map .sat .boom   { fill: #FFE3B8; }
+.orbit-map .sat .panel  { fill: #C98A4B; }
+.orbit-map .sat .body   { fill: #FFE3B8; }
+.orbit-map .sat .beacon { fill: #FFC658; }
 /*
  * `--progress` 必须注册才过渡得了。
  *
@@ -439,6 +531,28 @@ body::after {
 }
 
 /*
+ * ── 外圈缓慢自转（用户 2026-08-09：「外圈的 stage 环能缓慢地转动」）──
+ *
+ * `--spin` 由 `.orbit-wrap` 上一条 300s 的动画从 0 转到 360°，**继承**给环里那三样
+ * 要一起转的东西：节点、地图层（火箭和卫星都在里面）、进度弧。
+ *
+ * `inherits: true` 是这条的全部机关：自定义属性要注册过才插得出中间值（不注册的话
+ * 那条 animation **一声不响地什么都不做**，和 `--progress` 上面那段注释是同一个
+ * 坑），而要让子元素读得到又必须让它继承。
+ *
+ * **太阳和状态卡不跟着转**：太阳是被绕的那个，它自己有日冕在转；卡是给人读字的。
+ *
+ * 转动不破坏「火箭不许穿过 stage 和太阳」那条：整块地图是绕 viewBox 中心刚体旋转，
+ * 而太阳正好在那个中心 —— 到圆心的距离一个都没变，节点和路径又同在旋转坐标系里。
+ */
+@property --spin {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+@keyframes ringTurn { to { --spin: 360deg; } }
+
+/*
  * 进度圆弧：绕着轨道的那道沙金弧线，标已经走到哪（设计稿要的东西之一）。
  *
  * 从十二点开始顺时针，长度由 `--progress`（0–1）给 —— 和节点的摆法同一个起点、
@@ -449,7 +563,7 @@ body::after {
  * 「只留一个大环」仍然管着这里。
  */
 .progress {
-  position: absolute; inset: 4.5%; border-radius: 50%; pointer-events: none;
+  position: absolute; inset: 10%; border-radius: 50%; pointer-events: none;
   background: conic-gradient(from 0deg,
     var(--sand-deep) 0turn, var(--sand-deep) calc(var(--progress, 0) * 1turn),
     transparent calc(var(--progress, 0) * 1turn));
@@ -457,21 +571,49 @@ body::after {
   mask: radial-gradient(transparent 68.5%, #000 69.5% 70.5%, transparent 71.5%);
   opacity: .85;
   transition: --progress .6s ease;
+  transform: rotate(var(--spin));   /* 弧要跟着节点转，不然进度和阶段对不上 */
 }
 
-/* 节点：圆。旋出去再转回来，圆始终正对。 */
+/* 节点：圆。旋出去再转回来，圆始终正对 —— `--spin` 一起算进去，环转字不歪。 */
 .stage-node {
   position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 6;
-  transform: rotate(var(--a)) translateY(calc(-1 * var(--r))) rotate(calc(-1 * var(--a)));
+  transform:
+    rotate(calc(var(--a) + var(--spin)))
+    translateY(calc(-1 * var(--r)))
+    rotate(calc(-1 * (var(--a) + var(--spin))));
 }
 .stage-node button {
   position: absolute; left: -28px; top: -28px;
   width: 56px; height: 56px; padding: 0; display: grid; place-items: center;
   border: 1px solid rgba(255,255,255,.28); border-radius: 50%;
-  background: rgba(42,39,50,.36); backdrop-filter: blur(16px);
+  /*
+   * 跑过几轮 = 圆被点亮的程度（§5.9.4，2026-08-09 从分段刻度改过来的）。
+   * `--depth`（0–1）由 panel.js 的 drawOrbit 写在节点上：0 轮是原来的底色，
+   * 轮数越多这盏越亮。
+   *
+   * **光感渐变，不是平涂。** 走过两版弯路（都是用户 2026-08-09 毙的）：
+   * ① color-mix(in oklch) 混底色 —— oklch 色相绕圈插值，绿(152°)混深紫(298°)
+   *   路过蓝灰，一屏泥色；② 色相固定的纯色叠层 —— 色对了，但实心平涂像贴纸。
+   * 现在是香槟金到古铜的径向渐变：高光偏左上、往边缘落深，透明度整体跟着
+   * --depth 走 —— 读起来是「这个盘被点亮了几分」，和整屏的暖金质感同族。
+   *
+   * 批准态不再单独换绿的填色（平涂的绿正是「贴纸感」的大头）—— 绿勾和绿边框
+   * 已经在说「批准过」，填色只说「跑过几轮」，一层信息一个载体。
+   */
+  background:
+    radial-gradient(120% 120% at 34% 26%,
+      oklch(0.88 0.04 86 / calc(var(--depth, 0) * .38)) 0%,
+      oklch(0.74 0.07 68 / calc(var(--depth, 0) * .26)) 46%,
+      oklch(0.52 0.08 50 / calc(var(--depth, 0) * .20)) 100%),
+    rgba(42,39,50,.36);
+  backdrop-filter: blur(16px);
   cursor: pointer; font: inherit;
   transition: transform .28s cubic-bezier(.2,.8,.2,1),
               background .28s, border-color .28s, box-shadow .28s;
+}
+/* 并行座位开着的格子：外沿一圈虚线 —— 这个钟点上同时有第二个座在跑。 */
+.stage-node.parallel button {
+  outline: 1px dashed rgba(226,200,164,.55); outline-offset: 5px;
 }
 .stage-node button i {
   width: 9px; height: 9px; border-radius: 50%;
@@ -481,10 +623,19 @@ body::after {
 /*
  * 标签在圆外面，且不跟着放大 —— 否则会挤到邻居。
  *
- * **64px → 80px（2026-08-05）**：圆外面那一圈现在住着轮次刻度和绕圈的箭头
- * （§5.9.3/§5.9.4），而它们只能待在「圆的边缘」和「标签顶」之间。原来那条缝
- * 只有 36px，圈大不起来 —— 用户要的是「起码包裹住 stage 的圆」。
- * 节点之间隔着约 150px，多让 16px 不会挤到邻居。
+ * **64px → 80px（2026-08-05）**：圆外面那一圈住着绕圈的箭头（§5.9.3），
+ * 它只能待在「圆的边缘」和「标签顶」之间。原来那条缝只有 36px，圈大不起来
+ * —— 用户要的是「起码包裹住 stage 的圆」。节点之间隔着约 150px，多让 16px
+ * 不会挤到邻居。
+ */
+/*
+ * 阶段名摆在圆心下 52px（这里的 80 减去 button 自己的 -28）。
+ *
+ * **这个数和 panel.js 的 `LABEL_TOP_PX` 是同一件事的两半，改一个就要改另一个。**
+ *
+ * 试过把它推到 70px 给轨道让地方，**反而更糟**：环收小之后相邻节点只隔 122px，
+ * 标签离邻居比离自己还近，读者会认错主。字必须待在自己那个圆边上 —— 轨道跟字
+ * 抢地盘的那点冲突交给叠放顺序解决（节点层在地图层之上，火箭从字背后过）。
  */
 .stage-node button span {
   position: absolute; top: 80px; left: 50%; transform: translateX(-50%);
@@ -535,6 +686,7 @@ body::after {
  * 实心点。设计稿 §3 要求"不依赖颜色作为唯一状态表达"，删掉形状就违反它。
  */
 .stage-node.approved button {
+  /* 填色不换：轮数的亮度照常，「批准过」由这条绿边和下面的绿勾说。 */
   border-color: color-mix(in oklch, var(--approved) 52%, transparent);
 }
 .stage-node.approved button i {
@@ -557,29 +709,6 @@ body::after {
 @keyframes ringBreathe {
   0%, 100% { box-shadow: 0 0 0 4px rgba(212,178,139,.10), 0 0 20px rgba(228,207,173,.24); }
   50%      { box-shadow: 0 0 0 12px rgba(212,178,139,.05), 0 0 40px rgba(228,207,173,.48); }
-}
-
-/* 中心信息锚点 */
-.center {
-  position: absolute; inset: 27%; z-index: 4;
-  border: 1px solid rgba(255,255,255,.22); border-radius: 50%;
-  background: rgba(39,36,47,.3); backdrop-filter: blur(22px) saturate(115%);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; padding: 9%;
-  box-shadow: 0 22px 64px rgba(31,24,37,.22);
-  animation: centerFloat 6s ease-in-out infinite;
-}
-@keyframes centerFloat { 50% { transform: translateY(-5px); } }
-.center small {
-  font: 850 9px/1 ui-sans-serif, sans-serif; letter-spacing: .13em;
-  text-transform: uppercase; color: var(--sand); white-space: nowrap;
-}
-.center h3 { margin: 10px 0 7px; font: 560 clamp(26px, 3.4vh, 40px)/1 var(--serif); letter-spacing: -.04em; }
-.center p { margin: 0; color: rgba(255,255,255,.6); font-size: 12px; line-height: 1.7; }
-.center b { display: block; margin-top: 12px; color: var(--sand-deep); font: 500 38px/1 Georgia, serif; }
-.center b em {
-  display: block; margin-top: 6px; font: 700 9px/1 ui-sans-serif, sans-serif;
-  font-style: normal; letter-spacing: .16em; color: rgba(255,255,255,.44);
 }
 
 /*
@@ -940,7 +1069,8 @@ body::after {
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 
 @media (prefers-reduced-motion: reduce) {
-  body::before, .halo::before, .center, .live-flag i,
+  body::before, .halo::before, .live-flag i, .orbit-wrap,
+  .sun-corona, .rays-long, .rays-short, .sun-card,
   .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
@@ -990,20 +1120,68 @@ body::after {
           <div class="halo"></div>
           <div class="progress" id="progress"></div>
           <!--
+            环心那颗太阳：剪纸风的几层色块，**点它翻出这条 Change 走到哪了**。
+            摆在 .orbit-map 之前，火箭穿过中心那一段就压在它上面飞过去 ——
+            谁在绕谁，这个叠放顺序自己说了。
+
+            日冕是 12 长 + 12 短两组光芒：整组慢慢转，两组的亮度反相呼吸，
+            于是它像在烧，而不是贴了个圆。
+          -->
+          <button class="sun" id="sun" type="button"
+                  aria-expanded="false" aria-controls="sun-card"
+                  aria-label="看这条 Change 走到哪了">
+            <svg viewBox="-50 -50 100 100" aria-hidden="true">
+              <defs>
+                <path id="sun-ray" d="M -4.4 -27 L -1.9 -42 Q 0 -44.4 1.9 -42 L 4.4 -27 Z"/>
+                <path id="sun-nub" d="M -3.2 -27 L -1.4 -35.4 Q 0 -37.2 1.4 -35.4 L 3.2 -27 Z"/>
+              </defs>
+              <g class="sun-corona">
+                <g class="rays-long">
+                  <use href="#sun-ray" transform="rotate(0)"/>
+                  <use href="#sun-ray" transform="rotate(45)"/>
+                  <use href="#sun-ray" transform="rotate(90)"/>
+                  <use href="#sun-ray" transform="rotate(135)"/>
+                  <use href="#sun-ray" transform="rotate(180)"/>
+                  <use href="#sun-ray" transform="rotate(225)"/>
+                  <use href="#sun-ray" transform="rotate(270)"/>
+                  <use href="#sun-ray" transform="rotate(315)"/>
+                </g>
+                <g class="rays-short">
+                  <use href="#sun-nub" transform="rotate(22.5)"/>
+                  <use href="#sun-nub" transform="rotate(67.5)"/>
+                  <use href="#sun-nub" transform="rotate(112.5)"/>
+                  <use href="#sun-nub" transform="rotate(157.5)"/>
+                  <use href="#sun-nub" transform="rotate(202.5)"/>
+                  <use href="#sun-nub" transform="rotate(247.5)"/>
+                  <use href="#sun-nub" transform="rotate(292.5)"/>
+                  <use href="#sun-nub" transform="rotate(337.5)"/>
+                </g>
+              </g>
+              <!-- 剪纸的第二层纸：错开 3 个单位露出来，就是那道「厚度」。 -->
+              <circle class="sun-shade" cx="0" cy="3.2" r="23"/>
+              <circle class="sun-face" cx="0" cy="0" r="23"/>
+              <circle class="sun-gloss" cx="-8" cy="-8.5" r="6.4"/>
+            </svg>
+          </button>
+          <!--
             环上的地图层（§5.9.3）。**它不是第五个装饰圈** —— §5.0.1 那条「只留
             一个大环」管的是同心圆，这里画的是环**内部**的关系：回头的弦、能去的
-            虚线、节点的轮次刻度。
+            虚线。轮次不在这层，是节点圆自己的颜色深浅。
 
             viewBox 用 0–100 的方格，圆心 (50,50)、轨道半径 45.5 —— 那个 45.5 和
-            CSS 的 `inset: 4.5%`、panel.js 的 0.455 是同一个数。改一个就要改三个，
+            CSS 的 `inset: 10%`、panel.js 的 0.40 是同一个数。改一个就要改三个，
             否则弦会连到轨道外面去。
           -->
           <svg class="orbit-map" id="orbit-map" viewBox="0 0 100 100" aria-hidden="true"></svg>
-          <div class="center">
-            <small id="center-kicker">Stage Orbit</small>
-            <h3 id="center-title">—</h3>
-            <p id="center-line">十一个阶段，每个阶段一个 Codex 线程。</p>
-            <b id="center-count">0<em>Approved</em></b>
+          <!--
+            点太阳翻出来的状态卡。摆在环心下方一点，**不盖住太阳** —— 再点一次
+            太阳就收回去，一个开关管开也管关。
+          -->
+          <div class="sun-card" id="sun-card" hidden>
+            <small id="sun-kicker">Stage Orbit</small>
+            <h3 id="sun-title">—</h3>
+            <p id="sun-line"></p>
+            <b id="sun-count">0<em>Approved</em></b>
           </div>
           <div class="portal" id="portal"></div>
         </div>

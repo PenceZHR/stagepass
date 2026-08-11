@@ -196,9 +196,26 @@ export class RubricStore {
   upgradeDefaults(projectId: string): {
     upgraded: string[];
     skipped: { scope: string; why: string }[];
+    /**
+     * 这次升级**撤下**了哪些标准 —— 调用方要拿它去退休那些标准派生的、还开着的
+     * 阻断项（`domain/rubric-gaps.ts` 的 `retireStandards`）。
+     *
+     * ## 为什么非交出来不可（2026-08-10 真机顶出来的）
+     *
+     * 人手动改标准那条路（`app/edit-rubric.ts`）一直在退休遗留项；**而后台升级
+     * 这条路把 `save` 算出的 `retired` 丢掉了**。同一件事两条路，只有一条做对。
+     *
+     * 代价是真机上量到的：CHG-001 的 Build 上挂着两条谁也关不掉的孤儿 ——
+     * 「TestPlan 标为必须通过的用例全部通过」（环 v3 把它挪去 QA 了）和
+     * 「改动范围和 Plan 一致」（改名成 BuildPlan 之后的同义重复）。前者更糟：
+     * 任务书明令 Build 不许碰测试，**红方结构上不可能满足它**，而新一轮的反方
+     * 也不会再判它 —— 没有任何轮次关得掉，它就永远挡着闸门。
+     */
+    retired: { phase: Phase; role: RubricRole; keys: string[] }[];
   } {
     const upgraded: string[] = [];
     const skipped: { scope: string; why: string }[] = [];
+    const retired: { phase: Phase; role: RubricRole; keys: string[] }[] = [];
     for (const phase of PHASES) {
       for (const role of RUBRIC_ROLES) {
         const scope = { projectId, changeId: null, phase, role };
@@ -224,11 +241,16 @@ export class RubricStore {
          * 而 `save` 对那件事要一句话（`ReasonRequiredError`）。理由写清是**谁**
          * 换的：人回头看版本历史时，「出厂标准升级」和「我那天改的」得分得开。
          */
-        this.save(scope, drafts, FACTORY_UPGRADE_REASON);
+        const saved = this.save(scope, drafts, FACTORY_UPGRADE_REASON);
         upgraded.push(name);
+        if (saved.retired.length > 0) {
+          retired.push({
+            phase, role, keys: saved.retired.map((entry) => entry.key),
+          });
+        }
       }
     }
-    return { upgraded, skipped };
+    return { upgraded, skipped, retired };
   }
 
   /** 这个 scope 当前生效的版本，没有就 null。 */

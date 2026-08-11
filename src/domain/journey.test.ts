@@ -186,7 +186,7 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
      * 不是选单。
      */
     assert.deepEqual(edges.map((edge) => [edge.action, edge.to, edge.kind]), [
-      ["approve", "Plan", "forward"],
+      ["approve", "BuildPlan", "forward"],
       ["reject", "Arch", "self"],
       ["sendBack", "Spec", "backward"],
     ]);
@@ -199,10 +199,10 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
     assert.ok(optionsOf(settled("Spec")).some((edge) => edge.kind === "self"));
   });
 
-  it("Review 的驳回指向 Fix，不是指向自己 —— 同一个动作两句话", () => {
-    const back = optionsOf(settled("Review")).find((edge) => edge.action === "reject")!;
-    assert.equal(back.to, "Fix");
-    assert.equal(back.kind, "backward");
+  it("QA 的驳回也是自环 —— 环 v3 拆掉了「送修 → Fix」，reject 处处一句话", () => {
+    const back = optionsOf(settled("QA")).find((edge) => edge.action === "reject")!;
+    assert.equal(back.to, "QA");
+    assert.equal(back.kind, "self");
   });
 
   /**
@@ -237,7 +237,7 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
     assert.deepEqual(
       optionsFrom(blocked, computeGate(blocked, EMPTY_EVIDENCE)).map((e) => e.action),
       ["retry"]);
-    const done: ChangeState = { phase: "Done", status: "closed", returnStack: [] };
+    const done: ChangeState = { phase: "QA", status: "closed", returnStack: [] };
     assert.deepEqual(optionsFrom(done, computeGate(done, EMPTY_EVIDENCE)), []);
   });
 
@@ -257,5 +257,40 @@ describe("L1 · 从这儿能去哪：环上的活箭头（§5.9.3）", () => {
       }
     }
     assert.ok(worst <= 4, `活箭头涨到了 ${worst} 条`);
+  });
+});
+
+describe("L1 · 老账里退休阶段的跳转，方向不说谎（环 v3）", () => {
+  /**
+   * CHG-001 的真账：它带着 Plan / TechSpec 的历史走进了环 v3。直尺若只认主线图，
+   * `Plan→TestPlan` 这种**向前**的批准会被「认不出，保守判回头」画成回头弦。
+   * PHASES 是带着退休位的全序 —— 拿它量，历史的方向照旧是对的。
+   */
+  const at = "2026-08-09T00:00:00.000Z";
+  const entry = (
+    seq: number, action: string, from: [string, string], to: [string, string],
+  ) => ({
+    seq, action: action as never,
+    from: { phase: from[0] as never, status: from[1] as never },
+    to: { phase: to[0] as never, status: to[1] as never },
+    reason: null, at,
+  });
+
+  it("Plan→TestPlan 的批准是向前，TestPlan→Plan 的打回是回头", () => {
+    const jumps = jumpsFrom([
+      entry(1, "approve", ["Plan", "settled"], ["TestPlan", "pending"]),
+      entry(2, "sendBack", ["TestPlan", "settled"], ["Plan", "pending"]),
+    ]);
+    assert.equal(jumps[0]?.kind, "forward", "退休阶段的向前批准被画成了回头");
+    assert.equal(jumps[1]?.kind, "backward");
+  });
+
+  it("跨新旧名字也量得出来：TechSpec→BuildPlan 向前、Review→QA 向前", () => {
+    const jumps = jumpsFrom([
+      entry(1, "approve", ["TechSpec", "settled"], ["BuildPlan", "pending"]),
+      entry(2, "approve", ["Review", "settled"], ["QA", "pending"]),
+    ]);
+    assert.equal(jumps[0]?.kind, "forward");
+    assert.equal(jumps[1]?.kind, "forward");
   });
 });

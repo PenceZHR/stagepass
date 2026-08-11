@@ -5,7 +5,7 @@ import { humanGapId, type Gap } from "./gap";
 import {
   BLUE, judgePrompt, readBlueRubricAnswers, readConclusion, readRound,
   readVerdicts, RED, renderOpenGaps, renderSettled, summariseConvergence,
-  summariseRoundNotes, templateGaps,
+  summariseRoundNotes, summariseStall, templateGaps,
   UnreadableVerdictError,
 } from "./round";
 import { PHASES } from "./phase";
@@ -231,34 +231,18 @@ describe("L4 · 裁判必须先跑完正方再派反方", () => {
   });
 });
 
-describe("L4 · Review 里红方找到的缺陷也算数", () => {
+describe("L4 · QA 里红方找到的缺陷也算数", () => {
   /**
    * 「红方报的问题一概不算」这条规矩有它的理由 —— **产出者报告自己作品的问题不是
    * 对抗性发现**，让红方决定自己的东西有多糟，正是蓝方存在的原因。
    *
-   * **到 Review 这条理由不成立了**：红方审的不是自己的作品，是 Build 的产出。而
-   * Review 的活儿**就是**找缺陷，照旧丢掉等于这个阶段什么都不产出（用户 2026-07-30
-   * 拍板：Review 破例）。
-   *
-   * 破例只给 Review。QA 看着像同类，但它没被谈过 —— **保守是因为没谈，不是因为
-   * 想清楚了**，所以下面有一条守卫钉着它。
+   * **到 QA 这条理由不成立**：红方读的是 Build 的 diff、跑的是 Test 轨写的测试，
+   * 没有一样是自己写的。而 QA 的活儿**就是**找缺陷，照旧丢掉等于这个阶段什么都
+   * 不产出（用户 2026-07-30 对旧 Review 拍的板；环 v3 里 QA 收编了它，破例跟着
+   * 过来 —— 现在名单里只剩 QA 一个）。
    */
   const red = (blockers: object[]) =>
-    "```json\n" + JSON.stringify({ artifactIds: ["review.md"], blockers }) + "\n```";
-
-  it("**Review：红方报的缺陷进 gaps**", () => {
-    const reading = readRound({
-      phase: "Review", round: 1,
-      red: red([{ id: "RV-1", severity: "P0", title: "空指针没处理", where: null, why: null }]),
-      blue: answer([], [{ id: "RVB-1", severity: "P1", title: "你漏了错误路径", where: null, why: null }]),
-      judge: '```json\n{"verdicts":{}}\n```',
-    }, {});
-    assert.deepEqual(
-      reading.outcome.found.map((each) => each.id).sort(),
-      ["RV-1", "RVB-1"],
-      "红方的发现被丢了 —— 那正是 Review 唯一的产出",
-    );
-  });
+    "```json\n" + JSON.stringify({ artifactIds: ["qa.md"], blockers }) + "\n```";
 
   it("设计阶段照旧：红方报自己的问题一概不算", () => {
     const reading = readRound({
@@ -342,13 +326,13 @@ describe("L4 · Review 里红方找到的缺陷也算数", () => {
       "蓝方的发现被陪葬了");
   });
 
-  it("**Review：红方的发现算数，形状错了就该照旧作废**", () => {
-    // 这里红方审的是别人的代码，它的 blockers 就是这个阶段的产出 —— 读不出来
-    // 等于这一轮什么都没产出，作废是对的，不是误伤。
+  it("**QA：红方的发现算数，形状错了就该照旧作废**", () => {
+    // 这里红方读的跑的都是别人的东西，它的 blockers 就是这个阶段的产出 ——
+    // 读不出来等于这一轮什么都没产出，作废是对的，不是误伤。
     assert.throws(
       () => readRound({
-        phase: "Review", round: 1,
-        red: '```json\n{"artifactIds":["review.md"],"blockers":["RV-1: 就一句话"]}\n```',
+        phase: "QA", round: 1,
+        red: '```json\n{"artifactIds":["qa.md"],"blockers":["QA-1: 就一句话"]}\n```',
         blue: answer([], []),
         judge: '```json\n{"verdicts":{}}\n```',
       }, {}),
@@ -419,18 +403,25 @@ describe("L4 · 蓝方的规矩按阶段定", () => {
   });
 
   /**
-   * 2026-08-06 分工再拍（PLAN §3.2）：**蓝方跑 TestPlan 交的测试** —— 红方看
-   * 不到测试，反馈「哪条失败、输出是什么」由蓝方跑出来。所以这条测试从
-   * 「拦住蓝方自己跑」反转成「必须叫它跑」；不许修代码、不许改测试照旧拦着。
+   * 环 v3（2026-08-09）反转了 2026-08-06 那拍：两轨互盲，**Build 的蓝方不跑
+   * 测试**（跑挪到 QA 的对撞）。它回到纯静态：读改动和直接调用方、对着标准判；
+   * 不许执行、不许修照旧拦着。
    */
-  it("**Build：能读改动涉及的代码，而且要跑 TestPlan 交的测试**", () => {
+  it("**Build：能读改动涉及的代码，但不执行任何东西**", () => {
     const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
     assert.doesNotMatch(prompt, /不要去读仓库/,
       "Build 还在叫蓝方闭着眼睛审代码");
     assert.match(prompt, /改动/, "没告诉蓝方读什么");
     assert.match(prompt, /调用方/, "范围没说到直接调用方");
-    assert.match(prompt, /要跑 TestPlan 交的测试/, "没叫蓝方去跑测试 —— 红方看不到测试，失败反馈只能从这儿来");
-    assert.match(prompt, /不要动手修代码，也不要改任何测试/, "没拦住蓝方顺手修东西");
+    assert.doesNotMatch(prompt, /要跑 TestPlan 交的测试/,
+      "还在叫蓝方跑测试 —— 互盲之下 Build 的题面里根本没有测试，这句指令指向空气");
+    assert.match(prompt, /不要自己执行任何东西，也不要动手修代码/, "没拦住蓝方顺手跑或修");
+  });
+
+  it("**Test：读测试代码和方案，但不许读实现**（互盲的另一半）", () => {
+    const prompt = judgePrompt({ phase: "Test", round: 1, task: "t", openGaps: [] });
+    assert.match(prompt, /不要去读被测的实现代码/, "Test 的蓝方还能偷看实现");
+    assert.match(prompt, /不要自己执行任何东西/, "没拦住蓝方拿实现来跑");
   });
 
   it("**Review：和红方一样能读被审的那个 commit**", () => {
@@ -1620,5 +1611,24 @@ describe("L4 · 人的批注和上游文档打架时，谁说了算要写死（�
     const found: Gap = { ...humanGap("x"), id: "SPEC-1" };
     const text = renderOpenGaps([found]);
     assert.doesNotMatch(text, /以人的话为准/);
+  });
+});
+
+describe("L4 · 停机条件：账本不动 = 独立性耗尽（环 v3）", () => {
+  it("连停两轮才开口 —— 一轮没动可能只是这轮运气", () => {
+    const stalledOne = summariseStall({ round: 3, movedInRound: (r) => r !== 3 });
+    assert.equal(stalledOne, "");
+    const stalledTwo = summariseStall({ round: 4, movedInRound: (r) => r <= 2 });
+    assert.match(stalledTwo, /连续 2 轮没动/);
+    assert.match(stalledTwo, /换一种抽法/, "只报事实不给出口，人还是只会按「再来一轮」");
+  });
+
+  it("还在收敛就闭嘴 —— 轮数多不是停摆（和按轮数说话的那条分工）", () => {
+    assert.equal(summariseStall({ round: 8, movedInRound: () => true }), "");
+  });
+
+  it("从头就没动过的也数得对", () => {
+    assert.match(summariseStall({ round: 3, movedInRound: () => false }),
+      /连续 3 轮没动/);
   });
 });

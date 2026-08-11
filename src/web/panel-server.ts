@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
 import {
-  PHASES, isPhase, producesCommit, upstreamOf, type Phase,
+  PHASES, commitsWholeTree, isPhase, requiresHumanEdit, upstreamOf, type Phase,
 } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport, DEFAULT_SESSIONS, rollouts } from "../codex/tui-transport";
@@ -22,6 +22,7 @@ import {
 } from "../codex/archive";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { createTrustOps, type TrustOps } from "../codex/trust";
+import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import { BindingStore } from "../store/binding-store";
@@ -159,11 +160,18 @@ const cannotAskNow = (
 
 const pluginConfigFor = (
   database: { name: string }, changeId: string,
+  /**
+   * 这个会话是为哪个阶段起的（批 4 · P0 第 1 条）。跑轮的裁判会话必须给 ——
+   * worklist 按 (Change, 阶段) 取，并行的两条轨才各答各的。旁路/问人会话不给
+   * （它们不答 worklist），插件退回按 Change 取。
+   */
+  phase?: Phase,
 ): string[] => [
   `mcp_servers.stagepass.command="npx"`,
   `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
   `mcp_servers.stagepass.env={STAGEPASS_DB="${resolve(database.name)}",`
-  + `STAGEPASS_CHANGE="${changeId}"}`,
+  + `STAGEPASS_CHANGE="${changeId}"`
+  + (phase === undefined ? "}" : `,STAGEPASS_PHASE="${phase}"}`),
   /*
    * **许可门的根治**（BACKLOG §2.1，2026-08-05 挖出来的）。
    *
@@ -833,10 +841,21 @@ async function runRound(input: {
    * **第一版我写成了「只有 pending」，那是错的** —— 那会把 retry 之后那一步堵死：
    * `retry` 把 Change 推到 `running`，而那时正需要派一轮。名单要跟着 `queueTurn` 走。
    */
+  /*
+   * **blocked 的座位从这个按钮出去**（批 4 · 审计 P0 第 3 条）。
+   *
+   * 主线的 blocked 走裁决（retry 是人的决定，经「请 Codex 问我」）；座位没有
+   * 裁决面 —— 它的出口只有被收编。撤回前 `ParallelStore.retry` 全树没有调用者，
+   * 座位一 blocked 就永远趴着。人按「跑这个阶段」就是那个决定：先 retry 推回
+   * running，再照常派 —— 阻断归人管，这一下正是人在管。
+   */
+  if (seat !== null && seat.status === "blocked") {
+    new ParallelStore(database).apply(changeId, phase, "retry");
+  }
   // 并行座位看座位自己的状态，主线看主线的 —— 同一份名单，两个座。
   const status = seat === null
     ? new ChangeStore(database).read(changeId).state.status
-    : seat.status;
+    : seat.status === "blocked" ? "running" : seat.status;
   if (status !== "pending" && status !== "running") {
     return { ran: false, phase, reason: `phase_cannot_queue:${status}` };
   }
@@ -895,7 +914,8 @@ async function runRound(input: {
          * 判定从「手抄标识符」改成「调工具只交内容」，第一步就是它得有这个工具。
          * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
          */
-        config: pluginConfigFor(database, changeId),
+        // 带上阶段：这是跑轮的裁判会话，worklist 按 (Change, 阶段) 取（批 4）。
+        config: pluginConfigFor(database, changeId, phase),
         launch: ({ argv }) => { sessions.launchInto(changeId, phase, argv); },
         /*
          * **提示词进了 composer 却没被提交时，补那一下回车。**
@@ -941,6 +961,9 @@ async function runRound(input: {
       // 并行座位的轮次从活儿数（批 3）：座位的 start 不进账本。
       parallelRound: (each, seatPhase) =>
         new JobStore(database).countFor(each, seatPhase),
+      // 案 B 的挡门取数口（批 4）：Build 整树提交前看对轨（Test）在不在跑。
+      seatStatus: (each, seatPhase) =>
+        new ParallelStore(database).find(each, seatPhase)?.status ?? null,
       // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
       // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。
       readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
@@ -1001,8 +1024,10 @@ async function runRound(input: {
  * - **Codex 没信任过这个目录就别派**（2026-07-30 实测：Codex 停在信任提问上，
  *   这一侧等满 30 分钟只拿到「没有新线程」）。只有明确的 `false` 才拦；不替人
  *   答那个提问 —— 信任是人对目录的授权，不是 StagePass 的决定。
- * - **产出 commit 的阶段要干净树**（`producesCommit` —— 两件事同一个名单）：
- *   StagePass 提交整树，分不出哪行是红方写的、哪行是人写了一半的。文件要列出来。
+ * - **整树提交的阶段要干净树**（`commitsWholeTree`，批 4 起只剩 Build ——
+ *   「整树名单 = 干净树名单」那条等式不变，名单缩成一个）：StagePass 提交整树，
+ *   分不出哪行是红方写的、哪行是人写了一半的。文件要列出来。Test 窄提交
+ *   （逐个点名，卷不走别人的），所以它不查 —— 这正是两轨能并行的机械前提。
  * - **上游产物还在不在**（C1）：判据和 `/api/artifact` 同一个（`locateArtifact`），
  *   名单和任务书同一份（`upstreamOf`）。缺的逐条列出来。
  */
@@ -1027,7 +1052,7 @@ function dispatchPrecheck(
   if (sessions.trust.isTrusted(root) === false) {
     return { ran: false, phase, reason: "workspace_not_trusted", workspace: root };
   }
-  if (producesCommit(phase)) {
+  if (commitsWholeTree(phase)) {
     const dirty = sessions.repo.dirtyPaths(root);
     if (dirty.length > 0) {
       return { ran: false, phase, reason: "workspace_dirty", dirty };
@@ -1626,47 +1651,66 @@ function serveClose(
 }
 
 /**
- * 开一个并行座位（POST /api/parallel，批 3）—— **这个入口 2026-08-07 撤回了。**
+ * 并行座位一览（GET /api/parallel，批 4 重开）—— **只读**。
  *
- * ## 为什么撤，而不是补
+ * ## 手动开座的入口没有回来
  *
- * 真机验收前的一轮审计（`:memory:` 库上逐条实跑）在它身上找出十二个问题，
- * 其中六个落在它被设计出来的那个默认场景（TestPlan ∥ Build）上：
+ * 批 3 的 POST 入口 2026-08-07 撤回（审计 12 个问题、6 个 P0）。批 4 把那六条
+ * 逐个还了，但**开座从此是结构的事，不是按钮的事**：钻石的分叉在
+ * `ChangeStore.apply` 里 —— 批准落到 BuildPlan / Build 时自动给孪生阶段
+ * （TestPlan / Test）开座（`parallelTwinOf`）。人不需要、也不再能手动开一个
+ * 图上没有的并行 —— 那正是孤儿座位（P0 第 2/6 条）当初进来的门。
  *
- * 1. **两条并行的轮共用一条 worklist 队列** —— `WorklistStore.open/next` 按
- *    Change 关、按 Change 取（插件手上只有 `STAGEPASS_CHANGE`，拿不到阶段）。
- *    实测：TestPlan 的裁判把理由答进了 Build 的 gap，TestPlan 那两条静默作废。
- * 2. **跳过式批准甩出孤儿座位** —— 收编只在「到达那个阶段」时发生，而人可以
- *    批准着跳过它。实测在一个 `Done/closed` 的 Change 上照样起 Codex、排 job、
- *    写 evidence，且清不掉。
- * 3. **座位 blocked 之后没有任何出路** —— `ParallelStore.retry` 全树没有调用者，
- *    `decideGate` 只认主线阶段，界面上一个按钮都没有。
- * 4. **`sendBack` 会当场收编一个 settled 座位** —— 打回的意见一轮都没跑就变成
- *    「可以批准了」，正是 §8.9 要挡的形状。
- * 5. **两个整树 commit 的阶段共用一个工作区** —— TestPlan 和 Build 都在
- *    `PRODUCES_COMMIT` 里，先收工的那条把另一条的半成品 commit 进自己的 sha。
- * 6. **`Done` 也能开座位**，而 `Done` 在界面上没有格子 —— 收编成 `Done/blocked`
- *    之后这个 Change 永远关不掉。
- *
- * 前五条各自都要动地基（worklist 换键、座位要有关闭和 retry、收编要覆盖跳过、
- * 并行的 commit 阶段要有工作区隔离），第五条更是**设计层没答的问题**，不是补丁
- * 能收的。而这些洞全都能烧真的 Codex、写真的库 —— 留一个「大概能用」的入口在
- * 那儿，比没有这个功能糟得多。
- *
- * ## 留下的是什么
- *
- * `change_states` 那张表、`ParallelStore`、收编那一段照旧在：**已经存在的座位
- * 仍然收编得掉**（真库里一个都没有，但语义不该随入口一起消失），而新的开不出来。
- * 重新开张要跟着上面那六条一起来，见 docs/PLAN-2026-08-06.md 批 3。
+ * 这条路由留着给界面读「现在有哪些座位、各自什么状态」——
+ * 看状态不该有副作用（用户的界面原则），所以它一个字都不写。
  */
 function serveParallel(
   database: Database.Database,
   url: URL,
   response: ServerResponse,
 ): void {
-  void database;
-  void url;
-  json(response, { opened: false, reason: "parallel_seats_withdrawn" });
+  const changeId = url.searchParams.get("change") ?? "";
+  json(response, { seats: new ParallelStore(database).list(changeId) });
+}
+
+/**
+ * 编辑过门的**关门检测**（批 6，机制见 `domain/edit-gate.ts`）。
+ *
+ * 判据是机械的：这个阶段的产出文件（路径形态的那些）在工作树里有未提交的改动。
+ * StagePass 自己轮末就把产物目录窄提交掉了（`producedBy`），所以 settle 之后
+ * 树上这份文件的任何脏改动都只能出自人的手。
+ *
+ * 挂在 `/api/ask` 的进门处而不是读面板那条路上：检测到编辑要**写库**（关那条
+ * gap），而「看状态不该有副作用」—— 按下「请 Codex 问我」是一个动作，动作里
+ * 顺手把已经成立的事实落库，不违反那条原则。
+ *
+ * 人自己把编辑 commit 掉了的情形这里看不见 —— 那时门还开着，他在裁决表上驳回
+ * 或 waive 这一条（说明原因）就是出口，gap 的标题写着这句话。
+ */
+function settleEditGateIfEdited(
+  database: Database.Database,
+  sessions: PanelSessions,
+  changeId: string,
+): void {
+  let phase: Phase;
+  try {
+    phase = new ChangeStore(database).read(changeId).state.phase;
+  } catch {
+    return;   // 没有这个 Change —— decideGate 会用 404 说这件事
+  }
+  if (!requiresHumanEdit(phase)) return;
+  const gaps = new GapStore(database);
+  if (!gaps.all(changeId, phase).some(
+    (gap) => isEditGateGap(gap) && gap.status === "open")) return;
+  const root = sessions.workspaceFor(changeId);
+  if (root === null) return;
+  const artifacts = new EvidenceStore(database).read(changeId, phase).artifactIds
+    .filter((id) => !looksLikeSha(id));
+  const dirty = new Set(sessions.repo.dirtyPaths(root));
+  const edited = artifacts.filter((path) => dirty.has(path));
+  if (edited.length === 0) return;
+  gaps.replace(changeId, phase, editGateClosed(
+    gaps.all(changeId, phase), edited.join(", ")));
 }
 
 /**
@@ -1933,6 +1977,7 @@ export async function handle(
    */
   if (url.pathname === "/api/ask" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
+    settleEditGateIfEdited(database, sessions, changeId);
     const { outcome, closeSession } = await decideGate({
       database, sessions, changeId,
       cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
@@ -2098,9 +2143,8 @@ export async function handle(
     return;
   }
 
-  if (url.pathname === "/api/parallel" && request.method === "POST") {
-    serveParallel(database, url, response);
-    return;
+  if (url.pathname === "/api/parallel" && request.method === "GET") {
+    return serveParallel(database, url, response);
   }
 
   /*

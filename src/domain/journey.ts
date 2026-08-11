@@ -1,7 +1,7 @@
 import { recommendedApproval, type ChangeAction, type ChangeState } from "./change-state";
 import type { Gate } from "./gate";
 import {
-  DEFAULT_GRAPH, sendsToFix, upstreamOf,
+  DEFAULT_GRAPH, PHASES, upstreamOf,
   type Phase, type PhaseGraph,
 } from "./phase";
 import { roundFromLedger } from "./round";
@@ -63,12 +63,22 @@ export interface Jump {
  */
 const HUMAN_MOVES: ReadonlySet<string> = new Set(["approve", "reject", "sendBack"]);
 
+/*
+ * **直尺是 PHASES，不是主线图**：老账里躺着退休阶段的跳转（CHG-001 就有
+ * `Plan→TestPlan` 的批准），主线图认不出它们，一律「保守判回头」会把一次向前
+ * 的批准画成回头弦 —— 历史箭头说谎。PHASES 是带着全部退休位的全序（TechSpec/
+ * Plan 就躺在 Arch 和 BuildPlan 之间），拿它量，退休的名字也有正确的方向；
+ * 活着的阶段相对顺序两把尺子一致，行为一个字不变。
+ */
 const ORDER_INDEX: ReadonlyMap<string, number> =
-  new Map(DEFAULT_GRAPH.order.map((phase, index) => [phase, index]));
+  new Map(PHASES.map((phase, index) => [phase, index]));
 
 /**
  * 方向：全序的下标说了算（子序列图保持相对顺序，所以不用知道图）。
- * Fix 不在全序上，按语义判：**进 Fix 是回头（送修），出 Fix 是向前（修完回去）**。
+ *
+ * Fix 那两行是**给历史账本的**：环 v3 把 Fix 退休了（送修 = 重开阶段的下一轮），
+ * 但老账里的送修跳转永远在 —— 它们的方向照旧按语义判：进 Fix 是回头（送修），
+ * 出 Fix 是向前（修完回去）。新账写不出 Fix，这两行对新账是死路。
  */
 function kindOf(fromPhase: string, toPhase: string): JumpKind {
   if (fromPhase === toPhase) return "self";
@@ -96,9 +106,9 @@ function kindOf(fromPhase: string, toPhase: string): JumpKind {
  * ## 上限 4 条，护栏钉着
  *
  * 任一时刻实际可去的只有：批准 → 下一站、再来一轮 → 自己、打回 → 某个上游、
- * （Review/QA）→ Fix。§5.9.3③ 要求写进护栏，否则以后加功能会悄悄涨到 8 条。
- * 打回上游那一档**只画最近的一个**（最可能的那个），不是把整条上游铺开 ——
- * 铺开就当场破 4，而人真要打回更远的，裁决表里那一格给的是全名单。
+ * 重跑 → 自己（blocked 的 retry）。§5.9.3③ 要求写进护栏，否则以后加功能会
+ * 悄悄涨到 8 条。打回上游那一档**只画最近的一个**（最可能的那个），不是把整条
+ * 上游铺开 —— 铺开就当场破 4，而人真要打回更远的，裁决表里那一格给的是全名单。
  */
 export interface Edge {
   readonly action: ChangeAction;
@@ -148,18 +158,10 @@ export function optionsFrom(
     }
   }
   if (gate.permitted.includes("reject")) {
-    const to: Phase = sendsToFix(state.phase) ? "Fix" : state.phase;
+    // 每个阶段的 reject 都是自环：就在这儿再来一轮（环 v3 拆掉了「送修 → Fix」）。
     edges.push({
-      action: "reject", to, kind: kindOf(state.phase, to),
-      why: to === "Fix"
-        ? "打回去修 → Fix（代码有问题，修完回到这儿）"
-        : "再来一轮 → 红蓝在这个阶段重新跑",
-    });
-  }
-  if (gate.permitted.includes("rerun")) {
-    edges.push({
-      action: "rerun", to: state.phase, kind: "self",
-      why: "再审一次 → 这个阶段重新跑（代码不动，不送 Fix）",
+      action: "reject", to: state.phase, kind: "self",
+      why: "再来一轮 → 红蓝在这个阶段重新跑",
     });
   }
   if (gate.permitted.includes("retry")) {
@@ -196,11 +198,11 @@ export function optionsFrom(
  * （approve 弹过栈）的话，再把那句话塞进提示词，就是拿一件已经了结的事去改变
  * 这一轮的性质。
  *
- * ## 送修（reject → Fix）不算
+ * ## 只认 sendBack 压的栈
  *
- * 它也压栈、也是回头边，但它是另一句话：「代码有问题，去修」而不是「你这份
- * 上游文档错了」。而且 `reject` 那条路上根本没有理由可带（裁决表不收），
- * 硬算进来的结果是给 Fix 的红方念一句「Review 没有留下理由」—— 那是噪音。
+ * 环 v3 里压栈的只剩 sendBack 一种（送修 → Fix 那条路拆了），但历史账本里
+ * 还躺着送修压的栈帧 —— 下面按 `action === "sendBack"` 过滤，正好把它们排除：
+ * 那是另一句话（「代码有问题，去修」），不是「你这份上游产物错了」。
  */
 export function pendingSendBack(
   entries: readonly JourneyEntry[],

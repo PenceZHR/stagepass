@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { CHANGE_ACTIONS, PHASE_STATUSES, type ChangeState } from "./change-state";
-import { PHASES } from "./phase";
+import { isRetired, PHASES, TERMINAL_PHASE } from "./phase";
 import {
   assertFence,
   assertPermitted,
@@ -111,13 +111,12 @@ describe("L1 · the gate decides from facts, never from a summary", () => {
 
   it("gives every action either a permit or a stated reason", () => {
     for (const phase of PHASES) {
+      // 退休的阶段派不了轮，也就没有闸门可算（`assertStateValid` 只放行它的
+      // 历史行，`advancesTo` 对它抛）—— 穷举只覆盖主线上的。
+      if (isRetired(phase)) continue;
       for (const status of PHASE_STATUSES) {
-        if (status === "closed" && phase !== "Done") continue;
-        const state: ChangeState = {
-          phase,
-          status,
-          returnStack: phase === "Fix" ? ["Review"] : [],
-        };
+        if (status === "closed" && phase !== TERMINAL_PHASE) continue;
+        const state: ChangeState = { phase, status, returnStack: [] };
         const gate = computeGate(state, evidence({ blockers: [p1] }));
         for (const action of CHANGE_ACTIONS) {
           const decided = gate.permitted.includes(action)
@@ -136,7 +135,7 @@ describe("L1 · the fence catches ground that moved", () => {
       ["another artifact", snapshotOf(SETTLED, evidence({ artifactIds: ["spec.md", "b.md"] }))],
       ["a new blocker", snapshotOf(SETTLED, evidence({ blockers: [p1] }))],
       ["a waiver", snapshotOf(SETTLED, evidence({ waivedBlockerIds: ["B-2"] }))],
-      ["a different phase", snapshotOf({ ...SETTLED, phase: "Plan" }, evidence())],
+      ["a different phase", snapshotOf({ ...SETTLED, phase: "BuildPlan" }, evidence())],
       ["a different status", snapshotOf({ ...SETTLED, status: "running" }, evidence())],
     ];
     for (const [what, snapshot] of variants) {

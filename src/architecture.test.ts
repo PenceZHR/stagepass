@@ -72,6 +72,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/gate.ts": 1,
   "domain/lease.ts": 1,
   "domain/gap.ts": 1,
+  // 编辑过门（批 6）：纯规则，只吃 gap 的类型 —— 和 gap 同层。
+  "domain/edit-gate.ts": 1,
   "store/evidence-store.ts": 1,
   "store/gap-store.ts": 1,
   "store/command-store.ts": 1,

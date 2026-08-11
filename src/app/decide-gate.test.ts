@@ -157,7 +157,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       // 两条都驳回（`RESPONSE_DISMISS` 要理由，理由在第二趟那几格）。
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "这条说的是别的阶段的事", R02x: "范围是我改的，不是它写错",
-      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+      [DECISION_FIELD]: decisionLabel("approve"),
     });
 
     const result = await decideGate({
@@ -191,7 +191,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
 
     const { sessions, answerOpen } = answerer(database, {
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
-      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+      [DECISION_FIELD]: decisionLabel("approve"),
     });
     const result = await decideGate({
       database, sessions, changeId: CHANGE, cannotAskNow: () => null,
@@ -222,7 +222,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "不成立", R02x: "不成立",
       U: "TestPlan",
-      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+      [DECISION_FIELD]: decisionLabel("approve"),
     });
     const result = await decideGate({
       database, sessions, changeId: CHANGE, cannotAskNow: () => null,
@@ -243,7 +243,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "不成立", R02x: "不成立",
       U: APPROVE_AS_RECOMMENDED,
-      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+      [DECISION_FIELD]: decisionLabel("approve"),
     });
     await decideGate({
       database, sessions, changeId: CHANGE, cannotAskNow: () => null,
@@ -258,7 +258,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
    */
   it("选「再来一轮」就续跑；选批准不续", async () => {
     for (const [action, expected] of [
-      ["rerun", "跑了一轮"],
+      ["reject", "跑了一轮"],
       ["approve", null],
     ] as const) {
       const database = freshDatabase();
@@ -266,7 +266,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       const { sessions, answerOpen } = answerer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
         R01x: "不成立", R02x: "不成立",
-        [DECISION_FIELD]: decisionLabel(action, "PRD"),
+        [DECISION_FIELD]: decisionLabel(action),
       });
       const result = await decideGate({
         database, sessions, changeId: CHANGE, cannotAskNow: () => null,
@@ -293,14 +293,14 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
   it("裁决送走了 Change 就关会话；留在本阶段的裁决不关", async () => {
     for (const [action, closed] of [
       ["approve", true],  // PRD -> Spec：换了阶段，旧会话再没人要它了
-      ["rerun", false],   // 续跑同一阶段：rerun 自己管会话，这里关就是杀新轮
+      ["reject", false],  // 续跑同一阶段：续跑那条路自己管会话，这里关就是杀新轮
     ] as const) {
       const database = freshDatabase();
       settledWithGaps(database);
       const { sessions, answerOpen } = answerer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
         R01x: "不成立", R02x: "不成立",
-        [DECISION_FIELD]: decisionLabel(action, "PRD"),
+        [DECISION_FIELD]: decisionLabel(action),
       });
       const result = await decideGate({
         database, sessions, changeId: CHANGE, cannotAskNow: () => null,
@@ -326,7 +326,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     const { sessions, answerOpen } = answerer(database, {
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "不成立", R02x: "不成立",
-      [DECISION_FIELD]: decisionLabel("approve", "PRD"),
+      [DECISION_FIELD]: decisionLabel("approve"),
     });
     // 摆出那天的形状：账本记不下这次转移（老库的 CHECK 名单落后了）。
     database.exec(
@@ -358,7 +358,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
    * 不许调 —— 一个还没批准的阶段的线程被归档，下一次 resume 就会一起来就死。
    */
   it("只有批准会触发归档", async () => {
-    for (const [action, archived] of [["approve", 1], ["rerun", 0]] as const) {
+    for (const [action, archived] of [["approve", 1], ["reject", 0]] as const) {
       const database = freshDatabase();
       settledWithGaps(database);
       // 归档要有线程可归 —— 没绑定就一次都不该调。
@@ -368,7 +368,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       const { sessions, answerOpen } = answerer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
         R01x: "不成立", R02x: "不成立",
-        [DECISION_FIELD]: decisionLabel(action, "PRD"),
+        [DECISION_FIELD]: decisionLabel(action),
       });
       await decideGate({
         database, sessions, changeId: CHANGE, cannotAskNow: () => null,

@@ -117,18 +117,18 @@ describe("出厂标准 · 共用的 critic 不许和某个阶段的规矩打架"
    * 绝对化的话，都必须在**每一个**阶段都成立。
    *
    * 2026-07-30 抓到的一次：那条原来写「没有提出需要读仓库或跑代码才能验证的问题 ——
-   * 只基于摆在面前的产出」。而 Build 和 Review 的蓝方现在**明确被允许读代码** ——
+   * 只基于摆在面前的产出」。而 Build 和 QA 的蓝方**明确被允许读代码** ——
    * 裁判会拿这条把蓝方最有价值的那类发现判成违规，正好把新开的权限抵消掉。
    */
   it("**不许写死「只基于摆在面前的产出」** —— 有的阶段蓝方就是要去读代码", () => {
-    for (const entry of defaultCriteria("Review", "critic")) {
+    for (const entry of defaultCriteria("QA", "critic")) {
       assert.doesNotMatch(entry.text, /只基于摆在面前的产出|不.*读仓库/,
-        `这条和 Review 的蓝方规矩打架：${entry.text}`);
+        `这条和 QA 的蓝方规矩打架：${entry.text}`);
     }
   });
 
   it("这条护栏不是空转的 —— critic 那一份确实有内容", () => {
-    assert.ok(defaultCriteria("Review", "critic").length >= 3);
+    assert.ok(defaultCriteria("QA", "critic").length >= 3);
   });
 });
 
@@ -152,7 +152,8 @@ describe("出厂标准 · critic 那份不许要一个这阶段没有的能力",
   });
 
   it("交问题清单的阶段照旧要判那几条 —— 别把它们一起删了", () => {
-    for (const phase of ["Fix", "Review", "QA", "Merge"] as const) {
+    // 环 v3 之后主线上只剩 QA 一个还交自由问题清单（Review/Fix/Merge 都退了）。
+    for (const phase of ["QA"] as const) {
       const texts = defaultCriteria(phase, "critic").map((each) => each.text);
       assert.ok(texts.some((t) => t.includes("同一个 id")), `${phase} 少了 id 那条`);
       assert.ok(texts.some((t) => t.includes("每条问题都指向")), `${phase} 少了位置那条`);

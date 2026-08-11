@@ -148,7 +148,7 @@ describe("L0 · 项目的阶段图是数据（§4.5）", () => {
     try {
       database.prepare(
         "INSERT INTO projects (id, name, phase_order, created_at) VALUES ('PRJ-S', 'p', ?, ?)",
-      ).run(JSON.stringify(["PRD", "Build", "Review", "Done"]), AT);
+      ).run(JSON.stringify(["PRD", "Build", "QA"]), AT);
       const created = store.create("CHG-S", { projectId: "PRJ-S" });
       assert.equal(created.state.phase, "PRD");
 
@@ -217,12 +217,11 @@ describe("L0 · every transition lands in the ledger", () => {
         guard += 1;
       }
       const record = store.read("CHG-1");
-      assert.equal(record.state.phase, "Done");
+      assert.equal(record.state.phase, "QA");
       assert.equal(record.state.status, "closed");
-      // 12 phases x 3 actions, plus the creation entry（主线含 Arch）.
-      // 主线 11 站（TechSpec 已退休），每站 start/settle/approve 三步，加建档那一条。
-      assert.equal(store.ledger("CHG-1").length, 11 * 3 + 1);
-      assert.equal(record.seq, 11 * 3);
+      // 环 v3 主线 8 站，每站 start/settle/approve 三步，加建档那一条。
+      assert.equal(store.ledger("CHG-1").length, 8 * 3 + 1);
+      assert.equal(record.seq, 8 * 3);
     } finally {
       database.close();
     }
@@ -291,12 +290,12 @@ describe("L0 · the ledger cannot be bypassed", () => {
   it("refuses a stored state the machine could not have produced", () => {
     const { database } = open();
     try {
-      // Fix without a return stack, inserted straight past the store.
+      // 一个不存在的阶段名，绕过 store 直接写。
       assert.throws(
         () => database.prepare(
           `INSERT INTO changes
              (id, phase, status, return_stack, seq, created_at, updated_at)
-           VALUES ('CHG-BAD', 'Fix', 'pending', '[]', 0, ?, ?)`,
+           VALUES ('CHG-BAD', 'Implement', 'pending', '[]', 0, ?, ?)`,
         ).run(AT, AT),
         /CHECK constraint failed/,
       );
@@ -462,5 +461,116 @@ describe("L0 · 删掉一个 Change，连同它的全部痕迹", () => {
   it("删一个不存在的 —— 什么都不做，也不抛", () => {
     const { store: changes } = open();
     changes.delete("CHG-NOPE");
+  });
+});
+
+/**
+ * 批 4 · 钻石的分叉与座位卫生。
+ *
+ * 座位的开与关全是 `apply` 的结构性后果：批准落到分叉点开孪生座、到达收编、
+ * sendBack 到达不接编（P0 第 4 条）、跳过清孤儿（P0 第 2 条）、closed 清光
+ * （P0 第 6 条）。没有任何一条路靠人手动开座。
+ */
+describe("L0 · 批 4：分叉开座，收编与卫生", () => {
+  const seats = (database: import("better-sqlite3").Database): [string, string][] =>
+    (database.prepare("SELECT phase, status FROM change_states ORDER BY phase")
+      .all() as { phase: string; status: string }[])
+      .map((row) => [row.phase, row.status]);
+  const walkTo = (store: ChangeStore, target: string): void => {
+    for (let guard = 0; store.read("CHG-P").state.phase !== target; guard += 1) {
+      if (guard > 20) throw new Error(`walk never reached ${target}`);
+      store.apply("CHG-P", "start");
+      store.apply("CHG-P", "settle");
+      store.apply("CHG-P", "approve");
+    }
+  };
+
+  it("批准落到 BuildPlan 开 TestPlan 座；落到 Build 开 Test 座", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "BuildPlan");
+    assert.deepEqual(seats(database), [["TestPlan", "pending"]]);
+    walkTo(store, "Build");   // 途经 TestPlan：座被收编；到 Build 再开 Test 座
+    assert.deepEqual(seats(database), [["Test", "pending"]]);
+  });
+
+  it("**sendBack 到达不接编 settled 座**（P0 第 4 条）—— 打回就是要重跑", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    // 一个残留的 settled 座（正常流到不了这儿 —— 座位在主线途经时就被收编了；
+    // 这是历史孤儿的形状）。QA 打回 Test：到达不许把 settled 接过来当「跑过了」。
+    database.prepare(
+      "INSERT INTO change_states (change_id, phase, status, opened_at, updated_at)"
+      + " VALUES ('CHG-P', 'Test', 'settled', 't', 't')").run();
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "sendBack", { to: "Test", reason: "测试写错了" });
+    const atTest = store.read("CHG-P").state;
+    assert.equal(atTest.phase, "Test");
+    assert.equal(atTest.status, "pending", "打回落点必须是 pending —— 打回的意见一轮没跑不许变成「可以批准了」");
+    // 座位那一行没了（一个阶段只有一个座），攒下的 evidence/gaps 都还在各自的表里。
+    assert.deepEqual(seats(database), []);
+  });
+
+  it("approve 到达照旧接编 settled 座 —— 并行攒的进度不用重跑", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "Build");
+    database.prepare(
+      "UPDATE change_states SET status = 'settled' WHERE phase = 'Test'").run();
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "approve");   // 到达 Test
+    assert.equal(store.read("CHG-P").state.phase, "Test");
+    assert.equal(store.read("CHG-P").state.status, "settled",
+      "approve 到达的收编被顺手删掉了");
+  });
+
+  it("**跳过式批准清掉被甩下的座**（P0 第 2 条）", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "BuildPlan");
+    assert.deepEqual(seats(database), [["TestPlan", "pending"]]);
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    // 人跳过 TestPlan 直接去 Build（§8.10 的合法选择）。
+    store.apply("CHG-P", "approve", { to: "Build" });
+    // TestPlan 座在主线身后，永远等不到收编 —— 清掉；Build 到达开了 Test 座。
+    assert.deepEqual(seats(database), [["Test", "pending"]]);
+  });
+
+  it("**closed 一个座位都不留**（P0 第 6 条）", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    // 手动塞一个残留座模拟历史孤儿。
+    database.prepare(
+      "INSERT INTO change_states (change_id, phase, status, opened_at, updated_at)"
+      + " VALUES ('CHG-P', 'Test', 'blocked', 't', 't')").run();
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "approve");   // QA 批准 = closed
+    assert.equal(store.read("CHG-P").state.status, "closed");
+    assert.deepEqual(seats(database), []);
+  });
+
+  it("子序列图没有孪生阶段就不开座 —— 跳过阶段是合法的（§4.5）", () => {
+    const { database } = open();
+    seedProject(database);
+    database.prepare(
+      "UPDATE projects SET phase_order = ? WHERE id = 'PRJ-1'",
+    ).run(JSON.stringify(["PRD", "BuildPlan", "Build", "QA"]));
+    const changes = new ChangeStore(database, { now: () => new Date(AT) });
+    changes.create("CHG-P", { projectId: "PRJ-1" });
+    for (const phase of ["PRD", "BuildPlan"]) {
+      void phase;
+      changes.apply("CHG-P", "start");
+      changes.apply("CHG-P", "settle");
+      changes.apply("CHG-P", "approve");
+    }
+    // 图上没有 TestPlan / Test —— 两个分叉点都开不出座。
+    assert.equal(changes.read("CHG-P").state.phase, "Build");
+    assert.deepEqual(seats(database), []);
   });
 });
