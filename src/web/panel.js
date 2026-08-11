@@ -1276,41 +1276,36 @@ function drawMap(panel) {
    */
 
   /*
-   * ③ 现在能去哪，虚线 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
+   * ③ **正在跑的阶段：卫星绕着它转**（用户 2026-08-09：「在跑 Stage 的小卫星呢」）。
+   *
+   * 判据是 `entry.live` —— 那个阶段有活着的进程。卫星是「这儿正在干活」的状态灯，
+   * 所以它跟着进程走，不跟着闸门的选项走。
+   *
+   * **遍历而不是只看 current**：并行座位可以同时有两个阶段在跑（BuildPlan∥TestPlan、
+   * Build∥Test），两个都该有卫星。而且它必须排在下面那个「没有当前阶段就收工」的
+   * 早返回**之前** —— 在跑就该看得见，跟环上有没有当前阶段无关。
+   */
+  phases.forEach((entry, index) => {
+    if (!entry.live) return;
+    drawSatellites(map, nodeAt(index, total), index);
+  });
+
+  /*
+   * ④ 现在能去哪 —— **摆选项，不摆结论**（用户：一切都是由我来决定）。
    */
   const here = phases.findIndex((entry) => entry.current);
   if (here < 0) return;
   const from = nodeAt(here, total);
   panel.options?.forEach((edge, order) => {
-    if (edge.kind === "self") {
-      /*
-       * **自环 = 卫星环绕**（用户 2026-08-09）。跨阶段那趟旅行才配火箭：要点火、
-       * 要变轨；「再来一轮」是原地绕着自己转，那是卫星干的事。
-       *
-       * 两颗分处不同半径、周期还不整除，于是永远错开、永远不成队形 —— 排成一队
-       * 跟飞读起来是「有个东西在爬」，分层各转各的读起来才是这个节点在自转。
-       *
-       * **地方不够就只放一颗。** 贴着 viewBox 边的那几个节点外圈被收窄，从盘边到
-       * 轨道剩不下两条道 —— 硬塞两颗会叠在一起，那还不如一颗。
-       */
-      const outer = outerOrbit(from);
-      const inner = nodeGeometry().surface;
-      const room = outer - inner;
-      const lanes = room >= 3.5
-        ? [
-            { radius: inner + room * 0.3, seconds: 6.5 },
-            { radius: outer, seconds: 10 },
-          ]
-        : [{ radius: inner + room * 0.5, seconds: 8 }];
-      lanes.forEach((lane, laneIndex) => {
-        const id = `map-self-${laneIndex}`;
-        map.append(svgNode("path", {
-          id, class: "rail", d: circleAround(from, lane.radius),
-        }));
-        map.append(rocketRide(satelliteGlyph(), id, lane.seconds));
-      });
-      return;
-    }
+    /*
+     * 「再来一轮」这条自环**环上不画**。
+     *
+     * 它是一个**选项**（你可以让这个阶段再跑一次），而卫星说的是**状态**（这个
+     * 阶段此刻正在跑）—— 见下面 ④。挂在这条选项上那一版把两者搞反了：闸门在等人
+     * 裁决时卫星在转，真正在跑的时候环上反而一动不动（闸门 running 时 options
+     * 是空的）。这条选项由左边那块面板的「闸门」那行和弹窗里的按钮说。
+     */
+    if (edge.kind === "self") return;
     const to = indexOf(edge.to);
     if (to < 0) return;
     const id = `map-live-${order}`;
@@ -1328,6 +1323,33 @@ function drawMap(panel) {
       id, class: "rail", d: rocketFlight(...tripArgs(here, to, total, back)),
     }));
     map.append(rocketRide(rocketGlyph("rocket"), id, back ? 22 : 18));
+  });
+}
+
+/**
+ * 一个阶段头上的卫星：两颗分处不同半径、周期还不整除，于是永远错开、永远不成
+ * 队形 —— 排成一队跟飞读起来是「有个东西在爬」，分层各转各的读起来才是这个节点
+ * 在自转。
+ *
+ * **地方不够就只放一颗。** 贴着 viewBox 边的那几个节点外圈被收窄，从盘边到轨道
+ * 剩不下两条道 —— 硬塞两颗会叠在一起，那还不如一颗。
+ */
+function drawSatellites(map, at, key) {
+  const outer = outerOrbit(at);
+  const inner = nodeGeometry().surface;
+  const room = outer - inner;
+  const lanes = room >= 3.5
+    ? [
+        { radius: inner + room * 0.3, seconds: 6.5 },
+        { radius: outer, seconds: 10 },
+      ]
+    : [{ radius: inner + room * 0.5, seconds: 8 }];
+  lanes.forEach((lane, laneIndex) => {
+    const id = `map-sat-${key}-${laneIndex}`;
+    map.append(svgNode("path", {
+      id, class: "rail", d: circleAround(at, lane.radius),
+    }));
+    map.append(rocketRide(satelliteGlyph(), id, lane.seconds));
   });
 }
 
