@@ -111,7 +111,7 @@ export function applyAssessments(
       // standard 没有「在哪儿」和「为什么」：它不是谁发现的一个问题，是一条没被
       // 满足的标准，而标准的正文就是它自己。见 `domain/gate.ts` 的 `Blocker.where`。
       where: null,
-      why: null,
+      why: null, owner: null,
     });
   }
 

@@ -27,9 +27,9 @@ function evidence(patch: Partial<Evidence> = {}): Evidence {
   return { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"], ...patch };
 }
 
-const p0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围与 PRD 冲突", where: null, why: null };
-const p1: Blocker = { id: "B-2", kind: "finding", severity: "P1", title: "验收标准不可测", where: null, why: null };
-const p2: Blocker = { id: "B-3", kind: "finding", severity: "P2", title: "措辞含糊", where: null, why: null };
+const p0: Blocker = { id: "B-1", kind: "finding", severity: "P0", title: "范围与 PRD 冲突", where: null, why: null, owner: null };
+const p1: Blocker = { id: "B-2", kind: "finding", severity: "P1", title: "验收标准不可测", where: null, why: null, owner: null };
+const p2: Blocker = { id: "B-3", kind: "finding", severity: "P2", title: "措辞含糊", where: null, why: null, owner: null };
 
 describe("L1 · the gate decides from facts, never from a summary", () => {
   it("permits approval when something was produced and nothing blocks", () => {
@@ -194,7 +194,7 @@ describe("L1 · 一条没被满足的标准，waive 不掉", () => {
     id: "RB:producer:RBC-a", kind: "standard", severity: null,
     title: "每条需求都有可测的验收标准",
     where: null,
-    why: null,
+    why: null, owner: null,
   };
 
   it("照挡 —— 有一条标准没满足，就不能批准", () => {

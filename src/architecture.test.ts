@@ -76,6 +76,9 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/edit-gate.ts": 1,
   "store/evidence-store.ts": 1,
   "store/gap-store.ts": 1,
+  // 旁路账本（彗星，2026-08-11）。它只依赖 better-sqlite3 的类型，我们自己的
+  // 东西一个都不 import —— 和 gap-store 同一层，理由也一样：纯存储。
+  "store/aside-store.ts": 1,
   "store/command-store.ts": 1,
   "work/job-store.ts": 1,
   "work/turn-loop.ts": 1,

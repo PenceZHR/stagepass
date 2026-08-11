@@ -6,6 +6,7 @@ import type { ChangeState } from "../domain/change-state";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
 import { roundFromLedger } from "../domain/round";
 import { createSubAgentLookup, threadContextUsage } from "../codex/subagent";
+import { AsideStore } from "../store/aside-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore, type LedgerEntry } from "../store/change-store";
 import { ParallelStore } from "../store/parallel-store";
@@ -257,6 +258,22 @@ export function panelView(input: {
     selectedProject,
     changes,
     workspace: input.workspace,
+    /**
+     * 旁路来过几趟、其中几趟动过手（彗星的尾迹读它，2026-08-11）。
+     *
+     * **动过手的那几趟是这一格的全部意义**：旁路里改的东西没经过对抗、账本上
+     * 别处看不见，而下游会对着那份树干活。环上得有个记号说「这儿有人动过手」。
+     */
+    aside: (() => {
+      const visits = new AsideStore(database).list(changeId);
+      return {
+        visits: visits.length,
+        touched: visits.filter((visit) => visit.touched).length,
+        /** 最近一趟动过手的那句话。没有就 null —— 不编。 */
+        lastNote: visits.filter((visit) => visit.touched && visit.note !== null)
+          .at(-1)?.note ?? null,
+      };
+    })(),
     // Which phase the Change is actually at. Clicking a future node opens a
     // terminal to look at; it does NOT let you run that phase out of order,
     // because the phase a turn runs in comes from the state machine.

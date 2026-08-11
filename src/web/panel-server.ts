@@ -25,6 +25,7 @@ import { createTrustOps, type TrustOps } from "../codex/trust";
 import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
+import { AsideStore } from "../store/aside-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ParallelStore } from "../store/parallel-store";
@@ -1435,14 +1436,32 @@ async function serveAside(
   response: ServerResponse,
   sessions: PanelSessions,
   options: PanelOptions,
+  request: IncomingMessage,
 ): Promise<void> {
   const changeId = url.searchParams.get("change") ?? "";
+  /*
+   * **写那一趟的理由走同一个入口**（`?visit=<seq>`）—— 它和开旁路是同一种
+   * 资源上的两个动作，而 `handle` 是一张路由表：每加一个功能就给它加一个分支，
+   * 那张表迟早长成一层（护栏「没有一个函数长成一层」盯的正是它）。
+   */
+  const visit = url.searchParams.get("visit");
+  if (visit !== null) {
+    await serveAsideNote(database, changeId, Number(visit), request, response);
+    return;
+  }
   try {
     new ChangeStore(database).read(changeId);
   } catch {
     response.writeHead(404).end("no such change");
     return;
   }
+  /*
+   * **进旁路记一趟账**（彗星，2026-08-11）。开着就接上，账也不重记 ——
+   * `AsideStore.open` 自己幂等，两边的语义必须一致，否则每点一次侧栏就记一趟空账。
+   */
+  const root = sessions.workspaceFor(changeId);
+  new AsideStore(database).open(
+    changeId, root === null ? null : sessions.repo.head(root));
   // 已经开着就原样接上，不起第二个 —— 和 /api/terminal 同一个幂等契约。
   if (sessions.has(changeId, ASIDE)) {
     json(response, { opened: true });
@@ -1612,7 +1631,20 @@ function serveClose(
   if (phase === ASIDE) {
     const had = sessions.has(changeId, ASIDE);
     sessions.close(changeId, ASIDE);
-    json(response, { closed: had, phase });
+    /*
+     * **出旁路结账**：记下当时的 HEAD。前后不同 = 这一趟动过手，`needsNote`
+     * 为真，界面据此向人要一句「这次旁路做了什么」—— 那句话是下游唯一能知道
+     * 「环外发生过什么」的地方。只聊过的那种一个字都不问。
+     */
+    const root = sessions.workspaceFor(changeId);
+    const settled = new AsideStore(database).close(
+      changeId, root === null ? null : sessions.repo.head(root));
+    json(response, {
+      closed: had, phase,
+      ...(settled === null ? {} : {
+        visit: settled.visit.seq, needsNote: settled.needsNote,
+      }),
+    });
     return;
   }
   if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
@@ -1671,6 +1703,33 @@ function serveParallel(
 ): void {
   const changeId = url.searchParams.get("change") ?? "";
   json(response, { seats: new ParallelStore(database).list(changeId) });
+}
+
+/**
+ * 旁路那一趟的理由（彗星，2026-08-11）。
+ *
+ * **只在动过手时界面才会来调它** —— 判据是 `AsideStore.close` 返回的
+ * `needsNote`（前后两个 HEAD 不同），不在这儿重算一份。只聊过的那种一个字
+ * 都不问，那正是让轻的用法保持轻。
+ */
+async function serveAsideNote(
+  database: Database.Database,
+  changeId: string,
+  seq: number,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  if (!Number.isInteger(seq) || seq < 1) {
+    response.writeHead(400).end("bad visit");
+    return;
+  }
+  // 原样递字节 —— 解码在 AsideStore 那一层（web/ 只转发，不解释）。
+  const wrote = new AsideStore(database).note(changeId, seq, await readBody(request));
+  if (!wrote) {
+    response.writeHead(400).end("empty note or no such visit");
+    return;
+  }
+  json(response, { noted: true });
 }
 
 /**
@@ -2190,7 +2249,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/aside" && request.method === "POST") {
-    await serveAside(database, url, response, sessions, options);
+    await serveAside(database, url, response, sessions, options, request);
     return;
   }
 

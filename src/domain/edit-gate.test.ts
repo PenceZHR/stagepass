@@ -16,7 +16,7 @@ import type { Gap } from "./gap";
 const other: Gap = {
   id: "S-1", kind: "finding", severity: "P1", title: "别的问题",
   status: "open", openedRound: 1, resolution: null, note: null,
-  closedBy: null, where: null, why: null,
+  closedBy: null, where: null, why: null, owner: null,
 };
 
 describe("L0 · 编辑过门", () => {

@@ -386,6 +386,10 @@ CREATE TABLE IF NOT EXISTS gaps (
   -- 两列都可空：模型没写就是 NULL。**这不是「可有可无」** —— 有没有写是被 rubric
   -- 判的（critic 第 1、2 条），判据归 rubric，不归建表约束。
   found_where   TEXT NULL,
+  -- 这一条该谁修（环 v3 的反馈回路）。NULL = 归发现它的这个阶段自己。
+  -- 只有 QA 这种同时读得到两条互盲轨道的对撞点填得出它；打回时它跟着一起走
+  -- （runRound 读 returnStack 上那几个阶段里 owner 指着自己的）。
+  owner_phase   TEXT NULL,
   found_why     TEXT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (change_id, phase, id),
@@ -625,6 +629,35 @@ CREATE TABLE IF NOT EXISTS round_notes (
 -- answer 是枚举值（closed/still_open，或 yes/no），reason 是散文。
 -- 上层照旧把它们翻译成 gap 的 verdict 和 rubric 的 assessment -- 那两张表的语义
 -- 一个字都没变，变的只是这些值**从哪来**。
+-- 旁路会话的账本（彗星，2026-08-11）。
+--
+-- ## 为什么它不进 change_events
+--
+-- 那张是**状态机**的账本：seq 稠密单调、触发器守着、每一行都对应一次
+-- 状态迁移。旁路不推状态机（那正是它存在的理由），塞进去要么破坏 seq，
+-- 要么造一堆 from=to 的假迁移。它是另一种事实，另开一张。
+--
+-- ## 判据：动了手才留痕
+--
+-- 只是问个名词、聊两句 -- 前后两个 HEAD 相同，这一行照记，
+-- 但不要人写理由（note 为 NULL）。树上真长出了 commit，note 必填：
+-- 那是**环外发生的改动**，账上没有它，下游就会对着一份来历不明的树干活。
+--
+-- 「关掉一个问题必须说明理由」在这条路上的同一句话。
+CREATE TABLE IF NOT EXISTS aside_visits (
+  change_id   TEXT NOT NULL REFERENCES changes(id),
+  seq         INTEGER NOT NULL,
+  opened_at   TEXT NOT NULL,
+  closed_at   TEXT     NULL,
+  -- 进出旁路时仓库的 HEAD。相同 = 只聊过；不同 = 动过手。
+  -- 拿不到（项目没路径、不是 git 仓库）时是 NULL，那时不追问。
+  head_before TEXT     NULL,
+  head_after  TEXT     NULL,
+  -- 人自己写的一句：这次旁路做了什么。动过手才要。
+  note        TEXT     NULL,
+  PRIMARY KEY (change_id, seq)
+);
+
 CREATE TABLE IF NOT EXISTS round_worklist (
   change_id   TEXT    NOT NULL REFERENCES changes(id),
   phase       TEXT    NOT NULL CHECK (phase IN (${quoted(PHASES)})),
@@ -700,6 +733,7 @@ export function migrate(database: {
     ["gaps", "note", "TEXT"],
     ["gaps", "closed_by", "TEXT"],
     ["gaps", "found_where", "TEXT"],
+    ["gaps", "owner_phase", "TEXT"],
     ["gaps", "found_why", "TEXT"],
     ["questions", "outcome_json", "TEXT"],
     ["change_events", "reason", "TEXT"],

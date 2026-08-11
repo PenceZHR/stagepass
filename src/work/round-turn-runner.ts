@@ -285,6 +285,8 @@ export class RoundTurnRunner implements TurnRunner {
           this.options.changes.ledger(job.changeId), change.state);
         return back === null ? {} : { sentBack: back };
       })(),
+      // 欠着回程的那几个阶段 —— 它们判给本阶段的问题要跟着进这一轮的名单。
+      owedTo: change.state.returnStack,
       // 同一个 (Change, 阶段) 复用同一个裁判线程。
       //
       // **必须看 status。** 一条 detached 的绑定仍然留着 threadId —— 直接拿它去

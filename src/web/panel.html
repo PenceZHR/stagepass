@@ -495,6 +495,42 @@ body::after {
  */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
 /*
+ * 彗星 —— 旁路会话（2026-08-11）。一个倾斜的真椭圆，和阶段那个正圆一眼分得开：
+ * **它不在任何一条轨道上**，正如旁路不属于任何阶段。
+ *
+ * 命中区是分开的一层（.comet-hit）：轨道那条线只有 .3 宽，而人要点的是一个
+ * 在动的东西 —— 描边给到 4，透明，专门接点击。彗星自己也带一个 r=4.5 的光晕，
+ * 两处都点得中。
+ */
+.orbit-map .comet-orbit {
+  fill: none; stroke: rgba(160,190,230,.12); stroke-width: .3;
+  stroke-dasharray: .6 2.2; pointer-events: none;
+}
+.orbit-map .comet-hit {
+  fill: none; stroke: transparent; stroke-width: 4;
+  pointer-events: stroke; cursor: pointer;
+}
+.orbit-map .comet-hit:hover + .comet .comet-head { fill: rgba(255,255,255,1); }
+.orbit-map .comet { pointer-events: none; }
+/* 命中区：**完全透明**。它是给手指用的，不是给眼睛看的。 */
+.orbit-map .comet-halo { fill: transparent; pointer-events: all; cursor: pointer; }
+/*
+ * 尾：几缕散开的丝。每缕的透明度由 JS 给（stroke-opacity），这里只定颜色和粗细。
+ * 圆头 + 越远越细，末端自然消失，不留硬边。
+ */
+.orbit-map .comet-strand {
+  fill: none; stroke: #dcecff; stroke-width: .16;
+  stroke-linecap: round;
+}
+.orbit-map .comet-tail { fill: url(#comet-tail-grad); stroke: none; }
+/* 彗发：核外面那层光，径向淡出。 */
+.orbit-map .comet-coma { fill: url(#comet-coma-grad); stroke: none; }
+/* 核：一个准确的位置，最亮的一点。 */
+.orbit-map .comet-core { fill: #f6fbff; stroke: none; }
+/* 动过手的那几趟留下的：整颗更亮一档 —— 环上看得见「这儿有人在环外改过东西」。 */
+.orbit-map .comet.marked .comet-strand { stroke: #eaf4ff; }
+.orbit-map .comet.marked .comet-core { fill: #ffffff; }
+/*
  * 剪纸小火箭：**平涂色块，没有描边**，和环心那颗太阳同一种语言（用户
  * 2026-08-09：「整体风格统一一下」）。上一版是细描边的空心壳 —— 那是给环上
  * 那些发丝线条配的，线撤掉之后它成了唯一还在说旧方言的东西。
@@ -1332,11 +1368,11 @@ body::after {
         -->
         <button class="enter" id="close-term" type="button" hidden>结束这个终端</button>
         <!--
-          旁路窗口（DESIGN-phase-not-the-only-axis §3.3）：一个不属于任何阶段的
-          Codex 聊天。**永远能按** —— 一轮对抗跑着的时候人想问个名词，不用等它
-          跑完，这正是它存在的理由。不产出、不推闸门、不占任何阶段的座。
+          旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
+          挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
+          而它恰恰是唯一不属于任何阶段的东西。彗星说对了这件事 —— 不在任何一条
+          轨道上、能到达环上任何地方、而且留下尾迹（动过手的那几趟进账本）。
         -->
-        <button class="enter" id="aside-term" type="button">旁路窗口（问问题）</button>
         <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
         <!--
           批 2「模型起草，人改」：在旁路会话里谈好 → 起草落成文件 → 人在编辑器里

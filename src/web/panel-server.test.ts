@@ -226,6 +226,8 @@ async function withPanel(
       commitAll: () => { throw new Error("测试里不许真的动 git"); },
       commitPaths: () => { throw new Error("测试里不许真的动 git"); },
       show: () => { throw new Error("测试里不许真的动 git"); },
+      // 旁路账本读它判「动没动手」。测试里不许碰真 git，所以给个「读不到」。
+      head: () => null,
     },
     /*
      * **默认「查不出来」。**
@@ -382,7 +384,7 @@ describe("panel · pass and fail per phase", () => {
     await withPanel(async ({ open, database }) => {
       new GapStore(database).settleRound(CHANGE, "PRD", {
         round: 1,
-        found: [{ id: "G1", severity: "P1", title: "验收标准不可测", where: null, why: null }],
+        found: [{ id: "G1", severity: "P1", title: "验收标准不可测", where: null, why: null, owner: null }],
         verdicts: {},
       });
       assert.equal((await marksOf(open))["PRD"], "problem");
@@ -401,7 +403,7 @@ describe("panel · pass and fail per phase", () => {
       // Green would then be claiming something that is no longer true.
       new GapStore(database).settleRound(CHANGE, "PRD", {
         round: 2,
-        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突", where: null, why: null }],
+        found: [{ id: "G9", severity: "P0", title: "PRD 与 Spec 冲突", where: null, why: null, owner: null }],
         verdicts: {},
       });
       assert.equal((await marksOf(open))["PRD"], "problem");
@@ -460,8 +462,8 @@ describe("panel · pass and fail per phase", () => {
       gaps.settleRound(CHANGE, "PRD", {
         round: 1,
         found: [
-          { id: "G1", severity: "P0", title: "没有验收标准", where: null, why: null },
-          { id: "G2", severity: "P2", title: "术语不一致", where: null, why: null },
+          { id: "G1", severity: "P0", title: "没有验收标准", where: null, why: null, owner: null },
+          { id: "G2", severity: "P2", title: "术语不一致", where: null, why: null, owner: null },
         ],
         verdicts: {},
       });
@@ -469,7 +471,7 @@ describe("panel · pass and fail per phase", () => {
         round: 2, found: [], verdicts: { G2: { kind: "closed", reason: "第二轮统一了叫法" } },
       });
       gaps.settleRound(CHANGE, "Spec", {
-        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码", where: null, why: null }], verdicts: {},
+        round: 1, found: [{ id: "S1", severity: "P1", title: "接口没有错误码", where: null, why: null, owner: null }], verdicts: {},
       });
 
       const panel = await (await open(`/api/panel?change=${CHANGE}`)).json() as
@@ -1252,7 +1254,7 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
         id: `RB:producer:${key}`, kind: "standard", severity: null,
         title: "挡着的", status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
         where: null,
-        why: null,
+        why: null, owner: null,
       }]);
       assert.equal(new GapStore(database).blockers(CHANGE, "Spec").length, 1);
 
@@ -1766,7 +1768,7 @@ describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 �
     }, {
       repo: {
         dirtyPaths: () => ["半成品.md"], commitAll: () => null,
-        commitPaths: () => null, show: () => null,
+        commitPaths: () => null, show: () => null, head: () => null,
       },
     });
   });
@@ -1944,7 +1946,7 @@ describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 �
     }, {
       repo: {
         dirtyPaths: () => ["半成品.md"], commitAll: () => null,
-        commitPaths: () => null, show: () => null,
+        commitPaths: () => null, show: () => null, head: () => null,
       },
     });
   });
@@ -2135,7 +2137,7 @@ describe("panel · Build 要在干净的工作树上跑", () => {
    * commit 边界严格等于轮次边界。
    */
   const dirty: PanelOptions["repo"] = {
-    dirtyPaths: () => ["半成品.md"], commitAll: () => null, commitPaths: () => null, show: () => null,
+    dirtyPaths: () => ["半成品.md"], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null,
   };
 
   const advanceToBuild = (database: Database.Database): void => {
@@ -2228,6 +2230,7 @@ describe("panel · 弹窗里读得到一个 commit", () => {
         commitAll: () => null,
         commitPaths: () => null,
         show: () => "commit a1b2c3d\n\n    加了 x\n\n+export const x = 1;\n",
+        head: () => null,
       },
     });
   });
@@ -2332,13 +2335,13 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         id: "SPEC-1", kind: "finding", severity: "P1", title: "验收标准不可测",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
         where: null,
-        why: null,
+        why: null, owner: null,
       },
       {
         id: "SPEC-2", kind: "finding", severity: "P1", title: "范围与 PRD 冲突",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
         where: null,
-        why: null,
+        why: null, owner: null,
       },
     ]);
     new EvidenceStore(database).put(CHANGE, "PRD", {
@@ -2500,7 +2503,7 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         id: "SPEC-9", kind: "finding", severity: "P0", title: "人没看见过的这一条",
         status: "open", openedRound: 2, resolution: null, note: null, closedBy: null,
         where: null,
-        why: null,
+        why: null, owner: null,
       }]);
       answer(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_AGREE,
@@ -3070,7 +3073,7 @@ describe("panel · 派发前查上游产物", () => {
       assert.equal(result.missing?.[0]?.id, "0123456789abcdef0123456789abcdef01234567");
     }, {
       repo: {
-        dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null,
+        dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null,
       },
     });
   });

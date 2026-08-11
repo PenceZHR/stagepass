@@ -54,7 +54,7 @@ describe("L2 · reading the model's answer", () => {
         blockers: [{
           id: "B", kind: "finding", severity: "P1", title: "x",
           // 契约里有，这一条没写 —— 缺就是 null，不作废整轮。见下面三条。
-          where: null, why: null,
+          where: null, why: null, owner: null,
         }],
       },
     );
@@ -76,6 +76,8 @@ describe("L2 · reading the model's answer", () => {
       [{
         id: "B", kind: "finding", severity: "P0", title: "空指针",
         where: "src/foo.ts:42", why: "list 为空时 head() 返回 undefined",
+        // 没报归属 = 归它自己（环 v3 的反馈回路，见 Blocker.owner）。
+        owner: null,
       }],
     );
   });

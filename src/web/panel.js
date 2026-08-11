@@ -96,7 +96,6 @@ const enterButton = button("enter");
 const waiveButton = button("waive");
 const briefButton = button("brief");
 const closeTermButton = button("close-term");
-const asideTermButton = button("aside-term");
 const briefDraftButton = button("brief-draft");
 const briefConfirmButton = button("brief-confirm");
 const openTermButton = button("open-term");
@@ -1242,6 +1241,149 @@ function drawMap(panel) {
    * 找不到，跳过就是了，不去猜一个坐标。
    */
   let lastTrip = null;   // 最近一次认得出的回跳 —— 幽灵火箭要重飞它
+  /*
+   * ── 彗星：旁路会话（用户 2026-08-11 定的画法）─────────────────
+   *
+   * 旁路不属于任何阶段 —— 它原来混在左侧那堆**跟着当前 stage 刷新**的按钮里
+   * （和「跑这个阶段」「结束这个终端」并列），读起来像是某个阶段的一个动作，
+   * 而它恰恰是唯一不占任何阶段座位的东西。
+   *
+   * 彗星说对了三件事：**不在任何一条轨道上**（一个倾斜的真椭圆，和阶段那个
+   * 正圆一眼分得开）、**能到达环上任何地方**、**它留下尾迹**（动过手的那几趟
+   * 在账本里，`panel.aside.touched`）。
+   *
+   * ## 几何是量出来的，不是拍的（2026-08-11 在真面板上量）
+   *
+   * ```
+   * 太阳（含日冕）半径 ≈ 9.7   →  椭圆短半轴不许小于 15
+   * 节点圆半径 6，圆心在 45.5  →  节点内缘 39.5，长半轴不许大于 37
+   * ```
+   *
+   * 第一版写的是 46×30，两头都撞（穿太阳、压 stage）—— 这两个数是实测的安全带，
+   * 改之前先重新量，别照着 viewBox 猜。
+   *
+   * ## 倾角按 Change 的 id 定
+   *
+   * 用户要「随机一点」，但随机不能是每次刷新都换一个角度 —— 那样环会在人眼前
+   * 自己转。取 id 的哈希：同一个 Change 永远同一条轨道，不同的 Change 各不相同。
+   */
+  const ASIDE_A = 36;    // 长半轴（< 39.5，不碰节点）
+  const ASIDE_B = 17;    // 短半轴（> 9.7 的日冕，留足余量）
+  const aside = panel.aside ?? { visits: 0, touched: 0, lastNote: null };
+  const tilt = ((() => {
+    let hash = 0;
+    for (const ch of String(panel.changeId ?? "")) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
+    return hash;
+  })() / 360) * Math.PI - Math.PI / 2;
+  const end = (sign) => ({
+    x: 50 + sign * ASIDE_A * Math.cos(tilt),
+    y: 50 + sign * ASIDE_A * Math.sin(tilt),
+  });
+  const [a1, a2] = [end(-1), end(1)];
+  const deg = (tilt * 180) / Math.PI;
+  // 两段半弧拼成一个**完整的椭圆**（第一版是一段起终点几乎重合的弧，收口处有个尖角）。
+  const cometPath = `M ${a1.x} ${a1.y} A ${ASIDE_A} ${ASIDE_B} ${deg} 1 0 ${a2.x} ${a2.y}`
+    + ` A ${ASIDE_A} ${ASIDE_B} ${deg} 1 0 ${a1.x} ${a1.y}`;
+  const cometId = "map-comet";
+  const cometTip = aside.touched > 0
+    ? `旁路：来过 ${aside.visits} 趟，其中 ${aside.touched} 趟动过手`
+      + (aside.lastNote ? `\n最近一趟：${aside.lastNote}` : "")
+    : `旁路（点开一个不属于任何阶段的窗口）${
+      aside.visits > 0 ? `\n来过 ${aside.visits} 趟，都只是聊过` : ""}`;
+  map.append(svgNode("path", { id: cometId, class: "comet-orbit", d: cometPath }));
+  /*
+   * **点得中是这颗彗星能用的前提。** 第一版把点击挂在那条 0.3 宽的虚线上，
+   * 而且只有彗星头（r=0.62）—— 一个在动的、比光标还小的目标。
+   * 现在两处都能点：一条透明的粗描边罩着整条轨道，外加彗星自己带一个大命中圈。
+   */
+  const hit = svgNode("path", { class: "comet-hit", d: cometPath }, cometTip);
+  hit.addEventListener("click", () => { void openAside(); });
+  map.append(hit);
+  /*
+   * 彗星本身：**核 + 彗发 + 散开的尾**，三层。
+   *
+   * 第一版是「一个圆点拖一条直线」，用户判丑，判得对 —— 那不是彗星的样子。
+   * 真彗星的尾从核那头细、往远处**发散**并淡掉，核外面裹着一层彗发（coma）。
+   * 三层各干各的：尾给方向和速度感，彗发给「它在发光」，核给一个准确的位置。
+   *
+   * 命中用的那个圈**完全透明** —— 第一版给了它 .06 的填充，于是环上多出一个
+   * 说不出所以然的浅色圆盘，正是丑的一半。它是命中区，不是画面的一部分。
+   */
+  // 尾巴长度：动过手越多越长，四趟封顶 —— 再长会绕到轨道另一头，读起来就不是尾巴了。
+  const tail = 6 + 4 * Math.min(aside.touched, 4) / 4;
+  const grad = svgNode("defs", {});
+  /*
+   * **模糊是这颗彗星好看不好看的分水岭。**
+   *
+   * 前两版一版实心锥（像探照灯）、一版四条线（像梳子）—— 病根都一样：
+   * path 的边是硬的，而彗尾是发光的雾，它根本没有边。一个高斯模糊比任何
+   * 形状上的功夫都管用；形状只要给个大概的走向，剩下的交给它。
+   */
+  const blur = svgNode("filter", {
+    id: "comet-glow", x: "-60%", y: "-60%", width: "220%", height: "220%",
+  });
+  blur.append(svgNode("feGaussianBlur", { stdDeviation: "0.42" }));
+  const tailGrad = svgNode("linearGradient", {
+    id: "comet-tail-grad", x1: "1", y1: "0", x2: "0", y2: "0",
+  });
+  tailGrad.append(
+    svgNode("stop", { offset: "0", "stop-color": "#e8f4ff", "stop-opacity": ".5" }),
+    svgNode("stop", { offset: ".35", "stop-color": "#bcd9ff", "stop-opacity": ".26" }),
+    svgNode("stop", { offset: "1", "stop-color": "#89b6ff", "stop-opacity": "0" }),
+  );
+  const comaGrad = svgNode("radialGradient", { id: "comet-coma-grad" });
+  comaGrad.append(
+    svgNode("stop", { offset: "0", "stop-color": "#ffffff", "stop-opacity": ".85" }),
+    svgNode("stop", { offset: ".4", "stop-color": "#d8ecff", "stop-opacity": ".35" }),
+    svgNode("stop", { offset: "1", "stop-color": "#8fc0ff", "stop-opacity": "0" }),
+  );
+  grad.append(blur, tailGrad, comaGrad);
+  map.append(grad);
+
+  const comet = svgNode("g", { class: "comet" });
+  /*
+   * 尾巴是**几缕散开的丝**，不是一个实心的锥。
+   *
+   * 第一版画了个对称的梯形加渐变，放大看是一束探照灯 —— 实心、对称、张角大，
+   * 末端还留着一条硬边。真彗尾没有边界，它是几缕亮度不等的流，越远越散。
+   * 细线也更贴这一屏已有的笔法：火箭、卫星、V 字都是描边画的，只有太阳是实心。
+   *
+   * 四缕的长度、张角、亮度都不一样 —— 一模一样的四条会读成一把梳子。
+   */
+  const wide = tail * 0.26;
+  const fog = svgNode("g", { class: "comet-fog", filter: "url(#comet-glow)" });
+  fog.append(
+    /*
+     * 尾的主体：一片**不对称**的雾。两侧张得不一样开（真彗尾受太阳风吹，
+     * 从来不是轴对称的），末端斜着收，靠模糊和渐变一起化掉，不留边。
+     */
+    svgNode("path", {
+      class: "comet-tail",
+      d: `M -0.4 -0.32`
+        + ` C ${-tail * 0.32} ${-wide * 0.5} ${-tail * 0.68} ${-wide * 0.82} ${-tail} ${-wide}`
+        + ` L ${-tail * 0.92} ${wide * 1.25}`
+        + ` C ${-tail * 0.55} ${wide * 0.86} ${-tail * 0.22} ${wide * 0.4} -0.4 0.36 Z`,
+    }),
+    // 两缕更亮的流，压在雾上 —— 彗尾里总有几条更密的。
+    svgNode("path", {
+      class: "comet-strand", "stroke-opacity": ".5",
+      d: `M -0.5 -0.06 Q ${-tail * 0.45} ${-wide * 0.34} ${-tail * 0.96} ${-wide * 0.72}`,
+    }),
+    svgNode("path", {
+      class: "comet-strand", "stroke-opacity": ".3",
+      d: `M -0.5 0.1 Q ${-tail * 0.4} ${wide * 0.45} ${-tail * 0.8} ${wide * 0.95}`,
+    }),
+    svgNode("circle", { class: "comet-coma", cx: 0, cy: 0, r: 2.1 }),
+  );
+  comet.append(fog);
+  // 核不进模糊：整颗彗星只有这一点是锐的，位置才说得准。
+  comet.append(svgNode("circle", { class: "comet-core", cx: 0, cy: 0, r: 0.62 }));
+  const halo = svgNode("circle", { class: "comet-halo", cx: 0, cy: 0, r: 4.5 }, cometTip);
+  halo.addEventListener("click", () => { void openAside(); });
+  comet.append(halo);
+  if (aside.touched > 0) comet.classList.add("marked");
+  map.append(rocketRide(comet, cometId, 55));
+
   for (const jump of panel.journey ?? []) {
     if (jump.kind !== "backward") continue;
     const from = indexOf(jump.fromPhase);
@@ -2128,6 +2270,27 @@ async function closeTerminal() {
       say(`这一轮中止了（${result.aborted}）。`
         + "现在可以 retry ——「请 Codex 问我」，在选择器里选。");
     }
+    /*
+     * **旁路里动过手，就当场要一句话**（彗星的账本，2026-08-11）。
+     *
+     * 判据在服务端（进出旁路时两个 HEAD 不同），这里只负责问。只聊过的那种
+     * `needsNote` 是假的，一个字都不问 —— 轻的用法保持轻，正是那条账的判据。
+     *
+     * 人不写也不拦他（旁路本来就不推闸门）；不写的代价是环上那颗彗星留着一条
+     * 说不出来历的尾迹，而下游会对着一份来历不明的树干活。
+     */
+    if (result.needsNote) {
+      const note = window.prompt(
+        "这趟旁路动了工作树（有新的 commit）。用一句话说清做了什么 ——\n"
+        + "它是下游唯一能知道「环外发生过什么」的地方。");
+      if (note && note.trim()) {
+        await fetch(
+          `/api/aside?change=${encodeURIComponent(changeId)}`
+          + `&visit=${encodeURIComponent(result.visit)}`,
+          { method: "POST", body: note },
+        );
+      }
+    }
     await loadOrReconnect();
     if (sheetPhase) drawSheet(sheetPhase);
   } finally {
@@ -2459,7 +2622,6 @@ async function attach(phase, reattaching = false) {
  * phaseBusy（这正是旁路的定义），所以这里也没有 disabled 逻辑可写。
  */
 async function openAside() {
-  asideTermButton.disabled = true;
   try {
     const response = await fetch(
       `/api/aside?change=${encodeURIComponent(changeId)}`, { method: "POST" });
@@ -2470,7 +2632,6 @@ async function openAside() {
     closeSheet();
     await enter("aside");
   } finally {
-    asideTermButton.disabled = false;
   }
 }
 
@@ -2548,7 +2709,6 @@ async function confirmBriefEdit() {
 }
 
 button("back").addEventListener("click", () => { void leave(); });
-asideTermButton.addEventListener("click", () => { void openAside(); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });

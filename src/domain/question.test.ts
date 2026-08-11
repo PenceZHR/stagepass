@@ -43,7 +43,7 @@ const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnStack: []
 const CLEAN: Evidence = { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"] };
 const WITH_P0: Evidence = {
   ...CLEAN,
-  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null }],
+  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null, owner: null }],
 };
 
 function ask(state: ChangeState, evidence: Evidence): Question | null {
@@ -286,7 +286,7 @@ describe("L3 · 题面把状态和后果说出来 —— 人答题的那一刻�
   const gapWith = (patch: Partial<Gap>): Gap => ({
     id: "G-1", kind: "finding", severity: "P1", title: "验收标准不可测",
     status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
-    where: null, why: null, ...patch,
+    where: null, why: null, owner: null, ...patch,
   });
   const askWith = (gaps: Gap[], round?: number): Question => gateDecisionQuestion({
     phase: "Spec",
@@ -490,7 +490,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     id, kind: "finding", severity: "P1", title,
     status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
     where: null,
-    why: null,
+    why: null, owner: null,
   });
   const GAPS = [openGap("SPEC-1", "验收标准不可测"), openGap("SPEC-2", "范围与 PRD 冲突")];
 
@@ -738,8 +738,8 @@ describe("L3 · turning an answer into a decision", () => {
 
 describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
   const waivable = [
-    { id: "SPEC-1", title: "写入不是原子的", where: null, why: null },
-    { id: "SPEC-2", title: "命令行没有定义", where: null, why: null },
+    { id: "SPEC-1", title: "写入不是原子的", where: null, why: null, owner: null },
+    { id: "SPEC-2", title: "命令行没有定义", where: null, why: null, owner: null },
   ];
 
   it("**一条 gap 一格，标题就在格子上** —— 不是让人对着一串裸 id 选", () => {

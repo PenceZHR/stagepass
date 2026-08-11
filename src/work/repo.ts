@@ -59,6 +59,12 @@ export interface RepoOps {
   commitPaths(cwd: string, paths: readonly string[], message: string): string | null;
   /** 一个 commit 的正文（带 diff）。读不到就返回 null —— 不猜、不回落到别的东西。 */
   show(cwd: string, sha: string): string | null;
+  /**
+   * 现在的 HEAD。**读不到就 null，不猜** —— 不是 git 仓库、还没有第一个 commit
+   * 都会走到这里，而「拿不到 HEAD」和「HEAD 没变」必须分得开：旁路账本靠前后
+   * 两个 HEAD 判「动没动手」，把拿不到当成没变，等于替人否认他做过的事。
+   */
+  head(cwd: string): string | null;
 }
 
 /** 看着像不像一个 commit sha。产出是路径还是 commit，靠它分。 */
@@ -149,6 +155,13 @@ export function createRepoOps(options: {
       }
     },
 
+    head(cwd) {
+      try {
+        return run(cwd, ["rev-parse", "HEAD"]).trim() || null;
+      } catch {
+        return null;
+      }
+    },
     show(cwd, sha) {
       try {
         return run(cwd, ["show", "--stat", "--patch", sha]);
