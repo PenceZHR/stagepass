@@ -762,6 +762,12 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
     file: join(HERE, "..", "..", "node_modules", "three", "build", "three.module.js"),
     type: "text/javascript; charset=utf-8",
   },
+  // r180 起 three 拆成两半：module 那份 `export * from "./three.core.js"`。
+  // 浏览器按相对路径来要它，所以它也得在菜单上 —— 少这条整个 3D 静默不加载。
+  "/three.core.js": {
+    file: join(HERE, "..", "..", "node_modules", "three", "build", "three.core.js"),
+    type: "text/javascript; charset=utf-8",
+  },
   "/CSS2DRenderer.js": {
     file: join(
       HERE, "..", "..", "node_modules", "three",

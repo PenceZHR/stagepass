@@ -1162,6 +1162,8 @@ body::after {
   text-align: left; border: 0; border-radius: 7px; background: transparent;
   color: rgba(255,255,255,.7); font: inherit; font-size: 12px; cursor: pointer;
 }
+/* display:flex/grid 会盖掉 UA 的 [hidden]{display:none} —— 这两行把 hidden 夺回来。 */
+.graph-row[hidden], .graph-empty[hidden] { display: none !important; }
 .graph-row:hover { background: rgba(255,255,255,.06); color: #fff; }
 .graph-row[aria-selected="true"] { background: rgba(232,176,74,.16); color: #fff; }
 .graph-row > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
