@@ -1599,17 +1599,8 @@ function drawWorkspace(panel) {
       void removeThing("project", project.id,
         `连同它底下的 ${project.changes} 个 Change 全部删掉。`);
     });
-    // 项目图谱（spec 2026-08-12）。项目级的入口，所以挂在项目行上 ——
-    // 挂在 Change 底下是反的。纯读：点它不起进程、不写库。
-    const graph = document.createElement("span");
-    graph.className = "graph-open";
-    graph.textContent = "◈ 图谱";
-    graph.title = "看这个项目的代码长什么样";
-    graph.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openGraphView(project);
-    });
-    row.append(name, sub, count, graph, remove);
+    // 图谱的入口只有环心的太阳（用户 2026-08-12 定）—— 行上不再放第二个。
+    row.append(name, sub, count, remove);
 
     // Clicking a project toggles the workspace open and shut. Picking a
     // DIFFERENT one selects it and opens; picking the one already selected
