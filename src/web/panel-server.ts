@@ -225,6 +225,18 @@ export interface PanelOptions {
   /** Codex 的目录信任。同一个路子 —— 真的那一套会去读用户的 `~/.codex/config.toml`。 */
   readonly trust?: TrustOps;
   /**
+   * 图谱那三条路（`/api/graph` `/api/file` `/api/graph-excludes`）的处理器
+   * （spec 2026-08-12）。处理了返回 true，不是它的路返回 false。
+   *
+   * **不在这里 import `web/graph-api.ts`，故意的**：本模块的依赖闭包有一条
+   * 只许缩的棘轮（architecture.test.ts 的 CLOSURE_RATCHET），把图谱一族 import
+   * 进来它当场红 —— 而它红得对。接线在入口（scripts/panel.ts），archive / trust /
+   * repo 全是这个形状。不注入 = 面板没有图谱（404），不是半个图谱。
+   */
+  readonly graph?: (
+    url: URL, request: IncomingMessage, response: ServerResponse,
+  ) => Promise<boolean>;
+  /**
    * Codex 的会话目录（「turn 已死」探测要按线程 id 找 rollout）。
    * 默认和 transport 同一个 `~/.codex/sessions`；可注入是为了测试不摸真目录。
    */
@@ -738,6 +750,25 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
     file: join(HERE, "..", "..", "node_modules", "@xterm", "xterm", "css", "xterm.css"),
     type: "text/css; charset=utf-8",
   },
+  // 图谱的前端和 three.js 本体。和 xterm 同一个套路：从 node_modules 直接喂，
+  // 零 CDN、零构建步骤 —— 面板是 localhost，600KB 不过网络。
+  "/graph-view.js": {
+    file: join(HERE, "graph-view.js"), type: "text/javascript; charset=utf-8",
+  },
+  "/graph-scene.js": {
+    file: join(HERE, "graph-scene.js"), type: "text/javascript; charset=utf-8",
+  },
+  "/three.module.js": {
+    file: join(HERE, "..", "..", "node_modules", "three", "build", "three.module.js"),
+    type: "text/javascript; charset=utf-8",
+  },
+  "/CSS2DRenderer.js": {
+    file: join(
+      HERE, "..", "..", "node_modules", "three",
+      "examples", "jsm", "renderers", "CSS2DRenderer.js",
+    ),
+    type: "text/javascript; charset=utf-8",
+  },
   "/xterm.js": {
     file: join(HERE, "..", "..", "node_modules", "@xterm", "xterm", "lib", "xterm.js"),
     type: "text/javascript; charset=utf-8",
@@ -1193,6 +1224,20 @@ function locateArtifact(input: {
     return { ok: false, reason: "not_a_file" };
   }
   return { ok: true, kind: "file", real, bytes: statSync(real).size };
+}
+
+/** `/api/progress`。从 `handle()` 搬出来 —— 图谱那条路进来时，函数上限棘轮要的债。 */
+function serveProgress(
+  url: URL,
+  response: ServerResponse,
+  database: Database.Database,
+  sessions: PanelSessions,
+): void {
+  const view = progressView({
+    database, sessions, changeId: url.searchParams.get("change") ?? "",
+  });
+  if (view === null) { response.writeHead(404).end("no such change"); return; }
+  json(response, view);
 }
 
 function readBody(request: IncomingMessage): Promise<Uint8Array> {
@@ -1931,11 +1976,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/progress" && request.method === "GET") {
-    const view = progressView({
-      database, sessions, changeId: url.searchParams.get("change") ?? "",
-    });
-    if (view === null) { response.writeHead(404).end("no such change"); return; }
-    json(response, view);
+    serveProgress(url, response, database, sessions);
     return;
   }
 
@@ -1943,6 +1984,9 @@ export async function handle(
     serveArtifact(database, url, response, sessions);
     return;
   }
+
+  // 项目图谱（spec 2026-08-12）。注入的 —— 理由见 PanelOptions.graph。
+  if (options.graph !== undefined && await options.graph(url, request, response)) return;
 
   /*
    * 新建 Project / Change。

@@ -24,7 +24,9 @@ import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
 import { FACTORY_UPGRADE_REASON, RubricStore } from "../src/store/rubric-store";
+import { createRepoOps } from "../src/work/repo";
 import { recoverStuckTurns } from "../src/work/turn-loop";
+import { createGraphApi } from "../src/web/graph-api";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 
 function argument(name: string): string | undefined {
@@ -236,11 +238,23 @@ if (
   });
 }
 
+/*
+ * git 那一层建在这里、两处共用：pty 会话（提交产出）和图谱（ls-files）拿到的
+ * 必须是同一套 —— 两套各自 exec git 不会错，但「哪条路走的哪个 git」就说不清了。
+ */
+const repo = createRepoOps();
+
 const { server, sessions } = createPanelServer({
   database,
   askTimeoutMs,
   turnTimeoutMs,
   roundBudget,
+  repo,
+  /*
+   * 图谱的三条路（spec 2026-08-12）。在入口接线而不是让 panel-server 自己
+   * import —— 它的依赖闭包有一条只许缩的棘轮，理由写在 PanelOptions.graph 上。
+   */
+  graph: createGraphApi({ database, repo }),
   session: {
     // Where Codex runs. The repository itself, because a phase's work is about
     // this tree -- unlike the probes, which use an empty directory on purpose.

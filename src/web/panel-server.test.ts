@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -24,6 +24,7 @@ import {
 import {
   createPanelServer, type PanelOptions, type PanelSessions,
 } from "./panel-server";
+import { createGraphApi } from "./graph-api";
 import type { Phase } from "../domain/phase";
 import type { PtySession } from "./pty-session";
 
@@ -192,6 +193,15 @@ async function withPanel(
     };
   }) as never;
 
+  const repo: PanelOptions["repo"] = extra.repo ?? {
+    dirtyPaths: () => [],
+    commitAll: () => { throw new Error("测试里不许真的动 git"); },
+    commitPaths: () => { throw new Error("测试里不许真的动 git"); },
+    show: () => { throw new Error("测试里不许真的动 git"); },
+    // 旁路账本读它判「动没动手」。测试里不许碰真 git，所以给个「读不到」。
+    head: () => null, trackedFiles: () => null,
+  };
+
   const { server, sessions } = createPanelServer({
     // 时限调到 200ms：没有真 Codex，轮次必然等不到 rollout。不设它的话，
     // 测试会陪着默认的 30 分钟一起等。
@@ -221,14 +231,9 @@ async function withPanel(
      * 不注入的话用的是真的那一套，而它会在**这棵树**上跑 `git add -A` + `git commit`
      * —— 测试跑一遍就把工作区里所有没提交的东西提交掉。这一格是承重的。
      */
-    repo: extra.repo ?? {
-      dirtyPaths: () => [],
-      commitAll: () => { throw new Error("测试里不许真的动 git"); },
-      commitPaths: () => { throw new Error("测试里不许真的动 git"); },
-      show: () => { throw new Error("测试里不许真的动 git"); },
-      // 旁路账本读它判「动没动手」。测试里不许碰真 git，所以给个「读不到」。
-      head: () => null,
-    },
+    repo,
+    // 图谱走注入（PanelOptions.graph 上写着为什么），测试里和生产同一条接线。
+    graph: createGraphApi({ database, repo }),
     /*
      * **默认「查不出来」。**
      *
@@ -1768,7 +1773,7 @@ describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 �
     }, {
       repo: {
         dirtyPaths: () => ["半成品.md"], commitAll: () => null,
-        commitPaths: () => null, show: () => null, head: () => null,
+        commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null,
       },
     });
   });
@@ -1946,7 +1951,7 @@ describe("panel · 派发前的路障，人按之前就看得见（2026-08-07 �
     }, {
       repo: {
         dirtyPaths: () => ["半成品.md"], commitAll: () => null,
-        commitPaths: () => null, show: () => null, head: () => null,
+        commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null,
       },
     });
   });
@@ -2137,7 +2142,7 @@ describe("panel · Build 要在干净的工作树上跑", () => {
    * commit 边界严格等于轮次边界。
    */
   const dirty: PanelOptions["repo"] = {
-    dirtyPaths: () => ["半成品.md"], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null,
+    dirtyPaths: () => ["半成品.md"], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null,
   };
 
   const advanceToBuild = (database: Database.Database): void => {
@@ -2230,7 +2235,7 @@ describe("panel · 弹窗里读得到一个 commit", () => {
         commitAll: () => null,
         commitPaths: () => null,
         show: () => "commit a1b2c3d\n\n    加了 x\n\n+export const x = 1;\n",
-        head: () => null,
+        head: () => null, trackedFiles: () => null,
       },
     });
   });
@@ -3073,7 +3078,7 @@ describe("panel · 派发前查上游产物", () => {
       assert.equal(result.missing?.[0]?.id, "0123456789abcdef0123456789abcdef01234567");
     }, {
       repo: {
-        dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null,
+        dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null,
       },
     });
   });
@@ -3251,5 +3256,160 @@ describe("「turn 已死」探测的 rollout 那半（AskSessions.recordCount / 
       // 别人的话不算我们的轮。
       assert.equal(sessions.turnEnded(CHANGE, "PRD", 0, "一句没送进去过的话"), false);
     }, { sessionsDir: dir });
+  });
+});
+
+/**
+ * 项目图谱的三条路（图谱 spec 2026-08-12）。
+ *
+ * git 是注入的（`repo.trackedFiles`），文件是真的临时目录 —— 读正文那一步
+ * 走的是生产代码那条路，不是喂进去的假文本。
+ */
+describe("图谱 · /api/graph /api/file /api/graph-excludes", () => {
+  /** 一个长得像 demo 的小项目：两层代码、一张图、一个不该进图的目录。 */
+  const scaffold = (): { root: string; tracked: string[] } => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-graph-"));
+    mkdirSync(join(root, "core"));
+    mkdirSync(join(root, "game"));
+    mkdirSync(join(root, "art"));
+    mkdirSync(join(root, "archive"));
+    writeFileSync(join(root, "core", "config.ts"), "export const c = 1;\n");
+    writeFileSync(join(root, "game", "player.ts"),
+      'import { c } from "../core/config";\nexport const p = c;\n');
+    writeFileSync(join(root, "art", "x.png"), "png");
+    writeFileSync(join(root, "archive", "old.ts"), "export const dead = 1;\n");
+    writeFileSync(join(root, "README.md"), "# readme\n");
+    return {
+      root,
+      tracked: ["core/config.ts", "game/player.ts", "art/x.png",
+        "archive/old.ts", "README.md"],
+    };
+  };
+
+  const repoOf = (tracked: readonly string[] | null): PanelOptions["repo"] => ({
+    dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null,
+    show: () => null, head: () => null, trackedFiles: () => tracked,
+  });
+
+  it("没给项目 400，项目不存在 404，没路径 409 —— 每种都明说，不画空图", async () => {
+    const { root, tracked } = scaffold();
+    await withPanel(async ({ open, database }) => {
+      assert.equal((await open("/api/graph")).status, 400);
+      assert.equal((await open("/api/graph?project=PRJ-NONE")).status, 404);
+      new ProjectStore(database).ensure("PRJ-BARE", "没路径的");
+      const bare = await open("/api/graph?project=PRJ-BARE");
+      assert.equal(bare.status, 409);
+      assert.deepEqual(await bare.json(), { error: "no-path" });
+    }, { repo: repoOf(tracked), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("**不是 git 仓库就说不是** —— 空清单会画一张空图，和路径填错一个样", async () => {
+    await withPanel(async ({ open }) => {
+      const gone = await open(`/api/graph?project=${PROJECT}`);
+      assert.equal(gone.status, 409);
+      assert.deepEqual(await gone.json(), { error: "not-a-repo" });
+    }, { repo: repoOf(null) });
+  });
+
+  it("场景：代码上盘、层按依赖排、素材归门、README 不是节点", async () => {
+    const { root, tracked } = scaffold();
+    await withPanel(async ({ open }) => {
+      const response = await open(`/api/graph?project=${PROJECT}`);
+      assert.equal(response.status, 200);
+      const scene = await response.json() as {
+        layers: { key: string; index: number }[];
+        nodes: { path: string; layer: number }[];
+        edges: unknown[];
+        assetDirs: { dir: string; files: number }[];
+      };
+      // core 被依赖，在底下；archive 的死代码没人引，也是一张盘。
+      assert.deepEqual(
+        scene.layers.map((layer) => [layer.key, layer.index]),
+        [["archive", 0], ["core", 1], ["game", 2]]);
+      assert.deepEqual(
+        scene.nodes.map((node) => node.path).sort(),
+        ["archive/old.ts", "core/config.ts", "game/player.ts"]);
+      assert.equal(scene.edges.length, 1);
+      // 素材和 README 归门：art 一扇、根下散文件一扇。
+      assert.deepEqual(scene.assetDirs,
+        [{ dir: ".", files: 1 }, { dir: "art", files: 1 }]);
+    }, { repo: repoOf(tracked), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("配料单：完整正文 + 依赖的签名 + 谁依赖它 —— ingredientsFor 原样", async () => {
+    const { root, tracked } = scaffold();
+    await withPanel(async ({ open }) => {
+      const response = await open(
+        `/api/file?project=${PROJECT}&path=${encodeURIComponent("game/player.ts")}`);
+      assert.equal(response.status, 200);
+      const list = await response.json() as {
+        own: { path: string; text: string }[];
+        dependencies: { path: string; signatures: string[] }[];
+        dependents: string[];
+      };
+      assert.equal(list.own[0]!.path, "game/player.ts");
+      assert.match(list.own[0]!.text, /import \{ c \}/);
+      // 依赖那半份只有签名，没有实现。
+      assert.deepEqual(list.dependencies[0]!.path, "core/config.ts");
+      assert.match(list.dependencies[0]!.signatures.join("\n"), /const c/);
+      assert.deepEqual(list.dependents, []);
+    }, { repo: repoOf(tracked), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("**读盘面的两道闸都关着**：越界 404、没跟踪 404、软链出去 403", async () => {
+    const { root, tracked } = scaffold();
+    // 一个 tracked 的软链，指到项目外 —— 白名单挡不住它，realpath 那道要能。
+    const outside = mkdtempSync(join(tmpdir(), "stagepass-outside-"));
+    writeFileSync(join(outside, "secret.ts"), "export const s = 1;\n");
+    symlinkSync(join(outside, "secret.ts"), join(root, "core", "link.ts"));
+    const withLink = [...tracked, "core/link.ts"];
+    await withPanel(async ({ open }) => {
+      const sneak = await open(
+        `/api/file?project=${PROJECT}&path=${encodeURIComponent("../../etc/passwd")}`);
+      assert.equal(sneak.status, 404);   // 不在 git 清单里 —— 白名单先拒
+      const untracked = await open(
+        `/api/file?project=${PROJECT}&path=${encodeURIComponent("core/ghost.ts")}`);
+      assert.equal(untracked.status, 404);
+      const linked = await open(
+        `/api/file?project=${PROJECT}&path=${encodeURIComponent("core/link.ts")}`);
+      assert.equal(linked.status, 403);  // tracked，但 realpath 落在外面
+      assert.deepEqual(await linked.json(), { error: "path-outside" });
+      // tracked 但不是代码 —— 图上没有它这个节点，404 而不是 500。
+      const readme = await open(
+        `/api/file?project=${PROJECT}&path=${encodeURIComponent("README.md")}`);
+      assert.equal(readme.status, 404);
+      assert.deepEqual(await readme.json(), { error: "not-a-module" });
+    }, { repo: repoOf(withLink), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it("勾选：坏 body 400；勾掉 archive 后它的代码归门、盘上不再有", async () => {
+    const { root, tracked } = scaffold();
+    await withPanel(async ({ open }) => {
+      const bad = await open(`/api/graph-excludes?project=${PROJECT}`,
+        { method: "POST", body: "not json" });
+      assert.equal(bad.status, 400);
+
+      const saved = await open(`/api/graph-excludes?project=${PROJECT}`,
+        { method: "POST", body: JSON.stringify(["archive/"]) });
+      assert.equal(saved.status, 200);
+      assert.deepEqual(await saved.json(), { excluded: ["archive"] });
+
+      const scene = await (await open(`/api/graph?project=${PROJECT}`)).json() as {
+        nodes: { path: string }[];
+        assetDirs: { dir: string; files: number }[];
+        excluded: string[];
+      };
+      assert.ok(!scene.nodes.some((node) => node.path.startsWith("archive/")));
+      // 勾掉 ≠ 消失：archive 的文件归到门里。
+      assert.deepEqual(scene.assetDirs.find((door) => door.dir === "archive"),
+        { dir: "archive", files: 1 });
+      assert.deepEqual(scene.excluded, ["archive"]);
+    }, { repo: repoOf(tracked), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
   });
 });

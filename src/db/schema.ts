@@ -158,6 +158,10 @@ CREATE TABLE IF NOT EXISTS projects (
   -- JSON 数组，必须是全序的子序列、以 Done 收尾（domain/phase.ts 的 phaseGraphOf
   -- 在读取时校验）。NULL = 走全序。
   phase_order TEXT     NULL,
+  -- 图谱上被人勾掉的目录（图谱 spec 2026-08-12：「关键代码」的判据在面板上勾）。
+  -- JSON 数组，NULL = 没勾过。**没有索引引用它，也不许有** —— 引用新列的索引
+  -- 会让还没跑 migrate 的旧库当场打不开（prepareSchema 的顺序陷阱）。
+  graph_excludes TEXT  NULL,
   created_at  TEXT NOT NULL
 );
 
@@ -730,6 +734,7 @@ export function migrate(database: {
   const added: [table: string, column: string, type: string][] = [
     ["projects", "path", "TEXT"],
     ["projects", "phase_order", "TEXT"],
+    ["projects", "graph_excludes", "TEXT"],
     ["gaps", "note", "TEXT"],
     ["gaps", "closed_by", "TEXT"],
     ["gaps", "found_where", "TEXT"],

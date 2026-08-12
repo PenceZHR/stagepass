@@ -93,6 +93,33 @@ export class ProjectStore {
     wipe();
   }
 
+  /**
+   * 图谱上被勾掉的目录（图谱 spec 2026-08-12）。
+   *
+   * 坏数据当没勾过，不抛 —— 这一列只影响画哪些文件，一条被人手改坏的 JSON
+   * 不值得让整个面板打不开；勾选状态在界面上看得见，错了人当场就会纠正。
+   */
+  graphExcludes(id: string): string[] {
+    const row = this.database.prepare(
+      "SELECT graph_excludes FROM projects WHERE id = ?",
+    ).get(id) as { graph_excludes: string | null } | undefined;
+    if (!row?.graph_excludes) return [];
+    try {
+      const parsed: unknown = JSON.parse(row.graph_excludes);
+      return Array.isArray(parsed)
+        ? parsed.filter((dir): dir is string => typeof dir === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  setGraphExcludes(id: string, dirs: readonly string[]): void {
+    this.database.prepare(
+      "UPDATE projects SET graph_excludes = ? WHERE id = ?",
+    ).run(JSON.stringify(dirs), id);
+  }
+
   list(): Project[] {
     const rows = this.database.prepare(
       "SELECT id, name, path, created_at FROM projects ORDER BY created_at",

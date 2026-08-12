@@ -60,6 +60,13 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "graph/ingredients.ts": 0,
   // 两张图的对账（H 档第三块）。同一族工具，同一层：它只读图，不读代码。
   "graph/reconcile.ts": 0,
+  // 图谱（spec 2026-08-12）的两块纯函数：判据和布局。只吃路径清单和图，
+  // 不碰文件系统 —— 和上面同族，同层。
+  "graph/code-selection.ts": 0,
+  "graph/graph-layout.ts": 0,
+  // 图谱那条路上唯一碰盘的地方（git 清单 + 读正文）。git 是注入的，
+  // 和 `work/repo.ts` 同一个形状、同一层。
+  "graph/read-workspace.ts": 2,
   // 只依赖 phase 的纯路径生成（E：产物的家）。
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
@@ -156,6 +163,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
   // 在接口写进去的那一刻就会红。
   "web/panel-server.ts": 5,
+  // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
+  // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
+  // 「HTTP 进、JSON 出」的界面层，读的最高一层是 store（0）和 graph（0/2）。
+  "web/graph-api.ts": 5,
 
   "domain/question.ts": 3,
   "domain/brief.ts": 3,

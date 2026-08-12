@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { blastRadiusOf, dependentsOf,
   closureOf,
+  cyclesOf,
   dependenciesOf,
   parseModuleGraph,
   type ModuleFile,
@@ -93,6 +94,22 @@ describe("L0 · 路径解析和出口清单", () => {
     ]);
     assert.deepEqual(dependenciesOf(graph, "a.ts"), []);
     assert.deepEqual(graph.unresolved, [{ from: "a.ts", missing: "nowhere.ts" }]);
+  });
+
+  /**
+   * 2026-08-12 真项目上撞到的回归：`import "./x.mjs"` 被补成 `x.mjs.ts`，
+   * 于是 `unresolved` 里多出一个**不存在的文件** —— 假缺口教人不信真缺口。
+   */
+  it("**已经带脚本后缀的不再补 `.ts`** —— `./x.mjs` 就是 `x.mjs`，不是 `x.mjs.ts`", () => {
+    const graph = parseModuleGraph([
+      file("a.ts", 'import { run } from "./tool.mjs";\nexport const y = run;\n'),
+      file("tool.mjs", "export const run = 1;\n"),
+      file("b.ts", 'import { s } from "./style.js";\nexport const z = s;\n'),
+    ]);
+    // .mjs 是图里的真节点，这条边成立，不进 unresolved。
+    assert.deepEqual(dependenciesOf(graph, "a.ts"), ["tool.mjs"]);
+    // .js 指向图外 —— 缺口记的是它本来的名字，不是捏造出来的 `.js.ts`。
+    assert.deepEqual(graph.unresolved, [{ from: "b.ts", missing: "style.js" }]);
   });
 
   it("出口清单带种类 —— 配料单要靠它说「这个模块对外提供什么」", () => {
@@ -196,5 +213,34 @@ describe("爆炸半径：改它会砸到谁（反方向）", () => {
       { path: "y.ts", text: `import { x } from "./x";\nexport const y = x;` },
     ]);
     assert.deepEqual(blastRadiusOf(cyclic, "x.ts"), ["y.ts"]);
+  });
+});
+
+describe("L0 · 环的清单 —— 画图的人要看见环本身", () => {
+  it("两节点的环报出来，首尾相接", () => {
+    const cyclic = parseModuleGraph([
+      file("x.ts", 'import { y } from "./y";\nexport const x = y;\n'),
+      file("y.ts", 'import { x } from "./x";\nexport const y = x;\n'),
+    ]);
+    assert.deepEqual(cyclesOf(cyclic), [["x.ts", "y.ts"]]);
+  });
+
+  it("无环的图返回空 —— 不把长链误报成环", () => {
+    const chain = parseModuleGraph([
+      file("a.ts", 'import { b } from "./b";\nexport const a = b;\n'),
+      file("b.ts", 'import { c } from "./c";\nexport const b = c;\n'),
+      file("c.ts", "export const c = 1;\n"),
+    ]);
+    assert.deepEqual(cyclesOf(chain), []);
+  });
+
+  it("**菱形不是环** —— 两条路汇到同一个地基只是重逢，不是回头", () => {
+    const diamond = parseModuleGraph([
+      file("app.ts", 'import { l } from "./left";\nimport { r } from "./right";\nexport const a = l + r;\n'),
+      file("left.ts", 'import { base } from "./base";\nexport const l = base;\n'),
+      file("right.ts", 'import { base } from "./base";\nexport const r = base;\n'),
+      file("base.ts", "export const base = 1;\n"),
+    ]);
+    assert.deepEqual(cyclesOf(diamond), []);
   });
 });

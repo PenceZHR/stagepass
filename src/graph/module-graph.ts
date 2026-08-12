@@ -75,7 +75,16 @@ export interface ModuleGraph {
   readonly unresolved: readonly { from: string; missing: string }[];
 }
 
-/** `a/b/c.ts` + `../d/e` → `a/d/e.ts`。只认相对路径，别的都是外部包。 */
+/**
+ * `a/b/c.ts` + `../d/e` → `a/d/e.ts`。只认相对路径，别的都是外部包。
+ *
+ * **已经带脚本后缀的不再补 `.ts`。** 第一版无条件补，于是
+ * `import "./tools/x.mjs"` 被解析成 `x.mjs.ts` —— 一个不存在的文件，图上
+ * 平白多出一个**假缺口**（2026-08-12 在真项目上撞到，两条）。而假缺口比真缺口
+ * 更糟：它教人不信 `unresolved` 那张表。
+ */
+const SCRIPT_SUFFIX = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+
 function resolve(fromPath: string, specifier: string): string | null {
   if (!specifier.startsWith(".")) return null;
   const directory = fromPath.includes("/")
@@ -89,7 +98,7 @@ function resolve(fromPath: string, specifier: string): string | null {
     else out.push(part);
   }
   const joined = out.join("/");
-  return joined.endsWith(".ts") ? joined : `${joined}.ts`;
+  return SCRIPT_SUFFIX.test(joined) ? joined : `${joined}.ts`;
 }
 
 /** `import`/`export … from` 上那一串名字。取本地名之外的原名（`a as b` 取 `a`）。 */
@@ -309,4 +318,37 @@ export function blastRadiusOf(graph: ModuleGraph, path: string): string[] {
   }
   seen.delete(path);
   return [...seen].sort();
+}
+
+/**
+ * 图里的环，每条是一串首尾相接的路径（首元素不重复出现在尾部）。
+ *
+ * `closureOf` / `blastRadiusOf` 对环的态度是「遇到就停，别转死」—— 那是查询的
+ * 正确态度。但**画图的人需要看见环本身**：环是「只许往下依赖」最直接的反例，
+ * 图上不标出来，一张按层摆的图会把它伪装成两条无辜的边。
+ *
+ * DFS 一遍、每个节点只走一次，所以报的是**「存在哪些环」的代表集**，不是全部
+ * 基本环的枚举 —— 要回答的问题是「这里有没有环、在哪」，不是环的计数。
+ * 起点按 `modules` 的顺序，结果确定。
+ */
+export function cyclesOf(graph: ModuleGraph): string[][] {
+  const found: string[][] = [];
+  const state = new Map<string, "open" | "done">();
+  const stack: string[] = [];
+  const walk = (node: string): void => {
+    const seen = state.get(node);
+    if (seen === "done") return;
+    if (seen === "open") {
+      const at = stack.indexOf(node);
+      if (at >= 0) found.push(stack.slice(at));
+      return;
+    }
+    state.set(node, "open");
+    stack.push(node);
+    for (const next of dependenciesOf(graph, node)) walk(next);
+    stack.pop();
+    state.set(node, "done");
+  };
+  for (const module of graph.modules) walk(module.path);
+  return found;
 }

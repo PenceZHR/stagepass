@@ -82,6 +82,16 @@ describe("L0 · 旧库能补上后加的列", () => {
     database.close();
   });
 
+  it("graph_excludes 也在补的清单里（图谱 spec 2026-08-12），旧行是 NULL", () => {
+    const database = oldShape();
+    database.exec(SCHEMA_SQL);
+    migrate(database);
+    assert.deepEqual(
+      database.prepare("SELECT id, graph_excludes FROM projects").get(),
+      { id: "PRJ-OLD", graph_excludes: null });
+    database.close();
+  });
+
   it("跑两次不会加两列", () => {
     const database = oldShape();
     migrate(database);

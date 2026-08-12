@@ -65,6 +65,12 @@ export interface RepoOps {
    * 两个 HEAD 判「动没动手」，把拿不到当成没变，等于替人否认他做过的事。
    */
   head(cwd: string): string | null;
+  /**
+   * git 跟踪的全部文件，路径原样。**读不到就 null，不当成空清单** ——
+   * 「不是 git 仓库」和「一个空仓库」必须分得开：图谱拿空清单会画一张空图，
+   * 而空图长得和「路径填错了」一模一样（图谱 spec：fail-loud 第 3 条）。
+   */
+  trackedFiles(cwd: string): readonly string[] | null;
 }
 
 /** 看着像不像一个 commit sha。产出是路径还是 commit，靠它分。 */
@@ -167,6 +173,17 @@ export function createRepoOps(options: {
         return run(cwd, ["show", "--stat", "--patch", sha]);
       } catch {
         return null;
+      }
+    },
+    trackedFiles(cwd) {
+      try {
+        // `-z`，理由和 dirtyPaths 那条一样：裸输出会把非 ASCII 文件名转义成
+        // 八进制加引号，而图谱的节点名就是路径本身，那串东西没人认得出来。
+        return run(cwd, ["ls-files", "-z"])
+          .split("\0")
+          .filter((path) => path !== "");
+      } catch {
+        return null;   // 不是 git 仓库 —— 让调用方 fail-loud，不画空图
       }
     },
   };
