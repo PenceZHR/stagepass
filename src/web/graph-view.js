@@ -38,8 +38,11 @@ async function open(target) {
   pick("graph-project").textContent = `${target.name} · ${target.id}`;
   pick("graph-empty").hidden = true;
 
+  // 选中的 Change 带上：服务端会叠 Arch 的图纸（规划 vs 真实）。
+  const withChange = target.changeId
+    ? `&change=${encodeURIComponent(target.changeId)}` : "";
   const { status, body } = await fetchJson(
-    `/api/graph?project=${encodeURIComponent(target.id)}`);
+    `/api/graph?project=${encodeURIComponent(target.id)}${withChange}`);
   if (status !== 200) {
     showEmpty(FAILURES[body.error] ?? `图谱取不下来（${body.error ?? status}）`);
     return;
@@ -53,10 +56,12 @@ async function open(target) {
     }
   }
   scene?.setModel(model);
+  scene?.setOverlay(model.plan?.ok ? model.plan.overlay : null);
   renderList("");
   renderDoors();
   renderExcludes();
   renderDetail(null);
+  renderPlan();
   if (model.nodes.length === 0) {
     showEmpty("这个项目里没有能解析的代码模块（图谱现在只认 TS/JS 一族）。"
       + "下面的目录清单还是真的。");
@@ -194,6 +199,65 @@ async function loadIngredients(index) {
     .slice(0, 6).join("\n") || "（没有依赖）";
   card.append(title, lines);
   scene?.showNearCard(index, card);
+}
+
+/** kind → 人话。和 reconcile 的六类一一对应，别发明第七类。 */
+const FINDING_NAMES = {
+  concept_homeless: "概念未落地",
+  concept_scattered: "概念散落",
+  module_overloaded: "模块超载",
+  module_unclaimed: "模块无主",
+  relation_unimplemented: "关系没实现",
+  dependency_unplanned: "计划外依赖",
+};
+
+/**
+ * 规划 vs 真实（BACKLOG §十一）。三态分明：没选 Change、Arch 还没产图纸、
+ * 图纸坏了逐条读毛病、图纸好了逐条读发现 —— 图上画的和这里读的是同一份。
+ */
+function renderPlan() {
+  const holder = pick("graph-plan");
+  holder.replaceChildren();
+  const note = (text) => {
+    const hint = document.createElement("p");
+    hint.className = "graph-hint";
+    hint.textContent = text;
+    holder.append(hint);
+  };
+  if (!project?.changeId) {
+    note("没有选中的 Change —— 选一个再进图谱，这里会叠 Arch 的图纸。");
+    return;
+  }
+  const plan = model?.plan;
+  if (plan === undefined || (plan.ok === false && plan.reason === "missing")) {
+    note(`Arch 还没产出图纸（docs/stagepass/${project.changeId}/arch.graph.json）。`
+      + "Arch 阶段跑过之后这里会亮。");
+    return;
+  }
+  if (plan.ok === false) {
+    note("图纸不合法 —— 这要打回 Arch：");
+    for (const defect of plan.defects) {
+      const row = document.createElement("p");
+      row.className = "graph-warn";
+      row.textContent = defect;
+      holder.append(row);
+    }
+    return;
+  }
+  const overlay = plan.overlay;
+  note(`${overlay.concepts.length} 个概念 · ${overlay.relations.length} 条关系 · `
+    + (overlay.findings.length === 0 ? "对账无发现 —— 图纸和代码是一致的"
+      : `${overlay.findings.length} 条对账发现`));
+  for (const finding of overlay.findings) {
+    const row = document.createElement("div");
+    row.className = "graph-finding";
+    const badge = document.createElement("b");
+    badge.textContent = FINDING_NAMES[finding.kind] ?? finding.kind;
+    const detail = document.createElement("span");
+    detail.textContent = finding.detail;
+    row.append(badge, detail);
+    holder.append(row);
+  }
 }
 
 /** 门：不上图的那些，一扇一行。点开 = 系统文件管理器，图谱不做文件浏览器。 */

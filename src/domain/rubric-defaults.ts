@@ -206,6 +206,10 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "riskiest", text: "指名了最可能出错的一处，而不是并列罗列多项风险" },
     { section: "traceability", text: "每一组决定都对得回 Spec 的某一条，没有引入 Spec 里不存在的行为" },
     { section: "deferred", text: "留给下游的每一项都写明了留给哪个阶段和为什么现在定不了；没有把函数名、签名或数据结构推给下游" },
+    // 机器可读架构图（BACKLOG §十一）。反方指得出来：文件在不在、三个键全不全、
+    // serves 有没有漏认领 —— 每一条都是能指着说「这条不满足」的。
+    { section: "graph", text: "arch.graph.json 存在且是合法 JSON，concepts / relations / serves 三个键都有，概念 id 没有重复" },
+    { section: "graph", text: "「文件与函数清单」点过名的每个文件都在 serves 里认领了概念；relations 的 from/to 都指向存在的概念 id" },
   ],
   /*
    * 退休了（并进 Arch，2026-08-08）。**空名单 = 这个阶段不再有出厂标准**，

@@ -3,6 +3,7 @@ import {
   type EdgeKind, type ModuleGraph,
 } from "./module-graph";
 import type { Selection } from "./code-selection";
+import { reconcile, type ConceptMap, type Finding } from "./reconcile";
 
 /**
  * 把一张依赖图摆成三维场景：**层 = 环，引力 = 依赖方向，位置 = 危险度**。
@@ -287,4 +288,131 @@ export function layout(graph: ModuleGraph, selection: Selection): SceneModel {
     assetDirs: selection.assetDirs,
     excluded: selection.excluded,
   };
+}
+
+/** 规划层悬浮的高度。真实的星在 y=0 的环面上，规划的幽灵星飘在它们头顶。 */
+const PLAN_ALTITUDE = 14;
+
+export interface PlanConcept {
+  readonly id: string;
+  readonly name: string;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  /** 承载它的真实节点（SceneModel.nodes 下标）。 */
+  readonly carriers: readonly number[];
+  /** 需求里有它、代码里没有 —— reconcile 的 concept_homeless。 */
+  readonly homeless: boolean;
+}
+
+export interface PlanRelation {
+  readonly from: number;
+  readonly to: number;
+  readonly why: string;
+  /** 承载两头的模块之间真的有依赖。false = 关系没实现，或一头是幽灵。 */
+  readonly implemented: boolean;
+}
+
+export interface PlanOverlay {
+  readonly concepts: readonly PlanConcept[];
+  readonly relations: readonly PlanRelation[];
+  /** 真实节点的对账标注：下标 → FindingKind 子集（unclaimed / overloaded / scattered）。 */
+  readonly nodeMarks: Readonly<Record<number, readonly string[]>>;
+  /** 计划外的依赖（代码有、图上没有）：真实节点下标对。 */
+  readonly unplanned: readonly { from: number; to: number }[];
+  /** reconcile 的原话，给侧栏逐条读。 */
+  readonly findings: readonly Finding[];
+}
+
+/**
+ * 把 Arch 的概念图叠到已经摆好的场景上（BACKLOG §十一：架构必须可视化）。
+ *
+ * ## 摆法：规划层悬在真实层上方
+ *
+ * - 有归宿的概念摆在**承载它的那些星的重心正上方**（y = PLAN_ALTITUDE）——
+ *   概念和它的实现在一条垂线上，抬头就能对上
+ * - 无归宿的概念（needs 里有、代码里没有）摆在**最外环再往外一圈**的
+ *   规划轨道上 —— 它们还没落地，所以不在任何环带里
+ * - 关系两头都有承载且微观真有依赖 = implemented；否则是虚的
+ *
+ * 纯函数：场景 + 图 + 概念图进，叠影出。对账本身是 `reconcile()` 的活，
+ * 这里只把它的发现翻译成坐标和标注 —— 同一份发现，侧栏读原话、图上看位置。
+ */
+export function overlayPlan(
+  scene: SceneModel,
+  graph: ModuleGraph,
+  map: ConceptMap,
+): PlanOverlay {
+  const findings = reconcile(map, graph);
+  const indexOf = new Map(scene.nodes.map((node, index) => [node.path, index]));
+
+  const carriersOf = new Map<string, number[]>(
+    map.concepts.map((concept) => [concept.id, []]));
+  for (const [path, ids] of Object.entries(map.serves)) {
+    const index = indexOf.get(path);
+    if (index === undefined) continue;
+    for (const id of ids) carriersOf.get(id)?.push(index);
+  }
+
+  const outermost = Math.max(14, ...scene.layers.map((layer) => layer.radius));
+  let strays = 0;
+  const concepts: PlanConcept[] = map.concepts.map((concept) => {
+    const carriers = [...(carriersOf.get(concept.id) ?? [])].sort((a, b) => a - b);
+    if (carriers.length === 0) {
+      // 规划轨道：黄金角错开，和环带里的星同一套节奏。
+      const angle = strays * 2.39996;
+      strays += 1;
+      return {
+        id: concept.id, name: concept.name,
+        x: (outermost + 10) * Math.cos(angle),
+        y: PLAN_ALTITUDE,
+        z: (outermost + 10) * Math.sin(angle),
+        carriers, homeless: true,
+      };
+    }
+    const x = carriers.reduce((sum, index) => sum + scene.nodes[index]!.x, 0) / carriers.length;
+    const z = carriers.reduce((sum, index) => sum + scene.nodes[index]!.z, 0) / carriers.length;
+    return {
+      id: concept.id, name: concept.name,
+      x, y: PLAN_ALTITUDE, z, carriers, homeless: false,
+    };
+  });
+  const conceptIndex = new Map(concepts.map((concept, index) => [concept.id, index]));
+
+  const unimplemented = new Set(
+    findings.filter((finding) => finding.kind === "relation_unimplemented")
+      .map((finding) => `${finding.concepts[0]}>${finding.concepts[1]}`));
+  const relations: PlanRelation[] = map.relations
+    .filter((relation) => conceptIndex.has(relation.from) && conceptIndex.has(relation.to))
+    .map((relation) => ({
+      from: conceptIndex.get(relation.from)!,
+      to: conceptIndex.get(relation.to)!,
+      why: relation.why,
+      implemented: !unimplemented.has(`${relation.from}>${relation.to}`)
+        && !concepts[conceptIndex.get(relation.from)!]!.homeless
+        && !concepts[conceptIndex.get(relation.to)!]!.homeless,
+    }));
+
+  const nodeMarks: Record<number, string[]> = {};
+  const mark = (path: string, kind: string): void => {
+    const index = indexOf.get(path);
+    if (index === undefined) return;
+    nodeMarks[index] = [...(nodeMarks[index] ?? []), kind];
+  };
+  for (const finding of findings) {
+    if (finding.kind === "module_unclaimed" || finding.kind === "module_overloaded"
+      || finding.kind === "concept_scattered") {
+      for (const path of finding.modules) mark(path, finding.kind);
+    }
+  }
+
+  const unplanned = findings
+    .filter((finding) => finding.kind === "dependency_unplanned")
+    .flatMap((finding) => {
+      const from = indexOf.get(finding.modules[0] ?? "");
+      const to = indexOf.get(finding.modules[1] ?? "");
+      return from === undefined || to === undefined ? [] : [{ from, to }];
+    });
+
+  return { concepts, relations, nodeMarks, unplanned, findings };
 }

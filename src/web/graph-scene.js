@@ -92,9 +92,10 @@ export function createGraphScene(container, callbacks) {
   let selected = null;
   let edgeGroup = new THREE.Group();     // 选中态的边，重选就清
   let standingGroup = new THREE.Group(); // 常亮的：盘、星尘、违规边、断头边
+  let overlayGroup = new THREE.Group();  // 规划层：Arch 图纸的幽灵星和对账标注
   let nearCard = null;
   let flight = null;
-  scene.add(edgeGroup, standingGroup);
+  scene.add(edgeGroup, standingGroup, overlayGroup);
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -199,15 +200,23 @@ export function createGraphScene(container, callbacks) {
    * 边画成微微上拱的弧，不是直线段 —— 118 个节点的盘上，直线会齐刷刷贴着盘面
    * 排成栅栏；弧让每条边有自己的身段，加色混合下交叠处自己发亮。
    */
-  function arc(from, to, color, opacity) {
+  function arc(from, to, color, opacity, dashed = false) {
     const middle = from.clone().add(to).multiplyScalar(0.5);
     middle.y += Math.max(1.6, from.distanceTo(to) * 0.14);
     const curve = new THREE.QuadraticBezierCurve3(from, middle, to);
     const geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(28));
-    return new THREE.Line(geometry, new THREE.LineBasicMaterial({
-      color, transparent: true, opacity,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    }));
+    const material = dashed
+      ? new THREE.LineDashedMaterial({
+        color, transparent: true, opacity, dashSize: 1.1, gapSize: 0.9,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })
+      : new THREE.LineBasicMaterial({
+        color, transparent: true, opacity,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+    const drawn = new THREE.Line(geometry, material);
+    if (dashed) drawn.computeLineDistances();
+    return drawn;
   }
 
   function dashedStub(from, color) {
@@ -304,6 +313,7 @@ export function createGraphScene(container, callbacks) {
   function setModel(next) {
     wipe(edgeGroup);
     wipe(standingGroup);
+    wipe(overlayGroup);
     for (const group of groups) scene.remove(group);
     groups = []; hitTargets = []; labels = []; headline = new Set();
     selected = null; nearCard = null;
@@ -441,6 +451,94 @@ export function createGraphScene(container, callbacks) {
     callbacks.onSelect?.(index);
   }
 
+  /**
+   * 规划层（BACKLOG §十一）：Arch 图纸叠在真实的环上。
+   *
+   * ```
+   * 概念       线框多面体悬在承载它的星的重心正上方 —— 抬头就能对上
+   * 幽灵概念   玫瑰色，挂在最外环之外的规划轨道 —— 需求里有、代码里没有
+   * 垂线       概念 → 每个承载它的星，发丝虚线
+   * 关系       实现了的实弧；没实现的玫瑰虚弧 —— 最危险的一类，它看着好好的
+   * 计划外依赖 琥珀虚弧贴着星层 —— 代码有、图纸没有，多半是抄近路
+   * 无主的星   一圈玫瑰虚环 —— 说不出服务谁的模块没有存在理由
+   * ```
+   *
+   * 传 null 摘掉整层。数据是服务端 overlayPlan 算好的，这里照画。
+   */
+  function setOverlay(overlay) {
+    wipe(overlayGroup);
+    if (overlay === null || !model) return;
+
+    const anchors = overlay.concepts.map((concept) => {
+      const spot = new THREE.Vector3(concept.x, concept.y, concept.z);
+      const tint = concept.homeless ? 0xc46a6a : 0xe1c9a8;
+      const gem = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(1.5, 0),
+        new THREE.MeshBasicMaterial({
+          color: tint, wireframe: true, transparent: true,
+          opacity: concept.homeless ? 0.8 : 0.6,
+        }),
+      );
+      gem.position.copy(spot);
+      overlayGroup.add(gem);
+
+      const tag = document.createElement("div");
+      tag.className = concept.homeless
+        ? "graph-plan-tag graph-plan-homeless" : "graph-plan-tag";
+      tag.textContent = concept.homeless ? `${concept.name} · 未落地` : concept.name;
+      const label = new CSS2DObject(tag);
+      label.position.copy(spot).add(new THREE.Vector3(0, 2.4, 0));
+      overlayGroup.add(label);
+
+      for (const carrier of concept.carriers) {
+        overlayGroup.add(
+          line(spot, centerOf(carrier), tint, 0.35, true));
+      }
+      return spot;
+    });
+
+    for (const relation of overlay.relations) {
+      overlayGroup.add(arc(
+        anchors[relation.from], anchors[relation.to],
+        relation.implemented ? 0xe1c9a8 : 0xc46a6a,
+        relation.implemented ? 0.45 : 0.7,
+        !relation.implemented,
+      ));
+    }
+
+    for (const dep of overlay.unplanned) {
+      overlayGroup.add(arc(centerOf(dep.from), centerOf(dep.to), 0xdf9d66, 0.6, true));
+    }
+
+    for (const [index, kinds] of Object.entries(overlay.nodeMarks)) {
+      if (!kinds.includes("module_unclaimed") && !kinds.includes("module_overloaded")) continue;
+      const star = groups[Number(index)];
+      const halo = new THREE.Mesh(
+        new THREE.TorusGeometry(star.userData.radius * 2.8, 0.03, 6, 48),
+        new THREE.MeshBasicMaterial({
+          color: kinds.includes("module_unclaimed") ? 0xc46a6a : 0xdf9d66,
+          transparent: true, opacity: 0.65,
+        }),
+      );
+      halo.rotation.x = Math.PI / 2;
+      halo.position.copy(star.position);
+      overlayGroup.add(halo);
+    }
+  }
+
+  /** 概念→承载者的垂线是直的，不拱 —— 拱线是「流」，垂线是「归属」。 */
+  function line(from, to, color, opacity, dashed) {
+    const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
+    const material = dashed
+      ? new THREE.LineDashedMaterial({
+        color, transparent: true, opacity, dashSize: 0.8, gapSize: 0.6,
+      })
+      : new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+    const drawn = new THREE.Line(geometry, material);
+    if (dashed) drawn.computeLineDistances();
+    return drawn;
+  }
+
   /** 飞到一颗星跟前 —— 「飞进去」的另一半。reduced-motion 下瞬移。 */
   function flyTo(index) {
     const target = centerOf(index);
@@ -544,6 +642,7 @@ export function createGraphScene(container, callbacks) {
 
   return {
     setModel,
+    setOverlay,
     select,
     flyTo,
     showNearCard,

@@ -1180,6 +1180,19 @@ body::after {
 .graph-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .graph-door { display: flex; gap: 8px; padding: 3px 6px; font-size: 12px; color: rgba(255,255,255,.65); }
 .graph-exclude { display: flex; gap: 7px; align-items: center; padding: 2px 6px; font-size: 12px; color: rgba(255,255,255,.7); }
+/* 规划层：概念名牌用沙金 kicker；未落地的玫瑰；对账发现一条一块。 */
+.graph-plan-tag {
+  font: 500 10px/1 ui-monospace, monospace; letter-spacing: .1em;
+  color: rgba(225,201,168,.85); white-space: nowrap; pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.graph-plan-tag.graph-plan-homeless { color: rgba(196,106,106,.9); }
+.graph-finding {
+  display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; margin: 4px 0;
+  border-left: 2px solid rgba(225,201,168,.35); background: rgba(255,255,255,.03);
+  border-radius: 0; font-size: 11.5px; color: rgba(255,255,255,.72);
+}
+.graph-finding b { font-weight: 500; color: var(--sand); font-size: 10.5px; letter-spacing: .06em; }
 #graph-view details summary { cursor: pointer; font-size: 12px; color: rgba(255,255,255,.55); }
 </style>
 </head>
@@ -1486,6 +1499,10 @@ body::after {
         <aside class="graph-side">
           <input id="graph-search" type="search" placeholder="找文件…" autocomplete="off">
           <div id="graph-detail"></div>
+          <details open>
+            <summary>规划 vs 真实（Arch 对账）</summary>
+            <div id="graph-plan"></div>
+          </details>
           <div id="graph-list"></div>
           <details open>
             <summary>不上图的那些（点不开 —— 用文件管理器）</summary>

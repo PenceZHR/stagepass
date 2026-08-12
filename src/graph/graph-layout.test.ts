@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { selectCode } from "./code-selection";
-import { layout } from "./graph-layout";
+import { layout, overlayPlan } from "./graph-layout";
 import { parseModuleGraph, type ModuleFile } from "./module-graph";
 
 /**
@@ -158,5 +158,67 @@ describe("L0 · 场景的完整性", () => {
     const scene = layout(graph, picked);
     assert.equal(scene.nodes.length, 1);
     assert.deepEqual(scene.assetDirs, [{ dir: ".", files: 1 }]);
+  });
+});
+
+describe("L0 · overlayPlan：规划层悬在真实层上方（BACKLOG §十一）", () => {
+  const scene = () => layout(tree(), selection);
+  const graphOf = () => tree();
+  const map = {
+    concepts: [
+      { id: "cfg", name: "配置" },
+      { id: "play", name: "玩法" },
+      { id: "dream", name: "还没做的" },
+    ],
+    relations: [
+      { from: "play", to: "cfg", why: "玩法读配置" },
+      { from: "dream", to: "cfg", why: "幽灵的关系" },
+    ],
+    serves: {
+      "core/config.ts": ["cfg"],
+      "core/geometry.ts": ["cfg"],
+      "game/player.ts": ["play"],
+    },
+  };
+
+  it("有归宿的概念悬在承载者重心正上方；幽灵挂在规划轨道上", () => {
+    const plan = overlayPlan(scene(), graphOf(), map);
+    const cfg = plan.concepts.find((concept) => concept.id === "cfg")!;
+    assert.equal(cfg.homeless, false);
+    assert.equal(cfg.y, 14);
+    // 重心：两个承载者坐标的平均。
+    const s = scene();
+    const carriers = cfg.carriers.map((index) => s.nodes[index]!);
+    assert.ok(Math.abs(cfg.x - (carriers[0]!.x + carriers[1]!.x) / 2) < 1e-9);
+    const dream = plan.concepts.find((concept) => concept.id === "dream")!;
+    assert.equal(dream.homeless, true);
+    assert.ok(Math.hypot(dream.x, dream.z) > Math.max(...s.layers.map((l) => l.radius)),
+      "幽灵概念必须在最外环之外的规划轨道上");
+  });
+
+  it("关系分实现与虚：真有依赖的实线，幽灵参与的一律虚", () => {
+    const plan = overlayPlan(scene(), graphOf(), map);
+    const real = plan.relations.find((relation) => relation.why === "玩法读配置")!;
+    // game/player.ts import 了 view3d，没直接 import core/config —— 看真图。
+    // tree() 里 player 只引 camera/rig，所以这条关系其实没实现 —— 虚。
+    assert.equal(real.implemented, false);
+    const ghost = plan.relations.find((relation) => relation.why === "幽灵的关系")!;
+    assert.equal(ghost.implemented, false);
+  });
+
+  it("对账标注落到节点下标上：无主模块被点名", () => {
+    const plan = overlayPlan(scene(), graphOf(), map);
+    const s = scene();
+    const unclaimedIndexes = Object.entries(plan.nodeMarks)
+      .filter(([, kinds]) => kinds.includes("module_unclaimed"))
+      .map(([index]) => s.nodes[Number(index)]!.path);
+    // serves 只认领了三个文件 —— 其余全是无主。
+    assert.ok(unclaimedIndexes.includes("view3d/camera.ts"));
+    assert.ok(!unclaimedIndexes.includes("core/config.ts"));
+  });
+
+  it("findings 原话带回 —— 侧栏读的和图上画的是同一份", () => {
+    const plan = overlayPlan(scene(), graphOf(), map);
+    assert.ok(plan.findings.some((finding) => finding.kind === "concept_homeless"));
   });
 });

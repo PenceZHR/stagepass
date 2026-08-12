@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { parseModuleGraph, type ModuleFile } from "./module-graph";
-import { reconcile, type ConceptMap } from "./reconcile";
+import { parseConceptMap, reconcile, type ConceptMap } from "./reconcile";
 
 /**
  * L1 · 两张图的对账（§5.4.4：全部价值在对账）。
@@ -128,5 +128,37 @@ describe("L1 · ③ 两张图对不上的两个方向", () => {
     const found = reconcile(map({ serves: {} }), graph);
     assert.deepEqual([...new Set(kinds(found))].sort(),
       ["concept_homeless", "module_unclaimed"]);
+  });
+});
+
+describe("L0 · parseConceptMap —— 固定 Schema，fail-closed", () => {
+  it("合法的图原样读进来", () => {
+    const parsed = parseConceptMap(JSON.stringify({
+      concepts: [{ id: "auth", name: "登录" }, { id: "bill", name: "计费" }],
+      relations: [{ from: "auth", to: "bill", why: "计费要知道是谁" }],
+      serves: { "src/auth.ts": ["auth"] },
+    }));
+    assert.ok(parsed.ok);
+    assert.equal(parsed.map.concepts.length, 2);
+    assert.deepEqual(parsed.map.serves["src/auth.ts"], ["auth"]);
+  });
+
+  it("**毛病逐条点名**，不修剪成「差不多」—— 这份文件是模型写的", () => {
+    const parsed = parseConceptMap(JSON.stringify({
+      concepts: [{ id: "auth", name: "登录" }, { id: "auth", name: "重复" }],
+      relations: [{ from: "auth", to: "ghost", why: "指向不存在的" }],
+      serves: { "src/x.ts": ["nobody"] },
+    }));
+    assert.ok(!parsed.ok);
+    assert.ok(parsed.defects.some((entry) => entry.includes("重复")));
+    assert.ok(parsed.defects.some((entry) => entry.includes("ghost")));
+    assert.ok(parsed.defects.some((entry) => entry.includes("nobody")));
+  });
+
+  it("不是 JSON、缺节，都说清楚", () => {
+    assert.ok(!parseConceptMap("not json").ok);
+    const empty = parseConceptMap("{}");
+    assert.ok(!empty.ok);
+    assert.equal(empty.defects.length, 3);   // concepts / relations / serves 各一条
   });
 });

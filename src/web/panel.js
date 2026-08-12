@@ -2554,7 +2554,11 @@ function openGraphView(project) {
   stageView.hidden = true;
   orbitView.hidden = true;
   graphView.hidden = false;
-  window.stagepassGraph?.open({ id: project.id, name: project.name });
+  window.stagepassGraph?.open({
+    id: project.id, name: project.name,
+    // 选中的 Change 一起带过去 —— 图谱会叠这个 Change 的 Arch 图纸（规划 vs 真实）。
+    changeId: panelState?.changeId ?? null,
+  });
 }
 
 function closeGraphView() {

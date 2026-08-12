@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type Database from "better-sqlite3";
 
+import { artifactHome } from "../domain/artifact-home";
 import { parseExcludes } from "../graph/code-selection";
 import { readFileIngredients, readWorkspaceGraph } from "../graph/read-workspace";
 import { ProjectStore } from "../store/project-store";
@@ -61,9 +62,29 @@ export function createGraphApi(input: {
     const excluded = projects.graphExcludes(projectId);
 
     if (url.pathname === "/api/graph" && request.method === "GET") {
-      const graph = readWorkspaceGraph({ root, excluded, trackedFiles });
+      /*
+       * 带 `change=` 就叠 Arch 的图纸（BACKLOG §十一）：读
+       * `docs/stagepass/<CHG>/arch.graph.json`、对账、把叠影一起带回。
+       * Change 必须真属于这个项目 —— 拿别的项目的 changeId 读不到任何东西。
+       */
+      const changeId = url.searchParams.get("change");
+      let planFile: string | undefined;
+      if (changeId !== null && changeId !== "") {
+        const owner = input.database.prepare(
+          "SELECT project_id FROM changes WHERE id = ?",
+        ).get(changeId) as { project_id: string | null } | undefined;
+        if (owner === undefined || owner.project_id !== projectId) {
+          fail(404, "change-unknown"); return true;
+        }
+        planFile = `${artifactHome(changeId)}/arch.graph.json`;
+      }
+      const graph = readWorkspaceGraph({
+        root, excluded, trackedFiles,
+        ...(planFile === undefined ? {} : { planFile }),
+      });
       if (!graph.ok) { fail(409, graph.reason); return true; }
-      json(graph.scene);
+      json(graph.plan === undefined
+        ? graph.scene : { ...graph.scene, plan: graph.plan });
       return true;
     }
 

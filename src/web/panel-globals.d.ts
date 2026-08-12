@@ -40,7 +40,12 @@ declare module "three/addons/controls/OrbitControls.js";
 /** panel.js ↔ graph-view.js 唯一的握手（图谱 spec 2026-08-12）。 */
 interface Window {
   stagepassGraph?: {
-    open(project: { id: string; name: string }): void;
+    open(project: {
+      id: string;
+      name: string;
+      /** 选中的 Change —— 图谱要叠它的 Arch 图纸。null = 没选。 */
+      changeId?: string | null;
+    }): void;
     close(): void;
   };
 }

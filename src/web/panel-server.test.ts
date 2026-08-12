@@ -3413,3 +3413,73 @@ describe("图谱 · /api/graph /api/file /api/graph-excludes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("图谱 · Arch 图纸叠影（BACKLOG §十一）", () => {
+  const scaffold = (): { root: string; tracked: string[] } => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-plan-"));
+    mkdirSync(join(root, "core"));
+    writeFileSync(join(root, "core", "config.ts"), "export const c = 1;\n");
+    writeFileSync(join(root, "core", "stray.ts"), "export const s = 1;\n");
+    return { root, tracked: ["core/config.ts", "core/stray.ts"] };
+  };
+  const repoOf = (tracked: readonly string[]): PanelOptions["repo"] => ({
+    dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null,
+    show: () => null, head: () => null, trackedFiles: () => tracked,
+  });
+
+  it("没图纸 missing、坏图纸 invalid 逐条点名、好图纸叠影带回", async () => {
+    const { root, tracked } = scaffold();
+    await withPanel(async ({ open }) => {
+      const bare = await open(`/api/graph?project=${PROJECT}&change=${CHANGE}`);
+      assert.equal(bare.status, 200);
+      assert.deepEqual((await bare.json() as { plan: unknown }).plan,
+        { ok: false, reason: "missing" });
+
+      mkdirSync(join(root, "docs", "stagepass", CHANGE), { recursive: true });
+      const planPath = join(root, "docs", "stagepass", CHANGE, "arch.graph.json");
+      writeFileSync(planPath, "not json");
+      const broken = await open(`/api/graph?project=${PROJECT}&change=${CHANGE}`);
+      const invalid = (await broken.json() as {
+        plan: { ok: boolean; reason: string; defects: string[] };
+      }).plan;
+      assert.equal(invalid.reason, "invalid");
+      assert.ok(invalid.defects.length > 0);
+
+      writeFileSync(planPath, JSON.stringify({
+        concepts: [{ id: "cfg", name: "配置" }, { id: "dream", name: "没落地的" }],
+        relations: [],
+        serves: { "core/config.ts": ["cfg"] },
+      }));
+      const good = await open(`/api/graph?project=${PROJECT}&change=${CHANGE}`);
+      const plan = (await good.json() as {
+        plan: {
+          ok: boolean;
+          overlay: {
+            concepts: { id: string; homeless: boolean; y: number }[];
+            findings: { kind: string }[];
+            nodeMarks: Record<string, string[]>;
+          };
+        };
+      }).plan;
+      assert.equal(plan.ok, true);
+      // 规划层悬空；没落地的概念是幽灵；没认领的模块被点名。
+      assert.ok(plan.overlay.concepts.every((concept) => concept.y > 0));
+      assert.equal(
+        plan.overlay.concepts.find((concept) => concept.id === "dream")?.homeless, true);
+      assert.ok(plan.overlay.findings.some((finding) => finding.kind === "module_unclaimed"));
+    }, { repo: repoOf(tracked), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("change 不属于这个项目就 404 —— 别的项目的图纸读不到", async () => {
+    const { root, tracked } = scaffold();
+    await withPanel(async ({ open, database }) => {
+      new ProjectStore(database).ensure("PRJ-OTHER", "别人", "/tmp");
+      new ChangeStore(database).create("CHG-OTHER", { projectId: "PRJ-OTHER" });
+      const sneak = await open(`/api/graph?project=${PROJECT}&change=CHG-OTHER`);
+      assert.equal(sneak.status, 404);
+      assert.deepEqual(await sneak.json(), { error: "change-unknown" });
+    }, { repo: repoOf(tracked), projectPath: root });
+    rmSync(root, { recursive: true, force: true });
+  });
+});

@@ -2,11 +2,12 @@ import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, sep } from "node:path";
 
 import { selectCode } from "./code-selection";
-import { layout, type SceneModel } from "./graph-layout";
+import { layout, overlayPlan, type PlanOverlay, type SceneModel } from "./graph-layout";
 import {
   ingredientsFor, ModuleNotInGraphError, type IngredientList,
 } from "./ingredients";
 import { parseModuleGraph, type ModuleFile } from "./module-graph";
+import { parseConceptMap } from "./reconcile";
 
 /**
  * 图谱这条路上**唯一碰文件系统的地方**。
@@ -22,8 +23,18 @@ import { parseModuleGraph, type ModuleFile } from "./module-graph";
  * `no-store` 同一个理由：缓存会静默显示上一版，读起来就像「改动没生效」。
  */
 
+/**
+ * Arch 图纸的读取结果，三态分明（BACKLOG §十一）：
+ * 没有图纸（Arch 还没产出）、图纸不合法（逐条点名）、图纸合法（叠影算好）。
+ * **「没有」和「坏了」必须分得开** —— 前者是流程还没走到，后者要打回 Arch。
+ */
+export type PlanReading =
+  | { readonly ok: true; readonly overlay: PlanOverlay }
+  | { readonly ok: false; readonly reason: "missing" }
+  | { readonly ok: false; readonly reason: "invalid"; readonly defects: readonly string[] };
+
 export type WorkspaceGraph =
-  | { readonly ok: true; readonly scene: SceneModel }
+  | { readonly ok: true; readonly scene: SceneModel; readonly plan?: PlanReading }
   | { readonly ok: false; readonly reason: "not-a-repo" };
 
 /**
@@ -57,15 +68,44 @@ export function readWorkspaceGraph(input: {
   excluded: readonly string[];
   trackedFiles: (cwd: string) => readonly string[] | null;
   readFile?: (absolute: string) => string | null;
+  /**
+   * Arch 图纸（`arch.graph.json`）的仓库相对路径。给了就读、对账、算叠影；
+   * 不给就没有 plan 这一节。路径是服务端从 changeId 拼的，不是用户输入 ——
+   * 但 realpath 那道闸照关（changeId 是人起的名字，名字里带 `../` 不该变成能力）。
+   */
+  planFile?: string;
 }): WorkspaceGraph {
   const tracked = input.trackedFiles(input.root);
   if (tracked === null) return { ok: false, reason: "not-a-repo" };
   const selection = selectCode(tracked, input.excluded);
-  const files = codeFiles({
-    root: input.root, code: selection.code,
-    readFile: input.readFile ?? readOrSkip,
-  });
-  return { ok: true, scene: layout(parseModuleGraph(files), selection) };
+  const readFile = input.readFile ?? readOrSkip;
+  const files = codeFiles({ root: input.root, code: selection.code, readFile });
+  const graph = parseModuleGraph(files);
+  const scene = layout(graph, selection);
+
+  if (input.planFile === undefined) return { ok: true, scene };
+
+  let plan: PlanReading;
+  const inside = (relative: string): boolean => {
+    try {
+      const realRoot = realpathSync(input.root);
+      const real = realpathSync(join(realRoot, relative));
+      return real === realRoot || real.startsWith(realRoot + sep);
+    } catch {
+      return false;   // realpath 失败 = 文件不存在 —— 按「没有图纸」走
+    }
+  };
+  const text = inside(input.planFile)
+    ? readFile(join(input.root, input.planFile)) : null;
+  if (text === null) {
+    plan = { ok: false, reason: "missing" };
+  } else {
+    const parsed = parseConceptMap(text);
+    plan = parsed.ok
+      ? { ok: true, overlay: overlayPlan(scene, graph, parsed.map) }
+      : { ok: false, reason: "invalid", defects: parsed.defects };
+  }
+  return { ok: true, scene, plan };
 }
 
 export type FileReading =
