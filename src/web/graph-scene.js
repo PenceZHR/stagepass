@@ -28,6 +28,7 @@ const VIOLATION_COLOR = 0xc46a6a;   // 向上的边：玫瑰，常亮但极细
 const FOG_COLOR = 0x151220;         // 和面板的夜空同族
 const NEAR_DISTANCE = 26;           // 近景档：比这近就把配料单牌翻出来
 const MID_DISTANCE = 45;            // 中景档：飞到一颗星这么近，它的名字浮出来
+const GOLDEN_ANGLE = 2.39996;       // 造星的朝向/珠位用它错开 —— 确定性，刷新不换天
 
 /** 辉光贴图：一张 canvas 画的径向渐变。所有星共用，按 material.color 染色。 */
 function glowTexture() {
@@ -62,9 +63,15 @@ export function createGraphScene(container, callbacks) {
   container.appendChild(labelRenderer.domElement);
 
   const scene = new THREE.Scene();
-  // 雾给纵深：远处的星自己暗下去。密度按整座塔的尺度在 fitCamera 里调。
+  // 雾给纵深：远处的星自己暗下去。密度按环系的尺度在 fitCamera 里调。
   scene.fog = new THREE.FogExp2(FOG_COLOR, 0.006);
   const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 5000);
+
+  // 晶核要棱面，棱面要光：一盏暖顶光 + 半球环境光。加色混合的辉光不吃光，不受影响。
+  scene.add(new THREE.HemisphereLight(0xfff0d8, 0x2a2438, 0.9));
+  const key = new THREE.DirectionalLight(0xffe8c4, 1.6);
+  key.position.set(60, 120, 40);
+  scene.add(key);
 
   const controls = new OrbitControls(camera, labelRenderer.domElement);
   controls.enableDamping = true;
@@ -101,6 +108,92 @@ export function createGraphScene(container, callbacks) {
   }
 
   const coreRadius = (node) => 0.55 + Math.sqrt(node.blast) * 0.22;
+
+  /** 测试文件换个身段（钻石）—— 形状说话，不靠颜色一个人扛。 */
+  const isTestFile = (path) => /\.test\.|(^|\/)tests?\//.test(path);
+
+  /**
+   * 造一颗星。**不是一颗球** —— 每颗都是小件工艺品，件件确定性生成
+   * （角度全由下标推出来，刷新不换天）：
+   *
+   * ```
+   * 晶核     多面体 + 平直着色 —— 打光后有棱面；测试文件是钻石（八面体）
+   * 双层辉光  内圈亮、外圈虚 —— 一层的话要么糊要么寡
+   * 星带     爆炸半径 ≥ 8 才有：一圈倾斜的发丝环 —— 危险的星自带光环
+   * 珠子     串在星带上，一颗 = 一个导出（最多五颗）—— 接口越多，星带越热闹
+   * ```
+   */
+  function buildStar(index, node) {
+    const tint = LAYER_COLORS[node.layer % LAYER_COLORS.length];
+    const radius = coreRadius(node);
+    const group = new THREE.Group();
+    group.position.set(node.x, node.y, node.z);
+
+    const core = new THREE.Mesh(
+      isTestFile(node.path)
+        ? new THREE.OctahedronGeometry(radius * 1.1, 0)
+        : new THREE.IcosahedronGeometry(radius, 0),
+      new THREE.MeshStandardMaterial({
+        color: 0xf4e8d4, flatShading: true, metalness: 0.2, roughness: 0.45,
+        emissive: tint, emissiveIntensity: 0.22,
+      }),
+    );
+    // 每颗的朝向不同 —— 同一批棱面对着同一个方向，看着像冲压件。
+    core.rotation.set(index * 0.7, index * GOLDEN_ANGLE, index * 0.35);
+
+    const haloInner = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glow, color: tint, transparent: true, opacity: 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    haloInner.scale.setScalar(radius * 3.6);
+    const haloOuter = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glow, color: tint, transparent: true, opacity: 0.30,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    haloOuter.scale.setScalar(radius * 9);
+
+    let ring = null;
+    if (node.blast >= 8) {
+      ring = new THREE.Mesh(
+        new THREE.TorusGeometry(radius * 2.1, 0.035, 8, 64),
+        new THREE.MeshBasicMaterial({
+          color: tint, transparent: true, opacity: 0.55,
+          blending: THREE.AdditiveBlending, depthWrite: false,
+        }),
+      );
+      ring.rotation.set(
+        Math.PI / 2 - (0.38 + (index % 5) * 0.11), (index * 0.777) % Math.PI, 0);
+      // 珠子串在星带上（作为环的子节点，跟着环倾斜）。
+      for (let bead = 0; bead < Math.min(node.exports, 5); bead += 1) {
+        const seat = bead * GOLDEN_ANGLE + index;
+        const pearl = new THREE.Mesh(
+          new THREE.SphereGeometry(Math.max(0.07, radius * 0.12), 8, 6),
+          new THREE.MeshBasicMaterial({ color: 0xfff4e2 }),
+        );
+        pearl.position.set(
+          radius * 2.1 * Math.cos(seat), radius * 2.1 * Math.sin(seat), 0);
+        ring.add(pearl);
+      }
+      group.add(ring);
+    }
+
+    const hit = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(radius * 1.9, 1.4), 8, 6),
+      new THREE.MeshBasicMaterial({ visible: false }),
+    );
+    hit.userData.index = index;
+
+    const text = document.createElement("div");
+    text.className = "graph-node-label";
+    text.textContent = node.name;
+    const label = new CSS2DObject(text);
+    label.position.set(0, radius + 1.7, 0);
+    label.visible = false;
+
+    group.add(core, haloInner, haloOuter, hit, label);
+    group.userData = { core, haloInner, haloOuter, ring, tint, radius };
+    return { group, hit, label };
+  }
 
   /**
    * 边画成微微上拱的弧，不是直线段 —— 118 个节点的盘上，直线会齐刷刷贴着盘面
@@ -267,44 +360,13 @@ export function createGraphScene(container, callbacks) {
       }
     }
 
-    // 节点：星（亮芯 + 辉光）。命中球比星大一圈 —— raycast 打得中才算能点。
+    // 节点：一颗一颗造出来的星，不是一颗光球（用户 2026-08-12 要的精细）。
     for (const [index, node] of model.nodes.entries()) {
-      const tint = LAYER_COLORS[node.layer % LAYER_COLORS.length];
-      const radius = coreRadius(node);
-      const group = new THREE.Group();
-      group.position.set(node.x, node.y, node.z);
-
-      const core = new THREE.Mesh(
-        new THREE.SphereGeometry(radius, 18, 12),
-        new THREE.MeshBasicMaterial({ color: 0xfff4e2 }),
-      );
-      core.userData.index = index;
-
-      const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: glow, color: tint, transparent: true, opacity: 0.9,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      }));
-      halo.scale.setScalar(radius * 7);
-
-      const hit = new THREE.Mesh(
-        new THREE.SphereGeometry(Math.max(radius * 1.8, 1.3), 8, 6),
-        new THREE.MeshBasicMaterial({ visible: false }),
-      );
-      hit.userData.index = index;
-
-      const text = document.createElement("div");
-      text.className = "graph-node-label";
-      text.textContent = node.name;
-      const label = new CSS2DObject(text);
-      label.position.set(0, radius + 1.6, 0);
-      label.visible = false;
-
-      group.add(core, halo, hit, label);
-      group.userData = { core, halo, tint, radius };
-      scene.add(group);
-      groups.push(group);
-      hitTargets.push(hit);
-      labels.push(label);
+      const star = buildStar(index, node);
+      scene.add(star.group);
+      groups.push(star.group);
+      hitTargets.push(star.hit);
+      labels.push(star.label);
     }
 
     // 常亮的两种「不对劲」，都极细 —— 它们是批注，不是主角。
@@ -360,16 +422,21 @@ export function createGraphScene(container, callbacks) {
     }
 
     for (const [other, group] of groups.entries()) {
-      const { core, halo, tint, radius } = group.userData;
+      const { core, haloInner, haloOuter, ring, tint, radius } = group.userData;
       const related = other === index
         || dependencies.has(other) || dependents.has(other);
       const color = other === index ? SELECT_COLOR
         : dependencies.has(other) ? DEP_COLOR
           : dependents.has(other) ? DEPENDENT_COLOR : tint;
-      halo.material.color.setHex(color);
-      halo.material.opacity = index === null ? 0.9 : related ? 1 : 0.22;
-      halo.scale.setScalar(radius * (other === index ? 10 : 7));
-      core.material.color.setHex(related || index === null ? 0xfff4e2 : 0x8a8494);
+      haloInner.material.color.setHex(color);
+      haloOuter.material.color.setHex(color);
+      haloInner.material.opacity = index === null ? 0.85 : related ? 1 : 0.18;
+      haloOuter.material.opacity = index === null ? 0.30 : related ? 0.45 : 0.06;
+      haloOuter.scale.setScalar(radius * (other === index ? 13 : 9));
+      core.material.emissive.setHex(color);
+      core.material.emissiveIntensity = other === index ? 0.55 : related ? 0.35 : 0.22;
+      core.material.color.setHex(related || index === null ? 0xf4e8d4 : 0x6f6a7c);
+      if (ring) ring.material.opacity = index === null ? 0.55 : related ? 0.8 : 0.10;
     }
     callbacks.onSelect?.(index);
   }
