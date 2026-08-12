@@ -93,6 +93,9 @@ export function createGraphScene(container, callbacks) {
   let edgeGroup = new THREE.Group();     // 选中态的边，重选就清
   let standingGroup = new THREE.Group(); // 常亮的：盘、星尘、违规边、断头边
   let overlayGroup = new THREE.Group();  // 规划层：Arch 图纸的幽灵星和对账标注
+  let conceptGems = [];                  // 概念星（可点），下标 = overlay.concepts
+  let conceptLines = [];                 // 每个概念的归属垂线组，点了才亮
+  let overlayActive = false;
   let nearCard = null;
   let flight = null;
   scene.add(edgeGroup, standingGroup, overlayGroup);
@@ -371,10 +374,10 @@ export function createGraphScene(container, callbacks) {
       tag.className = "graph-layer-tag";
       tag.textContent = `${layer.key} · ${layer.count}`;
       const anchor = new CSS2DObject(tag);
-      // 每层换一个角度：全排在同一根线上会叠成一摞。
+      // 名牌贴环的**外缘**，别插在星群中间和星名打架；每层换一个角度。
       const spot = layer.index * 0.85 + 0.35;
-      const mid = (layer.inner + layer.radius) / 2;
-      anchor.position.set(mid * Math.cos(spot), 1.8, mid * Math.sin(spot));
+      const edge = layer.radius + 2.2;
+      anchor.position.set(edge * Math.cos(spot), -1.0, edge * Math.sin(spot));
       standingGroup.add(anchor);
     }
 
@@ -487,9 +490,12 @@ export function createGraphScene(container, callbacks) {
    */
   function setOverlay(overlay) {
     wipe(overlayGroup);
+    conceptGems = [];
+    conceptLines = [];
+    overlayActive = overlay !== null;
     if (overlay === null || !model) return;
 
-    const anchors = overlay.concepts.map((concept) => {
+    const anchors = overlay.concepts.map((concept, order) => {
       const spot = new THREE.Vector3(concept.x, concept.y, concept.z);
       const tint = concept.homeless ? 0xc46a6a : 0xe1c9a8;
       const gem = new THREE.Mesh(
@@ -500,20 +506,34 @@ export function createGraphScene(container, callbacks) {
         }),
       );
       gem.position.copy(spot);
+      gem.userData.concept = order;
+      gem.userData.baseOpacity = gem.material.opacity;
       overlayGroup.add(gem);
+      conceptGems.push(gem);
 
       const tag = document.createElement("div");
       tag.className = concept.homeless
         ? "graph-plan-tag graph-plan-homeless" : "graph-plan-tag";
-      tag.textContent = concept.homeless ? `${concept.name} · 未落地` : concept.name;
+      // 名牌只留名字，长了截断 —— 「未落地」由颜色和位置说（玫瑰 + 规划轨道），
+      // 全文在侧栏。文字是图上最贵的东西，一块名牌一行字。
+      tag.textContent = concept.name.length > 12
+        ? `${concept.name.slice(0, 12)}…` : concept.name;
+      tag.title = concept.name;
       const label = new CSS2DObject(tag);
       label.position.copy(spot).add(new THREE.Vector3(0, 2.4, 0));
       overlayGroup.add(label);
 
+      /*
+       * 归属垂线**默认全藏**（2026-08-12 用户判「乱」的最大头：一个概念
+       * 28 个承载者就是 28 根常亮的笼条）。点概念星才亮它自己的那把。
+       */
+      const lines = new THREE.Group();
+      lines.visible = false;
       for (const carrier of concept.carriers) {
-        overlayGroup.add(
-          line(spot, centerOf(carrier), tint, 0.35, true));
+        lines.add(line(spot, centerOf(carrier), tint, 0.4, true));
       }
+      overlayGroup.add(lines);
+      conceptLines.push(lines);
       return spot;
     });
 
@@ -602,8 +622,30 @@ export function createGraphScene(container, callbacks) {
   labelRenderer.domElement.addEventListener("pointerup", (event) => {
     // 拖动是转相机，不是点选 —— 挪超过 6px 就不当点击。
     if (downAt === null || Math.hypot(event.clientX - downAt.x, event.clientY - downAt.y) > 6) return;
+    // 概念星优先（它们悬在星层上方，两者很少在屏幕上重叠）。
+    const box = labelRenderer.domElement.getBoundingClientRect();
+    pointer.x = ((event.clientX - box.left) / box.width) * 2 - 1;
+    pointer.y = -((event.clientY - box.top) / box.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const gem = raycaster.intersectObjects(conceptGems, false)[0];
+    if (gem !== undefined) {
+      selectConcept(gem.object.userData.concept);
+      return;
+    }
+    selectConcept(null);
     select(pick(event));
   });
+
+  /** 点概念星：亮它自己的归属垂线，别的概念的收起来。null = 全收。 */
+  function selectConcept(order) {
+    for (const [other, lines] of conceptLines.entries()) {
+      lines.visible = other === order;
+    }
+    for (const [other, gem] of conceptGems.entries()) {
+      gem.material.opacity = order === null ? gem.userData.baseOpacity
+        : other === order ? 1 : 0.25;
+    }
+  }
   labelRenderer.domElement.addEventListener("dblclick", (event) => {
     const index = pick(event);
     if (index !== null) { select(index); flyTo(index); }
@@ -616,7 +658,9 @@ export function createGraphScene(container, callbacks) {
   function updateTiers() {
     if (!model) return;
     for (const [index, label] of labels.entries()) {
-      label.visible = headline.has(index) || index === selected
+      // 叠影开着时，常亮的星名让位给概念名牌 —— 一个视距只说一层话。
+      // 星名飞近了照浮（中景档不受影响），选中的永远在。
+      label.visible = (headline.has(index) && !overlayActive) || index === selected
         || camera.position.distanceTo(groups[index].position) < MID_DISTANCE;
     }
     if (nearCard && selected !== null) {

@@ -255,15 +255,27 @@ function renderPlan() {
   note(`${overlay.concepts.length} 个概念 · ${overlay.relations.length} 条关系 · `
     + (overlay.findings.length === 0 ? "对账无发现 —— 图纸和代码是一致的"
       : `${overlay.findings.length} 条对账发现`));
+  // 按类分组折叠 —— 131 张卡摊开是一面墙（2026-08-12 用户判「乱」）。
+  // 「模块无主 92」是一行，点开才是 92 条；类按发现数少的在前（少的往往更要紧）。
+  const byKind = new Map();
   for (const finding of overlay.findings) {
-    const row = document.createElement("div");
-    row.className = "graph-finding";
-    const badge = document.createElement("b");
-    badge.textContent = FINDING_NAMES[finding.kind] ?? finding.kind;
-    const detail = document.createElement("span");
-    detail.textContent = finding.detail;
-    row.append(badge, detail);
-    holder.append(row);
+    byKind.set(finding.kind, [...(byKind.get(finding.kind) ?? []), finding]);
+  }
+  for (const [kind, findings] of
+    [...byKind.entries()].sort((a, b) => a[1].length - b[1].length)) {
+    const fold = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = `${FINDING_NAMES[kind] ?? kind} · ${findings.length}`;
+    fold.append(summary);
+    for (const finding of findings) {
+      const row = document.createElement("div");
+      row.className = "graph-finding";
+      const detail = document.createElement("span");
+      detail.textContent = finding.detail;
+      row.append(detail);
+      fold.append(row);
+    }
+    holder.append(fold);
   }
 }
 
