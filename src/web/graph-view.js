@@ -41,8 +41,15 @@ async function open(target) {
   // 选中的 Change 带上：服务端会叠 Arch 的图纸（规划 vs 真实）。
   const withChange = target.changeId
     ? `&change=${encodeURIComponent(target.changeId)}` : "";
-  const { status, body } = await fetchJson(
+  let { status, body } = await fetchJson(
     `/api/graph?project=${encodeURIComponent(target.id)}${withChange}`);
+  if (status === 404 && body.error === "change-unknown" && withChange !== "") {
+    // 面板选中的 Change 不在库里（比如默认的 CHG-1）—— 叠影是增值，
+    // 取不到不该杀死整张图（2026-08-12 真机撞到）。降级成不带 change 重取。
+    project = { ...target, changeId: null };
+    ({ status, body } = await fetchJson(
+      `/api/graph?project=${encodeURIComponent(target.id)}`));
+  }
   if (status !== 200) {
     showEmpty(FAILURES[body.error] ?? `图谱取不下来（${body.error ?? status}）`);
     return;

@@ -254,7 +254,12 @@ export function createGraphScene(container, callbacks) {
     }));
   }
 
-  /** 吸积盘贴图：内缘炽金、向外烧尽。一张 canvas 的径向渐变。 */
+  /**
+   * 吸积盘贴图：内缘炽金、向外烧尽，**带流纹**。
+   *
+   * 流纹不是装饰 —— 径向渐变是旋转对称的，转多快都看不出来在转；
+   * 方位角上要有结构，旋转才存在。纹路确定性生成（黄金角步进），刷新不换天。
+   */
   function accretionTexture() {
     const size = 256;
     const canvas = document.createElement("canvas");
@@ -269,6 +274,20 @@ export function createGraphScene(container, callbacks) {
     fade.addColorStop(1, "rgba(169,120,121,0)");
     brush.fillStyle = fade;
     brush.fillRect(0, 0, size, size);
+    // 流纹：几十条亮暗相间的短弧，微微拖出螺旋感。
+    brush.translate(size / 2, size / 2);
+    for (let i = 0; i < 44; i += 1) {
+      const angle = i * GOLDEN_ANGLE;
+      const inner = size * (0.30 + (i % 7) * 0.024);
+      const sweep = 0.5 + (i % 5) * 0.22;
+      const bright = i % 3 === 0;
+      brush.beginPath();
+      brush.arc(0, 0, inner, angle, angle + sweep);
+      brush.strokeStyle = bright
+        ? "rgba(255,242,214,.28)" : "rgba(60,40,52,.30)";
+      brush.lineWidth = 1.6 + (i % 4) * 0.8;
+      brush.stroke();
+    }
     return new THREE.CanvasTexture(canvas);
   }
 
@@ -305,7 +324,8 @@ export function createGraphScene(container, callbacks) {
     disc.rotation.x = -Math.PI / 2;
 
     hole.add(horizon, photon, disc);
-    hole.userData.spin = disc;   // 帧循环里让吸积盘极慢地转
+    // 帧循环里动的三样：盘在转、环在呼吸 —— 黑洞是活的。
+    hole.userData.animate = { disc, photon };
     return hole;
   }
 
@@ -608,10 +628,15 @@ export function createGraphScene(container, callbacks) {
   function frame(now) {
     if (disposed) return;
     requestAnimationFrame(frame);
-    // 吸积盘极慢地转 —— 黑洞是活的。reduced-motion 下静止。
+    // 黑洞是活的：盘带着流纹转（约 30 秒一圈），光子环缓慢呼吸 ——
+    // 和面板太阳的日冕同一种节奏，不抢戏。reduced-motion 下静止。
     if (!still) {
-      const hole = standingGroup.children.find((child) => child.userData.spin);
-      if (hole) hole.userData.spin.rotation.z = now * 0.00002;
+      const hole = standingGroup.children.find((child) => child.userData.animate);
+      if (hole) {
+        hole.userData.animate.disc.rotation.z = now * 0.0002;
+        hole.userData.animate.photon.material.opacity =
+          0.78 + 0.18 * Math.sin(now * 0.0011);
+      }
     }
     if (flight !== null) {
       const t = Math.min(1, (now - flight.start) / flight.ms);
