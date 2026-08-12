@@ -5,15 +5,15 @@
  * 数据进（SceneModel）、事件出（onSelect）、别的它不知道：不 fetch、不读库、
  * 不认识面板的其余部分。
  *
- * ## 视觉语言（2026-08-12 重画）
+ * ## 视觉语言（2026-08-12 二稿：黑洞 + 土星环，用户定的元素）
  *
- * 第一版是灰球堆，用户判定丑。这一版贴面板自己的美学（云海 + 暖沙金 + 发丝线）：
+ * 第一版是叠盘塔，用户判定丑。这一版是**一个引力系统**：
  *
- * - **节点是星，不是石头**：辉光 sprite（加色混合）+ 亮芯，大小仍由爆炸半径说话
- * - **盘是发丝环**，和环形轨道同族 —— 一圈细线 + 几乎看不见的盘面
- * - **边是弧**，不是直线段；选中才亮，加色混合让交叠处自己发光
- * - **雾和星尘**给纵深 —— 远的自己暗下去，不用手调透明度
- * - 配色全取自面板：沙金 / 玫瑰 / 灰绿，低饱和（设计稿 §3 禁仪表盘警示色）
+ * - **中心是黑洞**：纯黑视界 + 光子环 + 暖金吸积盘 —— 它就是「依赖的压力」本身
+ * - **代码排成土星环**：被依赖得越狠的层越靠内（坐标是服务端算的，这边照画）
+ * - **节点是星**：辉光 sprite（加色混合）+ 亮芯，大小仍由爆炸半径说话
+ * - **环带是发丝细缘 + 几乎看不见的带面**；边是微拱的弧，选中才亮
+ * - **雾和星尘**给纵深；配色全取自面板：沙金 / 玫瑰 / 灰绿，低饱和
  */
 import * as THREE from "three";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
@@ -27,7 +27,7 @@ const DEPENDENT_COLOR = 0xdf9d66;   // 谁依赖它：暖橙
 const VIOLATION_COLOR = 0xc46a6a;   // 向上的边：玫瑰，常亮但极细
 const FOG_COLOR = 0x151220;         // 和面板的夜空同族
 const NEAR_DISTANCE = 26;           // 近景档：比这近就把配料单牌翻出来
-const MID_DISTANCE = 80;            // 中景档：比这近就浮出该盘全部标签
+const MID_DISTANCE = 45;            // 中景档：飞到一颗星这么近，它的名字浮出来
 
 /** 辉光贴图：一张 canvas 画的径向渐变。所有星共用，按 material.color 染色。 */
 function glowTexture() {
@@ -130,16 +130,16 @@ export function createGraphScene(container, callbacks) {
   const centerOf = (index) => groups[index].position.clone();
 
   /** 星尘：一层稀疏的远景点，给「在一个空间里」的感觉。静止，不闪。 */
-  function sprinkleDust(radius, top) {
+  function sprinkleDust(radius) {
     const positions = [];
     for (let i = 0; i < 240; i += 1) {
       // 均匀壳层分布；确定性伪随机（黄金角步进），刷新不换天
       const a = i * 2.39996;
       const b = i * 0.61803 * Math.PI * 2;
-      const r = radius * (2.2 + (i % 17) * 0.22);
+      const r = radius * (1.5 + (i % 17) * 0.18);
       positions.push(
         r * Math.cos(a) * Math.cos(b * 0.31),
-        top / 2 + r * 0.75 * Math.sin(b),
+        r * 0.45 * Math.sin(b),
         r * Math.sin(a) * Math.cos(b * 0.31),
       );
     }
@@ -152,6 +152,61 @@ export function createGraphScene(container, callbacks) {
     }));
   }
 
+  /** 吸积盘贴图：内缘炽金、向外烧尽。一张 canvas 的径向渐变。 */
+  function accretionTexture() {
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const brush = canvas.getContext("2d");
+    const fade = brush.createRadialGradient(
+      size / 2, size / 2, size * 0.30, size / 2, size / 2, size * 0.5);
+    fade.addColorStop(0, "rgba(255,236,200,.95)");
+    fade.addColorStop(0.18, "rgba(232,176,74,.60)");
+    fade.addColorStop(0.5, "rgba(217,138,95,.22)");
+    fade.addColorStop(1, "rgba(169,120,121,0)");
+    brush.fillStyle = fade;
+    brush.fillRect(0, 0, size, size);
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  /**
+   * 黑洞。三件套：纯黑视界（雾都染不到它 —— 黑洞比夜更黑）、
+   * 一圈锋利的光子环、平躺的吸积盘。它占的就是布局留出的那个洞（半径 11）。
+   */
+  function blackHole() {
+    const hole = new THREE.Group();
+
+    const horizon = new THREE.Mesh(
+      new THREE.SphereGeometry(5.2, 48, 32),
+      new THREE.MeshBasicMaterial({ color: 0x000000, fog: false }),
+    );
+
+    const photon = new THREE.Mesh(
+      new THREE.TorusGeometry(5.55, 0.10, 12, 128),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff0d4, fog: false, transparent: true, opacity: 0.95,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }),
+    );
+    // 微微立起来一点 —— 全平的话从 3/4 视角看只剩一条线。
+    photon.rotation.x = Math.PI / 2 - 0.22;
+
+    const disc = new THREE.Mesh(
+      new THREE.RingGeometry(5.4, 10.6, 128),
+      new THREE.MeshBasicMaterial({
+        map: accretionTexture(), fog: false, transparent: true,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    disc.rotation.x = -Math.PI / 2;
+
+    hole.add(horizon, photon, disc);
+    hole.userData.spin = disc;   // 帧循环里让吸积盘极慢地转
+    return hole;
+  }
+
   /** 把一张 SceneModel 摆出来。重进图谱就整个重建 —— 图不缓存，场景也不缝补。 */
   function setModel(next) {
     wipe(edgeGroup);
@@ -161,37 +216,42 @@ export function createGraphScene(container, callbacks) {
     selected = null; nearCard = null;
     model = next;
 
-    // 盘：发丝环 + 几乎看不见的盘面。和环形轨道同族，不抢星的戏。
+    standingGroup.add(blackHole());
+
+    // 环带：外缘一根发丝线 + 几乎看不见的带面。层名沿着各自的角度错开摆。
     for (const layer of model.layers) {
       const tint = LAYER_COLORS[layer.index % LAYER_COLORS.length];
 
       const rim = new THREE.Mesh(
-        new THREE.TorusGeometry(layer.radius, 0.055, 8, 128),
+        new THREE.TorusGeometry(layer.radius, 0.05, 8, 160),
         new THREE.MeshBasicMaterial({
-          color: tint, transparent: true, opacity: 0.5,
+          color: tint, transparent: true, opacity: 0.42,
           blending: THREE.AdditiveBlending, depthWrite: false,
         }),
       );
       rim.rotation.x = Math.PI / 2;
-      rim.position.set(0, layer.y - 1.2, 0);
+      rim.position.set(0, -1.0, 0);
       standingGroup.add(rim);
 
-      const floor = new THREE.Mesh(
-        new THREE.CircleGeometry(layer.radius, 96),
+      const band = new THREE.Mesh(
+        new THREE.RingGeometry(layer.inner, layer.radius, 128),
         new THREE.MeshBasicMaterial({
-          color: tint, transparent: true, opacity: 0.045,
+          color: tint, transparent: true, opacity: 0.05,
           side: THREE.DoubleSide, depthWrite: false,
         }),
       );
-      floor.rotation.x = -Math.PI / 2;
-      floor.position.copy(rim.position);
-      standingGroup.add(floor);
+      band.rotation.x = -Math.PI / 2;
+      band.position.set(0, -1.0, 0);
+      standingGroup.add(band);
 
       const tag = document.createElement("div");
       tag.className = "graph-layer-tag";
       tag.textContent = `${layer.key} · ${layer.count}`;
       const anchor = new CSS2DObject(tag);
-      anchor.position.set(-layer.radius - 2.5, layer.y - 1.2, 0);
+      // 每层换一个角度：全排在同一根线上会叠成一摞。
+      const spot = layer.index * 0.85 + 0.35;
+      const mid = (layer.inner + layer.radius) / 2;
+      anchor.position.set(mid * Math.cos(spot), 1.8, mid * Math.sin(spot));
       standingGroup.add(anchor);
     }
 
@@ -257,28 +317,24 @@ export function createGraphScene(container, callbacks) {
       standingGroup.add(dashedStub(centerOf(gap.from), VIOLATION_COLOR));
     }
 
-    const top = model.layers.length > 0
-      ? model.layers[model.layers.length - 1].y : 0;
-    const widest = Math.max(4, ...model.layers.map((layer) => layer.radius));
-    standingGroup.add(sprinkleDust(widest, top));
+    const widest = Math.max(14, ...model.layers.map((layer) => layer.radius));
+    standingGroup.add(sprinkleDust(widest));
 
     fitCamera();
     select(null);
   }
 
-  /** 取景：3/4 视角把整座塔框进来 —— 第一眼看到的是结构，不是某张盘的内部。 */
+  /** 取景：抬高一点的 3/4 俯角 —— 第一眼是黑洞和整套环，不是某条环带的内部。 */
   function fitCamera() {
     if (!model || model.layers.length === 0) return;
-    const top = model.layers[model.layers.length - 1].y;
-    const widest = Math.max(4, ...model.layers.map((layer) => layer.radius));
-    const focus = new THREE.Vector3(0, top / 2, 0);
-    const envelope = Math.hypot(top / 2, widest) + 6;
-    const distance = envelope / Math.sin((camera.fov / 2) * (Math.PI / 180));
-    const direction = new THREE.Vector3(0.55, 0.42, 1).normalize();
+    const widest = Math.max(14, ...model.layers.map((layer) => layer.radius));
+    const focus = new THREE.Vector3(0, 0, 0);
+    const distance = (widest + 8) / Math.sin((camera.fov / 2) * (Math.PI / 180));
+    const direction = new THREE.Vector3(0.30, 0.85, 1).normalize();
     controls.target.copy(focus);
     camera.position.copy(focus.clone().add(direction.multiplyScalar(distance)));
-    // 雾跟着尺度走：塔越高雾越薄，保证顶层不糊。
-    scene.fog.density = 1.6 / Math.max(distance, 60);
+    // 雾跟着尺度走：环越大雾越薄，保证最外圈不糊。
+    scene.fog.density = 1.4 / Math.max(distance, 60);
     controls.update();
   }
 
@@ -368,18 +424,15 @@ export function createGraphScene(container, callbacks) {
     if (index !== null) { select(index); flyTo(index); }
   });
 
-  /** 三档 LOD，每帧按相机距离拨。 */
+  /**
+   * 三档 LOD，每帧按相机距离拨。土星环是平的，「离哪张盘近」没有意义了 ——
+   * 判据改成**逐星**：飞近谁，谁的名字浮出来。
+   */
   function updateTiers() {
     if (!model) return;
-    const layerNear = new Map();
-    for (const layer of model.layers) {
-      const distance = camera.position.distanceTo(new THREE.Vector3(0, layer.y, 0));
-      layerNear.set(layer.index, distance < MID_DISTANCE);
-    }
     for (const [index, label] of labels.entries()) {
-      const node = model.nodes[index];
-      label.visible = headline.has(index) || layerNear.get(node.layer) === true
-        || index === selected;
+      label.visible = headline.has(index) || index === selected
+        || camera.position.distanceTo(groups[index].position) < MID_DISTANCE;
     }
     if (nearCard && selected !== null) {
       nearCard.visible = camera.position.distanceTo(centerOf(selected)) < NEAR_DISTANCE;
@@ -390,6 +443,11 @@ export function createGraphScene(container, callbacks) {
   function frame(now) {
     if (disposed) return;
     requestAnimationFrame(frame);
+    // 吸积盘极慢地转 —— 黑洞是活的。reduced-motion 下静止。
+    if (!still) {
+      const hole = standingGroup.children.find((child) => child.userData.spin);
+      if (hole) hole.userData.spin.rotation.z = now * 0.00002;
+    }
     if (flight !== null) {
       const t = Math.min(1, (now - flight.start) / flight.ms);
       const ease = t * (2 - t);

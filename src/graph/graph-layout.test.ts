@@ -39,13 +39,28 @@ const tree = () => parseModuleGraph([
 
 const selection = { code: [], assetDirs: [{ dir: "assets", files: 3 }], excluded: ["archive"] };
 
-describe("L0 · 层：组、序、破环", () => {
-  it("组 = 直接父目录，层序 = 拓扑（被依赖的在底下）", () => {
+describe("L0 · 环：组、序、破环", () => {
+  it("组 = 直接父目录，环序 = 拓扑（被依赖得最狠的贴着洞）", () => {
     const scene = layout(tree(), selection);
     assert.deepEqual(
-      scene.layers.map((layer) => [layer.key, layer.index, layer.y]),
-      [["core", 0, 0], ["view3d", 1, 26], ["game", 2, 52], ["tests", 3, 78]],
+      scene.layers.map((layer) => [layer.key, layer.index]),
+      [["core", 0], ["view3d", 1], ["game", 2], ["tests", 3]],
     );
+    // 土星环是平的。
+    assert.ok(scene.layers.every((layer) => layer.y === 0));
+    assert.ok(scene.nodes.every((node) => node.y === 0));
+  });
+
+  it("golden：环带嵌套 —— 第 0 环内缘贴洞，后一环内缘 = 前一环外缘 + 缝", () => {
+    const scene = layout(tree(), selection);
+    assert.equal(scene.layers[0]!.inner, 16);   // HOLE 11 + GAP 5
+    for (const [i, layer] of scene.layers.entries()) {
+      assert.ok(layer.radius > layer.inner, `${layer.key} 的环带没有宽度`);
+      if (i > 0) {
+        assert.ok(Math.abs(layer.inner - (scene.layers[i - 1]!.radius + 5)) < 1e-9,
+          `${layer.key} 的内缘漂了`);
+      }
+    }
   });
 
   it("**组间环按权重破，破的那条记在账上** —— 它是发现，不是布局的垃圾", () => {
@@ -65,34 +80,37 @@ describe("L0 · 层：组、序、破环", () => {
   });
 });
 
-describe("L0 · 盘内：葵花螺旋，爆炸半径说话", () => {
-  it("**盘心是最危险的那个** —— 每层第一个节点在爆炸半径最大处", () => {
+describe("L0 · 环带内：重的沉向内缘，密度各环一致", () => {
+  it("**离洞最近的是最危险的那个** —— 每环第一个节点爆炸半径最大、半径最小", () => {
     const scene = layout(tree(), selection);
     const core = scene.nodes.filter((node) => node.layer === 0);
-    // config 波及 3 个（camera/rig/player…），geometry 波及 2 个 —— config 在前。
+    // config 被两层引，geometry 只被一层 —— config 在前、更靠洞。
     assert.equal(core[0]!.path, "core/config.ts");
     assert.ok(core[0]!.blast > core[1]!.blast);
-    // 第一个节点贴着盘心：r = 3·√0.55。
-    const r0 = Math.hypot(core[0]!.x, core[0]!.z);
-    assert.ok(Math.abs(r0 - 3 * Math.sqrt(0.55)) < 1e-9);
+    assert.ok(
+      Math.hypot(core[0]!.x, core[0]!.z) < Math.hypot(core[1]!.x, core[1]!.z));
   });
 
   it("golden：第 k 个节点的极坐标就是公式本身", () => {
     const scene = layout(tree(), selection);
+    const ring = scene.layers[0]!;
     const core = scene.nodes.filter((node) => node.layer === 0);
     for (const [k, node] of core.entries()) {
-      const r = 3 * Math.sqrt(k + 0.55);
+      const r = Math.sqrt(ring.inner ** 2
+        + ((k + 0.5) / core.length) * (ring.radius ** 2 - ring.inner ** 2));
       const a = k * 2.39996;
       assert.ok(Math.abs(node.x - r * Math.cos(a)) < 1e-9, `节点 ${k} 的 x 漂了`);
       assert.ok(Math.abs(node.z - r * Math.sin(a)) < 1e-9, `节点 ${k} 的 z 漂了`);
-      assert.equal(node.y, 0);
     }
   });
 
-  it("盘半径 ∝ √n —— 密度各盘一致，不靠手调", () => {
+  it("golden：环带按每节点等面积长大 —— 密度不靠手调", () => {
     const scene = layout(tree(), selection);
-    const core = scene.layers.find((layer) => layer.key === "core")!;
-    assert.equal(core.radius, 3 * Math.sqrt(2) + 3);
+    for (const ring of scene.layers) {
+      const area = Math.PI * (ring.radius ** 2 - ring.inner ** 2);
+      assert.ok(Math.abs(area - ring.count * 26) < 1e-6,
+        `${ring.key} 的环带面积漂了：${area}`);
+    }
   });
 });
 

@@ -5,32 +5,46 @@ import {
 import type { Selection } from "./code-selection";
 
 /**
- * 把一张依赖图摆成三维场景：**层 = 盘，高度 = 依赖方向，位置 = 危险度**。
+ * 把一张依赖图摆成三维场景：**层 = 环，引力 = 依赖方向，位置 = 危险度**。
  *
  * ## 为什么布局在服务端、是纯函数
  *
  * 纯函数才有 golden test —— 同一张图永远摆出同一个场景，坐标不会因为前端
  * 改了个常量悄悄漂。前端只负责画，一个数都不算。
  *
- * ## 三条布局规则（图谱 spec 2026-08-12）
+ * ## 形态：黑洞 + 同心环（用户 2026-08-12 定，换掉第一版的叠盘塔）
+ *
+ * 中心留一个洞（前端画黑洞），代码绕着它排成土星环。**引力就是依赖方向**：
+ *
+ * ```
+ * 被依赖得越狠的层，环越靠内 —— 全树压在它身上，它离洞最近
+ * tests 谁也不被依赖 —— 最外圈
+ * 违规（依赖比自己外层的东西）= 向外爬的边，一眼能看出来
+ * ```
+ *
+ * ## 三条布局规则
  *
  * 1. **组 = 文件的直接父目录。** demo 恰好得到 core/view3d/game/tests 四组，
  *    stagepass 得到 src 下九组 —— 两边都对，不用配置。
- * 2. **层序 = 组图的拓扑序**（全序：同级并列的组也排出先后，免得两张盘叠在
- *    同一个高度上）。组图有环时按边的权重破，**保重的那条**，被破的边记进
+ * 2. **环序 = 组图的拓扑序**（全序：同级并列的组也排出先后，一组一条环带）。
+ *    组图有环时按边的权重破，**保重的那条**，被破的边记进
  *    `brokenLayerEdges` —— 它本身就是一条发现，不是布局的垃圾。
- * 3. **盘内位置 = 葵花螺旋，按爆炸半径降序** —— 越靠盘心越危险，位置本身在
- *    说话。第 k 个节点 `r = SPACING·√(k+0.55)`、`a = k·黄金角`，
- *    于是盘半径 `∝ √n`，节点密度各盘一致。
+ * 3. **环带内按爆炸半径降序、黄金角布点，重的沉向内缘** —— 引力隐喻的延伸：
+ *    同一层里也越危险越靠洞。第 k 个（共 n 个）的半径
+ *    `r = √(rᵢₙ² + (k+0.5)/n · (rₒᵤₜ² − rᵢₙ²))`，角 `a = k·黄金角`；
+ *    环带外缘按**每节点等面积**长大（`rₒᵤₜ = √(rᵢₙ² + n·AREA/π)`），
+ *    于是所有环带的密度一致，不靠手调。
  *
- * 坐标系：y 向上（层的高度），盘面在 x/z 平面 —— three.js 的习惯，前端照画。
+ * 坐标系：全部节点在 y=0 的平面上，环在 x/z —— 土星环是平的。
  */
 
-/** 盘内节点间距。改它整张图等比缩放，别的什么都不变。 */
-const SPACING = 3;
-/** 相邻两张盘的高度差。 */
-const LAYER_GAP = 26;
-/** 黄金角（弧度）。葵花籽就是这么排的 —— 任何 n 下都不出现放射状的空条。 */
+/** 中心洞的半径 —— 前端的黑洞画在这里面，代码不许进来。 */
+const HOLE_RADIUS = 11;
+/** 相邻环带之间的空隙。 */
+const RING_GAP = 5;
+/** 每个节点在环带里占的面积。改它整张图等比疏密，别的什么都不变。 */
+const NODE_AREA = 26;
+/** 黄金角（弧度）。任何 n 下都不出现放射状的空条。 */
 const GOLDEN_ANGLE = 2.39996;
 
 export interface SceneNode {
@@ -54,8 +68,13 @@ export interface SceneNode {
 export interface SceneLayer {
   /** 组名，就是目录：`assets/scripts/core`。 */
   readonly key: string;
+  /** 0 = 最内圈 = 被依赖得最狠的那层。 */
   readonly index: number;
+  /** 环带内缘。第 0 环的内缘就是洞的边。 */
+  readonly inner: number;
+  /** 环带外缘。 */
   readonly radius: number;
+  /** 恒为 0 —— 土星环是平的。留着是给第二阶段的立体标注用。 */
   readonly y: number;
   readonly count: number;
 }
@@ -184,12 +203,12 @@ export function layout(graph: ModuleGraph, selection: Selection): SceneModel {
 
   const { level, broken } = orderGroups(weights);
 
-  // 全序：先按层号，同层按组名 —— 同级并列的组也一组一张盘，不叠在一个高度。
+  // 全序：先按层号，同层按组名 —— 同级并列的组也一组一条环带，不叠在一起。
   const groupKeys = [...weights.keys()].sort((a, b) =>
     (level.get(a)! - level.get(b)!) || a.localeCompare(b));
   const layerIndex = new Map(groupKeys.map((key, index) => [key, index]));
 
-  // 盘内排序：爆炸半径降序，同数按路径 —— 位置说话，结果确定。
+  // 环带内排序：爆炸半径降序，同数按路径 —— 重的沉向内缘，结果确定。
   const measured = paths.map((path) => ({
     path,
     blast: blastRadiusOf(graph, path).length,
@@ -205,12 +224,17 @@ export function layout(graph: ModuleGraph, selection: Selection): SceneModel {
 
   const nodes: SceneNode[] = [];
   const indexOf = new Map<string, number>();
-  const layers: SceneLayer[] = groupKeys.map((key) => {
+  const layers: SceneLayer[] = [];
+  let inner = HOLE_RADIUS + RING_GAP;
+  for (const key of groupKeys) {
     const entries = byLayer.get(key) ?? [];
     const index = layerIndex.get(key)!;
-    const y = index * LAYER_GAP;
+    // 每节点等面积长大：所有环带密度一致，不靠手调。空组也占一条细缝，
+    // 免得「一层消失了」和「一层是空的」在图上分不开。
+    const outer = Math.sqrt(inner * inner + Math.max(entries.length, 1) * NODE_AREA / Math.PI);
     for (const [k, entry] of entries.entries()) {
-      const r = SPACING * Math.sqrt(k + 0.55);
+      const r = Math.sqrt(
+        inner * inner + ((k + 0.5) / entries.length) * (outer * outer - inner * inner));
       const a = k * GOLDEN_ANGLE;
       const node = graph.modules.find((module) => module.path === entry.path)!;
       indexOf.set(entry.path, nodes.length);
@@ -220,7 +244,7 @@ export function layout(graph: ModuleGraph, selection: Selection): SceneModel {
           .replace(/\.(?:ts|tsx|js|jsx|mjs|cjs)$/, ""),
         layer: index,
         x: r * Math.cos(a),
-        y,
+        y: 0,
         z: r * Math.sin(a),
         exports: node.exports.length,
         deps: dependenciesOf(graph, entry.path).length,
@@ -229,14 +253,9 @@ export function layout(graph: ModuleGraph, selection: Selection): SceneModel {
         marks: [],
       });
     }
-    return {
-      key,
-      index,
-      radius: SPACING * Math.sqrt(entries.length) + SPACING,
-      y,
-      count: entries.length,
-    };
-  });
+    layers.push({ key, index, inner, radius: outer, y: 0, count: entries.length });
+    inner = outer + RING_GAP;
+  }
 
   const edges: SceneEdge[] = [];
   for (const module of graph.modules) {
