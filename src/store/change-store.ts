@@ -373,6 +373,27 @@ export class ChangeStore {
         this.database.prepare(
           "DELETE FROM change_states WHERE change_id = ?",
         ).run(changeId);
+      } else if (action === "sendBack" && next.phase !== current.state.phase) {
+        /*
+         * **打回清全部座位**（2026-08-12，用户点名的「并行状态回转」）。
+         *
+         * 只清身后不够：主线在 Build、Test 座位并行跑到 settled，打回 BuildPlan
+         * 时 Test 在落点**前方**，按下面那条规则会活下来 —— 而重走到 Test 是
+         * approve 到达，**到达即收编**，旧世界的 settled 被原样接过来：测试从没
+         * 对着新计划重写过，状态却说「可以直接批准」。这正是 P0 第 4 条
+         * （sendBack 到达不收编）防住了落点、没防住落点下游的同一个病。
+         *
+         * 打回宣告的是「上游产物作废」—— 此前并行攒下的每一个 settled 都建立在
+         * 作废的前提上，没有一个例外，所以全清。evidence / gaps 照旧留表（重走的
+         * 轮对着它们干活）；重走穿过分叉点时，上面那条开孪生座的规则会把座位
+         * 重新开出来 —— 新座位攒的才是新世界的轮次。
+         *
+         * 顺序要紧：先清，紧接着「两轨一起重来」才开孪生座 —— 反过来刚开的座
+         * 会被自己这一步清掉。
+         */
+        this.database.prepare(
+          "DELETE FROM change_states WHERE change_id = ?",
+        ).run(changeId);
       } else if (next.phase !== current.state.phase) {
         const ahead = graph.order.slice(graph.order.indexOf(next.phase) + 1);
         this.database.prepare(
