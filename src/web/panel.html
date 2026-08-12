@@ -1110,6 +1110,69 @@ body::after {
   .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
+/* ── 项目图谱（spec 2026-08-12）：第三个 view ─────────────────
+ *
+ * 一屏两半：左边是能飞进去的 3D（three.js 画的），右边是同一份数据的列表 ——
+ * raycast 会点不准，列表永远点得准，键盘和读屏也只认列表。谁点都改同一个选中态。
+ */
+#graph-view { display: flex; flex-direction: column; gap: 10px; padding: 18px 20px 14px; }
+.graph-body { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.graph-canvas {
+  position: relative; flex: 1; min-width: 0; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: oklch(0.14 0.03 295 / 60%);
+}
+.graph-canvas canvas { position: absolute; inset: 0; }
+.graph-labels { position: absolute; inset: 0; }
+.graph-layer-tag { font: 500 11px/1 ui-monospace, monospace; letter-spacing: .06em; color: rgba(255,255,255,.55); white-space: nowrap; }
+.graph-node-label {
+  font-size: 11px; color: rgba(255,255,255,.85); white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0,0,0,.85); pointer-events: none;
+}
+.graph-near-card {
+  max-width: 330px; padding: 8px 11px; font-size: 11px; color: rgba(255,255,255,.85);
+  background: rgba(39,36,47,.92); border: 1px solid var(--border); border-radius: 10px;
+}
+.graph-near-card pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 10px; color: rgba(255,255,255,.6); }
+.graph-empty {
+  position: absolute; inset: 0; z-index: 3; display: grid; place-items: center;
+  padding: 30px; text-align: center; font-size: 14px; line-height: 1.7;
+  color: rgba(255,255,255,.65); background: rgba(20,18,26,.55);
+}
+.graph-side { flex: 0 0 300px; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+#graph-search {
+  background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 9px;
+  color: #fff; padding: 8px 11px; font: inherit; font-size: 13px;
+}
+#graph-detail h3 { margin: 0 0 6px; font: 500 13px/1.4 var(--serif); color: #fff; word-break: break-all; }
+#graph-detail dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 12px; }
+#graph-detail dt { color: rgba(255,255,255,.5); }
+#graph-detail dd { margin: 0; color: rgba(255,255,255,.85); }
+.graph-hint { font-size: 12px; color: rgba(255,255,255,.5); margin: 0; }
+.graph-warn { font-size: 12px; color: var(--problem); }
+.graph-ingredients {
+  max-height: 30vh; overflow: auto; margin: 8px 0 0;
+  background: rgba(0,0,0,.28); border: 1px solid var(--border); border-radius: 9px;
+  padding: 9px; font-size: 10.5px; line-height: 1.5; color: rgba(255,255,255,.72);
+  white-space: pre-wrap; word-break: break-all;
+}
+#graph-list { display: flex; flex-direction: column; gap: 1px; }
+.graph-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 6px;
+  text-align: left; border: 0; border-radius: 7px; background: transparent;
+  color: rgba(255,255,255,.7); font: inherit; font-size: 12px; cursor: pointer;
+}
+.graph-row:hover { background: rgba(255,255,255,.06); color: #fff; }
+.graph-row[aria-selected="true"] { background: rgba(232,176,74,.16); color: #fff; }
+.graph-row > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-row em, .graph-door em { margin-left: auto; font-style: normal; color: rgba(255,255,255,.4); font-size: 11px; }
+.graph-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.graph-door { display: flex; gap: 8px; padding: 3px 6px; font-size: 12px; color: rgba(255,255,255,.65); }
+.graph-exclude { display: flex; gap: 7px; align-items: center; padding: 2px 6px; font-size: 12px; color: rgba(255,255,255,.7); }
+#graph-view details summary { cursor: pointer; font-size: 12px; color: rgba(255,255,255,.55); }
+/* Project 行上的图谱入口 —— 和 × 同一族的小字动作。 */
+.row .graph-open { cursor: pointer; }
+.row .graph-open:hover { color: var(--sand); }
 </style>
 </head>
 <body>
@@ -1397,11 +1460,50 @@ body::after {
       <div class="surface"><div id="term"></div></div>
       <p class="note" id="stage-note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
     </section>
+
+    <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->
+    <section class="view" id="graph-view" hidden>
+      <div class="stage-head">
+        <div class="stage-title">
+          <span>项目图谱</span>
+          <span class="thread" id="graph-project"></span>
+        </div>
+        <button class="back" id="graph-back">← 返回阶段环</button>
+      </div>
+      <div class="graph-body">
+        <div class="graph-canvas" id="graph-canvas">
+          <div class="graph-empty" id="graph-empty" hidden></div>
+        </div>
+        <aside class="graph-side">
+          <input id="graph-search" type="search" placeholder="找文件…" autocomplete="off">
+          <div id="graph-detail"></div>
+          <div id="graph-list"></div>
+          <details open>
+            <summary>不上图的那些（点不开 —— 用文件管理器）</summary>
+            <div id="graph-doors"></div>
+          </details>
+          <details>
+            <summary>哪些目录算关键代码</summary>
+            <div id="graph-excludes"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
   </section>
 </div>
 
+<script type="importmap">
+{
+  "imports": {
+    "three": "/three.module.js",
+    "three/addons/renderers/CSS2DRenderer.js": "/CSS2DRenderer.js",
+    "three/addons/controls/OrbitControls.js": "/OrbitControls.js"
+  }
+}
+</script>
 <script src="/xterm.js"></script>
 <script src="/addon-fit.js"></script>
 <script src="/panel.js"></script>
+<script type="module" src="/graph-view.js"></script>
 </body>
 </html>

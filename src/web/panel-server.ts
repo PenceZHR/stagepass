@@ -769,6 +769,13 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
     ),
     type: "text/javascript; charset=utf-8",
   },
+  "/OrbitControls.js": {
+    file: join(
+      HERE, "..", "..", "node_modules", "three",
+      "examples", "jsm", "controls", "OrbitControls.js",
+    ),
+    type: "text/javascript; charset=utf-8",
+  },
   "/xterm.js": {
     file: join(HERE, "..", "..", "node_modules", "@xterm", "xterm", "lib", "xterm.js"),
     type: "text/javascript; charset=utf-8",

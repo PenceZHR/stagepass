@@ -57,6 +57,7 @@ function dialog(id) { return /** @type {HTMLDialogElement} */ (pick(id)); }
 
 const orbitView = pick("orbit-view");
 const stageView = pick("stage-view");
+const graphView = pick("graph-view");
 const wrap = pick("orbit-wrap");
 const portal = pick("portal");
 const columns = pick("columns");
@@ -1598,7 +1599,17 @@ function drawWorkspace(panel) {
       void removeThing("project", project.id,
         `连同它底下的 ${project.changes} 个 Change 全部删掉。`);
     });
-    row.append(name, sub, count, remove);
+    // 项目图谱（spec 2026-08-12）。项目级的入口，所以挂在项目行上 ——
+    // 挂在 Change 底下是反的。纯读：点它不起进程、不写库。
+    const graph = document.createElement("span");
+    graph.className = "graph-open";
+    graph.textContent = "◈ 图谱";
+    graph.title = "看这个项目的代码长什么样";
+    graph.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openGraphView(project);
+    });
+    row.append(name, sub, count, graph, remove);
 
     // Clicking a project toggles the workspace open and shut. Picking a
     // DIFFERENT one selects it and opens; picking the one already selected
@@ -2521,6 +2532,33 @@ async function leave() {
 
   await loadOrReconnect();
 }
+
+/*
+ * ── 项目图谱（spec 2026-08-12）：第三个互斥 view ─────────────
+ *
+ * 图谱本体在 graph-view.js（panel.js 已经三千行，新东西不再往里塞）。
+ * 两边只握一次手：这里管「哪个 view 在台上」，那边管图谱里发生的一切。
+ * 进图谱是只读动作 —— 不起进程、不写库（「看状态不该有副作用」）。
+ */
+function openGraphView(project) {
+  // 台上如果是终端，按 leave() 的规矩收干净 —— 只是不播它的动画。
+  if (stream) { stream.abort(); stream = null; }
+  current = null;
+  stageView.classList.remove("active");
+  stageView.hidden = true;
+  orbitView.hidden = true;
+  graphView.hidden = false;
+  window.stagepassGraph?.open({ id: project.id, name: project.name });
+}
+
+function closeGraphView() {
+  window.stagepassGraph?.close();
+  graphView.hidden = true;
+  orbitView.hidden = false;
+  void loadOrReconnect();
+}
+
+pick("graph-back").addEventListener("click", () => closeGraphView());
 
 async function attach(phase, reattaching = false) {
   stream = new AbortController();
