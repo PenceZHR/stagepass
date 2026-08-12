@@ -68,6 +68,14 @@ export interface Gap {
    */
   readonly where: string | null;
   readonly why: string | null;
+  /**
+   * **这一条该谁修** —— 见 `domain/gate.ts` 的 `Blocker.owner`。
+   *
+   * `null` = 归发现它的这个阶段自己（绝大多数）。非空 = 报它的阶段判定这条该由
+   * 另一个阶段修；打回到那个阶段时，它会**跟着一起过去**（`runRound` 读
+   * returnStack 上那几个阶段里 owner 指着自己的），进任务书、也进裁判的逐条名单。
+   */
+  readonly owner: string | null;
 }
 
 export type Verdict =
@@ -172,7 +180,7 @@ export function raise(
     closedBy: null,
     // 人自己提的：他的话就是标题本身，没有「在哪儿」和「为什么」这两问。
     where: null,
-    why: null,
+    why: null, owner: null,
   }];
 }
 
@@ -262,6 +270,8 @@ export interface RoundOutcome {
     /** 在哪儿、为什么。缺就是 null —— 见 `domain/gate.ts` 的 `Blocker.where`。 */
     where: string | null;
     why: string | null;
+    /** 该谁修。`null` = 归这个阶段自己。见 `domain/gate.ts` 的 `Blocker.owner`。 */
+    owner?: string | null;
   }[];
   /** What this round says about gaps that were already open. */
   readonly verdicts: Readonly<Record<string, Verdict>>;
@@ -356,6 +366,8 @@ export function applyRound(
       kind: "finding",
       severity: found.severity,
       title: found.title,
+      // 报的人说这条该谁修。没说就是归它自己（`?? null`）—— 绝大多数是这样。
+      owner: found.owner ?? null,
       status: "open",
       openedRound: outcome.round,
       resolution: null,
@@ -462,6 +474,7 @@ export function blockersFrom(gaps: readonly Gap[]): Blocker[] {
     .filter((gap) => gap.status === "open")
     .map((gap) => ({
       id: gap.id, kind: gap.kind, severity: gap.severity, title: gap.title,
+      owner: gap.owner,
       where: gap.where, why: gap.why,
     }));
 }

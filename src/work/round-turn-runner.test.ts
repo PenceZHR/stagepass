@@ -10,6 +10,8 @@ import { EvidenceStore } from "../store/evidence-store";
 import { RoundNoteStore } from "../store/round-note-store";
 import { WorklistStore } from "../store/worklist-store";
 import { GapStore } from "../store/gap-store";
+import type { Gap } from "../domain/gap";
+import type { Phase } from "../domain/phase";
 import { ProjectStore } from "../store/project-store";
 import { RubricStore } from "../store/rubric-store";
 import { TurnLoop } from "./turn-loop";
@@ -108,7 +110,7 @@ function runner(
     evidence: new EvidenceStore(context.db),
     notes: new RoundNoteStore(context.db),
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
-    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null },
+    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
     writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
@@ -400,7 +402,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
         calls.push(`commitPaths ${paths.join(",")} ${message}`);
         return sha;
       },
-      show: () => null,
+      show: () => null, head: () => null, trackedFiles: () => null,
     };
   };
 
@@ -668,7 +670,7 @@ describe("L4 · E：产物有家，轮末自己入档，越界要报出来", () 
         calls.push(`commitPaths ${paths.join(",")} ${message}`);
         return "beefdeadcafe";
       },
-      show: () => null,
+      show: () => null, head: () => null, trackedFiles: () => null,
     };
   };
 
@@ -784,5 +786,81 @@ describe("RoundTurnRunner · 编辑过门（批 6）", () => {
     });
     await dispatchRound(loop, "J1");
     assert.ok(!context.gaps.all(CHANGE, "Spec").some((gap) => gap.id === "EDIT-1"));
+  });
+});
+
+describe("L4 · 下游判给这个阶段的问题，打回时跟着过来（环 v3 的反馈回路）", () => {
+  /**
+   * 真机上的洞（2026-08-11）：QA 打回 Build 之后，Build 的红方看到的是**空名单** ——
+   * QA 那二十几条一条都传不过去，唯一穿过去的是人写的那句理由（那次是「直接打回」
+   * 四个字），于是红方把上一版原样交了回来，两版哈希一模一样。
+   *
+   * 判据：`returnStack` 上欠着回程的那几个阶段里，`owner` 指着本阶段的 open gap。
+   */
+  /** 这个阶段跑到第几轮了 —— 名单是按轮存的，写死 1 会在打回之后错位。 */
+  const roundOf = (context: ReturnType<typeof open>, phase: Phase): number =>
+    context.changes.ledger(CHANGE)
+      .filter((entry) => entry.to.phase === phase && entry.to.status === "running").length;
+  const finding = (id: string, title: string, owner: string | null): Gap => ({
+    id, kind: "finding", severity: "P1", title,
+    status: "open", openedRound: 1, resolution: null, note: null,
+    closedBy: null, where: null, why: null, owner,
+  });
+
+  it("**QA 判给 Build 的进了 Build 这一轮的名单**，判给 Test 的不进", async () => {
+    const context = open();
+    context.gaps.replace(CHANGE, "QA", [
+      finding("Q-1", "代码这儿错了", "Build"),
+      finding("Q-2", "测试这儿错了", "Test"),
+      finding("Q-3", "QA 自己要补的", null),
+    ]);
+    /*
+     * 走真的状态机推到「Build 欠着 QA 的回程」——**直接 UPDATE changes 会被账本
+     * 触发器当场拒**（`ck_changes_ledger`），而那正是它存在的理由：没有账的状态
+     * 变化不许发生，测试也不例外。
+     */
+    toQA(context);
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    context.changes.apply(CHANGE, "sendBack", { to: "Build", reason: "代码错了" });
+
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]), () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+
+    const round = roundOf(context, "Build");
+    const asked = new WorklistStore(context.db).read(CHANGE, "Build", round)
+      .map((item) => item.target);
+    assert.ok(asked.includes("Q-1"), `判给 Build 的没送到：${JSON.stringify(asked)}`);
+    assert.ok(!asked.includes("Q-2"),
+      "判给 Test 的送到了 Build 手上 —— 那是把测试的问题摆到施工方眼前，破互盲");
+    assert.ok(!asked.includes("Q-3"), "没判归属的是 QA 自己的活儿，不该派给 Build");
+  });
+
+  it("不欠回程时一条都不带 —— 正常前进的轮次不该背上下游的旧账", async () => {
+    const context = open();
+    context.gaps.replace(CHANGE, "QA", [finding("Q-1", "代码这儿错了", "Build")]);
+    // 沿主线正常走到 Build（不欠任何回程）。
+    const evidence = new EvidenceStore(context.db);
+    while (context.changes.read(CHANGE).state.phase !== "Build") {
+      const at = context.changes.read(CHANGE).state.phase;
+      context.changes.apply(CHANGE, "start");
+      context.changes.apply(CHANGE, "settle");
+      evidence.put(CHANGE, at, {
+        artifactIds: [`docs/stagepass/${CHANGE}/${at}-r1.md`],
+        blockers: [], waivedBlockerIds: [],
+      });
+      context.changes.apply(CHANGE, "approve");
+    }
+
+    const loop = new TurnLoop({
+      database: context.db,
+      runner: runner(context, new ScriptedCodexTransport([judgeSays]), () => answer()),
+    });
+    await dispatchRound(loop, "J1");
+    assert.ok(!new WorklistStore(context.db).read(CHANGE, "Build", roundOf(context, "Build"))
+      .map((item) => item.target).includes("Q-1"));
   });
 });

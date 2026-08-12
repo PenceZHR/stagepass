@@ -73,6 +73,87 @@ export interface Finding {
   readonly concepts: readonly string[];
 }
 
+/**
+ * 把 Arch 产出的 `arch.graph.json` 读成 ConceptMap（图谱 spec 第二阶段 +
+ * BACKLOG §十一，2026-08-12）。
+ *
+ * **固定 Schema，fail-closed**：形状不对不修剪成「差不多」，一条条点名毛病
+ * 退回去 —— 这份文件是模型写的，静默容错等于教它可以写歪
+ * （[[stagepass-fixed-schema-not-no-json]]：判据是结构由谁决定）。
+ *
+ * 引用完整性也在这儿判：relation 指向不存在的概念、serves 挂到不存在的概念
+ * id，都是「图自己不自洽」—— 不自洽的图喂给 reconcile 会产出一堆假发现。
+ */
+export function parseConceptMap(
+  text: string,
+): { readonly ok: true; readonly map: ConceptMap }
+  | { readonly ok: false; readonly defects: readonly string[] } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { ok: false, defects: ["不是合法的 JSON"] };
+  }
+  const defects: string[] = [];
+  const body = raw as {
+    concepts?: unknown; relations?: unknown; serves?: unknown;
+  };
+  const concepts: Concept[] = [];
+  if (!Array.isArray(body?.concepts) || body.concepts.length === 0) {
+    defects.push("concepts 必须是非空数组");
+  } else {
+    for (const [i, entry] of (body.concepts as unknown[]).entries()) {
+      const concept = entry as { id?: unknown; name?: unknown };
+      if (typeof concept?.id !== "string" || concept.id === ""
+        || typeof concept?.name !== "string" || concept.name === "") {
+        defects.push(`concepts[${i}] 要有非空的 id 和 name`);
+        continue;
+      }
+      concepts.push({ id: concept.id, name: concept.name });
+    }
+  }
+  const ids = new Set(concepts.map((each) => each.id));
+  if (ids.size !== concepts.length) defects.push("概念 id 有重复");
+
+  const relations: ConceptRelation[] = [];
+  if (!Array.isArray(body?.relations)) {
+    defects.push("relations 必须是数组（可以为空）");
+  } else {
+    for (const [i, entry] of (body.relations as unknown[]).entries()) {
+      const relation = entry as { from?: unknown; to?: unknown; why?: unknown };
+      if (typeof relation?.from !== "string" || typeof relation?.to !== "string"
+        || typeof relation?.why !== "string" || relation.why === "") {
+        defects.push(`relations[${i}] 要有 from / to / why 三个非空字符串`);
+        continue;
+      }
+      if (!ids.has(relation.from)) defects.push(`relations[${i}].from 指向不存在的概念「${relation.from}」`);
+      if (!ids.has(relation.to)) defects.push(`relations[${i}].to 指向不存在的概念「${relation.to}」`);
+      relations.push({ from: relation.from, to: relation.to, why: relation.why });
+    }
+  }
+
+  const serves: Record<string, readonly string[]> = {};
+  if (typeof body?.serves !== "object" || body.serves === null
+    || Array.isArray(body.serves)) {
+    defects.push("serves 必须是对象：{ 文件路径: [概念 id] }");
+  } else {
+    for (const [path, value] of Object.entries(body.serves as Record<string, unknown>)) {
+      if (!Array.isArray(value)
+        || !value.every((id): id is string => typeof id === "string")) {
+        defects.push(`serves[${path}] 必须是概念 id 的数组`);
+        continue;
+      }
+      for (const id of value) {
+        if (!ids.has(id)) defects.push(`serves[${path}] 挂到了不存在的概念「${id}」`);
+      }
+      serves[path] = value;
+    }
+  }
+
+  if (defects.length > 0) return { ok: false, defects };
+  return { ok: true, map: { concepts, relations, serves } };
+}
+
 export interface ReconcileOptions {
   /**
    * 一个概念摊到几个模块上才算「散落」。

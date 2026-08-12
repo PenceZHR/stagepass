@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { BLOCKER_SEVERITIES, type BlockerSeverity, type Finding } from "./gate";
-import type { Phase } from "./phase";
+import { isPhase, type Phase } from "./phase";
 
 /**
  * What StagePass asks Codex to do, and what it will accept back.
@@ -100,8 +100,9 @@ export function requestHash(request: TurnRequest): string {
  * 前者可以赌，后者不能。判据是「缺了会怎样」，不是「长不长」。
  */
 export const RESULT_CONTRACT = `Reply with one \`\`\`json block and nothing that contradicts it:
-{"artifactIds": ["<path or id you produced>"], "blockers": [{"id": "...", "severity": "P0|P1|P2", "title": "...", "where": "...", "why": "..."}]}
-Report every problem you found as a blocker. An empty list means you found none.`;
+{"artifactIds": ["<path or id you produced>"], "blockers": [{"id": "...", "severity": "P0|P1|P2", "title": "...", "where": "...", "why": "...", "owner": null}]}
+Report every problem you found as a blocker. An empty list means you found none.
+Set "owner" only when the fix belongs to ANOTHER phase, and then it must be that phase's exact name; leave it null when the problem is this phase's own to fix.`;
 
 /**
  * 有模板的阶段，反方的契约：**没有问题清单，但仍然要 `artifactIds`。**
@@ -365,6 +366,17 @@ export function parseTurnResult(
        */
       where: blank(blocker.where),
       why: blank(blocker.why),
+      /*
+       * **归属：认不出的阶段名一律当没写。**
+       *
+       * 和 where/why 同一条纪律（缺了不整轮作废）—— 但这里多一道：它必须是
+       * `PHASES` 里真有的名字。模型编一个「Implementation」出来，下游按它去派活
+       * 会派进空气里；而「没归属」是一个完好的默认（归发现它的阶段自己）。
+       */
+      owner: (() => {
+        const named = blank(blocker.owner);
+        return named !== null && isPhase(named) ? named : null;
+      })(),
     };
   });
 

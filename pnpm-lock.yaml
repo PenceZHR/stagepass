@@ -20,6 +20,9 @@ importers:
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0
+      three:
+        specifier: ^0.185.1
+        version: 0.185.1
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.13
@@ -355,6 +358,9 @@ packages:
   tar-stream@2.0.0:
     resolution: {integrity: sha512-n2vtsWshZOVr/SY4KtslPoUlyNh06I2SGgAOCZmquCEjlbV/LjY2CY80rDtdQRHFOYXNlgBDo6Fr3ww2CWPOtA==}
 
+  three@0.185.1:
+    resolution: {integrity: sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg==}
+
   tsx@4.22.4:
     resolution: {integrity: sha512-X8EX+XV4QR5xCsrgxaED954zTDfY8KqlDtskKEL0cHhyS/P8b4IFOvGDQpsC9Q1XnLq915wEfwwY/zzskCtmhg==}
     engines: {node: '>=18.0.0'}
@@ -654,6 +660,8 @@ snapshots:
       fs-constants: 1.0.0
       inherits: 2.0.4
       readable-stream: 3.6.2
+
+  three@0.185.1: {}
 
   tsx@4.22.4:
     dependencies:

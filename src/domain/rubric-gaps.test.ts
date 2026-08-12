@@ -35,7 +35,7 @@ const openStandard = (patch: Partial<Gap> = {}): Gap => ({
   title: "每条需求都有可测的验收标准",
   status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
   // standard 没有「在哪儿 / 为什么」—— 它不是谁发现的，是一条没被满足的标准。
-  where: null, why: null,
+  where: null, why: null, owner: null,
   ...patch,
 });
 
@@ -114,7 +114,7 @@ describe("L5 · 什么能让一条标准不再挡", () => {
       id: "G-1", kind: "finding", severity: "P0", title: "范围冲突",
       status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
       where: null,
-      why: null,
+      why: null, owner: null,
     };
     assert.deepEqual(apply([finding], [judged({ verdict: "yes" })], 2), [finding]);
   });
@@ -149,7 +149,7 @@ describe("L5 · 对账：标准已经不在名单上的阻断项", () => {
   const gap = (id: string, status: "open" | "closed" = "open"): Gap => ({
     id, kind: "finding", severity: "P1", title: id, status,
     openedRound: 1, resolution: null, note: null, closedBy: null,
-    where: null, why: null,
+    where: null, why: null, owner: null,
   });
 
   it("**认出孤儿** —— 开着、是自己派生的、而 key 不在当前名单里", () => {

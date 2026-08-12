@@ -90,6 +90,13 @@ export interface RoundRequest {
    * （`RoundInstructions.blueDocPath`），家在哪由 `domain/artifact-home.ts` 说。
    */
   readonly blueDocPath?: string | undefined;
+  /**
+   * 这个阶段欠着谁的回程（`returnStack`）。它们那儿 `owner` 指着本阶段的 open gap
+   * 会跟着进这一轮的名单 —— 环 v3 的反馈回路，见 `runRound` 里那段。
+   *
+   * 不给 = 不带（老调用点一个字不用改）。
+   */
+  readonly owedTo?: readonly Phase[] | undefined;
 }
 
 export interface RoundDependencies {
@@ -231,9 +238,27 @@ export async function runRound(
   // listing it would invite a verdict that reopens something already settled.
   // 编辑过门那条也不进（批 6）：它是人和机器之间的门 —— 红方修不了它，裁判
   // 判不了「人编辑没编辑」，送进去只会引来一个没有依据的表态把门顺手关掉。
-  const openGaps = dependencies.gaps
+  const own = dependencies.gaps
     .all(request.changeId, request.phase)
     .filter((gap) => gap.status === "open" && !isEditGateGap(gap));
+  /*
+   * **下游打回时，它发现的问题要跟着过来**（环 v3 的反馈回路，2026-08-11）。
+   *
+   * 在这之前只读本阶段自己的 gap，于是 QA 打回 Build 之后，Build 的红方看到的是
+   * 一份空名单 —— QA 那二十几条一条都传不过去，唯一穿过去的是人写的那句理由
+   * （真机上是「直接打回」四个字，于是红方把上一版原样交了回来，两版哈希一样）。
+   *
+   * 取哪些：`returnStack` 上欠着回程的那几个阶段里，`owner` 指着**我**的。
+   * 归属由对撞点自己判（只有 QA 同时读得到两条互盲轨道，见 `Blocker.owner`），
+   * 所以互盲自动成立 —— 判给 Build 的是代码问题，测试的毛病不会送到它眼前。
+   *
+   * 它们和本阶段的问题**一起进名单**：红方逐条处理，裁判逐条判「还成不成立」。
+   * 不另开一套机械 —— 这条回路要能被机械地问「你处理了没有」，散文做不到。
+   */
+  const fromDownstream = (request.owedTo ?? [])
+    .flatMap((phase) => dependencies.gaps.all(request.changeId, phase))
+    .filter((gap) => gap.status === "open" && gap.owner === request.phase);
+  const openGaps = [...own, ...fromDownstream];
 
   /*
    * 名单落成文件，提示词里只印路径。空名单不写 —— 那时提示词里那句

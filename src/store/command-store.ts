@@ -47,6 +47,8 @@ export interface CommandRequest {
    * （§8.10 —— 不给就是走推荐那条）。别的动作不带。
    */
   readonly to?: Phase;
+  /** 打回时孪生阶段一起重来（环 v3）：给打回落点的孪生开座。只有 sendBack 读它。 */
+  readonly withTwin?: boolean;
   /** 这一步为什么发生，人的话。进账本，环上历史箭头读它。 */
   readonly reason?: string;
 }
@@ -140,6 +142,7 @@ export class CommandStore {
         request.action,
         {
           ...(request.to === undefined ? {} : { to: request.to }),
+          ...(request.withTwin === undefined ? {} : { withTwin: request.withTwin }),
           ...(request.reason === undefined ? {} : { reason: request.reason }),
         },
       );

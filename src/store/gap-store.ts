@@ -41,6 +41,7 @@ interface GapRow {
   /** 列名和域字段不同名，理由写在 `db/schema.ts` 建表那儿（`where` 是 SQL 保留字）。 */
   found_where: string | null;
   found_why: string | null;
+  owner_phase: string | null;
 }
 
 export class GapStore {
@@ -52,7 +53,7 @@ export class GapStore {
   all(changeId: string, phase: Phase): Gap[] {
     const rows = this.database.prepare(
       `SELECT id, kind, severity, title, status, opened_round, resolution, note,
-              closed_by, found_where, found_why
+              closed_by, found_where, found_why, owner_phase
          FROM gaps WHERE change_id = ? AND phase = ? ORDER BY opened_round, id`,
     ).all(changeId, phase) as GapRow[];
     return rows.map((row) => ({
@@ -67,6 +68,7 @@ export class GapStore {
       closedBy: row.closed_by,
       where: row.found_where,
       why: row.found_why,
+      owner: row.owner_phase,
     }));
   }
 
@@ -101,7 +103,7 @@ export class GapStore {
   humanSettled(changeId: string): (Gap & { phase: Phase })[] {
     const rows = this.database.prepare(
       `SELECT id, kind, severity, title, status, opened_round, resolution, note,
-              closed_by, found_where, found_why, phase
+              closed_by, found_where, found_why, owner_phase, phase
          FROM gaps
         WHERE change_id = ?
           AND (closed_by = 'human' OR status = 'waived')
@@ -119,6 +121,7 @@ export class GapStore {
       closedBy: row.closed_by,
       where: row.found_where,
       why: row.found_why,
+      owner: row.owner_phase,
       phase: row.phase,
     }));
   }
@@ -217,8 +220,8 @@ export class GapStore {
     const upsert = this.database.prepare(
       `INSERT INTO gaps
          (id, change_id, phase, kind, severity, title, status, opened_round,
-          resolution, note, closed_by, found_where, found_why, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          resolution, note, closed_by, found_where, found_why, owner_phase, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (change_id, phase, id) DO UPDATE SET
          kind = excluded.kind,
          severity = excluded.severity,
@@ -230,6 +233,7 @@ export class GapStore {
          closed_by = excluded.closed_by,
          found_where = excluded.found_where,
          found_why = excluded.found_why,
+         owner_phase = excluded.owner_phase,
          updated_at = excluded.updated_at`,
     );
     this.database.transaction(() => {
@@ -237,7 +241,7 @@ export class GapStore {
         upsert.run(
           gap.id, changeId, phase, gap.kind, gap.severity, gap.title,
           gap.status, gap.openedRound, gap.resolution, gap.note, gap.closedBy,
-          gap.where, gap.why, at,
+          gap.where, gap.why, gap.owner, at,
         );
       }
     })();

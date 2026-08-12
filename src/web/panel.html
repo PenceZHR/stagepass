@@ -495,6 +495,42 @@ body::after {
  */
 .orbit-map .rail { fill: none; stroke: none; pointer-events: none; }
 /*
+ * 彗星 —— 旁路会话（2026-08-11）。一个倾斜的真椭圆，和阶段那个正圆一眼分得开：
+ * **它不在任何一条轨道上**，正如旁路不属于任何阶段。
+ *
+ * 命中区是分开的一层（.comet-hit）：轨道那条线只有 .3 宽，而人要点的是一个
+ * 在动的东西 —— 描边给到 4，透明，专门接点击。彗星自己也带一个 r=4.5 的光晕，
+ * 两处都点得中。
+ */
+.orbit-map .comet-orbit {
+  fill: none; stroke: rgba(160,190,230,.12); stroke-width: .3;
+  stroke-dasharray: .6 2.2; pointer-events: none;
+}
+.orbit-map .comet-hit {
+  fill: none; stroke: transparent; stroke-width: 4;
+  pointer-events: stroke; cursor: pointer;
+}
+.orbit-map .comet-hit:hover + .comet .comet-head { fill: rgba(255,255,255,1); }
+.orbit-map .comet { pointer-events: none; }
+/* 命中区：**完全透明**。它是给手指用的，不是给眼睛看的。 */
+.orbit-map .comet-halo { fill: transparent; pointer-events: all; cursor: pointer; }
+/*
+ * 尾：几缕散开的丝。每缕的透明度由 JS 给（stroke-opacity），这里只定颜色和粗细。
+ * 圆头 + 越远越细，末端自然消失，不留硬边。
+ */
+.orbit-map .comet-strand {
+  fill: none; stroke: #dcecff; stroke-width: .16;
+  stroke-linecap: round;
+}
+.orbit-map .comet-tail { fill: url(#comet-tail-grad); stroke: none; }
+/* 彗发：核外面那层光，径向淡出。 */
+.orbit-map .comet-coma { fill: url(#comet-coma-grad); stroke: none; }
+/* 核：一个准确的位置，最亮的一点。 */
+.orbit-map .comet-core { fill: #f6fbff; stroke: none; }
+/* 动过手的那几趟留下的：整颗更亮一档 —— 环上看得见「这儿有人在环外改过东西」。 */
+.orbit-map .comet.marked .comet-strand { stroke: #eaf4ff; }
+.orbit-map .comet.marked .comet-core { fill: #ffffff; }
+/*
  * 剪纸小火箭：**平涂色块，没有描边**，和环心那颗太阳同一种语言（用户
  * 2026-08-09：「整体风格统一一下」）。上一版是细描边的空心壳 —— 那是给环上
  * 那些发丝线条配的，线撤掉之后它成了唯一还在说旧方言的东西。
@@ -1074,6 +1110,90 @@ body::after {
   .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
+/* ── 项目图谱（spec 2026-08-12）：第三个 view ─────────────────
+ *
+ * 一屏两半：左边是能飞进去的 3D（three.js 画的），右边是同一份数据的列表 ——
+ * raycast 会点不准，列表永远点得准，键盘和读屏也只认列表。谁点都改同一个选中态。
+ */
+#graph-view { display: flex; flex-direction: column; gap: 10px; padding: 18px 20px 14px; }
+.graph-body { flex: 1; min-height: 0; display: flex; gap: 14px; }
+.graph-canvas {
+  position: relative; flex: 1; min-width: 0; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 14px;
+  /* 夜空 + 渐晕：中央微亮、四角沉下去 —— 星是加色混合，衬底越沉越亮。 */
+  background:
+    radial-gradient(120% 90% at 50% 38%,
+      oklch(0.21 0.04 295 / 85%), oklch(0.13 0.032 295 / 96%) 70%),
+    oklch(0.12 0.03 295);
+}
+.graph-canvas canvas { position: absolute; inset: 0; }
+.graph-labels { position: absolute; inset: 0; }
+/* 层名用面板的 kicker 语汇：小号等宽、拉开字距、沙金。 */
+.graph-layer-tag {
+  font: 500 10px/1 ui-monospace, monospace; letter-spacing: .12em;
+  text-transform: uppercase; color: rgba(225,201,168,.55); white-space: nowrap;
+}
+.graph-node-label {
+  font: 400 10.5px/1 ui-monospace, monospace; letter-spacing: .02em;
+  color: rgba(255,255,255,.72); white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9); pointer-events: none;
+}
+.graph-near-card {
+  max-width: 330px; padding: 8px 11px; font-size: 11px; color: rgba(255,255,255,.85);
+  background: rgba(39,36,47,.92); border: 1px solid var(--border); border-radius: 10px;
+}
+.graph-near-card pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 10px; color: rgba(255,255,255,.6); }
+.graph-empty {
+  position: absolute; inset: 0; z-index: 3; display: grid; place-items: center;
+  padding: 30px; text-align: center; font-size: 14px; line-height: 1.7;
+  color: rgba(255,255,255,.65); background: rgba(20,18,26,.55);
+}
+.graph-side { flex: 0 0 300px; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+#graph-search {
+  background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 9px;
+  color: #fff; padding: 8px 11px; font: inherit; font-size: 13px;
+}
+#graph-detail h3 { margin: 0 0 6px; font: 500 13px/1.4 var(--serif); color: #fff; word-break: break-all; }
+#graph-detail dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 12px; }
+#graph-detail dt { color: rgba(255,255,255,.5); }
+#graph-detail dd { margin: 0; color: rgba(255,255,255,.85); }
+.graph-hint { font-size: 12px; color: rgba(255,255,255,.5); margin: 0; }
+.graph-warn { font-size: 12px; color: var(--problem); }
+.graph-ingredients {
+  max-height: 30vh; overflow: auto; margin: 8px 0 0;
+  background: rgba(0,0,0,.28); border: 1px solid var(--border); border-radius: 9px;
+  padding: 9px; font-size: 10.5px; line-height: 1.5; color: rgba(255,255,255,.72);
+  white-space: pre-wrap; word-break: break-all;
+}
+#graph-list { display: flex; flex-direction: column; gap: 1px; }
+.graph-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 6px;
+  text-align: left; border: 0; border-radius: 7px; background: transparent;
+  color: rgba(255,255,255,.7); font: inherit; font-size: 12px; cursor: pointer;
+}
+/* display:flex/grid 会盖掉 UA 的 [hidden]{display:none} —— 这两行把 hidden 夺回来。 */
+.graph-row[hidden], .graph-empty[hidden] { display: none !important; }
+.graph-row:hover { background: rgba(255,255,255,.06); color: #fff; }
+.graph-row[aria-selected="true"] { background: rgba(232,176,74,.16); color: #fff; }
+.graph-row > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-row em, .graph-door em { margin-left: auto; font-style: normal; color: rgba(255,255,255,.4); font-size: 11px; }
+.graph-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.graph-door { display: flex; gap: 8px; padding: 3px 6px; font-size: 12px; color: rgba(255,255,255,.65); }
+.graph-exclude { display: flex; gap: 7px; align-items: center; padding: 2px 6px; font-size: 12px; color: rgba(255,255,255,.7); }
+/* 规划层：概念名牌用沙金 kicker；未落地的玫瑰；对账发现一条一块。 */
+.graph-plan-tag {
+  font: 500 10px/1 ui-monospace, monospace; letter-spacing: .1em;
+  color: rgba(225,201,168,.85); white-space: nowrap; pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9);
+}
+.graph-plan-tag.graph-plan-homeless { color: rgba(196,106,106,.9); }
+.graph-finding {
+  display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; margin: 4px 0;
+  border-left: 2px solid rgba(225,201,168,.35); background: rgba(255,255,255,.03);
+  border-radius: 0; font-size: 11.5px; color: rgba(255,255,255,.72);
+}
+.graph-finding b { font-weight: 500; color: var(--sand); font-size: 10.5px; letter-spacing: .06em; }
+#graph-view details summary { cursor: pointer; font-size: 12px; color: rgba(255,255,255,.55); }
 </style>
 </head>
 <body>
@@ -1127,9 +1247,10 @@ body::after {
             日冕是 12 长 + 12 短两组光芒：整组慢慢转，两组的亮度反相呼吸，
             于是它像在烧，而不是贴了个圆。
           -->
+          <!-- 语义（用户 2026-08-12 定）：悬停看状态卡，**点击进项目图谱**。 -->
           <button class="sun" id="sun" type="button"
-                  aria-expanded="false" aria-controls="sun-card"
-                  aria-label="看这条 Change 走到哪了">
+                  aria-controls="sun-card"
+                  aria-label="点开这个项目的文件图谱" title="点开这个项目的文件图谱">
             <svg viewBox="-50 -50 100 100" aria-hidden="true">
               <defs>
                 <path id="sun-ray" d="M -4.4 -27 L -1.9 -42 Q 0 -44.4 1.9 -42 L 4.4 -27 Z"/>
@@ -1332,11 +1453,11 @@ body::after {
         -->
         <button class="enter" id="close-term" type="button" hidden>结束这个终端</button>
         <!--
-          旁路窗口（DESIGN-phase-not-the-only-axis §3.3）：一个不属于任何阶段的
-          Codex 聊天。**永远能按** —— 一轮对抗跑着的时候人想问个名词，不用等它
-          跑完，这正是它存在的理由。不产出、不推闸门、不占任何阶段的座。
+          旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
+          挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
+          而它恰恰是唯一不属于任何阶段的东西。彗星说对了这件事 —— 不在任何一条
+          轨道上、能到达环上任何地方、而且留下尾迹（动过手的那几趟进账本）。
         -->
-        <button class="enter" id="aside-term" type="button">旁路窗口（问问题）</button>
         <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
         <!--
           批 2「模型起草，人改」：在旁路会话里谈好 → 起草落成文件 → 人在编辑器里
@@ -1361,11 +1482,54 @@ body::after {
       <div class="surface"><div id="term"></div></div>
       <p class="note" id="stage-note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
     </section>
+
+    <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->
+    <section class="view" id="graph-view" hidden>
+      <div class="stage-head">
+        <div class="stage-title">
+          <span>项目图谱</span>
+          <span class="thread" id="graph-project"></span>
+        </div>
+        <button class="back" id="graph-back">← 返回阶段环</button>
+      </div>
+      <div class="graph-body">
+        <div class="graph-canvas" id="graph-canvas">
+          <div class="graph-empty" id="graph-empty" hidden></div>
+        </div>
+        <aside class="graph-side">
+          <input id="graph-search" type="search" placeholder="找文件…" autocomplete="off">
+          <div id="graph-detail"></div>
+          <details open>
+            <summary>规划 vs 真实（Arch 对账）</summary>
+            <div id="graph-plan"></div>
+          </details>
+          <div id="graph-list"></div>
+          <details open>
+            <summary>不上图的那些（点不开 —— 用文件管理器）</summary>
+            <div id="graph-doors"></div>
+          </details>
+          <details>
+            <summary>哪些目录算关键代码</summary>
+            <div id="graph-excludes"></div>
+          </details>
+        </aside>
+      </div>
+    </section>
   </section>
 </div>
 
+<script type="importmap">
+{
+  "imports": {
+    "three": "/three.module.js",
+    "three/addons/renderers/CSS2DRenderer.js": "/CSS2DRenderer.js",
+    "three/addons/controls/OrbitControls.js": "/OrbitControls.js"
+  }
+}
+</script>
 <script src="/xterm.js"></script>
 <script src="/addon-fit.js"></script>
 <script src="/panel.js"></script>
+<script type="module" src="/graph-view.js"></script>
 </body>
 </html>

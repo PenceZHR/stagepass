@@ -20,7 +20,7 @@ const gap = (id: string, title: string): Gap => ({
   id, kind: "finding", severity: "P1", title, status: "open", openedRound: 1,
   resolution: null, note: null, closedBy: null,
   where: null,
-  why: null,
+  why: null, owner: null,
 });
 
 describe("L4 · what the judge is told", () => {
@@ -106,7 +106,7 @@ describe("L4 · what the judge is told", () => {
         title: "每条需求都有可测的验收标准",
         status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
         where: null,
-        why: null,
+        why: null, owner: null,
       }],
     });
     assert.match(prompt, /RB:producer:RBC-a \[标准\]/);
@@ -247,8 +247,8 @@ describe("L4 · QA 里红方找到的缺陷也算数", () => {
   it("设计阶段照旧：红方报自己的问题一概不算", () => {
     const reading = readRound({
       phase: "Spec", round: 1,
-      red: red([{ id: "SELF-1", severity: "P0", title: "我自己觉得这里不太好", where: null, why: null }]),
-      blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测", where: null, why: null }]),
+      red: red([{ id: "SELF-1", severity: "P0", title: "我自己觉得这里不太好", where: null, why: null, owner: null }]),
+      blue: answer([], [{ id: "S-1", severity: "P1", title: "验收不可测", where: null, why: null, owner: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     // 红方的自审一概不算（老规矩）；2026-08-06 起反方在这儿也不交自由 blockers 了
@@ -259,7 +259,7 @@ describe("L4 · QA 里红方找到的缺陷也算数", () => {
   it("**Build 也照旧** —— 红方写的代码是它自己的作品", () => {
     const reading = readRound({
       phase: "Build", round: 1,
-      red: red([{ id: "SELF-1", severity: "P0", title: "我知道这里有问题", where: null, why: null }]),
+      red: red([{ id: "SELF-1", severity: "P0", title: "我知道这里有问题", where: null, why: null, owner: null }]),
       blue: answer([], []),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
@@ -276,8 +276,8 @@ describe("L4 · QA 里红方找到的缺陷也算数", () => {
      */
     const reading = readRound({
       phase: "QA", round: 1,
-      red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了", where: null, why: null }]),
-      blue: answer([], [{ id: "QAB-1", severity: "P1", title: "你跳过了第 5 条", where: null, why: null }]),
+      red: red([{ id: "QA-1", severity: "P0", title: "第 3 条用例挂了", where: null, why: null, owner: null }]),
+      blue: answer([], [{ id: "QAB-1", severity: "P1", title: "你跳过了第 5 条", where: null, why: null, owner: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.outcome.found.map((e) => e.id).sort(),
@@ -290,7 +290,7 @@ describe("L4 · QA 里红方找到的缺陷也算数", () => {
     for (const phase of ["Merge", "Retro", "Fix"] as const) {
       const reading = readRound({
         phase, round: 1,
-        red: red([{ id: "X-1", severity: "P0", title: "我自己觉得有问题", where: null, why: null }]),
+        red: red([{ id: "X-1", severity: "P0", title: "我自己觉得有问题", where: null, why: null, owner: null }]),
         blue: answer([], []),
         judge: '```json\n{"verdicts":{}}\n```',
       }, {});
@@ -318,7 +318,7 @@ describe("L4 · QA 里红方找到的缺陷也算数", () => {
         artifactIds: ["x.ts"],
         blockers: ["BUILD-WEB-1/BUILD-SCENE-SCOPE-1: npm run build 失败了"],
       }) + "\n```",
-      blue: answer([], [{ id: "B-1", severity: "P1", title: "改动没接进调用方", where: null, why: null }]),
+      blue: answer([], [{ id: "B-1", severity: "P1", title: "改动没接进调用方", where: null, why: null, owner: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.artifactIds, ["x.ts"], "红方的产物被陪葬了");
@@ -369,8 +369,8 @@ describe("L4 · QA 里红方找到的缺陷也算数", () => {
     // 前缀（见 judgePrompt），这里钉住「撞了也不会多出一条假的」。
     const reading = readRound({
       phase: "Review", round: 1,
-      red: red([{ id: "RV-1", severity: "P0", title: "红方这么说", where: null, why: null }]),
-      blue: answer([], [{ id: "RV-1", severity: "P1", title: "蓝方那么说", where: null, why: null }]),
+      red: red([{ id: "RV-1", severity: "P0", title: "红方这么说", where: null, why: null, owner: null }]),
+      blue: answer([], [{ id: "RV-1", severity: "P1", title: "蓝方那么说", where: null, why: null, owner: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.equal(reading.outcome.found.filter((e) => e.id === "RV-1").length, 1);
@@ -667,12 +667,12 @@ describe("L4 · each role is read from its own transcript", () => {
       phase: "Fix",
       round: 2,
       red: answer(["spec.md"]),
-      blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null }]),
+      blue: answer([], [{ id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null, owner: null }]),
       judge: '```json\n{"verdicts":{}}\n```',
     }, {});
     assert.deepEqual(reading.artifactIds, ["spec.md"]);
     assert.deepEqual(reading.outcome.found, [
-      { id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null },
+      { id: "SPEC-9", severity: "P0", title: "范围冲突", where: null, why: null, owner: null },
     ]);
     assert.equal(reading.outcome.round, 2);
   });
@@ -686,7 +686,7 @@ describe("L4 · each role is read from its own transcript", () => {
     const reading = readRound({
       phase: "Spec",
       round: 1,
-      red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行", where: null, why: null }]),
+      red: answer(["spec.md"], [{ id: "RED-SELF", kind: "finding", severity: "P0", title: "我觉得还行", where: null, why: null, owner: null }]),
       blue: answer([], []),
       judge: "",
     }, {});
@@ -1397,7 +1397,7 @@ describe("L4 · 已裁定的事跨阶段跟着走", () => {
     id: "SPEC-DEDUP-1", kind: "finding" as const, severity: "P1" as const,
     title: "去重语义没定义", status: "closed" as const, openedRound: 1,
     resolution: "实测过了，那个定义在第 3 节", note: null,
-    closedBy: "human" as const, where: null, why: null, ...patch,
+    closedBy: "human" as const, where: null, why: null, owner: null, ...patch,
   });
 
   it("**驳回的和接受风险的分开列** —— 两句话不一样", () => {
@@ -1487,7 +1487,7 @@ describe("L4 · 「在哪儿」和「为什么」要活到下一轮的提示词�
     id: "RV-NPE-1", kind: "finding", severity: "P0",
     title: "空指针", status: "open", openedRound: 1,
     resolution: null, note: null, closedBy: null,
-    where: null, why: null, ...patch,
+    where: null, why: null, owner: null, ...patch,
   });
 
   /**
@@ -1513,7 +1513,7 @@ describe("L4 · 「在哪儿」和「为什么」要活到下一轮的提示词�
    * 「写了但是空的」，而这两件事该有的反应不一样。
    */
   it("**没有的那一样，连标签都不出现**", () => {
-    const text = renderOpenGaps([found({ where: "src/foo.ts:42", why: null })]);
+    const text = renderOpenGaps([found({ where: "src/foo.ts:42", why: null, owner: null })]);
     assert.ok(text.includes("在这儿："), "有 where 却没印");
     assert.ok(!text.includes("为什么是问题："), `why 是空的，却印了标签：\n${text}`);
   });
@@ -1592,7 +1592,7 @@ describe("L4 · 人的批注和上游文档打架时，谁说了算要写死（�
   const humanGap = (title: string, note: string | null = null): Gap => ({
     id: humanGapId(1), kind: "finding", severity: "P1", title,
     status: "open", openedRound: 2, resolution: null, note,
-    closedBy: null, where: null, why: null,
+    closedBy: null, where: null, why: null, owner: null,
   });
 
   it("有人提的问题时，名单里写明「冲突以人的话为准」", () => {

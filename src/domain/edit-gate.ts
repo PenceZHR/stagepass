@@ -61,7 +61,7 @@ export function withEditGate(gaps: readonly Gap[], round: number): Gap[] {
     note: null,
     closedBy: null,
     where: null,
-    why: null,
+    why: null, owner: null,
   };
   return existing === undefined
     ? [...gaps, gate]

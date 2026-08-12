@@ -239,8 +239,23 @@ const contractNotes = (path: string | undefined): string[] =>
 
 export function renderOpenGaps(openGaps: readonly Gap[]): string {
   const human = openGaps.filter(isHumanGap);
-  const found = openGaps.filter((gap) => !isHumanGap(gap));
+  /*
+   * **下游判给这个阶段的那几条，单独一节**（环 v3 的反馈回路，2026-08-11）。
+   *
+   * 它们和本阶段自己的问题混在一起会读丢来历 —— 而来历正是它们的分量所在：
+   * 这不是「有人觉得这里可能有问题」，是**下游拿着两条轨的产出撞出来的**，
+   * 而且判定它该由你修。混进去等于把一条硬结论降格成一条建议。
+   */
+  const sentDown = openGaps.filter((gap) => !isHumanGap(gap) && gap.owner !== null);
+  const found = openGaps.filter((gap) => !isHumanGap(gap) && gap.owner === null);
   const sections: string[] = [];
+  if (sentDown.length > 0) {
+    sections.push(
+      "**下游判定该由这个阶段修的（它读到了你看不到的那一侧，逐条处理）：**",
+      ...sentDown.map(gapLine),
+      "",
+    );
+  }
   if (human.length > 0) {
     sections.push(
       "**人明确要求下一轮处理的（不许当成建议）：**",
@@ -361,6 +376,7 @@ export function templateGaps(
         where: input.docPath,
         // 「该回答什么」原样带过去 —— 少了它，下一轮红方只知道缺了个标题。
         why: section.asks,
+        owner: null,
       };
       if (existing === undefined) next.push(opened);
       else next[next.indexOf(existing)] = opened;
@@ -1259,6 +1275,11 @@ export function readRound(
       // 为什么，交出来之后只剩一个标题往下走，下一轮的红方和 Fix 得回去重新解析
       // 那份报告散文。用户 2026-08-04：「绝对不能出现语义损失」。
       where: blocker.where, why: blocker.why,
+      /*
+       * **归属也别在这儿掉**（环 v3 的反馈回路）。它和 where/why 是同一处教训的
+       * 同一行：报的人说清了「这该谁修」，在这一行丢掉，打回时就没东西可带走。
+       */
+      owner: blocker.owner,
     }));
   } catch (error) {
     // A blue that answered in the wrong shape found nothing StagePass can act
@@ -1275,6 +1296,7 @@ export function readRound(
           id: blocker.id, severity: blocker.severity, title: blocker.title,
           // Review / QA 里红方报的问题算数，它说的「在哪儿、为什么」当然也要跟着走。
           where: blocker.where, why: blocker.why,
+          owner: blocker.owner,
         })),
         ...blueBlockers,
       ])

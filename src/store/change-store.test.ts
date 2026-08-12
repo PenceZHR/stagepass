@@ -540,6 +540,88 @@ describe("L0 · 批 4：分叉开座，收编与卫生", () => {
     assert.deepEqual(seats(database), [["Test", "pending"]]);
   });
 
+  /**
+   * 「并行状态回转」（2026-08-12 用户点名的洞）：打回时**落点前方**的孪生座
+   * 留着旧 settled，重走到它是 approve 到达 —— 到达即收编，旧世界的结论
+   * 借尸还魂成「可以直接批准」。P0 第 4 条防住了落点，这条防落点的下游。
+   */
+  it("**打回清全部座位** —— 前方孪生座的旧 settled 不许等着重走来收编", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "Build");   // Test 座开着
+    // 并行那轨跑完了：Test 座 settled。
+    database.prepare(
+      "UPDATE change_states SET status = 'settled' WHERE phase = 'Test'").run();
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    // 计划错了，Build 打回 BuildPlan —— Test 的 settled 建立在作废的计划上。
+    store.apply("CHG-P", "sendBack", { to: "BuildPlan", reason: "计划错了" });
+    assert.deepEqual(seats(database), [], "打回必须清光座位，包括落点前方的");
+    // §8.9 重走。途经分叉点会把座位重新开出来（新世界的座），
+    // 走到 Test 时收编的是新座的 pending —— 不是旧世界的 settled。
+    walkTo(store, "Test");
+    assert.equal(store.read("CHG-P").state.status, "pending",
+      "旧 settled 借尸还魂了 —— 测试从没对着新计划重写过，状态却说可以批准");
+  });
+
+  it("打回清座和「两轨一起重来」共存：先清，孪生座再开", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    // 一个残留的 settled 孤儿座（P0 第 4 条那条测试的同款形状）。
+    database.prepare(
+      "INSERT INTO change_states (change_id, phase, status, opened_at, updated_at)"
+      + " VALUES ('CHG-P', 'Build', 'settled', 't', 't')").run();
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    // QA 够得着 BuildPlan 和它的孪生 TestPlan（都在上游）—— 合法的两轨重来。
+    store.apply("CHG-P", "sendBack",
+      { to: "BuildPlan", withTwin: true, reason: "计划错了，两轨一起重来" });
+    // 旧 Build 孤儿座被清掉；孪生 TestPlan 座是清完之后新开的。
+    assert.deepEqual(seats(database), [["TestPlan", "pending"]]);
+  });
+
+  it("**打回带孪生：落点的孪生同时开座**（环 v3「两轨一起重来」）", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "sendBack",
+      { to: "BuildPlan", reason: "两份计划都要重来", withTwin: true });
+    assert.equal(store.read("CHG-P").state.phase, "BuildPlan");
+    // TestPlan 的座开了，pending —— 两轨并行重跑。
+    assert.deepEqual(seats(database), [["TestPlan", "pending"]]);
+  });
+
+  it("**发起方够不着孪生就拒**：Build 打回 BuildPlan 带不动 TestPlan", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "Build");
+    database.prepare("DELETE FROM change_states").run();   // 清掉自动分叉的 Test 座
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    // TestPlan 不在 Build 的上游里（互盲）—— 组合不合法，动手之前就拒。
+    assert.throws(
+      () => store.apply("CHG-P", "sendBack",
+        { to: "BuildPlan", reason: "x", withTwin: true }),
+      /target_not_upstream/,
+    );
+    // 拒得干净：主线没动、座位没开。
+    assert.equal(store.read("CHG-P").state.phase, "Build");
+    assert.deepEqual(seats(database), []);
+  });
+
+  it("不带 withTwin 的打回照旧不开孪生座 —— 批 4 那条原样成立", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "sendBack", { to: "BuildPlan", reason: "只重计划" });
+    assert.deepEqual(seats(database), []);
+  });
+
   it("**closed 一个座位都不留**（P0 第 6 条）", () => {
     const { database, store } = open();
     store.create("CHG-P");

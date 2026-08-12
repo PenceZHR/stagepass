@@ -19,7 +19,7 @@ const TTL = 30_000;
 const DEADLINE = T0 + 300_000;
 const WORKER = { owner: "w-a", token: "t-1", now: T0, ttlMs: TTL };
 
-const P0: Finding = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null };
+const P0: Finding = { id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null, owner: null };
 
 function open(script: (TurnOutcome | Error)[]) {
   const database = new Database(":memory:");

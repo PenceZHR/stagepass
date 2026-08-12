@@ -206,6 +206,10 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "riskiest", text: "指名了最可能出错的一处，而不是并列罗列多项风险" },
     { section: "traceability", text: "每一组决定都对得回 Spec 的某一条，没有引入 Spec 里不存在的行为" },
     { section: "deferred", text: "留给下游的每一项都写明了留给哪个阶段和为什么现在定不了；没有把函数名、签名或数据结构推给下游" },
+    // 机器可读架构图（BACKLOG §十一）。反方指得出来：文件在不在、三个键全不全、
+    // serves 有没有漏认领 —— 每一条都是能指着说「这条不满足」的。
+    { section: "graph", text: "arch.graph.json 存在且是合法 JSON，concepts / relations / serves 三个键都有，概念 id 没有重复" },
+    { section: "graph", text: "「文件与函数清单」点过名的每个文件都在 serves 里认领了概念；relations 的 from/to 都指向存在的概念 id" },
   ],
   /*
    * 退休了（并进 Arch，2026-08-08）。**空名单 = 这个阶段不再有出厂标准**，
@@ -306,6 +310,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "selfrun", text: "证明了测试代码自己站得住（语法、依赖、fixture 齐全），而没有拿实现来跑" },
     { section: "written", text: "测试断言的是 TestPlan 写的期望输出，没有把断言写成「不抛错就算过」这类空判" },
     { section: "unfinished", text: "没做完的逐条列了差什么；没有时明写了「无」" },
+    // 具体性补齐（2026-08-12，BACKLOG §十）：「证明了」要落在看得见的东西上。
+    { section: "selfrun", text: "站得住的证据贴了命令和输出原文（编译、静态检查或 dry-run 那几行），不是一句「检查过了」" },
   ],
   /*
    * 退休了（环 v3，2026-08-09）：Review 收编进 QA、Fix 变成打回交互、Merge 是
@@ -336,6 +342,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "repro", text: "跑的命令和环境写下来了，别人照着能重现" },
     { section: "executed", text: "按 TestPlan 的用例 id 逐条列了结果，每条写了跑的命令和过没过；没有把多条并成一句「全部通过」" },
     { section: "failures", text: "失败的用例贴了输出原文（报错那几行、实际值和期望值），而不是转述一句「结果不对」" },
+    // 具体性补齐（2026-08-12，BACKLOG §十）：「确认过没退化」要有范围和数字。
+    { section: "regression", text: "回归确认点名了跑的是哪个套件或哪几条命令、多少条过多少条没过，不是一句「无回归」" },
   ],
   Merge: [],
   Retro: [],

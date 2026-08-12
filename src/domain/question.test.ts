@@ -24,6 +24,7 @@ import {
   responsesFrom,
   SEND_BACK_NONE,
   sendBackReasonFrom,
+  sendBackBothLabel,
   sendBackTargetFrom,
   UnreadableAnswerError,
   type Answer,
@@ -35,6 +36,7 @@ import {
   WAIVE_KEEP,
 } from "./question";
 import type { ChangeState } from "./change-state";
+import type { Gate } from "./gate";
 import { blockersFrom, humanGapId, type Gap } from "./gap";
 import type { Phase } from "./phase";
 
@@ -43,7 +45,7 @@ const BLOCKED: ChangeState = { phase: "Spec", status: "blocked", returnStack: []
 const CLEAN: Evidence = { ...EMPTY_EVIDENCE, artifactIds: ["spec.md"] };
 const WITH_P0: Evidence = {
   ...CLEAN,
-  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null }],
+  blockers: [{ id: "B-1", kind: "finding", severity: "P0", title: "范围冲突", where: null, why: null, owner: null }],
 };
 
 function ask(state: ChangeState, evidence: Evidence): Question | null {
@@ -286,7 +288,7 @@ describe("L3 · 题面把状态和后果说出来 —— 人答题的那一刻�
   const gapWith = (patch: Partial<Gap>): Gap => ({
     id: "G-1", kind: "finding", severity: "P1", title: "验收标准不可测",
     status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
-    where: null, why: null, ...patch,
+    where: null, why: null, owner: null, ...patch,
   });
   const askWith = (gaps: Gap[], round?: number): Question => gateDecisionQuestion({
     phase: "Spec",
@@ -446,7 +448,8 @@ describe("L3 · 打回上游进裁决表（§5.9.1 长回边的人机面）", ()
       T: "Spec", [DECISION_FIELD]: decisionLabel("sendBack"),
     } };
     assert.equal(decisionFrom(question, answer), "sendBack");
-    assert.equal(sendBackTargetFrom(question, answer), "Spec");
+    // 环 v3 起返回 {to, withTwin} —— 组合项（两轨一起重来）要多带一位。
+    assert.deepEqual(sendBackTargetFrom(question, answer), { to: "Spec", withTwin: false });
   });
 
   it("选了「不打回」或者指了名单外的地方 —— 目标是 null，不猜", () => {
@@ -490,7 +493,7 @@ describe("L3 · 回应蓝方：一条 open gap 一道题", () => {
     id, kind: "finding", severity: "P1", title,
     status: "open", openedRound: 1, resolution: null, note: null, closedBy: null,
     where: null,
-    why: null,
+    why: null, owner: null,
   });
   const GAPS = [openGap("SPEC-1", "验收标准不可测"), openGap("SPEC-2", "范围与 PRD 冲突")];
 
@@ -738,8 +741,8 @@ describe("L3 · turning an answer into a decision", () => {
 
 describe("L3 · 接受风险问的是「哪一条」加「为什么」", () => {
   const waivable = [
-    { id: "SPEC-1", title: "写入不是原子的", where: null, why: null },
-    { id: "SPEC-2", title: "命令行没有定义", where: null, why: null },
+    { id: "SPEC-1", title: "写入不是原子的", where: null, why: null, owner: null },
+    { id: "SPEC-2", title: "命令行没有定义", where: null, why: null, owner: null },
   ];
 
   it("**一条 gap 一格，标题就在格子上** —— 不是让人对着一串裸 id 选", () => {
@@ -906,5 +909,67 @@ describe("批准之后进哪（§8.10）", () => {
     // 压根没那一格的题（没有第二条路），也读不出东西来。
     assert.equal(
       approveTargetFrom(ask([]), { action: "accept", content: { U: "QA" } }), null);
+  });
+});
+
+describe("L3 · 打回的组合项：两轨一起重来（环 v3）", () => {
+  /**
+   * 选择器只有单选 enum，而合法的组合只有两个（互不消费的孪生对）——
+   * 所以组合以**选项**的形态出现，不是多选框。用户 2026-08-12 拍。
+   */
+  const gate: Gate = {
+    permitted: ["approve", "reject", "sendBack"],
+    refusals: {}, snapshot: "S",
+  };
+
+  it("孪生都在名单里 —— 组合项出现，且紧跟在孪生之后", () => {
+    const question = gateDecisionQuestion({
+      phase: "QA", gate, summary: "", round: 1,
+      sendBackTargets: ["Arch", "BuildPlan", "TestPlan", "Build", "Test"],
+    })!;
+    const offered = question.requestedSchema.properties["T"]!.enum!;
+    assert.ok(offered.includes(sendBackBothLabel("BuildPlan", "TestPlan")));
+    assert.ok(offered.includes(sendBackBothLabel("Build", "Test")));
+  });
+
+  it("孪生不在名单里就不摆 —— 一个必被拒的选项是圈套，不是能力", () => {
+    // Build 打回时名单里没有 TestPlan（互盲），组合不该出现。
+    const question = gateDecisionQuestion({
+      phase: "Build", gate, summary: "", round: 1,
+      sendBackTargets: ["PRD", "Spec", "Arch", "BuildPlan"],
+    })!;
+    const offered = question.requestedSchema.properties["T"]!.enum!;
+    assert.ok(!offered.some((entry) => entry.includes("两轨一起重来")),
+      `不该有组合项：${JSON.stringify(offered)}`);
+  });
+
+  it("**选组合项解析成 {to, withTwin:true}**；普通项 withTwin 是 false", () => {
+    const question = gateDecisionQuestion({
+      phase: "QA", gate, summary: "", round: 1,
+      sendBackTargets: ["BuildPlan", "TestPlan"],
+    })!;
+    const both = sendBackTargetFrom(question, {
+      action: "accept",
+      content: { decision: "打回上游（哪一份产物错了，上面那格选）",
+        T: sendBackBothLabel("BuildPlan", "TestPlan") },
+    });
+    assert.deepEqual(both, { to: "BuildPlan", withTwin: true });
+    const single = sendBackTargetFrom(question, {
+      action: "accept",
+      content: { decision: "打回上游（哪一份产物错了，上面那格选）", T: "BuildPlan" },
+    });
+    assert.deepEqual(single, { to: "BuildPlan", withTwin: false });
+  });
+
+  it("题面 enum 里没有的组合字符串 —— null，不猜", () => {
+    const question = gateDecisionQuestion({
+      phase: "Build", gate, summary: "", round: 1,
+      sendBackTargets: ["PRD", "Spec", "Arch", "BuildPlan"],
+    })!;
+    assert.equal(sendBackTargetFrom(question, {
+      action: "accept",
+      content: { decision: "打回上游（哪一份产物错了，上面那格选）",
+        T: sendBackBothLabel("BuildPlan", "TestPlan") },
+    }), null);
   });
 });
