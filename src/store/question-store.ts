@@ -314,13 +314,16 @@ export class QuestionStore {
     }
     // 目标从**这道题自己的答案**读（T / U 都是第一趟的格子，就在这份里）。
     let to: Phase | undefined;
+    // 「两轨一起重来」（环 v3）：打回落点的孪生阶段同时开座。人选的是组合项时为真。
+    let withTwin = false;
     if (action === "sendBack") {
       const target = sendBackTargetFrom(record.question, answer);
       if (target === null) {
         finish();
         return { kind: "refused", action, reason: "no_target_chosen" };
       }
-      to = target;
+      to = target.to;
+      withTwin = target.withTwin;
     }
     if (action === "approve") {
       /*
@@ -339,6 +342,7 @@ export class QuestionStore {
         ? this.commands.gateFor(record.changeId).snapshot
         : record.expectedSnapshot,
       ...(to === undefined ? {} : { to }),
+      ...(withTwin ? { withTwin: true } : {}),
       ...(action === "sendBack" && reason !== "" ? { reason } : {}),
     });
     finish();

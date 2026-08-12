@@ -1,7 +1,7 @@
 import type { ChangeAction } from "./change-state";
 import { isHumanGap, type Gap, type GapResponse } from "./gap";
 import type { BlockerKind, BlockerSeverity, Gate } from "./gate";
-import { isPhase, type Phase } from "./phase";
+import { isPhase, parallelTwinOf, PHASES, type Phase } from "./phase";
 
 /**
  * A question StagePass puts to the human, and the answer it will accept.
@@ -193,7 +193,17 @@ export function gateDecisionQuestion(input: {
     ...(offered.includes("sendBack") ? [{
       id: SEND_BACK_FIELD,
       title: "打回哪一份（只有裁决选「打回上游」才生效）",
-      options: [SEND_BACK_NONE, ...targets],
+      /*
+       * 孪生阶段**都在名单里**时，紧跟着补一项「两轨一起重来」（环 v3）。
+       * 只补合法的：发起方够不着孪生（比如 Build 打回 BuildPlan，但 TestPlan
+       * 不在 Build 的上游里）就不摆 —— 一个必被拒的选项是圈套，不是能力。
+       */
+      options: [SEND_BACK_NONE, ...targets.flatMap((target) => {
+        const twin = parallelTwinOf(target);
+        return twin !== null && targets.includes(twin)
+          ? [target, sendBackBothLabel(target, twin)]
+          : [target];
+      })],
     }] : []),
     /*
      * 批准之后进哪（§8.10）。和上面那格同一个形状、同一条理由：**默认排第一**，
@@ -284,6 +294,22 @@ const SEND_BACK_FIELD = "T";
 export const SEND_BACK_NONE = "不打回";
 
 /**
+ * 「两轨一起重来」那一项的标签（环 v3，用户 2026-08-12 拍）。
+ *
+ * ## 为什么是组合选项，不是多选框
+ *
+ * 选择器只有单选 enum（2026-07-28 实测，见文件头）；而且**合法的组合本来就只有
+ * 两个** —— 并行的前提是互不消费（CONSUMES），全序里满足的只有
+ * BuildPlan∥TestPlan 和 Build∥Test。把仅有的两个合法组合摆成选项，比一排
+ * 布尔勾选干净：勾选能拼出的组合大多不合法，挡非法组合的活儿全得另写。
+ *
+ * 标签就是回来的答案原文（§5.2b），所以格式是**约定**：`sendBackTargetFrom`
+ * 按同一个函数再算一遍来认它 —— 两边永远一致，不靠字符串解析。
+ */
+export const sendBackBothLabel = (to: Phase, twin: Phase): string =>
+  `${to} + ${twin}（两轨一起重来）`;
+
+/**
  * 打回到哪。**对着问题自己的 enum 校验**（和 `decisionFrom` 同一个理由：enum 是
  * 人当时真正看见的名单）。「不打回」、名单外的、读不出的 —— 都是 null，不猜。
  * null 配上 `decision = 打回上游`，由落地那层报「没选哪一份」，不静默。
@@ -291,14 +317,25 @@ export const SEND_BACK_NONE = "不打回";
 export function sendBackTargetFrom(
   question: Question,
   answer: Answer,
-): Phase | null {
+): { to: Phase; withTwin: boolean } | null {
   if (answer.action !== "accept") return null;
   const offered = question.requestedSchema.properties[SEND_BACK_FIELD]?.enum;
   if (!offered) return null;
   const chosen = answer.content[SEND_BACK_FIELD];
   if (typeof chosen !== "string" || chosen === SEND_BACK_NONE) return null;
-  if (!offered.includes(chosen) || !isPhase(chosen)) return null;
-  return chosen;
+  if (!offered.includes(chosen)) return null;
+  if (isPhase(chosen)) return { to: chosen, withTwin: false };
+  /*
+   * 组合项：**用同一个函数把标签再算一遍来认**，不解析字符串 —— 解析是第二份
+   * 格式定义，两份必然漂移。候选只有「有孪生的阶段」那几个，逐个对得起。
+   */
+  for (const phase of PHASES) {
+    const twin = parallelTwinOf(phase);
+    if (twin !== null && chosen === sendBackBothLabel(phase, twin)) {
+      return { to: phase, withTwin: true };
+    }
+  }
+  return null;
 }
 
 const APPROVE_FIELD = "U";

@@ -540,6 +540,47 @@ describe("L0 · 批 4：分叉开座，收编与卫生", () => {
     assert.deepEqual(seats(database), [["Test", "pending"]]);
   });
 
+  it("**打回带孪生：落点的孪生同时开座**（环 v3「两轨一起重来」）", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "sendBack",
+      { to: "BuildPlan", reason: "两份计划都要重来", withTwin: true });
+    assert.equal(store.read("CHG-P").state.phase, "BuildPlan");
+    // TestPlan 的座开了，pending —— 两轨并行重跑。
+    assert.deepEqual(seats(database), [["TestPlan", "pending"]]);
+  });
+
+  it("**发起方够不着孪生就拒**：Build 打回 BuildPlan 带不动 TestPlan", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "Build");
+    database.prepare("DELETE FROM change_states").run();   // 清掉自动分叉的 Test 座
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    // TestPlan 不在 Build 的上游里（互盲）—— 组合不合法，动手之前就拒。
+    assert.throws(
+      () => store.apply("CHG-P", "sendBack",
+        { to: "BuildPlan", reason: "x", withTwin: true }),
+      /target_not_upstream/,
+    );
+    // 拒得干净：主线没动、座位没开。
+    assert.equal(store.read("CHG-P").state.phase, "Build");
+    assert.deepEqual(seats(database), []);
+  });
+
+  it("不带 withTwin 的打回照旧不开孪生座 —— 批 4 那条原样成立", () => {
+    const { database, store } = open();
+    store.create("CHG-P");
+    walkTo(store, "QA");
+    store.apply("CHG-P", "start");
+    store.apply("CHG-P", "settle");
+    store.apply("CHG-P", "sendBack", { to: "BuildPlan", reason: "只重计划" });
+    assert.deepEqual(seats(database), []);
+  });
+
   it("**closed 一个座位都不留**（P0 第 6 条）", () => {
     const { database, store } = open();
     store.create("CHG-P");

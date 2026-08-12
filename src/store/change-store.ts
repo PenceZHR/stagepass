@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 
 import {
   assertStateValid,
+  SendBackTargetError,
   transition,
   type ChangeAction,
   type ChangeState,
@@ -12,6 +13,7 @@ import {
   isPhase,
   parallelTwinOf,
   phaseGraphOf,
+  upstreamOf,
   type Phase,
   type PhaseGraph,
 } from "../domain/phase";
@@ -271,12 +273,37 @@ export class ChangeStore {
     options: {
       /** `sendBack` 的目标（打回哪一份上游文档）。别的动作不读。 */
       to?: Phase;
+      /**
+       * 打回时**孪生阶段一起重来**（环 v3，用户 2026-08-12 拍）：给打回落点的
+       * 孪生开一个 pending 座位，两轨并行重跑。只有 `sendBack` 读它。
+       *
+       * 默认不带 —— 批 4 那条「sendBack 到达不开孪生座」的理由原样成立（QA 说
+       * 代码错了时测试轨往往是好的，自动拖它重来是替人做决定）；这个参数正是
+       * 把那个决定还给人的入口。
+       */
+      withTwin?: boolean;
       /** 这一步为什么发生，人的话。进账本的 reason 列，环上历史箭头读它。 */
       reason?: string;
     } = {},
   ): ChangeRecord {
     const current = this.read(changeId);
     const graph = this.graphFor(current.projectId);
+    /*
+     * **「两轨一起重来」的合法性在动手之前判**（环 v3）。三条都得成立：
+     * 落点有孪生、孪生在这个 Change 的图上、而且**发起方够得着它**（upstreamOf
+     * —— Build 打回 BuildPlan 时 TestPlan 不在 Build 的上游里，组合就不合法；
+     * 题面那侧同一条判据不摆这个选项，这里是防绕过题面的调用方）。
+     */
+    if (action === "sendBack" && options.withTwin === true) {
+      const twin = options.to === undefined ? null : parallelTwinOf(options.to);
+      if (twin === null || !graph.order.includes(twin)
+        || !upstreamOf(current.state.phase, graph).includes(twin)) {
+        throw new SendBackTargetError(
+          "target_not_upstream",
+          `${current.state.phase} -> ${options.to ?? "?"} 的孪生不可及`,
+        );
+      }
+    }
     const next = transition(current.state, action, {
       ...(options.to === undefined ? {} : { to: options.to }),
       graph,
@@ -359,7 +386,13 @@ export class ChangeStore {
        * （sendBack 到达是打回重开，孪生该不该跟着重来由人裁）；孪生不在这个
        * Change 的图上就不开（跳过阶段是合法的，§4.5）。
        */
-      const twin = action === "approve" && arriving ? parallelTwinOf(next.phase) : null;
+      /*
+       * 开孪生座的两种到达（环 v3）：**批准落到分叉点**（批 4 的自动分叉），或
+       * **人打回时点了「两轨一起重来」**（合法性上面已经判过）。别的到达不开。
+       */
+      const twin = arriving
+        && (action === "approve" || (action === "sendBack" && options.withTwin === true))
+        ? parallelTwinOf(next.phase) : null;
       if (twin !== null && graph.order.includes(twin)) {
         this.database.prepare(
           `INSERT OR IGNORE INTO change_states
