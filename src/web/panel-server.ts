@@ -242,10 +242,15 @@ export interface PanelOptions {
    */
   readonly sessionsDir?: string;
   /**
-   * 一轮最多等多久。默认 30 分钟。
+   * 一轮最多等多久。默认 180 分钟。
    *
    * 不只是给测试用的旋钮：一轮对抗真的会停在审批上等人（PRD §6.6），而
    * 「窗口还开着、什么也没发生」和成功长得一模一样 —— 总得有个东西替它说话。
+   *
+   * **30 分钟的旧默认 2026-08-12 被真机杀掉**：Arch 按新模板（九节 + 图纸）
+   * 一轮真跑了 3.5 小时 —— turn 在 12:49 被判死，pty 里的 Codex 却继续跑到
+   * 15:56 出了结果，人对着一条已判死的轮裁决，账落了、轮早没了。用户拍：
+   * 全部统一 180。
    */
   readonly turnTimeoutMs?: number;
   /**
@@ -1037,7 +1042,7 @@ async function runRound(input: {
    * 那是这个坑的第三个面，而它比前两个更难看出来：库里会说这轮死了，屏幕上
    * Codex 还在动。
    */
-  const turnMs = options.turnTimeoutMs ?? 30 * 60_000;
+  const turnMs = options.turnTimeoutMs ?? 180 * 60_000;
   loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1, phase });
 
   /*

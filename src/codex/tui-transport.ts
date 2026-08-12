@@ -147,7 +147,10 @@ export class CodexTuiTransport implements CodexTransport {
 
   constructor(private readonly options: CodexTuiTransportOptions) {
     this.sessionsDir = options.sessionsDir ?? DEFAULT_SESSIONS;
-    this.timeoutMs = options.timeoutMs ?? 30 * 60_000;
+    // 180 分钟，和 job 截止同一个数（2026-08-12 用户拍：Arch 新模板一轮真跑了
+    // 3.5 小时，30 分钟的旧默认把活轮判死）。三个截止不同步的坑见 panel-server
+    // 那段「同一堵墙，两个名字」。
+    this.timeoutMs = options.timeoutMs ?? 180 * 60_000;
     this.nudgeAfterMs = options.nudgeAfterMs ?? 45_000;
     this.pollMs = options.pollMs ?? 1_000;
     this.now = options.now ?? Date.now;

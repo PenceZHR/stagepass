@@ -86,7 +86,9 @@ const minutes = (name: string, fallbackMinutes: number): number => {
   return value * 60_000;
 };
 const askTimeoutMs = minutes("ask-timeout", 15);
-const turnTimeoutMs = minutes("turn-timeout", 30);
+// 180：Arch 按新模板（九节 + 图纸）一轮实测 3.5 小时，30 分钟把活轮判死了
+// （2026-08-12 真机）。用户拍：全部统一 180。
+const turnTimeoutMs = minutes("turn-timeout", 180);
 
 /**
  * 跑几轮之后开始把收敛数据摊给人看。默认 5。
