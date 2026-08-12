@@ -1946,12 +1946,27 @@ function fillSunCard() {
   sunCount.append(unit);
 }
 
-/** 点太阳：开，或者关。卡摆在太阳下方不盖住它，所以一个开关管两头。 */
-function toggleSunCard() {
-  const opening = sunCard.hidden;
-  sunCard.hidden = !opening;
-  sunButton.setAttribute("aria-expanded", String(opening));
-  if (opening) fillSunCard();
+/*
+ * 太阳的语义（用户 2026-08-12 改）：**悬停看状态卡，点击进项目图谱。**
+ *
+ * 状态卡原来是点击开关（2026-08-09「点一下才看」）——「问了才答」这层意思
+ * 保留，只是问的方式从点变成悬停：看一眼没有副作用，而**点击从此是一个动作**
+ * （飞进这个项目的文件图谱）。两个语义不再抢同一个手势。
+ */
+function showSunCard() {
+  fillSunCard();
+  sunCard.hidden = false;
+}
+
+function hideSunCard() {
+  sunCard.hidden = true;
+}
+
+function sunToGraph() {
+  const project = targetProject();
+  if (project === null) return;   // 一个项目都没有 —— 没图可看，别装开了
+  hideSunCard();
+  openGraphView(project);
 }
 
 /*
@@ -3275,5 +3290,9 @@ async function saveRubric() {
 
 tabGaps.addEventListener("click", () => { showTab("gaps"); });
 tabRubric.addEventListener("click", () => { showTab("rubric"); });
-sunButton.addEventListener("click", () => { toggleSunCard(); });
+sunButton.addEventListener("click", () => { sunToGraph(); });
+sunButton.addEventListener("pointerenter", () => { showSunCard(); });
+sunButton.addEventListener("pointerleave", () => { hideSunCard(); });
+sunButton.addEventListener("focus", () => { showSunCard(); });
+sunButton.addEventListener("blur", () => { hideSunCard(); });
 
