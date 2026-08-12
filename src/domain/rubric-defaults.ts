@@ -310,6 +310,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "selfrun", text: "证明了测试代码自己站得住（语法、依赖、fixture 齐全），而没有拿实现来跑" },
     { section: "written", text: "测试断言的是 TestPlan 写的期望输出，没有把断言写成「不抛错就算过」这类空判" },
     { section: "unfinished", text: "没做完的逐条列了差什么；没有时明写了「无」" },
+    // 具体性补齐（2026-08-12，BACKLOG §十）：「证明了」要落在看得见的东西上。
+    { section: "selfrun", text: "站得住的证据贴了命令和输出原文（编译、静态检查或 dry-run 那几行），不是一句「检查过了」" },
   ],
   /*
    * 退休了（环 v3，2026-08-09）：Review 收编进 QA、Fix 变成打回交互、Merge 是
@@ -340,6 +342,8 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
     { section: "repro", text: "跑的命令和环境写下来了，别人照着能重现" },
     { section: "executed", text: "按 TestPlan 的用例 id 逐条列了结果，每条写了跑的命令和过没过；没有把多条并成一句「全部通过」" },
     { section: "failures", text: "失败的用例贴了输出原文（报错那几行、实际值和期望值），而不是转述一句「结果不对」" },
+    // 具体性补齐（2026-08-12，BACKLOG §十）：「确认过没退化」要有范围和数字。
+    { section: "regression", text: "回归确认点名了跑的是哪个套件或哪几条命令、多少条过多少条没过，不是一句「无回归」" },
   ],
   Merge: [],
   Retro: [],
