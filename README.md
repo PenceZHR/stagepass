@@ -4,240 +4,275 @@
 
 > **A model does not get to pass its own work.**
 
-StagePass is a local delivery control plane. It splits one change into twelve
-phases, runs Codex once per phase to produce evidence and find problems, and then
-**stops and waits for a person to decide**. The decision happens in Codex's own
-selector, not on a web page. Only once you have chosen does StagePass advance.
+StagePass is a local delivery control plane. It lays one change onto an
+**eight-phase diamond ring**, runs an adversarial Codex round at every phase
+(red produces, blue attacks, a judge rules), collects evidence, surfaces
+problems — and then **stops and waits for a person to decide**. The decision
+happens in Codex's own selector, not on a web page. Only once you have chosen
+does StagePass advance.
+
+```
+PRD → Spec → Arch → ⟨BuildPlan ∥ TestPlan⟩ → ⟨Build ∥ Test⟩ → QA
+                └───── two mutually blind tracks ─────┘
+```
+
+Arch is the fork of the diamond: the build track and the test track split
+there and **cannot see each other** (Build may not even read the tests). They
+collide at QA — which reads the code, runs the tests, and mutation-attacks the
+test suite itself. What QA finds is sent back with three-way attribution
+(Build / Test / Arch), and a send-back means a **re-walk**: phases in between
+are no longer presumed correct, and every parallel seat is cleared.
 
 ---
 
-## ⚠️ Status: under construction — five of six layers done
+## ⚠️ Status: foundation green, ring closed, bootstrap not yet
 
-This is not usable software yet. **The table below is honest**; what is not done
-is simply not done:
+This is not usable software yet. **The table below is honest**; what is not
+done is simply not done:
 
 | Layer | What it is | Status |
 |---|---|---|
-| **L0** | Schema, state machine, transitions, audit ledger | ✅ Proved fully offline |
-| **L1** | Gate computation, fencing, leases, heartbeats, idempotency, crash recovery | ✅ Proved offline; crash recovery seen on a real machine 2026-08-03 |
-| **L2** | Launching the Codex TUI, thread binding, turn records, reading results from the rollout | ✅ Real turns, twice (osascript and pty) |
-| **L3** | Compose question → Codex's native selector → a person chooses → answer lands → state advances | ✅ A real person really chose |
-| **L4** | Red / blue / judge adversarial rounds, settled into something decidable | ✅ Real rounds: gaps stored, gate held shut, gaps closed by later rounds |
-| **L5** | Rubric scoring, gap tracking | ✅ End-to-end on a real machine 2026-08-03 (PRD, round 3) |
-| **L6** | Rolled out to the remaining phases | 🟡 Four of eleven run end to end on a real machine (PRD, Spec and TechSpec all approved 2026-08-04, now at Plan). The other seven share the same code path and factory rubrics but have not been run. |
+| **L0–L5** | Schema, state machine, gates, leases, crash recovery, Codex TUI hosting, native-selector decisions, adversarial rounds, rubric scoring | ✅ Proved offline and each walked on a real machine (layer by layer since 2026-07-28) |
+| **Ring v3** | Eight-phase diamond, blind parallel tracks, QA's three attacks, send-back-as-rewalk, parallel seats | ✅ Landed in six batches (2026-08-09); CHG-001 really walked the new ring to QA and is re-walking after a send-back |
+| **Project graph** | Black-hole-and-Saturn-rings 3D dependency view, Arch blueprint reconciliation overlay | ✅ Verified on a real machine (2026-08-12); one semantic boundary still awaits a ruling |
+| **Bootstrap** | Run one Change through StagePass that produces StagePass's own next change | ❌ Has not happened — this is the test of whether the word "bootstrap" is earned |
 
 **A layer that has not passed is a layer you may not build on.** That is this
-repository's construction discipline, not a suggestion — and it is also how this
-README is written: every line corresponds to something that actually ran.
+repository's construction discipline, not a suggestion — and it is also how
+this README stays alive: every line corresponds to something that actually ran.
 
-> The README before the rebuild described an architecture that **never ran** — MCP
-> App decision cards, follower IPC, a separate web dashboard. All of it was deleted
-> along with the old tree; the rebuild started 2026-07-28. Writing something that
-> never worked as if it were finished is exactly what turned that README into
-> waste paper.
+> The README before the rebuild described an architecture that **never ran**.
+> It was deleted along with the old code; the rebuild started 2026-07-28.
+> Writing unproven things in the past tense is exactly how that README became
+> waste paper. The old twelve-phase mainline is retired too (TechSpec merged
+> into Arch, Review absorbed by QA, Fix became the send-back interaction) —
+> the names belong to history now, and historical ledger rows are never
+> rewritten.
 
 ---
 
 ## The problem it exists for
 
-Asking a model whether it finished a phase is asking it to grade itself. The real
-failures look like this:
+Letting a model judge "is this phase done?" is letting it grade its own exam.
+Real failures look like this:
 
-- Round two regenerates the document, **fails to mention round one's problem, and
-  the problem is thereby resolved**.
-- The model reports "no blockers", the gate opens, and the problem travels into
-  the next phase.
-- A person wants to intervene, but the way in is a button on a web page — and a
-  button on a web page only tells the web page.
+- Round two regenerates the document and **last round's problems, never
+  mentioned again, count as solved**;
+- The model reports "no blockers", the gate opens, the problem rides into the
+  next phase;
+- The same mind writes the code and the tests, so the tests pin the
+  implementation's text rather than its behaviour.
 
 StagePass answers each with a hard rule:
 
-1. **Silence cannot close a problem.** Rows in `gaps` outlive the round that found
-   them, and closing one requires stating a reason — "this round did not mention
-   it" and "this round says it is fixed" are different rows in the database.
-2. **The gate reads evidence, never the model's opinion of its own work.** A phase
-   node turns green because **the ledger records that a human approved it**, not
-   because some round reported no problems.
-3. **There is exactly one answer path.** A person's choice happens inside the
-   elicitation selector Codex draws. There is no button on the web surface that
-   can move a gate, and there never will be.
+1. **Silence cannot close a problem.** Rows in `gaps` survive across rounds;
+   closing one requires a reason — "not mentioned this round" and "this round
+   claims it is fixed" are two different rows in the database.
+2. **Gates read evidence, not self-assessment.** A phase node turns green only
+   because **a person approved it in the ledger**.
+3. **There is exactly one decision path.** Human choices happen in the
+   elicitation selector Codex itself draws. There is no button on the web page
+   that can move a gate, and there never will be.
+4. **The code author and the test author are blind to each other.** The two
+   tracks share only the Arch contract and collide at QA, where mutation
+   attacks vet the tests themselves (a no-op mutation must stay green;
+   reverting the change must turn red).
 
-### A fourth rule, learned the expensive way
+### The fifth rule was paid for in full
 
-**No string StagePass compares for equality may appear in text a model has to
-write.** A judge once dropped a segment from a 36-character UUID and four
-perfectly good verdicts were voided together. The audit that followed found seven
-such surfaces; five had already burned at least once.
+**Any string StagePass will exact-match may never appear in text a model has
+to write out.** A judge once dropped a chunk of a 36-character UUID and four
+perfectly-formed verdicts died together. A survey found seven such surfaces;
+five had already burned at least once.
 
-So a model's output may now contain only **a choice from an enumeration** and
-**prose**. Identifiers never travel through a model:
-
-- Which threads a round ran on — StagePass works it out from the rollout's
-  `parent_thread_id`, rather than asking the judge to report them.
-- Per-item verdicts — the model calls `stagepass_next` for the next item and
-  `stagepass_answer` to answer it. **Not one of the three plugin tools accepts an
-  identifier**: two take nothing at all, and `stagepass_answer` takes only
-  `answer` and `reason`. *Which* item is being answered is StagePass's business.
-- Rubric criteria the opposition scores — written to a file numbered `1..N`, and
-  the answers come back by number. One missing or duplicated number voids the
-  whole sheet rather than shifting every verdict onto the wrong criterion.
+So model output is now restricted to **enum choices and prose**. Identifiers
+never pass through a model's mouth: thread ids are read from the rollout's
+`parent_thread_id`; none of the plugin's three tools accepts an identifier;
+the rubric the critic answers is numbered `1..N`, and a missing or duplicated
+number voids the whole sheet instead of letting verdicts slide onto the wrong
+criteria.
 
 ---
 
-## Three parts, no overlapping responsibility
+## The project graph: a black hole, Saturn's rings, and Arch's blueprint
+
+The sun at the center of the ring opens the project's **real dependency
+graph** (parsed with the actual TypeScript compiler, not regex):
+
+- **The black hole at the center is the pull of dependency itself** — the more
+  a layer is depended on, the closer its ring band sits to the hole; within a
+  band, the larger a file's blast radius, the closer it sinks to the inner
+  edge. `tests`, which nothing depends on, is the outermost ring.
+- **Violations are visible at a glance**: healthy dependencies all point
+  inward; an arc climbing outward is "depending on something above you".
+- **Arch must produce a machine-readable blueprint** (`arch.graph.json`:
+  concepts / relations / claims). It is mechanically reconciled against the
+  real code and overlaid on the rings — a planned concept hovers directly
+  above the stars that carry it; a concept that exists in the requirements but
+  not in the code is a rose-colored ghost on a planning orbit outside the
+  outermost ring.
+- Reconciliation never judges; it lays out facts in six kinds — homeless
+  concept, scattered concept, overloaded module, unclaimed module,
+  unimplemented relation, unplanned dependency — each readable in the side
+  panel and drawn distinctly on the rings.
+
+Which directories count as "real code" is checked off by a person in the
+panel (persisted per project); assets and generated files are aggregated into
+a short list of doors and never enter the scene. The graph is **never
+cached**: ~200ms end to end, always equal to the tree on disk.
+
+---
+
+## Three parts, no overlapping duties
 
 | | Does | **Explicitly does not** |
 |---|---|---|
-| **State machine and gate** (`src/domain`, `src/store`) | Transitions, gate, fence, leases, recovery; composes questions, validates answers, advances state | **Renders nothing** |
-| **Terminal panel** (`src/web`) | Looking and launching: the stage orbit, evidence, risks; **hosts the pty the Codex TUI actually runs inside** | **Carries no decision entrance** |
-| **Codex plugin** (`src/plugin`) | Puts questions to a person over MCP `elicitation` and sends the answer back | Decides nothing, composes nothing, judges no legality |
+| **State machine & gates** (`src/domain`, `src/store`, `src/app`) | Transitions, gates, fencing, leases, recovery; composing questions, validating answers, advancing state | **Render anything** |
+| **Terminal panel** (`src/web`) | Viewing and launching: the phase ring, evidence, the graph; **hosts the pty that Codex's TUI actually runs in** | **Host any business decision entry point** |
+| **Codex plugin** (`src/plugin`) | Asks the person via MCP `elicitation`, sends the answer back | Decide, compose, or judge legality |
 
-**The terminal panel is a host, not an entrance.** Every pixel of the execution
-and of the selector you see in the browser is drawn by the `codex` binary itself,
-in escape sequences; StagePass only moves bytes from the pty into xterm.js. What
-changed is who owns the glass, not who does the drawing.
+**The panel is a host, not an entry point.** Every pixel of the execution you
+watch in the browser is drawn by the `codex` binary itself with escape
+sequences; StagePass only moves bytes from the pty to xterm.js.
 
-That is not left to good intentions. `src/architecture.test.ts` holds five
-standing guards that may never go red:
+This is not left to judgement. The standing guards in
+`src/architecture.test.ts` may never go red. The founding five:
 
-1. Every module declares which layer it belongs to.
-2. A lower layer may not import a higher one.
-3. No export exists without a caller.
-4. One concept, one name (no aliases for a phase).
-5. **`src/web/` may not contain `TextDecoder`, `.toString(`, `JSON.parse`, or
-   `String.fromCharCode`** — the four ways to turn pty bytes into a string, none
-   of them left open.
+1. Every module declares its layer;
+2. A lower layer may not import a higher one;
+3. No export with zero callers;
+4. One name per concept (no phase-name aliases);
+5. **No `TextDecoder` / `.toString(` / `JSON.parse` / `String.fromCharCode`
+   anywhere under `src/web/`** — all four roads from pty bytes to strings,
+   closed.
 
-Guard 5 is the precondition the terminal panel was accepted on: the moment
-StagePass starts parsing Codex's output to draw its own interface, it has slid
-back into the approach that was rejected outright. That is not a style question,
-so it cannot be left to judgement.
+Ratchets grew later: single-function line counts, per-module dependency
+closure share, ingredient-list share of the tree — existing violations are
+pinned in an exception table that may only shrink. The graph routes exist as
+injected wiring precisely because the closure ratchet went red on the direct
+version: the guard was right, so the code followed it.
 
-### Looking is not an action
+### Looking must have no side effects
 
-Opening a phase's terminal used to start a Codex process. So somebody who only
-wanted to check on a phase would spawn one — and because a live process holds the
-phase's only seat, every other action on that phase was then refused. Two separate
-buttons now:
-
-| | |
-|---|---|
-| **See this terminal** | Attaches if a process is running; shows the last screen if one died; says **"this phase has no process"** if it never ran. Starts nothing. |
-| **Open a terminal** | Starts one, explicitly, with the plugin registered. Hidden while a process is already running. |
+Opening a phase's terminal does not spawn a process; opening the graph writes
+nothing and never touches Codex. **A look is just a look.** The button that
+spawns says so explicitly.
 
 ---
 
-## What actually runs today
+## What runs today
 
 ```bash
 pnpm install
-pnpm check            # 751 tests + strict typecheck, fully offline, no Codex needed
+pnpm check            # 1209 tests + strict typecheck, fully offline, no Codex needed
 ```
 
-These need a real Codex:
+With a real Codex:
 
 ```bash
-pnpm panel                 # the terminal panel: stage orbit, one terminal per phase
-pnpm verify:rebuild        # the whole L0–L2 chain (offline)
-pnpm verify:decision       # L3: compose → selector → a person chooses → the gate advances
-pnpm verify:round          # L4: run one real adversarial round
-pnpm verify:rubric-round   # L5: a round that also scores rubrics
+pnpm panel                 # the terminal panel: phase ring + graph + one terminal per phase
+pnpm verify:rebuild        # L0–L2 end to end (offline)
+pnpm verify:decision       # L3: compose → selector → person chooses → gate advances
+pnpm verify:round          # L4: one real red/blue adversarial round
+pnpm verify:rubric-round   # L5: a round plus rubric scoring
 ```
 
-`pnpm panel` takes flags, all optional:
+All `pnpm panel` flags are optional:
 
 ```bash
 node --import tsx scripts/panel.ts \
   --db <path> --port 4173 \
   --project-name <name> --project-path <dir> \
-  --model <name> --effort minimal|low|medium|high|xhigh \
-  --ask-timeout <minutes> --turn-timeout <minutes>
+  --model <model> --effort minimal|low|medium|high|xhigh \
+  --ask-timeout <minutes> --turn-timeout <minutes> --round-budget <rounds>
 ```
 
-Effort defaults to `xhigh`: a round takes minutes either way, and trading that for
-a shallower verdict is a bad deal. Without `--db` a throwaway database is created,
-so you can click around without touching anything real.
+Reasoning effort defaults to `xhigh`: an adversarial round takes minutes
+anyway; saving pennies of thinking budget for a shallower verdict is a bad
+trade. Without `--db` a throwaway database is created — click anything, no
+real data is touched.
 
-Probes answer one factual question each about Codex, and print what they measured:
+Each probe answers exactly one factual question about Codex:
 
 ```bash
 pnpm probe:pty        # does the elicitation selector work inside a pty?
-pnpm probe:elicit     # does `-a never` silently auto-decline elicitation? (it does)
-pnpm probe:sandbox    # read-only vs workspace-write: which one stalls on approval?
+pnpm probe:elicit     # does -a never silently decline elicitation? (yes)
+pnpm probe:sandbox    # read-only vs workspace-write: which one stalls on approvals?
 pnpm probe:subagent   # which threads refuse input from outside their parent?
 ```
 
 ### Requirements
 
-- **macOS.** node-pty uses prebuilt binaries and `verify:decision` shells out to
-  `osascript`. No other platform has been verified — do not assume it works.
-- **Node 20+** (developed on 25.9) and **pnpm**.
-- **Codex CLI** (developed against 0.146.0). Every command above L2 needs it.
+- **macOS.** node-pty uses prebuilds; `verify:decision` uses `osascript`.
+  Other platforms are unverified — do not assume they work.
+- **Node 20+** (developed on 25.9), **pnpm**.
+- **Codex CLI** (developed on 0.146.0). Everything above L2 needs it.
 
-### Two traps worth knowing
+### Two traps that bite
 
-**`-a never` breaks the only way to ask a person anything.** It does not merely
-govern shell approvals — it makes Codex **auto-decline MCP `elicitation/create`**.
-The failure is silent: back comes a perfectly well-formed `{"action":"decline"}`,
-indistinguishable from someone pressing Esc. In this codebase that value is
-**unrepresentable in the type system** (`CodexInvocation.approval` accepts only
-`"untrusted" | "on-request"`). Better to make it fail to compile than to leave a
-comment warning the next person.
+**`-a never` severs the only channel to a human.** It does not just gate shell
+approvals — it makes Codex **auto-decline MCP `elicitation/create`**. The
+failure is silent: a perfectly well-formed `{"action":"decline"}` comes back,
+indistinguishable from a person pressing Esc. The value is now
+**unrepresentable in the type** (`CodexInvocation.approval` accepts only
+`"untrusted" | "on-request"`).
 
-**A sub-agent thread refuses input from anyone but its parent.** `codex resume
-<sub-agent thread>` starts, loads its MCP servers, and then answers any submitted
-prompt with `■ This sub-agent is controlled by its parent. Direct input is
-disabled.` — regardless of whether the parent is still alive. Measured 2026-08-03
-on 0.146.0 (`pnpm probe:subagent`: two sub-agent threads refused, one ordinary
-thread accepted and answered). A design that drives a sub-agent thread directly
-cannot work; the only channel left is its parent, which is why rubric criteria now
-travel as two file paths the judge relays verbatim.
+**A sub-agent's thread refuses input from anyone but its parent.**
+`codex resume <subagent-thread>` starts fine, the MCP server loads, and the
+first submission returns `■ This sub-agent is controlled by its parent.
+Direct input is disabled.` — regardless of whether the parent is still alive.
+Measured 2026-08-03 on 0.146.0. Any design that drives a sub-agent thread
+directly is dead on arrival.
 
 ---
 
-## Repository layout
+## Shape of the repository
 
 ```
 src/
-  domain/     Pure logic: phases, state machine, gate, gaps, leases, rounds, questions,
-              per-phase prompts — no IO, so every legal and illegal transition is
-              provable offline
-  store/      SQLite reads and writes: change, evidence, gap, command, binding, turn,
-              question, rubric, worklist
-  work/       Long-running work: job leases, the turn loop, adversarial and rubric rounds
-  codex/      Talking to Codex: invocation, TUI transport, rollout parsing, subagents,
-              directory trust, archive
-  plugin/     The MCP plugin. Its only write is recording what a person said.
-  web/        The terminal panel: pty session, panel server, and the browser half
-  architecture.test.ts   the five standing guards
-docs/         PRD, handoffs, design notes. **The PRD is the single authority.**
-scripts/      panel, verify:*, probe:*
+  domain/     Pure logic: phases, state machine, gates, gaps, leases, rounds,
+              questions, templates and factory rubrics — no IO, exhaustively provable
+  store/      SQLite: changes, evidence, gaps, bindings, rubrics, parallel seats,
+              the aside ledger
+  app/        Use cases: ask a human, record a brief, decide a gate, waive a risk,
+              create and delete
+  work/       Long-running: job leases, the turn loop, wiring for adversarial and
+              rubric rounds, git
+  graph/      The graph engine: compiler-parsed dependencies, selection criteria,
+              layout, ingredient lists, blueprint reconciliation — all pure functions
+  codex/      Driving Codex: invocation, TUI transport, rollout parsing,
+              directory trust, archiving
+  plugin/     The MCP plugin: its only write is "record what the person said"
+  web/        The terminal panel: pty sessions, the panel server, the graph API
+              (injected wiring), and the browser half
+  architecture.test.ts   the standing guards
+docs/         PRD, BACKLOG, designs, handoffs. **The PRD is the only authority;
+              BACKLOG is the single entry point for undone work.**
+scripts/      panel, verify:*, probe:*, dump-rubrics, regen-prompt-golden
 ```
 
-13,586 lines of production code across 45 modules, 13,125 lines of tests. SQLite is
-the authority — a trigger on `changes` makes the database **abort on the spot** any
-state update that does not come with its ledger row, rather than leaving a missing
-audit entry to be discovered later.
+22,644 lines of production code across 66 modules, 21,606 lines of tests, plus
+4,355 lines of type-checked panel JS. SQLite is the sole authority — a trigger
+on `changes` makes the database itself reject, **at write time**, any state
+update without its matching ledger row.
 
-Two files are pinned byte for byte, on purpose:
+Two things are pinned byte-for-byte, deliberately:
 
-- `src/domain/round-prompt.golden.txt` — the judge prompt for every phase. Changing
-  one phase's entry must leave the other ten byte-identical; that is what keeps the
-  eleven phases from quietly growing a shared template again.
-- The plugin's tool contract — three tools, and **not one of them takes an
-  identifier**. `stagepass_ask` used to accept a `questionId`; that parameter was
-  one of the seven surfaces, and removing it is why the model can no longer answer
-  the wrong question.
+- `src/domain/round-prompt.golden.txt` — every phase's judge prompt. Touch one
+  phase and the others must not move by a character; this is what stops them
+  from growing back into one shared template.
+- The plugin's tool contract — three tools, **none accepts an identifier**.
 
-Main documents (written in Chinese):
+Key documents:
 
-- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) — **the single authority**, including why the rebuild happened
-- [`docs/HANDOFF-2026-08-03.md`](docs/HANDOFF-2026-08-03.md) — current progress, traps found the hard way, what is still missing
-- [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) — the seven surfaces where a model was copying identifiers, and how each was taken to zero
-- [`docs/STAGEPASS-ACTUAL-REQUIREMENTS.md`](docs/STAGEPASS-ACTUAL-REQUIREMENTS.md) — what the product solves and what each of the twelve phases produces
+- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) — **the only authority**, including why the rebuild
+- [`docs/BACKLOG.md`](docs/BACKLOG.md) — what is undone and why, accumulated across sessions
+- [`docs/PLAN-2026-08-09-ring-v3.md`](docs/PLAN-2026-08-09-ring-v3.md) — ring v3: eight rulings, seven batches
+- [`docs/superpowers/specs/2026-08-12-project-graph-3d-design.md`](docs/superpowers/specs/2026-08-12-project-graph-3d-design.md) — the project graph's design and criteria
+- [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) — the seven hand-transcription surfaces and how each reached zero
 
 ---
 
-## Licence
+## License
 
 [MIT](LICENSE)
