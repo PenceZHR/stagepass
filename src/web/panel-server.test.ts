@@ -1349,6 +1349,19 @@ describe("panel · rubric 是网页上唯一能改的东西", () => {
  * 理由就是不许那样。所以面板上那个按钮换掉了 runner，而不是并排多一个按钮：
  * 两个「跑」、没人说得清哪个是真的，那是老树的病。
  */
+/**
+ * 派出去的 argv 里跟着的题面正文。
+ *
+ * 题面走文件了（用户 2026-08-13：会话里只送信封）—— argv 里只剩信封和 codex
+ * 的旗子，任务书内容的断言要顺着信封里的路径读回文件。一段 argv 里有几份题面
+ * 就读几份，拼起来给断言（续跑的测试一口气派两轮）。
+ */
+function scriptsBehind(argv: string): string {
+  const paths = [...argv.matchAll(/\/[^\s：]*round-script-[^\s：]*\.md/g)];
+  assert.ok(paths.length > 0, "信封里没有题面的路径");
+  return paths.map((match) => readFileSync(match[0], "utf-8")).join("\n");
+}
+
 describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
   it("派给 Codex 的提示词里有裁判、红方、蓝方", async () => {
     await withPanel(async ({ open, pty, database }) => {
@@ -1360,15 +1373,15 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
       await new Promise((resolve) => { setTimeout(resolve, 120); });
 
-      const argv = pty.started.find((entry) => entry.phase === "PRD")?.argv ?? [];
-      const prompt = argv.join(" ");
-      assert.match(prompt, /裁判/, "没有裁判");
+      const argv = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
+      const prompt = scriptsBehind(argv);
+      assert.match(argv, /裁判/, "信封连身份都不说");
       // 「/root/red」那套身份路径 2026-07-30 废掉了，「裁判报 agent_id」那一版
       // 2026-08-02 也废掉了 —— 现在两方在提示词里就叫正方 / 反方，而 StagePass 按
       // rollout 的 parent_thread_id 自己认哪条线程是谁。
       assert.match(prompt, /1\. 正方/, "没有让它派生正方");
       assert.match(prompt, /2\. 反方/, "没有让它派生反方");
-      assert.doesNotMatch(prompt, /agent_id/, "又在要它手抄线程 id 了");
+      assert.doesNotMatch(argv + prompt, /agent_id/, "又在要它手抄线程 id 了");
       assert.match(prompt, /先派正方/, "没说清派生的先后 —— 那是红蓝的判据");
 
       /*
@@ -1378,8 +1391,8 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
        * 裁判那个会话手上没有 StagePass 的工具。少了它，提示词里叫它调工具只会得到
        * 「没有这个工具」，而那是最难查的一种毛病。
        */
-      assert.match(prompt, /mcp_servers\.stagepass\.command/, "没给这一轮挂上插件");
-      assert.match(prompt, /plugin\/server\.ts/, "插件路径没进 argv");
+      assert.match(argv, /mcp_servers\.stagepass\.command/, "没给这一轮挂上插件");
+      assert.match(argv, /plugin\/server\.ts/, "插件路径没进 argv");
     });
   });
 
@@ -1455,15 +1468,17 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
       void open(`/api/run?change=${CHANGE}`, { method: "POST" }).catch(() => {});
       await new Promise((resolve) => { setTimeout(resolve, 120); });
 
-      const prompt = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
+      const prompt = scriptsBehind(
+        (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" "));
       /*
        * 模型不再需要猜「this change」是什么 —— 但正文现在在文件里（用户 2026-08-03）。
        * 两头都要盯：路径印出去了，而且那个文件里真是他写的需求。只盯前一半的话，
        * 「路径对了但文件是空的」就没人接住 —— 而那正是 CHG-003 第一轮的症状
        * （红方报「缺少产品输入」）换了一种发生方式。
+       * （路径在**题面**里 —— 会话里只送信封，2026-08-13。）
        */
       const path = /\/[^\s：]*requirement-[^\s：]*\.md/.exec(prompt)?.[0];
-      assert.ok(path, "需求的路径没进提示词");
+      assert.ok(path, "需求的路径没进题面");
       assert.match(readFileSync(path, "utf-8"), /上线前必须能一键回滚/);
     });
   });
@@ -1518,11 +1533,12 @@ describe("panel · 跑一个阶段 = 跑一轮对抗", () => {
        * 由 StagePass 单独去问它的线程。**criterion key 和正文都不再经提示词。**
        * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
        */
-      const prompt = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
-      assert.doesNotMatch(prompt, new RegExp(saved.criteria[0]!.key), "criterion key 又进提示词了");
-      assert.doesNotMatch(prompt, /```rubric/, "围栏协议又回来了");
-      // 而工具那条路是通的：提示词里告诉它去调。
-      assert.match(prompt, /stagepass_next/);
+      const argv = (pty.started.find((entry) => entry.phase === "PRD")?.argv ?? []).join(" ");
+      const everything = argv + scriptsBehind(argv);   // 信封 + 题面，一处都不许有
+      assert.doesNotMatch(everything, new RegExp(saved.criteria[0]!.key), "criterion key 又进提示词了");
+      assert.doesNotMatch(everything, /```rubric/, "围栏协议又回来了");
+      // 而工具那条路是通的：题面里告诉它去调。
+      assert.match(everything, /stagepass_next/);
     });
   });
 });
@@ -2771,17 +2787,19 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
       };
       assert.equal(result.continued?.ran, true);
       assert.equal(result.continued?.phase, "PRD");
-      // 派出去的那一轮提示词里带着裁判和红蓝 —— 是一轮对抗，不是一次 turn。
-      const argv = pty.started.map((entry) => entry.argv.join(" ")).join("\n");
-      assert.match(argv, /1\. 正方/);
-      assert.match(argv, /2\. 反方/);
+      // 派出去的那一轮题面里带着裁判和红蓝 —— 是一轮对抗，不是一次 turn。
+      // （题面走文件了，2026-08-13：argv 里是信封，正文顺着路径读回来。）
+      const scripts = scriptsBehind(
+        pty.started.map((entry) => entry.argv.join(" ")).join("\n"));
+      assert.match(scripts, /1\. 正方/);
+      assert.match(scripts, /2\. 反方/);
       /*
        * 而且人刚写的那句话进了下一轮 —— **它现在在名单文件里，不在提示词里**
        * （用户 2026-08-03：能文件化的就走文件）。所以两件事都要盯：路径印出去了，
        * 而且那个文件里真有他那句话。少盯后一半，「路径对了但文件是空的」就没人接住。
        */
-      const path = /\/[^\s：]*open-problems-[^\s：]*\.md/.exec(argv)?.[0];
-      assert.ok(path, "名单的路径没进提示词");
+      const path = /\/[^\s：]*open-problems-[^\s：]*\.md/.exec(scripts)?.[0];
+      assert.ok(path, "名单的路径没进题面");
       assert.match(readFileSync(path, "utf-8"), /按第 3 节那种写法改/);
     });
   });
@@ -2807,7 +2825,9 @@ describe("panel · 回应蓝方和裁决同一次问出来", () => {
         continued: { ran: boolean } | null;
       };
       assert.equal(result.continued?.ran, true, "retry 之后没有自动续跑");
-      assert.match(pty.started.map((each) => each.argv.join(" ")).join("\n"),
+      // 题面走文件（2026-08-13）：对抗的证据在题面里，argv 里只有信封。
+      assert.match(
+        scriptsBehind(pty.started.map((each) => each.argv.join(" ")).join("\n")),
         /1\. 正方/);
     });
   });

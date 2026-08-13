@@ -203,13 +203,18 @@ describe("L5 · 没有人给自己打分", () => {
     const context = open();
     seedProducer(context);
     const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
+    const written = new Map<string, string>();
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    writeRoundFile: (name: string, content: string) => {
+      const path = `/tmp/stagepass-test/${name}`;
+      written.set(path, content);
+      return path;
+    },
     readRoundFile: () => null,
     worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
@@ -217,11 +222,13 @@ describe("L5 · 没有人给自己打分", () => {
     });
 
     // 红方是被判的那个，从来不背标准；而反方那份 2026-08-03 起也不再经裁判转达 ——
-    // StagePass 自己 resume 它的线程去问（`askBlueByWorklist`）。所以整份提示词里
-    // 一条 criterion 的正文都不该有，一个 ```rubric 围栏也不该有。
-    const prompt = transport.dispatches[0]!.prompt;
-    assert.doesNotMatch(prompt, /```rubric/, "还在往提示词里塞标准");
-    assert.doesNotMatch(prompt, /RBC-/, "还在往提示词里塞 criterion key");
+    // StagePass 自己 resume 它的线程去问（`askBlueByWorklist`）。所以裁判那一侧
+    // 一条 criterion 的正文都不该有，一个 ```rubric 围栏也不该有 ——
+    // **信封和题面文件都要盯**（题面走文件了，2026-08-13）。
+    const sent = transport.dispatches[0]!.prompt
+      + (written.get("/tmp/stagepass-test/round-script-Fix-r1.md") ?? "");
+    assert.doesNotMatch(sent, /```rubric/, "还在往裁判那侧塞标准");
+    assert.doesNotMatch(sent, /RBC-/, "还在往裁判那侧塞 criterion key");
   });
 
   it("critic 的判定来自裁判 —— 蓝方也不自评", async () => {
@@ -242,20 +249,29 @@ describe("L5 · 没有人给自己打分", () => {
       [{ text: "关闭一个问题必须写清它为什么不再成立", blocking: true }]);
 
     const transport = new ScriptedCodexTransport([asJudge('```json\n{"verdicts":{}}\n```')]);
+    const written = new Map<string, string>();
     const settled = await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
     }, {
       transport, gaps: context.gaps, rubrics: context.rubrics,
       childThreads,
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    writeRoundFile: (name: string, content: string) => {
+      const path = `/tmp/stagepass-test/${name}`;
+      written.set(path, content);
+      return path;
+    },
     readRoundFile: () => null,
     worklist: new WorklistStore(context.db, () => new Date(AT)),
     readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
 
-    assert.doesNotMatch(transport.dispatches[0]!.prompt, /```rubric/,
+    // 信封和题面都不许有（题面走文件了，2026-08-13）。
+    assert.doesNotMatch(
+      transport.dispatches[0]!.prompt
+        + (written.get("/tmp/stagepass-test/round-script-Fix-r1.md") ?? ""),
+      /```rubric/,
       "verdict 那份被塞给某个模型了 —— 它只该给人看");
     assert.deepEqual(settled.assessments.verdict, []);
     // 也不许因此挂一条挡门的 standard —— 它压根不参与判定。
@@ -539,6 +555,7 @@ describe("L5 · 反方那份标准走文件", () => {
       asJudge('```json\n{"verdicts":{}}\n```'),
       ...Array.from({ length: 8 }, () => ""),
     ]);
+    const written = new Map<string, string>();
     await runRubricRound({
       projectId: PROJECT, changeId: CHANGE, phase: "Fix",
       round: 1, task: "写 Spec", judgeThreadId: null,
@@ -547,17 +564,24 @@ describe("L5 · 反方那份标准走文件", () => {
       gaps: context.gaps,
       rubrics: context.rubrics,
       childThreads,
-      writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+      writeRoundFile: (name: string, content: string) => {
+        const path = `/tmp/stagepass-test/${name}`;
+        written.set(path, content);
+        return path;
+      },
       readRoundFile: () => null,
       worklist: new WorklistStore(context.db, () => new Date(AT)),
       readThread: roles(answer(), answer()),
       readThreadWhole: deliveredAll(context),
     });
 
-    const prompt = transport.dispatches[0]!.prompt;
-    assert.ok(!prompt.includes(key), "criterion key 进了裁判的提示词");
-    assert.match(prompt, /rubric-CHG-[^\s]*\.md/, "标准文件的路径没进提示词");
-    assert.match(prompt, /rubric-answers-CHG-[^\s]*\.md/, "答案文件的路径没进提示词");
+    // 会话里只送信封（2026-08-13）：key 两处都不许有，两个路径要在题面里。
+    const envelope = transport.dispatches[0]!.prompt;
+    const script = written.get("/tmp/stagepass-test/round-script-Fix-r1.md")!;
+    assert.ok(!envelope.includes(key) && !script.includes(key),
+      "criterion key 进了裁判那侧");
+    assert.match(script, /rubric-CHG-[^\s]*\.md/, "标准文件的路径没进题面");
+    assert.match(script, /rubric-answers-CHG-[^\s]*\.md/, "答案文件的路径没进题面");
   });
 
   it("**标准文件按 1..N 编号，key 一个字都不出现**", async () => {

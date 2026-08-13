@@ -368,11 +368,26 @@ export async function runRound(
    * （`worklist.read` 按 (阶段, 轮) 取）。下一次派轮会自愈，可那扇窗正好是
    * 「人在终端里查刚才为什么炸」的那段时间。
    */
-  let delivery;
-  try {
-    delivery = await dependencies.transport.runTurn({
-    threadId: request.judgeThreadId,
-    prompt: judgePrompt({
+  /*
+   * **题面整体落成文件，会话里只送一个信封**（用户 2026-08-13：「提示词我不想
+   * 每次都大段地输进去……每次这么长的提示词，我感觉不太好看」）。
+   *
+   * 这是 2026-08-03「能文件化的就走文件」那条路走到头：requirement、名单、
+   * 裁定史、契约说明早就各自走文件了，最后裸奔的就是剧本主体。信封只有三样 ——
+   * 身份和轮次、题面文件的路径、「先读它」：**内容一个字不带**，于是裁判不读
+   * 文件就没法开工（它连答案格式都不知道），读了才有全部指令。半份内容在信封、
+   * 半份在文件才是最坏的形状 —— 那会让它觉得信封已经够了。
+   *
+   * 转达定律不因此松动：路径比段落难被改写（requirement 那份的实测先例 ——
+   * 段落会被裁判转述时改写丢，路径转坏了红方会大声说读不到）。
+   *
+   * 附带的机械收益：transport 认「自己那一轮」靠拿整段 prompt 当针去 rollout 里
+   * 找（`findOwnCompletedTurn`）—— 信封里的路径每轮都在新的临时目录里，针反而
+   * 更短更独特。
+   */
+  const scriptPath = dependencies.writeRoundFile(
+    `round-script-${request.phase}-r${request.round}.md`,
+    judgePrompt({
       phase: request.phase,
       round: request.round,
       task: request.task,
@@ -391,6 +406,17 @@ export async function runRound(
       ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
       contractNotesPath,
     }),
+  );
+  let delivery;
+  try {
+    delivery = await dependencies.transport.runTurn({
+      threadId: request.judgeThreadId,
+      prompt: [
+        `你是本轮的裁判。阶段：${request.phase}，第 ${request.round} 轮。`,
+        `这一轮的完整题面在这个文件里，**先读它，从头到尾**：${scriptPath}`,
+        "读完照它执行。要转达给正反两方的内容、答案的格式、停机条件都只在题面里 ——",
+        "题面之外没有第二份指令。",
+      ].join("\n"),
     });
   } catch (error) {
     // 派轮炸了 —— 名单先收工，再把错原样抛上去（失败仍然是失败）。

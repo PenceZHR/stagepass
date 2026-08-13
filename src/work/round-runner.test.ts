@@ -195,19 +195,67 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     await runRound({ ...request, round: 1 }, dependencies);
     await runRound({ ...request, round: 2, judgeThreadId: "JUDGE-1" }, dependencies);
 
-    // Round 1 had nothing open to judge; round 2 must carry round 1's finding.
-    assert.match(transport.dispatches[0]!.prompt, /没有未关闭的问题/);
     /*
-     * **名单走文件了**（用户 2026-08-03：能文件化的就走文件）。所以第 2 轮的提示词里
+     * **题面整体走文件了**（用户 2026-08-13：不想每轮一大段糊进会话）。会话里只送
+     * 一个短信封，正文都在题面文件里 —— 断言全部改盯文件，否则牙齿跟着搬家丢了。
+     */
+    const script = (round: number) => files.written.get(
+      [...files.written.keys()].find((each) => each.includes(`round-script-Fix-r${round}`))!)!;
+    // Round 1 had nothing open to judge; round 2 must carry round 1's finding.
+    assert.match(script(1), /没有未关闭的问题/);
+    /*
+     * **名单走文件了**（用户 2026-08-03：能文件化的就走文件）。所以第 2 轮的题面里
      * 是一个路径，正文在文件里 —— 两处都要盯，否则「路径印出去了但文件是空的」这种
      * 断法就没人接住。
      */
     const path = [...files.written.keys()].find((each) => each.includes("open-problems"))!;
-    assert.match(transport.dispatches[1]!.prompt, new RegExp(path));
-    assert.doesNotMatch(transport.dispatches[1]!.prompt, /SPEC-1 \[P1\]/, "正文还印在提示词里");
+    assert.match(script(2), new RegExp(path));
+    assert.doesNotMatch(script(2), /SPEC-1 \[P1\]/, "正文还印在题面里");
     assert.match(files.written.get(path)!, /SPEC-1 \[P1\] 验收不可测/);
     // Red is told the shape to answer in, or its result is unreadable later.
-    assert.ok(transport.dispatches[0]!.prompt.includes(RESULT_CONTRACT));
+    assert.ok(script(1).includes(RESULT_CONTRACT));
+  });
+
+  /*
+   * **题面走文件，会话里只送一个信封**（用户 2026-08-13：「提示词我不想每次都
+   * 大段地输进去」）。信封只有三样：身份和轮次、题面文件的路径、「先读它」——
+   * 内容一个字不带，于是不读文件就没法开工，读了才有格式和停机条件。
+   * 转达定律照旧成立：路径比段落难被改写（requirement 那份的先例）。
+   */
+  it("**会话里送的是信封，不是题面** —— 正文只在文件里", async () => {
+    const db = database();
+    const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+    const files = inMemoryFiles();
+
+    await runRound(
+      { changeId: CHANGE, phase: "Fix", round: 1, task: "写 Spec", judgeThreadId: null },
+      {
+        transport,
+        gaps: new GapStore(db, () => new Date(AT)),
+        childThreads: spawnedBy(transport),
+        writeRoundFile: files.write,
+        readRoundFile: files.read,
+        worklist: worklistOf(db),
+        readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({})),
+      },
+    );
+
+    const sent = transport.dispatches[0]!.prompt;
+    const scriptPath = [...files.written.keys()]
+      .find((each) => each.includes("round-script-Fix-r1"));
+    assert.ok(scriptPath !== undefined, "题面没落成文件");
+    // 信封：身份、路径、先读它 —— 都在；题面的正文 —— 都不在。
+    assert.match(sent, /裁判/);
+    assert.match(sent, /第 1 轮/);
+    assert.match(sent, new RegExp(scriptPath!));
+    assert.match(sent, /先读它/);
+    assert.doesNotMatch(sent, /派生两个子 Agent/, "题面正文漏进了信封");
+    assert.ok(!sent.includes(RESULT_CONTRACT), "答案契约漏进了信封");
+    assert.ok(sent.length < 400, `信封该是几行字，不是一份文档：${sent.length}`);
+    // 题面文件本身是完整的 —— 剧本、契约都在里面。
+    const script = files.written.get(scriptPath!)!;
+    assert.match(script, /派生两个子 Agent/);
+    assert.ok(script.includes(RESULT_CONTRACT));
   });
 
   it("closes a gap only when the judge says why", async () => {
