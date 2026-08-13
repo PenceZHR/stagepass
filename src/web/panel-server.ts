@@ -37,7 +37,7 @@ import { RubricStore } from "../store/rubric-store";
 import { RoundNoteStore } from "../store/round-note-store";
 import { RUBRIC_ROLES, type RubricRole } from "../domain/rubric";
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
-import { TurnLoop, recoverStuckTurns } from "../work/turn-loop";
+import { LEASE_TTL_MS, TurnLoop, recoverStuckTurns } from "../work/turn-loop";
 import { decideGate, type DecideOutcome } from "../app/decide-gate";
 import { rubricFor, saveRubric } from "../app/edit-rubric";
 import {
@@ -398,6 +398,22 @@ export class PanelSessions {
     if (!bound || bound.status !== "bound") return null;
     return rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
       .get(bound.threadId) ?? null;
+  }
+
+  /**
+   * 这个座位的 rollout 文件多久没长了（`LiveSessions.rolloutAgeMs`）。
+   *
+   * 判据是文件 mtime，不解析内容 —— 「多久没动静」只关心它长没长，连读带解析
+   * 反而让一个每 2 秒轮询的进度端点去反复吃几 MB 的 jsonl。
+   */
+  rolloutAgeMs(changeId: string, phase: Seat): number | null {
+    const path = this.rolloutPathFor(changeId, phase);
+    if (path === null) return null;
+    try {
+      return Math.max(0, Date.now() - statSync(path).mtimeMs);
+    } catch {
+      return null;   // 文件没了和没绑线程一样：说不出来就说不出来。
+    }
   }
 
   /**
@@ -895,17 +911,28 @@ async function runRound(input: {
    * **blocked 的座位从这个按钮出去**（批 4 · 审计 P0 第 3 条）。
    *
    * 主线的 blocked 走裁决（retry 是人的决定，经「请 Codex 问我」）；座位没有
-   * 裁决面 —— 它的出口只有被收编。撤回前 `ParallelStore.retry` 全树没有调用者，
+   * 裁决面 —— 它的终点只有被收编。撤回前 `ParallelStore.retry` 全树没有调用者，
    * 座位一 blocked 就永远趴着。人按「跑这个阶段」就是那个决定：先 retry 推回
    * running，再照常派 —— 阻断归人管，这一下正是人在管。
    */
   if (seat !== null && seat.status === "blocked") {
     new ParallelStore(database).apply(changeId, phase, "retry");
   }
+  /*
+   * **settled 的座位从这个按钮再来一轮**（2026-08-13 用户拍：并行轨必须能
+   * 独立重来）。座位没有裁决面，主线的 reject 够不着它 —— 在这之前一个
+   * settled 的座位是冻的：按「跑」被拒，提示去裁决，而裁决面根本不存在，
+   * 死路。和上面 blocked → retry 同一个形状：人按这个按钮，就是「这轨
+   * 再来一轮」的决定本身。
+   */
+  if (seat !== null && seat.status === "settled") {
+    new ParallelStore(database).apply(changeId, phase, "start");
+  }
   // 并行座位看座位自己的状态，主线看主线的 —— 同一份名单，两个座。
   const status = seat === null
     ? new ChangeStore(database).read(changeId).state.status
-    : seat.status === "blocked" ? "running" : seat.status;
+    : seat.status === "blocked" || seat.status === "settled"
+      ? "running" : seat.status;
   if (status !== "pending" && status !== "running") {
     return { ran: false, phase, reason: `phase_cannot_queue:${status}` };
   }
@@ -1023,24 +1050,25 @@ async function runRound(input: {
   const at = Date.now();
   const jobId = `JOB-${changeId}-${phase}-${at}`;
   /*
-   * **一轮有三个截止时间，它们必须是同一个数。**
+   * **硬顶有两份（transport 和 job 截止），它们必须是同一个数；租约不再是第三份。**
    *
-   *   transport   等 rollout 长出结果（`CodexTuiTransport.timeoutMs`）
-   *   job 截止    到点把 job 判 `deadline_reached`（`domain/lease.ts`）
-   *   租约 TTL    到点收尸人认为没人在管这条，把它收掉
+   *   transport   等 rollout 长出结果（`CodexTuiTransport.timeoutMs`）      = turnMs
+   *   job 截止    到点把 job 判 `deadline_reached`（`domain/lease.ts`）      = turnMs
+   *   租约        短租 + 跑轮期间心跳续（`LEASE_TTL_MS`，turn-loop.ts）
    *
-   * 2026-08-04 实测：前者跟着 `--turn-timeout` 走，后两个写死 30 分钟。于是
-   * `--turn-timeout 180` **一点用都没有** —— 21:25 起跑的那一轮 21:55 整死于
-   * `deadline_reached`，transport 那边还剩 150 分钟没用上。
+   * 2026-08-04 实测（当时三个都要同数）：transport 跟着 `--turn-timeout` 走、
+   * 后两个写死 30 分钟时，`--turn-timeout 180` **一点用都没有** —— 21:25 起跑的
+   * 那一轮 21:55 整死于 `deadline_reached`。更坏的是同一堵墙两个名字：三个都是
+   * 30 分钟时 transport 先喊 `codex_unavailable`，把 transport 推上去之后轮到
+   * job 截止喊 `deadline_reached`（我当天先后诊断错了两次）。所以**硬顶那两份
+   * 必须同数**这半句今天仍然成立。
    *
-   * 更坏的是它换了个名字：三个都是 30 分钟时，transport 先喊，错误是
-   * `codex_unavailable ... 1800000ms`；把 transport 推上去之后，轮到 job 截止先喊，
-   * 错误变成 `deadline_reached`。**同一堵墙，两个名字**，而看错误信息的人会以为
-   * 是两个不同的毛病（我今天就先后诊断错了两次）。
-   *
-   * 租约也要跟着。它短于另外两个的话，收尸人会在一条**还在跑**的轮身上收尸 ——
-   * 那是这个坑的第三个面，而它比前两个更难看出来：库里会说这轮死了，屏幕上
-   * Codex 还在动。
+   * 租约那份原来也要同数，因为当时没有心跳 —— 租约短于轮长，收尸人会在一条
+   * **还在跑**的轮身上收尸（第三张脸：库里说死了，屏幕上 Codex 还在动）。
+   * 代价是**检测死亡的延迟 = 单轮时限**：出厂 30 → 180 分钟之后，面板中途死掉，
+   * 界面要说满 3 小时的「在跑」。2026-08-13 起心跳接上了（`TurnLoop.startHeartbeat`），
+   * 租约只回答「工人还活着吗」：活着每拍续，死了最多 `LEASE_TTL_MS` + 一趟收尸
+   * 就被发现。第三张脸由「续到硬顶就停手」挡住，有测试钉。
    */
   const turnMs = options.turnTimeoutMs ?? 180 * 60_000;
   loop.queueTurn({ changeId, jobId, deadlineAt: at + turnMs, maxAttempts: 1, phase });
@@ -1057,7 +1085,7 @@ async function runRound(input: {
    * `running` 它自己就开始转。这个响应要说的只有「派出去了没有」，外加一个 jobId
    * 让人和测试指认得了这一轮。
    */
-  void runToCompletion({ loop, database, changeId, phase, jobId, at, turnMs });
+  void runToCompletion({ loop, database, changeId, phase, jobId, at });
   return { ran: true, phase, jobId };
 }
 
@@ -1155,12 +1183,11 @@ async function runToCompletion(input: {
   phase: Phase;
   jobId: string;
   at: number;
-  turnMs: number;
 }): Promise<void> {
   const { loop, database, changeId, phase, jobId } = input;
   try {
     await loop.runOnce({
-      owner: "panel", token: jobId, now: input.at, ttlMs: input.turnMs,
+      owner: "panel", token: jobId, now: input.at, ttlMs: LEASE_TTL_MS,
     });
   } catch (error: unknown) {
     // 库已经关了 = 面板在退场（生产不关库，只有测试的 teardown 会）。这时的
@@ -2521,6 +2548,10 @@ export function createPanelServer(options: PanelOptions): {
     for (const each of swept.stranded) {
       // running 而身后没有任何未完成的 job —— 不变量破了，收回 blocked（可以 retry）。
       console.log(`[panel] running 却没有任何活儿，收回 blocked（可以 retry）：${each}`);
+    }
+    for (const each of swept.clamped) {
+      // 多半是升级前批的整轮长租约。重计时之后，死进程最多 TTL + 一趟收尸就被发现。
+      console.log(`[panel] 租约比现行 TTL 长，按 ${LEASE_TTL_MS / 60_000} 分钟重新计时：${each}`);
     }
   }, everyMs);
   // Node 不该为了这个定时器活着。

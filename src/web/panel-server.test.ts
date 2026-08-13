@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
+import { ParallelStore } from "../store/parallel-store";
 import { BindingStore } from "../store/binding-store";
 import { QuestionStore } from "../store/question-store";
 import { EvidenceStore } from "../store/evidence-store";
@@ -637,6 +640,7 @@ describe("panel · 一轮跑到哪了", () => {
     spawned: number;
     stage: string | null;
     processGone: boolean;
+    quietForMs: number | null;
   }
   const progressOf = async (
     open: (path: string, init?: RequestInit) => Promise<Response>,
@@ -700,6 +704,41 @@ describe("panel · 一轮跑到哪了", () => {
     await withPanel(async ({ open, database }) => {
       new ChangeStore(database).apply(CHANGE, "start");
       assert.equal((await progressOf(open)).stage, null);
+    });
+  });
+
+  /*
+   * 「在跑」可以是三种东西：真在跑、进程死了（processGone 说得出）、**进程活着但
+   * 卡死了**（等目录信任、等许可框、模型僵住）。第三种在界面上和第一种完全同形，
+   * 2026-08-13 之前它能静默烧满整轮 180 分钟。rollout 是唯一许可的公开观察面
+   * （PRD §9.3 不许碰 pty）—— 文件多久没长，就是「多久没有可观察的动静」。
+   */
+  it("**报得出 rollout 多久没动静了** —— 「活着但卡死」才有名字", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "stagepass-quiet-"));
+    const thread = "0199aaaa-0000-7000-8000-000000000002";
+    const file = join(dir, `rollout-2026-08-13T00-00-00-${thread}.jsonl`);
+    writeFileSync(file, JSON.stringify(
+      { timestamp: "t1", type: "event_msg", payload: { type: "task_started" } },
+    ));
+    // 把文件的 mtime 拨回 10 分钟前 —— 模拟「上一条事件之后再没动静」。
+    const tenMinutesAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(file, tenMinutesAgo, tenMinutesAgo);
+
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).apply(CHANGE, "start");
+      new BindingStore(database).bind(CHANGE, "PRD", thread);
+      const progress = await progressOf(open);
+      assert.ok(
+        (progress.quietForMs ?? -1) >= 9 * 60_000,
+        `10 分钟没动静要报得出来：${progress.quietForMs}`,
+      );
+    }, { sessionsDir: dir });
+  });
+
+  it("没绑线程 —— quietForMs 是 null，不猜", async () => {
+    await withPanel(async ({ open, database }) => {
+      new ChangeStore(database).apply(CHANGE, "start");
+      assert.equal((await progressOf(open)).quietForMs, null);
     });
   });
 
@@ -1919,6 +1958,33 @@ describe("panel · 并行座位（批 4 重开）：分叉自动开座，入口�
         { method: "POST" })).json() as { ran: boolean; reason?: string };
       assert.equal(ran.ran, false);
       assert.equal(ran.reason, "phase_not_active");
+    });
+  });
+
+  /**
+   * 2026-08-13 用户点名的「巨狠的 bug」：settled 的座位原来什么都不接受
+   * （ACCEPTS.settled = []），按「跑」被拒、提示去裁决 —— 而座位没有裁决面。
+   * 两轨名义并行、实际依附：座位轨想重来，必须先裁决完主线孪生等收编。
+   */
+  it("**settled 的座位按「跑」= 这轨再来一轮** —— 并行轨独立重来，不依附主线", async () => {
+    await withPanel(async ({ open, database, pty }) => {
+      const changes = new ChangeStore(database);
+      changes.setBrief(CHANGE, "需求");
+      advanceTo(changes, "BuildPlan");   // 分叉：TestPlan 座 pending
+      // 座位轨跑完一轮：pending → running → settled。
+      const seats = new ParallelStore(database);
+      seats.apply(CHANGE, "TestPlan", "start");
+      seats.apply(CHANGE, "TestPlan", "settle");
+      // 主线不动（还在 BuildPlan），直接对 settled 的座位按「跑」。
+      const ran = await (await open(`/api/run?change=${CHANGE}&phase=TestPlan`,
+        { method: "POST" })).json() as { ran: boolean; reason?: string };
+      assert.equal(ran.ran, true,
+        `settled 座位被拒了：${ran.reason} —— 依附又回来了`);
+      assert.equal(seats.find(CHANGE, "TestPlan")?.status, "running",
+        "座位该在新一轮上");
+      // 主线原地未动 —— 座位重跑是轨内的事，不是裁决。
+      assert.equal(changes.read(CHANGE).state.phase, "BuildPlan");
+      assert.ok(pty.started.length > 0, "得真的派了一轮");
     });
   });
 });

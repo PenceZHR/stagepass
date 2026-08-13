@@ -44,6 +44,15 @@ import { JobStore } from "../work/job-store";
  */
 export interface LiveSessions {
   has(changeId: string, phase: Phase): boolean;
+  /**
+   * 这个座位绑的线程的 rollout 文件多久没长了（毫秒）。null = 没绑线程或读不到。
+   *
+   * 「在跑」有三种：真在跑、进程死了（`processGone`）、**进程活着但卡死**
+   * （等目录信任、等许可框、模型僵住）—— 第三种和第一种在界面上完全同形，
+   * 修之前它能静默烧满整轮。rollout 是唯一许可的观察面（PRD §9.3 不许碰 pty），
+   * 文件多久没长就是「多久没有可观察的动静」。
+   */
+  rolloutAgeMs(changeId: string, phase: Phase): number | null;
 }
 
 /**
@@ -415,5 +424,10 @@ export function progressView(input: {
      * 今天这一格会静默烧掉 30 分钟。它必须有名字，界面才说得出这句话。
      */
     processGone: state.status === "running" && !live,
+    /**
+     * 第三种「在跑」也要有名字：进程活着但多久没有可观察的动静了。
+     * 阈值不在这儿定 —— 这里只报数，几分钟算「卡住」由界面（和人）说。
+     */
+    quietForMs: sessions.rolloutAgeMs(changeId, phase),
   };
 }

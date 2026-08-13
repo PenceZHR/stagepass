@@ -403,6 +403,32 @@ export class JobStore {
   }
 
   /**
+   * 把超过现行 TTL 的租约按 `now + ttlMs` 重新计时，返回被动过的 job id。
+   *
+   * 给收尸人当第 0 步用的**对账**：判据是「这份租约比现行 TTL 还长」这个
+   * 现在时的不自洽，不是「谁刚刚批了一份长租约」。事件驱动的修法（只在批租约
+   * 那一刻管住 TTL）碰不到**已经躺在库里**的长租约 —— 租约短批上线前，活库里
+   * 每一份租约都是批满整轮 180 分钟的，收尸人对它们无能为力恰好 3 小时
+   * （`a187f06` → `985e48c` 同一课的又一次）。
+   *
+   * 对还活着的工人是无害的：它的心跳每一拍都把到期时间推回 `now + ttlMs`，
+   * clamp 到的数和心跳写的数是同一个。
+   */
+  clampLeases(now: number, ttlMs: number): string[] {
+    const cap = now + ttlMs;
+    const rows = this.database.prepare(
+      "SELECT id FROM jobs WHERE status = 'running' AND expires_at > ?",
+    ).all(cap) as { id: string }[];
+    if (rows.length === 0) return [];
+    const at = this.now().toISOString();
+    const update = this.database.prepare(
+      "UPDATE jobs SET expires_at = ?, updated_at = ? WHERE id = ?",
+    );
+    for (const row of rows) update.run(cap, at, row.id);
+    return rows.map((row) => row.id);
+  }
+
+  /**
    * Resolve every job whose owner is gone. Called on startup and periodically;
    * this is what makes "the process died" a survivable event rather than a
    * permanently stuck Change.

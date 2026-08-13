@@ -242,10 +242,23 @@ function progressWords(progress) {
   }
   if (progress.status !== "running") return null;
   const elapsed = spell(progress.job?.elapsedMs ?? 0);
-  return progress.stage === null
+  const base = progress.stage === null
     ? `${progress.phase} 在跑，已经 ${elapsed}。还看不出走到哪一步`
       + "（第一轮看不出来 —— 裁判的线程要跑完才绑上）。"
     : `${progress.phase} 在跑，已经 ${elapsed}：${STAGE_WORDS[progress.stage] ?? progress.stage}。`;
+  /*
+   * 第三种「在跑」：进程活着但很久没有可观察的动静（rollout 没长）。
+   * 它和「真在跑」在屏幕上完全同形，而它可能是在等目录信任、等许可框，或者
+   * 模型僵住了 —— 三种都要人去终端看一眼才分得出。阈值取 5 分钟：xhigh 的单次
+   * 长推理会安静一两分钟，5 分钟没动静值得人抬一次头，但只提醒、不下结论 ——
+   * 判死轮的只有租约和硬顶，不是这句话。
+   */
+  const quiet = progress.quietForMs;
+  if (typeof quiet === "number" && quiet >= 5 * 60_000) {
+    return base + `⚠ 已经 ${spell(quiet)} 没有新动静 —— `
+      + "可能在等信任/许可，也可能卡住了，去终端看一眼。";
+  }
+  return base;
 }
 
 /**

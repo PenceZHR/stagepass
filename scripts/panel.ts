@@ -336,6 +336,12 @@ server.listen(port, "127.0.0.1", () => {
     console.log(`恢复   running 却没有任何活儿的 Change，收回 blocked（可以 retry）：`
       + recovered.stranded.join("、"));
   }
+  // 升级前批的整轮长租约（180 分钟）被按现行短 TTL 重新计时 —— 上一个面板真死了
+  // 的话，几分钟内收尸人就会收它，而不是等满 3 小时。
+  if (recovered.clamped.length > 0) {
+    console.log(`恢复   ${recovered.clamped.length} 份超长租约按现行 TTL 重新计时：`
+      + recovered.clamped.join("、"));
+  }
   // 出厂标准的补/升在建库那一段就做完了，逐条打过 —— 这里不再复述一遍。
   // 截止时间要说出来。到点之后 StagePass 会把会话关掉，而那在屏幕上是「终端自己
   // 没了」—— 人得先知道有这么个东西，才可能把它和自己刚才的等待对上。

@@ -87,18 +87,46 @@ export interface TurnRunner {
  */
 export const STRANDED_GRACE_MS = 60_000;
 
+/*
+ * ── 租约短批 + 心跳（2026-08-13）─────────────────────────────
+ *
+ * 在此之前租约 TTL = 整轮时限。那不是疏忽，是 2026-08-04 的教训
+ * （panel-server「三个截止时间」注释）：当时没有人心跳，租约短于轮长的话，
+ * 收尸人会在**还在跑**的轮身上收尸 —— 库里说死了，屏幕上 Codex 还在动。
+ * 但代价在出厂时限 30 → 180 分钟时翻了六倍：**检测死亡的延迟 = 单轮时限**，
+ * 一个死轮要在界面上「在跑」满 3 个小时。
+ *
+ * 病根是一个数在回答两个问题。现在拆开：
+ *
+ *   硬顶（deadlineAt）   合法的活最长能跑多久 —— 还是整轮时限，和 transport 同数
+ *   租约（TTL + 心跳）   工人还活着吗 —— 活着就每拍续，死了最多 TTL 就被发现
+ *
+ * TTL 对心跳间隔留了十倍的量：better-sqlite3 是同步库，事件循环偶尔被长查询
+ * 卡住一两拍不该等于「工人死了」。
+ */
+export const LEASE_TTL_MS = 5 * 60_000;
+// 不导出：它只是 `heartbeatEveryMs` 没给时的默认值，外面没人需要念它的名字。
+const HEARTBEAT_EVERY_MS = 30_000;
+
 export function recoverStuckTurns(
   database: Database.Database,
   now: number,
+  leaseTtlMs: number = LEASE_TTL_MS,
 ): {
   resumed: readonly string[];
   failed: readonly { id: string; reason: string }[];
   /** 因为「running 而身后没有任何未完成的 job」被收掉的 Change。 */
   stranded: readonly string[];
+  /** 租约超过现行 TTL、被重新计时的 job（多半是升级前批的整轮长租约）。 */
+  clamped: readonly string[];
 } {
   const jobs = new JobStore(database);
   const changes = new ChangeStore(database);
   const seats = new ParallelStore(database);
+  // 第 0 步：把超长租约按现行 TTL 重新计时（对账，不是事件 —— 理由在
+  // `JobStore.clampLeases`）。活着的工人下一拍心跳会把它续回去，死了的
+  // 从此最多 TTL + 一趟收尸就被发现。
+  const clamped = jobs.clampLeases(now, leaseTtlMs);
   const summary = jobs.recover(now);
 
   for (const each of summary.failed) {
@@ -137,7 +165,7 @@ export function recoverStuckTurns(
     changes.apply(record.id, "fail");
     stranded.push(record.id);
   }
-  return { ...summary, stranded };
+  return { ...summary, stranded, clamped };
 }
 
 /**
@@ -166,6 +194,8 @@ export interface TurnLoopDependencies {
   readonly database: Database.Database;
   readonly runner: TurnRunner;
   readonly now?: () => Date;
+  /** 跑轮期间多久续一次租。测试用毫秒级的值把一条心跳测试压进百来毫秒。 */
+  readonly heartbeatEveryMs?: number;
 }
 
 export type RunResult =
@@ -178,13 +208,63 @@ export class TurnLoop {
   private readonly evidence: EvidenceStore;
   private readonly gaps: GapStore;
   private readonly jobs: JobStore;
+  private readonly clock: () => Date;
 
   constructor(private readonly dependencies: TurnLoopDependencies) {
     const now = dependencies.now ?? (() => new Date());
+    this.clock = now;
     this.changes = new ChangeStore(dependencies.database, { now });
     this.evidence = new EvidenceStore(dependencies.database, now);
     this.gaps = new GapStore(dependencies.database, now);
     this.jobs = new JobStore(dependencies.database, now);
+  }
+
+  /**
+   * 跑轮期间的心跳：每拍把租约续到 `now + ttlMs`，续到硬顶就停。
+   *
+   * **停在 `expiresAt >= deadlineAt`，不是多跳一拍再看** —— 到了硬顶那一拍，
+   * `heartbeat` 的答案是 `deadline_reached`，而 `JobStore` 对它的处理是
+   * `markFailed`：把一个还活着的轮判死在库里，正是短租约当年不敢上的原因
+   * （2026-08-04 的第三张脸）。最后那一段 TTL 留给 transport 的超时去收 ——
+   * 硬顶和它是同一个数，谁先到都是同一堵墙。
+   *
+   * 心跳失败（库忙、单拍抛了）不打断轮：下一拍再试，TTL 对间隔留了十倍的量。
+   * 租约丢了（`lost`，比如人中止后 retry 把活儿给了新工人）就停 —— 这个工人
+   * 迟到的收尾由 `runOnce` 的「谁先收尾谁说了算」兜住。
+   */
+  private startHeartbeat(input: {
+    jobId: string;
+    owner: string;
+    token: string;
+    ttlMs: number;
+  }): NodeJS.Timeout {
+    const everyMs = this.dependencies.heartbeatEveryMs ?? HEARTBEAT_EVERY_MS;
+    const beat = setInterval(() => {
+      let current: Job;
+      try {
+        current = this.jobs.read(input.jobId);
+      } catch {
+        clearInterval(beat);   // 行都没了（Change 被删级联掉）—— 没有租可续。
+        return;
+      }
+      if (current.status !== "running" || current.lease === null
+        || current.lease.expiresAt >= current.lease.deadlineAt) {
+        clearInterval(beat);
+        return;
+      }
+      try {
+        const result = this.jobs.heartbeat({
+          jobId: input.jobId, owner: input.owner, token: input.token,
+          now: this.clock().getTime(), ttlMs: input.ttlMs,
+        });
+        if (result.kind !== "extended") clearInterval(beat);
+      } catch {
+        // 单拍失败下一拍再试。
+      }
+    }, everyMs);
+    // Node 不该为了心跳活着 —— 轮自己结束时 finally 会清掉它。
+    beat.unref?.();
+    return beat;
   }
 
   /**
@@ -256,6 +336,10 @@ export class TurnLoop {
   }): Promise<RunResult> {
     const job = this.jobs.claimNext(input);
     if (!job) return { kind: "idle" };
+    // 领到活就开始心跳。claim 只批了一个 TTL 的租，跑得再久也靠续，不靠批满。
+    const beat = this.startHeartbeat({
+      jobId: job.id, owner: input.owner, token: input.token, ttlMs: input.ttlMs,
+    });
 
     /*
      * 这条活儿的成果与成败落到哪个座位（批 3）：
@@ -332,6 +416,8 @@ export class TurnLoop {
         jobId: job.id, owner: input.owner, token: input.token, reason,
       });
       return { kind: "failed", jobId: job.id, reason };
+    } finally {
+      clearInterval(beat);
     }
   }
 }
