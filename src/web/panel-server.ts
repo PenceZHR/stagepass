@@ -18,7 +18,7 @@ import {
   childThreadsOf, readThreadTranscript, readThreadUserMessages, readThreadWholeText,
 } from "../codex/subagent";
 import {
-  archiveFinished, createArchiveOps, ensureResumable, type ArchiveOps,
+  archiveFinished, createArchiveOps, type ArchiveOps,
 } from "../codex/archive";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { createTrustOps, type TrustOps } from "../codex/trust";
@@ -26,7 +26,7 @@ import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
 import { createRepoOps, looksLikeSha, type RepoOps } from "../work/repo";
 import { JobStore } from "../work/job-store";
 import { AsideStore } from "../store/aside-store";
-import { BindingStore } from "../store/binding-store";
+import { BindingStore, type BoundThread } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ParallelStore } from "../store/parallel-store";
 import { EvidenceStore } from "../store/evidence-store";
@@ -48,6 +48,9 @@ import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief"
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
 import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
+import {
+  prepareBoundThread, reconcileMissingBindings, type BindingRecoveryReport,
+} from "./session-recovery";
 
 /**
  * The terminal panel: StagePass Web hosting the windows Codex draws in.
@@ -329,6 +332,13 @@ export class ProjectPathMissingError extends Error {
   }
 }
 
+class SessionResumeRefusedError extends Error {
+  constructor(readonly threadId: string, reason: string) {
+    super(`refusing to resume thread ${threadId}: ${reason}`);
+    this.name = "SessionResumeRefusedError";
+  }
+}
+
 export class PanelSessions {
   private readonly live = new Map<string, LiveSession>();
   /**
@@ -359,6 +369,30 @@ export class PanelSessions {
     this.trust = options.trust ?? createTrustOps();
   }
 
+  /** 服务启动时只解绑已经确定不存在的线程；环境故障只进报告。 */
+  reconcileBindings(): BindingRecoveryReport {
+    return reconcileMissingBindings(
+      new BindingStore(this.options.database),
+      this.archive,
+    );
+  }
+
+  private bindingFor(
+    changeId: string, phase: Seat, threadId: string,
+  ): BoundThread {
+    return phase === ASIDE
+      ? { changeId, kind: "aside", phase: null, threadId }
+      : { changeId, kind: "round", phase, threadId };
+  }
+
+  private detachBinding(binding: BoundThread): void {
+    const bindings = new BindingStore(this.options.database);
+    if (binding.kind === "round") {
+      bindings.detach(binding.changeId, binding.phase);
+    } else {
+      bindings.detachAside(binding.changeId);
+    }
+  }
 
   private static key(changeId: string, phase: Seat): string {
     return `${changeId}${phase}`;
@@ -540,19 +574,21 @@ export class PanelSessions {
     if (cwd === null) throw new ProjectPathMissingError(changeId);
 
     /*
-     * **resume 之前先把线程弄成 resume 得动的。**
-     *
-     * 一条被归档的会话，`codex resume` 一起来就退，而这一侧只看得见「进程没了」——
-     * 2026-07-30 用户就撞在这上面。归档是外面的动作（不是 StagePass、也不是进程退出），
-     * 所以这里每次 resume 都先确认一遍。**只在真的被归档时才动手**：`codex unarchive`
-     * 对一条没被归档的会话会报错。
-     *
-     * 查不到状态就照旧往下走 —— 退回加这一层之前的行为，不因为读不到别人的库就不干活。
+     * **resume 之前先过四态守卫。** missing 换 fresh；archived 解开并二次确认；
+     * unavailable / still_archived 明确拒绝。所有分支都发生在 start() 之前。
      */
     if (argv[0] === "resume" && argv[1] !== undefined) {
-      const outcome = ensureResumable(argv[1], this.archive);
-      if (outcome !== "already_open") {
-        console.log(`[panel] ${changeId}/${phase} 的线程 ${argv[1]} —— ${outcome}`);
+      const threadId = argv[1];
+      const prepared = prepareBoundThread({
+        binding: this.bindingFor(changeId, phase, threadId),
+        archive: this.archive,
+        detach: (binding) => { this.detachBinding(binding); },
+      });
+      if (prepared.kind === "fresh") {
+        console.log(`[panel] ${changeId}/${phase} 的线程 ${threadId} 已不存在 —— fresh`);
+        argv = argv.slice(2);
+      } else if (prepared.kind === "refused") {
+        throw new SessionResumeRefusedError(threadId, prepared.reason);
       }
     }
 

@@ -299,6 +299,10 @@ const { server, sessions } = createPanelServer({
   },
 });
 
+// Codex 的状态事实已经能判定时，先把悬空 binding 收掉，再让任何 HTTP 请求进来。
+// unavailable 只报告，不写库；真正 archived 的线程留到用户打开时再解开。
+const bindingRecovery = sessions.reconcileBindings();
+
 const stop = (registry: PanelSessions): void => {
   registry.closeAll();
   server.close();
@@ -322,6 +326,20 @@ process.on("SIGTERM", () => { stop(sessions); });
 server.listen(port, "127.0.0.1", () => {
   console.log(`面板   http://localhost:${port}/?change=${encodeURIComponent(changeId)}`);
   console.log(`数据库 ${dbPath}`);
+  for (const binding of bindingRecovery.detached) {
+    const seat = binding.kind === "round" ? binding.phase : "aside";
+    console.log(
+      `Session 恢复   ${binding.changeId}/${seat} ${binding.threadId}`
+      + " —— missing，已 detached；下次打开会 fresh",
+    );
+  }
+  for (const item of bindingRecovery.unavailable) {
+    const seat = item.binding.kind === "round" ? item.binding.phase : "aside";
+    console.log(
+      `Session 恢复   ${item.binding.changeId}/${seat} ${item.binding.threadId}`
+      + ` —— unavailable，binding 保留：${item.reason}`,
+    );
+  }
   // 恢复要说出来。静默恢复和「什么都没发生」在屏幕上一模一样，而它刚刚把一个
   // Change 从「在跑」改成了「上一轮失败了」—— 那是人需要知道的事。
   if (recovered.failed.length > 0 || recovered.resumed.length > 0) {
