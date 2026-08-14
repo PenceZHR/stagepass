@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -173,8 +173,12 @@ describe("L2 · 真的那一套只在真的用时才碰 Codex", () => {
     const stateDbPath = join(directory, "state_5.sqlite");
     const openRollout = join(directory, "open.jsonl");
     const archivedRollout = join(directory, "archived.jsonl");
+    const movedRollout = join(directory, "moved-by-codex.jsonl");
+    const movedArchivedRollout = join(directory, "archived_sessions", "moved-by-codex.jsonl");
     writeFileSync(openRollout, "{}\n", "utf8");
     writeFileSync(archivedRollout, "{}\n", "utf8");
+    mkdirSync(join(directory, "archived_sessions"));
+    writeFileSync(movedArchivedRollout, "{}\n", "utf8");
     const database = new Database(stateDbPath);
     try {
       database.exec(
@@ -186,6 +190,9 @@ describe("L2 · 真的那一套只在真的用时才碰 Codex", () => {
       database.prepare(
         "INSERT INTO threads (id, archived, rollout_path) VALUES (?, ?, ?)",
       ).run("T-ARCHIVED", 1, archivedRollout);
+      database.prepare(
+        "INSERT INTO threads (id, archived, rollout_path) VALUES (?, ?, ?)",
+      ).run("T-ARCHIVED-MOVED", 1, movedRollout);
     } finally {
       database.close();
     }
@@ -197,6 +204,14 @@ describe("L2 · 真的那一套只在真的用时才碰 Codex", () => {
       });
       assert.deepEqual(ops.availability("T-ARCHIVED"), {
         kind: "archived", rolloutPath: archivedRollout,
+      });
+      /*
+       * 2026-08-14 真库：`codex archive` 把 rollout 搬进同级 `archived_sessions/`，
+       * 但 threads.rollout_path 仍指向原位置。只查旧路径会把 archived 错判 missing，
+       * 启动巡检随即把一条完全可解归档的 binding 拆掉。
+       */
+      assert.deepEqual(ops.availability("T-ARCHIVED-MOVED"), {
+        kind: "archived", rolloutPath: movedArchivedRollout,
       });
       assert.deepEqual(ops.availability("T-NO-ROW"), {
         kind: "missing", reason: "no-row",
