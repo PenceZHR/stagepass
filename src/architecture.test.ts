@@ -162,6 +162,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 又提了一层，理由和当初 2 -> 3 一样：它开始承载 rubric 编辑（PRD §1.1 那个
   // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
   // 在接口写进去的那一刻就会红。
+  // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
+  "web/session-recovery.ts": 5,
   "web/panel-server.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
