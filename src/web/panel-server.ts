@@ -551,7 +551,7 @@ export class PanelSessions {
      */
     if (argv[0] === "resume" && argv[1] !== undefined) {
       const outcome = ensureResumable(argv[1], this.archive);
-      if (outcome !== "already_open" && outcome !== "unknown") {
+      if (outcome !== "already_open") {
         console.log(`[panel] ${changeId}/${phase} 的线程 ${argv[1]} —— ${outcome}`);
       }
     }

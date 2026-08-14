@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -44,9 +45,18 @@ import { join } from "node:path";
 
 const DEFAULT_STATE_DB = join(homedir(), ".codex", "state_5.sqlite");
 
+/** Codex 状态库和 rollout 文件合起来，对一条线程能说出的完整事实。 */
+export type ThreadAvailability =
+  | { readonly kind: "open"; readonly rolloutPath: string }
+  | { readonly kind: "archived"; readonly rolloutPath: string }
+  | { readonly kind: "missing"; readonly reason: "no-row" | "no-rollout" }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
 export interface ArchiveOps {
-  /** 这条线程被归档了吗。查不到（库读不了、或者没有这条）返回 null —— 不猜。 */
-  isArchived(threadId: string): boolean | null;
+  /**
+   * 这条线程能不能 resume。环境错误和确定不存在必须分开：只有后者能解绑。
+   */
+  availability(threadId: string): ThreadAvailability;
   /** 跑 `codex unarchive`。失败让它抛，调用方自己决定怎么说。 */
   unarchive(threadId: string): void;
   /** 跑 `codex archive`。 */
@@ -64,20 +74,33 @@ export function createArchiveOps(options: {
     });
 
   return {
-    isArchived(threadId) {
+    availability(threadId) {
       try {
         // 只读，而且用完就关：这是别人的库，握着它就是握着一把锁。
         const database = new Database(stateDbPath, { readonly: true });
         try {
           const row = database.prepare(
-            "SELECT archived FROM threads WHERE id = ?",
-          ).get(threadId) as { archived: number } | undefined;
-          return row === undefined ? null : row.archived === 1;
+            "SELECT archived, rollout_path FROM threads WHERE id = ?",
+          ).get(threadId) as {
+            archived: number;
+            rollout_path: string;
+          } | undefined;
+          if (row === undefined) return { kind: "missing", reason: "no-row" };
+          if (!existsSync(row.rollout_path)) {
+            return { kind: "missing", reason: "no-rollout" };
+          }
+          return row.archived === 1
+            ? { kind: "archived", rolloutPath: row.rollout_path }
+            : { kind: "open", rolloutPath: row.rollout_path };
         } finally {
           database.close();
         }
-      } catch {
-        return null; // 库读不了。**说不知道**，不说「没归档」。
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          kind: "unavailable",
+          reason: `cannot read Codex state database ${stateDbPath}: ${detail}`,
+        };
       }
     },
     unarchive(threadId) { run(["unarchive", threadId]); },
@@ -93,8 +116,10 @@ export type ResumableOutcome =
   | "unarchived"
   /** 试着解了，但那一列还是 1 —— 这一次 resume 多半还是会一起来就死。 */
   | "still_archived"
-  /** 查不到状态（读不了那个库）。退回加这一层之前的行为。 */
-  | "unknown";
+  /** 查询成功，但 thread 行或 rollout 文件已经不存在。 */
+  | "missing"
+  /** 状态库不可读；这不是 Session 丢失，不得据此解绑。 */
+  | "unavailable";
 
 /**
  * resume 之前，把这条线程弄成 resume 得动的。
@@ -105,16 +130,21 @@ export function ensureResumable(
   threadId: string,
   ops: ArchiveOps,
 ): ResumableOutcome {
-  const archived = ops.isArchived(threadId);
-  if (archived === null) return "unknown";
-  if (!archived) return "already_open";
+  const before = ops.availability(threadId);
+  if (before.kind === "missing") return "missing";
+  if (before.kind === "unavailable") return "unavailable";
+  if (before.kind === "open") return "already_open";
   try {
     ops.unarchive(threadId);
   } catch {
     return "still_archived";
   }
   // **做完再读一次那一列。** 命令的退出码在这里不当真，那一列才是权威。
-  return ops.isArchived(threadId) === false ? "unarchived" : "still_archived";
+  const after = ops.availability(threadId);
+  if (after.kind === "open") return "unarchived";
+  if (after.kind === "missing") return "missing";
+  if (after.kind === "unavailable") return "unavailable";
+  return "still_archived";
 }
 
 /** `archiveFinished` 做完之后的实话。 */
@@ -137,13 +167,16 @@ export function archiveFinished(
   threadId: string,
   ops: ArchiveOps,
 ): ArchiveOutcome {
-  const archived = ops.isArchived(threadId);
-  if (archived === null) return "unknown";
-  if (archived) return "already_archived";
+  const before = ops.availability(threadId);
+  if (before.kind === "missing" || before.kind === "unavailable") return "unknown";
+  if (before.kind === "archived") return "already_archived";
   try {
     ops.archive(threadId);
   } catch {
     return "still_open";
   }
-  return ops.isArchived(threadId) === true ? "archived" : "still_open";
+  const after = ops.availability(threadId);
+  if (after.kind === "archived") return "archived";
+  if (after.kind === "open") return "still_open";
+  return "unknown";
 }

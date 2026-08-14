@@ -49,6 +49,21 @@ export interface Binding {
   readonly status: BindingStatus;
 }
 
+/** 一个仍由 StagePass 占着的 Codex 座位；round 与 aside 是封闭的两种形状。 */
+export type BoundThread =
+  | {
+      readonly changeId: string;
+      readonly kind: "round";
+      readonly phase: Phase;
+      readonly threadId: string;
+    }
+  | {
+      readonly changeId: string;
+      readonly kind: "aside";
+      readonly phase: null;
+      readonly threadId: string;
+    };
+
 export class ChangeNotBoundError extends Error {
   constructor(readonly changeId: string, readonly phase: Phase) {
     super(`Change ${changeId} has no Codex thread bound to its ${phase} phase`);
@@ -73,6 +88,13 @@ interface BindingRow {
   phase: Phase;
   thread_id: string;
   status: BindingStatus;
+}
+
+interface BoundThreadRow {
+  change_id: string;
+  kind: "round" | "aside";
+  phase: Phase | null;
+  thread_id: string;
 }
 
 export class BindingStore {
@@ -158,6 +180,42 @@ export class BindingStore {
       `UPDATE change_bindings SET status = 'detached', updated_at = ?
         WHERE change_id = ? AND phase = ? AND kind = 'round'`,
     ).run(this.now().toISOString(), changeId, phase);
+  }
+
+  /**
+   * 全库仍 bound 的座位。启动巡检用；顺序由 SQL 固定，不能随插入时序漂。
+   */
+  listBound(): readonly BoundThread[] {
+    const rows = this.database.prepare(
+      `SELECT change_id, kind, phase, thread_id
+         FROM change_bindings
+        WHERE status = 'bound'
+        ORDER BY change_id,
+          CASE kind WHEN 'round' THEN 0 ELSE 1 END,
+          phase`,
+    ).all() as BoundThreadRow[];
+
+    return rows.map((row): BoundThread => {
+      if (row.kind === "round" && row.phase !== null) {
+        return {
+          changeId: row.change_id,
+          kind: "round",
+          phase: row.phase,
+          threadId: row.thread_id,
+        };
+      }
+      if (row.kind === "aside" && row.phase === null) {
+        return {
+          changeId: row.change_id,
+          kind: "aside",
+          phase: null,
+          threadId: row.thread_id,
+        };
+      }
+      throw new Error(
+        `Invalid bound thread row: kind=${row.kind} phase=${String(row.phase)}`,
+      );
+    });
   }
 
   /*
