@@ -104,6 +104,42 @@ interface Fake {
 const resumedThread = (argv: string[]): string | null =>
   argv[0] === "resume" ? argv[1]! : null;
 
+type FakeArchiveState =
+  | "open" | "archived" | "missing" | "no-rollout" | "unavailable";
+
+/** 一个假的 Codex 线程事实，记下 archive/unarchive 动作。没点名的线程默认 open。 */
+function fakeArchive(initial: Record<string, FakeArchiveState> = {}) {
+  const state = { ...initial };
+  const calls: string[] = [];
+  return {
+    calls,
+    availability(threadId: string) {
+      const current = state[threadId] ?? "open";
+      if (current === "open") {
+        return { kind: "open" as const, rolloutPath: `/rollouts/${threadId}.jsonl` };
+      }
+      if (current === "archived") {
+        return { kind: "archived" as const, rolloutPath: `/rollouts/${threadId}.jsonl` };
+      }
+      if (current === "no-rollout") {
+        return { kind: "missing" as const, reason: "no-rollout" as const };
+      }
+      if (current === "unavailable") {
+        return { kind: "unavailable" as const, reason: "state database is locked" };
+      }
+      return { kind: "missing" as const, reason: "no-row" as const };
+    },
+    unarchive(threadId: string) {
+      calls.push(`unarchive ${threadId}`);
+      state[threadId] = "open";
+    },
+    archive(threadId: string) {
+      calls.push(`archive ${threadId}`);
+      state[threadId] = "archived";
+    },
+  };
+}
+
 
 /**
  * 起一个终端，然后接上去。
@@ -220,14 +256,10 @@ async function withPanel(
      * **默认注入一个什么都不知道的假的。**
      *
      * 不注入的话用的是真的那一套，而它会去读 `~/.codex/state_5.sqlite` —— 测试跑一遍
-     * 就摸了一次用户的 Codex 库。这里一律「查不到状态」，也就是退回加归档那一层之前
-     * 的行为，跟别的测试原来验的东西逐字一致。
+     * 就摸了一次用户的 Codex 库。这里一律返回 open；已有测试验的不是恢复分支，不能
+     * 因测试机的真实 Session 状态而漂。
      */
-    archive: extra.archive ?? {
-      isArchived: () => null,
-      unarchive: () => { throw new Error("测试里不许真的动 Codex"); },
-      archive: () => { throw new Error("测试里不许真的动 Codex"); },
-    },
+    archive: extra.archive ?? fakeArchive(),
     /*
      * **默认注入一个绝不碰 git 的。**
      *
@@ -757,6 +789,72 @@ describe("panel · 一轮跑到哪了", () => {
   });
 });
 
+describe("panel · 死 Session 在 PTY 之前恢复", () => {
+  it("启动巡检只 detach missing，保留 archived 和 unavailable", async () => {
+    const archive = fakeArchive({
+      "T-ARCHIVED": "archived",
+      "T-MISSING": "missing",
+      "T-UNAVAILABLE": "unavailable",
+    });
+    await withPanel(async ({ database, sessions }) => {
+      const bindings = new BindingStore(database);
+      bindings.bind(CHANGE, "PRD", "T-ARCHIVED");
+      bindings.bind(CHANGE, "Test", "T-MISSING");
+      bindings.bindAside(CHANGE, "T-UNAVAILABLE");
+
+      const first = sessions.reconcileBindings();
+      assert.deepEqual(first, {
+        detached: [{
+          changeId: CHANGE, kind: "round", phase: "Test", threadId: "T-MISSING",
+        }],
+        unavailable: [{
+          binding: {
+            changeId: CHANGE, kind: "aside", phase: null, threadId: "T-UNAVAILABLE",
+          },
+          reason: "state database is locked",
+        }],
+      });
+      assert.equal(bindings.find(CHANGE, "PRD")?.status, "bound");
+      assert.equal(bindings.find(CHANGE, "Test")?.status, "detached");
+      assert.equal(bindings.findAside(CHANGE)?.status, "bound");
+
+      assert.deepEqual(sessions.reconcileBindings().detached, []);
+    }, { archive });
+  });
+
+  it("missing 的 resume 只删开头两项，其余 argv 原样交给 fresh PTY", async () => {
+    const archive = fakeArchive({ "T-DEAD": "no-rollout" });
+    await withPanel(async ({ database, sessions, pty }) => {
+      const bindings = new BindingStore(database);
+      bindings.bind(CHANGE, "Test", "T-DEAD");
+      const tail = ["-s", "workspace-write", "-m", "gpt-5", "完整题面路径"];
+
+      sessions.launchInto(CHANGE, "Test", ["resume", "T-DEAD", ...tail]);
+
+      assert.deepEqual(pty.started[0]?.argv, tail);
+      assert.equal(bindings.find(CHANGE, "Test")?.status, "detached");
+    }, { archive });
+  });
+
+  it("unavailable 明确拒绝，binding 不动且 PTY factory 一次都不进", async () => {
+    const archive = fakeArchive({ "T-LOCKED": "unavailable" });
+    await withPanel(async ({ database, sessions, pty }) => {
+      const bindings = new BindingStore(database);
+      bindings.bind(CHANGE, "Test", "T-LOCKED");
+
+      assert.throws(
+        () => sessions.launchInto(CHANGE, "Test", ["resume", "T-LOCKED"]),
+        (error: unknown) => error instanceof Error
+          && error.name === "SessionResumeRefusedError"
+          && /T-LOCKED/.test(error.message)
+          && /state database is locked/.test(error.message),
+      );
+      assert.equal(pty.started.length, 0);
+      assert.equal(bindings.find(CHANGE, "Test")?.status, "bound");
+    }, { archive });
+  });
+});
+
 /*
  * 归档：用户 2026-07-30 拍板的形状 ——
  * **批准之前遇到归档就自动解开；批准之后由 StagePass 主动归档。**
@@ -765,24 +863,12 @@ describe("panel · 一轮跑到哪了", () => {
  * 会先解归档，批准那条路上真的会归档。
  */
 describe("panel · 归档由 StagePass 自己管", () => {
-  /** 一个假的 Codex 归档状态，记下每一次动作。 */
-  const fakeArchive = (initial: Record<string, boolean>) => {
-    const state = { ...initial };
-    const calls: string[] = [];
-    return {
-      calls,
-      isArchived: (id: string) => (id in state ? state[id]! : null),
-      unarchive: (id: string) => { calls.push(`unarchive ${id}`); state[id] = false; },
-      archive: (id: string) => { calls.push(`archive ${id}`); state[id] = true; },
-    };
-  };
-
   it("**resume 一条被归档的线程之前，先解开它**", async () => {
     /*
      * 2026-07-30 用户就撞在这上面：线程被归档 → `codex resume` 一起来就退 →
      * 界面只看得见「进程没了」。现在每次 resume 都先确认一遍。
      */
-    const archive = fakeArchive({ "THREAD-OLD": true });
+    const archive = fakeArchive({ "THREAD-OLD": "archived" });
     await withPanel(async ({ open, database, pty }) => {
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-OLD");
       await withTerminal(open, "PRD");              // 浏览用的 resume
@@ -796,7 +882,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
 
   it("没被归档的线程 —— 一根手指都不动", () => {
     // `codex unarchive` 对一条没被归档的会话会报错（实测），所以不能无脑先跑一遍。
-    const archive = fakeArchive({ "THREAD-OK": false });
+    const archive = fakeArchive({ "THREAD-OK": "open" });
     return withPanel(async ({ open, database }) => {
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-OK");
       await withTerminal(open, "PRD");
@@ -806,7 +892,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
   });
 
   it("**批准一个阶段之后，归档它那条线程**", async () => {
-    const archive = fakeArchive({ "THREAD-PRD": false });
+    const archive = fakeArchive({ "THREAD-PRD": "open" });
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-PRD");
@@ -834,7 +920,7 @@ describe("panel · 归档由 StagePass 自己管", () => {
   });
 
   it("**没批准就不许归档** —— 再来一轮之后那条线程还得能用", async () => {
-    const archive = fakeArchive({ "THREAD-PRD": false });
+    const archive = fakeArchive({ "THREAD-PRD": "open" });
     await withPanel(async ({ open, database }) => {
       const changes = new ChangeStore(database);
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-PRD");
