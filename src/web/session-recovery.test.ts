@@ -118,27 +118,41 @@ describe("session recovery · 启动巡检", () => {
       { changeId: "CHG-1", kind: "round", phase: "Build", threadId: "T-OPEN" },
       { changeId: "CHG-1", kind: "round", phase: "Test", threadId: "T-MISSING" },
       { changeId: "CHG-1", kind: "round", phase: "PRD", threadId: "T-ARCHIVED" },
-      { changeId: "CHG-1", kind: "aside", phase: null, threadId: "T-UNAVAILABLE" },
+      { changeId: "CHG-1", kind: "round", phase: "Spec", threadId: "T-UNAVAILABLE" },
+      { changeId: "CHG-1", kind: "aside", phase: null, threadId: "T-MISSING-ASIDE" },
     ];
     const detached = new Set<string>();
     const store = {
       listBound: () => bindings.filter((binding) => !detached.has(binding.threadId)),
-      detach: (_changeId: string, _phase: string) => { detached.add("T-MISSING"); },
-      detachAside: (_changeId: string) => { detached.add("T-UNAVAILABLE"); },
+      detach: (changeId: string, phase: string) => {
+        const binding = bindings.find((candidate) =>
+          candidate.kind === "round"
+          && candidate.changeId === changeId
+          && candidate.phase === phase);
+        assert.ok(binding, `找不到要 detach 的 round binding：${changeId}/${phase}`);
+        detached.add(binding.threadId);
+      },
+      detachAside: (changeId: string) => {
+        const binding = bindings.find((candidate) =>
+          candidate.kind === "aside" && candidate.changeId === changeId);
+        assert.ok(binding, `找不到要 detach 的 aside binding：${changeId}`);
+        detached.add(binding.threadId);
+      },
     };
     const archive = fakeArchive({
       "T-OPEN": "open",
       "T-MISSING": "missing",
       "T-ARCHIVED": "archived",
       "T-UNAVAILABLE": "unavailable",
+      "T-MISSING-ASIDE": "no-rollout",
     });
 
     const first = reconcileMissingBindings(store, archive);
     assert.deepEqual(first, {
-      detached: [bindings[1]],
+      detached: [bindings[1], bindings[4]],
       unavailable: [{ binding: bindings[3], reason: "state database is locked" }],
     });
-    assert.deepEqual([...detached], ["T-MISSING"]);
+    assert.deepEqual([...detached], ["T-MISSING", "T-MISSING-ASIDE"]);
 
     const second = reconcileMissingBindings(store, archive);
     assert.deepEqual(second, {
