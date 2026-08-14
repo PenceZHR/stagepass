@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * 归档：让「这条线程还能不能 resume」变成 StagePass 自己管的事。
@@ -68,6 +68,7 @@ export function createArchiveOps(options: {
   run?: (args: readonly string[]) => void;
 } = {}): ArchiveOps {
   const stateDbPath = options.stateDbPath ?? DEFAULT_STATE_DB;
+  const archivedSessionsPath = join(dirname(stateDbPath), "archived_sessions");
   const run = options.run
     ?? ((args: readonly string[]): void => {
       execFileSync("codex", [...args], { stdio: "ignore" });
@@ -86,12 +87,26 @@ export function createArchiveOps(options: {
             rollout_path: string;
           } | undefined;
           if (row === undefined) return { kind: "missing", reason: "no-row" };
-          if (!existsSync(row.rollout_path)) {
+          const archivedRolloutPath = join(
+            archivedSessionsPath,
+            basename(row.rollout_path),
+          );
+          /*
+           * Codex 归档会把 rollout 搬进 `archived_sessions/`，但至少在 0.146.0
+           * 到 2026-08-14 的真库上不会同步 threads.rollout_path。archived 行必须
+           * 同时认原位置和归档位置；否则会把一条可 unarchive 的线程误拆 binding。
+           */
+          const rolloutPath = existsSync(row.rollout_path)
+            ? row.rollout_path
+            : row.archived === 1 && existsSync(archivedRolloutPath)
+              ? archivedRolloutPath
+              : null;
+          if (rolloutPath === null) {
             return { kind: "missing", reason: "no-rollout" };
           }
           return row.archived === 1
-            ? { kind: "archived", rolloutPath: row.rollout_path }
-            : { kind: "open", rolloutPath: row.rollout_path };
+            ? { kind: "archived", rolloutPath }
+            : { kind: "open", rolloutPath };
         } finally {
           database.close();
         }
