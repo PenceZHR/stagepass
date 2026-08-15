@@ -38,7 +38,7 @@ Modify:
 - Modify: `src/web/stream-session.ts`
 - Modify: `src/web/stream-session.test.ts`
 
-- [ ] **Step 1: Replace the old binding-on-open expectation with failing durability tests**
+- [x] **Step 1: Replace the old binding-on-open expectation with failing durability tests**
 
 Change the first test to assert that opening a new seat creates a reusable in-process session but no durable row:
 
@@ -71,7 +71,7 @@ assert.equal(resumed.threadId, "THREAD-OLD");
 assert.deepEqual(connection.requests.map(({ method }) => method), ["thread/resume"]);
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -81,7 +81,7 @@ node --import tsx --test src/web/stream-session.test.ts
 
 Expected: compile/test failure because `StreamOpenOptions.threadId` does not exist and `open()` still writes a bound row.
 
-- [ ] **Step 3: Remove binding ownership from `StreamSessions`**
+- [x] **Step 3: Remove binding ownership from `StreamSessions`**
 
 Use this public option:
 
@@ -103,7 +103,7 @@ const session = await this.options.host.open(
 
 Keep workspace lookup, event tracking, exact-turn controls and close behavior unchanged.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run:
 
@@ -114,7 +114,7 @@ pnpm typecheck
 
 Expected: all `StreamSessions` tests pass and both TypeScript projects exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/web/stream-session.ts src/web/stream-session.test.ts

@@ -71,10 +71,13 @@ function setup(now?: () => number) {
 }
 
 describe("StreamSessions", () => {
-  it("opens and binds one persistent thread without an implicit turn", async () => {
+  it("keeps a new zero-turn thread ephemeral", async () => {
     const { database, connection, sessions } = setup();
     try {
-      const first = await sessions.open("CHG-1", "PRD", { config: { stagepass: true } });
+      const first = await sessions.open("CHG-1", "PRD", {
+        threadId: null,
+        config: { stagepass: true },
+      });
       const second = await sessions.open("CHG-1", "PRD");
 
       assert.equal(first, second);
@@ -82,12 +85,7 @@ describe("StreamSessions", () => {
         connection.requests.map(({ method }) => method),
         ["thread/start"],
       );
-      assert.deepEqual(new BindingStore(database).find("CHG-1", "PRD"), {
-        changeId: "CHG-1",
-        phase: "PRD",
-        threadId: "THREAD-1",
-        status: "bound",
-      });
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
       assert.equal(first.snapshot().activeTurnId, null);
       assert.equal(connection.requests[0]?.params.cwd, "/repo");
     } finally {
@@ -95,18 +93,21 @@ describe("StreamSessions", () => {
     }
   });
 
-  it("resumes the bound thread and gives aside its own seat", async () => {
+  it("resumes an explicitly selected thread without binding a new aside", async () => {
     const { database, connection, sessions } = setup();
     try {
       const bindings = new BindingStore(database);
-      bindings.bind("CHG-1", "PRD", "THREAD-OLD");
 
-      assert.equal((await sessions.open("CHG-1", "PRD")).threadId, "THREAD-OLD");
-      assert.equal((await sessions.open("CHG-1", "aside")).threadId, "THREAD-1");
-      assert.deepEqual(bindings.findAside("CHG-1"), {
-        threadId: "THREAD-1",
-        status: "bound",
-      });
+      assert.equal(
+        (await sessions.open("CHG-1", "PRD", { threadId: "THREAD-OLD" })).threadId,
+        "THREAD-OLD",
+      );
+      assert.equal(
+        (await sessions.open("CHG-1", "aside", { threadId: null })).threadId,
+        "THREAD-1",
+      );
+      assert.equal(bindings.find("CHG-1", "PRD"), null);
+      assert.equal(bindings.findAside("CHG-1"), null);
       assert.deepEqual(
         connection.requests.map(({ method }) => method),
         ["thread/resume", "thread/start"],

@@ -4,7 +4,6 @@ import type { AppServerSession, AppServerSessionOptions } from "../codex/app-ser
 import type { AppServerSessionHost } from "../codex/app-server-transport";
 import type { StreamEvent, StreamSnapshot } from "../codex/stream-state";
 import { isPhase, type Phase } from "../domain/phase";
-import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 
@@ -23,6 +22,7 @@ export interface StreamSessionsOptions {
 }
 
 export interface StreamOpenOptions {
+  readonly threadId?: string | null;
   readonly config?: Readonly<Record<string, unknown>>;
 }
 
@@ -50,11 +50,8 @@ export class StreamSessions {
   private readonly opening = new Map<string, Promise<AppServerSession>>();
   private readonly lastActivityAt = new Map<string, number>();
   private readonly unsubscribeActivity = new Map<string, () => void>();
-  private readonly bindings: BindingStore;
 
-  constructor(private readonly options: StreamSessionsOptions) {
-    this.bindings = new BindingStore(options.database);
-  }
+  constructor(private readonly options: StreamSessionsOptions) {}
 
   open(
     changeId: string,
@@ -174,12 +171,8 @@ export class StreamSessions {
     openOptions: StreamOpenOptions,
   ): Promise<AppServerSession> {
     const cwd = this.workspaceFor(changeId);
-    const bound = seat === STREAM_ASIDE
-      ? this.bindings.findAside(changeId)
-      : this.bindings.find(changeId, seat);
-    const threadId = bound?.status === "bound" ? bound.threadId : null;
     const session = await this.options.host.open(
-      threadId,
+      openOptions.threadId ?? null,
       this.sessionOptions(cwd, openOptions.config),
     );
     const key = StreamSessions.key(changeId, seat);
@@ -187,8 +180,6 @@ export class StreamSessions {
     this.unsubscribeActivity.set(key, session.subscribe(() => {
       this.lastActivityAt.set(key, this.now());
     }));
-    if (seat === STREAM_ASIDE) this.bindings.bindAside(changeId, session.threadId);
-    else this.bindings.bind(changeId, seat, session.threadId);
     return session;
   }
 
