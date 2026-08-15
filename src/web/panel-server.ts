@@ -22,6 +22,7 @@ import {
   type AppServerHistory,
   threadTurnEnded as appServerThreadTurnEnded,
 } from "../codex/app-server-history";
+import type { StreamEvent, StreamSnapshot } from "../codex/stream-state";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { createTrustOps, type TrustOps } from "../codex/trust";
 import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
@@ -52,8 +53,15 @@ import { panelView, progressView } from "./panel-view";
 import {
   prepareBoundThread, reconcileMissingBindings, type BindingRecoveryReport,
 } from "./session-recovery";
-import { serveCodexStreamApi } from "./codex-stream-api";
-import { STREAM_ASIDE, type StreamSessions } from "./stream-session";
+import {
+  serveCodexStreamApi,
+  type CodexStreamPort,
+} from "./codex-stream-api";
+import {
+  STREAM_ASIDE,
+  type StreamOpenOptions,
+  type StreamSessions,
+} from "./stream-session";
 
 /**
  * StagePass Web workbench backed exclusively by one supervised Codex App Server.
@@ -286,7 +294,7 @@ class SessionResumeRefusedError extends Error {
 }
 
 /** StagePass-facing facade over structured App Server sessions and history. */
-export class PanelSessions {
+export class PanelSessions implements CodexStreamPort {
   readonly archive: ArchiveOps;
   readonly repo: RepoOps;
   readonly trust: TrustOps;
@@ -322,34 +330,106 @@ export class PanelSessions {
     return this.options.streams.active(changeId, phase);
   }
 
+  async open(
+    changeId: string,
+    phase: Seat,
+    options: StreamOpenOptions = {},
+  ) {
+    const threadId = await this.resumableThreadId(changeId, phase);
+    return this.options.streams.open(changeId, phase, { ...options, threadId });
+  }
+
   async openForChat(
     changeId: string,
     phase: Seat,
     config: Readonly<Record<string, unknown>>,
   ): Promise<void> {
-    await this.prepareBinding(changeId, phase);
-    await this.options.streams.open(changeId, phase, { config });
+    await this.open(changeId, phase, { config });
   }
 
   async startTurn(
     changeId: string,
     phase: Seat,
     prompt: string,
-    config: Readonly<Record<string, unknown>>,
+    config: Readonly<Record<string, unknown>> = pluginAppServerConfigFor(
+      this.options.database,
+      changeId,
+      phase === ASIDE ? undefined : phase,
+    ),
   ): Promise<string> {
-    await this.openForChat(changeId, phase, config);
-    return this.options.streams.startTurn(changeId, phase, prompt);
+    const session = await this.open(changeId, phase, { config });
+    const turnId = await this.options.streams.startTurn(changeId, phase, prompt);
+    this.bind(changeId, phase, session.threadId);
+    return turnId;
+  }
+
+  async runTurn(
+    changeId: string,
+    phase: Seat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs: number,
+  ): Promise<string> {
+    const turnId = await this.startTurn(changeId, phase, prompt, config);
+    const outcome = await this.options.streams.awaitTurn(
+      changeId,
+      phase,
+      turnId,
+      timeoutMs,
+    );
+    if (outcome.status !== "completed") {
+      throw new Error(`codex_turn_${outcome.status}`);
+    }
+    return outcome.text;
   }
 
   async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
     if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
     if (!this.has(changeId, phase) || this.active(changeId, phase)) return false;
     try {
-      await this.options.streams.startTurn(changeId, phase, line);
+      await this.startTurn(changeId, phase, line);
       return true;
     } catch {
       return false;
     }
+  }
+
+  snapshot(changeId: string, phase: Seat): StreamSnapshot {
+    return this.options.streams.snapshot(changeId, phase);
+  }
+
+  eventsAfter(
+    changeId: string,
+    phase: Seat,
+    seq: number,
+  ): readonly StreamEvent[] | null {
+    return this.options.streams.eventsAfter(changeId, phase, seq);
+  }
+
+  subscribe(
+    changeId: string,
+    phase: Seat,
+    listener: (event: StreamEvent) => void,
+  ): () => void {
+    return this.options.streams.subscribe(changeId, phase, listener);
+  }
+
+  steer(
+    changeId: string,
+    phase: Seat,
+    direction: string,
+    expectedTurnId: string,
+  ): Promise<void> {
+    return this.options.streams.steer(changeId, phase, direction, expectedTurnId);
+  }
+
+  respond(
+    changeId: string,
+    phase: Seat,
+    interactionId: string,
+    response: unknown,
+  ): Promise<void> {
+    return this.options.streams.respond(changeId, phase, interactionId, response);
   }
 
   async recordCount(changeId: string, phase: Seat): Promise<number | null> {
@@ -395,7 +475,17 @@ export class PanelSessions {
     this.options.streams.close(changeId, phase);
   }
 
-  async interrupt(changeId: string, phase: Seat): Promise<boolean> {
+  async interrupt(changeId: string, phase: Seat, turnId: string): Promise<void>;
+  async interrupt(changeId: string, phase: Seat): Promise<boolean>;
+  async interrupt(
+    changeId: string,
+    phase: Seat,
+    turnId?: string,
+  ): Promise<void | boolean> {
+    if (turnId !== undefined) {
+      await this.options.streams.interrupt(changeId, phase, turnId);
+      return;
+    }
     if (!this.has(changeId, phase)) return false;
     const snapshot = this.options.streams.snapshot(changeId, phase);
     if (snapshot.activeTurnId === null) return false;
@@ -412,11 +502,24 @@ export class PanelSessions {
   }
 
   private boundThreadId(changeId: string, phase: Seat): string | null {
+    return this.binding(changeId, phase)?.threadId ?? null;
+  }
+
+  private binding(changeId: string, phase: Seat): BoundThread | null {
     const bindings = new BindingStore(this.options.database);
-    const bound = phase === ASIDE
+    const found = phase === ASIDE
       ? bindings.findAside(changeId)
       : bindings.find(changeId, phase);
-    return bound?.status === "bound" ? bound.threadId : null;
+    if (found?.status !== "bound") return null;
+    return phase === ASIDE
+      ? { changeId, kind: "aside", phase: null, threadId: found.threadId }
+      : { changeId, kind: "round", phase, threadId: found.threadId };
+  }
+
+  private bind(changeId: string, phase: Seat, threadId: string): void {
+    const bindings = new BindingStore(this.options.database);
+    if (phase === ASIDE) bindings.bindAside(changeId, threadId);
+    else bindings.bind(changeId, phase, threadId);
   }
 
   private detachBinding(binding: BoundThread): void {
@@ -425,12 +528,9 @@ export class PanelSessions {
     else bindings.detachAside(binding.changeId);
   }
 
-  private async prepareBinding(changeId: string, phase: Seat): Promise<void> {
-    const threadId = this.boundThreadId(changeId, phase);
-    if (threadId === null) return;
-    const binding: BoundThread = phase === ASIDE
-      ? { changeId, kind: "aside", phase: null, threadId }
-      : { changeId, kind: "round", phase, threadId };
+  private async resumableThreadId(changeId: string, phase: Seat): Promise<string | null> {
+    const binding = this.binding(changeId, phase);
+    if (binding === null) return null;
     const prepared = await prepareBoundThread({
       binding,
       archive: this.archive,
@@ -438,13 +538,14 @@ export class PanelSessions {
     });
     if (prepared.kind === "fresh") {
       console.log(
-        `[panel] ${changeId}/${phase} 的线程 ${threadId} 已不存在 —— fresh`,
+        `[panel] ${changeId}/${phase} 的线程 ${binding.threadId} 已不存在 —— fresh`,
       );
-      return;
+      return null;
     }
     if (prepared.kind === "refused") {
-      throw new SessionResumeRefusedError(threadId, prepared.reason);
+      throw new SessionResumeRefusedError(binding.threadId, prepared.reason);
     }
+    return prepared.threadId;
   }
 }
 
@@ -976,10 +1077,11 @@ function serveStructuredCodex(
   url: URL,
   request: IncomingMessage,
   response: ServerResponse,
+  sessions: PanelSessions,
   options: PanelOptions,
 ): Promise<boolean> {
   return serveCodexStreamApi(url, request, response, {
-    streams: options.streams,
+    streams: sessions,
     configFor: (changeId, seat) => pluginAppServerConfigFor(
       options.database,
       changeId,
@@ -1204,17 +1306,15 @@ async function serveRubricSave(
  * ## 线程怎么被认出来、绑定
  *
  * 聊天没有「turn 跑完」这回事，但线程要能跨窗口续（批 2 的「把闲聊收敛成 brief」
- * 要按它找到那段对话）。所以第一次打开带一句开场提示词，走 transport 的
- * `awaitNewThread`（按提示词认线程，不认「谁先出现」）；`onThread` 一认出来就
- * 绑进 `change_bindings (kind='aside')`，之后每次打开都 resume 同一条。
- * 认线程在后台跑，不挡这个响应 —— 人要的是窗口，不是绑定回执。
+ * 要按它找到那段对话）。第一次打开只在进程里创建空 thread；开场提示词的
+ * `turn/start` 被 App Server 接受之后才绑进 `change_bindings (kind='aside')`。
+ * 这样库里不会留下 Codex 尚未持久化的空 thread，之后每次打开仍 resume 同一条。
  */
 async function serveAside(
   database: Database.Database,
   url: URL,
   response: ServerResponse,
   sessions: PanelSessions,
-  options: PanelOptions,
   request: IncomingMessage,
 ): Promise<void> {
   const changeId = url.searchParams.get("change") ?? "";
@@ -1262,11 +1362,12 @@ async function serveAside(
      * 而这句话也会成为 App Server thread 的 user message —— 不标记它就会被算成人说的，
      * 那道闸当场失效（2026-08-06 真机上就是这么放过一份空草稿的）。
      */
-    await options.streams.startTurn(changeId, ASIDE,
+    await sessions.startTurn(changeId, ASIDE,
       `${STAGEPASS_SAID} 这是 StagePass 里 ${changeId} 的旁路会话`
       + `（${new Date().toISOString()}）。`
       + "人会在这里问问题、聊这次改动要什么。你不产出任何阶段的东西、不推动任何"
       + "闸门。回答要基于这个仓库的真实代码，不知道就说不知道。收到请简短回应。",
+      pluginAppServerConfigFor(database, changeId),
     );
   }
   json(response, { opened: true });
@@ -1315,17 +1416,13 @@ async function serveBriefDraft(
       history: options.history,
       threadId,
     }),
-    runTurn: async (threadId, prompt) => {
-      const workspace = sessions.workspaceFor(changeId);
-      if (workspace === null) throw new ProjectPathMissingError(changeId);
-      const transport = options.appServerTransport({
-        cwd: workspace,
-        ...(options.turnTimeoutMs === undefined
-          ? {} : { timeoutMs: options.turnTimeoutMs }),
-        config: pluginAppServerConfigFor(database, changeId),
-      });
-      return (await transport.runTurn({ threadId, prompt })).text;
-    },
+    runTurn: async (_threadId, prompt) => sessions.runTurn(
+      changeId,
+      ASIDE,
+      prompt,
+      pluginAppServerConfigFor(database, changeId),
+      options.turnTimeoutMs ?? 180 * 60_000,
+    ),
     writeBriefFile: briefFiles(options).write,
   });
   json(response, outcome);
@@ -1675,7 +1772,7 @@ export async function handle(
     response.end(readFileSync(asset.file));
     return;
   }
-  if (await serveStructuredCodex(url, request, response, options)) return;
+  if (await serveStructuredCodex(url, request, response, sessions, options)) return;
 
   if (url.pathname === "/api/panel" && request.method === "GET") {
     servePanel(url, response, sessions, options);
@@ -1872,21 +1969,13 @@ export async function handle(
        */
       propose: async (prompt) => {
         const phase = new ChangeStore(database).read(changeId).state.phase;
-        const workspace = sessions.workspaceFor(changeId);
-        if (workspace === null) throw new ProjectPathMissingError(changeId);
-        await sessions.openForChat(
+        return sessions.runTurn(
           changeId,
           phase,
+          prompt,
           pluginAppServerConfigFor(database, changeId),
+          options.turnTimeoutMs ?? 180 * 60_000,
         );
-        const bound = new BindingStore(database).find(changeId, phase);
-        if (bound?.status !== "bound") throw new Error("App Server thread was not bound");
-        const transport = options.appServerTransport({
-          cwd: workspace,
-          ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
-          config: pluginAppServerConfigFor(database, changeId),
-        });
-        return (await transport.runTurn({ threadId: bound.threadId, prompt })).text;
       },
       timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
     });
@@ -1985,7 +2074,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/aside" && request.method === "POST") {
-    await serveAside(database, url, response, sessions, options, request);
+    await serveAside(database, url, response, sessions, request);
     return;
   }
 

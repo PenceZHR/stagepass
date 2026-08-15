@@ -169,17 +169,14 @@ async function withPanel(body: (input: {
 }
 
 describe("pure App Server panel", () => {
-  it("显式进入阶段只启动结构化 thread，旧 PTY 路由不存在", async () => {
+  it("显式进入阶段只启动临时 thread，首个 turn 才绑定，旧 PTY 路由不存在", async () => {
     await withPanel(async ({ base, database, connection }) => {
       const opened = await fetch(`${base}/api/terminal?change=CHG-1&phase=PRD`, {
         method: "POST",
       });
       assert.equal(opened.status, 200);
       assert.equal(connection.calls[0]?.method, "thread/start");
-      assert.equal(
-        new BindingStore(database).find("CHG-1", "PRD")?.status,
-        "bound",
-      );
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
       assert.equal((await fetch(`${base}/pty/CHG-1/PRD`)).status, 404);
 
       const snapshot = await fetch(
@@ -187,6 +184,17 @@ describe("pure App Server panel", () => {
       );
       assert.equal(snapshot.status, 200);
       assert.equal((await snapshot.json() as { threadId: string }).threadId, "THREAD-1");
+
+      const started = await fetch(`${base}/api/codex/turn`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ changeId: "CHG-1", seat: "PRD", prompt: "开始" }),
+      });
+      assert.equal(started.status, 200);
+      assert.equal(
+        new BindingStore(database).find("CHG-1", "PRD")?.status,
+        "bound",
+      );
     });
   });
 

@@ -12,6 +12,7 @@ import type { AppServerConnection } from "../codex/app-server-session";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { StreamEvent } from "../codex/stream-state";
 import { SCHEMA_SQL } from "../db/schema";
+import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { createPanelServer } from "./panel-server";
@@ -23,6 +24,17 @@ class FakeConnection implements AppServerConnection {
     params: Readonly<Record<string, unknown>>;
   }> = [];
   private readonly listeners = new Set<(message: AppServerNotification) => void>();
+  private readonly availability = new Map<string, "open" | "archived">();
+  private rejectNextTurn = false;
+
+  setAvailability(threadId: string, state: "open" | "archived" | "missing"): void {
+    if (state === "missing") this.availability.delete(threadId);
+    else this.availability.set(threadId, state);
+  }
+
+  failNextTurnStart(): void {
+    this.rejectNextTurn = true;
+  }
 
   request(
     method: string,
@@ -30,15 +42,33 @@ class FakeConnection implements AppServerConnection {
   ): Promise<unknown> {
     this.requests.push({ method, params });
     if (method === "thread/start") {
+      this.availability.set("THREAD-1", "open");
       return Promise.resolve({ thread: { id: "THREAD-1", turns: [] } });
     }
     if (method === "thread/resume") {
       return Promise.resolve({ thread: { id: params.threadId, turns: [] } });
     }
     if (method === "turn/start") {
+      if (this.rejectNextTurn) {
+        this.rejectNextTurn = false;
+        return Promise.reject(new Error("turn/start rejected"));
+      }
       return Promise.resolve({
         turn: { id: "TURN-1", status: "inProgress", items: [] },
       });
+    }
+    if (method === "thread/list") {
+      const archived = params.archived === true;
+      return Promise.resolve({
+        data: [...this.availability]
+          .filter(([, state]) => (state === "archived") === archived)
+          .map(([id]) => ({ id })),
+        nextCursor: null,
+      });
+    }
+    if (method === "thread/unarchive") {
+      this.availability.set(String(params.threadId), "open");
+      return Promise.resolve({});
     }
     if (method === "turn/steer") return Promise.resolve({ turnId: "TURN-1" });
     if (method === "turn/interrupt") return Promise.resolve({});
@@ -76,6 +106,7 @@ async function withStreamPanel(body: (input: {
   readonly connection: FakeConnection;
   readonly host: AppServerSessionHost;
   readonly streams: ObservedStreamSessions;
+  readonly database: Database.Database;
 }) => Promise<void>): Promise<void> {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
@@ -115,7 +146,7 @@ async function withStreamPanel(body: (input: {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    await body({ base, connection, host, streams });
+    await body({ base, connection, host, streams, database });
   } finally {
     history.dispose();
     sessions.closeAll();
@@ -133,6 +164,85 @@ const post = (base: string, path: string, value: unknown): Promise<Response> =>
   });
 
 describe("panel · structured App Server stream API", () => {
+  it("does not bind a new browser seat until its first turn starts", async () => {
+    await withStreamPanel(async ({ base, database }) => {
+      const opened = await post(base, "/api/codex/open", {
+        changeId: "CHG-1", seat: "PRD",
+      });
+      assert.equal(opened.status, 200);
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
+
+      const started = await post(base, "/api/codex/turn", {
+        changeId: "CHG-1", seat: "PRD", prompt: "验收",
+      });
+      assert.equal(started.status, 200);
+      assert.deepEqual(new BindingStore(database).find("CHG-1", "PRD"), {
+        changeId: "CHG-1",
+        phase: "PRD",
+        threadId: "THREAD-1",
+        status: "bound",
+      });
+    });
+  });
+
+  it("leaves a new browser seat ephemeral when turn/start fails", async () => {
+    await withStreamPanel(async ({ base, connection, database }) => {
+      await post(base, "/api/codex/open", { changeId: "CHG-1", seat: "PRD" });
+      connection.failNextTurnStart();
+      const started = await post(base, "/api/codex/turn", {
+        changeId: "CHG-1", seat: "PRD", prompt: "不会开始",
+      });
+
+      assert.equal(started.status, 500);
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
+    });
+  });
+
+  it("rebinds a detached in-process thread after its first successful turn", async () => {
+    await withStreamPanel(async ({ base, connection, database }) => {
+      await post(base, "/api/codex/open", { changeId: "CHG-1", seat: "PRD" });
+      const bindings = new BindingStore(database);
+      bindings.bind("CHG-1", "PRD", "THREAD-1");
+      bindings.detach("CHG-1", "PRD");
+
+      const started = await post(base, "/api/codex/turn", {
+        changeId: "CHG-1", seat: "PRD", prompt: "现在持久化",
+      });
+
+      assert.equal(started.status, 200);
+      assert.deepEqual(bindings.find("CHG-1", "PRD"), {
+        changeId: "CHG-1",
+        phase: "PRD",
+        threadId: "THREAD-1",
+        status: "bound",
+      });
+      assert.equal(
+        connection.requests.filter(({ method }) => method === "thread/start").length,
+        1,
+      );
+    });
+  });
+
+  it("unarchives a browser binding before resuming the same thread", async () => {
+    await withStreamPanel(async ({ base, connection, database }) => {
+      new BindingStore(database).bind("CHG-1", "PRD", "THREAD-ARCHIVED");
+      connection.setAvailability("THREAD-ARCHIVED", "archived");
+      const opened = await post(base, "/api/codex/open", {
+        changeId: "CHG-1", seat: "PRD",
+      });
+
+      assert.equal(opened.status, 200);
+      assert.equal((await opened.json() as { threadId: string }).threadId, "THREAD-ARCHIVED");
+      assert.deepEqual(connection.requests.map(({ method }) => method), [
+        "thread/list",
+        "thread/list",
+        "thread/unarchive",
+        "thread/list",
+        "thread/resume",
+      ]);
+    });
+  });
+
   it("opens without a turn and serves the materialized snapshot", async () => {
     await withStreamPanel(async ({ base, connection }) => {
       const opened = await post(base, "/api/codex/open", {

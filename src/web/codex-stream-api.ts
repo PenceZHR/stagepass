@@ -1,21 +1,51 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { AppServerSessionError } from "../codex/app-server-session";
-import type { StreamEvent } from "../codex/stream-state";
-import {
-  isStreamSeat,
-  StreamSessionError,
-  type StreamSeat,
-  type StreamSessions,
-} from "./stream-session";
+import type { StreamEvent, StreamSnapshot } from "../codex/stream-state";
+import { isPhase, type Phase } from "../domain/phase";
 
 const BODY_LIMIT = 64 * 1024;
 
+export type CodexStreamSeat = Exclude<Phase, "Done"> | "aside";
+
+export interface CodexStreamPort {
+  open(
+    changeId: string,
+    seat: CodexStreamSeat,
+    options?: { readonly config?: Readonly<Record<string, unknown>> },
+  ): Promise<{ snapshot(): StreamSnapshot }>;
+  snapshot(changeId: string, seat: CodexStreamSeat): StreamSnapshot;
+  eventsAfter(
+    changeId: string,
+    seat: CodexStreamSeat,
+    seq: number,
+  ): readonly StreamEvent[] | null;
+  subscribe(
+    changeId: string,
+    seat: CodexStreamSeat,
+    listener: (event: StreamEvent) => void,
+  ): () => void;
+  startTurn(changeId: string, seat: CodexStreamSeat, prompt: string): Promise<string>;
+  steer(
+    changeId: string,
+    seat: CodexStreamSeat,
+    direction: string,
+    expectedTurnId: string,
+  ): Promise<void>;
+  interrupt(changeId: string, seat: CodexStreamSeat, turnId: string): Promise<void>;
+  respond(
+    changeId: string,
+    seat: CodexStreamSeat,
+    interactionId: string,
+    response: unknown,
+  ): Promise<void>;
+}
+
 interface CodexStreamApiOptions {
-  readonly streams: StreamSessions;
+  readonly streams: CodexStreamPort;
   readonly configFor: (
     changeId: string,
-    seat: StreamSeat,
+    seat: CodexStreamSeat,
   ) => Readonly<Record<string, unknown>>;
 }
 
@@ -40,10 +70,11 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
 
 function errorStatus(error: unknown): number {
   if (error instanceof StreamApiError) return error.status;
-  if (error instanceof StreamSessionError) {
-    if (error.code === "no_such_change") return 404;
-    if (error.code === "project_path_missing") return 409;
-    if (error.code === "session_not_open") return 409;
+  const streamCode = streamSessionCode(error);
+  if (streamCode !== null) {
+    if (streamCode === "no_such_change") return 404;
+    if (streamCode === "project_path_missing") return 409;
+    if (streamCode === "session_not_open") return 409;
     return 400;
   }
   if (error instanceof AppServerSessionError) {
@@ -60,10 +91,18 @@ function errorStatus(error: unknown): number {
 }
 
 function errorCode(error: unknown): string {
-  if (error instanceof StreamApiError
-    || error instanceof StreamSessionError
-    || error instanceof AppServerSessionError) return error.code;
+  if (error instanceof StreamApiError || error instanceof AppServerSessionError) {
+    return error.code;
+  }
+  const streamCode = streamSessionCode(error);
+  if (streamCode !== null) return streamCode;
   return "codex_stream_failed";
+}
+
+function streamSessionCode(error: unknown): string | null {
+  if (!(error instanceof Error) || error.name !== "StreamSessionError") return null;
+  const code = (error as Error & { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : null;
 }
 
 function publicMessage(error: unknown): string {
@@ -110,14 +149,17 @@ function requiredString(
   return value;
 }
 
-function seatFrom(value: unknown): StreamSeat {
-  if (typeof value !== "string" || !isStreamSeat(value)) {
+function seatFrom(value: unknown): CodexStreamSeat {
+  if (
+    typeof value !== "string"
+    || (value !== "aside" && (!isPhase(value) || value === "Done"))
+  ) {
     throw new StreamApiError("invalid_seat", 400, "seat is not a streamable phase or aside");
   }
   return value;
 }
 
-function queryIdentity(url: URL): { changeId: string; seat: StreamSeat } {
+function queryIdentity(url: URL): { changeId: string; seat: CodexStreamSeat } {
   const changeId = url.searchParams.get("change") ?? "";
   if (changeId === "") {
     throw new StreamApiError("invalid_request", 400, "change is required");
@@ -127,7 +169,7 @@ function queryIdentity(url: URL): { changeId: string; seat: StreamSeat } {
 
 function bodyIdentity(body: Readonly<Record<string, unknown>>): {
   changeId: string;
-  seat: StreamSeat;
+  seat: CodexStreamSeat;
 } {
   return {
     changeId: requiredString(body, "changeId"),

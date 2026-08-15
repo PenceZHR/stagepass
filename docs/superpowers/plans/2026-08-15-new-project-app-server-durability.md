@@ -131,7 +131,7 @@ git commit -m "fix: keep empty app-server threads ephemeral"
 - Modify: `src/web/session-recovery.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing facade and HTTP tests**
+- [x] **Step 1: Write failing facade and HTTP tests**
 
 Extend the fake history in `src/web/stream-api.test.ts` so `thread/list` and `thread/unarchive` are observable. Add these cases:
 
@@ -181,7 +181,7 @@ assert.doesNotMatch(
 );
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -191,7 +191,7 @@ node --import tsx --test src/web/stream-api.test.ts src/web/session-recovery.tes
 
 Expected: new-open is still bound too early, archived browser open bypasses unarchive, and the architecture guard fails on the concrete import.
 
-- [ ] **Step 3: Define the narrow HTTP session port**
+- [x] **Step 3: Define the narrow HTTP session port**
 
 In `src/web/codex-stream-api.ts`, replace the concrete import with a local interface:
 
@@ -212,7 +212,7 @@ export interface CodexStreamPort {
 
 Set `CodexStreamApiOptions.streams` to `CodexStreamPort`. Preserve endpoint bodies and public error shapes.
 
-- [ ] **Step 4: Make `PanelSessions` the port and sole binding owner**
+- [x] **Step 4: Make `PanelSessions` the port and sole binding owner**
 
 Change binding preparation to return the exact resume id:
 
@@ -266,7 +266,7 @@ async runTurn(changeId: string, seat: Seat, prompt: string, config: Record<strin
 
 Use that method in `/api/brief` instead of opening, reading the just-written binding, and starting an independent transport.
 
-- [ ] **Step 5: Run GREEN and all affected business tests**
+- [x] **Step 5: Run GREEN and all affected business tests**
 
 Run:
 
@@ -284,7 +284,7 @@ pnpm typecheck
 
 Expected: all selected suites pass, no skipped cases, typecheck exits 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/web/stream-session.ts src/web/stream-session.test.ts \

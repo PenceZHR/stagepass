@@ -1,9 +1,13 @@
 import type Database from "better-sqlite3";
 
-import type { AppServerSession, AppServerSessionOptions } from "../codex/app-server-session";
+import type {
+  AppServerSession,
+  AppServerSessionOptions,
+  CompletedTurn,
+} from "../codex/app-server-session";
 import type { AppServerSessionHost } from "../codex/app-server-transport";
 import type { StreamEvent, StreamSnapshot } from "../codex/stream-state";
-import { isPhase, type Phase } from "../domain/phase";
+import type { Phase } from "../domain/phase";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 
@@ -38,10 +42,6 @@ export class StreamSessionError extends Error {
     super(message);
     this.name = "StreamSessionError";
   }
-}
-
-export function isStreamSeat(value: string): value is StreamSeat {
-  return value === STREAM_ASIDE || (isPhase(value) && value !== "Done");
 }
 
 /** One structured App Server session per durable StagePass (Change, seat). */
@@ -110,6 +110,15 @@ export class StreamSessions {
 
   startTurn(changeId: string, seat: StreamSeat, prompt: string): Promise<string> {
     return this.require(changeId, seat).startTurn(prompt);
+  }
+
+  awaitTurn(
+    changeId: string,
+    seat: StreamSeat,
+    turnId: string,
+    timeoutMs = 0,
+  ): Promise<CompletedTurn> {
+    return this.require(changeId, seat).awaitTurn(turnId, timeoutMs);
   }
 
   steer(

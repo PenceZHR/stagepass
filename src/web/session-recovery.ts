@@ -1,4 +1,4 @@
-import { ensureResumable, type ArchiveOps } from "../codex/archive";
+import type { ArchiveOps } from "../codex/archive";
 import {
   BindingStore,
   type BoundThread,
@@ -71,18 +71,27 @@ export async function prepareBoundThread(input: {
     return { kind: "fresh", replacedThreadId: binding.threadId };
   }
 
-  const outcome = await ensureResumable(binding.threadId, archive);
-  if (outcome === "already_open" || outcome === "unarchived") {
-    return { kind: "resume", threadId: binding.threadId };
+  try {
+    await archive.unarchive(binding.threadId);
+  } catch {
+    return { kind: "refused", reason: "thread is still archived after thread/unarchive" };
   }
-  if (outcome === "missing") {
+  let after;
+  try {
+    after = await archive.availability(binding.threadId);
+  } catch {
+    return {
+      kind: "refused",
+      reason: "codex app-server became unavailable while unarchiving the thread",
+    };
+  }
+  if (after === "open") return { kind: "resume", threadId: binding.threadId };
+  if (after === "missing") {
     detach(binding);
     return { kind: "fresh", replacedThreadId: binding.threadId };
   }
   return {
     kind: "refused",
-    reason: outcome === "unavailable"
-      ? "codex app-server became unavailable while unarchiving the thread"
-      : "thread is still archived after thread/unarchive",
+    reason: "thread is still archived after thread/unarchive",
   };
 }

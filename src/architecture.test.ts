@@ -374,6 +374,12 @@ describe("standing · one name per concept", () => {
 });
 
 describe("standing · Codex runtime is pure App Server", () => {
+  it("browser stream routes depend on the product port, not raw sessions", () => {
+    const route = production.find((file) => file.path === "web/codex-stream-api.ts");
+    assert.ok(route);
+    assert.doesNotMatch(route.text, /type StreamSessions|from "\.\/stream-session"/);
+  });
+
   it("production has no PTY, TUI, rollout-file, or private-state path", () => {
     const forbidden = ["node-pty", "@xterm", "/pty/", "state_5.sqlite", "rollout-"];
     const found: string[] = [];
