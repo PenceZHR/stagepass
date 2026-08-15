@@ -1,4 +1,10 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type RequestListener,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import {
   mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync,
 } from "node:fs";
@@ -62,6 +68,7 @@ import {
   type StreamOpenOptions,
   type StreamSessions,
 } from "./stream-session";
+import type { ReservedPanelListener } from "./panel-listener";
 
 /**
  * StagePass Web workbench backed exclusively by one supervised Codex App Server.
@@ -2097,12 +2104,15 @@ export async function handle(
   response.writeHead(404).end("not found");
 }
 
-export function createPanelServer(options: PanelOptions): {
+export function createPanelServer(
+  options: PanelOptions,
+  reserved?: ReservedPanelListener,
+): {
   server: Server;
   sessions: PanelSessions;
 } {
   const sessions = new PanelSessions(options);
-  const server = createServer((request, response) => {
+  const listener: RequestListener = (request, response) => {
     void handle(request, response, sessions, options).catch((error: unknown) => {
       /*
        * **失败必须说真话**（PRD §7 M7）。
@@ -2133,7 +2143,9 @@ export function createPanelServer(options: PanelOptions): {
       response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ failed: true, error: detail }));
     });
-  });
+  };
+  const server = reserved?.server ?? createServer(listener);
+  reserved?.activate(listener);
   /*
    * **收尸人要一直在，不能只在启动时来一趟。**
    *

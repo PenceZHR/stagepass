@@ -304,7 +304,7 @@ git commit -m "fix: persist app-server seats after first turn"
 - Modify: `scripts/panel.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing reservation tests**
+- [x] **Step 1: Write failing reservation tests**
 
 Create `src/web/panel-listener.test.ts`:
 
@@ -332,7 +332,7 @@ assert.match(result.stderr, /EADDRINUSE|already in use/);
 assert.equal(existsSync(dbPath), false);
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -342,7 +342,7 @@ node --import tsx --test src/web/panel-listener.test.ts src/panel-entry.test.ts
 
 Expected: module-not-found for `panel-listener.ts`; the entry test demonstrates the current database file is created before collision exit.
 
-- [ ] **Step 3: Implement a reserved loopback HTTP server**
+- [x] **Step 3: Implement a reserved loopback HTTP server**
 
 Create `src/web/panel-listener.ts` with this public surface:
 
@@ -366,7 +366,7 @@ The server owns exactly one delegating request listener. Before activation it re
 
 with status 503 and `cache-control: no-store`. `activate` swaps a closure variable; it never closes or rebinds the socket. Calling `activate` twice throws `panel_listener_already_active`.
 
-- [ ] **Step 4: Let `createPanelServer` activate an existing listener**
+- [x] **Step 4: Let `createPanelServer` activate an existing listener**
 
 Add an optional second argument:
 
@@ -379,7 +379,7 @@ export function createPanelServer(
 
 Build the current request listener as a named `RequestListener`. If `reserved` exists, use its server and call `reserved.activate(listener)`; otherwise use `createServer(listener)`. Keep reaper cleanup attached to the selected server.
 
-- [ ] **Step 5: Reorder the production entry**
+- [x] **Step 5: Reorder the production entry**
 
 In `scripts/panel.ts`, parse and validate pure CLI arguments first, then execute:
 
@@ -395,7 +395,7 @@ const { server, sessions } = createPanelServer(options, reserved);
 
 Remove the final `server.listen(...)`; the callback banner becomes a normal log immediately after handler activation. Track partially-created server, database, history and App Server client in startup resource variables. The top-level failure path closes each resource in reverse order before reporting the error and exiting.
 
-- [ ] **Step 6: Run GREEN**
+- [x] **Step 6: Run GREEN**
 
 Run:
 
@@ -406,7 +406,7 @@ pnpm typecheck
 
 Expected: listener and entry tests pass; a collision leaves the supplied database path absent.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/web/panel-listener.ts src/web/panel-listener.test.ts \

@@ -11,6 +11,8 @@
  * without touching anything real.
  */
 import { mkdtempSync } from "node:fs";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import Database from "better-sqlite3";
@@ -25,6 +27,7 @@ import { prepareSchema } from "../src/db/schema";
 import { PHASES } from "../src/domain/phase";
 import { RUBRIC_ROLES } from "../src/domain/rubric";
 import { orphanedStandardKeys, retireStandards } from "../src/domain/rubric-gaps";
+import { BindingStore } from "../src/store/binding-store";
 import { ChangeStore } from "../src/store/change-store";
 import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
@@ -32,7 +35,9 @@ import { FACTORY_UPGRADE_REASON, RubricStore } from "../src/store/rubric-store";
 import { createRepoOps } from "../src/work/repo";
 import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createGraphApi } from "../src/web/graph-api";
+import { reservePanelListener } from "../src/web/panel-listener";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
+import { reconcileMissingBindings } from "../src/web/session-recovery";
 import { StreamSessions } from "../src/web/stream-session";
 
 function argument(name: string): string | undefined {
@@ -41,7 +46,30 @@ function argument(name: string): string | undefined {
 }
 
 async function start(): Promise<void> {
+let startupServer: Server | null = null;
+let startupDatabase: Database.Database | null = null;
+let startupClient: AppServerClient | null = null;
+let startupHistory: AppServerHistory | null = null;
+let startupSessions: PanelSessions | null = null;
+const cleanup = async (): Promise<void> => {
+  startupSessions?.closeAll();
+  startupHistory?.dispose();
+  if (startupClient !== null) {
+    try { await startupClient.close(1_000); } catch { /* preserve the startup error */ }
+  }
+  if (startupDatabase?.open === true) startupDatabase.close();
+  if (startupServer?.listening === true) {
+    startupServer.closeAllConnections();
+    await new Promise<void>((resolve) => startupServer!.close(() => resolve()));
+  }
+};
+
+try {
 const port = Number(argument("port") ?? 4173);
+if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+  console.error(`--port 要一个 0～65535 的整数，收到的是「${argument("port") ?? "4173"}」`);
+  process.exit(1);
+}
 
 /**
  * 模型和思考预算，命令行说了算。
@@ -116,10 +144,14 @@ const roundBudget = (() => {
 })();
 
 const changeId = argument("change") ?? "CHG-1";
+const reserved = await reservePanelListener({ port, host: "127.0.0.1" });
+startupServer = reserved.server;
+
 const dbPath = argument("db")
   ?? join(mkdtempSync(join(tmpdir(), "stagepass-panel-")), "ship.db");
 
 const database = new Database(dbPath);
+startupDatabase = database;
 database.pragma("journal_mode = WAL");
 database.pragma("foreign_keys = ON");
 /*
@@ -271,9 +303,11 @@ const appServerClient = AppServerClient.spawn({
     if (message !== "") console.error(`[app-server] ${message}`);
   },
 });
+startupClient = appServerClient;
 appServerHost = new AppServerSessionHost(appServerClient);
 await appServerClient.initialize();
 const history = new AppServerHistory(appServerClient);
+startupHistory = history;
 const streamSessions = new StreamSessions({
   database,
   host: appServerHost,
@@ -282,6 +316,13 @@ const streamSessions = new StreamSessions({
   effort,
   ...(model === undefined ? {} : { model }),
 });
+
+// Codex 的状态事实已经能判定时，先把悬空 binding 收掉，再激活 HTTP handler。
+// unavailable 只报告，不写库；真正 archived 的线程留到用户打开时再解开。
+const bindingRecovery = await reconcileMissingBindings(
+  new BindingStore(database),
+  history,
+);
 
 const { server, sessions } = createPanelServer({
   database,
@@ -306,28 +347,21 @@ const { server, sessions } = createPanelServer({
       ...(model === undefined ? {} : { model }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     }),
-});
-
-// Codex 的状态事实已经能判定时，先把悬空 binding 收掉，再让任何 HTTP 请求进来。
-// unavailable 只报告，不写库；真正 archived 的线程留到用户打开时再解开。
-const bindingRecovery = await sessions.reconcileBindings();
+}, reserved);
+startupSessions = sessions;
 
 let stopping = false;
-const stop = async (registry: PanelSessions): Promise<void> => {
+const stop = async (): Promise<void> => {
   if (stopping) return;
   stopping = true;
-  registry.closeAll();
-  history.dispose();
-  server.close();
-  await appServerClient.close(1_000);
-  database.close();
+  await cleanup();
   process.exit(0);
 };
-process.on("SIGINT", () => { void stop(sessions); });
-process.on("SIGTERM", () => { void stop(sessions); });
+process.on("SIGINT", () => { void stop(); });
+process.on("SIGTERM", () => { void stop(); });
 
 /*
- * **只绑回环。**（BACKLOG §3.4「面板无鉴权 0 处」的那一半）
+ * **只绑回环，而且先绑端口再碰数据库。**（BACKLOG §3.4「面板无鉴权 0 处」的那一半）
  *
  * `listen(port)` 不给 host 时 Node 绑的是**所有网卡** —— 而这个面板零鉴权，
  * 它能派轮、能改 rubric、能删 Change、也能控制一个正在运行的 Codex turn。
@@ -335,10 +369,11 @@ process.on("SIGTERM", () => { void stop(sessions); });
  *
  * 鉴权本身没做（也不该急着做：用户数 1 是设计不是缺陷，§1.1）。但「不做鉴权」
  * 和「向全世界开放」是两件事 —— 前者可以接受，后者不行。绑回环把攻击面从
- * 「一个网段」缩到「这台机器上的进程」，而那正是这个产品的实际使用面。
+ * 「一个网段」缩到「这台机器上的进程」，而那正是这个产品的实际使用面。监听在
+ * 上面 `reservePanelListener` 已经完成；从这一刻到 handler 激活之前只会返回 503。
  */
-server.listen(port, "127.0.0.1", () => {
-  console.log(`面板   http://localhost:${port}/?change=${encodeURIComponent(changeId)}`);
+  const listeningPort = (server.address() as AddressInfo).port;
+  console.log(`面板   http://localhost:${listeningPort}/?change=${encodeURIComponent(changeId)}`);
   console.log(`数据库 ${dbPath}`);
   for (const binding of bindingRecovery.detached) {
     const seat = binding.kind === "round" ? binding.phase : "aside";
@@ -381,7 +416,10 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`轮次   跑满 ${roundBudget} 轮之后，裁决表会告诉你它到底在不在收敛`);
   console.log("\n每个阶段一条结构化会话。进入只连接/恢复线程，不会自动发起 turn。");
   console.log("Ctrl-C 结束。");
-});
+} catch (error) {
+  await cleanup();
+  throw error;
+}
 }
 
 void start().catch((error: unknown) => {

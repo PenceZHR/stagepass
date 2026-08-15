@@ -169,6 +169,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "web/session-recovery.ts": 5,
   "web/stream-session.ts": 5,
   "web/codex-stream-api.ts": 5,
+  "web/panel-listener.ts": 5,
   "web/panel-server.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
