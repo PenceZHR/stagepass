@@ -233,7 +233,7 @@ git commit -m "feat: deliver detailed prompts through private files"
 - Create: `src/codex/tmux.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing naming, paste, and lifecycle tests**
+- [x] **Step 1: Write failing naming, paste, and lifecycle tests**
 
 ```ts
 it("derives an opaque stable name", () => {
@@ -257,7 +257,7 @@ it("pastes before sending Enter as a separate command", async () => {
 
 Also prove `has-session` exit 1 means absent; concurrent ensure creates once; TUI command contains no prompt/title/path; close/detach never kills; explicit end kills once; and errors are `tmux_unavailable`, `tmux_command_failed`, `invalid_thread_id`.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/codex/tmux.test.ts
@@ -265,7 +265,7 @@ node --import tsx --test --test-concurrency=1 src/codex/tmux.test.ts
 
 Expected: FAIL because the module is missing.
 
-- [ ] **Step 3: Implement the tmux port**
+- [x] **Step 3: Implement the tmux port**
 
 ```ts
 export interface TmuxIdentity { readonly changeId: string; readonly seat: string; }
@@ -284,7 +284,7 @@ Use SHA-256 for the 20-hex suffix. Validate thread ids as UUIDs and names as `^s
 
 Prompt submission is exactly `load-buffer -b sp_input -` with the short envelope on stdin, `paste-buffer -d -b sp_input -t sp_0123456789abcdef0123`, then `send-keys -t sp_0123456789abcdef0123 Enter`; the runtime substitutes the validated session name. The detailed prompt remains only in its private file.
 
-- [ ] **Step 4: Validate and commit**
+- [x] **Step 4: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/codex/tmux.test.ts src/architecture.test.ts
