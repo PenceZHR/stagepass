@@ -453,7 +453,7 @@ git commit -m "feat: observe turns owned by native Codex TUI"
 - Modify: `src/web/session-recovery.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 ```ts
 it("binds on explicit open and reuses thread and tmux", async () => {
@@ -476,7 +476,7 @@ it("close-window preserves binding and tmux", async () => {
 
 Also cover archived reuse, explicit missing detach/replacement, unavailable preservation, missing-tmux recreation on the same thread, restart reconstruction with empty memory, concurrent open, per-seat input lease, prompt-file retention until externally started turn completion, release-without-kill, end-with-binding-preserved, archive-and-end, and Change-scoped forget.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/native-sessions.test.ts src/web/session-recovery.test.ts
@@ -484,7 +484,7 @@ node --import tsx --test --test-concurrency=1 src/web/native-sessions.test.ts sr
 
 Expected: FAIL because `NativeSessions` is missing.
 
-- [ ] **Step 3: Implement the normalized state and port**
+- [x] **Step 3: Implement the normalized state and port**
 
 ```ts
 export type NativeSeat = Exclude<Phase, "Done"> | "aside";
@@ -515,11 +515,11 @@ Bind a new thread before opening Terminal; a failed binding is a named error. Ke
 
 Keep pending prompt files in the in-memory seat entry keyed by observed turn id. Release each file on terminal completion or explicit dispatch failure; `releaseObserver` must first attach a completion cleanup listener so a still-running TUI turn does not leak its file merely because StagePass released the foreground observer.
 
-- [ ] **Step 4: Make recovery state-driven**
+- [x] **Step 4: Make recovery state-driven**
 
 Keep `prepareBoundThread` as the sole open/archived/missing classifier. Combine binding result, `tmux.status`, and `terminal.status`. Startup inspection may report but must not kill tmux or detach on unavailable. Explicit open may recreate missing tmux on the same thread.
 
-- [ ] **Step 5: Validate and commit**
+- [x] **Step 5: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/native-sessions.test.ts src/web/session-recovery.test.ts src/architecture.test.ts
