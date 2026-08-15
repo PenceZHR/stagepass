@@ -380,7 +380,7 @@ git commit -m "feat: control marked macOS Terminal windows"
 - Create: `src/codex/native-tui-session.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing external-turn tests**
+- [x] **Step 1: Write failing external-turn tests**
 
 ```ts
 it("waits for a turn newer than the baseline", async () => {
@@ -403,7 +403,7 @@ it("submits through tmux and never calls App Server turn/start", async () => {
 
 Also test busy baseline, timeout, failed/interrupted completion, duplicate notification, prompt-file cleanup after completion, and disconnect while waiting.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/codex/app-server-session.test.ts src/codex/native-tui-session.test.ts
@@ -411,7 +411,7 @@ node --import tsx --test --test-concurrency=1 src/codex/app-server-session.test.
 
 Expected: FAIL because `awaitNextTurn` and native transport are missing.
 
-- [ ] **Step 3: Add the observer primitive**
+- [x] **Step 3: Add the observer primitive**
 
 ```ts
 awaitNextTurn(afterTurnId: string | null, timeoutMs: number): Promise<string>;
@@ -419,7 +419,7 @@ awaitNextTurn(afterTurnId: string | null, timeoutMs: number): Promise<string>;
 
 Resolve only on a new `turn.started`, unregister on every exit, and throw `turn_start_timeout` on timeout.
 
-- [ ] **Step 4: Implement the TUI-backed transport**
+- [x] **Step 4: Implement the TUI-backed transport**
 
 ```ts
 export interface NativeTuiTurnPort {
@@ -435,7 +435,7 @@ export class NativeTuiCodexTransport implements CodexTransport {
 
 The StagePass proxy's reverse-request handler returns `interaction_owner_is_native_tui`; it never answers or rejects on the TUI's behalf and never creates a browser interaction sheet.
 
-- [ ] **Step 5: Validate and commit**
+- [x] **Step 5: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/codex/app-server-session.test.ts src/codex/native-tui-session.test.ts src/architecture.test.ts
