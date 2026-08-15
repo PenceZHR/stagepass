@@ -300,7 +300,7 @@ git commit -m "feat: own durable Codex TUI sessions with tmux"
 - Create: `src/system/terminal-app.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing Terminal controller tests**
+- [x] **Step 1: Write failing Terminal controller tests**
 
 ```ts
 it("passes action, marker, and attach command as osascript argv", async () => {
@@ -319,7 +319,7 @@ it("passes action, marker, and attach command as osascript argv", async () => {
 
 Add tests that focus/close fail closed on multiple marker matches, no OS window id is reused across calls, and Apple event `-1743` maps to `terminal_automation_denied`.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/system/terminal-app.test.ts
@@ -327,7 +327,7 @@ node --import tsx --test --test-concurrency=1 src/system/terminal-app.test.ts
 
 Expected: FAIL because the module is missing.
 
-- [ ] **Step 3: Implement the fixed AppleScript boundary**
+- [x] **Step 3: Implement the fixed AppleScript boundary**
 
 ```ts
 export type TerminalWindowState = "closed" | "open";
@@ -345,7 +345,7 @@ export interface TerminalAppOps {
 
 The embedded AppleScript receives `[action, marker, attachCommand]` through `on run argv`, discovers tabs by exact `custom title`, gives a new tab the marker, activates Terminal for open/focus, and closes only a unique marked target. It prints one JSON object. Dynamic free text is forbidden; validate marker/name before creating the fixed attach command. Zero matches means closed; multiple matches yield `terminal_window_ambiguous` without mutation.
 
-- [ ] **Step 4: Validate offline**
+- [x] **Step 4: Validate offline**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/system/terminal-app.test.ts src/architecture.test.ts
@@ -354,7 +354,7 @@ pnpm typecheck
 
 Expected: all pass without launching Terminal because the process seam is fake.
 
-- [ ] **Step 5: Run the narrow real Terminal smoke test**
+- [x] **Step 5: Run the narrow real Terminal smoke test**
 
 Add one opt-in test named `real marked window survives close` to `terminal-app.test.ts`. It creates `sp_00000000000000000000`, runs production open/focus/close, asserts `tmux has-session -t sp_00000000000000000000`, and kills that exact disposable session in `finally`. Run:
 
@@ -364,7 +364,7 @@ STAGEPASS_TERMINAL_SMOKE=1 node --import tsx --test --test-name-pattern="real ma
 
 Expected: focus does not duplicate the window, close removes only the marked window, and tmux remains.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/system/terminal-app.ts src/system/terminal-app.test.ts src/architecture.test.ts
