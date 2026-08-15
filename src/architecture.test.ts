@@ -101,6 +101,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/app-server-daemon.ts": 2,
   // 详细提示词只落进 0600 临时文件；给原生 TUI 的只是短信封和路径。
   "codex/prompt-file.ts": 2,
+  // 原生 Codex 会话的长寿命 owner；只以不透明名字操作 tmux，不读屏幕。
+  "codex/tmux.ts": 2,
   "system/process.ts": 2,
   // App Server 通知在这里收束成一条可重放的 thread 事件流；session 只在这层
   // 持有 Codex thread/turn/item 生命周期，不认识 Change、phase 或界面。
