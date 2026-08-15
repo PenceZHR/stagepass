@@ -20,6 +20,7 @@
   },
   "include": [
     "src/web/panel.js",
+    "src/web/codex-stream.js",
     "src/web/graph-view.js",
     "src/web/graph-scene.js",
     "src/web/panel-globals.d.ts"

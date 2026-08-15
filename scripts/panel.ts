@@ -1,12 +1,11 @@
 /**
- * Start the terminal panel.
+ * Start the StagePass App Server workbench.
  *
  *   pnpm panel [--db <path>] [--change <id>] [--port 4173]
  *
- * Opens StagePass Web with one terminal per phase. Codex runs inside those
- * terminals and draws them itself; the panel moves bytes and routes no
- * decision. Approvals still happen in the selector Codex draws -- it is just in
- * a browser now instead of a Terminal.app window.
+ * Opens StagePass Web with one structured App Server thread per phase seat.
+ * The browser renders normalized snapshots and events; it receives neither
+ * terminal bytes nor JSON-RPC envelopes.
  *
  * With no `--db`, a throwaway database is created so the panel can be looked at
  * without touching anything real.
@@ -40,6 +39,7 @@ function argument(name: string): string | undefined {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
+async function start(): Promise<void> {
 const port = Number(argument("port") ?? 4173);
 
 /**
@@ -416,6 +416,12 @@ server.listen(port, "127.0.0.1", () => {
   // 没了」—— 人得先知道有这么个东西，才可能把它和自己刚才的等待对上。
   console.log(`截止   问人 ${askTimeoutMs / 60_000} 分钟 · 一轮 ${turnTimeoutMs / 60_000} 分钟`);
   console.log(`轮次   跑满 ${roundBudget} 轮之后，裁决表会告诉你它到底在不在收敛`);
-  console.log("\n每个阶段一个终端。**看一眼不会起进程** —— 要一个按「开一个终端」。");
+  console.log("\n每个阶段一条结构化会话。进入只连接/恢复线程，不会自动发起 turn。");
   console.log("Ctrl-C 结束。");
+});
+}
+
+void start().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 });

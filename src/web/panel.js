@@ -1,5 +1,7 @@
+import { createCodexStream } from "./codex-stream.js";
+
 /*
- * The browser half of the terminal panel — Abstract Cloud & Sea + Circular
+ * The browser half of the StagePass workbench — Abstract Cloud & Sea + Circular
  * Stage Orbit, as confirmed on 2026-07-24.
  *
  * Things that are decisions rather than styling, so do not "simplify" them:
@@ -21,9 +23,8 @@
  * 所以：觉得主屏少了点什么，答案是 renderStatus 或 drawSheet，不是往环那屏塞
  * 一块新东西。原来压在环底下那条决策区就是这么长出来的，已经整条撤掉了。
  *
- * And the rule the panel exists under: bytes arrive as Uint8Array and go
- * straight into xterm.js. Nothing here decodes them, because nothing here may
- * understand them (PRD §9.3).
+ * The stage view consumes only StagePass-normalized App Server snapshots and
+ * events. It never receives terminal bytes or JSON-RPC envelopes.
  */
 const params = new URLSearchParams(location.search);
 const changeId = params.get("change") || "CHG-1";
@@ -64,7 +65,13 @@ const columns = pick("columns");
 const stageName = pick("stage-name");
 const stageThread = pick("stage-thread");
 const stageNote = pick("stage-note");
-/** 终端底下那行注解的原话。say() 会盖掉它，进终端时还原。 */
+const codexSurface = pick("codex-stream");
+const codexComposer = /** @type {HTMLFormElement} */ (pick("codex-composer"));
+const codexInput = /** @type {HTMLTextAreaElement} */ (pick("codex-input"));
+const codexSend = button("codex-send");
+const codexInterrupt = button("codex-interrupt");
+const codexInteraction = dialog("codex-interaction");
+/** 会话底下那行注解的原话。say() 会盖掉它，进会话时还原。 */
 const NOTE_DEFAULT = stageNote.textContent;
 
 // 左侧 40% 的常驻面板
@@ -96,10 +103,8 @@ const tabRubric = pick("tab-rubric");
 const enterButton = button("enter");
 const waiveButton = button("waive");
 const briefButton = button("brief");
-const closeTermButton = button("close-term");
 const briefDraftButton = button("brief-draft");
 const briefConfirmButton = button("brief-confirm");
-const openTermButton = button("open-term");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
 const roundProgress = pick("round-progress");
@@ -107,22 +112,6 @@ const runButton = button("run");
 const askButton = button("ask");
 
 pick("crumb-change").textContent = changeId;
-
-const term = new Terminal({
-  convertEol: false,
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-  fontSize: 13,
-  theme: {
-    background: "rgba(0,0,0,0)",
-    foreground: "#e6dfd2",
-    cursor: "#e4cfad",
-    selectionBackground: "rgba(228,207,173,0.28)",
-  },
-  allowTransparency: true,
-});
-const fit = new FitAddon.FitAddon();
-term.loadAddon(fit);
-term.open(pick("term"));
 
 /**
  * 阶段的 pass / fail，用**词**说一遍。
@@ -141,7 +130,7 @@ const MARK = {
 let phases = [];
 let panelState = null;
 let current = null;
-let stream = null;
+let codex = null;
 let moving = false;
 /** 弹窗正在显示哪个阶段，没开时是 null。 */
 let sheetPhase = null;
@@ -152,19 +141,7 @@ let sheetTab = "gaps";
 /** 正在编辑的那份 rubric —— 角色、作用域、以及还没保存的 criteria。 */
 let editing = null;
 
-const path = (phase, suffix = "") =>
-  `/pty/${encodeURIComponent(changeId)}/${encodeURIComponent(phase)}${suffix}`;
-
 const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-
-/** Keystrokes out. Text until they are sent; bytes from there on. */
-const send = (phase, data) =>
-  fetch(path(phase, "/in"), { method: "POST", body: new TextEncoder().encode(data) });
-
-function resize(phase) {
-  fit.fit();
-  return fetch(path(phase, `/resize?cols=${term.cols}&rows=${term.rows}`), { method: "POST" });
-}
 
 const SEAT_WORDS = {
   pending: "并行座位开着，还没跑",
@@ -174,7 +151,7 @@ const SEAT_WORDS = {
 };
 
 function statusOf(entry) {
-  if (entry.live) return { short: "进程活着", long: "线程活着，点开直接接上去。" };
+  if (entry.live) return { short: "正在运行", long: "这一格有一轮正在运行，点开可以实时查看或介入。" };
   // 并行座位（批 3）：主线在别处，这一格自己在攒轮次。
   if (entry.seat) {
     return {
@@ -184,7 +161,7 @@ function statusOf(entry) {
   }
   if (entry.threadId) return { short: "有线程", long: "有线程，点开会恢复它的历史。" };
   if (entry.current) return { short: "待运行", long: "Change 就停在这个阶段。跑它会派发一次真的 turn。" };
-  return { short: "未开始", long: "还没轮到它。点开只是打开一个终端看看。" };
+  return { short: "未开始", long: "还没轮到它。点开只会进入结构化会话，不会自动发起 turn。" };
 }
 
 /**
@@ -563,8 +540,9 @@ async function ask() {
 /**
  * 录入需求：模型读仓库提问题 -> 人在选择器里答。
  *
- * **和 approve / waive 同一条路**：网页只组题、把题送进那个阶段的终端，答在 Codex
- * 自己的选择器里发生。网页不代答，也没有「直接填需求」的输入框。
+ * **和 approve / waive 同一条路**：网页只组题、把题送进那个阶段的 App Server
+ * 会话，答在 StagePass 的 interaction sheet 里发生。网页不代答，也没有「直接填需求」
+ * 的输入框。
  *
  * 在这之前这一步整个不存在，于是 PRD 阶段的红方收到的是一句写死的通用指令，
  * 「this change」是哪个 change 它从来不知道 —— 那份 PRD 只能是编的。
@@ -572,17 +550,8 @@ async function ask() {
 /*
  * ── 顺序很要紧，别调回来 ──────────────────────────────
  *
- * 三个动作（录需求 / 问闸门 / 接受风险）都要「派一个 turn 进这个阶段的终端，然后进
- * 去看」。**必须先发请求，再进终端。**
- *
- * 反过来就坏：`enter()` 会通过 `/pty/...` 开一个**浏览用**的会话（没有提示词），
- * 而服务端那三个端点看见「这个阶段已经有活进程」就直接拒 `phase_already_running`
- * —— 于是它被自己刚开的终端挡住了。2026-07-30 实测，症状是「点了没反应」，
- * 而且一旦终端开过一次就永远失败。
- *
- * 等一下再进：服务端收到请求后毫秒级就把 pty 起来了，这时 `enter()` 里的 attach
- * 会接上**同一个**会话（`sessions.open` 对活着的会话是原样返回），人就看得见提示词
- * 和选择器。
+ * 三个动作（录需求 / 问闸门 / 接受风险）都要「先派 turn，再进入同一条结构化会话」。
+ * 先发请求是为了让 StagePass 的用例决定要问什么；进入会话只负责呈现，不另造 turn。
  */
 const DISPATCH_THEN_ENTER_MS = 1200;
 
@@ -1688,7 +1657,6 @@ function setCollapsed(collapsed) {
   const until = Date.now() + 620;
   const settle = () => {
     placeNodes();
-    if (current) void resize(current);
     if (Date.now() < until) requestAnimationFrame(settle);
   };
   requestAnimationFrame(settle);
@@ -2103,20 +2071,6 @@ function drawSheet(phase) {
   askButton.disabled = decidable.length === 0 || entry.live
     || (onlyRetry && barred);
 
-  /*
-   * 出口：**两个来源都问**（交接 §5.5.2）。注册表里有活进程，或者账本上有一轮
-   * 在飞（queued / running 的 job）—— 后者在进程死了、或面板重启过之后照样成立，
-   * 而那正是原来出口被藏、人一个能按的都没有的那个死结。
-   * 没有出口，上面每一个 disabled 都是一个没有出路的死结。
-   */
-  const flying = roundInFlight(entry);
-  closeTermButton.hidden = !(entry.live || flying);
-  // 有一轮在飞时，这个出口收的不只是进程，还有账本上的那一轮（job 记失败、
-  // Change 回 blocked、retry 有路）—— 名字要说实话。
-  closeTermButton.textContent = flying ? "中止这一轮" : "结束这个终端";
-  // 「开一个」和「结束这个」互斥：一个阶段同时只许一个进程。
-  openTermButton.hidden = entry.live || flying;
-
   drawNextStep(entry);
 }
 
@@ -2193,9 +2147,9 @@ function nextStep(entry) {
   }
   if (entry.live) {
     return {
-      what: "先结束这个终端",
-      why: "一个阶段同时只许有一个 Codex 进程，它开着的时候派不出新的东西 ——"
-        + "所以别的按钮都是灰的。看完就按「结束这个终端」。",
+      what: "查看或介入这一轮",
+      why: "这一格有一个 App Server turn 正在运行。进入会话可以看实时进度、补充方向，"
+        + "或者明确中断这一轮。",
     };
   }
   if (!entry.current) {
@@ -2251,81 +2205,6 @@ function nextStep(entry) {
     why: "需求已经记下了。跑它会派一轮红蓝对抗：红方拿你写的需求去做，蓝方挑毛病，"
       + "裁判裁决，三个角色各自还要过一遍标准。要几分钟。",
   };
-}
-
-/**
- * 结束这个阶段的终端。
- *
- * **这是那个缺失的出口。** 结束一个进程不是业务决策 —— 它不推动闸门，也不对任何
- * 产物下判断，所以它可以是网页上的一个按钮。
- */
-/**
- * 明确起一个 Codex 聊天窗口。
- *
- * 和「看这个终端」分开的那一半 —— 看的那条路绝不起进程了（用户 2026-08-03：
- * 「我点进入终端只是想看看状态……而不是点了就报废」）。起进程要有自己的名字，
- * 人按下去就知道自己在做什么。
- */
-async function openTerminal() {
-  const phase = sheetPhase;
-  if (!phase) return;
-  openTermButton.disabled = true;
-  try {
-    const response = await fetch(
-      `/api/terminal?change=${encodeURIComponent(changeId)}`
-      + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
-    );
-    const result = response.ok ? await response.json() : { opened: false };
-    await loadOrReconnect();
-    // 起成了就直接进去 —— 人要的是那个终端，不是「已开启」四个字。
-    if (result.opened) { closeSheet(); await enter(phase); return; }
-    if (sheetPhase) drawSheet(sheetPhase);
-  } finally {
-    openTermButton.disabled = false;
-  }
-}
-
-async function closeTerminal() {
-  const phase = sheetPhase;
-  if (!phase) return;
-  closeTermButton.disabled = true;
-  try {
-    const result = await (await fetch(
-      `/api/close?change=${encodeURIComponent(changeId)}`
-      + `&phase=${encodeURIComponent(phase)}`, { method: "POST" },
-    )).json();
-    // 连账本一起收掉了一轮，就要说出来 —— job 记了失败、Change 回了 blocked，
-    // 静默的话人不知道现在已经可以 retry 了。
-    if (result.aborted) {
-      say(`这一轮中止了（${result.aborted}）。`
-        + "现在可以 retry ——「请 Codex 问我」，在选择器里选。");
-    }
-    /*
-     * **旁路里动过手，就当场要一句话**（彗星的账本，2026-08-11）。
-     *
-     * 判据在服务端（进出旁路时两个 HEAD 不同），这里只负责问。只聊过的那种
-     * `needsNote` 是假的，一个字都不问 —— 轻的用法保持轻，正是那条账的判据。
-     *
-     * 人不写也不拦他（旁路本来就不推闸门）；不写的代价是环上那颗彗星留着一条
-     * 说不出来历的尾迹，而下游会对着一份来历不明的树干活。
-     */
-    if (result.needsNote) {
-      const note = window.prompt(
-        "这趟旁路动了工作树（有新的 commit）。用一句话说清做了什么 ——\n"
-        + "它是下游唯一能知道「环外发生过什么」的地方。");
-      if (note && note.trim()) {
-        await fetch(
-          `/api/aside?change=${encodeURIComponent(changeId)}`
-          + `&visit=${encodeURIComponent(result.visit)}`,
-          { method: "POST", body: note },
-        );
-      }
-    }
-    await loadOrReconnect();
-    if (sheetPhase) drawSheet(sheetPhase);
-  } finally {
-    closeTermButton.disabled = false;
-  }
 }
 
 /**
@@ -2503,6 +2382,8 @@ function drawGaps(entry) {
 async function enter(phase) {
   if (moving) return;
   moving = true;
+  codex?.close();
+  codex = null;
   current = phase;
 
   const entry = phases.find((item) => item.phase === phase);
@@ -2526,16 +2407,29 @@ async function enter(phase) {
   stageView.classList.add("active");
   await wait(120);
   moving = false;
-
-  term.reset();
-  term.focus();
-  await attach(phase);
+  codex = createCodexStream({
+    changeId,
+    seat: phase,
+    surface: codexSurface,
+    form: codexComposer,
+    input: codexInput,
+    send: codexSend,
+    interrupt: codexInterrupt,
+    interaction: codexInteraction,
+    onStatus: ({ text }) => { stageNote.textContent = text; },
+  });
+  try {
+    await codex.open();
+  } catch (error) {
+    stageNote.textContent = `会话没能打开：${error?.message ?? error}`;
+  }
 }
 
 async function leave() {
   if (moving) return;
   moving = true;
-  if (stream) { stream.abort(); stream = null; }
+  codex?.close();
+  codex = null;
   current = null;
 
   stageView.classList.remove("active");
@@ -2560,8 +2454,9 @@ async function leave() {
  * 进图谱是只读动作 —— 不起进程、不写库（「看状态不该有副作用」）。
  */
 function openGraphView(project) {
-  // 台上如果是终端，按 leave() 的规矩收干净 —— 只是不播它的动画。
-  if (stream) { stream.abort(); stream = null; }
+  // 台上如果是会话，按 leave() 的规矩收干净 —— 只是不播它的动画。
+  codex?.close();
+  codex = null;
   current = null;
   stageView.classList.remove("active");
   stageView.hidden = true;
@@ -2583,99 +2478,6 @@ function closeGraphView() {
 
 pick("graph-back").addEventListener("click", () => closeGraphView());
 
-async function attach(phase, reattaching = false) {
-  stream = new AbortController();
-  const mine = stream;
-  if (!reattaching) await resize(phase);
-
-  /*
-   * **这条路只看，不起进程**（服务端 2026-08-03 起就是这个语义）。三种回法：
-   *
-   *   200 + 流   进程活着，接上去
-   *   200 + 完整 进程死了，这是它的最后一屏（服务端给完就 end）
-   *   409        这个阶段从没跑过 —— 说出来，别留一片空白
-   */
-  const response = await fetch(
-    path(phase, reattaching ? "?existing=1" : ""), { signal: stream.signal });
-  if (!response.ok) {
-    if (mine !== stream) return;
-    /*
-     * **空白和「没有进程」在人眼里一模一样**，所以要写出来。这正是这个面板从头
-     * 到尾在防的那类：做了事却看不出做了，或者没做事却看不出没做。
-     */
-    if (!reattaching) {
-      term.reset();
-      term.write("\r\n  这个阶段还没有进程。\r\n\r\n");
-      term.write("  要跑这个阶段，回阶段环按「跑这个阶段」；\r\n");
-      term.write("  只想在这条线程里跟 Codex 说话，按「开一个终端」。\r\n");
-    }
-    // 重连扑空（409）：进程真的死了。注解已经在屏幕下面，保留尸体，不再试。
-    return;
-  }
-  const reader = response.body.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    /*
-     * **换过一格就不许再往这块屏幕上画。**
-     *
-     * `abort()` 之后这条 `read()` 通常会抛，但那是「通常」：切走的那一刻可能已经有
-     * 一次 read 在路上，它照样会 resolve 出数据。少了这一行，实测就是**两个终端的
-     * 输出叠在同一屏上** —— 而标签页存在的全部意义就是让人分得清哪个是哪个。
-     *
-     * `mine !== stream` 是这个文件里已有的那把尺子（下面那个收尾判断用的就是它），
-     * 这里只是把它挪到写之前。
-     */
-    if (mine !== stream) return;
-    // value is a Uint8Array. It is drawn, never inspected.
-    term.write(value);
-  }
-
-  /*
-   * 流断了就说一句。
-   *
-   * **死终端和卡住的终端长得一模一样** —— xterm 停在最后一帧，光标还在，人以为
-   * 它在想事情，于是一直等、一直打字，什么都不发生。用户 2026-07-30 撞到的正是
-   * 这个（那次是 StagePass 自己在录完需求之后关掉了会话）。
-   *
-   * 只写终端**下面**那行注解，不往 xterm 里写字：终端那块画面是 Codex 的，
-   * StagePass 一个像素都不画（PRD §9.3）。
-   *
-   * `mine` 那个判断是必需的：`leave()` 会 abort 这条流，那种结束是人主动走开，
-   * 不该报「进程结束了」。
-   */
-  if (stream === mine) {
-    stageNote.textContent =
-      `${phase} 的进程已经结束了 —— 这个终端不再接受输入。返回阶段环继续。`;
-    /*
-     * **自动重连一次**（交接 C3）。
-     *
-     * 流断掉有两种：服务端换了会话（「答完直接续跑」关旧起新 —— 接上新的就好，
-     * 原来这里没有任何重连，人对着死流干等），和进程真的死了（上面那行注解就是
-     * 给这种看的）。重连带 `existing=1`，后者会拿到 409、注解留着 —— 两种不再
-     * 长得一样。
-     *
-     * 只连一次（reattaching 不再递归），免得在一个反复断的服务上转圈。
-     *
-     * ## 这里曾经有一个 `&& label === null`，它让整个重连从来没有发生过
-     *
-     * `label` 是 aside 那套东西的变量。`7d8e53b` 把整套 aside 撤掉时删掉了它，
-     * **漏了这一处引用**。于是每次流一断，这一行就抛 `ReferenceError: label is
-     * not defined`，下面两行永远执行不到 —— 症状是「Codex 问完话、或者阶段一动，
-     * 终端就再也不动了，可底下明明在跑」。用户 2026-08-04 报的就是这个。
-     *
-     * 它躲过了 `pnpm check`：`tsconfig.src.json` 的 include 只有 `src/**\/*.ts`
-     * 和 `scripts/**\/*.ts`，**这个文件根本不在类型检查范围内**。一个裸标识符
-     * 引用在浏览器里才会炸，而没有任何一层在它炸之前看过它。
-     */
-    if (!reattaching) {
-      await wait(800);
-      if (stream !== mine) return; // 人已经走开或换了格子
-      await attach(phase, true);
-    }
-  }
-}
-
 /**
  * 旁路窗口：不属于任何阶段的 Codex 聊天（DESIGN §3.3）。
  *
@@ -2683,17 +2485,8 @@ async function attach(phase, reattaching = false) {
  * phaseBusy（这正是旁路的定义），所以这里也没有 disabled 逻辑可写。
  */
 async function openAside() {
-  try {
-    const response = await fetch(
-      `/api/aside?change=${encodeURIComponent(changeId)}`, { method: "POST" });
-    if (!response.ok) {
-      say(`旁路窗口没开成：${await response.text()}`);
-      return;
-    }
-    closeSheet();
-    await enter("aside");
-  } finally {
-  }
+  closeSheet();
+  await enter("aside");
 }
 
 /**
@@ -2712,7 +2505,7 @@ const DRAFT_REFUSAL_WORDS = {
 async function draftBriefFromAside() {
   briefDraftButton.disabled = true;
   /*
-   * 起草那一轮要跑几分钟（xhigh），而它跑在旁路窗口里 —— 把人送进去看着，
+   * 起草那一轮要跑几分钟（xhigh），而它跑在旁路会话里 —— 把人送进去看着，
    * 比让他对着一个「整理中…」的按钮干等强。这也是 2026-08-06 那个「卡住」的
    * 另一半：屏幕上没有任何东西说它在跑。
    */
@@ -2775,8 +2568,6 @@ briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); })
 runButton.addEventListener("click", () => { void run(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
-closeTermButton.addEventListener("click", () => { void closeTerminal(); });
-openTermButton.addEventListener("click", () => { void openTerminal(); });
 waiveButton.addEventListener("click", () => { void waive(); });
 button("expand").addEventListener("click", () => { setCollapsed(false); });
 
@@ -2958,11 +2749,7 @@ sheet.addEventListener("close", () => { sheetPhase = null; notice = null; });
 // Applied before the first paint, and without a transition -- animating from
 // three columns to none on load would look like the page changing its mind.
 if (startCollapsed) columns.classList.add("collapsed");
-term.onData((data) => { if (current) void send(current, data); });
-addEventListener("resize", () => {
-  if (current) void resize(current);
-  else placeNodes();
-});
+addEventListener("resize", placeNodes);
 
 void loadOrReconnect();
 
@@ -3303,4 +3090,3 @@ sunButton.addEventListener("pointerenter", () => { showSunCard(); });
 sunButton.addEventListener("pointerleave", () => { hideSunCard(); });
 sunButton.addEventListener("focus", () => { showSunCard(); });
 sunButton.addEventListener("blur", () => { hideSunCard(); });
-

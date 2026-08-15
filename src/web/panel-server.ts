@@ -850,17 +850,16 @@ export class PanelSessions {
 const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
   "/": { file: join(HERE, "panel.html"), type: "text/html; charset=utf-8" },
   "/panel.js": { file: join(HERE, "panel.js"), type: "text/javascript; charset=utf-8" },
+  "/codex-stream.js": {
+    file: join(HERE, "codex-stream.js"), type: "text/javascript; charset=utf-8",
+  },
   // The cloud-sea ground is a real generated raster, not CSS pretending to be
   // one -- that was decided in the 2026-07-24 visual direction, not styled.
   "/assets/abstract-cloud-sea.png": {
     file: join(HERE, "assets", "abstract-cloud-sea.png"),
     type: "image/png",
   },
-  "/xterm.css": {
-    file: join(HERE, "..", "..", "node_modules", "@xterm", "xterm", "css", "xterm.css"),
-    type: "text/css; charset=utf-8",
-  },
-  // 图谱的前端和 three.js 本体。和 xterm 同一个套路：从 node_modules 直接喂，
+  // 图谱的前端和 three.js 本体。从 node_modules 直接喂，
   // 零 CDN、零构建步骤 —— 面板是 localhost，600KB 不过网络。
   "/graph-view.js": {
     file: join(HERE, "graph-view.js"), type: "text/javascript; charset=utf-8",
@@ -890,14 +889,6 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
       HERE, "..", "..", "node_modules", "three",
       "examples", "jsm", "controls", "OrbitControls.js",
     ),
-    type: "text/javascript; charset=utf-8",
-  },
-  "/xterm.js": {
-    file: join(HERE, "..", "..", "node_modules", "@xterm", "xterm", "lib", "xterm.js"),
-    type: "text/javascript; charset=utf-8",
-  },
-  "/addon-fit.js": {
-    file: join(HERE, "..", "..", "node_modules", "@xterm", "addon-fit", "lib", "addon-fit.js"),
     type: "text/javascript; charset=utf-8",
   },
 };
@@ -1373,9 +1364,16 @@ function serveProgress(
   response: ServerResponse,
   database: Database.Database,
   sessions: PanelSessions,
+  streams: StreamSessions | undefined,
 ): void {
   const view = progressView({
-    database, sessions, changeId: url.searchParams.get("change") ?? "",
+    database,
+    sessions: {
+      has: (changeId, phase) => streams?.active(changeId, phase)
+        || sessions.has(changeId, phase),
+      rolloutAgeMs: (changeId, phase) => sessions.rolloutAgeMs(changeId, phase),
+    },
+    changeId: url.searchParams.get("change") ?? "",
   });
   if (view === null) { response.writeHead(404).end("no such change"); return; }
   json(response, view);
@@ -2010,7 +2008,7 @@ function servePanel(
     ...panelView({
       database,
       sessions: {
-        has: (each, phase) => options.streams?.has(each, phase)
+        has: (each, phase) => options.streams?.active(each, phase)
           || sessions.has(each, phase),
         rolloutAgeMs: (each, phase) => sessions.rolloutAgeMs(each, phase),
       },
@@ -2141,7 +2139,7 @@ export async function handle(
   }
 
   if (url.pathname === "/api/progress" && request.method === "GET") {
-    serveProgress(url, response, database, sessions);
+    serveProgress(url, response, database, sessions, options.streams);
     return;
   }
 

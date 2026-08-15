@@ -96,6 +96,25 @@ describe("StreamState", () => {
     assert.equal(item?.output, "checking...\n");
   });
 
+  it("inherits completed turn status when historical items omit their own status", () => {
+    const state = new StreamState("THREAD-1");
+    state.hydrate([{
+      id: "TURN-DONE",
+      status: "completed",
+      items: [{
+        type: "subAgentActivity",
+        id: "SUB-1",
+        kind: "started",
+        agentPath: "/root/proponent",
+      }],
+    }]);
+
+    const item = state.snapshot().items[0];
+    assert.equal(item?.kind, "subAgentActivity");
+    assert.equal(item?.status, "completed");
+    assert.equal(item?.title, "/root/proponent");
+  });
+
   it("ignores another thread and does not re-emit duplicate completion", () => {
     const state = new StreamState("THREAD-1");
     assert.equal(state.accept(notification("turn/started", {

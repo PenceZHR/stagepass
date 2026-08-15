@@ -81,6 +81,11 @@ export class StreamSessions {
     return this.sessions.has(StreamSessions.key(changeId, seat));
   }
 
+  active(changeId: string, seat: StreamSeat): boolean {
+    const session = this.sessions.get(StreamSessions.key(changeId, seat));
+    return session !== undefined && session.snapshot().activeTurnId !== null;
+  }
+
   eventsAfter(
     changeId: string,
     seat: StreamSeat,

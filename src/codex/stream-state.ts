@@ -98,7 +98,9 @@ function itemFromWire(raw: unknown, turnId: string, previous?: StreamItem): Stre
     ? item.command
     : typeof item.name === "string"
       ? item.name
-      : previous?.title ?? "";
+      : typeof item.agentPath === "string"
+        ? item.agentPath
+        : previous?.title ?? "";
   return {
     id,
     turnId,
@@ -224,7 +226,14 @@ export class StreamState {
       if (status === "inProgress") this.activeTurnId = turnId;
       const items = Array.isArray(turn.items) ? turn.items : [];
       for (const rawItem of items) {
-        const materialized = itemFromWire(rawItem, turnId);
+        const wire = asRecord(rawItem);
+        // Historical thread/read payloads often omit item.status even though
+        // the enclosing turn is final. A final turn is authoritative here;
+        // otherwise old sub-agent and message rows look permanently alive.
+        const materialized = itemFromWire(
+          { ...wire, status: wire.status ?? status },
+          turnId,
+        );
         if (materialized !== null) this.items.set(materialized.id, materialized);
       }
     }

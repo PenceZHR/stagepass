@@ -3,8 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>stagepass · 终端面板</title>
-<link rel="stylesheet" href="/xterm.css">
+<title>stagepass · 工作台</title>
 <style>
 /*
  * Abstract Cloud & Sea Motion + 三列 2:2:6 + Circular Stage Orbit。
@@ -1070,8 +1069,7 @@ body::after {
   100% { opacity: 0; transform: translate(-50%,-50%) scale(14); }
 }
 
-/* ── 阶段视图（在第三列里原地替换） ───────────────────── */
-/* 补问那格的标签页。只有真开着补问时才出现。 */
+/* ── 原生会话视图（在第三列里原地替换） ───────────────── */
 
 #stage-view {
   display: flex; flex-direction: column; gap: 12px; padding: 22px 26px 20px;
@@ -1095,14 +1093,162 @@ body::after {
 }
 .back:hover { color: var(--sand-strong); }
 .surface {
-  flex: 1; min-height: 0;
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
   border: 1px solid rgba(255,255,255,.18); border-radius: 18px;
-  background: oklch(0.132 0.028 295);
-  box-shadow: 0 22px 80px rgba(31,24,37,.38); padding: 15px 17px;
+  background: oklch(0.145 0.03 295 / 82%); backdrop-filter: blur(20px);
+  box-shadow: 0 22px 80px rgba(31,24,37,.38); overflow: hidden;
 }
-#term { width: 100%; height: 100%; }
-.xterm .xterm-viewport { background: transparent !important; }
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
+
+.stream-surface {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: clamp(20px, 3vw, 38px) clamp(20px, 4vw, 52px) 24px;
+  scroll-behavior: smooth;
+}
+.stream-status {
+  margin: 0 0 24px; padding-bottom: 11px;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+  color: rgba(255,255,255,.42);
+  font: 750 9px/1 ui-sans-serif, sans-serif; letter-spacing: .18em;
+  text-transform: uppercase;
+}
+.stream-status[data-status="running"] { color: var(--sand-strong); }
+.stream-status[data-status="failed"], .stream-status[data-status="error"] {
+  color: var(--problem);
+}
+.stream-item { margin: 0; color: rgba(255,255,255,.82); }
+.stream-agent {
+  max-width: 72ch; padding: 0 0 30px;
+  font: 400 clamp(15px, 1.2vw, 17px)/1.86 var(--serif);
+  letter-spacing: -.012em;
+}
+.stream-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+.stream-work {
+  padding: 12px 0; border-top: 1px solid rgba(255,255,255,.09);
+}
+.stream-work:last-child { border-bottom: 1px solid rgba(255,255,255,.09); }
+.stream-work-title {
+  cursor: pointer; color: rgba(255,255,255,.62); list-style-position: outside;
+  font: 650 11px/1.5 ui-sans-serif, sans-serif; letter-spacing: .025em;
+}
+.stream-work-title::marker { color: var(--sand-deep); }
+.stream-work-state {
+  margin-left: 10px; color: rgba(255,255,255,.3);
+  font: 600 9px/1 ui-monospace, monospace; text-transform: uppercase;
+}
+.stream-work-body {
+  max-height: 240px; margin: 12px 0 2px; padding: 13px 15px; overflow: auto;
+  border-left: 1px solid rgba(225,201,168,.32);
+  background: rgba(8,6,15,.24); color: rgba(255,255,255,.7);
+  font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.composer {
+  display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 10px;
+  padding: 14px 16px 16px; border-top: 1px solid rgba(255,255,255,.11);
+  background: oklch(0.155 0.035 295 / 92%);
+}
+.composer textarea {
+  width: 100%; min-height: 44px; max-height: 160px; resize: vertical;
+  padding: 11px 13px; border: 1px solid rgba(255,255,255,.13); border-radius: 11px;
+  outline: 0; background: rgba(255,255,255,.045); color: #fff;
+  font: 13px/1.55 ui-sans-serif, -apple-system, "PingFang SC", sans-serif;
+}
+.composer textarea:focus { border-color: rgba(225,201,168,.52); }
+.composer button, .interaction-action {
+  min-height: 40px; padding: 0 15px; border: 1px solid rgba(255,255,255,.15);
+  border-radius: 999px; background: transparent; color: rgba(255,255,255,.68);
+  cursor: pointer; font: 750 10px/1 ui-sans-serif, sans-serif; letter-spacing: .08em;
+}
+.composer button:hover, .interaction-action:hover { color: #fff; border-color: var(--sand); }
+.composer button[type="submit"], .interaction-action.primary {
+  background: var(--sand-strong); border-color: var(--sand-strong);
+  color: oklch(0.2 0.035 295);
+}
+.composer button:disabled, .interaction-action:disabled { opacity: .38; cursor: wait; }
+
+#codex-interaction { width: min(600px, calc(100vw - 36px)); }
+.interaction-head { margin-bottom: 22px; }
+.interaction-kicker {
+  color: var(--sand-deep); font: 800 9px/1 ui-sans-serif, sans-serif;
+  letter-spacing: .19em; text-transform: uppercase;
+}
+.interaction-title { margin: 12px 0 0; font: 560 27px/1.1 var(--serif); letter-spacing: -.035em; }
+.interaction-message {
+  margin: 13px 0 0; color: rgba(255,255,255,.62); white-space: pre-wrap;
+  font: 13px/1.75 ui-sans-serif, sans-serif;
+}
+.interaction-fields { display: grid; gap: 15px; margin: 10px 0 22px; }
+.interaction-field { display: grid; gap: 7px; }
+.interaction-label { color: rgba(255,255,255,.8); font: 500 13px/1.45 var(--serif); }
+.interaction-input {
+  width: 100%; min-height: 40px; padding: 9px 11px;
+  border: 1px solid rgba(255,255,255,.15); border-radius: 9px;
+  background: oklch(0.16 0.035 295); color: #fff;
+}
+.interaction-help { color: rgba(255,255,255,.4); }
+.interaction-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 9px; }
+.interaction-link { color: var(--sand-strong); }
+
+/*
+ * 窄屏不把桌面四栏缩成四条缝。工作区仍在原层级，只把每列里的卡片改成横向浏览；
+ * 当前 Change 与阶段环随后完整落到纵向内容里。这样人仍控制“看哪个项目 / Change”
+ * 的结构，而不会因为手机宽度丢掉阶段环或把名称拆成单字。
+ */
+@media (max-width: 820px) {
+  html, body { height: auto; min-height: 100%; }
+  body { overflow-x: hidden; overflow-y: auto; }
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    grid-template-columns: 1fr auto; min-height: 58px; padding: 0 17px;
+  }
+  .wordmark { font-size: 21px; }
+  .crumb { text-align: right; }
+  .live-flag { display: none; }
+
+  .columns, .columns.collapsed {
+    display: block; min-height: 0; transition: none;
+  }
+  .columns.collapsed .col.workspace { display: flex; }
+  .columns.collapsed .col.workspace > * { opacity: 1; }
+  .expand, .columns.collapsed .expand { display: none; }
+  .col + .col { border-left: 0; border-top: 1px solid oklch(0.89 0.025 75 / 11%); }
+  .col.workspace { overflow: hidden; }
+  .col-head { padding: 18px 18px 11px; }
+  .col-head small { margin-bottom: 4px; }
+  .rows {
+    flex-direction: row; gap: 7px; padding: 0 12px 15px;
+    overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+  }
+  .row { flex: 0 0 min(76vw, 290px); scroll-snap-align: start; }
+
+  .col.stage { min-height: max(760px, 100svh); }
+  #orbit-view {
+    grid-template-columns: 1fr; grid-template-rows: auto minmax(350px, 1fr);
+  }
+  .status-panel {
+    padding: 25px 22px 18px; overflow: visible;
+    border-right: 0; border-bottom: 1px solid oklch(0.89 0.025 75 / 9%);
+  }
+  .columns.collapsed .status-panel { padding-top: 25px; }
+  .status-title { min-height: 0; font-size: clamp(23px, 8vw, 29px); }
+  .status-line { margin-top: 9px; }
+  .status-facts { margin-top: 15px; }
+  .status-facts > div { padding: 7px 0; }
+  .status-foot { margin-top: 10px; padding-top: 0; }
+  .orbit-stage { padding: 20px 22px 42px; }
+  .sheet { width: calc(100vw - 24px); max-height: calc(100svh - 24px); }
+}
+
+@media (max-width: 680px) {
+  #stage-view { padding: 15px 12px 12px; }
+  .stage-title { font-size: 24px; }
+  .stage-title .thread { display: none; }
+  .stream-surface { padding: 20px 17px; }
+  .composer { grid-template-columns: 1fr auto; }
+  .composer textarea { grid-column: 1 / -1; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   body::before, .halo::before, .live-flag i, .orbit-wrap,
@@ -1435,23 +1581,7 @@ body::after {
         <div id="sheet-rubric" hidden></div>
       </div>
       <div class="sheet-foot">
-        <!--
-          看这个阶段的终端。**只看，绝不起进程** —— 起进程是下面那个按钮的事。
-          用户 2026-08-03：「我点进入终端只是想看看状态或者适时介入，而不是点了
-          就报废。」进程没了就给最后一屏，从没跑过就说还没有进程。
-        -->
-        <button class="enter" id="enter" type="button">看这个终端</button>
-        <!--
-          明确起一个 Codex 聊天窗口。有活进程时藏起来（一个阶段只许一个进程）。
-          名字里有「开」，人按下去就知道自己在起一个进程。
-        -->
-        <button class="enter" id="open-term" type="button" hidden>开一个终端</button>
-        <!--
-          结束这个终端 —— **界面上一直缺的那个出口**。每个动作在有活进程时都禁用
-          （一个阶段同时只许一个进程），而 TUI 不会自己退出：没有这个按钮，人一按
-          「开一个终端」，那个阶段就卡住，只剩这个出口。
-        -->
-        <button class="enter" id="close-term" type="button" hidden>结束这个终端</button>
+        <button class="enter" id="enter" type="button">进入会话</button>
         <!--
           旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
           挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
@@ -1479,9 +1609,18 @@ body::after {
         </div>
         <button class="back" id="back">← 返回阶段环</button>
       </div>
-      <div class="surface"><div id="term"></div></div>
-      <p class="note" id="stage-note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
+      <div class="surface">
+        <section class="stream-surface" id="codex-stream" aria-live="polite"></section>
+        <form class="composer" id="codex-composer">
+          <textarea id="codex-input" aria-label="给 Codex 的消息" rows="2"></textarea>
+          <button type="button" id="codex-interrupt" hidden>中断</button>
+          <button type="submit" id="codex-send">发送</button>
+        </form>
+      </div>
+      <p class="note" id="stage-note">这是 App Server 的结构化会话流。正文、工具进度和需要你处理的交互各走自己的语义层。</p>
     </section>
+
+    <dialog class="sheet" id="codex-interaction" aria-labelledby="codex-interaction-title"></dialog>
 
     <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->
     <section class="view" id="graph-view" hidden>
@@ -1527,9 +1666,7 @@ body::after {
   }
 }
 </script>
-<script src="/xterm.js"></script>
-<script src="/addon-fit.js"></script>
-<script src="/panel.js"></script>
+<script type="module" src="/panel.js"></script>
 <script type="module" src="/graph-view.js"></script>
 </body>
 </html>

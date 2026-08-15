@@ -119,7 +119,10 @@ describe("StreamSessions", () => {
     const { database, connection, sessions } = setup();
     try {
       await sessions.open("CHG-1", "PRD");
+      assert.equal(sessions.has("CHG-1", "PRD"), true);
+      assert.equal(sessions.active("CHG-1", "PRD"), false);
       const turnId = await sessions.startTurn("CHG-1", "PRD", "开始");
+      assert.equal(sessions.active("CHG-1", "PRD"), true);
       connection.emit("item/started", {
         threadId: "THREAD-1",
         turnId,
@@ -133,8 +136,13 @@ describe("StreamSessions", () => {
       });
       await sessions.steer("CHG-1", "PRD", "继续", turnId);
       await sessions.interrupt("CHG-1", "PRD", turnId);
+      connection.emit("turn/completed", {
+        threadId: "THREAD-1",
+        turn: { id: turnId, status: "interrupted", items: [] },
+      });
 
       assert.equal(sessions.snapshot("CHG-1", "PRD").items[0]?.text, "流式");
+      assert.equal(sessions.active("CHG-1", "PRD"), false);
       assert.deepEqual(
         connection.requests.slice(1).map(({ method }) => method),
         ["turn/start", "turn/steer", "turn/interrupt"],
@@ -147,6 +155,7 @@ describe("StreamSessions", () => {
   it("fails closed for an unopened seat or a Change without a project path", async () => {
     const { database, sessions } = setup();
     try {
+      assert.equal(sessions.active("CHG-1", "Spec"), false);
       assert.throws(
         () => sessions.snapshot("CHG-1", "Spec"),
         (error: unknown) =>
