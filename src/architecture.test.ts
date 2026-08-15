@@ -94,6 +94,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "store/binding-store.ts": 2,
   "store/turn-store.ts": 2,
   "codex/transport.ts": 2,
+  // App Server 的公开 JSONL 协议边界。protocol 只定义线上的最小形状；client 是
+  // 整棵树唯一会直接持有 Codex 子进程 stdin/stdout 的地方。
+  "codex/app-server-protocol.ts": 2,
+  "codex/app-server-client.ts": 2,
   "codex/invocation.ts": 2,
   "codex/archive.ts": 2,
   // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。
