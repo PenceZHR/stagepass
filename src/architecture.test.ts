@@ -98,6 +98,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 整棵树唯一会直接持有 Codex 子进程 stdin/stdout 的地方。
   "codex/app-server-protocol.ts": 2,
   "codex/app-server-client.ts": 2,
+  "codex/app-server-daemon.ts": 2,
+  "system/process.ts": 2,
   // App Server 通知在这里收束成一条可重放的 thread 事件流；session 只在这层
   // 持有 Codex thread/turn/item 生命周期，不认识 Change、phase 或界面。
   "codex/stream-state.ts": 2,
@@ -393,11 +395,13 @@ describe("standing · Codex runtime is pure App Server", () => {
     assert.deepEqual(found, []);
   });
 
-  it("only the supervised App Server client spawns Codex", () => {
+  it("only the system process boundary calls Node spawn", () => {
     const spawners = production
-      .filter((file) => /\bspawn\s*\(/.test(withoutComments(file.text)))
+      .filter((file) => /import\s*\{[^}]*\bspawn\b[^}]*\}\s*from\s*["']node:child_process["']/.test(
+        withoutComments(file.text),
+      ))
       .map((file) => file.path);
-    assert.deepEqual(spawners, ["codex/app-server-client.ts"]);
+    assert.deepEqual(spawners, ["system/process.ts"]);
   });
 });
 

@@ -1,7 +1,4 @@
-import {
-  spawn,
-  type ChildProcessWithoutNullStreams,
-} from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
   asRecord,
@@ -11,6 +8,7 @@ import {
   type AppServerRequest,
   type RpcId,
 } from "./app-server-protocol";
+import { createProcessOps, type ProcessOps } from "../system/process";
 
 const DEFAULT_CLOSE_GRACE_MS = 2_000;
 const FORCE_KILL_GRACE_MS = 100;
@@ -36,6 +34,7 @@ export interface AppServerClientOptions {
   readonly onNotification: (message: AppServerNotification) => void;
   readonly onServerRequest: (message: AppServerRequest) => Promise<unknown>;
   readonly onStderr?: (message: string) => void;
+  readonly process?: ProcessOps;
 }
 
 export class AppServerError extends Error {
@@ -78,10 +77,11 @@ function positiveGraceMs(value: number | undefined): number {
  */
 export class AppServerClient {
   static spawn(options: AppServerClientOptions): AppServerClient {
-    const child = spawn(options.command, [...options.args], {
+    const child = (options.process ?? createProcessOps()).spawn({
+      command: options.command,
+      args: options.args,
       cwd: options.cwd,
       env: options.env ?? process.env,
-      stdio: ["pipe", "pipe", "pipe"],
     });
     return new AppServerClient(child, options);
   }
