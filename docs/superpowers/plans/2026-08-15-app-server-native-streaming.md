@@ -50,7 +50,7 @@ Deleted after replacement is green:
 - Create: `src/codex/__fixtures__/fake-app-server.cjs`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write the fake peer and failing process-boundary tests**
+- [x] **Step 1: Write the fake peer and failing process-boundary tests**
 
 The fixture accepts only the real launch shape (`app-server --listen stdio://`) and supports
 `normal`, `chunked`, `approval`, `hang`, and `exit1` modes. Tests must assert:
@@ -73,13 +73,13 @@ Also prove a response split across stdout chunks is parsed once, an approval req
 response under the same id, timeout rejects only the target request, process exit rejects every
 pending request, and stderr sanitization removes bearer/sk-like tokens.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/codex/app-server-client.test.ts`
 
 Expected: FAIL because `app-server-client.ts` and protocol guards do not exist.
 
-- [ ] **Step 3: Implement the minimal protocol and client**
+- [x] **Step 3: Implement the minimal protocol and client**
 
 Required public surface:
 
@@ -107,7 +107,7 @@ export class AppServerClient {
 The reader buffers partial lines. Unknown notifications are routed, not discarded. Unknown server
 requests are rejected by the injected handler, never auto-approved.
 
-- [ ] **Step 4: Run GREEN and structural checks**
+- [x] **Step 4: Run GREEN and structural checks**
 
 Run: `pnpm test -- src/codex/app-server-client.test.ts`
 
@@ -117,7 +117,7 @@ Run: `pnpm typecheck`
 
 Expected: exit 0. Add both new production modules to the architecture layer map at L2.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/codex/app-server-protocol.ts src/codex/app-server-client.ts \
@@ -136,7 +136,7 @@ git commit -m "feat: add supervised app-server protocol client"
 - Modify: `src/codex/__fixtures__/fake-app-server.cjs`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing state tests**
+- [x] **Step 1: Write failing state tests**
 
 Use state assertions, not callback-call assertions:
 
@@ -154,13 +154,13 @@ Cover item start/delta/completion, command output, reasoning summary, file chang
 unknown item, terminal turn, duplicate delivery, foreign thread filtering, replay gap and pending
 interaction resolution.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/codex/stream-state.test.ts src/codex/app-server-session.test.ts`
 
 Expected: FAIL because both modules are absent.
 
-- [ ] **Step 3: Implement stream contracts and session API**
+- [x] **Step 3: Implement stream contracts and session API**
 
 Required union and API:
 
@@ -190,7 +190,7 @@ export class AppServerSession {
 The client must allow multiple notification listeners and route server requests to the matching
 thread session. `completed` item/turn payloads replace incremental partial values as final truth.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `pnpm test -- src/codex/stream-state.test.ts src/codex/app-server-session.test.ts`
 
@@ -200,7 +200,7 @@ Run: `pnpm typecheck`
 
 Expected: exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/codex/stream-state.ts src/codex/stream-state.test.ts \
@@ -219,7 +219,7 @@ git commit -m "feat: materialize app-server stream sessions"
 - Modify: `scripts/panel.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing `CodexTransport` contract tests**
+- [x] **Step 1: Write failing `CodexTransport` contract tests**
 
 ```ts
 const delivery = await transport.runTurn({
@@ -234,20 +234,20 @@ assert.deepEqual(delivery, { threadId: "THREAD-1", text: "final answer" });
 Cover resume, terminal failed, terminal interrupted, timeout, and exact onThread-before-terminal
 ordering.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/codex/app-server-transport.test.ts src/codex/turn-runner.test.ts`
 
 Expected: App Server transport import failure.
 
-- [ ] **Step 3: Implement transport and wire background runners**
+- [x] **Step 3: Implement transport and wire background runners**
 
 `AppServerCodexTransport` uses the shared client/session manager, not a per-turn process. It passes
 cwd/model/effort/sandbox/approval and StagePass MCP config through `thread/start|resume`. Final text
 comes from terminal agentMessage items. `turn/start` output schema is used where StagePass already
 has a response contract.
 
-- [ ] **Step 4: Run GREEN and relevant business suite**
+- [x] **Step 4: Run GREEN and relevant business suite**
 
 Run: `pnpm test -- src/codex/app-server-transport.test.ts src/codex/turn-runner.test.ts src/work/round-turn-runner.test.ts`
 
@@ -257,7 +257,7 @@ Run: `pnpm typecheck`
 
 Expected: exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/codex/app-server-transport.ts src/codex/app-server-transport.test.ts \
@@ -276,7 +276,7 @@ git commit -m "feat: run stage turns through app-server"
 - Modify: `scripts/panel.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing registry and HTTP tests**
+- [x] **Step 1: Write failing registry and HTTP tests**
 
 Prove one seat/one thread, no implicit turn on open, snapshot shape, SSE ids, Last-Event-ID replay,
 replay gap, turn-busy, stale steer/interrupt, interaction response idempotency, and listener removal
@@ -288,13 +288,13 @@ assert.equal(response.status, 200);
 assert.equal(fake.requests.filter((r) => r.method === "turn/start").length, 0);
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/web/stream-session.test.ts src/web/panel-server.test.ts`
 
 Expected: new endpoints return 404.
 
-- [ ] **Step 3: Implement registry and endpoints**
+- [x] **Step 3: Implement registry and endpoints**
 
 SSE frames use:
 
@@ -308,7 +308,7 @@ data: <single-line JSON>
 `/api/codex/open` resolves workspace from the Change's Project, then start/resume. Every write body
 is length-limited JSON. Existing job/gate endpoints call the same App Server session registry.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `pnpm test -- src/web/stream-session.test.ts src/web/panel-server.test.ts`
 
@@ -318,7 +318,7 @@ Run: `pnpm typecheck`
 
 Expected: exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/web/stream-session.ts src/web/stream-session.test.ts \
@@ -338,20 +338,20 @@ git commit -m "feat: expose app-server snapshot and event stream"
 - Modify: `src/web/panel-server.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing source/DOM-behavior tests**
+- [x] **Step 1: Write failing source/DOM-behavior tests**
 
 Tests prove the browser module renders text deltas without replacing existing DOM, renders command,
 file, MCP and reasoning items with semantic elements, sends idle composer input to `/turn`, running
 input to `/steer`, sends interrupt with expected turn id, and opens a real dialog for interactions.
 They also prove xterm scripts and the `/pty` browser path are absent.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/web/codex-stream.test.ts src/architecture.test.ts`
 
 Expected: missing module and old xterm/PTY assertions.
 
-- [ ] **Step 3: Implement the renderer in the existing art system**
+- [x] **Step 3: Implement the renderer in the existing art system**
 
 Required DOM roots:
 
@@ -368,7 +368,7 @@ Required DOM roots:
 Reuse current `--background`, `--sand*`, `--rose`, `--serif`, divider and sheet rules. Agent prose is
 unboxed; secondary execution items use thin dividers and disclosure, not a dashboard card grid.
 
-- [ ] **Step 4: Run GREEN, typecheck and browser verification**
+- [x] **Step 4: Run GREEN, typecheck and browser verification**
 
 Run: `pnpm test -- src/web/codex-stream.test.ts src/architecture.test.ts`
 
@@ -377,7 +377,7 @@ Run: `pnpm typecheck`
 Then start only this worktree on `4173`, inspect console/network/DOM, and capture 1440/1024/768/320
 screenshots. Verify keyboard submit, Shift+Enter, interrupt and dialog focus.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/web/codex-stream.js src/web/codex-stream.test.ts src/web/panel.html \
@@ -397,19 +397,19 @@ git commit -m "feat: render native codex stream in stagepass"
 - Modify: `src/app/converge-brief.ts`, `src/app/converge-brief.test.ts`
 - Modify: `src/web/panel-view.ts`, `src/web/panel-server.ts`
 
-- [ ] **Step 1: Write failing compatibility tests against App Server history**
+- [x] **Step 1: Write failing compatibility tests against App Server history**
 
 Prove thread availability from `thread/resume/read`, archive/unarchive requests, last completed turn,
 all user/agent text, context usage when present, subagent lineage from collab/subagent items, and
 "turn ended without answer" without filesystem access.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/codex/app-server-history.test.ts src/codex/subagent.test.ts src/web/session-recovery.test.ts src/app/ask-human.test.ts`
 
 Expected: history adapter missing.
 
-- [ ] **Step 3: Implement async App Server history ports**
+- [x] **Step 3: Implement async App Server history ports**
 
 Replace synchronous filesystem interfaces with injected async ports:
 
@@ -424,7 +424,7 @@ export interface CodexHistory {
 Move callers to await these operations. Missing is only an explicit App Server not-found response;
 disconnect/protocol errors keep bindings intact. Preserve every StagePass business outcome.
 
-- [ ] **Step 4: Run GREEN and the complete affected suite**
+- [x] **Step 4: Run GREEN and the complete affected suite**
 
 Run: `pnpm test -- src/codex/app-server-history.test.ts src/codex/subagent.test.ts src/web/session-recovery.test.ts src/app/ask-human.test.ts src/app/converge-brief.test.ts src/work/round-runner.test.ts src/work/rubric-round.test.ts`
 
@@ -432,7 +432,7 @@ Run: `pnpm typecheck`
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/codex/app-server-history.ts src/codex/app-server-history.test.ts \
@@ -452,7 +452,7 @@ git commit -m "refactor: derive codex history from app-server"
 - Delete: PTY/rollout-only scripts discovered by `rg`
 - Modify: `package.json`, `pnpm-lock.yaml`, `src/architecture.test.ts`, `scripts/panel.ts`
 
-- [ ] **Step 1: Add failing purity guards**
+- [x] **Step 1: Add failing purity guards**
 
 The architecture test scans production files and dependencies:
 
@@ -464,18 +464,18 @@ assert.equal(dependencies.has("@xterm/xterm"), false);
 
 It must also assert `app-server-client.ts` is the only module that spawns Codex.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm test -- src/architecture.test.ts`
 
 Expected: failures name the remaining legacy files/imports.
 
-- [ ] **Step 3: Delete legacy modules, probes and dependencies**
+- [x] **Step 3: Delete legacy modules, probes and dependencies**
 
 Remove only files whose behavior is already covered by Tasks 1–6. Regenerate the pnpm lock with
 `pnpm install --lockfile-only`. Update the layer map, orphan guard and closure ratchet intentionally.
 
-- [ ] **Step 4: Run full verification**
+- [x] **Step 4: Run full verification**
 
 Run: `pnpm check`
 
@@ -490,7 +490,7 @@ rg -n 'node-pty|@xterm|/pty/|state_5\.sqlite|rollout-' src scripts package.json
 Expected: no production matches; historical docs/tests may match only when explicitly describing the
 removed route.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -505,31 +505,33 @@ git commit -m "refactor: remove the codex tui and rollout pipeline"
 - Modify: `docs/CODEX-CONTRACT.md`
 - Create: `docs/evidence/app-server-native-streaming-2026-08-15.md`
 
-- [ ] **Step 1: Update live documentation**
+- [x] **Step 1: Update live documentation**
 
 State that this branch replaces the old "StagePass never renders Codex semantics" invariant. Record
 Codex 0.147 methods, event/interaction support, failure semantics and the exact schema generation
 command. Keep the original branch untouched.
 
-- [ ] **Step 2: Run the real service only on 4173**
+- [x] **Step 2: Run the real service only on 4173**
 
 Run:
 
 ```bash
-pnpm panel -- --port 4173 --db <isolated-acceptance-db>
+pnpm panel -- --port 4173 --db /Users/zhanghr/.stagepass/panel.db
 ```
 
-Walk: fresh thread, resume, streaming text, command output, MCP tool, StagePass elicitation, steer,
-interrupt, post-interrupt turn, browser refresh, server restart. Record thread/turn ids with any
-sensitive values removed.
+Use the real database read-only to open an archived binding, unarchive/resume it, materialize its
+history, refresh and restart. Exercise mutating flows — fresh thread, streaming text, command output,
+MCP tool, StagePass elicitation, steer, interrupt and a post-interrupt turn — against the deterministic
+App Server protocol fixture so acceptance never changes a live Change. Record thread/turn ids with
+any sensitive values removed.
 
-- [ ] **Step 3: Browser and protocol acceptance**
+- [x] **Step 3: Browser and protocol acceptance**
 
 Verify console has zero errors; only one SSE connection per visible stage; DOM does not duplicate
 deltas after reconnect; keyboard and dialog focus work; screenshots match StagePass art at 1440,
 1024, 768 and 320 widths.
 
-- [ ] **Step 4: Final full verification**
+- [x] **Step 4: Final full verification**
 
 Run: `pnpm check`
 
@@ -539,7 +541,7 @@ Run: `git status --short`
 
 Expected: only the evidence/doc changes for this task before commit.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md docs/PRD-stagepass-rebuild-2026-07-28.md docs/CODEX-CONTRACT.md \

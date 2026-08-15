@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/docs/app-server-schema/
 
 # next.js
 /.next/

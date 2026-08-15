@@ -7,9 +7,10 @@
 StagePass is a local delivery control plane. It lays one change onto an
 **eight-phase diamond ring**, runs an adversarial Codex round at every phase
 (red produces, blue attacks, a judge rules), collects evidence, surfaces
-problems — and then **stops and waits for a person to decide**. The decision
-happens in Codex's own selector, not on a web page. Only once you have chosen
-does StagePass advance.
+problems — and then **stops and waits for a person to decide**. In this isolated
+branch, Codex runs through one supervised App Server and StagePass renders its
+typed stream and interaction sheet. Only the person's recorded choice can
+advance a gate.
 
 ```
 PRD → Spec → Arch → ⟨BuildPlan ∥ TestPlan⟩ → ⟨Build ∥ Test⟩ → QA
@@ -32,7 +33,7 @@ done is simply not done:
 
 | Layer | What it is | Status |
 |---|---|---|
-| **L0–L5** | Schema, state machine, gates, leases, crash recovery, Codex TUI hosting, native-selector decisions, adversarial rounds, rubric scoring | ✅ Proved offline and each walked on a real machine (layer by layer since 2026-07-28) |
+| **L0–L5** | Schema, state machine, gates, leases, crash recovery, pure App Server hosting, human interactions, adversarial rounds, rubric scoring | ✅ 1057-test baseline plus App Server protocol and browser acceptance |
 | **Ring v3** | Eight-phase diamond, blind parallel tracks, QA's three attacks, send-back-as-rewalk, parallel seats | ✅ Landed in six batches (2026-08-09); CHG-001 really walked the new ring to QA and is re-walking after a send-back |
 | **Project graph** | Black-hole-and-Saturn-rings 3D dependency view, Arch blueprint reconciliation overlay | ✅ Verified on a real machine (2026-08-12); one semantic boundary still awaits a ruling |
 | **Bootstrap** | Run one Change through StagePass that produces StagePass's own next change | ❌ Has not happened — this is the test of whether the word "bootstrap" is earned |
@@ -70,9 +71,9 @@ StagePass answers each with a hard rule:
    claims it is fixed" are two different rows in the database.
 2. **Gates read evidence, not self-assessment.** A phase node turns green only
    because **a person approved it in the ledger**.
-3. **There is exactly one decision path.** Human choices happen in the
-   elicitation selector Codex itself draws. There is no button on the web page
-   that can move a gate, and there never will be.
+3. **There is exactly one decision path.** App Server approval and elicitation
+   requests appear in the StagePass interaction sheet, but the answer still
+   enters the same StagePass use case and ledger. Rendering cannot move a gate.
 4. **The code author and the test author are blind to each other.** The two
    tracks share only the Arch contract and collide at QA, where mutation
    attacks vet the tests themselves (a no-op mutation must stay green;
@@ -86,8 +87,8 @@ perfectly-formed verdicts died together. A survey found seven such surfaces;
 five had already burned at least once.
 
 So model output is now restricted to **enum choices and prose**. Identifiers
-never pass through a model's mouth: thread ids are read from the rollout's
-`parent_thread_id`; none of the plugin's three tools accepts an identifier;
+never pass through a model's mouth: thread lineage comes from `thread/read`;
+none of the plugin's three tools accepts an identifier;
 the rubric the critic answers is numbered `1..N`, and a missing or duplicated
 number voids the whole sheet instead of letting verdicts slide onto the wrong
 criteria.
@@ -128,12 +129,12 @@ cached**: ~200ms end to end, always equal to the tree on disk.
 | | Does | **Explicitly does not** |
 |---|---|---|
 | **State machine & gates** (`src/domain`, `src/store`, `src/app`) | Transitions, gates, fencing, leases, recovery; composing questions, validating answers, advancing state | **Render anything** |
-| **Terminal panel** (`src/web`) | Viewing and launching: the phase ring, evidence, the graph; **hosts the pty that Codex's TUI actually runs in** | **Host any business decision entry point** |
+| **App Server workbench** (`src/web`) | Viewing and launching: the phase ring, evidence, graph, normalized Codex snapshots/events and human interactions | Infer gate state from model text or bypass a StagePass use case |
 | **Codex plugin** (`src/plugin`) | Asks the person via MCP `elicitation`, sends the answer back | Decide, compose, or judge legality |
 
-**The panel is a host, not an entry point.** Every pixel of the execution you
-watch in the browser is drawn by the `codex` binary itself with escape
-sequences; StagePass only moves bytes from the pty to xterm.js.
+**The panel is a projection, not a decision authority.** StagePass materializes
+typed App Server thread/turn/item state and renders it in its own visual system.
+Raw JSON-RPC ids and payloads never cross into the browser.
 
 This is not left to judgement. The standing guards in
 `src/architecture.test.ts` may never go red. The founding five:
@@ -142,9 +143,9 @@ This is not left to judgement. The standing guards in
 2. A lower layer may not import a higher one;
 3. No export with zero callers;
 4. One name per concept (no phase-name aliases);
-5. **No `TextDecoder` / `.toString(` / `JSON.parse` / `String.fromCharCode`
-   anywhere under `src/web/`** — all four roads from pty bytes to strings,
-   closed.
+5. **No PTY/TUI/private-record runtime path.** Production scanning rejects
+   `node-pty`, xterm, `/pty/`, rollout paths and `state_5.sqlite`; only the
+   supervised App Server client may spawn Codex.
 
 Ratchets grew later: single-function line counts, per-module dependency
 closure share, ingredient-list share of the tree — existing violations are
@@ -154,9 +155,9 @@ version: the guard was right, so the code followed it.
 
 ### Looking must have no side effects
 
-Opening a phase's terminal does not spawn a process; opening the graph writes
-nothing and never touches Codex. **A look is just a look.** The button that
-spawns says so explicitly.
+Reading a snapshot or opening the graph writes nothing and never starts a turn.
+**A look is just a look.** Opening a Codex thread and starting a turn remain two
+separate actions.
 
 ---
 
@@ -164,17 +165,13 @@ spawns says so explicitly.
 
 ```bash
 pnpm install
-pnpm check            # 1209 tests + strict typecheck, fully offline, no Codex needed
+pnpm check            # strict typecheck + complete offline suite
 ```
 
 With a real Codex:
 
 ```bash
-pnpm panel                 # the terminal panel: phase ring + graph + one terminal per phase
-pnpm verify:rebuild        # L0–L2 end to end (offline)
-pnpm verify:decision       # L3: compose → selector → person chooses → gate advances
-pnpm verify:round          # L4: one real red/blue adversarial round
-pnpm verify:rubric-round   # L5: a round plus rubric scoring
+pnpm panel -- --db /Users/zhanghr/.stagepass/panel.db --port 4173
 ```
 
 All `pnpm panel` flags are optional:
@@ -192,30 +189,20 @@ anyway; saving pennies of thinking budget for a shallower verdict is a bad
 trade. Without `--db` a throwaway database is created — click anything, no
 real data is touched.
 
-Each probe answers exactly one factual question about Codex:
-
-```bash
-pnpm probe:pty        # does the elicitation selector work inside a pty?
-pnpm probe:elicit     # does -a never silently decline elicitation? (yes)
-pnpm probe:sandbox    # read-only vs workspace-write: which one stalls on approvals?
-pnpm probe:subagent   # which threads refuse input from outside their parent?
-```
+Generate the exact local protocol schema after a Codex upgrade with
+`pnpm schema:app-server`.
 
 ### Requirements
 
-- **macOS.** node-pty uses prebuilds; `verify:decision` uses `osascript`.
-  Other platforms are unverified — do not assume they work.
 - **Node 20+** (developed on 25.9), **pnpm**.
-- **Codex CLI** (developed on 0.146.0). Everything above L2 needs it.
+- **Codex CLI with `app-server`** (verified on 0.147.0).
 
 ### Two traps that bite
 
-**`-a never` severs the only channel to a human.** It does not just gate shell
-approvals — it makes Codex **auto-decline MCP `elicitation/create`**. The
-failure is silent: a perfectly well-formed `{"action":"decline"}` comes back,
-indistinguishable from a person pressing Esc. The value is now
-**unrepresentable in the type** (`CodexInvocation.approval` accepts only
-`"untrusted" | "on-request"`).
+**Only an explicit App Server “thread missing” may detach a binding.** A timeout,
+disconnect or protocol error means “unavailable”, not “gone”; preserving that
+distinction prevents archived or temporarily unreachable sessions from being
+silently replaced.
 
 **A sub-agent's thread refuses input from anyone but its parent.**
 `codex resume <subagent-thread>` starts fine, the MCP server loads, and the
@@ -240,19 +227,18 @@ src/
               rubric rounds, git
   graph/      The graph engine: compiler-parsed dependencies, selection criteria,
               layout, ingredient lists, blueprint reconciliation — all pure functions
-  codex/      Driving Codex: invocation, TUI transport, rollout parsing,
-              directory trust, archiving
+  codex/      App Server JSON-RPC, sessions, history, stream projection,
+              transport, directory trust and archive policy
   plugin/     The MCP plugin: its only write is "record what the person said"
-  web/        The terminal panel: pty sessions, the panel server, the graph API
-              (injected wiring), and the browser half
+  web/        App Server session registry, snapshot/SSE API, native renderer,
+              panel server, graph API and browser half
   architecture.test.ts   the standing guards
 docs/         PRD, BACKLOG, designs, handoffs. **The PRD is the only authority;
               BACKLOG is the single entry point for undone work.**
-scripts/      panel, verify:*, probe:*, dump-rubrics, regen-prompt-golden
+scripts/      panel, plugin server, dump-rubrics, regen-prompt-golden
 ```
 
-22,644 lines of production code across 66 modules, 21,606 lines of tests, plus
-4,355 lines of type-checked panel JS. SQLite is the sole authority — a trigger
+SQLite is the sole business authority — a trigger
 on `changes` makes the database itself reject, **at write time**, any state
 update without its matching ledger row.
 
@@ -268,6 +254,8 @@ Key documents:
 - [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) — **the only authority**, including why the rebuild
 - [`docs/BACKLOG.md`](docs/BACKLOG.md) — what is undone and why, accumulated across sessions
 - [`docs/PLAN-2026-08-09-ring-v3.md`](docs/PLAN-2026-08-09-ring-v3.md) — ring v3: eight rulings, seven batches
+- [`docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md`](docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md) — pure App Server runtime and native stream contract
+- [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) — the live App Server behavior contract
 - [`docs/superpowers/specs/2026-08-12-project-graph-3d-design.md`](docs/superpowers/specs/2026-08-12-project-graph-3d-design.md) — the project graph's design and criteria
 - [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) — the seven hand-transcription surfaces and how each reached zero
 

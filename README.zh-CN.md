@@ -6,8 +6,8 @@
 
 StagePass 是一个本地运行的交付控制面：它把一次改动摆上一条**八阶段的钻石环**，
 每个阶段跑 Codex 的对抗轮（红方产出、蓝方挑错、裁判判定），产出证据、找出问题，
-然后**停下来等人裁决**。裁决发生在 Codex 自己的选择器里，不在网页上。人选完，
-StagePass 才推进状态。
+然后**停下来等人裁决**。这个隔离分支只运行一个受监管的 Codex App Server，
+StagePass 原生渲染结构化流和交互框；只有人的答案被账本接受后，状态才会推进。
 
 ```
 PRD → Spec → Arch → ⟨BuildPlan ∥ TestPlan⟩ → ⟨Build ∥ Test⟩ → QA
@@ -27,7 +27,7 @@ Arch 是钻石的分叉点：计划轨和测试轨从这里分开、**互相看�
 
 | 层 | 内容 | 状态 |
 |---|---|---|
-| **L0–L5** | schema、状态机、闸门、租约、崩溃恢复、Codex TUI 托管、原生选择器裁决、对抗轮、rubric 出分 | ✅ 全部离线验收 + 真机各走通过（2026-07-28 起逐层） |
+| **L0–L5** | schema、状态机、闸门、租约、崩溃恢复、纯 App Server 托管、人工交互、对抗轮、rubric 出分 | ✅ 1057 项基线测试 + App Server 协议与浏览器验收 |
 | **环 v3** | 八阶段钻石环、两轨互盲、QA 三攻、打回重走、并行座位 | ✅ 六批落地（2026-08-09），CHG-001 真机沿新环走到 QA、又按打回重走 |
 | **项目图谱** | 黑洞 + 土星环的 3D 依赖图，Arch 图纸对账叠影 | ✅ 真机验过（2026-08-12）；判据的语义边界还有一个待拍板 |
 | **自举** | 用 StagePass 跑一个 Change，产出 StagePass 自己的下一个改动 | ❌ 还没发生 —— 这是「能不能叫 bootstrap」的判据 |
@@ -56,8 +56,8 @@ StagePass 对这些各有一条硬规则：
    "这一轮没提到"和"这一轮说它已经修好了"在库里是两种不同的行。
 2. **闸门读证据，不读模型的自我评价。** 阶段节点变绿只因为**账本里有人批准过它**，
    不是因为哪一轮报告说没问题。
-3. **裁决只有一条路径。** 人的选择发生在 Codex 自己画的 elicitation 选择器里。
-   网页上没有、也不会有一个能推动闸门的按钮。
+3. **裁决只有一条路径。** App Server 的审批和 elicitation 会出现在 StagePass
+   interaction sheet，但答案仍进入同一套用例与账本。渲染本身不能推动闸门。
 4. **写代码的和写测试的互盲。** 两轨只共享 Arch 契约，在 QA 对撞；QA 用变异攻击
    验测试本身（不改行为的变异必须全绿、还原改动必须变红）。
 
@@ -68,7 +68,7 @@ StagePass 对这些各有一条硬规则：
 盘完全系统，这样的面有七个，其中五个已经烧过至少一次。
 
 于是模型的输出里现在只允许有**枚举里的选择**和**散文**。标识符一律不经模型的嘴：
-线程 id 从 rollout 的 `parent_thread_id` 自己认；插件的三个工具没有一个收标识符；
+线程血缘从 `thread/read` 自己认；插件的三个工具没有一个收标识符；
 反方要判的 rubric 按 `1..N` 编号，缺号或重号整份作废，而不是错位挂到别的标准上。
 
 ---
@@ -96,11 +96,11 @@ StagePass 对这些各有一条硬规则：
 | | 干什么 | **明确不干什么** |
 |---|---|---|
 | **状态机与闸门**（`src/domain`、`src/store`、`src/app`） | 状态转移、gate、fence、租约、恢复；组题、验答案、推进状态 | **不渲染任何东西** |
-| **终端面板**（`src/web`） | 看和启动：阶段环、证据、图谱；**托管 Codex TUI 真正运行在里面的那块 pty** | **不承载任何业务决策入口** |
+| **App Server 工作台**（`src/web`） | 看和启动：阶段环、证据、图谱、归一化 Codex snapshot/event 和人工交互 | 从模型正文推断闸门状态，或绕过 StagePass 用例 |
 | **Codex 插件**（`src/plugin`） | 通过 MCP `elicitation` 向人提问，把答案发回来 | 不决策、不组题、不判断合法性 |
 
-**终端面板是宿主，不是入口。** 你在浏览器里看到的执行过程和选择界面，每一个像素
-都是 `codex` 二进制自己用转义序列画的；StagePass 只把字节从 pty 搬到 xterm.js。
+**面板是投影，不是决策权威。** StagePass 物化 App Server 的 thread/turn/item 状态，
+再用自己的美术系统渲染；原始 JSON-RPC id 和 payload 不进入浏览器。
 
 这条不靠自觉。`src/architecture.test.ts` 里的常驻护栏任何时候都不许红，起家的五条：
 
@@ -108,8 +108,8 @@ StagePass 对这些各有一条硬规则：
 2. 下层不许 import 上层；
 3. 没有零调用者的 export；
 4. 一个概念一个名字（阶段名不许有别名）；
-5. **`src/web/` 里不许出现 `TextDecoder` / `.toString(` / `JSON.parse` /
-   `String.fromCharCode`** —— 把 pty 字节变成字符串的四条路，一条都不留。
+5. **生产运行时没有 PTY/TUI/私有记录路径。** 常驻扫描拒绝 `node-pty`、xterm、
+   `/pty/`、rollout 和 `state_5.sqlite`；只有 App Server client 可以启动 Codex。
 
 后来又长出了几条**棘轮**：单函数行数、单模块依赖闭包占比、配料单占全树比例 ——
 现行违例逐个钉死在例外表里，只许缩、不许涨。图谱那批路由就是被闭包棘轮打红后
@@ -117,8 +117,8 @@ StagePass 对这些各有一条硬规则：
 
 ### 看状态不该有副作用
 
-打开一个阶段的终端不会起进程；进图谱不写库、不碰 Codex。**看一眼就是看一眼。**
-要起进程的按钮明确写着"开一个终端"。
+读取 snapshot、打开图谱都不写库，也不启动 turn。**看一眼就是看一眼。**
+打开 Codex thread 和开始 turn 是两个不同动作。
 
 ---
 
@@ -126,17 +126,13 @@ StagePass 对这些各有一条硬规则：
 
 ```bash
 pnpm install
-pnpm check            # 1209 个测试 + 严格 typecheck，全离线，不需要 Codex
+pnpm check            # 严格 typecheck + 完整离线测试
 ```
 
 需要真 Codex 的：
 
 ```bash
-pnpm panel                 # 终端面板：阶段环 + 图谱 + 每阶段一个终端
-pnpm verify:rebuild        # L0–L2 整条链路（离线）
-pnpm verify:decision       # L3：组题 → 选择器 → 人选 → 闸门前进
-pnpm verify:round          # L4：真跑一轮红蓝对抗
-pnpm verify:rubric-round   # L5：跑一轮，并且给 rubric 出分
+pnpm panel -- --db /Users/zhanghr/.stagepass/panel.db --port 4173
 ```
 
 `pnpm panel` 的参数全都是可选的：
@@ -152,29 +148,18 @@ node --import tsx scripts/panel.ts \
 思考预算默认 `xhigh`：一轮对抗反正要几分钟起步，省那点预算换回一份判得更浅的结论
 不划算。不带 `--db` 会建一个临时库，可以随便点，不碰任何真数据。
 
-探针每个只回答一个关于 Codex 的事实问题，并把量到的东西打出来：
-
-```bash
-pnpm probe:pty        # elicitation 选择器在 pty 里能不能用？
-pnpm probe:elicit     # -a never 会不会静默 decline 掉 elicitation？（会）
-pnpm probe:sandbox    # read-only 与 workspace-write：哪一个会卡在审批上？
-pnpm probe:subagent   # 哪些线程拒绝来自父线程之外的输入？
-```
+Codex 升级后用 `pnpm schema:app-server` 生成本机精确协议 schema，再跑完整校验。
 
 ### 环境要求
 
-- **macOS。** node-pty 用预编译产物，`verify:decision` 走 `osascript`。其它平台
-  没有验证过，别假设能跑。
 - **Node 20+**（开发用的是 25.9）、**pnpm**。
-- **Codex CLI**（开发用的是 0.146.0）。L2 以上每一条命令都需要它。
+- **带 `app-server` 的 Codex CLI**（已在 0.147.0 验证）。
 
 ### 两个会咬人的坑
 
-**`-a never` 会掐断唯一的问人通道。** 它不只管 shell 审批 —— 它会让 Codex
-**自动 decline 掉 MCP 的 `elicitation/create`**。失败是静默的：回来一个格式完全
-合法的 `{"action":"decline"}`，和"人按了 Esc"一模一样。代码里这个值**在类型上已经
-不可表达**（`CodexInvocation.approval` 只接受 `"untrusted" | "on-request"`）。
-写注释叮嘱下一个人，不如让它编译不过。
+**只有 App Server 明确认定 thread missing 才能 detach binding。** timeout、断线或
+协议错误只能说明“暂时不可用”，不能说明“已经不存在”；混淆两者会把归档或短暂不可达
+的会话静默换成新线程。
 
 **子 Agent 的线程拒绝父线程之外的任何输入。** `codex resume <子Agent线程>` 起得来、
 MCP server 也照常加载，但一提交就是 `■ This sub-agent is controlled by its parent.
@@ -193,16 +178,17 @@ src/
   app/        用例层：问人、录需求、裁决、接受风险、新建与删除
   work/       长任务：job 租约、turn 循环、对抗轮次与 rubric 轮次的接线、git
   graph/      图谱引擎：真编译器解析依赖、判据、布局、配料单、图纸对账 —— 全部纯函数
-  codex/      调 Codex：invocation、TUI transport、rollout 解析、目录信任、归档
+  codex/      App Server JSON-RPC、session、history、stream projection、transport、
+              目录信任与归档策略
   plugin/     MCP 插件：唯一的写入是"记下人说了什么"
-  web/        终端面板：pty 会话、面板服务端、图谱 API（注入接线）、浏览器那半边
+  web/        App Server session registry、snapshot/SSE API、原生 renderer、
+              面板服务端、图谱 API 与浏览器那半边
   architecture.test.ts   常驻护栏
 docs/         PRD、BACKLOG、设计稿、交接。**PRD 是唯一权威，BACKLOG 是待办的唯一入口。**
-scripts/      panel、verify:*、probe:*、dump-rubrics、regen-prompt-golden
+scripts/      panel、plugin server、dump-rubrics、regen-prompt-golden
 ```
 
-生产代码 22644 行、66 个模块，测试 21606 行，面板前端另有 4355 行带类型检查的 JS。
-SQLite 是唯一权威 —— `changes` 表上有触发器，任何一次没有配套账本行的状态更新都会
+SQLite 是唯一业务权威 —— `changes` 表上有触发器，任何一次没有配套账本行的状态更新都会
 被数据库**当场**拒绝。
 
 有两样东西是逐字节钉死的，这是故意的：
@@ -216,6 +202,8 @@ SQLite 是唯一权威 —— `changes` 表上有触发器，任何一次没有�
 - [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) —— **唯一权威**，包括为什么重建
 - [`docs/BACKLOG.md`](docs/BACKLOG.md) —— 还没做的 + 为什么这么做，跨会话累积
 - [`docs/PLAN-2026-08-09-ring-v3.md`](docs/PLAN-2026-08-09-ring-v3.md) —— 环 v3：八条拍板 + 七批落地
+- [`docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md`](docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md) —— 纯 App Server 运行时与原生流契约
+- [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) —— 当前 App Server 行为契约
 - [`docs/superpowers/specs/2026-08-12-project-graph-3d-design.md`](docs/superpowers/specs/2026-08-12-project-graph-3d-design.md) —— 项目图谱的设计与判据
 - [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) —— 模型手抄标识符的七个面，以及每一个是怎么归零的
 

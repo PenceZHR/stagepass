@@ -1,5 +1,13 @@
 # PRD：StagePass 重建（2026-07-28）
 
+> **2026-08-15 分支覆盖说明：** 本文关于 Codex TUI、PTY、xterm、rollout 文件和
+> `state_5.sqlite` 的运行时决定，只描述原分支的历史基线。隔离分支
+> `codex/native-streaming-app-server` 已由
+> [`2026-08-15-app-server-native-streaming-design.md`](superpowers/specs/2026-08-15-app-server-native-streaming-design.md)
+> 覆盖为**纯 Codex App Server**：结构化 thread/turn/item 事件由 StagePass 原生渲染，
+> 人工审批和 MCP elicitation 在 StagePass interaction sheet 内回答；状态机、rubric、
+> gap、gate 与“必须由人裁决”的业务权威不变。两条运行时不在同一分支共存。
+
 > **全部代码重写。** 现有代码库不是基座，是参考资料。
 >
 > 本文取代 `STAGEPASS-ACTUAL-REQUIREMENTS.md` 中关于**架构与人工决策表面**的部分（§5.1 / §5.3 / §10.4）。产品要解决什么问题、目标用户是谁、十二个阶段各自要产出什么 —— 那份文档仍然有效，本文不重复。

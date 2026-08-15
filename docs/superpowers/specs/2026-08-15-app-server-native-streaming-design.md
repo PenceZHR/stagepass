@@ -120,7 +120,8 @@ stdout 分块和半行，按 request id 关联响应；stderr 只作诊断，不
 
 - 以 `(changeId, seat)` 注册 `AppServerSession`；seat 是 phase 或 `aside`；
 - 与 `BindingStore` 对接，保证一 seat 一 thread、一 thread 不被两个 seat 共享；
-- 提供 snapshot、subscribe、startTurn、steer、interrupt、respond、archive、close；
+- 提供 snapshot、subscribe、startTurn、steer、interrupt、respond 与 close；归档只由
+  人工批准后的 StagePass 用例触发，不暴露通用 Web 写端点；
 - `close` 只关闭当前订阅/会话对象，不杀共享 App Server 进程；
 - 服务关闭时统一关闭 App Server client。
 
@@ -137,7 +138,6 @@ PTY 端点被以下结构化端点取代：
 | `POST` | `/api/codex/steer` | 给当前 inProgress turn 追加方向 |
 | `POST` | `/api/codex/interrupt` | 中断当前 turn，保留 thread |
 | `POST` | `/api/codex/respond` | 回答审批、elicitation 或 tool input |
-| `POST` | `/api/codex/archive` | 仅在阶段批准后归档 thread |
 
 所有写端点先校验 Change、seat、thread/turn precondition 和 JSON body。响应使用现有
 `sendJson` 错误风格；协议错误有稳定 code，不把 stderr 或 token 暴露给浏览器。
@@ -241,7 +241,8 @@ thread 掩盖。
   渲染需求，但不得把 StagePass 私密配置写进日志。
 - stderr、RPC error 和命令输出进入 UI 前做长度限制与敏感串清理。
 - SSE 每个连接有关闭监听；浏览器离开即移除 subscriber。
-- replay、command output 与 reasoning 均有字节上限，超限显示截断事实。
+- 单项正文/输出上限 256 KiB；replay 同时受 512 事件和 2 MiB 上限，超限显示截断
+  或要求重新获取 snapshot。
 - 未知 server request 默认拒绝，不能自动批准。
 
 ## 9. 实施切片
