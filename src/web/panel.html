@@ -1195,6 +1195,14 @@ body::after {
  * 当前 Change 与阶段环随后完整落到纵向内容里。这样人仍控制“看哪个项目 / Change”
  * 的结构，而不会因为手机宽度丢掉阶段环或把名称拆成单字。
  */
+@media (max-width: 1180px) {
+  .status-facts > div { align-items: flex-start; }
+  .status-facts dd {
+    max-width: 68%; white-space: normal; overflow: visible;
+    text-overflow: clip; overflow-wrap: anywhere;
+  }
+}
+
 @media (max-width: 820px) {
   html, body { height: auto; min-height: 100%; }
   body { overflow-x: hidden; overflow-y: auto; }

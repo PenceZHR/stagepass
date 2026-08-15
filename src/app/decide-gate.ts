@@ -220,18 +220,18 @@ function staleAssessmentsNote(input: {
  * 卷走；Plan 那次 2 秒误判，真裁判照常派了子 Agent。两次人都是在**不知道磁盘上
  * 已经有成果**的情况下选的重跑。
  *
- * 只做知情，不做自动收编 —— 要不要认那份产出、怎么认，归人管。判据走 rollout
+ * 只做知情，不做自动收编 —— 要不要认那份产出、怎么认，归人管。判据走 App Server history
  * （认那条 turn 自己的提示词），和 transport 认轮同一份纪律。
  */
-function revivedTurnNote(input: {
+async function revivedTurnNote(input: {
   readonly turns: TurnStore;
   readonly sessions: AskSessions;
   readonly changeId: string;
   readonly phase: Phase;
-}): string {
+}): Promise<string> {
   const last = input.turns.latest(input.changeId, input.phase);
   if (!last || last.status !== "failed" || last.threadId === null) return "";
-  if (input.sessions.threadTurnEnded?.(last.threadId, 0, last.prompt) !== true) {
+  if (await input.sessions.threadTurnEnded?.(last.threadId, 0, last.prompt) !== true) {
     return "";
   }
   const why = (last.error ?? "原因不明").slice(0, 80);
@@ -246,7 +246,7 @@ export async function decideGate(input: {
   /** 现在能不能问人。判据在 `web/` 那层（它要看活进程和账本），这里只消费结论。 */
   cannotAskNow: (phase: Phase) =>
     { reason: string; busy: string; jobId?: string } | null;
-  launch: (input: { phase: Phase; prompt: string }) => void;
+  launch: (input: { phase: Phase; prompt: string }) => void | Promise<void>;
   /**
    * 「再来一轮」时续跑那一轮。**先关会话再跑** —— 那个阶段的终端这时还活着
    * （题就是送进去的），不关 `runRound` 会撞上 §6.5 规则 5 直接拒。这不是绕过
@@ -259,7 +259,9 @@ export async function decideGate(input: {
    * **只由批准触发**，别的地方一概不许调 —— 一个还没批准的阶段的线程被归档，
    * 下一次 resume 就会一起来就死，那正是这条路要收拾的事。
    */
-  onApproved: (input: { phase: Phase; threadId: string }) => void;
+  onApproved: (
+    input: { phase: Phase; threadId: string },
+  ) => void | Promise<void>;
   /** 一个阶段最多跑几轮。跑满之后把收敛数据摊出来，**不拦人** —— 阻断归人管。 */
   roundBudget: number;
   timeoutMs: number;
@@ -333,7 +335,7 @@ export async function decideGate(input: {
         ledger: changes.ledger(changeId), upstream: upstreamOf(phase, graph),
       })
       // 上一轮可能死而复生（判了失败、线程后来跑完了）—— 人选重跑之前要知道。
-      + revivedTurnNote({
+      + await revivedTurnNote({
         turns: new TurnStore(database), sessions, changeId, phase,
       })
       + summariseConvergence({
@@ -383,7 +385,7 @@ export async function decideGate(input: {
 
   const askPrompt = launchAskPrompt("它会把 StagePass 的问题交给我来选。",
     "不要替我做决定，不要解释我该选什么，调用完就停下。");
-  input.launch({ phase, prompt: askPrompt });
+  await input.launch({ phase, prompt: askPrompt });
 
   const waited = await waitForAnswer({
     database, questions, sessions, changeId, phase, questionId,
@@ -495,7 +497,7 @@ export async function decideGate(input: {
     && (outcome as { action?: unknown }).action === "approve"
   ) {
     const bound = new BindingStore(database).find(changeId, phase);
-    if (bound?.status === "bound") input.onApproved({ phase, threadId: bound.threadId });
+    if (bound?.status === "bound") await input.onApproved({ phase, threadId: bound.threadId });
   }
 
   /*

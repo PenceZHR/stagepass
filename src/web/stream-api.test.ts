@@ -7,6 +7,7 @@ import type {
   AppServerNotification,
   AppServerRequest,
 } from "../codex/app-server-protocol";
+import { AppServerHistory } from "../codex/app-server-history";
 import type { AppServerConnection } from "../codex/app-server-session";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { StreamEvent } from "../codex/stream-state";
@@ -83,6 +84,7 @@ async function withStreamPanel(body: (input: {
   new ChangeStore(database).create("CHG-1", { projectId: "PRJ-1" });
   const connection = new FakeConnection();
   const host = new AppServerSessionHost(connection);
+  const history = new AppServerHistory(connection);
   const streams = new ObservedStreamSessions({
     database,
     host,
@@ -93,14 +95,13 @@ async function withStreamPanel(body: (input: {
   const { server, sessions } = createPanelServer({
     database,
     streams,
-    session: { cwd: "/repo" },
+    history,
+    appServerTransport: () => ({
+      async runTurn() {
+        throw new Error("background turn is outside stream API tests");
+      },
+    }),
     recoverEveryMs: 3_600_000,
-    start: (() => { throw new Error("PTY must not start in stream API tests"); }) as never,
-    archive: {
-      availability: () => ({ kind: "missing", reason: "no-row" }),
-      archive: () => {},
-      unarchive: () => {},
-    },
     repo: {
       dirtyPaths: () => [],
       commitAll: () => null,
@@ -116,6 +117,7 @@ async function withStreamPanel(body: (input: {
   try {
     await body({ base, connection, host, streams });
   } finally {
+    history.dispose();
     sessions.closeAll();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -16,6 +16,7 @@ import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
 import { AppServerClient } from "../src/codex/app-server-client";
+import { AppServerHistory } from "../src/codex/app-server-history";
 import {
   AppServerCodexTransport,
   AppServerSessionHost,
@@ -247,14 +248,14 @@ if (
 }
 
 /*
- * git 那一层建在这里、两处共用：pty 会话（提交产出）和图谱（ls-files）拿到的
+ * git 那一层建在这里、两处共用：App Server 会话（提交产出）和图谱（ls-files）拿到的
  * 必须是同一套 —— 两套各自 exec git 不会错，但「哪条路走的哪个 git」就说不清了。
  */
 const repo = createRepoOps();
 
 /*
  * 这条分支的 Codex 运行时只有这一份 App Server 进程。所有阶段 thread 都复用它，
- * 反向的审批/elicitation 再按 threadId 路由回各自 session；绝不为每一轮另起 TUI。
+ * 反向的审批/elicitation 再按 threadId 路由回各自 session；绝不为每一轮另起进程。
  */
 let appServerHost: AppServerSessionHost | null = null;
 const appServerClient = AppServerClient.spawn({
@@ -272,6 +273,7 @@ const appServerClient = AppServerClient.spawn({
 });
 appServerHost = new AppServerSessionHost(appServerClient);
 await appServerClient.initialize();
+const history = new AppServerHistory(appServerClient);
 const streamSessions = new StreamSessions({
   database,
   host: appServerHost,
@@ -293,6 +295,7 @@ const { server, sessions } = createPanelServer({
    */
   graph: createGraphApi({ database, repo }),
   streams: streamSessions,
+  history,
   appServerTransport: ({ cwd, config, timeoutMs }) =>
     new AppServerCodexTransport(appServerHost!, {
       cwd,
@@ -303,58 +306,18 @@ const { server, sessions } = createPanelServer({
       ...(model === undefined ? {} : { model }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     }),
-  session: {
-    // Where Codex runs. The repository itself, because a phase's work is about
-    // this tree -- unlike the probes, which use an empty directory on purpose.
-    cwd: process.cwd(),
-    /*
-     * `workspace-write`, not `read-only` (PRD §6.6, 2026-07-29 更正).
-     *
-     * 每个阶段的活儿都要产出文件 —— 设计阶段产文档，Build/Fix 产代码。read-only
-     * 的定义就是模型不能写，于是它想写就**必然**要升级审批，整个 turn 停在那儿
-     * 等人按 Enter：实测二十分钟 rollout 一个字节没长，没有报错、没有任何迹象。
-     *
-     * `pnpm probe:sandbox` 是这条的判据：同一提示词、同一 `-a on-request`，只变
-     * `-s`，turn 跑起来后一个键都不按 —— read-only 等满 150s 没写成，
-     * workspace-write 26.1s 写成了且没弹过任何审批。
-     *
-     * **代价是真的**：这样 Codex 能改工作区里的任何文件，包括源码。"设计阶段不
-     * 碰代码"从此不由沙箱保证，只是个约定。工作区外的写和网络仍然要升级审批。
-     *
-     * 别为了"更安全"把它改回 read-only —— 那不是更安全，那是让每个 turn 都卡住。
-     */
-    sandbox: "workspace-write",
-    // `never` 会让 Codex 自动 decline 掉 elicitation，而那是唯一的问人通道
-    // （PRD §6.6）。类型上已经不可表达，这里写出来是为了让人别去找那个值。
-    approval: "on-request",
-    /*
-     * **默认 xhigh，可以用 `--effort` 调低。**
-     *
-     * 原来写死 `low`，而且是写死在这个脚本里 —— 面板上看不见、命令行也改不了。
-     * 用户 2026-08-03：「默认的模型是 so low，但是我要的是 so ultra high。」
-     *
-     * 默认往高了取，是因为这套东西的产出要被人当依据用：一轮对抗几分钟起步，
-     * 省那点思考预算换回一份判得更浅的结论，不划算。要省的人显式降。
-     */
-    reasoningEffort: effort,
-    /*
-     * **不给就不传 `-m`**，让 Codex 用它自己的默认 —— 在这里写死一个模型名，
-     * 等于把「哪个模型可用」这件事冻结在这个脚本里，而它变得比这个仓库快。
-     */
-    ...(model === undefined ? {} : { model }),
-  },
 });
 
 // Codex 的状态事实已经能判定时，先把悬空 binding 收掉，再让任何 HTTP 请求进来。
 // unavailable 只报告，不写库；真正 archived 的线程留到用户打开时再解开。
-const bindingRecovery = sessions.reconcileBindings();
+const bindingRecovery = await sessions.reconcileBindings();
 
 let stopping = false;
 const stop = async (registry: PanelSessions): Promise<void> => {
   if (stopping) return;
   stopping = true;
   registry.closeAll();
-  appServerHost?.closeAll();
+  history.dispose();
   server.close();
   await appServerClient.close(1_000);
   database.close();
@@ -367,7 +330,7 @@ process.on("SIGTERM", () => { void stop(sessions); });
  * **只绑回环。**（BACKLOG §3.4「面板无鉴权 0 处」的那一半）
  *
  * `listen(port)` 不给 host 时 Node 绑的是**所有网卡** —— 而这个面板零鉴权，
- * 它能派轮、能改 rubric、能删 Change、能把字节写进一个跑着 Codex 的 pty。
+ * 它能派轮、能改 rubric、能删 Change、也能控制一个正在运行的 Codex turn。
  * 同一个咖啡馆 wifi 里的任何人都够得着，共用一个真库之后这件事更值钱。
  *
  * 鉴权本身没做（也不该急着做：用户数 1 是设计不是缺陷，§1.1）。但「不做鉴权」

@@ -52,7 +52,7 @@ export function createProject(input: {
   if (name === "") return { kind: "name_required" };
 
   /*
-   * 三条都查，因为错在这里发现比在 pty 里发现便宜得多：必须是绝对路径（相对路径
+   * 三条都查，因为错在这里发现比派出 Codex turn 后发现便宜得多：必须是绝对路径（相对路径
    * 相对谁？服务端的 cwd 吗 —— 那就又回到那个洞了）、必须存在、必须是目录。
    */
   const rawPath = input.path.trim();

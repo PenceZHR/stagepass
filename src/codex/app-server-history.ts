@@ -55,7 +55,7 @@ export interface ThreadHistory {
 
 export type ThreadAvailability = "open" | "archived" | "missing";
 
-export class AppServerHistoryError extends Error {
+class AppServerHistoryError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
     this.name = "AppServerHistoryError";

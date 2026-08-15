@@ -1,54 +1,18 @@
-import Database from "better-sqlite3";
-import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import type {
+  AppServerHistory,
+  ContextUsage,
+  ThreadHistory,
+} from "./app-server-history";
 
-import {
-  allTextIn, contextUsageOf, findLastCompletedTurn, lineageOf, parseRollout,
-  threadIdFromRolloutName, userMessagesIn, type ContextUsage,
-} from "./rollout";
+type HistoryReader = Pick<AppServerHistory, "readThread">;
 
-/**
- * Finding what each sub-agent actually said.
- *
- * A round's judge spawns red and blue, and StagePass reads each of their own
- * session files rather than the judge's account of them. That is the difference
- * between an adversarial round and a summary of one: a judge that relayed blue
- * could soften it, and a softened attack is the thing this mechanism exists to
- * prevent.
- *
- * ## 取证只按线程 id，不碰 Codex 的私有库
- *
- * rollout 的**文件名里就带着 thread id**，所以读一方说了什么只要扫会话目录。
- * 而「这两条线程属于那一轮」由 StagePass **自己按血缘认**（`childThreadsOf`）——
- * 它读的是 rollout 里 `session_meta` 的 `parent_thread_id`。
- *
- * 这条路走过两版。原来从 `state_5.sqlite` 的 `agent_path` 认，而那一列只有原生
- * `spawn_agent({task_name})` 会设，**那个工具不是每个会话都有**（2026-07-30 实测），
- * 没有它的会话里每个阶段的每一轮都跑不了。于是改成**让裁判把两个 `agent_id` 报进
- * 答案** —— 那修好了跑不了的问题，代价是把一个 36 字符的 UUID 放进了模型必须手抄
- * 的文本里。抄错一个字符整轮作废，而正反两方说的话谁也看不到（`02059a8` 实测过）。
- *
- * 第三版两头都不占：`parent_thread_id` 说的是线程血缘而不是 Agent 的名字，
- * 2026-08-02 在 100 条真线程上数过 **76/76 有值**（同一批里 `agent_path` 是 1/76）。
- * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
- *
- * ## 还剩一处读那个库：进度那一屏
- *
- * 「这一轮派生了几个子 Agent」只能从 `thread_spawn_edges` 数。它是**尽力而为**的：
- * 读不到就说不知道，界面照实说「还看不出走到哪一步」，没有任何东西建立在它之上。
- * 注意它**不看 `agent_path`** —— 数个数就够，而那一列可能是空的。
- */
-
-/** 裁判报了这条线程，可是会话目录里找不到它。 */
 export class SubAgentNotFoundError extends Error {
   constructor(readonly threadId: string) {
-    super(`no rollout for thread ${threadId}`);
+    super(`no App Server thread ${threadId}`);
     this.name = "SubAgentNotFoundError";
   }
 }
 
-/** 找到了，但它一轮都没跑完 —— 半截的话不是这一方的结论。 */
 export class SubAgentUnfinishedError extends Error {
   constructor(readonly threadId: string) {
     super(`thread ${threadId} has not completed a turn`);
@@ -56,232 +20,64 @@ export class SubAgentUnfinishedError extends Error {
   }
 }
 
-export interface SubAgentLookup {
-  /**
-   * 这条线程派生了几个子 Agent。**只数个数，不看 `agent_path`** —— 那一列可能是空的
-   * （见文件开头），而进度那一屏要的只是「红方在写」还是「蓝方在挑」。
-   */
-  spawnCount(parentThreadId: string): number;
+async function required(
+  history: HistoryReader,
+  threadId: string,
+): Promise<ThreadHistory> {
+  const found = await history.readThread(threadId);
+  if (found === null) throw new SubAgentNotFoundError(threadId);
+  return found;
 }
 
-const DEFAULT_STATE_DB = join(homedir(), ".codex", "state_5.sqlite");
-
-export function createSubAgentLookup(
-  stateDbPath: string = DEFAULT_STATE_DB,
-): SubAgentLookup {
-  return {
-    spawnCount(parentThreadId) {
-      // Read-only, and opened per call: this is somebody else's database and
-      // holding it open would mean holding a lock on it.
-      const database = new Database(stateDbPath, { readonly: true });
-      try {
-        return (database.prepare(
-          "SELECT COUNT(*) AS n FROM thread_spawn_edges WHERE parent_thread_id = ?",
-        ).get(parentThreadId) as { n: number }).n;
-      } finally {
-        database.close();
-      }
-    },
-  };
+/** Last complete model answer from a child thread. */
+export async function readThreadTranscript(input: {
+  readonly history: HistoryReader;
+  readonly threadId: string;
+}): Promise<string> {
+  const found = await required(input.history, input.threadId);
+  if (found.lastCompletedText === null) {
+    throw new SubAgentUnfinishedError(input.threadId);
+  }
+  return found.lastCompletedText;
 }
 
-/**
- * 一条线程自己说的最后一句完整的话，**按线程 id 找**。
- *
- * ## 为什么这条取代了按 `agent_path` 认红蓝
- *
- * 那一列只有原生 `spawn_agent({task_name})` 会设，而**那个工具不是每个 Codex 会话
- * 都有**（2026-07-30 实测：同一天同一台机器，几小时前有、后来没有）。没有它的会话里
- * 每个阶段的每一轮都跑不了，症状是 `no sub-agent at /root/red`。
- *
- * 中间有过一版「让裁判把两个 `agent_id` 报进答案」（`readAgents`），而那正是
- * 手抄面 #1：36 字符的 UUID 抄错一个字这一轮就作废，实测栽过（`02059a8` 把自己
- * 的线程报成了子 Agent）。**现在两条都不走了** —— 血缘写在 rollout 的
- * `session_meta.parent_thread_id` 里（CHG-003 真数据 76/76 有值），
- * StagePass 自己认，模型手上一个标识符都没有。`readAgents` 连同它的守卫已拆。
- *
- * ## 顺带：不再碰 Codex 的私有库
- *
- * **rollout 文件名里就带着 thread id**，所以这条路只扫会话目录。上面那段关于
- * 「如果 Codex 改了表名这里就会坏」的依赖，对轮次这条路已经不存在了。
- *
- * ## 找不到就抛，不返回空
- *
- * 空字符串会被上游读成「这一方什么都没说」，而那和「找不到」是两件事 —— 后者必须
- * 大声失败。
- */
-export function readThreadTranscript(input: ThreadLookup): string {
-  const outcome = findLastCompletedTurn(rolloutOf(input));
-  if (!outcome) throw new SubAgentUnfinishedError(input.threadId);
-  return outcome.text;
+/** All user and agent prose that the child thread received or produced. */
+export async function readThreadWholeText(input: {
+  readonly history: HistoryReader;
+  readonly threadId: string;
+}): Promise<string> {
+  return (await required(input.history, input.threadId)).allText;
 }
 
-/**
- * 一条线程**收到过**的全部文本 —— 它说的，和它被告知的。
- *
- * ## 和上面那个的分工
- *
- * `readThreadTranscript` 给「它说了什么」，这个给「它经历了什么」。两个都要，是因为
- * 有一个问题只有后者答得了：**契约到底送到没有。** 契约在它被问到的那一段里，
- * 而「它说了什么」里当然找不到。
- *
- * 「反方没答」和「反方压根没收到」今天在库里长得一模一样，而人对这两件事该做的
- * 完全不同 —— 前者去看反方，后者去看裁判有没有转达。见
- * docs/DESIGN-rubric-delivery-2026-07-31.md §3.3。
- *
- * ## 半截的一轮也算
- *
- * 这里**不要求** turn 跑完（`readThreadTranscript` 要求）。问的是「收到过吗」，
- * 而一条被问了却还没答完的线程确实收到过。
- */
-export function readThreadWholeText(input: ThreadLookup): string {
-  return allTextIn(rolloutOf(input));
-}
-
-/**
- * 这条线程上打进去的话，按先后。**「谁开的口」那一问**（`userMessagesIn`）。
- *
- * ## 「读不出来」和「一句都没有」必须分开
- *
- * 返回 `null` = 这条线程的 rollout 读不到（文件不在、Codex 换了格式、权限没了）；
- * 返回 `[]` = 读到了，里面确实一句都没有。
- *
- * 原来两种都返回 `[]`，而 `converge-brief` 拿它判「人开过口没有」—— 于是一次
- * 读取失败会被说成「你还没在窗口里说过话」，人对着满屏自己的对话，每按一次都
- * 得到同一句，而任何地方都没有第二个诊断。这道闸是「不许凭空造需求」的地基，
- * 一次读不到就把它静默解除掉，正是这棵树最防的那种失败。
- */
-export function readThreadUserMessages(input: ThreadLookup): string[] | null {
+/** User inputs in order; null means history was not safely readable. */
+export async function readThreadUserMessages(input: {
+  readonly history: HistoryReader;
+  readonly threadId: string;
+}): Promise<readonly string[] | null> {
   try {
-    return userMessagesIn(rolloutOf(input));
+    return (await required(input.history, input.threadId)).userMessages;
   } catch {
     return null;
   }
 }
 
-/**
- * 这条线程派生的子 Agent，**按出生先后排**。
- *
- * ## 为什么顺序就是身份
- *
- * 裁判被明确要求「一个跑完再派下一个，不要并行」（`domain/round.ts` 的
- * `judgePrompt`），所以先出生的是红方、后出生的是蓝方。这不是约定俗成的猜测：
- * 出生时刻是每条线程自己 `session_meta` 里写着的事实。
- *
- * ## 一条线程可能有两个 rollout 文件
- *
- * `resume` 有时会另起一个文件（2026-08-02 在真目录里见过同一个 id 出现两次）。
- * 所以**按 thread id 去重**，取它最早的那次出生时刻 —— 认的是线程，不是文件。
- *
- * （这段原来举的例子是「补问会 resume 蓝方那条线程」—— 那条机制 2026-08-03 被
- * Codex 封死了：子 Agent 线程拒绝外部输入（`domain/round.ts` 那段）。机制死了，
- * 但「一个 id 两个文件」这个现象本身与谁去 resume 无关，去重照旧要做。）
- *
- * ## 只读文件头
- *
- * 要的东西全在第一行的 `session_meta` 里，而一个会话目录轻易上百个文件、每个几 MB。
- * 实测那一行最大 19.3KB（`base_instructions` 占了大头），所以 256KB 绰绰有余。
- */
-export function childThreadsOf(input: {
-  parentThreadId: string;
-  /** 会话目录里所有的 rollout 路径。注入是为了离线证。 */
-  list?: () => readonly string[];
-  read?: (path: string) => string;
-}): string[] {
-  const list = input.list ?? (() => walkRollouts(DEFAULT_SESSIONS));
-  const read = input.read ?? readHead;
-  const wanted = input.parentThreadId.trim().toLowerCase();
-
-  /** thread id -> 它最早的出生时刻。同一条线程两个文件时取早的那个。 */
-  const born = new Map<string, string>();
-  for (const path of list()) {
-    let lineage;
-    try {
-      lineage = lineageOf(parseRollout(read(path)));
-    } catch {
-      continue; // 文件正被写、或者刚被删 —— 扫描不该为此整个失败
-    }
-    if (!lineage || lineage.parentThreadId !== wanted) continue;
-    const at = lineage.startedAt ?? "";
-    const seen = born.get(lineage.threadId);
-    if (seen === undefined || at < seen) born.set(lineage.threadId, at);
-  }
-
-  return [...born.entries()]
-    .sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([threadId]) => threadId);
+/** Spawn lineage in the exact order exposed by the parent App Server history. */
+export async function childThreadsOf(input: {
+  readonly history: HistoryReader;
+  readonly parentThreadId: string;
+}): Promise<readonly string[]> {
+  return (await required(input.history, input.parentThreadId)).childThreadIds;
 }
 
-/** 只读前 256KB —— 理由见 `childThreadsOf`。 */
-function readHead(path: string): string {
-  const handle = openSync(path, "r");
+/** Latest request context usage cached from the official token usage event. */
+export async function threadContextUsage(input: {
+  readonly history: HistoryReader;
+  readonly threadId: string;
+}): Promise<ContextUsage | null> {
   try {
-    const buffer = Buffer.alloc(HEAD_BYTES);
-    const read = readSync(handle, buffer, 0, HEAD_BYTES, 0);
-    return buffer.subarray(0, read).toString("utf-8");
-  } finally {
-    closeSync(handle);
-  }
-}
-
-const HEAD_BYTES = 256 * 1024;
-
-interface ThreadLookup {
-  threadId: string;
-  /** 会话目录里所有的 rollout 路径。注入是为了离线证。 */
-  list?: () => readonly string[];
-  read?: (path: string) => string;
-}
-
-/** 找到这条线程的 rollout 并解析。**找不到就抛，不返回空** —— 见上面那段。 */
-function rolloutOf(input: ThreadLookup) {
-  const list = input.list ?? (() => walkRollouts(DEFAULT_SESSIONS));
-  const read = input.read ?? ((path: string) => readFileSync(path, "utf-8"));
-  const wanted = input.threadId.trim().toLowerCase();
-
-  const path = list().find((each) =>
-    threadIdFromRolloutName(each.slice(each.lastIndexOf("/") + 1)) === wanted);
-  if (path === undefined) {
-    throw new SubAgentNotFoundError(input.threadId);
-  }
-  return parseRollout(read(path));
-}
-
-/**
- * 这条线程离上下文墙多远（§3.3·11）。
- *
- * 找不到线程、或 rollout 里还没有 `token_count`，都返回 null。和
- * `readThreadTranscript` **抛错**的理由正相反：那边一个空字符串会被上游当成
- * 「这一方什么都没说」写进下一轮提示词；这边 null 只是界面少显示一行 ——
- * 「说不出」照实说不出，不该为此把进度端点带崩。
- */
-export function threadContextUsage(input: ThreadLookup): ContextUsage | null {
-  try {
-    return contextUsageOf(rolloutOf(input));
+    return (await required(input.history, input.threadId)).contextUsage;
   } catch (error) {
     if (error instanceof SubAgentNotFoundError) return null;
     throw error;
   }
-}
-
-const DEFAULT_SESSIONS = join(homedir(), ".codex", "sessions");
-
-/** 会话目录里所有的 rollout 文件。`tui-transport` 那边是同一个走法。 */
-function walkRollouts(root: string): string[] {
-  const found: string[] = [];
-  const walk = (directory: string): void => {
-    let entries: string[];
-    try {
-      entries = readdirSync(directory);
-    } catch {
-      return; // 还没建出来，第一次跑之前是正常的
-    }
-    for (const entry of entries) {
-      const path = join(directory, entry);
-      if (threadIdFromRolloutName(entry)) found.push(path);
-      else if (!entry.includes(".")) walk(path);
-    }
-  };
-  walk(root);
-  return found;
 }

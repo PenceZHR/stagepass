@@ -151,7 +151,7 @@ const item = (
   title: kind === "commandExecution" ? "pnpm check" : kind,
   text,
   output,
-  data: {},
+  truncated: false,
 });
 
 const snapshot = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -211,6 +211,10 @@ function fixture(initial: Record<string, unknown>) {
 
 const tick = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0); });
 
+function descendants(root: FakeElement): FakeElement[] {
+  return root.children.flatMap((child) => [child, ...descendants(child)]);
+}
+
 describe("StagePass-native Codex stream", () => {
   it("appends text deltas to the existing semantic item node", async () => {
     const page = fixture(snapshot({
@@ -250,6 +254,15 @@ describe("StagePass-native Codex stream", () => {
     assert.deepEqual(work.map((child) => child.dataset.kind), [
       "reasoning", "commandExecution", "fileChange", "mcpToolCall",
     ]);
+  });
+
+  it("shows when App Server output was bounded", async () => {
+    const page = fixture(snapshot({
+      items: [{ ...item("C", "commandExecution", "", "partial"), truncated: true }],
+    }));
+    await page.controller.open();
+
+    assert.match(page.surface.textContent, /已截断/);
   });
 
   it("renders sub-agent activity as named StagePass work instead of an unknown item", async () => {
@@ -344,6 +357,34 @@ describe("StagePass-native Codex stream", () => {
     assert.match(page.interaction.textContent, /git status --short/);
   });
 
+  it("never turns an untrusted MCP elicitation URL into an executable link", async () => {
+    const page = fixture(snapshot());
+    await page.controller.open();
+    page.setSnapshot(snapshot({
+      interactions: [{
+        id: "interaction-unsafe",
+        kind: "mcpElicitation",
+        method: "mcpServer/elicitation/request",
+        status: "pending",
+        params: { mode: "url", url: "javascript:globalThis.compromised=true" },
+      }],
+    }));
+    page.sources[0]!.emit("interaction.requested", {
+      seq: 1,
+      kind: "interaction.requested",
+      threadId: "THREAD-1",
+      interactionId: "interaction-unsafe",
+      payload: {},
+    });
+    await tick();
+
+    assert.equal(
+      descendants(page.interaction).some((element) => element.tagName === "A"),
+      false,
+    );
+    assert.match(page.interaction.textContent, /不安全|无法打开/);
+  });
+
   it("removes xterm and the browser PTY path from the panel", () => {
     const root = join(process.cwd(), "src", "web");
     const html = readFileSync(join(root, "panel.html"), "utf8");
@@ -362,5 +403,6 @@ describe("StagePass-native Codex stream", () => {
     assert.match(html, /@media \(max-width: 820px\)[\s\S]*\.columns, \.columns\.collapsed \{[\s\S]*display: block/);
     assert.match(html, /@media \(max-width: 820px\)[\s\S]*#orbit-view \{[\s\S]*grid-template-columns: 1fr/);
     assert.match(html, /@media \(max-width: 820px\)[\s\S]*\.col\.stage \{[\s\S]*min-height:/);
+    assert.match(html, /@media \(max-width: 1180px\)[\s\S]*\.status-facts dd \{[\s\S]*overflow-wrap: anywhere/);
   });
 });

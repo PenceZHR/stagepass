@@ -18,7 +18,7 @@ import type { RepoOps } from "../work/repo";
  * 所以这里自成一个模块，panel-server 只认一个注入的函数签名（`PanelOptions.graph`），
  * 接线在入口（scripts/panel.ts）—— archive / trust / repo 全是这个形状。
  *
- * **看图谱是只读动作**（「看状态不该有副作用」）：不起 pty、不碰 Codex、
+ * **看图谱是只读动作**（「看状态不该有副作用」）：不启动 turn、不碰 Codex、
  * 不推任何闸门 —— 唯一的写是人亲手勾目录那条 POST，写的也只是勾选本身。
  *
  * 错误全是 JSON `{ error }`，fail-loud：路径没填、项目不存在、不是 git 仓库，

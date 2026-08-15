@@ -29,7 +29,9 @@ import {
  * 起一个新会话去问人，带上这次要说的提示词。**会话怎么起是 `web/` 那层的事** ——
  * 这一层不知道 argv、不知道插件怎么注册，也就不会被那些细节绑住。
  */
-export type LaunchAsk = (input: { phase: Phase; prompt: string }) => void;
+export type LaunchAsk = (
+  input: { phase: Phase; prompt: string },
+) => void | Promise<void>;
 
 export type WaiveOutcome =
   /** 没有这个 Change。调用者翻成 404。 */
@@ -122,7 +124,7 @@ export async function waive(input: {
 
   const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
     "不要替我做决定，不要评价这些风险，调用完就停下。");
-  input.launch({ phase, prompt: askPrompt });
+  await input.launch({ phase, prompt: askPrompt });
 
   const waited = await waitForAnswer({
     database, questions, sessions, changeId, phase, questionId,

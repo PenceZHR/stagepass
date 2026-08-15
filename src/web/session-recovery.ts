@@ -1,8 +1,7 @@
+import { ensureResumable, type ArchiveOps } from "../codex/archive";
 import {
-  ensureResumable, type ArchiveOps,
-} from "../codex/archive";
-import {
-  BindingStore, type BoundThread,
+  BindingStore,
+  type BoundThread,
 } from "../store/binding-store";
 
 export interface BindingRecoveryReport {
@@ -24,61 +23,55 @@ type RecoveryBindings = Pick<
 >;
 
 function detachBinding(bindings: RecoveryBindings, binding: BoundThread): void {
-  if (binding.kind === "round") {
-    bindings.detach(binding.changeId, binding.phase);
-  } else {
-    bindings.detachAside(binding.changeId);
-  }
+  if (binding.kind === "round") bindings.detach(binding.changeId, binding.phase);
+  else bindings.detachAside(binding.changeId);
 }
 
-/**
- * 服务启动时只收拾已经确定不存在的线程。
- *
- * archived 留给真正打开它的那一刻解开；unavailable 只报告，绝不拿环境故障当丢失。
- */
-export function reconcileMissingBindings(
+function detail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Startup audit: detach only App Server-confirmed missing threads. */
+export async function reconcileMissingBindings(
   bindings: RecoveryBindings,
   archive: ArchiveOps,
-): BindingRecoveryReport {
+): Promise<BindingRecoveryReport> {
   const detached: BoundThread[] = [];
   const unavailable: { binding: BoundThread; reason: string }[] = [];
-
   for (const binding of bindings.listBound()) {
-    const availability = archive.availability(binding.threadId);
-    if (availability.kind === "missing") {
-      detachBinding(bindings, binding);
-      detached.push(binding);
-    } else if (availability.kind === "unavailable") {
-      unavailable.push({ binding, reason: availability.reason });
+    try {
+      const state = await archive.availability(binding.threadId);
+      if (state === "missing") {
+        detachBinding(bindings, binding);
+        detached.push(binding);
+      }
+    } catch (error) {
+      unavailable.push({ binding, reason: detail(error) });
     }
   }
-
   return { detached, unavailable };
 }
 
-/**
- * PTY 创建前的最后一道守卫。返回 fresh 时，真正的新 id 仍由现有 onThread 回调绑定。
- */
-export function prepareBoundThread(input: {
+/** Final public-protocol guard before resuming a durable binding. */
+export async function prepareBoundThread(input: {
   readonly binding: BoundThread;
   readonly archive: ArchiveOps;
   readonly detach: (binding: BoundThread) => void;
-}): PreparedThread {
+}): Promise<PreparedThread> {
   const { binding, archive, detach } = input;
-  const availability = archive.availability(binding.threadId);
-
-  if (availability.kind === "open") {
-    return { kind: "resume", threadId: binding.threadId };
+  let state;
+  try {
+    state = await archive.availability(binding.threadId);
+  } catch (error) {
+    return { kind: "refused", reason: detail(error) };
   }
-  if (availability.kind === "missing") {
+  if (state === "open") return { kind: "resume", threadId: binding.threadId };
+  if (state === "missing") {
     detach(binding);
     return { kind: "fresh", replacedThreadId: binding.threadId };
   }
-  if (availability.kind === "unavailable") {
-    return { kind: "refused", reason: availability.reason };
-  }
 
-  const outcome = ensureResumable(binding.threadId, archive);
+  const outcome = await ensureResumable(binding.threadId, archive);
   if (outcome === "already_open" || outcome === "unarchived") {
     return { kind: "resume", threadId: binding.threadId };
   }
@@ -86,17 +79,10 @@ export function prepareBoundThread(input: {
     detach(binding);
     return { kind: "fresh", replacedThreadId: binding.threadId };
   }
-  if (outcome === "unavailable") {
-    const after = archive.availability(binding.threadId);
-    return {
-      kind: "refused",
-      reason: after.kind === "unavailable"
-        ? after.reason
-        : "thread availability became unavailable after unarchive",
-    };
-  }
   return {
     kind: "refused",
-    reason: "thread is still archived after unarchive",
+    reason: outcome === "unavailable"
+      ? "codex app-server became unavailable while unarchiving the thread"
+      : "thread is still archived after thread/unarchive",
   };
 }

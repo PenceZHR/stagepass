@@ -85,20 +85,21 @@ function itemFromEvent(event, previous = {}) {
     turnId: string(event.turnId, string(previous.turnId)),
     kind,
     status: string(wire.status, string(previous.status, "inProgress")),
-    title: string(
+    title: string(wire.title, string(
       wire.command,
       string(wire.name, string(wire.agentPath, string(previous.title, kind))),
-    ),
+    )),
     text: string(wire.text, string(previous.text)),
     output: string(wire.output, string(previous.output)),
-    data: wire,
+    truncated: Boolean(wire.truncated ?? previous.truncated),
   };
 }
 
 function bodyText(item) {
-  return item.kind === "commandExecution" || item.kind === "fileChange"
+  const text = item.kind === "commandExecution" || item.kind === "fileChange"
     ? string(item.output, string(item.text))
     : string(item.text, string(item.output));
+  return item.truncated ? `${text}\n…（输出已截断）` : text;
 }
 
 function itemLabel(item) {
@@ -207,14 +208,30 @@ function scalarValue(entry) {
   return entry.field.value;
 }
 
+function safeWebUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      ? parsed.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function mcpForm(document, interaction, respond) {
   const params = record(interaction.params);
   if (params.mode === "url" && typeof params.url === "string") {
-    const link = node(document, "a", "interaction-link", "在浏览器中继续");
-    link.href = params.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    return { content: [link], actions: (footer) => {
+    const href = safeWebUrl(params.url);
+    const content = href === null
+      ? node(document, "p", "interaction-help", "这个链接使用了不安全的协议，无法打开。")
+      : node(document, "a", "interaction-link", "在浏览器中继续");
+    if (href !== null) {
+      content.href = href;
+      content.target = "_blank";
+      content.rel = "noopener noreferrer";
+    }
+    return { content: [content], actions: (footer) => {
       addAction(document, footer, "取消", { action: "cancel", _meta: null }, respond);
     } };
   }
@@ -475,19 +492,24 @@ export function createCodexStream(options) {
         title: "",
         text: "",
         output: "",
-        data: {},
+        truncated: false,
       };
       const delta = string(record(event.payload).delta);
       const output = previous.kind === "commandExecution" || previous.kind === "fileChange";
+      const truncated = Boolean(record(event.payload).truncated ?? previous.truncated);
       const next = {
         ...previous,
         text: output ? previous.text : `${string(previous.text)}${delta}`,
         output: output ? `${string(previous.output)}${delta}` : previous.output,
+        truncated,
       };
       items.set(id, next);
       const mounted = itemNodes.get(id);
       if (mounted) {
         mounted.body.textContent += delta;
+        if (!previous.truncated && truncated) {
+          mounted.body.textContent += "\n…（输出已截断）";
+        }
         surface.scrollTop = surface.scrollHeight;
       } else putItem(next);
       return;

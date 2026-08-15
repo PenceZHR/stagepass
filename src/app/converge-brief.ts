@@ -34,7 +34,7 @@ import { ChangeStore } from "../store/change-store";
  *
  * ## 为什么要标记
  *
- * 「这个窗口里人说过话吗」是起草的前置判据，而 rollout 的 `user_message` 里
+ * 「这个窗口里人说过话吗」是起草的前置判据，而 App Server history 的 user message 里
  * **StagePass 自己发的提示词和人打的字混在一起** —— 开场白、起草指令都算「输入」。
  * 不标记就只能靠猜（比对正文、按长度、按时间），而每一种猜法都会在某天悄悄判反。
  *
@@ -118,7 +118,9 @@ export async function draftBrief(input: {
    * **`null` = 读不出来**，和「读到了，一句都没有」是两件事。
    * 注进来是为了这一层能离线证 —— 它只管数，不管从哪读。
    */
-  saidIn: (threadId: string) => readonly string[] | null;
+  saidIn: (
+    threadId: string,
+  ) => readonly string[] | null | Promise<readonly string[] | null>;
   /** 落一份文件，返回绝对路径。放哪由 web 层定（生产在 ~/.stagepass/briefs/）。 */
   writeBriefFile: (name: string, content: string) => string;
 }): Promise<DraftOutcome> {
@@ -136,7 +138,7 @@ export async function draftBrief(input: {
    * **人得先开口。** 会话存在不等于谈过 —— 见 `no_conversation_yet`。
    * StagePass 自己打进去的话（开场白、上一次的起草指令）按标记刨掉。
    */
-  const said = input.saidIn(aside.threadId);
+  const said = await input.saidIn(aside.threadId);
   if (said === null) {
     /*
      * **读不出来 ≠ 没说过话。**

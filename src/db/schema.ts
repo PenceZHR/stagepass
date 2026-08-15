@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name        TEXT NOT NULL,
   -- 这个项目的代码在哪。**Codex 就跑在这个目录里。**
   --
-  -- 2026-07-30 用户发现的洞：在这之前 projects 只有 id 和 name，而 pty 的 cwd 是
+  -- 2026-07-30 用户发现的洞：在这之前 projects 只有 id 和 name，而 Codex 的 cwd 是
   -- 服务启动时定死的一个值（scripts/panel.ts 里的 process.cwd()）。于是你新建一个
   -- 项目、在它下面建 Change、按「跑这个阶段」—— Codex 跑在 stagepass 这个仓库里，
   -- 用的还是 workspace-write。**它会读写本仓库，同时声称在给你那个项目干活。**

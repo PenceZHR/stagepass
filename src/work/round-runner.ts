@@ -18,7 +18,7 @@ import type { WorkItemDraft } from "../domain/worklist";
  * One adversarial round, from prompt to settled gaps.
  *
  * The four things this joins were each proved separately -- the judge's prompt,
- * finding a sub-agent's own rollout, reading three transcripts into an outcome,
+ * finding a sub-agent through App Server lineage, reading three transcripts into an outcome,
  * and writing that outcome to the gap store. What was missing was the wire
  * between them, and a wire is exactly the kind of thing the tree this replaces
  * had a hundred of: built, plausible, and never once run end to end.
@@ -34,7 +34,7 @@ import type { WorkItemDraft } from "../domain/worklist";
  *
  * ## Everything unproven is injected
  *
- * The transport and the rollout reader are parameters, so the whole of this runs
+ * The transport and the App Server history reader are parameters, so the whole of this runs
  * offline against `ScriptedCodexTransport` and a stub reader. What is left that
  * needs a real Codex is one thing only: whether a judge actually spawns two
  * sub-agents, one after the other.
@@ -107,7 +107,7 @@ export interface RoundDependencies {
    *
    * 拿到 id 的那条路见 `childThreads` —— 这里只管「拿着 id 去读它说了什么」。
    */
-  readonly readThread: (threadId: string) => string;
+  readonly readThread: (threadId: string) => string | Promise<string>;
   /**
    * 一条线程派生的子 Agent，按出生先后排（`codex/subagent.ts` 的 `childThreadsOf`）。
    *
@@ -115,10 +115,12 @@ export interface RoundDependencies {
    * 放进了模型必须手抄的文本里，而抄错一个字符这一轮就作废、正反两方说的话谁也
    * 看不到（`02059a8` 实测过一次：它把自己的线程报成了子 Agent）。
    *
-   * 判据换成 rollout 里 `session_meta` 的 `parent_thread_id` —— 76/76 有值，
+   * 判据换成 App Server 返回的 thread lineage，不让模型手抄任何 id。
    * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
    */
-  readonly childThreads: (parentThreadId: string) => readonly string[];
+  readonly childThreads: (
+    parentThreadId: string,
+  ) => readonly string[] | Promise<readonly string[]>;
   /**
    * 裁判这一轮逐条表态的名单。
    *
@@ -170,8 +172,8 @@ export interface RoundSettled {
   /**
    * 三个角色各自说了什么，原文交出来。
    *
-   * 这里已经读到了它们（红蓝各自的 rollout、裁判的返回），交出来是为了让上层不必
-   * 再读一次 —— 再读一次不只是浪费，而是**可能读到不同的东西**：rollout 是活的，
+   * 这里已经读到了它们（红蓝各自的会话、裁判的返回），交出来是为了让上层不必
+   * 再读一次 —— 再读一次不只是浪费，而是**可能读到不同的东西**：会话是活的，
    * 两次读之间它可以长。上层要对同一份文本做判定，就必须是这一份。
    */
   readonly transcripts: {
@@ -184,7 +186,7 @@ export interface RoundSettled {
    *
    * 交出来是为了让上层能去问那两条线程**收到过什么** —— 「反方没答」和「反方压根
    * 没收到契约」是两件必须分开的事，而后者只有拿着线程 id 才查得了
-   * （`codex/rollout.ts` 的 `allTextIn`）。
+   * （`AppServerHistory.readThread`）。
    */
   readonly agents: RoundAgents;
   /**
@@ -332,7 +334,7 @@ export async function runRound(
    */
   const before = request.judgeThreadId === null
     ? []
-    : dependencies.childThreads(request.judgeThreadId);
+    : await dependencies.childThreads(request.judgeThreadId);
 
   /*
    * **名单要在 turn 之前开好** —— 裁判一起来就可能调 `stagepass_next`。
@@ -381,9 +383,8 @@ export async function runRound(
    * 转达定律不因此松动：路径比段落难被改写（requirement 那份的实测先例 ——
    * 段落会被裁判转述时改写丢，路径转坏了红方会大声说读不到）。
    *
-   * 附带的机械收益：transport 认「自己那一轮」靠拿整段 prompt 当针去 rollout 里
-   * 找（`findOwnCompletedTurn`）—— 信封里的路径每轮都在新的临时目录里，针反而
-   * 更短更独特。
+   * 附带的机械收益：transport 认「自己那一轮」靠 App Server 返回的 turn id；
+   * 信封里的路径每轮都在新的临时目录里，提示词也更短、更独特。
    */
   const scriptPath = dependencies.writeRoundFile(
     `round-script-${request.phase}-r${request.round}.md`,
@@ -434,7 +435,7 @@ export async function runRound(
    * 取最后两条：多出来通常是裁判重派了一次，那时最后两条是对的。这个判断连同实际
    * 派了几条一起交上去（`spawned`），不静默。
    */
-  const fresh = dependencies.childThreads(delivery.threadId)
+  const fresh = (await dependencies.childThreads(delivery.threadId))
     .filter((threadId) => !before.includes(threadId));
   if (fresh.length < 2) {
     // 同上：认不出两方也要先收名单，否则它开着毒下一个会话。
@@ -446,8 +447,8 @@ export async function runRound(
     blue: fresh[fresh.length - 1]!,
   };
 
-  const red = dependencies.readThread(agents.red);
-  const blue = dependencies.readThread(agents.blue);
+  const red = await dependencies.readThread(agents.red);
+  const blue = await dependencies.readThread(agents.blue);
 
   /*
    * 信封坏没坏，和「它给没给裁决」是两件事 —— 见 `VerdictReport.unreadable`。

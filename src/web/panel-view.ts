@@ -5,7 +5,7 @@ import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
 import { roundFromLedger } from "../domain/round";
-import { createSubAgentLookup, threadContextUsage } from "../codex/subagent";
+import type { AppServerHistory } from "../codex/app-server-history";
 import { AsideStore } from "../store/aside-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore, type LedgerEntry } from "../store/change-store";
@@ -40,20 +40,19 @@ import { JobStore } from "../work/job-store";
  * 会话在这一层只需要一个动作：那个 seat 是否已经打开。
  *
  * 结构类型而不是 `PanelSessions` —— 那个类住在 `panel-server.ts`，而这个文件
- * 被它 import。照着接口写，两边就没有环。纯 App Server 分支里 `has` 来自
- * `StreamSessions`；迁移完成前旧 PTY registry 仍作为离线测试兼容输入。
+ * 被它 import。照着接口写，两边就没有环；纯 App Server 分支里两者都来自
+ * `StreamSessions`。
  */
 export interface LiveSessions {
   has(changeId: string, phase: Phase): boolean;
   /**
-   * 这个座位绑的线程的 rollout 文件多久没长了（毫秒）。null = 没绑线程或读不到。
+   * 这个座位多久没有收到 App Server 事件（毫秒）。null = 会话还没打开。
    *
    * 「在跑」有三种：真在跑、进程死了（`processGone`）、**进程活着但卡死**
-   * （等目录信任、等许可框、模型僵住）—— 第三种和第一种在界面上完全同形，
-   * 修之前它能静默烧满整轮。rollout 是唯一许可的观察面（PRD §9.3 不许碰 pty），
-   * 文件多久没长就是「多久没有可观察的动静」。
+   * （等许可、模型僵住）—— 第三种和第一种在界面上完全同形。typed notification
+   * 距今多久就是「多久没有可观察的动静」；不解析渲染文本。
    */
-  rolloutAgeMs(changeId: string, phase: Phase): number | null;
+  quietForMs(changeId: string, phase: Phase): number | null;
 }
 
 /**
@@ -342,10 +341,8 @@ export function panelView(input: {
  *
  * ## 两条硬约束都守住
  *
- * - **不解析 pty 输出**（PRD §9.3）。这里一个字节都不碰 pty。
- * - 进度只来自**库**和**进程状态**，外加 Codex 自己的 `state_5.sqlite`
- *   （`codex/subagent.ts` 早就在读它，读的是「这个线程派生了哪几个子 Agent」，
- *   和读 rollout 同一类动作）。
+ * - **不从渲染文本推断状态**（PRD §9.3）。
+ * - 进度只来自**StagePass 库**、App Server turn 状态和 App Server 返回的子线程关系。
  *
  * ## 说不出来就说不出来
  *
@@ -355,12 +352,13 @@ export function panelView(input: {
  *
  * 只读，不写任何东西（M5）。
  */
-export function progressView(input: {
+export async function progressView(input: {
   database: Database.Database;
   sessions: LiveSessions;
+  history: Pick<AppServerHistory, "readThread">;
   changeId: string;
-}): unknown | null {
-  const { database, sessions, changeId } = input;
+}): Promise<unknown | null> {
+  const { database, sessions, history, changeId } = input;
   let state: ChangeState;
   try {
     state = new ChangeStore(database).read(changeId).state;
@@ -374,8 +372,8 @@ export function progressView(input: {
   /*
    * 裁判派生了哪几个子 Agent —— 这是唯一能说出「红方在写 / 蓝方在挑」的信号。
    *
-   * 整段包在 try 里：它读的是别人的库，Codex 改了表名这里就该**报不知道**，
-   * 而不是把整个进度端点带崩。
+   * 整段包在 try 里：App Server 暂时不可用时这里应该**报不知道**，而不是把整个
+   * 进度端点带崩。
    */
   let spawned = 0;
   let stageKnown = false;
@@ -383,10 +381,12 @@ export function progressView(input: {
   try {
     const bound = new BindingStore(database).find(changeId, phase);
     if (bound?.status === "bound") {
-      spawned = createSubAgentLookup().spawnCount(bound.threadId);
-      stageKnown = true;
-      // 裁判线程离上下文墙多远（§3.3·11）。null = rollout 里还没有 token_count。
-      context = threadContextUsage({ threadId: bound.threadId });
+      const thread = await history.readThread(bound.threadId);
+      if (thread !== null) {
+        spawned = thread.childThreadIds.length;
+        stageKnown = true;
+        context = thread.contextUsage;
+      }
     }
   } catch {
     stageKnown = false; // 查不到就是查不到，不猜
@@ -429,6 +429,6 @@ export function progressView(input: {
      * 第三种「在跑」也要有名字：进程活着但多久没有可观察的动静了。
      * 阈值不在这儿定 —— 这里只报数，几分钟算「卡住」由界面（和人）说。
      */
-    quietForMs: sessions.rolloutAgeMs(changeId, phase),
+    quietForMs: sessions.quietForMs(changeId, phase),
   };
 }

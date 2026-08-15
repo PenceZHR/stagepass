@@ -100,18 +100,10 @@ export interface RubricRoundRequest extends RoundRequest {
 
 export interface RubricRoundDependencies extends RoundDependencies {
   readonly rubrics: RubricStore;
-  /**
-   * 一条线程**收到过**的全部文本 —— 它说的，和它被告知的。
-   *
-   * 和 `readThread`（它说了什么）并列，不是它的替代。多这一个 reader 是为了回答
-   * 一个 `readThread` 结构上答不了的问题：**契约到底送到没有。** 契约在「它被问到
-   * 的那一段」里，而 `readThread` 只收模型说过的话。
-   *
-   * 「反方没答」和「反方压根没收到」今天在库里长得一模一样（evidence 都是 NULL），
-   * 而人对这两件事该做的事完全不同。见
-   * docs/DESIGN-rubric-delivery-2026-07-31.md §3.3。
-   */
-  readonly readThreadWhole: (threadId: string) => string;
+  /** Legacy fixture seam; no production path reads a second transcript view. */
+  readonly readThreadWhole?: (
+    threadId: string,
+  ) => string | Promise<string>;
 }
 
 /**

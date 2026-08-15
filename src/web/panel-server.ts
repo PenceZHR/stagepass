@@ -8,19 +8,20 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
 import {
-  PHASES, commitsWholeTree, isPhase, requiresHumanEdit, upstreamOf, type Phase,
+  commitsWholeTree, isPhase, requiresHumanEdit, upstreamOf, type Phase,
 } from "../domain/phase";
-import { codexArgv } from "../codex/invocation";
-import { CodexTuiTransport, DEFAULT_SESSIONS, rollouts } from "../codex/tui-transport";
 import type { CodexTransport } from "../codex/transport";
-import { findOwnCompletedTurn, parseRollout } from "../codex/rollout";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
-  childThreadsOf, readThreadTranscript, readThreadUserMessages, readThreadWholeText,
+  childThreadsOf, readThreadTranscript, readThreadUserMessages,
 } from "../codex/subagent";
 import {
-  archiveFinished, createArchiveOps, type ArchiveOps,
+  archiveFinished, type ArchiveOps,
 } from "../codex/archive";
+import {
+  type AppServerHistory,
+  threadTurnEnded as appServerThreadTurnEnded,
+} from "../codex/app-server-history";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { createTrustOps, type TrustOps } from "../codex/trust";
 import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
@@ -48,7 +49,6 @@ import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
-import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-session";
 import {
   prepareBoundThread, reconcileMissingBindings, type BindingRecoveryReport,
 } from "./session-recovery";
@@ -56,30 +56,15 @@ import { serveCodexStreamApi } from "./codex-stream-api";
 import { STREAM_ASIDE, type StreamSessions } from "./stream-session";
 
 /**
- * The terminal panel: StagePass Web hosting the windows Codex draws in.
+ * StagePass Web workbench backed exclusively by one supervised Codex App Server.
  *
- * ## Host, not entrance
+ * The browser receives normalized snapshots and typed events, never terminal
+ * bytes or JSON-RPC envelopes. Human decisions still pass through the existing
+ * StagePass domain use cases; rendering a Codex thread cannot advance a gate.
  *
- * This serves a page with one terminal per phase and moves bytes both ways. It
- * routes no decision. Approvals still happen inside the elicitation selector
- * Codex draws, which now appears in a browser pty instead of a Terminal.app
- * window -- the glass changed owner, not the decision. There is no endpoint here
- * that can move a gate, and there must never be one (PRD §1, §10).
- *
- * ## Bytes go through untouched
- *
- * Nothing in this file reads pty output. It arrives as `Uint8Array` from
- * `pty-session.ts` and is written straight to the response. The reason that
- * matters, and why it is a type rather than a promise, is in that module.
- *
- * ## One live process per phase thread
- *
- * The registry refuses to start a second session for a (Change, phase) that
- * already has a live one. Two `codex resume` processes appending to one rollout
- * interleave their turn boundaries, and then "which turn was mine" -- the thing
- * §6.4 pit 2 depends on -- has no answer. A panel makes several terminals being
- * open at once the normal case, so it is the panel that has to guarantee this
- * (PRD §6.5 rule 5).
+ * There is at most one live App Server turn per (Change, phase). This preserves
+ * deterministic turn ownership while still allowing independent phase seats to
+ * be open concurrently (PRD §6.5 rule 5).
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -116,7 +101,7 @@ type Seat = Phase | typeof ASIDE;
 /**
  * 这个阶段的账本上还有没有没了结的活儿。
  *
- * `sessions.has()` 问的是「注册表里还有没有这个阶段的 pty」，那是**当下这一刻**的
+ * `sessions.has()` 问的是「注册表里还有没有这个阶段的 App Server 会话」，那是**当下这一刻**的
  * 事实；而这里问的是「有没有事情还没了结」，只有账本知道。
  *
  * 2026-08-03 真机撞出来的：一轮跑完、会话结束、注册表里没了，**而库里那个 job 还是
@@ -148,8 +133,8 @@ const phaseBusy = (
  * 人面前那个选择器当场被取消，`stagepass_ask` 在 1~4 秒内返回空的 `cancel` ——
  * 人还没看清它就没了。连着六次都是这么废的。
  *
- * 派发那条**不加**这一格：一轮结算完 TUI 不退出，留下的闲窗口里没有任何 turn 边界
- * 可交错，它该被关掉接着派（2026-08-02 收窄，理由见 `runPhase`）。
+ * 派发那条**不加**这一格：一轮结算完会话仍可恢复，但没有活跃 turn 边界可交错，
+ * 它可以被关闭后接着派（2026-08-02 收窄，理由见 `runPhase`）。
  */
 const cannotAskNow = (
   database: Database.Database,
@@ -158,9 +143,9 @@ const cannotAskNow = (
   phase: Phase,
 ): { reason: "phase_already_running"; busy: string; jobId?: string } | null =>
   phaseBusy(database, changeId, phase)
-  ?? (sessions.has(changeId, phase)
+  ?? (sessions.active(changeId, phase)
     // 同上：`reason` 保持界面认识的那个，细节走 `busy`。
-    ? { reason: "phase_already_running" as const, busy: "terminal" }
+    ? { reason: "phase_already_running" as const, busy: "session" }
     : null);
 
 
@@ -191,41 +176,6 @@ const stagepassPluginFor = (
   defaultToolsApprovalMode: "auto",
 });
 
-const pluginConfigFor = (
-  database: { name: string }, changeId: string, phase?: Phase,
-): string[] => {
-  const plugin = stagepassPluginFor(database, changeId, phase);
-  const environment = Object.entries(plugin.env)
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-    .join(",");
-  return [
-    `mcp_servers.stagepass.command=${JSON.stringify(plugin.command)}`,
-    `mcp_servers.stagepass.args=${JSON.stringify(plugin.args)}`,
-    `mcp_servers.stagepass.env={${environment}}`,
-  /*
-   * **许可门的根治**（BACKLOG §2.1，2026-08-05 挖出来的）。
-   *
-   * `-a on-request` 下，Codex 对每个**会话**第一次调某 MCP 服务器的工具都弹许可框，
-   * 而每一轮对抗都是新会话 —— 没人按就静默烧满 turn 超时。2026-08-04 一夜实测
-   * 撞了七次，其中至少 65 分钟纯花在等人按（TestPlan r3 那两段静默）。
-   *
-   * 解药是**按服务器**的配置键：`default_tools_approval_mode`，枚举
-   * `auto / prompt / writes / approve`（0.146.0 实测，`codex mcp list` 挖的）。
-   * `auto` = 这个服务器的工具不再弹框。
-   *
-   * 为什么敢开：stagepass 这个服务器是**我们自己的插件**，工具只有问人/报判定
-   * 那几个 —— 给自己的工具自动放行，不涉及任何第三方。作用面也刚好：走 `-c` 只
-   * 影响 StagePass 起的会话，用户自己的 `~/.codex/config.toml` 一个字不动；
-   * 弹框全发生在裁判会话上，而 `-c` 恰好够得着它（子 Agent 不继承 `-c`，
-   * 但 stagepass_* 从来不是子 Agent 在调）。
-   *
-   * 真机确认待第一轮：判据是 rollout 里第一次 `stagepass_next` 调用**紧跟着**
-   * `custom_tool_call_output`，中间没有等人的空白。
-   */
-    `mcp_servers.stagepass.default_tools_approval_mode=${
-      JSON.stringify(plugin.defaultToolsApprovalMode)}`,
-  ];
-};
 
 const pluginAppServerConfigFor = (
   database: { name: string }, changeId: string, phase?: Phase,
@@ -251,28 +201,19 @@ const ARTIFACT_MAX_BYTES = 2_000_000;
 
 export interface PanelOptions {
   readonly database: Database.Database;
-  readonly session: PtySessionOptions;
-  /**
-   * Background stage turns use this structured App Server seam when supplied.
-   * The remaining PTY surface is migrated separately; production supplies it
-   * in this branch so round execution never falls back to rollout parsing.
-   */
-  readonly appServerTransport?: (input: {
+  /** Every Codex turn in this worktree crosses this structured seam. */
+  readonly appServerTransport: (input: {
     readonly cwd: string;
     readonly config: Readonly<Record<string, unknown>>;
     readonly timeoutMs?: number;
   }) => CodexTransport;
-  /** Structured browser sessions; absent only in legacy/offline panel tests. */
-  readonly streams?: StreamSessions;
+  readonly streams: StreamSessions;
+  readonly history: AppServerHistory;
   /**
    * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
    * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
    */
   readonly briefsDir?: string;
-  /** Injected so the routing half is provable without spawning Codex. */
-  readonly start?: typeof startPtySession;
-  /** 同理：归档那一层也要能在不碰 Codex 的情况下证明。 */
-  readonly archive?: ArchiveOps;
   /**
    * git。同理，而且这一格更要紧：真的那一套会在项目仓库里 `add -A` + `commit`，
    * 测试里没换掉就等于每跑一次测试就提交一次工作区。
@@ -293,18 +234,13 @@ export interface PanelOptions {
     url: URL, request: IncomingMessage, response: ServerResponse,
   ) => Promise<boolean>;
   /**
-   * Codex 的会话目录（「turn 已死」探测要按线程 id 找 rollout）。
-   * 默认和 transport 同一个 `~/.codex/sessions`；可注入是为了测试不摸真目录。
-   */
-  readonly sessionsDir?: string;
-  /**
    * 一轮最多等多久。默认 180 分钟。
    *
    * 不只是给测试用的旋钮：一轮对抗真的会停在审批上等人（PRD §6.6），而
    * 「窗口还开着、什么也没发生」和成功长得一模一样 —— 总得有个东西替它说话。
    *
    * **30 分钟的旧默认 2026-08-12 被真机杀掉**：Arch 按新模板（九节 + 图纸）
-   * 一轮真跑了 3.5 小时 —— turn 在 12:49 被判死，pty 里的 Codex 却继续跑到
+   * 一轮真跑了 3.5 小时 —— turn 在 12:49 被判死，Codex 却继续跑到
    * 15:56 出了结果，人对着一条已判死的轮裁决，账落了、轮早没了。用户拍：
    * 全部统一 180。
    */
@@ -335,50 +271,7 @@ export interface PanelOptions {
   readonly roundBudget?: number;
 }
 
-/**
- * How much output a session remembers so a new viewer sees a screen.
- *
- * A pty forwards what happens next, not what already happened, so attaching to
- * a session that has been running shows an empty terminal until Codex prints
- * again -- which, at an idle composer, is never. Replaying the bytes is the fix
- * and it stays inside the rule: they are stored and re-sent as bytes, never
- * read. Whole chunks are dropped from the front rather than slicing, because a
- * slice can land inside an escape sequence or a multi-byte character.
- */
-const SCROLLBACK_BYTES = 512 * 1024;
-
-interface LiveSession {
-  readonly session: PtySession;
-  readonly listeners: Set<(bytes: Uint8Array) => void>;
-  /**
-   * 进程结束时要通知的人。
-   *
-   * **少了它，一个死掉的终端和一个在思考的终端在浏览器里完全一样**：响应一直开着，
-   * fetch 的 reader 永远等不到 done，xterm 停在最后一帧、光标还在，人于是一直等、
-   * 一直打字，什么都不发生。用户 2026-07-30 报的「shut down / can't type anything」
-   * 就是这个 —— 而当时**没有任何一层察觉到进程已经没了**。
-   *
-   * `request.on("close")` 管的是反方向（人走开），它救不了这一边。
-   */
-  readonly enders: Set<() => void>;
-  readonly scrollback: Uint8Array[];
-  /**
-   * 这个 Change 已经被删掉了，死了也别留尸体。
-   *
-   * `close()` 只 `kill()`，而 `onExit` 是**异步**来的 —— 于是「删 Change」和
-   * 「存尸体」的顺序是删在前、存在后，光在 `forget()` 里删一遍 `corpses` 拦不住。
-   * 由这条会话自己带着这个标记，就没有顺序问题了。
-   */
-  forgotten: boolean;
-}
-
-/**
- * 这个 Change 所属的项目没写路径，所以不知道该在哪跑 Codex。
- *
- * 是个具名错误，而不是回落到某个默认目录：回落会让「跑在正确的仓库」和「跑在恰好
- * 启动时那个仓库」看起来一模一样，而那正是这条要挡的洞。
- */
-export class ProjectPathMissingError extends Error {
+class ProjectPathMissingError extends Error {
   constructor(readonly changeId: string) {
     super(`change ${changeId} has no project path; nothing knows where to run Codex`);
     this.name = "ProjectPathMissingError";
@@ -392,458 +285,166 @@ class SessionResumeRefusedError extends Error {
   }
 }
 
+/** StagePass-facing facade over structured App Server sessions and history. */
 export class PanelSessions {
-  private readonly live = new Map<string, LiveSession>();
-  /**
-   * 死掉的会话留下的最后一屏，按 (Change, 阶段) 各留一具。
-   *
-   * ## 为什么要留尸体
-   *
-   * 一个刚起来就死的进程，它临死前那句话就是死因（最常见：`session … is archived`）。
-   * 而 onExit 把会话删掉时 scrollback 跟着没了，`/pty/…` 又是「打开就起一个新的」——
-   * **回不去看尸体**。2026-07-30 查归档那次，这句话是在仓库外用 node-pty 探针重放
-   * 同一条 argv 才拿到的；死因不该那么贵。
-   *
-   * 下一个会话起来时，这段字节先进它的 scrollback（也就是先回放给每个来看的人），
-   * 新 TUI 一重画自然把它盖掉。**字节仍然是字节**：存的是原样的 Uint8Array，回放
-   * 也是原样写出去，不解析（§9.3）。上限继承 SCROLLBACK_BYTES，代价只有一点内存。
-   */
-  private readonly corpses = new Map<string, Uint8Array[]>();
-  /** 归档那一层。测试注入假的，生产用真的 —— 和 `start` 同一个路子。 */
   readonly archive: ArchiveOps;
-  /** git 那一层。同一个路子，理由见 `PanelOptions.repo`。 */
   readonly repo: RepoOps;
-  /** 目录信任那一层。同上。 */
   readonly trust: TrustOps;
 
   constructor(private readonly options: PanelOptions) {
-    this.archive = options.archive ?? createArchiveOps();
+    this.archive = options.history;
     this.repo = options.repo ?? createRepoOps();
     this.trust = options.trust ?? createTrustOps();
   }
 
-  /** 服务启动时只解绑已经确定不存在的线程；环境故障只进报告。 */
-  reconcileBindings(): BindingRecoveryReport {
+  async reconcileBindings(): Promise<BindingRecoveryReport> {
     return reconcileMissingBindings(
       new BindingStore(this.options.database),
       this.archive,
     );
   }
 
-  private bindingFor(
-    changeId: string, phase: Seat, threadId: string,
-  ): BoundThread {
-    return phase === ASIDE
-      ? { changeId, kind: "aside", phase: null, threadId }
-      : { changeId, kind: "round", phase, threadId };
-  }
-
-  private detachBinding(binding: BoundThread): void {
-    const bindings = new BindingStore(this.options.database);
-    if (binding.kind === "round") {
-      bindings.detach(binding.changeId, binding.phase);
-    } else {
-      bindings.detachAside(binding.changeId);
-    }
-  }
-
-  private static key(changeId: string, phase: Seat): string {
-    return `${changeId}${phase}`;
-  }
-
-  /**
-   * 这个 Change 该在哪个目录里跑，拿不到就是 null。
-   *
-   * Change -> Project -> path。三处任意一处缺失都返回 null，**不猜**。
-   */
   workspaceFor(changeId: string): string | null {
     try {
       const projectId = new ChangeStore(this.options.database).read(changeId).projectId;
       if (projectId === null) return null;
       return new ProjectStore(this.options.database).read(projectId).path;
     } catch {
-      return null; // 没有这个 Change，或者没有那个 Project
+      return null;
     }
   }
 
   has(changeId: string, phase: Seat): boolean {
-    const found = this.live.get(PanelSessions.key(changeId, phase));
-    return found !== undefined && found.session.alive;
+    return this.options.streams.has(changeId, phase);
   }
 
-  /**
-   * 这个座位绑的线程的 rollout 文件，找不到就 null。
-   *
-   * 「turn 已死」探测（`AskSessions`）的地基：探测认的是**这条线程自己的文件**，
-   * 认线程的约定和 transport 同一份（`rollouts` 就是从那边导出的）。
-   */
-  private rolloutPathFor(changeId: string, phase: Seat): string | null {
-    const bindings = new BindingStore(this.options.database);
-    const bound = phase === ASIDE
-      ? bindings.findAside(changeId)
-      : bindings.find(changeId, phase);
-    if (!bound || bound.status !== "bound") return null;
-    return rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
-      .get(bound.threadId) ?? null;
+  active(changeId: string, phase: Seat): boolean {
+    return this.options.streams.active(changeId, phase);
   }
 
-  /**
-   * 这个座位的 rollout 文件多久没长了（`LiveSessions.rolloutAgeMs`）。
-   *
-   * 判据是文件 mtime，不解析内容 —— 「多久没动静」只关心它长没长，连读带解析
-   * 反而让一个每 2 秒轮询的进度端点去反复吃几 MB 的 jsonl。
-   */
-  rolloutAgeMs(changeId: string, phase: Seat): number | null {
-    const path = this.rolloutPathFor(changeId, phase);
-    if (path === null) return null;
+  async openForChat(
+    changeId: string,
+    phase: Seat,
+    config: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    await this.prepareBinding(changeId, phase);
+    await this.options.streams.open(changeId, phase, { config });
+  }
+
+  async startTurn(
+    changeId: string,
+    phase: Seat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+  ): Promise<string> {
+    await this.openForChat(changeId, phase, config);
+    return this.options.streams.startTurn(changeId, phase, prompt);
+  }
+
+  async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
+    if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
+    if (!this.has(changeId, phase) || this.active(changeId, phase)) return false;
     try {
-      return Math.max(0, Date.now() - statSync(path).mtimeMs);
+      await this.options.streams.startTurn(changeId, phase, line);
+      return true;
     } catch {
-      return null;   // 文件没了和没绑线程一样：说不出来就说不出来。
+      return false;
     }
   }
 
-  /**
-   * rollout 现在有几条记录。**认不出线程、读不到文件都是 null，不是 0** ——
-   * 0 会被下游当成「整个文件都是新的」，那正是 2026-08-08 `recordCount`
-   * 那个 bug 的形状（`codex/rollout.ts`）。
-   */
-  recordCount(changeId: string, phase: Seat): number | null {
-    const path = this.rolloutPathFor(changeId, phase);
-    if (path === null) return null;
+  async recordCount(changeId: string, phase: Seat): Promise<number | null> {
+    const threadId = this.boundThreadId(changeId, phase);
+    if (threadId === null) return null;
     try {
-      return parseRollout(readFileSync(path, "utf-8")).length;
+      return (await this.options.history.readThread(threadId))?.turnCount ?? null;
     } catch {
       return null;
     }
   }
 
-  /** 从 `fromIndex` 起，装着这句提示词的那一轮已经跑完了没有（`AskSessions`）。 */
-  turnEnded(changeId: string, phase: Seat, fromIndex: number, prompt: string): boolean {
-    return this.completedIn(this.rolloutPathFor(changeId, phase), fromIndex, prompt);
+  async turnEnded(
+    changeId: string,
+    phase: Seat,
+    fromIndex: number,
+    prompt: string,
+  ): Promise<boolean> {
+    const threadId = this.boundThreadId(changeId, phase);
+    return threadId === null
+      ? false
+      : this.threadTurnEnded(threadId, fromIndex, prompt);
   }
 
-  /** 同一个判据，按线程 id 找文件 ——「上一轮死而复生」的探测用（`AskSessions`）。 */
-  threadTurnEnded(threadId: string, fromIndex: number, prompt: string): boolean {
-    const path = rollouts(this.options.sessionsDir ?? DEFAULT_SESSIONS)
-      .get(threadId) ?? null;
-    return this.completedIn(path, fromIndex, prompt);
-  }
-
-  private completedIn(path: string | null, fromIndex: number, prompt: string): boolean {
-    if (path === null) return false;
+  async threadTurnEnded(
+    threadId: string,
+    fromIndex: number,
+    prompt: string,
+  ): Promise<boolean> {
     try {
-      return findOwnCompletedTurn(
-        parseRollout(readFileSync(path, "utf-8")), fromIndex, prompt,
-      ) !== null;
+      const history = await this.options.history.readThread(threadId);
+      return history !== null && appServerThreadTurnEnded(history, fromIndex, prompt);
     } catch {
-      return false; // 正在写；下一秒再看。
+      return false;
     }
   }
 
-  /**
-   * 这个阶段最后一屏，**进程已经没了的时候**。没有尸体就是空数组。
-   *
-   * 「死了」和「从没跑过」在屏幕上必须分得开：前者要让人看见它是怎么死的
-   * （`corpses` 存在的全部理由），后者该说「还没有进程」而不是给一片空白。
-   */
-  lastScreen(changeId: string, phase: Seat): readonly Uint8Array[] {
-    return this.corpses.get(PanelSessions.key(changeId, phase)) ?? [];
-  }
-
-  /**
-   * 主线那条会话**如果它已经在跑**。没有就是 `undefined` —— 绝不起一个。
-   *
-   * `open()` 见没有就起一个，那对「往里写点东西」这种用途是错的：它会凭空造出
-   * 一个进程来接收那几个字节（而且是浏览用的那种，手上没有插件）。
-   * 「已经在跑就给我，没有就是没有」—— 补按键、查状态都该用这一条。
-   */
-  current(changeId: string, phase: Seat): LiveSession | undefined {
-    const found = this.live.get(PanelSessions.key(changeId, phase));
-    return found !== undefined && found.session.alive ? found : undefined;
-  }
-
-  /**
-   * **明确地**在这个阶段的线程里开一个 Codex 聊天窗口。
-   *
-   * ## 为什么这件事必须有自己的名字
-   *
-   * 这个方法原来叫 `open`，而「看一眼这个阶段的终端」走的也是它 —— 于是**只想看**
-   * 的人会凭空起一个进程。用户 2026-08-03 连着栽了两次，原话：
-   *
-   * > 「我点进入终端只是想看看状态或者适时介入，而不是点了就报废。」
-   *
-   * 起来之后 `has()` 变真，这个阶段的每一个动作都被闸门拒掉（`cannotAskNow`），
-   * 而当时界面上要先找到「结束这个终端」才出得来。**看和起是两件事，名字要分开。**
-   *
-   * ## 必须带插件
-   *
-   * 原来这条路拼 argv 时漏了 `config`，起出来的 Codex 手上没有 StagePass 的工具 ——
-   * 人在里面让它调 `stagepass_ask` 只会得到「没有这个工具」。和 `0c83eca` 修的
-   * 是同一个病（那次修的是跑一轮那条路），浏览这条路当时没一起修。
-   *
-   * 已经活着就原样返回，不起第二个（`launchInto` 的契约）。
-   */
-  openForChat(
-    changeId: string, phase: Phase, config: readonly string[],
-  ): LiveSession {
-    const bound = new BindingStore(this.options.database).find(changeId, phase);
-    // 没有 prompt：Codex 停在 composer，不派任何 turn。跑一个阶段走的是
-    // `launchInto`，那条路上的 argv 由 transport 提供，带着提示词。
-    return this.launchInto(changeId, phase, codexArgv({
-      threadId: bound?.status === "bound" ? bound.threadId : null,
-      sandbox: this.options.session.sandbox,
-      approval: this.options.session.approval,
-      model: this.options.session.model,
-      reasoningEffort: this.options.session.reasoningEffort,
-      config: [...config],
-    }));
-  }
-
-  /**
-   * The session for a phase, started with this exact invocation if it is not
-   * already running.
-   *
-   * An already-live session is returned untouched -- the argv is ignored rather
-   * than applied. That is the guarantee from the top of this file: a second
-   * `codex resume` on the same rollout interleaves turn boundaries.
-   */
-  launchInto(changeId: string, phase: Seat, argv: string[]): LiveSession {
-    const key = PanelSessions.key(changeId, phase);
-    const existing = this.live.get(key);
-    if (existing && existing.session.alive) return existing;
-
-    /*
-     * **Codex 跑在这个 Change 所属项目的目录里，不是服务启动时那个 cwd。**
-     *
-     * 用户 2026-07-30 发现的洞：在这之前 cwd 是 `options.session.cwd` 一个定死的值，
-     * 于是无论你选了哪个项目，Codex 都跑在同一个仓库里 —— 新建一个项目，它却在改
-     * stagepass 本身，用的还是 workspace-write，而且没有任何提示。
-     *
-     * 拿不到路径就**不起进程**，不回落到那个 cwd：回落正是那个洞的形状 —— 它让
-     * 「跑在正确的仓库」和「跑在恰好启动时那个仓库」看起来一模一样。
-     */
-    const cwd = this.workspaceFor(changeId);
-    if (cwd === null) throw new ProjectPathMissingError(changeId);
-
-    /*
-     * **resume 之前先过四态守卫。** missing 换 fresh；archived 解开并二次确认；
-     * unavailable / still_archived 明确拒绝。所有分支都发生在 start() 之前。
-     */
-    if (argv[0] === "resume" && argv[1] !== undefined) {
-      const threadId = argv[1];
-      const prepared = prepareBoundThread({
-        binding: this.bindingFor(changeId, phase, threadId),
-        archive: this.archive,
-        detach: (binding) => { this.detachBinding(binding); },
-      });
-      if (prepared.kind === "fresh") {
-        console.log(`[panel] ${changeId}/${phase} 的线程 ${threadId} 已不存在 —— fresh`);
-        argv = argv.slice(2);
-      } else if (prepared.kind === "refused") {
-        throw new SessionResumeRefusedError(threadId, prepared.reason);
-      }
-    }
-
-    const start = this.options.start ?? startPtySession;
-    const session = start({
-      changeId, phase, argv,
-      options: { ...this.options.session, cwd },
-    });
-
-    // 上一具尸体的最后一屏先垫进去 —— 每个来看这个新会话的人都会先看到它，
-    // 然后才是新进程的输出。见 `corpses` 那段注释。
-    const corpse = this.corpses.get(key) ?? [];
-    const entry: LiveSession = {
-      session, listeners: new Set(), enders: new Set(), scrollback: [...corpse],
-      forgotten: false,
-    };
-    const bornAt = Date.now();
-    let buffered = corpse.reduce((total, chunk) => total + chunk.byteLength, 0);
-    session.onBytes((bytes) => {
-      entry.scrollback.push(bytes);
-      buffered += bytes.byteLength;
-      while (buffered > SCROLLBACK_BYTES && entry.scrollback.length > 1) {
-        buffered -= entry.scrollback.shift()!.byteLength;
-      }
-      for (const listener of entry.listeners) listener(bytes);
-    });
-    session.onExit((exitCode) => {
-      /*
-       * **死因先说出来。**
-       *
-       * 2026-08-03 查那一屏 `Error: Operation not permitted (os error 1)` 花掉的
-       * 大半时间，都耗在「哪个进程、什么参数、死在哪一步」上 —— 而这一层手里全有，
-       * 只是原来一个字都不写。`corpses` 那段注释说的「死因不该那么贵」，指的是
-       * 人回去看得见；这一行是另一半：**事后查得出来**。
-       *
-       * 只写退出码和参数，不碰 pty 的字节（§9.3）。
-       */
-      console.log(
-        `[panel] ${changeId}/${phase} 的进程结束了，exitCode=${exitCode}`
-        + ` cwd=${cwd} argv=${JSON.stringify(argv)}`,
-      );
-      /*
-       * **刚起来就死的，把它吐出来的头几百字节一并写进日志**（BACKLOG §2.2，
-       * 用户 2026-08-05 裁的：存原始字节 + exitCode、不解析、不分支、只给人看 ——
-       * 不算「解释 pty 字节」，§9.3 红线不动）。
-       *
-       * 账单是 2026-08-04 那次「查了一小时没查出根因」：codex 临死那句话只进了
-       * 浏览器，事后去 /pty 捞尸体只剩一行没有上下文。这几百字节就是死因本身
-       * （实测最常见：`session … is archived`、`Operation not permitted`）。
-       *
-       * 阈值取 5 秒而不是笔记里随口写的 1 秒：EPERM 那类「一起来就死」不一定压着
-       * 1 秒线，而一个 5 秒内就退的 codex 无论如何都不是正常收工。正常会话跑几分钟，
-       * 不会误触。
-       */
-      if (Date.now() - bornAt < 5_000 && exitCode !== 0) {
-        const head = Buffer.concat(entry.scrollback).subarray(0, 512);
-        console.log(
-          `[panel] ${changeId}/${phase} 起来 ${((Date.now() - bornAt) / 1000).toFixed(1)}s`
-          + ` 就死了（exitCode=${exitCode}），它吐出来的头 ${head.byteLength} 字节原样如下：`,
-        );
-        // **字节原样写 stdout，全程不变字符串** —— §9.3 的护栏因此一个豁免都不用开
-        // （它盯的是 toString / TextDecoder；这里从 pty 到日志始终是 Uint8Array）。
-        process.stdout.write(head);
-        process.stdout.write("\n");
-      }
-      /*
-       * **只删自己那一条。**
-       *
-       * 无条件 `delete(key)` 的后果 2026-07-30 在真 Codex 上撞到了：D 的「答完直接
-       * 续跑」是 `close()` 紧接着 `launchInto()`，而 `close()` 只 `kill()`，进程的
-       * `onExit` 是**异步**来的。于是顺序变成
-       *
-       *   close → kill 旧的 → launchInto 存进新的 → 旧的 onExit 到了 → 把**新的**删掉
-       *
-       * 注册表从此认为这个阶段没有活进程，下一个 `open()` 就又起了一个 —— 实测到
-       * 两个 codex 同时挂在同一个 (Change, 阶段) 上，而 §6.5 规则 5 的全部意义就是
-       * 不许出现这个。两个 `codex resume` 往同一个 rollout 追加，「哪一轮是我的」
-       * 就没有答案了（§6.4 坑 2）。
-       *
-       * 症状还很难查：新起的那个是**浏览用**的（没有提示词），人进终端看见一个空
-       * composer，而正在跑的那一轮在另一个看不见的进程里。
-       */
-      // 尸体在身份判定**之前**留：无论这条 onExit 是不是当前会话的，死的都是
-      // `entry` 自己，它的最后一屏就该由它自己留下。拷贝一份，免得留下的引用
-      // 还被后续写入动到。
-      // 除非这个 Change 已经被删了 —— 见 `LiveSession.forgotten`。
-      if (!entry.forgotten) this.corpses.set(key, [...entry.scrollback]);
-      if (this.live.get(key) !== entry) return;
-      this.live.delete(key);
-      // **告诉正在看的人它没了。** 不通知的话响应一直开着，浏览器停在最后一帧，
-      // 死终端和在思考的终端一模一样。见 LiveSession.enders 那段注释。
-      for (const end of entry.enders) end();
-      entry.enders.clear();
-    });
-    this.live.set(key, entry);
-    return entry;
-  }
-
-  /**
-   * 往一个**活着的**会话的 composer 里打一段提示词，然后回车。没有活会话返回 false。
-   *
-   * ## 为什么是打字，而不是再起一个进程
-   *
-   * 一个阶段的一次交互有时要两个 turn：先让模型读仓库提问题，再让它把问题问给人。
-   * 而 `launchInto` 对一个还活着的会话是「原样返回、argv 直接丢掉」—— 那是 §6.5
-   * 规则 5 故意的行为。**于是第二段提示词根本送不进去**（2026-07-30 实测：题落库了、
-   * 状态 open、没有任何人被问到，人那边就是「点了没反应」）。
-   *
-   * 先 close 再 launchInto 也不行：**那会掐断浏览器正在读的那条流**，而浏览器不会
-   * 自动重连 —— 第二个 turn 跑起来了，却看不见、也答不了。只是把症状换成了更难查的
-   * 那一种。这条路我试过，别再试。
-   *
-   * TUI 跑完一轮不会退出，它就坐在 composer 上等输入。**把提示词打进去正是人会做的
-   * 事**，而且浏览器全程不断线：人看得见提示词出现，也看得见选择器画出来。
-   *
-   * 不违反 §9.3 —— 那条禁的是把 pty **输出**变成 string。按键一直是往里写的
-   * （`/pty/.../in` 就是干这个的）。
-   *
-   * **必须是一行。** composer 里一个换行就是提交，多行提示词会被截成半句发出去。
-   *
-   * ## 文字和回车必须分两次写，中间要等一下
-   *
-   * 实测（2026-07-30）：把 `文字 + \r` 一次写进去，**文字进了 composer，回车被吃掉**，
-   * 那段提示词就一直躺在那儿没发出去 —— 屏幕上看得见 `›` 后面跟着完整的一行，但没有
-   * 任何 turn 在跑。人那边的症状还是「点了没反应」。
-   *
-   * 原因是 TUI 把一次性灌进来的一大串当成**粘贴**，而粘贴模式下回车是插入换行、不是
-   * 提交。分两次写、中间隔一下，回车才被当成一次真的按键。
-   *
-   * 所以这个方法是 async 的。别为了「看起来干净」把它改回同步一次写 —— 那会静默地
-   * 什么都不做。
-   */
-  async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
-    if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
-    const entry = this.live.get(PanelSessions.key(changeId, phase));
-    if (!entry || !entry.session.alive) return false;
-
-    entry.session.write(Buffer.from(line, "utf-8"));
-    // 让 TUI 把这一串收完、退出粘贴态，再给它一个独立的回车。
-    await new Promise((resolve) => { setTimeout(resolve, 400); });
-    if (!entry.session.alive) return false;
-    entry.session.write(Buffer.from("\r", "utf-8"));
-    return true;
+  quietForMs(changeId: string, phase: Seat): number | null {
+    return this.options.streams.quietForMs(changeId, phase);
   }
 
   close(changeId: string, phase: Seat): void {
-    const key = PanelSessions.key(changeId, phase);
-    const entry = this.live.get(key);
-    entry?.session.kill();
-    this.live.delete(key);
-    /*
-     * **主动告诉正在看的人，不等 onExit。**
-     *
-     * `kill()` 之后 onExit 通常会来，也会顺手做这件事。但「通常」在这里不够：这条
-     * 路径是我们自己决定关掉它的，那就该由我们自己负责通知 —— 等一个可能迟到、
-     * 也可能因为 pty 实现而不来的回调，换来的就是浏览器对着一帧死画面继续等。
-     * 重复调用是无害的：`response.end()` 幂等，enders 随后被清空。
-     */
-    if (entry) {
-      for (const end of entry.enders) end();
-      entry.enders.clear();
-    }
+    this.options.streams.close(changeId, phase);
   }
 
-  /**
-   * 这个 Change 没了 —— 把它在这一层留下的一切一起收掉：活会话、补问格、尸体。
-   *
-   * ## 为什么删 Change 时 `close()` 不够
-   *
-   * 2026-08-03 用户报的那一屏：新建一个 Change，第一个阶段一打开就是几十行
-   * 一模一样的 `Error: Operation not permitted (os error 1)`。那些行不是新的 ——
-   * 是历次尝试攒下来的，而**删掉 Change 甩不掉它们**：
-   *
-   *   建 CHG-001 → 进程死掉 → 尸体存在 key `CHG-001PRD`
-   *   删掉 → 再建 → `mintId` 取「已有最大号 + 1」，删光了就又发 CHG-001
-   *   新会话起来 → 把那具尸体整个垫进 scrollback → 又死 → 存回去，多一行
-   *
-   * `corpses` 存在的理由是让人回去看**这个** Change 的死因。一个已经被删掉的
-   * Change 没有「回去看」这回事，它的最后一屏只会冒充下一个同名者的 —— 而
-   * 同名一定会发生，id 是顺号发的、给人念的，不是 uuid（见 `mintId`）。
-   *
-   * ## 为什么是枚举阶段，而不是按前缀扫 key
-   *
-   * key 是 `${changeId}${phase}` 拼出来的，**中间没有分隔符**。拿 `CHG-1` 去前缀
-   * 匹配会连 `CHG-10`、`CHG-100` 的尸体一起删掉。阶段是一张定死的表，逐个算出
-   * 精确的 key 就没有这个问题。
-   */
+  async interrupt(changeId: string, phase: Seat): Promise<boolean> {
+    if (!this.has(changeId, phase)) return false;
+    const snapshot = this.options.streams.snapshot(changeId, phase);
+    if (snapshot.activeTurnId === null) return false;
+    await this.options.streams.interrupt(changeId, phase, snapshot.activeTurnId);
+    return true;
+  }
+
   forget(changeId: string): void {
-    // 旁路会话也是这个 Change 的座位 —— 阶段之外的那一个，删 Change 一样要收。
-    for (const phase of [...PHASES, ASIDE] as const) {
-      const key = PanelSessions.key(changeId, phase);
-      // 先立标记再 kill：`onExit` 是异步的，晚于下面那句 `corpses.delete`。
-      const entry = this.live.get(key);
-      if (entry) entry.forgotten = true;
-      this.close(changeId, phase);
-      this.corpses.delete(key);
-    }
+    this.options.streams.forget(changeId);
   }
 
   closeAll(): void {
-    for (const entry of this.live.values()) entry.session.kill();
-    this.live.clear();
+    this.options.streams.closeAll();
+  }
+
+  private boundThreadId(changeId: string, phase: Seat): string | null {
+    const bindings = new BindingStore(this.options.database);
+    const bound = phase === ASIDE
+      ? bindings.findAside(changeId)
+      : bindings.find(changeId, phase);
+    return bound?.status === "bound" ? bound.threadId : null;
+  }
+
+  private detachBinding(binding: BoundThread): void {
+    const bindings = new BindingStore(this.options.database);
+    if (binding.kind === "round") bindings.detach(binding.changeId, binding.phase);
+    else bindings.detachAside(binding.changeId);
+  }
+
+  private async prepareBinding(changeId: string, phase: Seat): Promise<void> {
+    const threadId = this.boundThreadId(changeId, phase);
+    if (threadId === null) return;
+    const binding: BoundThread = phase === ASIDE
+      ? { changeId, kind: "aside", phase: null, threadId }
+      : { changeId, kind: "round", phase, threadId };
+    const prepared = await prepareBoundThread({
+      binding,
+      archive: this.archive,
+      detach: (found) => { this.detachBinding(found); },
+    });
+    if (prepared.kind === "fresh") {
+      console.log(
+        `[panel] ${changeId}/${phase} 的线程 ${threadId} 已不存在 —— fresh`,
+      );
+      return;
+    }
+    if (prepared.kind === "refused") {
+      throw new SessionResumeRefusedError(threadId, prepared.reason);
+    }
   }
 }
 
@@ -909,7 +510,7 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
  * 就是不许那样。所以这里直接换掉 runner，而不是在界面上多一个按钮：两个「跑」、
  * 没人说得清哪个是真的，那是老树的病。
  *
- * 裁判仍然跑在这个阶段自己的 pty 里（`launch` 那一行），所以你在面板上看得见它，
+ * 裁判仍然跑在这个阶段自己的 App Server thread 里（`launch` 那一行），所以你在面板上看得见它，
  * 也看得见它什么时候停下来问你。
  */
 async function runRound(input: {
@@ -943,7 +544,7 @@ async function runRound(input: {
    * **判据是「这个阶段有没有活儿没了结」，不是「窗口开没开」，也不是「进程活着吗」。**
    *
    * 两次收窄。2026-08-02 从「窗口开着就拒」收到「有 turn 在飞才拒」—— 一轮结算完
-   * TUI 不退出，留下的是个闲窗口，里面没有任何 turn 边界可交错，而原来那条会让人
+   * 会话保持可恢复，闲置时没有任何 turn 边界可交错，而原来那条会让人
    * 每次派发前都得手动去关。
    *
    * 2026-08-03 又反过来补了另一半：**只看进程会漏**。一轮跑完、会话结束、注册表里
@@ -1061,37 +662,11 @@ async function runRound(input: {
   const loop = new TurnLoop({
     database,
     runner: new RoundTurnRunner({
-      transport: options.appServerTransport?.({
+      transport: options.appServerTransport({
         cwd: workspace,
         config: pluginAppServerConfigFor(database, changeId, phase),
         ...(options.turnTimeoutMs === undefined
           ? {} : { timeoutMs: options.turnTimeoutMs }),
-      }) ?? new CodexTuiTransport({
-        ...options.session,
-        ...(options.turnTimeoutMs === undefined
-          ? {} : { timeoutMs: options.turnTimeoutMs }),
-        /*
-         * **对抗这条路也要挂上插件。**
-         *
-         * 面板另外两条路（问人问题、录需求）一直挂着，唯独跑一轮的这条没有 ——
-         * 于是裁判那个会话手上没有 StagePass 的工具。而落点二要把 gap 表态和 rubric
-         * 判定从「手抄标识符」改成「调工具只交内容」，第一步就是它得有这个工具。
-         * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §四。
-         */
-        // 带上阶段：这是跑轮的裁判会话，worklist 按 (Change, 阶段) 取（批 4）。
-        config: pluginConfigFor(database, changeId, phase),
-        launch: ({ argv }) => { sessions.launchInto(changeId, phase, argv); },
-        /*
-         * **提示词进了 composer 却没被提交时，补那一下回车。**
-         *
-         * 2026-08-03 真机：一条 resume 起来的会话，Codex 还在
-         * `Starting MCP server (2/4)`，argv 里的提示词被搁进 composer 没发出去，
-         * rollout 一个字节没长。判据和守卫都在 `awaitTurn` 那边 —— 这里只负责
-         * 把字节送到这个阶段那个终端。**没有就不送**（`current` 不会起进程）。
-         */
-        nudge: ({ bytes }) => {
-          sessions.current(changeId, phase)?.session.write(bytes);
-        },
       }),
       gaps: new GapStore(database),
       rubrics: new RubricStore(database),
@@ -1101,7 +676,10 @@ async function runRound(input: {
       notes: new RoundNoteStore(database),
       repo: sessions.repo,
       workspaceFor: (each) => sessions.workspaceFor(each),
-      childThreads: (parentThreadId) => childThreadsOf({ parentThreadId }),
+      childThreads: (parentThreadId) => childThreadsOf({
+        history: options.history,
+        parentThreadId,
+      }),
       /*
        * **写临时目录，不写工作区。** 写进工作区会把干净树弄脏，而干净树是派轮的
        * 前置条件（上面那个 `workspace_dirty`）—— 那会变成「派轮这件事本身让下一次
@@ -1121,32 +699,32 @@ async function runRound(input: {
         try { return readFileSync(path, "utf-8"); } catch { return null; }
       },
       worklist: new WorklistStore(database),
-      readThread: (threadId) => readThreadTranscript({ threadId }),
+      readThread: (threadId) => readThreadTranscript({
+        history: options.history,
+        threadId,
+      }),
       // 并行座位的轮次从活儿数（批 3）：座位的 start 不进账本。
       parallelRound: (each, seatPhase) =>
         new JobStore(database).countFor(each, seatPhase),
       // 案 B 的挡门取数口（批 4）：Build 整树提交前看对轨（Test）在不在跑。
       seatStatus: (each, seatPhase) =>
         new ParallelStore(database).find(each, seatPhase)?.status ?? null,
-      // 「它说了什么」和「它收到过什么」是两个 reader，理由见 rubric-round.ts 那边
-      // 的 `readThreadWhole`：契约在它被问到的那一段里，不在它说的话里。
-      readThreadWhole: (threadId) => readThreadWholeText({ threadId }),
       taskFor: (each) => MINIMAL_PHASE_INSTRUCTIONS[each as Phase],
     }),
   });
   const at = Date.now();
   const jobId = `JOB-${changeId}-${phase}-${at}`;
   /*
-   * **硬顶有两份（transport 和 job 截止），它们必须是同一个数；租约不再是第三份。**
+   * **硬顶有两份（App Server turn 和 job 截止），它们必须是同一个数；租约不再是第三份。**
    *
-   *   transport   等 rollout 长出结果（`CodexTuiTransport.timeoutMs`）      = turnMs
+   *   App Server  等 `turn/completed`（`AppServerCodexTransport.timeoutMs`） = turnMs
    *   job 截止    到点把 job 判 `deadline_reached`（`domain/lease.ts`）      = turnMs
    *   租约        短租 + 跑轮期间心跳续（`LEASE_TTL_MS`，turn-loop.ts）
    *
-   * 2026-08-04 实测（当时三个都要同数）：transport 跟着 `--turn-timeout` 走、
+   * 2026-08-04 实测（当时三个都要同数）：执行器跟着 `--turn-timeout` 走、
    * 后两个写死 30 分钟时，`--turn-timeout 180` **一点用都没有** —— 21:25 起跑的
    * 那一轮 21:55 整死于 `deadline_reached`。更坏的是同一堵墙两个名字：三个都是
-   * 30 分钟时 transport 先喊 `codex_unavailable`，把 transport 推上去之后轮到
+   * 30 分钟时执行器先喊 `codex_unavailable`，把执行器推上去之后轮到
    * job 截止喊 `deadline_reached`（我当天先后诊断错了两次）。所以**硬顶那两份
    * 必须同数**这半句今天仍然成立。
    *
@@ -1359,20 +937,21 @@ function locateArtifact(input: {
 }
 
 /** `/api/progress`。从 `handle()` 搬出来 —— 图谱那条路进来时，函数上限棘轮要的债。 */
-function serveProgress(
+async function serveProgress(
   url: URL,
   response: ServerResponse,
   database: Database.Database,
   sessions: PanelSessions,
-  streams: StreamSessions | undefined,
-): void {
-  const view = progressView({
+  streams: StreamSessions,
+  history: AppServerHistory,
+): Promise<void> {
+  const view = await progressView({
     database,
     sessions: {
-      has: (changeId, phase) => streams?.active(changeId, phase)
-        || sessions.has(changeId, phase),
-      rolloutAgeMs: (changeId, phase) => sessions.rolloutAgeMs(changeId, phase),
+      has: (changeId, phase) => streams.active(changeId, phase),
+      quietForMs: (changeId, phase) => sessions.quietForMs(changeId, phase),
     },
+    history,
     changeId: url.searchParams.get("change") ?? "",
   });
   if (view === null) { response.writeHead(404).end("no such change"); return; }
@@ -1399,7 +978,6 @@ function serveStructuredCodex(
   response: ServerResponse,
   options: PanelOptions,
 ): Promise<boolean> {
-  if (options.streams === undefined) return Promise.resolve(false);
   return serveCodexStreamApi(url, request, response, {
     streams: options.streams,
     configFor: (changeId, seat) => pluginAppServerConfigFor(
@@ -1670,51 +1248,27 @@ async function serveAside(
   }
 
   const bound = new BindingStore(database).findAside(changeId);
-  if (bound?.status === "bound") {
-    sessions.launchInto(changeId, ASIDE, codexArgv({
-      threadId: bound.threadId,
-      sandbox: options.session.sandbox,
-      approval: options.session.approval,
-      model: options.session.model,
-      reasoningEffort: options.session.reasoningEffort,
-      // 人要跟它说话，手上得有 StagePass 的工具 —— 和 openForChat 同一条理由。
-      config: pluginConfigFor(database, changeId),
-    }));
-    json(response, { opened: true });
-    return;
-  }
-
-  const transport = new CodexTuiTransport({
-    ...options.session,
-    ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
-    config: pluginConfigFor(database, changeId),
-    launch: ({ argv }) => { sessions.launchInto(changeId, ASIDE, argv); },
-  });
-  void transport.runTurn({
-    threadId: null,
+  await sessions.openForChat(
+    changeId,
+    ASIDE,
+    pluginAppServerConfigFor(database, changeId),
+  );
+  if (bound?.status !== "bound") {
     /*
      * 开场词带 changeId 和时刻：awaitNewThread 按它认线程，两个 Change 同时
      * 开旁路、或同一个 Change 关了重开，都不许认错。
      *
      * **开头那个标记是承重的**（`STAGEPASS_SAID`）：起草前要数「人说过几句」，
-     * 而这句话也落在 rollout 的 `user_message` 里 —— 不标记它就会被算成人说的，
+     * 而这句话也会成为 App Server thread 的 user message —— 不标记它就会被算成人说的，
      * 那道闸当场失效（2026-08-06 真机上就是这么放过一份空草稿的）。
      */
-    prompt: `${STAGEPASS_SAID} 这是 StagePass 里 ${changeId} 的旁路会话`
+    await options.streams.startTurn(changeId, ASIDE,
+      `${STAGEPASS_SAID} 这是 StagePass 里 ${changeId} 的旁路会话`
       + `（${new Date().toISOString()}）。`
       + "人会在这里问问题、聊这次改动要什么。你不产出任何阶段的东西、不推动任何"
       + "闸门。回答要基于这个仓库的真实代码，不知道就说不知道。收到请简短回应。",
-    onThread: (threadId) => {
-      try {
-        new BindingStore(database).bindAside(changeId, threadId);
-      } catch (error: unknown) {
-        console.error(`[panel] ${changeId} 旁路线程绑定失败：${String(error)}`);
-      }
-    },
-  }).catch((error: unknown) => {
-    // 认不出线程只丢「续得上」这件事，窗口本身好好开着 —— 说一声，别带走面板。
-    console.error(`[panel] ${changeId} 旁路会话认线程失败：${String(error)}`);
-  });
+    );
+  }
   json(response, { opened: true });
 }
 
@@ -1757,29 +1311,18 @@ async function serveBriefDraft(
   const changeId = url.searchParams.get("change") ?? "";
   const outcome = await draftBrief({
     database, changeId,
-    saidIn: (threadId) => readThreadUserMessages({ threadId }),
+    saidIn: (threadId) => readThreadUserMessages({
+      history: options.history,
+      threadId,
+    }),
     runTurn: async (threadId, prompt) => {
-      const transport = new CodexTuiTransport({
-        ...options.session,
+      const workspace = sessions.workspaceFor(changeId);
+      if (workspace === null) throw new ProjectPathMissingError(changeId);
+      const transport = options.appServerTransport({
+        cwd: workspace,
         ...(options.turnTimeoutMs === undefined
           ? {} : { timeoutMs: options.turnTimeoutMs }),
-        config: pluginConfigFor(database, changeId),
-        /*
-         * **窗口开着就把提示词打进去，绝不 close 再起。**
-         *
-         * 2026-08-06 真机上我犯的就是这个错：先 `close(ASIDE)` 再 spawn 一个
-         * 带提示词的 resume。从人那边看，他正在聊的窗口当场死掉重开，而起草那一轮
-         * 要跑几分钟 —— 屏幕上就是「卡住」。`PanelSessions.type` 那段注释早写着
-         * 这条（「先 close 再 launchInto 会掐断浏览器正在读的那条流」），
-         * 录需求那条路一直是打字的，起草这条当时没跟上。
-         *
-         * 打字要求提示词是**一行**（composer 里一个换行就是提交），
-         * `draftPrompt` 因此是一行。没有活窗口时才 resume 一个带提示词的。
-         */
-        launch: ({ argv }) => {
-          if (sessions.has(changeId, ASIDE)) void sessions.type(changeId, ASIDE, prompt);
-          else sessions.launchInto(changeId, ASIDE, argv);
-        },
+        config: pluginAppServerConfigFor(database, changeId),
       });
       return (await transport.runTurn({ threadId, prompt })).text;
     },
@@ -1820,17 +1363,18 @@ function serveBriefConfirm(
  * 中止一轮和结束一个进程同一类：不推动闸门、不对任何产物下判断，只陈述
  * 「人把这一轮停了」—— 和收尸人对过期租约做的是同一件事，只是由人当场触发。
  */
-function serveClose(
+async function serveClose(
   database: Database.Database,
   url: URL,
   response: ServerResponse,
   sessions: PanelSessions,
-): void {
+): Promise<void> {
   const changeId = url.searchParams.get("change") ?? "";
   const phase = url.searchParams.get("phase") ?? "";
   // 旁路会话也从这儿关：只有进程可收，没有账 —— 它不产出、不占座、没有 job。
   if (phase === ASIDE) {
     const had = sessions.has(changeId, ASIDE);
+    await sessions.interrupt(changeId, ASIDE);
     sessions.close(changeId, ASIDE);
     /*
      * **出旁路结账**：记下当时的 HEAD。前后不同 = 这一趟动过手，`needsNote`
@@ -1850,6 +1394,7 @@ function serveClose(
   }
   if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
   const was = sessions.has(changeId, phase);
+  await sessions.interrupt(changeId, phase);
   sessions.close(changeId, phase);
 
   // 只收「这个阶段」的账（批 3 起 busy 按阶段问）——
@@ -2008,13 +1553,12 @@ function servePanel(
     ...panelView({
       database,
       sessions: {
-        has: (each, phase) => options.streams?.active(each, phase)
-          || sessions.has(each, phase),
-        rolloutAgeMs: (each, phase) => sessions.rolloutAgeMs(each, phase),
+        has: (each, phase) => options.streams.active(each, phase),
+        quietForMs: (each, phase) => sessions.quietForMs(each, phase),
       },
       changeId,
       askedProject: url.searchParams.get("project"),
-      workspace: basename(options.session.cwd),
+      workspace: basename(sessions.workspaceFor(changeId) ?? process.cwd()),
     }) as object,
     /** 现在派这个阶段会被哪一条预检拒。null = 五条都过。 */
     blocked,
@@ -2034,9 +1578,9 @@ function servePanel(
  *
  * ## 这不违反 §9.3
  *
- * 那条护栏管的是**pty 的字节**：不许读懂 Codex 画在终端里的东西。这里读的是模型
- * **落在磁盘上的产物**，和 `codex/rollout.ts` 读 rollout、`codex/subagent.ts` 读
- * 子 Agent 的文件同一类动作。区别是判据性的：pty 输出是「界面」，产物是「文档」。
+ * 那条护栏管的是**Codex 会话流**：不许从渲染文本反推业务决定。这里读的是模型
+ * **明确登记的项目产物**；会话历史和子 Agent 关系则统一由 App Server 公共方法读取。
+ * 区别是判据性的：会话流是「界面」，产物是「文档」。
  *
  * ## 只读，而且只读这个阶段自己报出来的那些
  *
@@ -2139,7 +1683,14 @@ export async function handle(
   }
 
   if (url.pathname === "/api/progress" && request.method === "GET") {
-    serveProgress(url, response, database, sessions, options.streams);
+    await serveProgress(
+      url,
+      response,
+      database,
+      sessions,
+      options.streams,
+      options.history,
+    );
     return;
   }
 
@@ -2247,19 +1798,12 @@ export async function handle(
     const { outcome, closeSession } = await decideGate({
       database, sessions, changeId,
       cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
-      launch: ({ phase, prompt }) => {
-        const bound = new BindingStore(database).find(changeId, phase);
-        sessions.launchInto(changeId, phase, codexArgv({
-          threadId: bound?.status === "bound" ? bound.threadId : null,
-          sandbox: options.session.sandbox,
-          approval: options.session.approval,
-          model: options.session.model,
-          reasoningEffort: options.session.reasoningEffort,
-          // Registered per invocation, never written to the user's global config.
-          config: pluginConfigFor(database, changeId),
-          prompt,
-        }));
-      },
+      launch: ({ phase, prompt }) => sessions.startTurn(
+        changeId,
+        phase,
+        prompt,
+        pluginAppServerConfigFor(database, changeId),
+      ).then(() => {}),
       rerun: async (phase) => {
         // 那个阶段的终端这时还活着（题就是送进去的），所以先关掉它 —— 不然
         // `runRound` 会撞上 §6.5 规则 5 直接拒。
@@ -2271,8 +1815,8 @@ export async function handle(
        * 自动地 archive。」归档从此标记的是「这个阶段结束了」，而不是「Codex 那边
        * 有人清了一下」。
        */
-      onApproved: ({ phase, threadId }) => {
-        const done = archiveFinished(threadId, sessions.archive);
+      onApproved: async ({ phase, threadId }) => {
+        const done = await archiveFinished(threadId, sessions.archive);
         console.log(`[panel] ${changeId}/${phase} 已批准，线程 ${threadId} —— ${done}`);
       },
       roundBudget: options.roundBudget ?? 5,
@@ -2328,24 +1872,21 @@ export async function handle(
        */
       propose: async (prompt) => {
         const phase = new ChangeStore(database).read(changeId).state.phase;
-        const pluginConfig = pluginConfigFor(database, changeId);
-        const transport = new CodexTuiTransport({
-          ...options.session,
+        const workspace = sessions.workspaceFor(changeId);
+        if (workspace === null) throw new ProjectPathMissingError(changeId);
+        await sessions.openForChat(
+          changeId,
+          phase,
+          pluginAppServerConfigFor(database, changeId),
+        );
+        const bound = new BindingStore(database).find(changeId, phase);
+        if (bound?.status !== "bound") throw new Error("App Server thread was not bound");
+        const transport = options.appServerTransport({
+          cwd: workspace,
           ...(options.turnTimeoutMs === undefined ? {} : { timeoutMs: options.turnTimeoutMs }),
-          // argv 由这里自己配，不用 transport 给的那份 —— 它不知道要带插件。
-          launch: () => {
-            sessions.launchInto(changeId, phase, codexArgv({
-              threadId: null,
-              sandbox: options.session.sandbox,
-              approval: options.session.approval,
-              model: options.session.model,
-              reasoningEffort: options.session.reasoningEffort,
-              config: pluginConfig,
-              prompt,
-            }));
-          },
+          config: pluginAppServerConfigFor(database, changeId),
         });
-        return (await transport.runTurn({ threadId: null, prompt })).text;
+        return (await transport.runTurn({ threadId: bound.threadId, prompt })).text;
       },
       timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
     });
@@ -2363,18 +1904,12 @@ export async function handle(
     const { outcome, closeSession } = await waive({
       database, sessions, changeId,
       cannotAskNow: (phase) => cannotAskNow(database, sessions, changeId, phase),
-      launch: ({ phase, prompt }) => {
-        const bound = new BindingStore(database).find(changeId, phase);
-        sessions.launchInto(changeId, phase, codexArgv({
-          threadId: bound?.status === "bound" ? bound.threadId : null,
-          sandbox: options.session.sandbox,
-          approval: options.session.approval,
-          model: options.session.model,
-          reasoningEffort: options.session.reasoningEffort,
-          config: pluginConfigFor(database, changeId),
-          prompt,
-        }));
-      },
+      launch: ({ phase, prompt }) => sessions.startTurn(
+        changeId,
+        phase,
+        prompt,
+        pluginAppServerConfigFor(database, changeId),
+      ).then(() => {}),
       timeoutMs: options.askTimeoutMs ?? 15 * 60_000,
     });
     if (outcome.kind === "no_such_change") {
@@ -2414,20 +1949,10 @@ export async function handle(
   }
 
   /*
-   * 结束一个阶段的终端。
+   * **明确打开一个可交互 Codex 会话。** 和「只读历史」分开。
    *
-   * **这是界面上一直缺的那个出口。** 每个动作按钮在 `live` 时都禁用（一个阶段同时
-   * 只许一个进程，§6.5 规则 5），而 TUI 跑完一轮不会自己退出 —— 于是人一按「进入
-   * 终端」，那个阶段就永远卡住：所有按钮全灰，只剩「进入终端」能按，没有出路。
-   * 用户 2026-07-30 报的「I don't know what to do next」就是这个。
-   *
-   * 结束一个进程不是业务决策：它不推动闸门，也不对任何产物下判断。
-   */
-  /*
-   * **明确要一个终端。** 和「看一眼」分开的那半。
-   *
-   * 看的那条路（`GET /pty/...`）绝不起进程了，所以要有一个地方能起。它是一个
-   * 显式动作、有自己的名字，人按下去就知道自己在起一个 Codex —— 这正是
+   * 只读 snapshot 绝不起 turn，所以要有一个显式动作创建或恢复会话。人按下去
+   * 就知道自己在打开一个 Codex —— 这正是
    * 用户 2026-08-03 那句话要的：「我点进入终端只是想看看状态……而不是点了就报废。」
    *
    * 带插件：这条路上起的 Codex 人是要跟它说话的，手上没有 StagePass 的工具就
@@ -2445,10 +1970,14 @@ export async function handle(
     const busy = phaseBusy(database, changeId, phase);
     if (busy) { json(response, { opened: false, ...busy }); return; }
     try {
-      sessions.openForChat(changeId, phase, pluginConfigFor(database, changeId));
+      await sessions.openForChat(
+        changeId,
+        phase,
+        pluginAppServerConfigFor(database, changeId),
+      );
     } catch (error: unknown) {
       response.writeHead(409).end(
-        error instanceof Error ? error.message : "could not open a terminal");
+        error instanceof Error ? error.message : "could not open Codex");
       return;
     }
     json(response, { opened: true, phase });
@@ -2471,127 +2000,10 @@ export async function handle(
   }
 
   if (url.pathname === "/api/close" && request.method === "POST") {
-    serveClose(database, url, response, sessions);
+    await serveClose(database, url, response, sessions);
     return;
   }
 
-  const pty = /^\/pty\/([^/]+)\/([^/]+)(\/in|\/resize)?$/.exec(url.pathname);
-  if (pty) {
-    const changeId = decodeURIComponent(pty[1]!);
-    const seat = decodeURIComponent(pty[2]!);
-    // 旁路会话（ASIDE）和十个能开终端的阶段共用这一条流的机制 —— 它只是
-    // 注册表里多出来的那一个座位，字节进出的规矩一个字都不变。
-    if (seat !== ASIDE && (!isPhase(seat) || seat === "Done")) {
-      response.writeHead(404).end("no such phase");
-      return;
-    }
-    const phase = seat as Seat;
-    const action = pty[3];
-
-    if (action === undefined && request.method === "GET") {
-      /*
-       * **看一眼绝不起进程。**
-       *
-       * 这里原来走 `open()`，而它见没有会话就起一个 —— 于是「我只想看看状态」
-       * 变成「这个阶段废了」：新进程一活着，`cannotAskNow` 就把这个阶段的每个动作
-       * 都拒掉。用户 2026-08-03 连着栽了两次。
-       *
-       * 现在三种情况各说各的：活着就接上；死了就把最后一屏（`corpses`）给出去，
-       * 让人看得见死因；从没跑过就 409，前端说「这个阶段还没有进程」。
-       *
-       * 409 也是 C3 重连的判据（`?existing=1`）：前端据此保留死亡注解，而不是
-       * 循环重连或者对着一个空 composer 以为一切正常。
-       */
-      const entry = sessions.current(changeId, phase);
-      if (!entry) {
-        const corpse = sessions.lastScreen(changeId, phase);
-        if (corpse.length === 0) {
-          response.writeHead(409).end("no session for this phase");
-          return;
-        }
-        response.writeHead(200, {
-          "content-type": "application/octet-stream",
-          "cache-control": "no-cache, no-transform",
-          "x-accel-buffering": "no",
-        });
-        for (const chunk of corpse) response.write(chunk);
-        response.end();
-        return;
-      }
-      response.writeHead(200, {
-        "content-type": "application/octet-stream",
-        "cache-control": "no-cache, no-transform",
-        "x-accel-buffering": "no",
-      });
-      // Without this the headers wait for the first byte, so the browser's
-      // fetch does not resolve until Codex happens to print something -- and a
-      // terminal that has not printed yet is the normal case, not an edge one.
-      response.flushHeaders();
-      // What the session has already drawn, so an attaching viewer sees the
-      // screen rather than waiting for the next keystroke to produce one.
-      for (const chunk of entry.scrollback) response.write(chunk);
-      // Forwarded, not read. See the note at the top of this file.
-      const listener = (bytes: Uint8Array): void => { response.write(bytes); };
-      entry.listeners.add(listener);
-
-      /*
-       * 进程没了就**结束这条响应**。
-       *
-       * 这是浏览器唯一能知道「终端死了」的途径：`fetch` 的 reader 拿到 done，
-       * 客户端才说得出「这个终端不再接受输入」。少了它，人对着一帧静止的画面
-       * 一直打字（2026-07-30 用户报的就是这个）。
-       *
-       * 两个方向都要清理：进程先死（enders）、或者人先走开（request close）。
-       */
-      const end = (): void => {
-        entry.listeners.delete(listener);
-        response.end();
-      };
-      entry.enders.add(end);
-      request.on("close", () => {
-        entry.listeners.delete(listener);
-        entry.enders.delete(end);
-      });
-      return;
-    }
-    if (action === "/in" && request.method === "POST") {
-      /*
-       * **没有进程就不起一个来接这几个字节。** 原来这里也走 `open()` —— 于是一次
-       * 误触的按键就能凭空造出一个 Codex（而且是没有插件的那种）。
-       */
-      const live = sessions.current(changeId, phase);
-      if (!live) { response.writeHead(409).end("no session for this phase"); return; }
-      live.session.write(await readBody(request));
-      response.writeHead(204).end();
-      return;
-    }
-    if (action === "/resize" && request.method === "POST") {
-      const cols = Number(url.searchParams.get("cols"));
-      const rows = Number(url.searchParams.get("rows"));
-      /*
-       * **一个几列宽的终端不是一个合法的请求，是浏览器还没量出尺寸。**
-       *
-       * 实测两次（2026-07-29 / 07-30）：一个尺寸为 0 的窗口会让 xterm 的 fit 算出
-       * 1 列，然后 StagePass 老老实实把 `cols=1` 传给 pty —— Codex 从此把每个字符
-       * 单独排一行，画面竖成一条。**而它是持久的**：窗口恢复正常之后那一屏已经
-       * 那样画出去了，字节回放重排不了，看着像终端坏了。
-       *
-       * `cols > 0` 挡不住这个：1 是「> 0」的。所以设一个下限 —— 比这更窄的终端里
-       * 什么 TUI 都没法用，所以拒掉它一定比照做更接近人的意图。
-       */
-      const MIN_COLS = 20;
-      const MIN_ROWS = 5;
-      if (
-        Number.isFinite(cols) && Number.isFinite(rows)
-        && cols >= MIN_COLS && rows >= MIN_ROWS
-      ) {
-        // 同上：没有进程就没有可以 resize 的东西，不为此起一个。
-        sessions.current(changeId, phase)?.session.resize(cols, rows);
-      }
-      response.writeHead(204).end();
-      return;
-    }
-  }
 
   response.writeHead(404).end("not found");
 }

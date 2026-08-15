@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  STREAM_ITEM_TEXT_LIMIT,
   StreamState,
   type StreamNotification,
 } from "./stream-state";
@@ -148,6 +149,22 @@ describe("StreamState", () => {
     );
   });
 
+  it("bounds replay by bytes as well as event count", () => {
+    const state = new StreamState("THREAD-1", {
+      replayLimit: 20,
+      replayBytesLimit: 450,
+    });
+    for (let index = 0; index < 4; index += 1) {
+      state.accept(notification("error", {
+        threadId: "THREAD-1",
+        message: `${index}-${"x".repeat(180)}`,
+      }));
+    }
+
+    assert.equal(state.eventsAfter(0), null);
+    assert.ok((state.eventsAfter(3)?.length ?? 0) <= 1);
+  });
+
   it("routes an unknown notification as diagnostics without forwarding its payload", () => {
     const state = new StreamState("THREAD-1");
     state.accept(notification("account/sensitiveChanged", {
@@ -157,6 +174,57 @@ describe("StreamState", () => {
 
     assert.deepEqual(state.eventsAfter(0)?.[0]?.payload, {
       method: "account/sensitiveChanged",
+    });
+  });
+
+  it("projects only public item fields and bounds streamed content", () => {
+    const state = new StreamState("THREAD-1");
+    state.accept(notification("item/started", {
+      threadId: "THREAD-1",
+      turnId: "TURN-1",
+      item: {
+        type: "commandExecution",
+        id: "ITEM-CMD",
+        command: "generate",
+        accessToken: "must-not-reach-the-browser",
+        status: "inProgress",
+      },
+    }));
+    state.accept(notification("item/commandExecution/outputDelta", {
+      threadId: "THREAD-1",
+      turnId: "TURN-1",
+      itemId: "ITEM-CMD",
+      delta: "x".repeat(STREAM_ITEM_TEXT_LIMIT + 100),
+    }));
+
+    const item = state.snapshot().items[0];
+    assert.equal(item?.output.length, STREAM_ITEM_TEXT_LIMIT);
+    assert.equal(item?.truncated, true);
+    assert.doesNotMatch(JSON.stringify(item), /must-not-reach-the-browser/);
+    assert.doesNotMatch(
+      JSON.stringify(state.eventsAfter(0)),
+      /must-not-reach-the-browser/,
+    );
+  });
+
+  it("keeps interaction UI fields but strips protocol identity and extras", () => {
+    const state = new StreamState("THREAD-1");
+    state.openInteraction({
+      kind: "commandApproval",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "THREAD-1",
+        turnId: "TURN-1",
+        itemId: "ITEM-CMD",
+        command: "git status --short",
+        reason: "check the tree",
+        accessToken: "must-not-reach-the-browser",
+      },
+    });
+
+    assert.deepEqual(state.snapshot().interactions[0]?.params, {
+      command: "git status --short",
+      reason: "check the tree",
     });
   });
 

@@ -182,8 +182,8 @@ const lineFor = (entry) => (entry.mark ? MARK[entry.mark].line : statusOf(entry)
  * 进程都没有 —— 派出去的 Codex 早就没了，面板会一直坐到 30 分钟超时。
  * **「在跑」和「已经死了」在界面上是同一个样子**，而这一段就是为了把它们分开。
  *
- * 两条硬约束都守住：一个字节都不碰 pty（PRD §9.3），进度只来自 `/api/progress`
- * （库 + 进程状态）；**只写弹窗和左面板，环那一屏什么都不加**（交接 §5.0 第 4 条）。
+ * 两条硬约束都守住：不从渲染文本推断业务状态（PRD §9.3），进度只来自
+ * `/api/progress`（库 + App Server 状态）；**只写弹窗和左面板，环那一屏什么都不加**。
  */
 const PROGRESS_EVERY_MS = 3_000;
 
@@ -224,7 +224,7 @@ function progressWords(progress) {
       + "（第一轮看不出来 —— 裁判的线程要跑完才绑上）。"
     : `${progress.phase} 在跑，已经 ${elapsed}：${STAGE_WORDS[progress.stage] ?? progress.stage}。`;
   /*
-   * 第三种「在跑」：进程活着但很久没有可观察的动静（rollout 没长）。
+   * 第三种「在跑」：会话活着但很久没有收到 App Server 事件。
    * 它和「真在跑」在屏幕上完全同形，而它可能是在等目录信任、等许可框，或者
    * 模型僵住了 —— 三种都要人去终端看一眼才分得出。阈值取 5 分钟：xhigh 的单次
    * 长推理会安静一两分钟，5 分钟没动静值得人抬一次头，但只提醒、不下结论 ——
@@ -233,7 +233,7 @@ function progressWords(progress) {
   const quiet = progress.quietForMs;
   if (typeof quiet === "number" && quiet >= 5 * 60_000) {
     return base + `⚠ 已经 ${spell(quiet)} 没有新动静 —— `
-      + "可能在等信任/许可，也可能卡住了，去终端看一眼。";
+      + "可能在等许可，也可能卡住了，打开 Codex 看一眼。";
   }
   return base;
 }
@@ -337,11 +337,11 @@ function crashed(result) {
 /** 没派起来时说清是哪一种。原样吐一个 reason 等于没说。 */
 function runRefusal(result) {
   if (result.reason === "phase_already_running") {
-    // `busy` 说的是挡路的是什么：一个闲终端，还是账本上没了结的一轮 ——
+    // `busy` 说的是挡路的是什么：一个活跃会话，还是账本上没了结的一轮 ——
     // 两者的出路不同，一句话不能混着说。
-    return result.busy === "terminal"
-      ? `${result.phase} 已经开着一个终端了。同一个阶段线程同时只许有一个进程 ——`
-        + "先「结束这个终端」。"
+    return result.busy === "session"
+      ? `${result.phase} 已经有一个活跃 Codex turn。同一个阶段线程同时只许有一轮 ——`
+        + "先中断或等它完成。"
       : `${result.phase} 有一轮没了结（${result.busy ?? "?"}）。等它跑完，`
         + "或者按「中止这一轮」。";
   }
@@ -366,7 +366,7 @@ function runRefusal(result) {
      * 人自己答得了（替他答就是往他的 ~/.codex/config.toml 里写东西）。
      *
      * 不拦的后果实测过：Codex 起来、停在那个提问上、没人按，这一侧等满 30 分钟拿到
-     * 一句「TUI 好像没起来」。
+     * 一句「Codex 好像没起来」。
      */
     return `Codex 还没信任过 ${result.workspace}。派下去它会停在「Do you trust the`
       + " contents of this directory?」上等人按，而这一屏看不见它 —— 所以先拦住了。"
@@ -500,14 +500,11 @@ function saidWhat(result) {
 }
 
 /**
- * Put the gate decision to the human, in Codex.
- *
- * This opens the phase's terminal because that is where the answer happens --
- * the selector is drawn by Codex there, and the page has no way to answer it.
+ * Put the gate decision to the human through the phase's App Server session.
  */
 async function ask() {
   askButton.disabled = true;
-  askButton.textContent = "已送进终端…";
+  askButton.textContent = "已送进 Codex…";
   try {
     const result = await (await dispatchThenEnter(() => fetch(
       `/api/ask?change=${encodeURIComponent(changeId)}`, { method: "POST" },
@@ -1644,7 +1641,7 @@ function drawWorkspace(panel) {
  *
  * The state goes in the URL so a reload keeps it, and so a collapsed view can be
  * linked to. `replaceState` rather than a navigation: reloading the page here
- * would tear down every attached terminal to record a layout preference.
+ * would tear down every attached live stream to record a layout preference.
  */
 function setCollapsed(collapsed) {
   columns.classList.toggle("collapsed", collapsed);

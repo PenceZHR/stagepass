@@ -111,7 +111,7 @@ export class AsideStore {
    */
   note(changeId: string, seq: number, note: string | Uint8Array): boolean {
     /*
-     * **收字节也收字符串。** 面板那一层（`web/`）有条护栏：pty 路径上的模块
+     * **收字节也收字符串。** 面板那一层（`web/`）有条护栏：流式渲染路径上的模块
      * 只转发字节、不许解释（没有 TextDecoder / JSON.parse / toString）—— 它挡的
      * 是「有人顺手在转发层解析起了内容」，而理由和这条账无关，但规矩是规矩。
      * 所以解码落在这儿，和 `domain/rubric-edit.ts` 的 `parseRubricEdit` 同一个

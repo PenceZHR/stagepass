@@ -103,12 +103,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/stream-state.ts": 2,
   "codex/app-server-session.ts": 2,
   "codex/app-server-transport.ts": 2,
-  "codex/invocation.ts": 2,
+  "codex/app-server-history.ts": 2,
   "codex/archive.ts": 2,
   // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。
   "codex/trust.ts": 2,
-  "codex/rollout.ts": 2,
-  "codex/tui-transport.ts": 2,
   "codex/turn-runner.ts": 2,
 
   "domain/round.ts": 4,
@@ -151,14 +149,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
 
   // The panel is not a new layer, but its two halves sit at different ones.
   //
-  // `pty-session` only carries bytes: that is L2's second launch implementation,
-  // the first being osascript + Terminal.app (PRD §6, the L2 row).
-  //
   // `panel-server` also puts gate decisions to a person and applies the answer,
   // and that IS L3. It was declared 2 while it only hosted terminals; the guard
   // caught the drift the moment the question path was wired in, which is
   // exactly what this rule is for.
-  "web/pty-session.ts": 2,
   /*
    * 面板那两屏读出来的东西（`/api/panel`、`/api/progress`）。
    *
@@ -245,9 +239,6 @@ const GRAPH = parseModuleGraph(production);
  * reached, and one reachable from nowhere still does not.
  */
 const ENTRY_POINTS = [
-  "scripts/verify-rebuild.ts",
-  "scripts/verify-decision.ts",
-  "scripts/verify-round.ts",
   "scripts/panel.ts",
 ].map((path) => ({
   path,
@@ -382,41 +373,11 @@ describe("standing · one name per concept", () => {
   });
 });
 
-describe("standing · pty output is never interpreted", () => {
-  /**
-   * The fifth guard, and the precondition the terminal panel was accepted on
-   * (PRD §9.3).
-   *
-   * It replaces "there is no rendering code in `src/`", which stopped being
-   * checkable once Codex began drawing inside a browser. The replacement has to
-   * be just as mechanical, because the thing it prevents is a slide, not a
-   * decision: first a highlight when a turn ends, then a hint when the selector
-   * scrolls away, and by then StagePass is parsing Codex's stream and drawing
-   * its own interface -- the approach the user rejected outright (§2.4, third
-   * row). The ONLY difference between the panel and that approach is "does not
-   * interpret", so it cannot be left to judgement.
-   *
-   * Whoever has to relax this: you are reopening a settled decision, not
-   * loosening a style rule.
-   */
-  // This branch deliberately introduces a structured App Server renderer.
-  // The byte-only rule now guards only the legacy PTY adapter while it is
-  // being removed; structured HTTP modules must decode their own JSON bodies.
-  const ptyModules = production.filter((file) => file.path === "web/pty-session.ts");
-
-  it("has pty modules at all, so this guard is not vacuously green", () => {
-    assert.ok(
-      ptyModules.length === 1,
-      "expected the legacy PTY adapter while the migration is in progress",
-    );
-  });
-
-  it("turns bytes into text nowhere on the pty path", () => {
-    // Each of these is a way to get a string out of bytes. None has a use in a
-    // module whose whole job is to forward them.
-    const forbidden = ["TextDecoder", ".toString(", "JSON.parse", "String.fromCharCode"];
+describe("standing · Codex runtime is pure App Server", () => {
+  it("production has no PTY, TUI, rollout-file, or private-state path", () => {
+    const forbidden = ["node-pty", "@xterm", "/pty/", "state_5.sqlite", "rollout-"];
     const found: string[] = [];
-    for (const file of ptyModules) {
+    for (const file of production) {
       const code = withoutComments(file.text);
       for (const token of forbidden) {
         if (code.includes(token)) found.push(`${file.path}: ${token}`);
@@ -425,38 +386,11 @@ describe("standing · pty output is never interpreted", () => {
     assert.deepEqual(found, []);
   });
 
-  it("asks node-pty for bytes rather than the string it defaults to", () => {
-    const session = production.find((file) => file.path === "web/pty-session.ts");
-    assert.ok(session, "web/pty-session.ts is missing");
-    const code = withoutComments(session.text);
-    // Without this, onData yields a decoded string -- which both hands callers
-    // the thing this rule withholds and corrupts any multi-byte character that
-    // happens to straddle a chunk boundary.
-    assert.match(code, /encoding:\s*null/);
-    // And the type it hands out is the narrow one.
-    assert.match(code, /onBytes\(listener:\s*\(bytes:\s*Uint8Array\)/);
-  });
-
-  /**
-   * **`node-pty` 只许用到才加载。**
-   *
-   * 它是原生模块，而且只带 darwin / win32 的预编译产物。一句模块顶部的值导入，
-   * 就让整条注入假 pty 的路一起废掉 —— 2026-08-06 CI 第一次真跑撞到：
-   * `panel-server.test.ts` 明明塞的是假的，却因为加载不了原生模块，114 条测试
-   * 一条都没执行。
-   *
-   * **注入点在、依赖却是硬加载的，那道缝就是假的。** 这条钉住它别再变回去。
-   * `import type` 不算 —— 它编译后一个字节都不留。
-   */
-  it("**不在模块顶部加载 node-pty** —— 那会让注入的那道缝重新变成假的", () => {
-    const session = production.find((file) => file.path === "web/pty-session.ts");
-    assert.ok(session, "web/pty-session.ts is missing");
-    const valueImports = [...withoutComments(session.text)
-      .matchAll(/^import\s+(?!type\b)[^;]*?from\s+["']node-pty["']/gm)];
-    assert.deepEqual(
-      valueImports.map((match) => match[0]), [],
-      "值导入会在加载模块时就要原生模块 —— 改成 import type + 用到才 require",
-    );
+  it("only the supervised App Server client spawns Codex", () => {
+    const spawners = production
+      .filter((file) => /\bspawn\s*\(/.test(withoutComments(file.text)))
+      .map((file) => file.path);
+    assert.deepEqual(spawners, ["codex/app-server-client.ts"]);
   });
 });
 

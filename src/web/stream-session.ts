@@ -19,6 +19,7 @@ export interface StreamSessionsOptions {
   readonly effort: string;
   readonly model?: string;
   readonly requestTimeoutMs?: number;
+  readonly now?: () => number;
 }
 
 export interface StreamOpenOptions {
@@ -47,6 +48,8 @@ export function isStreamSeat(value: string): value is StreamSeat {
 export class StreamSessions {
   private readonly sessions = new Map<string, AppServerSession>();
   private readonly opening = new Map<string, Promise<AppServerSession>>();
+  private readonly lastActivityAt = new Map<string, number>();
+  private readonly unsubscribeActivity = new Map<string, () => void>();
   private readonly bindings: BindingStore;
 
   constructor(private readonly options: StreamSessionsOptions) {
@@ -84,6 +87,12 @@ export class StreamSessions {
   active(changeId: string, seat: StreamSeat): boolean {
     const session = this.sessions.get(StreamSessions.key(changeId, seat));
     return session !== undefined && session.snapshot().activeTurnId !== null;
+  }
+
+  /** Milliseconds since the last typed App Server event for an open seat. */
+  quietForMs(changeId: string, seat: StreamSeat): number | null {
+    const at = this.lastActivityAt.get(StreamSessions.key(changeId, seat));
+    return at === undefined ? null : Math.max(0, this.now() - at);
   }
 
   eventsAfter(
@@ -129,14 +138,34 @@ export class StreamSessions {
   }
 
   close(changeId: string, seat: StreamSeat): void {
-    this.sessions.delete(StreamSessions.key(changeId, seat));
+    const key = StreamSessions.key(changeId, seat);
+    const session = this.sessions.get(key);
+    if (session !== undefined) this.options.host.close(session.threadId);
+    this.unsubscribeActivity.get(key)?.();
+    this.unsubscribeActivity.delete(key);
+    this.lastActivityAt.delete(key);
+    this.sessions.delete(key);
   }
 
   forget(changeId: string): void {
     const prefix = `${changeId}\0`;
-    for (const key of this.sessions.keys()) {
-      if (key.startsWith(prefix)) this.sessions.delete(key);
+    for (const [key, session] of this.sessions) {
+      if (!key.startsWith(prefix)) continue;
+      this.options.host.close(session.threadId);
+      this.unsubscribeActivity.get(key)?.();
+      this.unsubscribeActivity.delete(key);
+      this.lastActivityAt.delete(key);
+      this.sessions.delete(key);
     }
+  }
+
+  closeAll(): void {
+    for (const unsubscribe of this.unsubscribeActivity.values()) unsubscribe();
+    this.sessions.clear();
+    this.opening.clear();
+    this.unsubscribeActivity.clear();
+    this.lastActivityAt.clear();
+    this.options.host.closeAll();
   }
 
   private async openOnce(
@@ -153,6 +182,11 @@ export class StreamSessions {
       threadId,
       this.sessionOptions(cwd, openOptions.config),
     );
+    const key = StreamSessions.key(changeId, seat);
+    this.lastActivityAt.set(key, this.now());
+    this.unsubscribeActivity.set(key, session.subscribe(() => {
+      this.lastActivityAt.set(key, this.now());
+    }));
     if (seat === STREAM_ASIDE) this.bindings.bindAside(changeId, session.threadId);
     else this.bindings.bind(changeId, seat, session.threadId);
     return session;
@@ -211,6 +245,10 @@ export class StreamSessions {
       );
     }
     return session;
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now();
   }
 
   private static key(changeId: string, seat: StreamSeat): string {

@@ -30,27 +30,39 @@ import type { QuestionStore } from "../store/question-store";
 export interface AskSessions {
   /** 往**同一个**会话里打字。另起进程会打掉人眼前正画着的选择器。 */
   type(changeId: string, phase: Phase, line: string): Promise<boolean>;
-  /** 那个进程还活着吗。判据是**进程状态**，不是 pty 的输出（PRD §9.3）。 */
+  /** 那个会话还有活跃 turn 吗。判据是 App Server 状态，不是渲染文本（PRD §9.3）。 */
   has(changeId: string, phase: Phase): boolean;
   /**
-   * 这个阶段绑的线程，rollout 现在有几条记录。**认不出线程就说 null** ——
+   * 这个阶段绑的线程，App Server 现在返回几条 turn。**认不出线程就说 null** ——
    * 「读不出来」返回 0 会被当成「整个文件都是新的」，那正是 2026-08-08
-   * `recordCount` 那个 bug 的形状（`codex/rollout.ts` 的 `findOwnCompletedTurn`）。
+   * `recordCount` 那个 bug 的形状。
    *
-   * 可选：读得到 rollout 的实现（`PanelSessions`）才有；测试的假会话可以不给，
+   * 可选：读得到 App Server history 的实现（`PanelSessions`）才有；测试的假会话可以不给，
    * 不给就等于探不了，`waitForAnswer` 退回「答案 + 进程」两个判据。
    */
-  recordCount?(changeId: string, phase: Phase): number | null;
+  recordCount?(
+    changeId: string,
+    phase: Phase,
+  ): number | null | Promise<number | null>;
   /**
-   * 从 `fromIndex` 起，**装着这句提示词的那一轮**在 rollout 里已经跑完了没有。
+   * 从 `fromIndex` 起，**装着这句提示词的那一轮**在 App Server history 里已经跑完了没有。
    * 判据和 transport 认轮一字不差（认提示词，不认「谁先出现」）。
    */
-  turnEnded?(changeId: string, phase: Phase, fromIndex: number, prompt: string): boolean;
+  turnEnded?(
+    changeId: string,
+    phase: Phase,
+    fromIndex: number,
+    prompt: string,
+  ): boolean | Promise<boolean>;
   /**
-   * 同一个判据，按**线程 id** 找文件 —— 「上一轮死而复生」的探测用（那条 turn
+   * 同一个判据，按**线程 id** 读会话 —— 「上一轮死而复生」的探测用（那条 turn
    * 记着自己当时跑在哪条线程上，而阶段的绑定此后可能已经换了）。
    */
-  threadTurnEnded?(threadId: string, fromIndex: number, prompt: string): boolean;
+  threadTurnEnded?(
+    threadId: string,
+    fromIndex: number,
+    prompt: string,
+  ): boolean | Promise<boolean>;
 }
 
 /**
@@ -153,17 +165,17 @@ export async function waitForAnswer(input: {
   let reason: Unanswered = "no_answer_in_time";
   /*
    * **「turn 结束了而题没答」是第三种死法**，前两个判据都看不见它：进程活着
-   * （TUI 跑完不退），答案永远不会来（人对表单的任何动作都会落答案，所以没答案
+   * （会话仍可恢复），答案永远不会来（人对表单的任何动作都会落答案，所以没答案
    * = 模型压根没把题端给人）。2026-08-09 真机：模型一个工具都没调、吐了条空话
    * 就完了 turn，人对着静止的 composer 干等了 12 分钟。
    *
    * 治法和 transport 的「补一下回车」同一个形状，三重闸：那一轮**确实结束**
-   * （rollout 里有它的 task_complete）、答案**确实没有**、只补一次。补的那句是
+   * （App Server turn 已结束）、答案**确实没有**、只补一次。补的那句是
    * `ASK_TOOL_LINE` —— 新的一轮，探测的起点和认的话都要跟着换。
    */
   let needle = input.prompt ?? null;
   let from = needle !== null
-    ? sessions.recordCount?.(changeId, phase) ?? null
+    ? await sessions.recordCount?.(changeId, phase) ?? null
     : null;
   let retyped = false;
   while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
@@ -172,7 +184,7 @@ export async function waitForAnswer(input: {
       break;
     }
     if (from !== null && needle !== null
-      && sessions.turnEnded?.(changeId, phase, from, needle) === true
+      && await sessions.turnEnded?.(changeId, phase, from, needle) === true
       // 答案和 task_complete 之间隔着模型收尾的那几秒，但还是再看一眼 —— 有了
       // 答案就不该补，多打的那一轮只会白白弹一次「此刻没有在等任何问题」。
       && !questions.readAnswerFor(questionId)) {
@@ -183,7 +195,7 @@ export async function waitForAnswer(input: {
       retyped = true;
       const line = input.retypeLine ?? ASK_TOOL_LINE;
       // 起点先取、再打字：打进去的那句话之后的记录才算新一轮的。
-      from = sessions.recordCount?.(changeId, phase) ?? from;
+      from = await sessions.recordCount?.(changeId, phase) ?? from;
       needle = line;
       if (!await sessions.type(changeId, phase, line)) {
         reason = "session_died_before_answering";

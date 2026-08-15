@@ -52,7 +52,7 @@ class FakeConnection implements AppServerConnection {
   }
 }
 
-function setup() {
+function setup(now?: () => number) {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
   database.exec(SCHEMA_SQL);
@@ -65,6 +65,7 @@ function setup() {
     sandbox: "workspace-write",
     approvalPolicy: "on-request",
     effort: "xhigh",
+    ...(now === undefined ? {} : { now }),
   });
   return { database, connection, sessions };
 }
@@ -116,9 +117,14 @@ describe("StreamSessions", () => {
   });
 
   it("projects events and delegates turn controls to the exact open seat", async () => {
-    const { database, connection, sessions } = setup();
+    let clock = 1_000;
+    const { database, connection, sessions } = setup(() => clock);
     try {
+      assert.equal(sessions.quietForMs("CHG-1", "PRD"), null);
       await sessions.open("CHG-1", "PRD");
+      assert.equal(sessions.quietForMs("CHG-1", "PRD"), 0);
+      clock = 1_250;
+      assert.equal(sessions.quietForMs("CHG-1", "PRD"), 250);
       assert.equal(sessions.has("CHG-1", "PRD"), true);
       assert.equal(sessions.active("CHG-1", "PRD"), false);
       const turnId = await sessions.startTurn("CHG-1", "PRD", "开始");
@@ -128,12 +134,15 @@ describe("StreamSessions", () => {
         turnId,
         item: { type: "agentMessage", id: "ITEM-1", text: "" },
       });
+      assert.equal(sessions.quietForMs("CHG-1", "PRD"), 0);
+      clock = 1_500;
       connection.emit("item/agentMessage/delta", {
         threadId: "THREAD-1",
         turnId,
         itemId: "ITEM-1",
         delta: "流式",
       });
+      assert.equal(sessions.quietForMs("CHG-1", "PRD"), 0);
       await sessions.steer("CHG-1", "PRD", "继续", turnId);
       await sessions.interrupt("CHG-1", "PRD", turnId);
       connection.emit("turn/completed", {
