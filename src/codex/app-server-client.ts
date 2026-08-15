@@ -89,6 +89,9 @@ export class AppServerClient {
   readonly pid: number | null;
 
   private readonly pending = new Map<RpcId, PendingRequest>();
+  private readonly notificationListeners = new Set<
+    (message: AppServerNotification) => void
+  >();
   private readonly exitPromise: Promise<AppServerExit>;
   private nextRequestId = 1;
   private stdoutBuffer = "";
@@ -102,6 +105,7 @@ export class AppServerClient {
     private readonly options: AppServerClientOptions,
   ) {
     this.pid = child.pid ?? null;
+    this.notificationListeners.add(options.onNotification);
     this.exitPromise = new Promise<AppServerExit>((resolve) => {
       this.resolveExit = resolve;
     });
@@ -154,6 +158,13 @@ export class AppServerClient {
   notify(method: string, params: Readonly<Record<string, unknown>> = {}): void {
     if (this.exitFacts !== null) throw this.exitedError();
     this.writeMessage({ method, params });
+  }
+
+  subscribeNotifications(
+    listener: (message: AppServerNotification) => void,
+  ): () => void {
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
   }
 
   respond(id: RpcId, result: unknown): void {
@@ -250,10 +261,11 @@ export class AppServerClient {
       return;
     }
     if (typeof method === "string") {
-      this.options.onNotification({
+      const notification = {
         method,
         params: asRecord(message.params),
-      });
+      };
+      for (const listener of this.notificationListeners) listener(notification);
       return;
     }
     if (!isRpcId(id)) return;
