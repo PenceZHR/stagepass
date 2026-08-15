@@ -87,7 +87,7 @@ Observed on 2026-08-15: tmux 3.7b; Codex CLI/managed App Server 0.147.0; the off
 - Modify: `src/codex/app-server-client.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing process-boundary tests**
+- [x] **Step 1: Write failing process-boundary tests**
 
 ```ts
 it("passes command arguments without a shell", async () => {
@@ -114,7 +114,7 @@ it("starts daemon, opens proxy, and never stops daemon on close", async () => {
 });
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/system/process.test.ts src/codex/app-server-daemon.test.ts
@@ -122,7 +122,7 @@ node --import tsx --test --test-concurrency=1 src/system/process.test.ts src/cod
 
 Expected: FAIL because the new modules do not exist.
 
-- [ ] **Step 3: Implement the process seam and daemon owner**
+- [x] **Step 3: Implement the process seam and daemon owner**
 
 ```ts
 export interface ProcessRequest {
@@ -147,7 +147,7 @@ export function createProcessOps(): ProcessOps;
 
 Every Node spawn uses `{ shell: false, stdio: ["pipe", "pipe", "pipe"] }`. `AppServerClient.spawn` accepts optional `processOps`. `startManagedAppServer` runs `codex app-server daemon start`, maps nonzero exit to `app_server_daemon_unavailable`, spawns `codex app-server proxy`, initializes it, and closes only the proxy.
 
-- [ ] **Step 4: Update the architecture layer map and spawner guard**
+- [x] **Step 4: Update the architecture layer map and spawner guard**
 
 Put both production modules in layer 2 and assert:
 
@@ -160,7 +160,7 @@ it("only the system process boundary calls Node spawn", () => {
 });
 ```
 
-- [ ] **Step 5: Validate and commit**
+- [x] **Step 5: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/system/process.test.ts src/codex/app-server-client.test.ts src/codex/app-server-daemon.test.ts src/architecture.test.ts
