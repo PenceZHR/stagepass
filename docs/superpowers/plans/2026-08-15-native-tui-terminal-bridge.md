@@ -33,7 +33,7 @@ The old browser stream files are deleted only after the native path is green: `s
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-15-native-tui-terminal-bridge.md` (check boxes and record observed versions only)
 
-- [ ] **Step 1: Confirm the worktree boundary and port**
+- [x] **Step 1: Confirm the worktree boundary and port**
 
 Run:
 
@@ -46,7 +46,7 @@ lsof -nP -iTCP:4173 -sTCP:LISTEN
 
 Expected: current directory ends in `native-streaming-app-server`, the experiment branch is `codex/native-streaming-app-server`, both trees have no unexpected changes, and no process listens on 4173.
 
-- [ ] **Step 2: Install the approved tmux dependency**
+- [x] **Step 2: Install the approved tmux dependency**
 
 ```bash
 brew install tmux
@@ -55,7 +55,7 @@ tmux -V
 
 Expected: Homebrew completes and `tmux -V` prints a version.
 
-- [ ] **Step 3: Verify the exact official daemon/proxy/remote interfaces**
+- [x] **Step 3: Verify the exact official daemon/proxy/remote interfaces**
 
 ```bash
 codex app-server daemon start
@@ -66,13 +66,15 @@ codex resume --help
 
 Expected: daemon version returns JSON, proxy documents the managed socket, and resume accepts `unix://` plus a session id. If the CLI says remote control is disabled, use its official `codex app-server daemon enable-remote-control` command once and rerun; do not invent a socket path.
 
-- [ ] **Step 4: Preserve the passing baseline**
+- [x] **Step 4: Preserve the passing baseline**
 
 ```bash
 pnpm check
 ```
 
 Expected: 1,073 tests pass and typecheck succeeds. A sandbox-only loopback `EPERM` is rerun with the approved unsandboxed test command and is not accepted as a product failure.
+
+Observed on 2026-08-15: tmux 3.7b; Codex CLI/managed App Server 0.147.0; the official standalone installer placed the managed binary under `~/.codex/packages/standalone/current/codex`; daemon start reported the default control socket under `~/.codex/app-server-control/`; baseline passed 1,073/1,073. The installer also added `~/.local/bin` to `~/.zprofile` as documented by its output.
 
 ## Task 2: Centralize child processes and connect through the managed daemon
 
