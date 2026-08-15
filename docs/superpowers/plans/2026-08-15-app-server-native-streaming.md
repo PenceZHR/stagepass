@@ -58,7 +58,7 @@ The fixture accepts only the real launch shape (`app-server --listen stdio://`) 
 ```ts
 const client = AppServerClient.spawn({
   command: process.execPath,
-  args: [FAKE_APP_SERVER],
+  args: [FAKE_APP_SERVER, "app-server", "--listen", "stdio://"],
   cwd: process.cwd(),
   onNotification: (message) => notifications.push(message),
   onServerRequest: async (message) => ({ decision: "decline" }),
