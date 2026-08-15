@@ -177,6 +177,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 在接口写进去的那一刻就会红。
   // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
   "web/session-recovery.ts": 5,
+  // Change/seat 到 thread + tmux + Terminal 的可重建状态机。
+  "web/native-sessions.ts": 5,
   "web/stream-session.ts": 5,
   "web/codex-stream-api.ts": 5,
   "web/panel-listener.ts": 5,

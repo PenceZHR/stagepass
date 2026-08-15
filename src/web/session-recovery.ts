@@ -17,6 +17,10 @@ export type PreparedThread =
   | { readonly kind: "fresh"; readonly replacedThreadId: string }
   | { readonly kind: "refused"; readonly reason: string };
 
+export type InspectedThread =
+  | { readonly kind: "open" | "archived" | "missing"; readonly threadId: string }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
 type RecoveryBindings = Pick<
   BindingStore,
   "listBound" | "detach" | "detachAside"
@@ -31,6 +35,19 @@ function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Read-only public-protocol classification used by status and recovery. */
+export async function inspectBoundThread(
+  binding: BoundThread,
+  archive: ArchiveOps,
+): Promise<InspectedThread> {
+  try {
+    const kind = await archive.availability(binding.threadId);
+    return { kind, threadId: binding.threadId };
+  } catch (error) {
+    return { kind: "unavailable", reason: detail(error) };
+  }
+}
+
 /** Startup audit: detach only App Server-confirmed missing threads. */
 export async function reconcileMissingBindings(
   bindings: RecoveryBindings,
@@ -39,14 +56,12 @@ export async function reconcileMissingBindings(
   const detached: BoundThread[] = [];
   const unavailable: { binding: BoundThread; reason: string }[] = [];
   for (const binding of bindings.listBound()) {
-    try {
-      const state = await archive.availability(binding.threadId);
-      if (state === "missing") {
-        detachBinding(bindings, binding);
-        detached.push(binding);
-      }
-    } catch (error) {
-      unavailable.push({ binding, reason: detail(error) });
+    const inspected = await inspectBoundThread(binding, archive);
+    if (inspected.kind === "missing") {
+      detachBinding(bindings, binding);
+      detached.push(binding);
+    } else if (inspected.kind === "unavailable") {
+      unavailable.push({ binding, reason: inspected.reason });
     }
   }
   return { detached, unavailable };
@@ -59,14 +74,12 @@ export async function prepareBoundThread(input: {
   readonly detach: (binding: BoundThread) => void;
 }): Promise<PreparedThread> {
   const { binding, archive, detach } = input;
-  let state;
-  try {
-    state = await archive.availability(binding.threadId);
-  } catch (error) {
-    return { kind: "refused", reason: detail(error) };
+  const inspected = await inspectBoundThread(binding, archive);
+  if (inspected.kind === "unavailable") {
+    return { kind: "refused", reason: inspected.reason };
   }
-  if (state === "open") return { kind: "resume", threadId: binding.threadId };
-  if (state === "missing") {
+  if (inspected.kind === "open") return { kind: "resume", threadId: binding.threadId };
+  if (inspected.kind === "missing") {
     detach(binding);
     return { kind: "fresh", replacedThreadId: binding.threadId };
   }

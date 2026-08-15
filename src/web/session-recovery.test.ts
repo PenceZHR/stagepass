@@ -5,6 +5,7 @@ import type { ArchiveOps } from "../codex/archive";
 import type { ThreadAvailability } from "../codex/app-server-history";
 import type { BoundThread } from "../store/binding-store";
 import {
+  inspectBoundThread,
   prepareBoundThread,
   reconcileMissingBindings,
 } from "./session-recovery";
@@ -41,6 +42,30 @@ const ROUND: BoundThread = {
 };
 
 describe("App Server session recovery", () => {
+  it("只读检查能区分 open / archived / missing / unavailable，且不解档不解绑", async () => {
+    const archive = fakeArchive({
+      "T-OPEN": "open",
+      "T-ARCHIVED": "archived",
+      "T-MISSING": "missing",
+      "T-DOWN": "unavailable",
+    });
+    const binding = (threadId: string): BoundThread => ({ ...ROUND, threadId });
+
+    assert.deepEqual(await inspectBoundThread(binding("T-OPEN"), archive), {
+      kind: "open", threadId: "T-OPEN",
+    });
+    assert.deepEqual(await inspectBoundThread(binding("T-ARCHIVED"), archive), {
+      kind: "archived", threadId: "T-ARCHIVED",
+    });
+    assert.deepEqual(await inspectBoundThread(binding("T-MISSING"), archive), {
+      kind: "missing", threadId: "T-MISSING",
+    });
+    assert.deepEqual(await inspectBoundThread(binding("T-DOWN"), archive), {
+      kind: "unavailable", reason: "app-server disconnected",
+    });
+    assert.deepEqual(archive.calls, []);
+  });
+
   it("open 原样恢复，archived 经确认解开后恢复", async () => {
     const detached: BoundThread[] = [];
     assert.deepEqual(await prepareBoundThread({
