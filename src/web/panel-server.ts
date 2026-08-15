@@ -52,6 +52,8 @@ import { startPtySession, type PtySession, type PtySessionOptions } from "./pty-
 import {
   prepareBoundThread, reconcileMissingBindings, type BindingRecoveryReport,
 } from "./session-recovery";
+import { serveCodexStreamApi } from "./codex-stream-api";
+import { STREAM_ASIDE, type StreamSessions } from "./stream-session";
 
 /**
  * The terminal panel: StagePass Web hosting the windows Codex draws in.
@@ -260,6 +262,8 @@ export interface PanelOptions {
     readonly config: Readonly<Record<string, unknown>>;
     readonly timeoutMs?: number;
   }) => CodexTransport;
+  /** Structured browser sessions; absent only in legacy/offline panel tests. */
+  readonly streams?: StreamSessions;
   /**
    * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
    * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
@@ -1391,6 +1395,23 @@ function json(response: ServerResponse, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
+function serveStructuredCodex(
+  url: URL,
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: PanelOptions,
+): Promise<boolean> {
+  if (options.streams === undefined) return Promise.resolve(false);
+  return serveCodexStreamApi(url, request, response, {
+    streams: options.streams,
+    configFor: (changeId, seat) => pluginAppServerConfigFor(
+      options.database,
+      changeId,
+      seat === STREAM_ASIDE ? undefined : seat,
+    ),
+  });
+}
+
 /**
  * 删掉一个 Change，或者一个项目（连同它底下的全部 Change）。
  *
@@ -1987,7 +2008,13 @@ function servePanel(
   }
   json(response, {
     ...panelView({
-      database, sessions, changeId,
+      database,
+      sessions: {
+        has: (each, phase) => options.streams?.has(each, phase)
+          || sessions.has(each, phase),
+        rolloutAgeMs: (each, phase) => sessions.rolloutAgeMs(each, phase),
+      },
+      changeId,
       askedProject: url.searchParams.get("project"),
       workspace: basename(options.session.cwd),
     }) as object,
@@ -2106,6 +2133,7 @@ export async function handle(
     response.end(readFileSync(asset.file));
     return;
   }
+  if (await serveStructuredCodex(url, request, response, options)) return;
 
   if (url.pathname === "/api/panel" && request.method === "GET") {
     servePanel(url, response, sessions, options);

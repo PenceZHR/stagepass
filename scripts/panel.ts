@@ -33,6 +33,7 @@ import { createRepoOps } from "../src/work/repo";
 import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createGraphApi } from "../src/web/graph-api";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
+import { StreamSessions } from "../src/web/stream-session";
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -271,6 +272,14 @@ const appServerClient = AppServerClient.spawn({
 });
 appServerHost = new AppServerSessionHost(appServerClient);
 await appServerClient.initialize();
+const streamSessions = new StreamSessions({
+  database,
+  host: appServerHost,
+  sandbox: "workspace-write",
+  approvalPolicy: "on-request",
+  effort,
+  ...(model === undefined ? {} : { model }),
+});
 
 const { server, sessions } = createPanelServer({
   database,
@@ -283,6 +292,7 @@ const { server, sessions } = createPanelServer({
    * import —— 它的依赖闭包有一条只许缩的棘轮，理由写在 PanelOptions.graph 上。
    */
   graph: createGraphApi({ database, repo }),
+  streams: streamSessions,
   appServerTransport: ({ cwd, config, timeoutMs }) =>
     new AppServerCodexTransport(appServerHost!, {
       cwd,

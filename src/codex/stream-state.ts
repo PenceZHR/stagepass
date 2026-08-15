@@ -151,7 +151,7 @@ export class StreamState {
       this.emit("error", params);
       return true;
     }
-    this.emit("notification.unknown", params);
+    this.emit("notification.unknown", { method: message.method });
     return true;
   }
 

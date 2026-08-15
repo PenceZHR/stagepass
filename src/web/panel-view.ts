@@ -37,10 +37,11 @@ import { JobStore } from "../work/job-store";
  */
 
 /**
- * 会话在这一层只需要一个动作：那个进程还活着吗。
+ * 会话在这一层只需要一个动作：那个 seat 是否已经打开。
  *
  * 结构类型而不是 `PanelSessions` —— 那个类住在 `panel-server.ts`，而这个文件
- * 被它 import。照着接口写，两边就没有环。
+ * 被它 import。照着接口写，两边就没有环。纯 App Server 分支里 `has` 来自
+ * `StreamSessions`；迁移完成前旧 PTY registry 仍作为离线测试兼容输入。
  */
 export interface LiveSessions {
   has(changeId: string, phase: Phase): boolean;

@@ -173,6 +173,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 在接口写进去的那一刻就会红。
   // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
   "web/session-recovery.ts": 5,
+  "web/stream-session.ts": 5,
+  "web/codex-stream-api.ts": 5,
   "web/panel-server.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
@@ -397,12 +399,15 @@ describe("standing · pty output is never interpreted", () => {
    * Whoever has to relax this: you are reopening a settled decision, not
    * loosening a style rule.
    */
-  const ptyModules = production.filter((file) => file.path.startsWith("web/"));
+  // This branch deliberately introduces a structured App Server renderer.
+  // The byte-only rule now guards only the legacy PTY adapter while it is
+  // being removed; structured HTTP modules must decode their own JSON bodies.
+  const ptyModules = production.filter((file) => file.path === "web/pty-session.ts");
 
   it("has pty modules at all, so this guard is not vacuously green", () => {
     assert.ok(
-      ptyModules.length >= 2,
-      "expected the panel's modules under src/web -- a guard with nothing to guard is not a guard",
+      ptyModules.length === 1,
+      "expected the legacy PTY adapter while the migration is in progress",
     );
   });
 

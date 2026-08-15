@@ -129,6 +129,18 @@ describe("StreamState", () => {
     );
   });
 
+  it("routes an unknown notification as diagnostics without forwarding its payload", () => {
+    const state = new StreamState("THREAD-1");
+    state.accept(notification("account/sensitiveChanged", {
+      threadId: "THREAD-1",
+      accessToken: "must-not-reach-the-browser",
+    }));
+
+    assert.deepEqual(state.eventsAfter(0)?.[0]?.payload, {
+      method: "account/sensitiveChanged",
+    });
+  });
+
   it("materializes and resolves an interaction without exposing the rpc id", () => {
     const state = new StreamState("THREAD-1");
     const opened = state.openInteraction({
