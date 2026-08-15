@@ -12,6 +12,7 @@ import {
 } from "../domain/phase";
 import { codexArgv } from "../codex/invocation";
 import { CodexTuiTransport, DEFAULT_SESSIONS, rollouts } from "../codex/tui-transport";
+import type { CodexTransport } from "../codex/transport";
 import { findOwnCompletedTurn, parseRollout } from "../codex/rollout";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
@@ -162,7 +163,14 @@ const cannotAskNow = (
 
 
 
-const pluginConfigFor = (
+interface StagePassPluginConfig {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  readonly defaultToolsApprovalMode: string;
+}
+
+const stagepassPluginFor = (
   database: { name: string }, changeId: string,
   /**
    * 这个会话是为哪个阶段起的（批 4 · P0 第 1 条）。跑轮的裁判会话必须给 ——
@@ -170,12 +178,28 @@ const pluginConfigFor = (
    * （它们不答 worklist），插件退回按 Change 取。
    */
   phase?: Phase,
-): string[] => [
-  `mcp_servers.stagepass.command="npx"`,
-  `mcp_servers.stagepass.args=["tsx","${join(HERE, "..", "plugin", "server.ts")}"]`,
-  `mcp_servers.stagepass.env={STAGEPASS_DB="${resolve(database.name)}",`
-  + `STAGEPASS_CHANGE="${changeId}"`
-  + (phase === undefined ? "}" : `,STAGEPASS_PHASE="${phase}"}`),
+): StagePassPluginConfig => ({
+  command: "npx",
+  args: ["tsx", join(HERE, "..", "plugin", "server.ts")],
+  env: {
+    STAGEPASS_DB: resolve(database.name),
+    STAGEPASS_CHANGE: changeId,
+    ...(phase === undefined ? {} : { STAGEPASS_PHASE: phase }),
+  },
+  defaultToolsApprovalMode: "auto",
+});
+
+const pluginConfigFor = (
+  database: { name: string }, changeId: string, phase?: Phase,
+): string[] => {
+  const plugin = stagepassPluginFor(database, changeId, phase);
+  const environment = Object.entries(plugin.env)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(",");
+  return [
+    `mcp_servers.stagepass.command=${JSON.stringify(plugin.command)}`,
+    `mcp_servers.stagepass.args=${JSON.stringify(plugin.args)}`,
+    `mcp_servers.stagepass.env={${environment}}`,
   /*
    * **许可门的根治**（BACKLOG §2.1，2026-08-05 挖出来的）。
    *
@@ -196,8 +220,23 @@ const pluginConfigFor = (
    * 真机确认待第一轮：判据是 rollout 里第一次 `stagepass_next` 调用**紧跟着**
    * `custom_tool_call_output`，中间没有等人的空白。
    */
-  `mcp_servers.stagepass.default_tools_approval_mode="auto"`,
-];
+    `mcp_servers.stagepass.default_tools_approval_mode=${
+      JSON.stringify(plugin.defaultToolsApprovalMode)}`,
+  ];
+};
+
+const pluginAppServerConfigFor = (
+  database: { name: string }, changeId: string, phase?: Phase,
+): Readonly<Record<string, unknown>> => {
+  const plugin = stagepassPluginFor(database, changeId, phase);
+  return {
+    "mcp_servers.stagepass.command": plugin.command,
+    "mcp_servers.stagepass.args": plugin.args,
+    "mcp_servers.stagepass.env": plugin.env,
+    "mcp_servers.stagepass.default_tools_approval_mode":
+      plugin.defaultToolsApprovalMode,
+  };
+};
 
 /**
  * 一份产出最大读多大，超过就只报大小、不读。
@@ -211,6 +250,16 @@ const ARTIFACT_MAX_BYTES = 2_000_000;
 export interface PanelOptions {
   readonly database: Database.Database;
   readonly session: PtySessionOptions;
+  /**
+   * Background stage turns use this structured App Server seam when supplied.
+   * The remaining PTY surface is migrated separately; production supplies it
+   * in this branch so round execution never falls back to rollout parsing.
+   */
+  readonly appServerTransport?: (input: {
+    readonly cwd: string;
+    readonly config: Readonly<Record<string, unknown>>;
+    readonly timeoutMs?: number;
+  }) => CodexTransport;
   /**
    * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
    * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
@@ -1011,11 +1060,18 @@ async function runRound(input: {
   // `dispatchPrecheck` 里，这里只管把拒绝按 `refuse` 的规矩落账、回滚状态。
   const refused = dispatchPrecheck(database, sessions, changeId, phase);
   if (refused !== null) return refuse(refused);
+  const workspace = sessions.workspaceFor(changeId);
+  if (workspace === null) throw new ProjectPathMissingError(changeId);
 
   const loop = new TurnLoop({
     database,
     runner: new RoundTurnRunner({
-      transport: new CodexTuiTransport({
+      transport: options.appServerTransport?.({
+        cwd: workspace,
+        config: pluginAppServerConfigFor(database, changeId, phase),
+        ...(options.turnTimeoutMs === undefined
+          ? {} : { timeoutMs: options.turnTimeoutMs }),
+      }) ?? new CodexTuiTransport({
         ...options.session,
         ...(options.turnTimeoutMs === undefined
           ? {} : { timeoutMs: options.turnTimeoutMs }),

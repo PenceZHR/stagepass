@@ -234,6 +234,10 @@ export class StreamState {
     const turn = asRecord(params.turn);
     const turnId = stringField(turn, "id");
     if (turnId === null) return false;
+    const existing = this.turns.get(turnId);
+    if (existing === "completed" || existing === "failed" || existing === "interrupted") {
+      return false;
+    }
     if (this.activeTurnId === turnId && this.turns.get(turnId) === "inProgress") {
       return false;
     }

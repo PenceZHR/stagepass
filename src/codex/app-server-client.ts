@@ -92,12 +92,14 @@ export class AppServerClient {
   private readonly notificationListeners = new Set<
     (message: AppServerNotification) => void
   >();
+  private readonly disconnectListeners = new Set<(error: Error) => void>();
   private readonly exitPromise: Promise<AppServerExit>;
   private nextRequestId = 1;
   private stdoutBuffer = "";
   private stderrTail = "";
   private exitFacts: AppServerExit | null = null;
   private closeStarted = false;
+  private disconnectError: Error | null = null;
   private resolveExit!: (facts: AppServerExit) => void;
 
   private constructor(
@@ -167,6 +169,15 @@ export class AppServerClient {
     return () => this.notificationListeners.delete(listener);
   }
 
+  subscribeDisconnect(listener: (error: Error) => void): () => void {
+    if (this.disconnectError !== null) {
+      queueMicrotask(() => listener(this.disconnectError!));
+      return () => {};
+    }
+    this.disconnectListeners.add(listener);
+    return () => this.disconnectListeners.delete(listener);
+  }
+
   respond(id: RpcId, result: unknown): void {
     this.writeMessage({ id, result });
   }
@@ -208,16 +219,20 @@ export class AppServerClient {
     this.child.stderr.setEncoding("utf8");
     this.child.stderr.on("data", (chunk: string) => this.consumeStderr(chunk));
     this.child.once("error", (error) => {
-      this.rejectAll(new AppServerError(
+      const disconnected = new AppServerError(
         "app_server_disconnected",
         `codex app-server process error: ${error.message}`,
-      ));
+      );
+      this.rejectAll(disconnected);
+      this.reportDisconnect(disconnected);
     });
     this.child.once("close", (code, signal) => {
       this.flushStdout();
       const facts = { code, signal };
       this.exitFacts = facts;
-      this.rejectAll(this.exitedError());
+      const disconnected = this.exitedError();
+      this.rejectAll(disconnected);
+      this.reportDisconnect(disconnected);
       this.resolveExit(facts);
     });
   }
@@ -331,6 +346,13 @@ export class AppServerClient {
 
   private rejectAll(error: Error): void {
     for (const id of [...this.pending.keys()]) this.rejectPending(id, error);
+  }
+
+  private reportDisconnect(error: Error): void {
+    if (this.disconnectError !== null) return;
+    this.disconnectError = error;
+    for (const listener of this.disconnectListeners) listener(error);
+    this.disconnectListeners.clear();
   }
 
   private exitedError(): AppServerError {

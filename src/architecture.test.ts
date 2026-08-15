@@ -102,6 +102,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 持有 Codex thread/turn/item 生命周期，不认识 Change、phase 或界面。
   "codex/stream-state.ts": 2,
   "codex/app-server-session.ts": 2,
+  "codex/app-server-transport.ts": 2,
   "codex/invocation.ts": 2,
   "codex/archive.ts": 2,
   // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。

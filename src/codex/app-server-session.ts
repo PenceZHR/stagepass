@@ -23,6 +23,7 @@ export interface AppServerConnection {
   subscribeNotifications(
     listener: (message: AppServerNotification) => void,
   ): () => void;
+  subscribeDisconnect?(listener: (error: Error) => void): () => void;
 }
 
 export interface AppServerSessionOptions {

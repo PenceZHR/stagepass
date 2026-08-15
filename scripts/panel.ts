@@ -16,6 +16,11 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
+import { AppServerClient } from "../src/codex/app-server-client";
+import {
+  AppServerCodexTransport,
+  AppServerSessionHost,
+} from "../src/codex/app-server-transport";
 import { prepareSchema } from "../src/db/schema";
 import { PHASES } from "../src/domain/phase";
 import { RUBRIC_ROLES } from "../src/domain/rubric";
@@ -246,6 +251,27 @@ if (
  */
 const repo = createRepoOps();
 
+/*
+ * 这条分支的 Codex 运行时只有这一份 App Server 进程。所有阶段 thread 都复用它，
+ * 反向的审批/elicitation 再按 threadId 路由回各自 session；绝不为每一轮另起 TUI。
+ */
+let appServerHost: AppServerSessionHost | null = null;
+const appServerClient = AppServerClient.spawn({
+  command: "codex",
+  args: ["app-server", "--listen", "stdio://"],
+  cwd: process.cwd(),
+  env: process.env,
+  onNotification: () => {},
+  onServerRequest: (request) => appServerHost === null
+    ? Promise.reject(new Error("app-server session host is not ready"))
+    : appServerHost.handleServerRequest(request),
+  onStderr: (message) => {
+    if (message !== "") console.error(`[app-server] ${message}`);
+  },
+});
+appServerHost = new AppServerSessionHost(appServerClient);
+await appServerClient.initialize();
+
 const { server, sessions } = createPanelServer({
   database,
   askTimeoutMs,
@@ -257,6 +283,16 @@ const { server, sessions } = createPanelServer({
    * import —— 它的依赖闭包有一条只许缩的棘轮，理由写在 PanelOptions.graph 上。
    */
   graph: createGraphApi({ database, repo }),
+  appServerTransport: ({ cwd, config, timeoutMs }) =>
+    new AppServerCodexTransport(appServerHost!, {
+      cwd,
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+      effort,
+      config,
+      ...(model === undefined ? {} : { model }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    }),
   session: {
     // Where Codex runs. The repository itself, because a phase's work is about
     // this tree -- unlike the probes, which use an empty directory on purpose.
@@ -303,14 +339,19 @@ const { server, sessions } = createPanelServer({
 // unavailable 只报告，不写库；真正 archived 的线程留到用户打开时再解开。
 const bindingRecovery = sessions.reconcileBindings();
 
-const stop = (registry: PanelSessions): void => {
+let stopping = false;
+const stop = async (registry: PanelSessions): Promise<void> => {
+  if (stopping) return;
+  stopping = true;
   registry.closeAll();
+  appServerHost?.closeAll();
   server.close();
+  await appServerClient.close(1_000);
   database.close();
   process.exit(0);
 };
-process.on("SIGINT", () => { stop(sessions); });
-process.on("SIGTERM", () => { stop(sessions); });
+process.on("SIGINT", () => { void stop(sessions); });
+process.on("SIGTERM", () => { void stop(sessions); });
 
 /*
  * **只绑回环。**（BACKLOG §3.4「面板无鉴权 0 处」的那一半）

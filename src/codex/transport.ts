@@ -3,11 +3,11 @@
  *
  * ## One method, and it is a public one
  *
- * Measured against `codex mcp-server` 0.144.4 on 2026-07-28: a thread is
- * created BY its first turn, not opened beforehand. So this is a single call
- * that takes the thread it is continuing, or null to start one, and returns the
- * thread it ran on. An earlier two-method shape (openThread + startTurn)
- * described an API that does not exist.
+ * The production implementation uses Codex App Server's public structured
+ * protocol. App Server opens a persistent thread before its first turn; this
+ * one-method business seam deliberately keeps that protocol detail below L2.
+ * Callers ask to run on an existing thread or a fresh one and receive the
+ * thread that actually owns the completed turn.
  *
  * The whole unproven surface of L2 is this interface. Everything around it --
  * binding, turn records, the response contract, every failure path -- is proved
@@ -15,11 +15,9 @@
  *
  * ## No private protocol
  *
- * `codex mcp-server` is a documented subcommand speaking MCP 2025-06-18 over
- * stdio. The tree this replaces drove Codex through a private `le32-json` IPC
- * socket and pinned `bundleVersion` fingerprints in an allowlist, so every
- * Desktop release could break it -- a 4000-line verifier existed to hedge that
- * risk. Nothing here depends on an interface Codex does not publish.
+ * `codex app-server --listen stdio://` speaks documented JSONL JSON-RPC. The
+ * transport consumes thread/turn/item messages directly; it neither drives a
+ * terminal nor parses private rollout files to infer completion.
  */
 
 export interface TurnDispatch {
