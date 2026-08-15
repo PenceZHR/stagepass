@@ -8,6 +8,24 @@ const BODY_LIMIT = 64 * 1024;
 
 export type CodexStreamSeat = Exclude<Phase, "Done"> | "aside";
 
+/** The App Server accepted the turn, but StagePass could not make its seat durable. */
+export class ThreadBindingAfterTurnStartError extends Error {
+  readonly code = "thread_binding_failed_after_turn_start" as const;
+
+  constructor(
+    readonly changeId: string,
+    readonly seat: string,
+    readonly threadId: string,
+    readonly turnId: string,
+  ) {
+    super(
+      `turn ${turnId} started on thread ${threadId} for ${changeId}/${seat}, `
+      + "but StagePass could not persist its binding",
+    );
+    this.name = "ThreadBindingAfterTurnStartError";
+  }
+}
+
 export interface CodexStreamPort {
   open(
     changeId: string,
@@ -91,7 +109,11 @@ function errorStatus(error: unknown): number {
 }
 
 function errorCode(error: unknown): string {
-  if (error instanceof StreamApiError || error instanceof AppServerSessionError) {
+  if (
+    error instanceof StreamApiError
+    || error instanceof AppServerSessionError
+    || error instanceof ThreadBindingAfterTurnStartError
+  ) {
     return error.code;
   }
   const streamCode = streamSessionCode(error);

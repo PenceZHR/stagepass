@@ -126,9 +126,16 @@ describe("AppServerClient", () => {
   });
 
   it("force-kills a server that ignores graceful close", async () => {
-    const client = spawnClient({ mode: "hang" });
+    let markReady!: () => void;
+    const ready = new Promise<void>((resolve) => { markReady = resolve; });
+    const client = spawnClient({
+      mode: "hang",
+      onNotification: (message) => {
+        if (message.method === "fake/ready") markReady();
+      },
+    });
     assert.ok(client.pid);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await ready;
 
     const closed = await client.close(20);
 

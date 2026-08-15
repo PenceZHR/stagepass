@@ -39,6 +39,10 @@ if (mode === "hang") {
   process.on("SIGTERM", () => {});
   process.stdin.resume();
   setInterval(() => {}, 60_000);
+  // Tell the parent only after the SIGTERM handler exists. A fixed sleep in the
+  // test races process startup under load and can observe SIGTERM instead of
+  // the client's deliberate SIGKILL escalation.
+  send({ method: "fake/ready", params: {} });
 } else {
   const input = readline.createInterface({ input: process.stdin });
 

@@ -216,6 +216,22 @@ function descendants(root: FakeElement): FakeElement[] {
 }
 
 describe("StagePass-native Codex stream", () => {
+  it("does not render an empty restored user message as an unknown work item", async () => {
+    const page = fixture(snapshot({
+      items: [
+        item("USER", "userMessage"),
+        item("AGENT", "agentMessage", "STAGEPASS_STREAM_OK"),
+      ],
+    }));
+    await page.controller.open();
+
+    assert.doesNotMatch(page.surface.textContent, /未识别项目/);
+    assert.equal(
+      page.surface.children.filter((child) => child.dataset.itemId !== undefined).length,
+      1,
+    );
+  });
+
   it("appends text deltas to the existing semantic item node", async () => {
     const page = fixture(snapshot({
       activeTurnId: "TURN-1",
@@ -394,6 +410,12 @@ describe("StagePass-native Codex stream", () => {
     assert.match(html, /id="codex-stream"/);
     assert.match(html, /id="codex-composer"/);
     assert.match(html, /id="codex-interaction"/);
+  });
+
+  it("declares an inline favicon so a healthy page has no asset 404", () => {
+    const html = readFileSync(join(process.cwd(), "src", "web", "panel.html"), "utf8");
+
+    assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
   });
 
   it("stacks the workspace and keeps the full orbit on phone-sized screens", () => {

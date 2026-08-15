@@ -341,6 +341,9 @@ export function createCodexStream(options) {
 
   const putItem = (item) => {
     if (!item.id) return;
+    // App Server 的历史快照会带一个没有正文的 userMessage 占位。它不是工作项，
+    // 更不能被画成「未识别项目」挡在真正回答前面。
+    if (item.kind === "userMessage" && bodyText(item).trim() === "") return;
     items.set(item.id, item);
     let mounted = itemNodes.get(item.id);
     if (!mounted) {

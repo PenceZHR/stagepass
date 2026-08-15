@@ -61,6 +61,7 @@ import {
 } from "./session-recovery";
 import {
   serveCodexStreamApi,
+  ThreadBindingAfterTurnStartError,
   type CodexStreamPort,
 } from "./codex-stream-api";
 import {
@@ -366,7 +367,23 @@ export class PanelSessions implements CodexStreamPort {
   ): Promise<string> {
     const session = await this.open(changeId, phase, { config });
     const turnId = await this.options.streams.startTurn(changeId, phase, prompt);
-    this.bind(changeId, phase, session.threadId);
+    try {
+      this.bind(changeId, phase, session.threadId);
+    } catch (error) {
+      const cause = error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+      console.error(
+        `[panel] thread_binding_failed_after_turn_start ${changeId}/${phase}`
+        + ` thread=${session.threadId} turn=${turnId} —— ${cause}`,
+      );
+      throw new ThreadBindingAfterTurnStartError(
+        changeId,
+        phase,
+        session.threadId,
+        turnId,
+      );
+    }
     return turnId;
   }
 

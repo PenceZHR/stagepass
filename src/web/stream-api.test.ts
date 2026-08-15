@@ -198,6 +198,50 @@ describe("panel · structured App Server stream API", () => {
     });
   });
 
+  it("names a binding failure after turn/start and retries the same thread", async () => {
+    await withStreamPanel(async ({ base, connection, database }) => {
+      await post(base, "/api/codex/open", { changeId: "CHG-1", seat: "PRD" });
+      database.exec(`CREATE TRIGGER reject_test_binding
+        BEFORE INSERT ON change_bindings
+        BEGIN SELECT RAISE(ABORT, 'synthetic binding failure'); END`);
+      const logged: string[] = [];
+      const originalError = console.error;
+      console.error = (...values: unknown[]) => { logged.push(values.map(String).join(" ")); };
+      let started: Response;
+      try {
+        started = await post(base, "/api/codex/turn", {
+          changeId: "CHG-1", seat: "PRD", prompt: "turn 已经开始",
+        });
+      } finally {
+        console.error = originalError;
+      }
+
+      assert.equal(started.status, 500);
+      assert.deepEqual(await started.json(), {
+        code: "thread_binding_failed_after_turn_start",
+        message: "turn TURN-1 started on thread THREAD-1 for CHG-1/PRD, but StagePass could not persist its binding",
+      });
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
+      assert.match(logged.join("\n"), /CHG-1\/PRD.*THREAD-1.*TURN-1.*synthetic binding failure/);
+
+      database.exec("DROP TRIGGER reject_test_binding");
+      connection.emit("turn/completed", {
+        threadId: "THREAD-1",
+        turn: { id: "TURN-1", status: "completed", items: [] },
+      });
+      const retried = await post(base, "/api/codex/turn", {
+        changeId: "CHG-1", seat: "PRD", prompt: "重试持久化",
+      });
+
+      assert.equal(retried.status, 200);
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD")?.threadId, "THREAD-1");
+      assert.equal(
+        connection.requests.filter(({ method }) => method === "thread/start").length,
+        1,
+      );
+    });
+  });
+
   it("rebinds a detached in-process thread after its first successful turn", async () => {
     await withStreamPanel(async ({ base, connection, database }) => {
       await post(base, "/api/codex/open", { changeId: "CHG-1", seat: "PRD" });
