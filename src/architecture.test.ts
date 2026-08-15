@@ -103,6 +103,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/prompt-file.ts": 2,
   // 原生 Codex 会话的长寿命 owner；只以不透明名字操作 tmux，不读屏幕。
   "codex/tmux.ts": 2,
+  // 任务从原生客户端输入；StagePass 只观察结构化 turn 终态。
+  "codex/native-tui-session.ts": 2,
   "system/process.ts": 2,
   // 只按白名单 marker 发现/控制 macOS Terminal 标签，不持久化窗口 id。
   "system/terminal-app.ts": 2,

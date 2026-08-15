@@ -139,7 +139,9 @@ export class AppServerSession {
 
   readonly state: StreamState;
   private readonly pendingInteractions = new Map<string, PendingInteraction>();
+  private readonly pendingWaits = new Set<(error: Error) => void>();
   private readonly unsubscribeNotifications: () => void;
+  private disposedError: AppServerSessionError | null = null;
 
   private constructor(
     private readonly connection: AppServerConnection,
@@ -208,24 +210,70 @@ export class AppServerSession {
   }
 
   awaitTurn(turnId: string, timeoutMs = 0): Promise<CompletedTurn> {
+    if (this.disposedError !== null) return Promise.reject(this.disposedError);
     const ready = this.completedTurn(turnId);
     if (ready !== null) return Promise.resolve(ready);
     return new Promise<CompletedTurn>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        unsubscribe();
+        this.pendingWaits.delete(fail);
+        if (timer !== null) clearTimeout(timer);
+      };
+      const fail = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
       const unsubscribe = this.state.subscribe((event) => {
         if (event.kind !== "turn.completed" || event.turnId !== turnId) return;
         const completed = this.completedTurn(turnId);
         if (completed === null) return;
-        unsubscribe();
-        if (timer !== null) clearTimeout(timer);
+        cleanup();
         resolve(completed);
       });
+      this.pendingWaits.add(fail);
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
-          unsubscribe();
-          reject(new AppServerSessionError(
+          fail(new AppServerSessionError(
             "turn_timeout",
             `timed out waiting for turn ${turnId}`,
+          ));
+        }, timeoutMs);
+      }
+    });
+  }
+
+  awaitNextTurn(afterTurnId: string | null, timeoutMs: number): Promise<string> {
+    if (this.disposedError !== null) return Promise.reject(this.disposedError);
+    const current = this.state.snapshot().lastTurnId;
+    if (current !== null && current !== afterTurnId) return Promise.resolve(current);
+
+    return new Promise<string>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = (): void => {
+        unsubscribe();
+        this.pendingWaits.delete(fail);
+        if (timer !== null) clearTimeout(timer);
+      };
+      const fail = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
+      const unsubscribe = this.state.subscribe((event) => {
+        if (
+          event.kind !== "turn.started"
+          || event.turnId === undefined
+          || event.turnId === afterTurnId
+        ) return;
+        cleanup();
+        resolve(event.turnId);
+      });
+      this.pendingWaits.add(fail);
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          fail(new AppServerSessionError(
+            "turn_start_timeout",
+            "timed out waiting for the native Codex client to start a turn",
           ));
         }, timeoutMs);
       }
@@ -277,9 +325,13 @@ export class AppServerSession {
   }
 
   dispose(reason = "app-server session closed"): void {
+    if (this.disposedError !== null) return;
+    this.disposedError = new AppServerSessionError("app_server_disconnected", reason);
     this.unsubscribeNotifications();
+    for (const fail of [...this.pendingWaits]) fail(this.disposedError);
+    this.pendingWaits.clear();
     for (const pending of this.pendingInteractions.values()) {
-      pending.reject(new AppServerSessionError("app_server_disconnected", reason));
+      pending.reject(this.disposedError);
     }
     this.pendingInteractions.clear();
   }

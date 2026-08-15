@@ -117,6 +117,46 @@ describe("AppServerSession", () => {
     );
   });
 
+  it("waits for a turn newer than the captured baseline", async () => {
+    const connection = new FakeConnection();
+    const session = await AppServerSession.start(connection, options);
+    connection.emit("turn/started", {
+      threadId: "THREAD-1",
+      turn: { id: "TURN-OLD", status: "inProgress", items: [] },
+    });
+    connection.emit("turn/completed", {
+      threadId: "THREAD-1",
+      turn: { id: "TURN-OLD", status: "completed", items: [] },
+    });
+
+    const waiting = session.awaitNextTurn("TURN-OLD", 200);
+    connection.emit("item/started", {
+      threadId: "THREAD-1",
+      turnId: "TURN-OLD",
+      item: { type: "agentMessage", id: "OLD-ITEM", text: "old" },
+    });
+    connection.emit("turn/started", {
+      threadId: "OTHER-THREAD",
+      turn: { id: "TURN-OTHER", status: "inProgress", items: [] },
+    });
+    connection.emit("turn/started", {
+      threadId: "THREAD-1",
+      turn: { id: "TURN-NEW", status: "inProgress", items: [] },
+    });
+
+    assert.equal(await waiting, "TURN-NEW");
+  });
+
+  it("bounds the wait for an externally started turn", async () => {
+    const session = await AppServerSession.start(new FakeConnection(), options);
+
+    await assert.rejects(
+      session.awaitNextTurn(null, 5),
+      (error: unknown) => error instanceof AppServerSessionError
+        && error.code === "turn_start_timeout",
+    );
+  });
+
   it("steers and interrupts only the current turn", async () => {
     const connection = new FakeConnection();
     const session = await AppServerSession.start(connection, options);
