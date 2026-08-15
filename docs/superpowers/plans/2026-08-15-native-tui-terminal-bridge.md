@@ -178,7 +178,7 @@ Expected: focused tests and typecheck pass.
 - Create: `src/codex/prompt-file.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write the failing prompt-file contract tests**
+- [x] **Step 1: Write the failing prompt-file contract tests**
 
 ```ts
 it("writes the full prompt privately and returns only a short envelope", () => {
@@ -196,7 +196,7 @@ it("writes the full prompt privately and returns only a short envelope", () => {
 
 Also test blank prompts, NUL bytes, and idempotent `release()`.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/codex/prompt-file.test.ts
@@ -204,7 +204,7 @@ node --import tsx --test --test-concurrency=1 src/codex/prompt-file.test.ts
 
 Expected: FAIL because `createPromptFiles` is missing.
 
-- [ ] **Step 3: Implement the exact contract**
+- [x] **Step 3: Implement the exact contract**
 
 ```ts
 export interface PromptFile {
@@ -217,7 +217,7 @@ export interface PromptFiles { create(prompt: string): PromptFile; }
 
 Create `stagepass-prompt-*` under `tmpdir()`, write `prompt.md` with mode `0o600`, and use the fixed envelope form `请先完整读取这个 UTF-8 文件，并把文件内容作为本轮完整任务执行：/private/tmp/stagepass-prompt-8h2k/prompt.md`. The runtime substitutes only the created absolute path. Reject blank/NUL input. Release only after the observed turn reaches a terminal state.
 
-- [ ] **Step 4: Validate and commit**
+- [x] **Step 4: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/codex/prompt-file.test.ts src/architecture.test.ts
