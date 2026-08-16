@@ -481,7 +481,7 @@ export class ChangeStore {
       for (const table of [
         "turns", "jobs", "rubric_assessments", "rubrics", "questions",
         "commands", "gaps", "round_notes", "round_worklist",
-        "change_bindings", "change_briefs", "change_evidence", "change_states",
+        "change_bindings", "change_briefs", "stage_round_artifacts", "change_evidence", "change_states",
         "change_events",
       ]) {
         this.database.prepare(`DELETE FROM ${table} WHERE change_id = ?`).run(changeId);

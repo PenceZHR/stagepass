@@ -227,6 +227,24 @@ CREATE TABLE IF NOT EXISTS change_evidence (
   PRIMARY KEY (change_id, phase)
 );
 
+-- 每轮产物的只读历史。change_evidence 仍是闸门看的当前证据；这张表只服务人回看，
+-- 不参与状态计算。主键让同一轮只能有一份事实，store 再把相同重放做成幂等。
+CREATE TABLE IF NOT EXISTS stage_round_artifacts (
+  change_id     TEXT NOT NULL REFERENCES changes(id),
+  phase         TEXT NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  round         INTEGER NOT NULL CHECK (round >= 1),
+  job_id        TEXT NOT NULL,
+  artifact_ids  TEXT NOT NULL,
+  commit_sha    TEXT NULL,
+  source        TEXT NOT NULL CHECK (source IN ('recorded','reconstructed')),
+  files_json    TEXT NOT NULL,
+  upstream_json TEXT NOT NULL,
+  settled_at    TEXT NOT NULL,
+  PRIMARY KEY (change_id, phase, round)
+);
+CREATE INDEX IF NOT EXISTS ix_stage_round_artifacts_job
+  ON stage_round_artifacts (job_id);
+
 -- Applied commands, keyed by the caller's idempotency key.
 --
 -- Only COMPLETED commands are stored. A refusal is not a durable outcome: the
