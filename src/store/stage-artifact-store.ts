@@ -54,6 +54,7 @@ export class StageArtifactStore {
 
   record(artifact: StageRoundArtifact): void {
     assertStageRoundArtifact(artifact);
+    if (artifact.settledAt === null) throw new Error("stage_artifact_invalid:settledAt");
     const existing = this.read(artifact.changeId, artifact.phase, artifact.round);
     if (existing !== null) {
       if (JSON.stringify(existing) === JSON.stringify(artifact)) return;

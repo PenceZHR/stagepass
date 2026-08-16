@@ -1,8 +1,8 @@
 import { isPhase, type Phase } from "./phase";
 
-export const ARTIFACT_ROLES = ["producer", "critic", "delivery", "structured"] as const;
-export const FILE_CHANGES = ["added", "modified", "deleted", "renamed"] as const;
-export const DISPLAY_CHANGES = [
+const ARTIFACT_ROLES = ["producer", "critic", "delivery", "structured"] as const;
+const FILE_CHANGES = ["added", "modified", "deleted", "renamed"] as const;
+const DISPLAY_CHANGES = [
   "added", "modified", "unchanged", "deleted", "replaced",
 ] as const;
 
@@ -32,7 +32,8 @@ export interface StageRoundArtifact {
   readonly source: "recorded" | "reconstructed";
   readonly files: readonly StageArtifactFile[];
   readonly upstream: readonly StageArtifactUpstream[];
-  readonly settledAt: string;
+  /** 旧轮次没有可证明的时间时是 null；新写入的 recorded manifest 永远有时间。 */
+  readonly settledAt: string | null;
 }
 
 export interface MaterializedStageArtifactFile extends StageArtifactFile {
@@ -75,7 +76,11 @@ export function assertStageRoundArtifact(value: StageRoundArtifact): void {
   assertStrings(value.artifactIds, "artifactIds");
   if (value.commit !== null && !/^[0-9a-f]{7,40}$/.test(value.commit)) fail("commit");
   if (value.source !== "recorded" && value.source !== "reconstructed") fail("source");
-  if (!Number.isFinite(Date.parse(value.settledAt))) fail("settledAt");
+  if (value.settledAt === null) {
+    if (value.source === "recorded") fail("settledAt");
+  } else if (!Number.isFinite(Date.parse(value.settledAt))) {
+    fail("settledAt");
+  }
 
   const paths = new Set<string>();
   for (const file of value.files) {

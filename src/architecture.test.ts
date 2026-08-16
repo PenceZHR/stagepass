@@ -46,6 +46,7 @@ const FILES = sourceFiles().map((path) => ({
  */
 const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
+  "domain/stage-artifact.ts": 0,
   /*
    * 真依赖图的解析器（H 档第一块）。它**只 import `typescript`**，我们自己的
    * 东西一个都不碰 —— 所以放最低层，谁都够得着。
@@ -64,9 +65,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 不碰文件系统 —— 和上面同族，同层。
   "graph/code-selection.ts": 0,
   "graph/graph-layout.ts": 0,
+  "graph/stage-artifact-layout.ts": 0,
   // 图谱那条路上唯一碰盘的地方（git 清单 + 读正文）。git 是注入的，
   // 和 `work/repo.ts` 同一个形状、同一层。
   "graph/read-workspace.ts": 2,
+  "graph/reconstruct-stage-artifact.ts": 2,
+  "graph/read-stage-artifact.ts": 2,
   // 只依赖 phase 的纯路径生成（E：产物的家）。
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
@@ -82,6 +86,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 编辑过门（批 6）：纯规则，只吃 gap 的类型 —— 和 gap 同层。
   "domain/edit-gate.ts": 1,
   "store/evidence-store.ts": 1,
+  "store/stage-artifact-store.ts": 1,
   "store/gap-store.ts": 1,
   // 旁路账本（彗星，2026-08-11）。它只依赖 better-sqlite3 的类型，我们自己的
   // 东西一个都不 import —— 和 gap-store 同一层，理由也一样：纯存储。
