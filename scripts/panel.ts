@@ -25,9 +25,8 @@ import {
   startManagedAppServer,
   type ManagedAppServer,
 } from "../src/codex/app-server-daemon";
-import { nativeTuiServerRequest } from "../src/codex/native-tui-session";
+import { nativeTuiServerRequest } from "../src/codex/native-tui-owner";
 import { createPromptFiles } from "../src/codex/prompt-file";
-import { createTmuxOps } from "../src/codex/tmux";
 import { prepareSchema } from "../src/db/schema";
 import { PHASES } from "../src/domain/phase";
 import { RUBRIC_ROLES } from "../src/domain/rubric";
@@ -45,7 +44,6 @@ import { reservePanelListener } from "../src/web/panel-listener";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 import { NativeSessions } from "../src/web/native-sessions";
 import { reconcileMissingBindings } from "../src/web/session-recovery";
-import { StreamSessions } from "../src/web/stream-session";
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -309,21 +307,10 @@ startupAppServer = appServer;
 const appServerHost = new AppServerSessionHost(appServer.client);
 const history = new AppServerHistory(appServer.client);
 startupHistory = history;
-const streamSessions = new StreamSessions({
-  database,
-  host: appServerHost,
-  sandbox: "workspace-write",
-  approvalPolicy: "on-request",
-  effort,
-  ...(model === undefined ? {} : { model }),
-});
-const tmux = createTmuxOps();
-console.log(`tmux    ${await tmux.version()}`);
 const nativeSessions = new NativeSessions({
   database,
   host: appServerHost,
   history,
-  tmux,
   terminal: createTerminalAppOps(),
   promptFiles: createPromptFiles(),
   sandbox: "workspace-write",
@@ -350,7 +337,6 @@ const { server, sessions } = createPanelServer({
    * import —— 它的依赖闭包有一条只许缩的棘轮，理由写在 PanelOptions.graph 上。
    */
   graph: createGraphApi({ database, repo }),
-  streams: streamSessions,
   history,
   nativeSessions,
 }, reserved);

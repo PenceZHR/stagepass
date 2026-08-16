@@ -5,7 +5,6 @@
  */
 
 const ERROR_WORDS = {
-  tmux_unavailable: "tmux 暂不可用。请确认 tmux 已安装，再重新打开终端。",
   terminal_automation_denied:
     "终端自动化权限尚未允许。请在系统设置中允许 StagePass 控制 Terminal。",
   terminal_window_ambiguous:
@@ -43,10 +42,8 @@ async function statusFrom(response) {
  *   seat: string;
  *   primary: HTMLButtonElement;
  *   closeWindow: HTMLButtonElement;
- *   endSession: HTMLButtonElement;
  *   summary: HTMLElement;
  *   fetchImpl?: typeof fetch;
- *   confirmImpl?: typeof confirm;
  *   pollMs?: number;
  *   setIntervalImpl?: typeof setInterval;
  *   clearIntervalImpl?: typeof clearInterval;
@@ -58,10 +55,8 @@ export function createTerminalBridge(options) {
     seat,
     primary,
     closeWindow,
-    endSession,
     summary,
     fetchImpl = fetch,
-    confirmImpl = confirm,
     pollMs = 2_000,
     setIntervalImpl = setInterval,
     clearIntervalImpl = clearInterval,
@@ -77,25 +72,22 @@ export function createTerminalBridge(options) {
     primary.setAttribute("aria-busy", String(value));
     primary.disabled = value || unavailable;
     closeWindow.disabled = value || unavailable;
-    endSession.disabled = value || unavailable;
   };
 
   const render = (status) => {
     current = status;
-    unavailable = status.tmux === "unavailable" || status.terminal === "unavailable";
+    unavailable = status.terminal === "unavailable" || status.thread === "unavailable";
     closeWindow.hidden = status.terminal !== "open";
-    endSession.hidden = status.threadId === null && status.tmux === "absent";
     if (unavailable) {
       primary.textContent = "原生终端暂不可用";
       primary.disabled = true;
-      summary.textContent = status.tmux === "unavailable"
-        ? ERROR_WORDS.tmux_unavailable
+      summary.textContent = status.thread === "unavailable"
+        ? ERROR_WORDS.thread_unavailable
         : ERROR_WORDS.terminal_automation_denied;
       summary.setAttribute("data-state", "unavailable");
       return;
     }
     closeWindow.disabled = busy;
-    endSession.disabled = busy;
     primary.disabled = busy;
     summary.setAttribute("data-state", status.thread === "running" ? "running" : "ready");
     if (status.action === "focus") {
@@ -103,9 +95,9 @@ export function createTerminalBridge(options) {
       summary.textContent = status.thread === "running"
         ? "官方 Codex TUI 正在系统终端中运行。输入、审批、MCP 与 Ctrl+C 都在那里完成。"
         : "官方 Codex TUI 已在系统终端中打开；这里仅负责定位窗口。";
-    } else if (status.action === "reopen") {
-      primary.textContent = "重新打开终端";
-      summary.textContent = "终端窗口已关闭，但 Codex 仍在后台继续。重新打开会回到同一个 tmux 与线程。";
+    } else if (status.action === "resume") {
+      primary.textContent = "恢复系统终端";
+      summary.textContent = "终端客户端已关闭或退出；恢复后会回到同一个 Codex 线程。";
     } else {
       primary.textContent = "打开系统终端";
       summary.textContent = "将在 macOS Terminal 中打开官方 Codex TUI；浏览器不会接收或重绘终端内容。";
@@ -156,16 +148,9 @@ export function createTerminalBridge(options) {
     await act(current.action === "focus" ? "focus" : "open");
   };
   const closeNativeWindow = () => { void act("close-window"); };
-  const endNativeSession = () => {
-    if (!confirmImpl("结束这个原生 Codex 会话？这会关闭窗口并终止对应 tmux，但不会删除线程绑定。")) {
-      return;
-    }
-    void act("end-session");
-  };
 
   primary.addEventListener("click", openOrFocus);
   closeWindow.addEventListener("click", closeNativeWindow);
-  endSession.addEventListener("click", endNativeSession);
 
   return {
     refresh,
@@ -177,7 +162,6 @@ export function createTerminalBridge(options) {
       poll = null;
       primary.removeEventListener("click", openOrFocus);
       closeWindow.removeEventListener("click", closeNativeWindow);
-      endSession.removeEventListener("click", endNativeSession);
     },
   };
 }

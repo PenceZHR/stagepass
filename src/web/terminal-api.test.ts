@@ -19,10 +19,8 @@ function state(
     seat,
     threadId: "THREAD-1",
     thread: "idle",
-    tmuxSession: "sp_0123456789abcdef0123",
-    tmux: "detached",
     terminal: "closed",
-    action: "reopen",
+    action: "resume",
   };
 }
 
@@ -41,9 +39,6 @@ class FakeNative implements NativeSessionsPort {
   focus(changeId: string, seat: NativeSeat) { return this.answer(changeId, seat, "focus"); }
   closeWindow(changeId: string, seat: NativeSeat) {
     return this.answer(changeId, seat, "close-window");
-  }
-  endSession(changeId: string, seat: NativeSeat) {
-    return this.answer(changeId, seat, "end-session");
   }
   archiveAndEnd(): Promise<void> { return Promise.resolve(); }
   releaseObserver(): void {}
@@ -87,15 +82,15 @@ function post(base: string, path: string, body: unknown): Promise<Response> {
 }
 
 describe("native terminal HTTP API", () => {
-  it("serves normalized status and all four lifecycle actions", async () => {
+  it("serves normalized status and the three client lifecycle actions", async () => {
     await withApi(async (base, sessions, configured) => {
       const status = await fetch(`${base}/api/terminal/status?change=CHG-1&seat=PRD`);
       assert.equal(status.status, 200);
       assert.deepEqual(Object.keys(await status.json() as object).sort(), [
-        "action", "changeId", "seat", "terminal", "thread", "threadId", "tmux", "tmuxSession",
+        "action", "changeId", "seat", "terminal", "thread", "threadId",
       ]);
 
-      for (const action of ["open", "focus", "close-window", "end-session"]) {
+      for (const action of ["open", "focus", "close-window"]) {
         assert.equal((await post(base, `/api/terminal/${action}`, {
           changeId: "CHG-1", seat: "PRD",
         })).status, 200);
@@ -105,9 +100,14 @@ describe("native terminal HTTP API", () => {
         "open:CHG-1/PRD",
         "focus:CHG-1/PRD",
         "close-window:CHG-1/PRD",
-        "end-session:CHG-1/PRD",
       ]);
       assert.deepEqual(configured, ["CHG-1/PRD"]);
+
+      const removed = await post(base, "/api/terminal/end-session", {
+        changeId: "CHG-1", seat: "PRD",
+      });
+      assert.equal(removed.status, 404);
+      assert.equal(sessions.calls.includes("end-session:CHG-1/PRD"), false);
     });
   });
 
@@ -135,7 +135,6 @@ describe("native terminal HTTP API", () => {
   it("maps stable runtime failures without exposing raw terminal data", async () => {
     await withApi(async (base, sessions) => {
       const cases = [
-        ["tmux_unavailable", 503],
         ["terminal_automation_denied", 503],
         ["terminal_window_ambiguous", 409],
         ["turn_busy", 409],

@@ -41,7 +41,7 @@ import { JobStore } from "../work/job-store";
  *
  * 结构类型而不是 `PanelSessions` —— 那个类住在 `panel-server.ts`，而这个文件
  * 被它 import。照着接口写，两边就没有环；纯 App Server 分支里两者都来自
- * `StreamSessions`。
+ * 原生会话 owner。
  */
 export interface LiveSessions {
   has(changeId: string, phase: Phase): boolean;

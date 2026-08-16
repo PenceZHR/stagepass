@@ -10,7 +10,6 @@ import type {
   AppServerNotification,
 } from "../codex/app-server-protocol";
 import type { AppServerConnection } from "../codex/app-server-session";
-import { AppServerSessionHost } from "../codex/app-server-transport";
 import { SCHEMA_SQL } from "../db/schema";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
@@ -21,7 +20,6 @@ import type {
   NativeSeat,
   NativeSessionStatus,
 } from "./native-sessions";
-import { StreamSessions } from "./stream-session";
 
 class FakeConnection implements AppServerConnection {
   readonly calls: Array<{
@@ -131,10 +129,8 @@ class FakeNativeSessions implements NativeRuntimeSessions {
       seat,
       threadId: "THREAD-NATIVE",
       thread: "idle",
-      tmuxSession: "sp_0123456789abcdef0123",
-      tmux: action === "close-window" || action === "end-session" ? "detached" : "attached",
-      terminal: action === "close-window" || action === "end-session" ? "closed" : "open",
-      action: action === "close-window" || action === "end-session" ? "reopen" : "focus",
+      terminal: action === "close-window" ? "closed" : "open",
+      action: action === "close-window" ? "resume" : "focus",
     });
   }
 
@@ -143,9 +139,6 @@ class FakeNativeSessions implements NativeRuntimeSessions {
   focus(changeId: string, seat: NativeSeat) { return this.answer(changeId, seat, "focus"); }
   closeWindow(changeId: string, seat: NativeSeat) {
     return this.answer(changeId, seat, "close-window");
-  }
-  endSession(changeId: string, seat: NativeSeat) {
-    return this.answer(changeId, seat, "end-session");
   }
   archiveAndEnd(changeId: string, seat: NativeSeat): Promise<void> {
     this.archivedAndEnded.push({ changeId, seat });
@@ -164,6 +157,7 @@ class FakeNativeSessions implements NativeRuntimeSessions {
   has(): boolean { return false; }
   active(): boolean { return false; }
   quietForMs(): number | null { return null; }
+  interrupt(): Promise<boolean> { return Promise.resolve(false); }
   startTurn(): Promise<string> { return Promise.resolve("TURN-NATIVE"); }
   runTurn(): Promise<string> { return Promise.resolve("done"); }
   transportFor(_changeId: string, seat: NativeSeat) {
@@ -192,20 +186,11 @@ async function withPanel(body: (input: {
   new ProjectStore(database).ensure("PRJ-1", "Project", "/repo");
   new ChangeStore(database).create("CHG-1", { projectId: "PRJ-1" });
   const connection = new FakeConnection();
-  const host = new AppServerSessionHost(connection);
   const history = new AppServerHistory(connection);
   const native = new FakeNativeSessions();
-  const streams = new StreamSessions({
-    database,
-    host,
-    sandbox: "workspace-write",
-    approvalPolicy: "on-request",
-    effort: "xhigh",
-  });
   const created = createPanelServer({
     database,
     history,
-    streams,
     nativeSessions: native,
     recoverEveryMs: 3_600_000,
     repo: {
@@ -277,20 +262,16 @@ describe("pure App Server panel", () => {
     });
   });
 
-  it("关闭窗口与结束会话是两条独立的本机动作", async () => {
+  it("关闭窗口只结束可丢弃的本机客户端", async () => {
     await withPanel(async ({ base, native }) => {
-      for (const action of ["close-window", "end-session"]) {
-        const response = await fetch(`${base}/api/terminal/${action}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ changeId: "CHG-1", seat: "PRD" }),
-        });
-        assert.equal(response.status, 200);
-      }
-      assert.deepEqual(native.calls, [
-        "close-window:CHG-1/PRD",
-        "end-session:CHG-1/PRD",
-      ]);
+      const request = {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ changeId: "CHG-1", seat: "PRD" }),
+      };
+      assert.equal((await fetch(`${base}/api/terminal/close-window`, request)).status, 200);
+      assert.equal((await fetch(`${base}/api/terminal/end-session`, request)).status, 404);
+      assert.deepEqual(native.calls, ["close-window:CHG-1/PRD"]);
     });
   });
 
@@ -323,10 +304,10 @@ describe("pure App Server panel", () => {
 
   it("本机会话清理失败时拒绝删除并保留 Change", async () => {
     await withPanel(async ({ base, database, native }) => {
-      native.forgetError = new Error("tmux cleanup failed");
+      native.forgetError = new Error("native client cleanup failed");
       const response = await fetch(`${base}/api/change?change=CHG-1`, { method: "DELETE" });
       assert.equal(response.status, 500);
-      assert.match(await response.text(), /tmux cleanup failed/);
+      assert.match(await response.text(), /native client cleanup failed/);
       assert.deepEqual(native.forgotten, ["CHG-1"]);
       assert.equal(new ChangeStore(database).read("CHG-1").id, "CHG-1");
     });

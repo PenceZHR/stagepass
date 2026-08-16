@@ -68,7 +68,6 @@ const stageNote = pick("stage-note");
 const terminalSummary = pick("terminal-summary");
 const terminalPrimary = button("terminal-primary");
 const terminalCloseWindow = button("terminal-close-window");
-const terminalEndSession = button("terminal-end-session");
 /** 会话底下那行注解的原话。say() 会盖掉它，进会话时还原。 */
 const NOTE_DEFAULT = stageNote.textContent;
 
@@ -2407,7 +2406,6 @@ async function enter(phase) {
     seat: phase,
     primary: terminalPrimary,
     closeWindow: terminalCloseWindow,
-    endSession: terminalEndSession,
     summary: terminalSummary,
   });
   try {

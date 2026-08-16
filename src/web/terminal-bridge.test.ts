@@ -41,20 +41,16 @@ const status = (overrides: Record<string, unknown> = {}) => ({
   seat: "PRD",
   threadId: "THREAD-1",
   thread: "idle",
-  tmuxSession: "sp_0123456789abcdef0123",
-  tmux: "detached",
   terminal: "closed",
-  action: "reopen",
+  action: "resume",
   ...overrides,
 });
 
 function fixture(initial: Record<string, unknown>) {
   const primary = new FakeElement();
   const closeWindow = new FakeElement();
-  const endSession = new FakeElement();
   const summary = new FakeElement();
   const calls: Array<{ path: string; method: string; body?: unknown }> = [];
-  const confirmations: string[] = [];
   const timers = new Map<number, () => void>();
   let nextTimer = 1;
   let current = initial;
@@ -71,13 +67,8 @@ function fixture(initial: Record<string, unknown>) {
     seat: "PRD",
     primary,
     closeWindow,
-    endSession,
     summary,
     fetchImpl,
-    confirmImpl: (message: string) => {
-      confirmations.push(message);
-      return true;
-    },
     pollMs: 2_000,
     setIntervalImpl: (callback: () => void) => {
       const id = nextTimer++;
@@ -90,10 +81,8 @@ function fixture(initial: Record<string, unknown>) {
     controller,
     primary,
     closeWindow,
-    endSession,
     summary,
     calls,
-    confirmations,
     timers,
     setStatus(value: Record<string, unknown>) { current = value; },
   };
@@ -102,16 +91,25 @@ function fixture(initial: Record<string, unknown>) {
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("native Terminal portal", () => {
-  it("renders reopen when tmux lives but Terminal is closed", async () => {
+  it("renders resume from a durable thread when Terminal is closed", async () => {
     const view = fixture(status());
     await view.controller.refresh();
-    assert.equal(view.primary.textContent, "重新打开终端");
-    assert.match(view.summary.textContent, /Codex 仍在后台继续/);
+    assert.equal(view.primary.textContent, "恢复系统终端");
+    assert.match(view.summary.textContent, /同一个 Codex 线程/);
     assert.equal(view.closeWindow.hidden, true);
+    assert.equal(JSON.stringify(status()).includes(["t", "mux"].join("")), false);
   });
 
-  it("focuses an existing Terminal window without creating another session", async () => {
-    const view = fixture(status({ tmux: "attached", terminal: "open", action: "focus" }));
+  it("renders stale as resumable and opens it through the native API", async () => {
+    const view = fixture(status({ terminal: "stale", action: "resume" }));
+    await view.controller.refresh();
+    view.primary.dispatch("click");
+    await tick();
+    assert.equal(view.calls.at(-1)?.path, "/api/terminal/open");
+  });
+
+  it("focuses an existing Terminal window without creating another thread", async () => {
+    const view = fixture(status({ terminal: "open", action: "focus" }));
     await view.controller.refresh();
     assert.equal(view.primary.textContent, "聚焦系统终端");
     view.primary.dispatch("click");
@@ -120,31 +118,27 @@ describe("native Terminal portal", () => {
     assert.deepEqual(view.calls.at(-1)?.body, { changeId: "CHG-1", seat: "PRD" });
   });
 
-  it("close window never calls end-session", async () => {
-    const view = fixture(status({ tmux: "attached", terminal: "open", action: "focus" }));
+  it("close window calls only the disposable-client route", async () => {
+    const view = fixture(status({ terminal: "open", action: "focus" }));
     await view.controller.refresh();
     view.closeWindow.dispatch("click");
     await tick();
     assert.equal(view.calls.at(-1)?.path, "/api/terminal/close-window");
-    assert.equal(view.calls.some(({ path }) => path === "/api/terminal/end-session"), false);
+    assert.equal(view.calls.some(({ path }) => path.includes("end-session")), false);
   });
 
-  it("requires a destructive confirmation before ending tmux", async () => {
-    const view = fixture(status({ terminal: "open", action: "focus" }));
-    await view.controller.refresh();
-    view.endSession.dispatch("click");
-    await tick();
-    assert.match(view.confirmations[0] ?? "", /结束.*会话/);
-    assert.equal(view.calls.at(-1)?.path, "/api/terminal/end-session");
-  });
-
-  it("shows an actionable unavailable state and stops polling on close", async () => {
-    const view = fixture(status({ tmux: "unavailable", terminal: "unavailable" }));
-    await view.controller.refresh();
-    assert.equal(view.primary.disabled, true);
-    assert.match(view.summary.textContent, /tmux|终端自动化/);
-    assert.equal(view.timers.size, 1);
-    view.controller.close();
-    assert.equal(view.timers.size, 0);
+  it("shows unavailable App Server or Terminal state and stops polling on close", async () => {
+    for (const unavailable of [
+      status({ terminal: "unavailable" }),
+      status({ thread: "unavailable" }),
+    ]) {
+      const view = fixture(unavailable);
+      await view.controller.refresh();
+      assert.equal(view.primary.disabled, true);
+      assert.match(view.summary.textContent, /Codex 会话|终端自动化/);
+      assert.equal(view.timers.size, 1);
+      view.controller.close();
+      assert.equal(view.timers.size, 0);
+    }
   });
 });

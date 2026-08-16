@@ -6,25 +6,20 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import type { AppServerNotification } from "../codex/app-server-protocol";
+import type { ThreadAvailability } from "../codex/app-server-history";
 import type { AppServerConnection } from "../codex/app-server-session";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { ArchiveOps } from "../codex/archive";
-import type { ThreadAvailability } from "../codex/app-server-history";
 import { createPromptFiles } from "../codex/prompt-file";
 import {
-  tmuxSessionName,
-  type TmuxIdentity,
-  type TmuxOps,
-  type TmuxSession,
-} from "../codex/tmux";
-import type {
-  TerminalAppOps,
-  TerminalTarget,
-  TerminalWindowState,
+  TerminalAppError,
+  type TerminalAppOps,
+  type TerminalTarget,
+  type TerminalWindowState,
 } from "../system/terminal-app";
 import { SCHEMA_SQL } from "../db/schema";
-import { ChangeStore } from "../store/change-store";
 import { BindingStore } from "../store/binding-store";
+import { ChangeStore } from "../store/change-store";
 import {
   NativeSessions,
   NativeSessionsError,
@@ -55,6 +50,7 @@ class FakeRuntime implements AppServerConnection, ArchiveOps {
       const id = String(params.threadId);
       return Promise.resolve({ thread: { id, turns: [] } });
     }
+    if (method === "turn/interrupt") return Promise.resolve({});
     throw new Error(`unexpected request ${method}`);
   }
 
@@ -95,74 +91,54 @@ class FakeRuntime implements AppServerConnection, ArchiveOps {
   }
 }
 
-class FakeTmux implements TmuxOps {
-  readonly created: string[] = [];
-  readonly submitted: Array<{ name: string; envelope: string }> = [];
-  readonly ended: string[] = [];
-  readonly sessions = new Map<string, "detached" | "attached">();
-  onSubmit: (envelope: string) => void = () => {};
-
-  version(): Promise<string> { return Promise.resolve("tmux 3.7b"); }
-
-  status(identity: TmuxIdentity): Promise<"absent" | "detached" | "attached"> {
-    return Promise.resolve(this.sessions.get(
-      tmuxSessionName(identity.changeId, identity.seat),
-    ) ?? "absent");
-  }
-
-  ensureSession(identity: TmuxIdentity, _threadId: string, _cwd: string): Promise<TmuxSession> {
-    const name = tmuxSessionName(identity.changeId, identity.seat);
-    if (!this.sessions.has(name)) {
-      this.created.push(name);
-      this.sessions.set(name, "detached");
-    }
-    return Promise.resolve({ name, marker: `STAGEPASS:${name}` });
-  }
-
-  submit(name: string, envelope: string): Promise<void> {
-    this.submitted.push({ name, envelope });
-    this.onSubmit(envelope);
-    return Promise.resolve();
-  }
-
-  detach(name: string): Promise<void> {
-    if (this.sessions.has(name)) this.sessions.set(name, "detached");
-    return Promise.resolve();
-  }
-
-  endSession(name: string): Promise<void> {
-    if (this.sessions.delete(name)) this.ended.push(name);
-    return Promise.resolve();
-  }
+interface TerminalDelivery {
+  readonly target: TerminalTarget;
+  readonly envelope: string;
+  readonly kind: "open" | "submit";
 }
 
 class FakeTerminal implements TerminalAppOps {
-  readonly openMarkers = new Set<string>();
-  readonly closed: string[] = [];
-
-  constructor(private readonly tmux: FakeTmux) {}
+  readonly states = new Map<string, TerminalWindowState>();
+  readonly opened: Array<{ target: TerminalTarget; prompt?: string }> = [];
+  readonly submitted: Array<{ target: TerminalTarget; envelope: string }> = [];
+  readonly focused: TerminalTarget[] = [];
+  readonly closed: TerminalTarget[] = [];
+  onDeliver: (delivery: TerminalDelivery) => void = () => {};
+  beforeSubmit: (target: TerminalTarget) => void = () => {};
 
   status(target: TerminalTarget): Promise<TerminalWindowState> {
-    return Promise.resolve(this.openMarkers.has(target.marker) ? "open" : "closed");
+    return Promise.resolve(this.states.get(target.marker) ?? "closed");
   }
 
-  open(target: TerminalTarget): Promise<"opened" | "focused"> {
-    const existed = this.openMarkers.has(target.marker);
-    this.openMarkers.add(target.marker);
-    if (this.tmux.sessions.has(target.sessionName)) {
-      this.tmux.sessions.set(target.sessionName, "attached");
-    }
-    return Promise.resolve(existed ? "focused" : "opened");
+  open(target: TerminalTarget, prompt?: string): Promise<"opened" | "focused" | "resumed"> {
+    const state = this.states.get(target.marker) ?? "closed";
+    this.opened.push({ target, ...(prompt === undefined ? {} : { prompt }) });
+    this.states.set(target.marker, "open");
+    if (prompt !== undefined) this.onDeliver({ target, envelope: prompt, kind: "open" });
+    if (state === "open") return Promise.resolve("focused");
+    return Promise.resolve(state === "stale" ? "resumed" : "opened");
   }
 
   focus(target: TerminalTarget): Promise<void> {
-    if (!this.openMarkers.has(target.marker)) throw new Error("missing");
+    if (this.states.get(target.marker) !== "open") throw new Error("missing");
+    this.focused.push(target);
     return Promise.resolve();
   }
 
+  submit(target: TerminalTarget, envelope: string): Promise<"submitted"> {
+    this.beforeSubmit(target);
+    if (this.states.get(target.marker) !== "open") {
+      throw new TerminalAppError("terminal_window_missing", "closed during submit");
+    }
+    this.submitted.push({ target, envelope });
+    this.onDeliver({ target, envelope, kind: "submit" });
+    return Promise.resolve("submitted");
+  }
+
   close(target: TerminalTarget): Promise<"closed" | "already_closed"> {
-    const existed = this.openMarkers.delete(target.marker);
-    if (existed) this.closed.push(target.marker);
+    const existed = this.states.get(target.marker) !== undefined;
+    this.states.delete(target.marker);
+    if (existed) this.closed.push(target);
     return Promise.resolve(existed ? "closed" : "already_closed");
   }
 }
@@ -174,13 +150,11 @@ function fixture(root: string) {
   new ChangeStore(database).create("CHG-1");
   new ChangeStore(database).create("CHG-2");
   const runtime = new FakeRuntime();
-  const tmux = new FakeTmux();
-  const terminal = new FakeTerminal(tmux);
+  const terminal = new FakeTerminal();
   const make = () => new NativeSessions({
     database,
     host: new AppServerSessionHost(runtime),
     history: runtime,
-    tmux,
     terminal,
     promptFiles: createPromptFiles({ root }),
     cwdFor: () => "/repo",
@@ -188,7 +162,7 @@ function fixture(root: string) {
     approvalPolicy: "on-request",
     effort: "xhigh",
   });
-  return { database, runtime, tmux, terminal, make };
+  return { database, runtime, terminal, make };
 }
 
 const config = { mcpServers: { stagepass: { enabled: true } } };
@@ -201,8 +175,23 @@ async function until(predicate: () => boolean): Promise<void> {
   assert.fail("condition was not reached");
 }
 
+function promptPath(envelope: string): string {
+  return envelope.slice(envelope.indexOf("：") + 1);
+}
+
+function finish(runtime: FakeRuntime, threadId: string, turnId: string, text = "done"): void {
+  runtime.emit("turn/completed", {
+    threadId,
+    turn: {
+      id: turnId,
+      status: "completed",
+      items: [{ type: "agentMessage", id: "ITEM-1", text }],
+    },
+  });
+}
+
 describe("native StagePass sessions", () => {
-  it("rejects an unknown Change before reporting a synthetic empty status", async () => {
+  it("rejects an unknown Change", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);
     try {
@@ -216,7 +205,7 @@ describe("native StagePass sessions", () => {
     }
   });
 
-  it("binds on explicit open and concurrent calls reuse one thread and tmux", async () => {
+  it("binds once, closes only the disposable client, and resumes the same thread", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);
     try {
@@ -227,18 +216,27 @@ describe("native StagePass sessions", () => {
       ]);
 
       assert.equal(first.threadId, second.threadId);
-      assert.equal(first.tmuxSession, second.tmuxSession);
       assert.equal(f.runtime.startedThreads, 1);
-      assert.equal(f.tmux.created.length, 1);
-      assert.equal(first.thread, "idle");
-      assert.equal(first.tmux, "attached");
-      assert.equal(first.terminal, "open");
+      assert.equal(f.terminal.opened.length, 1);
+      assert.deepEqual(first, {
+        changeId: "CHG-1",
+        seat: "PRD",
+        threadId: THREAD_ONE,
+        thread: "idle",
+        terminal: "open",
+        action: "focus",
+      });
 
       const closed = await sessions.closeWindow("CHG-1", "PRD");
-      assert.equal(closed.tmux, "detached");
       assert.equal(closed.terminal, "closed");
+      assert.equal(closed.action, "resume");
       assert.equal(new BindingStore(f.database).find("CHG-1", "PRD")?.threadId, first.threadId);
       assert.deepEqual(f.runtime.archived, []);
+
+      const resumed = await sessions.open("CHG-1", "PRD", config, { showTerminal: true });
+      assert.equal(resumed.threadId, first.threadId);
+      assert.equal(f.runtime.startedThreads, 1);
+      assert.equal(resumed.terminal, "open");
     } finally {
       f.database.close();
       rmSync(root, { recursive: true, force: true });
@@ -274,28 +272,27 @@ describe("native StagePass sessions", () => {
         (error) => error instanceof NativeSessionsError && error.code === "thread_unavailable",
       );
       assert.equal(bindings.find("CHG-1", "BuildPlan")?.threadId, unavailable);
-      assert.equal(f.tmux.ended.length, 0);
+      assert.equal(f.terminal.closed.length, 0);
     } finally {
       f.database.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("reconstructs from binding after restart and recreates missing tmux on the same thread", async () => {
+  it("reconstructs a closed client from binding after StagePass restarts", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);
     try {
-      const first = f.make();
-      const opened = await first.open("CHG-1", "PRD", config, { showTerminal: false });
-      f.tmux.sessions.delete(opened.tmuxSession);
-
+      const opened = await f.make().open("CHG-1", "PRD", config, { showTerminal: false });
       const restarted = f.make();
       const before = await restarted.status("CHG-1", "PRD");
       assert.equal(before.threadId, opened.threadId);
-      assert.equal(before.tmux, "absent");
-      const restored = await restarted.open("CHG-1", "PRD", config, { showTerminal: false });
+      assert.equal(before.terminal, "closed");
+      assert.equal(before.action, "resume");
+
+      const restored = await restarted.open("CHG-1", "PRD", config, { showTerminal: true });
       assert.equal(restored.threadId, opened.threadId);
-      assert.equal(restored.tmux, "detached");
+      assert.equal(restored.terminal, "open");
       assert.equal(f.runtime.startedThreads, 1);
     } finally {
       f.database.close();
@@ -303,63 +300,136 @@ describe("native StagePass sessions", () => {
     }
   });
 
-  it("leases one input per seat and releaseObserver keeps prompt and tmux until completion", async () => {
+  it("opens closed or stale clients with the private-file envelope and holds the lease", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);
     try {
       const sessions = f.make();
-      let promptPath = "";
-      f.tmux.onSubmit = (envelope) => {
-        promptPath = envelope.slice(envelope.indexOf("：") + 1);
-        assert.equal(existsSync(promptPath), true);
-        assert.match(readFileSync(promptPath, "utf8"), /FULL RUBRIC/);
+      let path = "";
+      f.terminal.onDeliver = ({ target, envelope, kind }) => {
+        assert.equal(kind, "open");
+        assert.equal(target.threadId, THREAD_ONE);
+        path = promptPath(envelope);
+        assert.equal(existsSync(path), true);
+        assert.match(readFileSync(path, "utf8"), /FULL RUBRIC/);
         f.runtime.emit("turn/started", {
-          threadId: THREAD_ONE,
+          threadId: target.threadId,
           turn: { id: "TURN-NATIVE", status: "inProgress", items: [] },
         });
       };
+
       const transport = sessions.transportFor("CHG-1", "PRD", config, 500);
       const running = transport.runTurn({ threadId: null, prompt: "FULL RUBRIC task" });
-      await until(() => f.tmux.submitted.length === 1);
+      await until(() => f.terminal.opened.some(({ prompt }) => prompt !== undefined));
       sessions.releaseObserver("CHG-1", "PRD");
-      assert.equal(existsSync(promptPath), true);
-
+      assert.equal(existsSync(path), true);
       await assert.rejects(
         transport.runTurn({ threadId: null, prompt: "must not interleave" }),
         (error) => error instanceof NativeSessionsError && error.code === "turn_busy",
       );
-      const bound = new BindingStore(f.database).find("CHG-1", "PRD")!.threadId;
-      f.runtime.emit("turn/completed", {
-        threadId: bound,
-        turn: {
-          id: "TURN-NATIVE",
-          status: "completed",
-          items: [{ type: "agentMessage", id: "ITEM-1", text: "done" }],
-        },
-      });
-      assert.equal((await running).text, "done");
-      assert.equal(existsSync(promptPath), false);
-      assert.equal(f.tmux.sessions.size, 1, "releaseObserver 不得 kill tmux");
 
-      const ended = await sessions.endSession("CHG-1", "PRD");
-      assert.equal(ended.tmux, "absent");
-      assert.equal(new BindingStore(f.database).find("CHG-1", "PRD")?.status, "bound");
+      finish(f.runtime, THREAD_ONE, "TURN-NATIVE");
+      assert.equal((await running).text, "done");
+      assert.equal(existsSync(path), false);
+      assert.equal(f.terminal.closed.length, 0, "observer release must not close Terminal");
     } finally {
       f.database.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("startTurn returns at external start while cleanup remains attached to completion", async () => {
+  it("submits the file envelope into an already-running native client", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);
     try {
       const sessions = f.make();
-      let promptPath = "";
-      f.tmux.onSubmit = (envelope) => {
-        promptPath = envelope.slice(envelope.indexOf("：") + 1);
+      const opened = await sessions.open("CHG-1", "PRD", config, { showTerminal: true });
+      f.terminal.onDeliver = ({ target, kind }) => {
+        assert.equal(kind, "submit");
         f.runtime.emit("turn/started", {
-          threadId: THREAD_ONE,
+          threadId: target.threadId,
+          turn: { id: "TURN-SUBMIT", status: "inProgress", items: [] },
+        });
+      };
+
+      const running = sessions.runTurn("CHG-1", "PRD", "details", config, 500);
+      await until(() => f.terminal.submitted.length === 1);
+      assert.equal(f.terminal.opened.length, 1, "dispatch must not reopen a live client");
+      finish(f.runtime, opened.threadId!, "TURN-SUBMIT", "submitted");
+      assert.equal(await running, "submitted");
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes the same thread if the native client closes between status and submit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      const sessions = f.make();
+      const opened = await sessions.open("CHG-1", "PRD", config, { showTerminal: true });
+      let raced = false;
+      f.terminal.beforeSubmit = (target) => {
+        if (raced) return;
+        raced = true;
+        f.terminal.states.delete(target.marker);
+      };
+      f.terminal.onDeliver = ({ target, kind }) => {
+        assert.equal(kind, "open");
+        f.runtime.emit("turn/started", {
+          threadId: target.threadId,
+          turn: { id: "TURN-RESUMED", status: "inProgress", items: [] },
+        });
+      };
+
+      const running = sessions.runTurn("CHG-1", "PRD", "details", config, 500);
+      await until(() => f.terminal.opened.length === 2);
+      assert.equal(f.terminal.opened[1]!.target.threadId, opened.threadId);
+      assert.equal(f.runtime.startedThreads, 1);
+      finish(f.runtime, opened.threadId!, "TURN-RESUMED", "resumed");
+      assert.equal(await running, "resumed");
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("interrupts the exact active App Server turn without owning Terminal bytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      const sessions = f.make();
+      f.terminal.onDeliver = ({ target }) => {
+        f.runtime.emit("turn/started", {
+          threadId: target.threadId,
+          turn: { id: "TURN-INTERRUPT", status: "inProgress", items: [] },
+        });
+      };
+      await sessions.startTurn("CHG-1", "PRD", "details", config, 500);
+
+      assert.equal(await sessions.interrupt("CHG-1", "PRD"), true);
+      assert.equal(f.runtime.calls.includes("turn/interrupt"), true);
+      f.runtime.emit("turn/completed", {
+        threadId: THREAD_ONE,
+        turn: { id: "TURN-INTERRUPT", status: "interrupted", items: [] },
+      });
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("startTurn returns at external start while prompt cleanup waits for completion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      const sessions = f.make();
+      let path = "";
+      f.terminal.onDeliver = ({ target, envelope }) => {
+        path = promptPath(envelope);
+        f.runtime.emit("turn/started", {
+          threadId: target.threadId,
           turn: { id: "TURN-STARTED", status: "inProgress", items: [] },
         });
       };
@@ -368,20 +438,12 @@ describe("native StagePass sessions", () => {
         await sessions.startTurn("CHG-1", "PRD", "detailed prompt", config, 500),
         "TURN-STARTED",
       );
-      assert.equal(sessions.has("CHG-1", "PRD"), true);
       assert.equal(sessions.active("CHG-1", "PRD"), true);
-      assert.equal(existsSync(promptPath), true);
+      assert.equal(existsSync(path), true);
       sessions.releaseObserver("CHG-1", "PRD");
 
-      f.runtime.emit("turn/completed", {
-        threadId: THREAD_ONE,
-        turn: {
-          id: "TURN-STARTED",
-          status: "completed",
-          items: [{ type: "agentMessage", id: "ITEM-2", text: "finished later" }],
-        },
-      });
-      await until(() => !existsSync(promptPath));
+      finish(f.runtime, THREAD_ONE, "TURN-STARTED", "finished later");
+      await until(() => !existsSync(path));
       assert.equal(sessions.active("CHG-1", "PRD"), false);
       assert.equal(sessions.has("CHG-1", "PRD"), false);
       assert.ok((sessions.quietForMs("CHG-1", "PRD") ?? -1) >= 0);
@@ -391,7 +453,7 @@ describe("native StagePass sessions", () => {
     }
   });
 
-  it("archive-and-end and Change-scoped forget clean only their owned runtime", async () => {
+  it("archive-and-end and Change-scoped forget close only their owned clients", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);
     try {
@@ -401,14 +463,14 @@ describe("native StagePass sessions", () => {
 
       await sessions.archiveAndEnd("CHG-1", "PRD");
       assert.ok(f.runtime.archived.includes(one.threadId!));
-      assert.equal(f.tmux.sessions.has(one.tmuxSession), false);
+      assert.equal(f.terminal.states.has(f.terminal.opened[0]!.target.marker), false);
       assert.equal(new BindingStore(f.database).find("CHG-1", "PRD")?.status, "bound");
-      assert.equal(f.tmux.sessions.has(two.tmuxSession), true);
+      assert.equal(f.terminal.states.has(f.terminal.opened[1]!.target.marker), true);
 
       await sessions.forget("CHG-2");
       assert.ok(f.runtime.archived.includes(two.threadId!));
-      assert.equal(f.tmux.sessions.has(two.tmuxSession), false);
-      assert.equal(f.tmux.ended.filter((name) => name === one.tmuxSession).length, 1);
+      assert.equal(f.terminal.states.has(f.terminal.opened[1]!.target.marker), false);
+      assert.equal(f.terminal.closed.length, 2);
     } finally {
       f.database.close();
       rmSync(root, { recursive: true, force: true });

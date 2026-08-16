@@ -13,11 +13,6 @@ import {
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { PromptFile, PromptFiles } from "../codex/prompt-file";
 import {
-  tmuxSessionName,
-  type TmuxIdentity,
-  type TmuxOps,
-} from "../codex/tmux";
-import {
   CodexTurnError,
   CodexUnavailableError,
   type CodexTransport,
@@ -30,7 +25,12 @@ import {
   type BoundThread,
 } from "../store/binding-store";
 import { ProjectStore } from "../store/project-store";
-import type { TerminalAppOps, TerminalTarget } from "../system/terminal-app";
+import {
+  terminalMarker,
+  TerminalAppError,
+  type TerminalAppOps,
+  type TerminalTarget,
+} from "../system/terminal-app";
 import {
   inspectBoundThread,
   prepareBoundThread,
@@ -43,10 +43,8 @@ export interface NativeSessionStatus {
   readonly seat: NativeSeat;
   readonly threadId: string | null;
   readonly thread: "none" | "idle" | "running" | "archived" | "missing" | "unavailable";
-  readonly tmuxSession: string;
-  readonly tmux: "absent" | "detached" | "attached" | "unavailable";
-  readonly terminal: "closed" | "open" | "unavailable";
-  readonly action: "open" | "focus" | "reopen";
+  readonly terminal: "closed" | "open" | "stale" | "unavailable";
+  readonly action: "open" | "focus" | "resume";
 }
 
 export interface NativeSessionsPort {
@@ -59,7 +57,6 @@ export interface NativeSessionsPort {
   ): Promise<NativeSessionStatus>;
   focus(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus>;
   closeWindow(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus>;
-  endSession(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus>;
   archiveAndEnd(changeId: string, seat: NativeSeat): Promise<void>;
   releaseObserver(changeId: string, seat: NativeSeat): void;
   forget(changeId: string): Promise<void>;
@@ -70,6 +67,7 @@ export interface NativeRuntimeSessions extends NativeSessionsPort {
   has(changeId: string, seat: NativeSeat): boolean;
   active(changeId: string, seat: NativeSeat): boolean;
   quietForMs(changeId: string, seat: NativeSeat): number | null;
+  interrupt(changeId: string, seat: NativeSeat): Promise<boolean>;
   startTurn(
     changeId: string,
     seat: NativeSeat,
@@ -114,7 +112,6 @@ interface NativeSessionsOptions extends Pick<
   readonly database: Database.Database;
   readonly host: AppServerSessionHost;
   readonly history: ArchiveOps;
-  readonly tmux: TmuxOps;
   readonly terminal: TerminalAppOps;
   readonly promptFiles: PromptFiles;
   readonly cwdFor?: (changeId: string) => string | null;
@@ -125,13 +122,13 @@ function keyOf(changeId: string, seat: NativeSeat): string {
   return `${changeId}\0${seat}`;
 }
 
-function identityOf(changeId: string, seat: string): TmuxIdentity {
-  return { changeId, seat };
-}
-
-function targetOf(changeId: string, seat: string): TerminalTarget {
-  const sessionName = tmuxSessionName(changeId, seat);
-  return { sessionName, marker: `STAGEPASS:${sessionName}` };
+function targetOf(
+  changeId: string,
+  seat: string,
+  threadId: string,
+  cwd: string,
+): TerminalTarget {
+  return { marker: terminalMarker(changeId, seat), threadId, cwd };
 }
 
 interface ActiveNativeTurn {
@@ -142,7 +139,7 @@ interface ActiveNativeTurn {
 
 const DEFAULT_TURN_TIMEOUT_MS = 180 * 60_000;
 
-/** Durable seat lifecycle reconstructed from binding + App Server + tmux + marker. */
+/** Durable seat lifecycle reconstructed from binding + App Server + Terminal marker. */
 export class NativeSessions implements NativeRuntimeSessions {
   private readonly bindings: BindingStore;
   private readonly opening = new Map<string, Promise<NativeSessionStatus>>();
@@ -157,13 +154,15 @@ export class NativeSessions implements NativeRuntimeSessions {
 
   async status(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
     this.assertChange(changeId);
-    const identity = identityOf(changeId, seat);
-    const target = targetOf(changeId, seat);
     const binding = this.bound(changeId, seat);
-    const [tmux, terminal] = await Promise.all([
-      this.options.tmux.status(identity).catch(() => "unavailable" as const),
-      this.options.terminal.status(target).catch(() => "unavailable" as const),
-    ]);
+    const terminal = binding === null
+      ? "closed" as const
+      : await this.options.terminal.status(targetOf(
+        changeId,
+        seat,
+        binding.threadId,
+        this.cwd(changeId),
+      )).catch(() => "unavailable" as const);
 
     let thread: NativeSessionStatus["thread"] = "none";
     if (binding !== null) {
@@ -184,14 +183,12 @@ export class NativeSessions implements NativeRuntimeSessions {
       seat,
       threadId: binding?.threadId ?? null,
       thread,
-      tmuxSession: target.sessionName,
-      tmux,
       terminal,
       action: terminal === "open"
         ? "focus"
-        : tmux === "detached" || tmux === "attached"
-          ? "reopen"
-          : "open",
+        : binding === null
+          ? "open"
+          : "resume",
     };
   }
 
@@ -207,6 +204,18 @@ export class NativeSessions implements NativeRuntimeSessions {
   quietForMs(changeId: string, seat: NativeSeat): number | null {
     const at = this.lastActivity.get(keyOf(changeId, seat));
     return at === undefined ? null : Math.max(0, Date.now() - at);
+  }
+
+  async interrupt(changeId: string, seat: NativeSeat): Promise<boolean> {
+    this.assertChange(changeId);
+    const binding = this.bound(changeId, seat);
+    if (binding === null) return false;
+    const session = this.options.host.session(binding.threadId);
+    if (session === null) return false;
+    const turnId = session.snapshot().activeTurnId;
+    if (turnId === null) return false;
+    await session.interrupt(turnId);
+    return true;
   }
 
   async startTurn(
@@ -252,30 +261,30 @@ export class NativeSessions implements NativeRuntimeSessions {
 
   async focus(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
     this.assertChange(changeId);
-    await this.options.terminal.focus(targetOf(changeId, seat));
+    const binding = this.bound(changeId, seat);
+    if (binding === null) {
+      throw new NativeSessionsError("thread_unavailable", `${changeId}/${seat} is not bound`);
+    }
+    await this.options.terminal.focus(targetOf(
+      changeId,
+      seat,
+      binding.threadId,
+      this.cwd(changeId),
+    ));
     return this.status(changeId, seat);
   }
 
   async closeWindow(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
     this.assertChange(changeId);
-    const identity = identityOf(changeId, seat);
-    const target = targetOf(changeId, seat);
-    const tmux = await this.options.tmux.status(identity);
-    if (tmux === "attached") await this.options.tmux.detach(target.sessionName);
-    await this.options.terminal.close(target);
-    return this.status(changeId, seat);
-  }
-
-  async endSession(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
-    this.assertChange(changeId);
-    const identity = identityOf(changeId, seat);
-    const target = targetOf(changeId, seat);
-    const tmux = await this.options.tmux.status(identity);
-    if (tmux === "attached") await this.options.tmux.detach(target.sessionName);
-    await this.options.terminal.close(target);
-    if (tmux !== "absent") await this.options.tmux.endSession(target.sessionName);
     const binding = this.bound(changeId, seat);
-    if (binding !== null) this.options.host.close(binding.threadId);
+    if (binding !== null) {
+      await this.options.terminal.close(targetOf(
+        changeId,
+        seat,
+        binding.threadId,
+        this.cwd(changeId),
+      ));
+    }
     return this.status(changeId, seat);
   }
 
@@ -359,7 +368,7 @@ export class NativeSessions implements NativeRuntimeSessions {
     this.inputLeases.add(key);
     let promptFile: PromptFile | null = null;
     try {
-      const opened = await this.open(changeId, seat, config, { showTerminal: true });
+      const opened = await this.open(changeId, seat, config, { showTerminal: false });
       if (opened.threadId === null) {
         throw new NativeSessionsError("binding_failed", "native seat has no bound thread");
       }
@@ -373,12 +382,26 @@ export class NativeSessions implements NativeRuntimeSessions {
         throw new NativeSessionsError("turn_busy", `${changeId}/${seat} already has a turn`);
       }
       promptFile = this.options.promptFiles.create(prompt);
-      const tmux = await this.options.tmux.ensureSession(
-        identityOf(changeId, seat),
+      const target = targetOf(
+        changeId,
+        seat,
         opened.threadId,
         this.cwd(changeId),
       );
-      await this.options.tmux.submit(tmux.name, promptFile.envelope);
+      const terminal = await this.options.terminal.status(target);
+      if (terminal === "open") {
+        try {
+          await this.options.terminal.submit(target, promptFile.envelope);
+        } catch (error) {
+          if (
+            !(error instanceof TerminalAppError)
+            || error.code !== "terminal_window_missing"
+          ) throw error;
+          await this.options.terminal.open(target, promptFile.envelope);
+        }
+      } else {
+        await this.options.terminal.open(target, promptFile.envelope);
+      }
       const turnId = await this.withDisconnect(session.awaitNextTurn(
         baseline.lastTurnId,
         timeoutMs,
@@ -505,13 +528,13 @@ export class NativeSessions implements NativeRuntimeSessions {
         );
       }
     }
-    const tmux = await this.options.tmux.ensureSession(
-      identityOf(changeId, seat),
-      session.threadId,
-      this.cwd(changeId),
-    );
     if (showTerminal) {
-      await this.options.terminal.open({ sessionName: tmux.name, marker: tmux.marker });
+      await this.options.terminal.open(targetOf(
+        changeId,
+        seat,
+        session.threadId,
+        this.cwd(changeId),
+      ));
     }
     return this.status(changeId, seat);
   }
@@ -581,12 +604,12 @@ export class NativeSessions implements NativeRuntimeSessions {
   private async cleanupBound(binding: BoundThread, seat: string): Promise<void> {
     const outcome = await archiveFinished(binding.threadId, this.options.history);
     const archiveFailed = outcome === "still_open" || outcome === "unknown";
-    const identity = identityOf(binding.changeId, seat);
-    const target = targetOf(binding.changeId, seat);
-    const tmux = await this.options.tmux.status(identity);
-    if (tmux === "attached") await this.options.tmux.detach(target.sessionName);
-    await this.options.terminal.close(target);
-    if (tmux !== "absent") await this.options.tmux.endSession(target.sessionName);
+    await this.options.terminal.close(targetOf(
+      binding.changeId,
+      seat,
+      binding.threadId,
+      this.cwd(binding.changeId),
+    ));
     this.options.host.close(binding.threadId);
     if (archiveFailed) {
       throw new NativeSessionsError(

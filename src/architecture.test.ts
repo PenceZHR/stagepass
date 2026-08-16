@@ -99,12 +99,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/app-server-protocol.ts": 2,
   "codex/app-server-client.ts": 2,
   "codex/app-server-daemon.ts": 2,
+  "codex/app-server-websocket.ts": 2,
   // 详细提示词只落进 0600 临时文件；给原生 TUI 的只是短信封和路径。
   "codex/prompt-file.ts": 2,
-  // 原生 Codex 会话的长寿命 owner；只以不透明名字操作 tmux，不读屏幕。
-  "codex/tmux.ts": 2,
-  // 任务从原生客户端输入；StagePass 只观察结构化 turn 终态。
-  "codex/native-tui-session.ts": 2,
+  // 反向交互仍归原生 TUI；StagePass 只观察结构化 turn 终态。
+  "codex/native-tui-owner.ts": 2,
   "system/process.ts": 2,
   // 只按白名单 marker 发现/控制 macOS Terminal 标签，不持久化窗口 id。
   "system/terminal-app.ts": 2,
@@ -177,12 +176,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 在接口写进去的那一刻就会红。
   // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
   "web/session-recovery.ts": 5,
-  // Change/seat 到 thread + tmux + Terminal 的可重建状态机。
+  // Change/seat 到 App Server thread + Terminal marker 的可重建状态机。
   "web/native-sessions.ts": 5,
   // 原生终端的 HTTP 边界只回归一化状态，不回 ANSI、输入或 JSON-RPC。
   "web/terminal-api.ts": 5,
-  "web/stream-session.ts": 5,
-  "web/codex-stream-api.ts": 5,
   "web/panel-listener.ts": 5,
   "web/panel-server.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
@@ -389,14 +386,23 @@ describe("standing · one name per concept", () => {
 });
 
 describe("standing · Codex runtime is pure App Server", () => {
-  it("browser stream routes depend on the product port, not raw sessions", () => {
-    const route = production.find((file) => file.path === "web/codex-stream-api.ts");
-    assert.ok(route);
-    assert.doesNotMatch(route.text, /type StreamSessions|from "\.\/stream-session"/);
+  it("has no second browser-stream session owner", () => {
+    const forbidden = ["web/codex-" + "stream-api.ts", "web/" + "stream-session.ts"];
+    assert.deepEqual(
+      production.filter((file) => forbidden.includes(file.path)).map((file) => file.path),
+      [],
+    );
   });
 
-  it("production has no PTY, TUI, rollout-file, or private-state path", () => {
-    const forbidden = ["node-pty", "@xterm", "/pty/", "state_5.sqlite", "rollout-"];
+  it("production has no PTY, legacy multiplexer, rollout-file, or private-state path", () => {
+    const forbidden = [
+      "node-pty",
+      "@xterm",
+      "/pty/",
+      ["t", "mux"].join(""),
+      "state_5.sqlite",
+      "rollout-",
+    ];
     const found: string[] = [];
     for (const file of production) {
       const code = withoutComments(file.text);

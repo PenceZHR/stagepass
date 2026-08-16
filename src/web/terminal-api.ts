@@ -7,7 +7,7 @@ import type {
 } from "./native-sessions";
 
 const BODY_LIMIT = 16 * 1024;
-const ACTIONS = new Set(["open", "focus", "close-window", "end-session"]);
+const ACTIONS = new Set(["open", "focus", "close-window"]);
 
 interface TerminalApiOptions {
   readonly sessions: NativeSessionsPort;
@@ -97,7 +97,7 @@ function requestIdentity(value: unknown): {
 }
 
 function runtimeStatus(code: string): number {
-  if (code === "tmux_unavailable" || code === "terminal_automation_denied") return 503;
+  if (code === "terminal_automation_denied") return 503;
   if (
     code === "terminal_window_ambiguous"
     || code === "turn_busy"
@@ -158,10 +158,8 @@ export async function serveTerminalApi(
       ));
     } else if (action === "focus") {
       json(response, 200, await options.sessions.focus(target.changeId, target.seat));
-    } else if (action === "close-window") {
-      json(response, 200, await options.sessions.closeWindow(target.changeId, target.seat));
     } else {
-      json(response, 200, await options.sessions.endSession(target.changeId, target.seat));
+      json(response, 200, await options.sessions.closeWindow(target.changeId, target.seat));
     }
     return true;
   } catch (error) {

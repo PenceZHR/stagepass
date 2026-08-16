@@ -1593,11 +1593,10 @@ body::after {
           <div class="terminal-portal__actions">
             <button class="enter" id="terminal-primary" type="button">打开系统终端</button>
             <button class="back" id="terminal-close-window" type="button" hidden>关闭终端窗口</button>
-            <button class="terminal-danger" id="terminal-end-session" type="button">结束会话</button>
           </div>
         </section>
       </div>
-      <p class="note" id="stage-note">窗口关闭只会分离显示；tmux、Codex 与当前任务会继续在后台运行。</p>
+      <p class="note" id="stage-note">窗口关闭只会退出可丢弃的客户端；Codex 线程与当前任务仍由 App Server 保留。</p>
     </section>
 
     <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->

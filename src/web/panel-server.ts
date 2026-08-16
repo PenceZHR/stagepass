@@ -27,7 +27,6 @@ import {
   type AppServerHistory,
   threadTurnEnded as appServerThreadTurnEnded,
 } from "../codex/app-server-history";
-import type { StreamEvent, StreamSnapshot } from "../codex/stream-state";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { createTrustOps, type TrustOps } from "../codex/trust";
 import { editGateClosed, isEditGateGap } from "../domain/edit-gate";
@@ -56,17 +55,8 @@ import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief"
 import { waive, type WaiveOutcome } from "../app/waive";
 import { panelView, progressView } from "./panel-view";
 import {
-  prepareBoundThread, reconcileMissingBindings, type BindingRecoveryReport,
+  reconcileMissingBindings, type BindingRecoveryReport,
 } from "./session-recovery";
-import {
-  serveCodexStreamApi,
-  type CodexStreamPort,
-} from "./codex-stream-api";
-import {
-  STREAM_ASIDE,
-  type StreamOpenOptions,
-  type StreamSessions,
-} from "./stream-session";
 import type { ReservedPanelListener } from "./panel-listener";
 import type {
   NativeRuntimeSessions,
@@ -225,10 +215,9 @@ const ARTIFACT_MAX_BYTES = 2_000_000;
 
 export interface PanelOptions {
   readonly database: Database.Database;
-  readonly streams: StreamSessions;
   readonly history: AppServerHistory;
   /** Native Terminal lifecycle; browser receives state only, never terminal bytes. */
-  readonly nativeSessions?: NativeRuntimeSessions;
+  readonly nativeSessions: NativeRuntimeSessions;
   /**
    * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
    * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
@@ -298,15 +287,8 @@ class ProjectPathMissingError extends Error {
   }
 }
 
-class SessionResumeRefusedError extends Error {
-  constructor(readonly threadId: string, reason: string) {
-    super(`refusing to resume thread ${threadId}: ${reason}`);
-    this.name = "SessionResumeRefusedError";
-  }
-}
-
 /** StagePass-facing facade over structured App Server sessions and history. */
-export class PanelSessions implements CodexStreamPort {
+export class PanelSessions {
   readonly archive: ArchiveOps;
   readonly repo: RepoOps;
   readonly trust: TrustOps;
@@ -335,22 +317,11 @@ export class PanelSessions implements CodexStreamPort {
   }
 
   has(changeId: string, phase: Seat): boolean {
-    return this.options.nativeSessions?.has(changeId, nativeSeatOf(phase))
-      ?? this.options.streams.has(changeId, phase);
+    return this.options.nativeSessions.has(changeId, nativeSeatOf(phase));
   }
 
   active(changeId: string, phase: Seat): boolean {
-    return this.options.nativeSessions?.active(changeId, nativeSeatOf(phase))
-      ?? this.options.streams.active(changeId, phase);
-  }
-
-  async open(
-    changeId: string,
-    phase: Seat,
-    options: StreamOpenOptions = {},
-  ) {
-    const threadId = await this.resumableThreadId(changeId, phase);
-    return this.options.streams.open(changeId, phase, { ...options, threadId });
+    return this.options.nativeSessions.active(changeId, nativeSeatOf(phase));
   }
 
   async openForChat(
@@ -358,9 +329,6 @@ export class PanelSessions implements CodexStreamPort {
     phase: Seat,
     config: Readonly<Record<string, unknown>>,
   ): Promise<void> {
-    if (this.options.nativeSessions === undefined) {
-      throw new Error("native_sessions_unavailable");
-    }
     await this.options.nativeSessions.open(
       changeId,
       nativeSeatOf(phase),
@@ -379,9 +347,6 @@ export class PanelSessions implements CodexStreamPort {
       phase === ASIDE ? undefined : phase,
     ),
   ): Promise<string> {
-    if (this.options.nativeSessions === undefined) {
-      throw new Error("native_sessions_unavailable");
-    }
     return this.options.nativeSessions.startTurn(
       changeId,
       nativeSeatOf(phase),
@@ -397,9 +362,6 @@ export class PanelSessions implements CodexStreamPort {
     config: Readonly<Record<string, unknown>>,
     timeoutMs: number,
   ): Promise<string> {
-    if (this.options.nativeSessions === undefined) {
-      throw new Error("native_sessions_unavailable");
-    }
     return this.options.nativeSessions.runTurn(
       changeId,
       nativeSeatOf(phase),
@@ -418,44 +380,6 @@ export class PanelSessions implements CodexStreamPort {
     } catch {
       return false;
     }
-  }
-
-  snapshot(changeId: string, phase: Seat): StreamSnapshot {
-    return this.options.streams.snapshot(changeId, phase);
-  }
-
-  eventsAfter(
-    changeId: string,
-    phase: Seat,
-    seq: number,
-  ): readonly StreamEvent[] | null {
-    return this.options.streams.eventsAfter(changeId, phase, seq);
-  }
-
-  subscribe(
-    changeId: string,
-    phase: Seat,
-    listener: (event: StreamEvent) => void,
-  ): () => void {
-    return this.options.streams.subscribe(changeId, phase, listener);
-  }
-
-  steer(
-    changeId: string,
-    phase: Seat,
-    direction: string,
-    expectedTurnId: string,
-  ): Promise<void> {
-    return this.options.streams.steer(changeId, phase, direction, expectedTurnId);
-  }
-
-  respond(
-    changeId: string,
-    phase: Seat,
-    interactionId: string,
-    response: unknown,
-  ): Promise<void> {
-    return this.options.streams.respond(changeId, phase, interactionId, response);
   }
 
   async recordCount(changeId: string, phase: Seat): Promise<number | null> {
@@ -494,54 +418,30 @@ export class PanelSessions implements CodexStreamPort {
   }
 
   quietForMs(changeId: string, phase: Seat): number | null {
-    return this.options.nativeSessions?.quietForMs(changeId, nativeSeatOf(phase))
-      ?? this.options.streams.quietForMs(changeId, phase);
+    return this.options.nativeSessions.quietForMs(changeId, nativeSeatOf(phase));
   }
 
   releaseObserver(changeId: string, phase: Seat): void {
-    if (this.options.nativeSessions !== undefined) {
-      this.options.nativeSessions.releaseObserver(changeId, nativeSeatOf(phase));
-      return;
-    }
-    this.options.streams.close(changeId, phase);
+    this.options.nativeSessions.releaseObserver(changeId, nativeSeatOf(phase));
   }
 
   async archiveAndEnd(changeId: string, phase: Seat): Promise<void> {
-    if (this.options.nativeSessions === undefined) {
-      throw new Error("native_sessions_unavailable");
-    }
     await this.options.nativeSessions.archiveAndEnd(
       changeId,
       nativeSeatOf(phase),
     );
   }
 
-  async interrupt(changeId: string, phase: Seat, turnId: string): Promise<void>;
-  async interrupt(changeId: string, phase: Seat): Promise<boolean>;
-  async interrupt(
-    changeId: string,
-    phase: Seat,
-    turnId?: string,
-  ): Promise<void | boolean> {
-    if (turnId !== undefined) {
-      await this.options.streams.interrupt(changeId, phase, turnId);
-      return;
-    }
-    if (!this.has(changeId, phase)) return false;
-    const snapshot = this.options.streams.snapshot(changeId, phase);
-    if (snapshot.activeTurnId === null) return false;
-    await this.options.streams.interrupt(changeId, phase, snapshot.activeTurnId);
-    return true;
+  interrupt(changeId: string, phase: Seat): Promise<boolean> {
+    return this.options.nativeSessions.interrupt(changeId, nativeSeatOf(phase));
   }
 
   async forget(changeId: string): Promise<void> {
-    await this.options.nativeSessions?.forget(changeId);
-    this.options.streams.forget(changeId);
+    await this.options.nativeSessions.forget(changeId);
   }
 
   closeAll(): void {
-    this.options.nativeSessions?.closeControlConnection();
-    this.options.streams.closeAll();
+    this.options.nativeSessions.closeControlConnection();
   }
 
   private boundThreadId(changeId: string, phase: Seat): string | null {
@@ -559,31 +459,6 @@ export class PanelSessions implements CodexStreamPort {
       : { changeId, kind: "round", phase, threadId: found.threadId };
   }
 
-  private detachBinding(binding: BoundThread): void {
-    const bindings = new BindingStore(this.options.database);
-    if (binding.kind === "round") bindings.detach(binding.changeId, binding.phase);
-    else bindings.detachAside(binding.changeId);
-  }
-
-  private async resumableThreadId(changeId: string, phase: Seat): Promise<string | null> {
-    const binding = this.binding(changeId, phase);
-    if (binding === null) return null;
-    const prepared = await prepareBoundThread({
-      binding,
-      archive: this.archive,
-      detach: (found) => { this.detachBinding(found); },
-    });
-    if (prepared.kind === "fresh") {
-      console.log(
-        `[panel] ${changeId}/${phase} 的线程 ${binding.threadId} 已不存在 —— fresh`,
-      );
-      return null;
-    }
-    if (prepared.kind === "refused") {
-      throw new SessionResumeRefusedError(binding.threadId, prepared.reason);
-    }
-    return prepared.threadId;
-  }
 }
 
 const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
@@ -1082,13 +957,12 @@ async function serveProgress(
   response: ServerResponse,
   database: Database.Database,
   sessions: PanelSessions,
-  streams: StreamSessions,
   history: AppServerHistory,
 ): Promise<void> {
   const view = await progressView({
     database,
     sessions: {
-      has: (changeId, phase) => streams.active(changeId, phase),
+      has: (changeId, phase) => sessions.active(changeId, phase),
       quietForMs: (changeId, phase) => sessions.quietForMs(changeId, phase),
     },
     history,
@@ -1110,23 +984,6 @@ function readBody(request: IncomingMessage): Promise<Uint8Array> {
 function json(response: ServerResponse, body: unknown): void {
   response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
-}
-
-function serveStructuredCodex(
-  url: URL,
-  request: IncomingMessage,
-  response: ServerResponse,
-  sessions: PanelSessions,
-  options: PanelOptions,
-): Promise<boolean> {
-  return serveCodexStreamApi(url, request, response, {
-    streams: sessions,
-    configFor: (changeId, seat) => pluginAppServerConfigFor(
-      options.database,
-      changeId,
-      seat === STREAM_ASIDE ? undefined : seat,
-    ),
-  });
 }
 
 /**
@@ -1723,7 +1580,7 @@ function servePanel(
     ...panelView({
       database,
       sessions: {
-        has: (each, phase) => options.streams.active(each, phase),
+        has: (each, phase) => sessions.active(each, phase),
         quietForMs: (each, phase) => sessions.quietForMs(each, phase),
       },
       changeId,
@@ -1845,7 +1702,7 @@ export async function handle(
     response.end(readFileSync(asset.file));
     return;
   }
-  if (options.nativeSessions !== undefined && await serveTerminalApi(
+  if (await serveTerminalApi(
     url,
     request,
     response,
@@ -1858,13 +1715,6 @@ export async function handle(
       ),
     },
   )) return;
-  // During the cutover, history reads remain available to server-side code;
-  // browser write routes are gone because the official native client owns input.
-  if (
-    request.method === "GET"
-    && await serveStructuredCodex(url, request, response, sessions, options)
-  ) return;
-
   if (url.pathname === "/api/panel" && request.method === "GET") {
     servePanel(url, response, sessions, options);
     return;
@@ -1876,7 +1726,6 @@ export async function handle(
       response,
       database,
       sessions,
-      options.streams,
       options.history,
     );
     return;
