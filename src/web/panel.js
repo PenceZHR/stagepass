@@ -23,8 +23,8 @@ import { createTerminalBridge } from "./terminal-bridge.js";
  * 所以：觉得主屏少了点什么，答案是 renderStatus 或 drawSheet，不是往环那屏塞
  * 一块新东西。原来压在环底下那条决策区就是这么长出来的，已经整条撤掉了。
  *
- * The stage view controls only native Terminal lifecycle. Official Codex TUI
- * output, input, approvals, MCP interaction, colors, and Ctrl+C stay native.
+ * The stage view is a read-only projection of settled artifacts. Official Codex
+ * TUI output, input, approvals, MCP interaction, colors, and Ctrl+C stay native.
  */
 const params = new URLSearchParams(location.search);
 const changeId = params.get("change") || "CHG-1";
@@ -2404,6 +2404,7 @@ async function enter(phase) {
   moving = true;
   terminalBridge?.close();
   terminalBridge = null;
+  window.stagepassArtifacts?.close();
   current = phase;
 
   const entry = phases.find((item) => item.phase === phase);
@@ -2434,10 +2435,25 @@ async function enter(phase) {
     closeWindow: terminalCloseWindow,
     summary: terminalSummary,
   });
+  const step = entry ? nextStep(entry) : null;
+  window.stagepassArtifacts?.open({
+    changeId,
+    phase,
+    threadId: entry?.threadId ?? null,
+    state: {
+      status: entry ? statusOf(entry).short : "旁路会话",
+      current: entry?.current ?? false,
+      live: entry?.live ?? false,
+      mark: entry?.mark ?? null,
+      openGaps: entry ? openGaps(entry).length : 0,
+    },
+    nextStep: step,
+  });
   try {
-    await terminalBridge.openOrFocus();
+    // 进入 Stage 是纯查看：只读状态，不自动拉起或聚焦 Terminal.app。
+    await terminalBridge.refresh();
   } catch (error) {
-    stageNote.textContent = `会话没能打开：${error?.message ?? error}`;
+    stageNote.textContent = `原生会话状态读取失败：${error?.message ?? error}`;
   }
 }
 
@@ -2446,6 +2462,7 @@ async function leave() {
   moving = true;
   terminalBridge?.close();
   terminalBridge = null;
+  window.stagepassArtifacts?.close();
   current = null;
 
   stageView.classList.remove("active");
@@ -2473,6 +2490,7 @@ function openGraphView(project) {
   // 台上如果是会话，按 leave() 的规矩收干净 —— 只是不播它的动画。
   terminalBridge?.close();
   terminalBridge = null;
+  window.stagepassArtifacts?.close();
   current = null;
   stageView.classList.remove("active");
   stageView.hidden = true;

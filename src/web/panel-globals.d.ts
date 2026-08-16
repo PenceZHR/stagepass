@@ -9,6 +9,22 @@ declare module "three/addons/controls/OrbitControls.js";
 
 /** panel.js ↔ graph-view.js 唯一的握手（图谱 spec 2026-08-12）。 */
 interface Window {
+  stagepassArtifacts?: {
+    open(stage: {
+      changeId: string;
+      phase: string;
+      threadId: string | null;
+      state: {
+        status: string;
+        current: boolean;
+        live: boolean;
+        mark: string | null;
+        openGaps: number;
+      };
+      nextStep: { what: string; why: string } | null;
+    }): void;
+    close(): void;
+  };
   stagepassGraph?: {
     open(project: {
       id: string;

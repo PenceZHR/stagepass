@@ -477,6 +477,15 @@ const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
   "/terminal-bridge.js": {
     file: join(HERE, "terminal-bridge.js"), type: "text/javascript; charset=utf-8",
   },
+  "/stage-artifact-view.js": {
+    file: join(HERE, "stage-artifact-view.js"), type: "text/javascript; charset=utf-8",
+  },
+  "/stage-artifact-scene.js": {
+    file: join(HERE, "stage-artifact-scene.js"), type: "text/javascript; charset=utf-8",
+  },
+  "/stage-artifact.css": {
+    file: join(HERE, "stage-artifact.css"), type: "text/css; charset=utf-8",
+  },
   // The cloud-sea ground is a real generated raster, not CSS pretending to be
   // one -- that was decided in the 2026-07-24 visual direction, not styled.
   "/assets/abstract-cloud-sea.png": {

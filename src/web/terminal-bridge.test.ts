@@ -100,6 +100,14 @@ describe("native Terminal portal", () => {
     assert.equal(JSON.stringify(status()).includes(["t", "mux"].join("")), false);
   });
 
+  it("refreshes native status without opening or focusing Terminal", async () => {
+    const view = fixture(status({ terminal: "open", action: "focus" }));
+    await view.controller.refresh();
+    assert.equal(view.calls.length, 1);
+    assert.match(view.calls[0]!.path, /^\/api\/terminal\/status\?/);
+    assert.equal(view.calls[0]!.method, "GET");
+  });
+
   it("renders stale as resumable and opens it through the native API", async () => {
     const view = fixture(status({ terminal: "stale", action: "resume" }));
     await view.controller.refresh();

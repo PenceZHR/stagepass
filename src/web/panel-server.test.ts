@@ -244,6 +244,13 @@ describe("pure App Server panel", () => {
       const terminalBridge = await fetch(`${base}/terminal-bridge.js`);
       assert.equal(terminalBridge.status, 200);
       assert.match(await terminalBridge.text(), /createTerminalBridge/);
+      for (const asset of [
+        "/stage-artifact-view.js",
+        "/stage-artifact-scene.js",
+        "/stage-artifact.css",
+      ]) {
+        assert.equal((await fetch(`${base}${asset}`)).status, 200, asset);
+      }
       assert.equal((await fetch(`${base}/codex-stream.js`)).status, 404);
       assert.equal((await fetch(`${base}/api/terminal?change=CHG-1&phase=PRD`, {
         method: "POST",
