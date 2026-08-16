@@ -85,8 +85,13 @@ interaction id；回答后服务端把结果回到原 request。未知反向请�
 ## 8. MCP 配置
 
 StagePass MCP 通过每条 thread 的 App Server `config` 注入，不写用户全局配置。配置包含
-当前数据库、Change，跑轮时还包含 phase。MCP elicitation 由 App Server 作为反向请求
-送入 StagePass interaction sheet，答案直接回到原 turn。
+当前数据库、Change，跑轮时还包含 phase。创建/恢复并注入配置后，StagePass 控制连接必须
+在向 Terminal 投递内容前调用 `thread/unsubscribe`；后续用不含 turns 的 `thread/read`
+查询状态，用 `thread/turns/list` 的有界最近页查询目标 turn。
+
+MCP tool approval 与 elicitation 的反向请求只送到官方 Codex TUI。StagePass 浏览器不代答，
+控制连接也不以“拒绝请求”的方式充当观察者；人的选择由 TUI 回到原 turn，StagePass MCP
+只负责把业务答案写入同一份 StagePass 账本。
 
 ## 9. 升级核对
 

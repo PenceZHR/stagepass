@@ -8,9 +8,10 @@ StagePass is a local delivery control plane. It lays one change onto an
 **eight-phase diamond ring**, runs an adversarial Codex round at every phase
 (red produces, blue attacks, a judge rules), collects evidence, surfaces
 problems — and then **stops and waits for a person to decide**. In this isolated
-branch, Codex runs through one supervised App Server and StagePass renders its
-typed stream and interaction sheet. Only the person's recorded choice can
-advance a gate.
+branch, a managed App Server keeps Codex threads durable, while the official
+Codex TUI in Terminal.app owns every interactive turn, approval, and MCP form.
+StagePass controls the workflow and records decisions; only the person's
+recorded choice can advance a gate.
 
 ```
 PRD → Spec → Arch → ⟨BuildPlan ∥ TestPlan⟩ → ⟨Build ∥ Test⟩ → QA
@@ -33,7 +34,7 @@ done is simply not done:
 
 | Layer | What it is | Status |
 |---|---|---|
-| **L0–L5** | Schema, state machine, gates, leases, crash recovery, pure App Server hosting, human interactions, adversarial rounds, rubric scoring | ✅ 1057-test baseline plus App Server protocol and browser acceptance |
+| **L0–L5** | Schema, state machine, gates, leases, crash recovery, managed App Server hosting, native TUI interactions, adversarial rounds, rubric scoring | ✅ 1093-test baseline plus App Server protocol and native Terminal acceptance |
 | **Ring v3** | Eight-phase diamond, blind parallel tracks, QA's three attacks, send-back-as-rewalk, parallel seats | ✅ Landed in six batches (2026-08-09); CHG-001 really walked the new ring to QA and is re-walking after a send-back |
 | **Project graph** | Black-hole-and-Saturn-rings 3D dependency view, Arch blueprint reconciliation overlay | ✅ Verified on a real machine (2026-08-12); one semantic boundary still awaits a ruling |
 | **Bootstrap** | Run one Change through StagePass that produces StagePass's own next change | ❌ Has not happened — this is the test of whether the word "bootstrap" is earned |
@@ -72,8 +73,8 @@ StagePass answers each with a hard rule:
 2. **Gates read evidence, not self-assessment.** A phase node turns green only
    because **a person approved it in the ledger**.
 3. **There is exactly one decision path.** App Server approval and elicitation
-   requests appear in the StagePass interaction sheet, but the answer still
-   enters the same StagePass use case and ledger. Rendering cannot move a gate.
+   requests stay in the official Codex TUI; StagePass MCP records the business
+   answer in the same StagePass use case and ledger. Rendering cannot move a gate.
 4. **The code author and the test author are blind to each other.** The two
    tracks share only the Arch contract and collide at QA, where mutation
    attacks vet the tests themselves (a no-op mutation must stay green;
@@ -129,12 +130,13 @@ cached**: ~200ms end to end, always equal to the tree on disk.
 | | Does | **Explicitly does not** |
 |---|---|---|
 | **State machine & gates** (`src/domain`, `src/store`, `src/app`) | Transitions, gates, fencing, leases, recovery; composing questions, validating answers, advancing state | **Render anything** |
-| **App Server workbench** (`src/web`) | Viewing and launching: the phase ring, evidence, graph, normalized Codex snapshots/events and human interactions | Infer gate state from model text or bypass a StagePass use case |
+| **Native TUI portal** (`src/web`) | Viewing and launching: the phase ring, evidence, graph, durable bindings, and native Terminal lifecycle | Render terminal bytes, answer Codex interactions, infer gate state from model text, or bypass a StagePass use case |
 | **Codex plugin** (`src/plugin`) | Asks the person via MCP `elicitation`, sends the answer back | Decide, compose, or judge legality |
 
-**The panel is a projection, not a decision authority.** StagePass materializes
-typed App Server thread/turn/item state and renders it in its own visual system.
-Raw JSON-RPC ids and payloads never cross into the browser.
+**The panel is a projection, not a decision authority.** StagePass reads durable
+thread history for workflow facts and opens or focuses the official TUI. Terminal
+bytes, reverse requests, raw JSON-RPC ids, and protocol payloads never cross into
+the browser.
 
 This is not left to judgement. The standing guards in
 `src/architecture.test.ts` may never go red. The founding five:
@@ -143,9 +145,10 @@ This is not left to judgement. The standing guards in
 2. A lower layer may not import a higher one;
 3. No export with zero callers;
 4. One name per concept (no phase-name aliases);
-5. **No PTY/TUI/private-record runtime path.** Production scanning rejects
-   `node-pty`, xterm, `/pty/`, rollout paths and `state_5.sqlite`; only the
-   supervised App Server client may spawn Codex.
+5. **No PTY/browser-terminal/private-record runtime path.** Production scanning
+   rejects `node-pty`, xterm, `/pty/`, rollout paths and `state_5.sqlite`; the only
+   interactive client is the official Codex TUI opened through the fixed
+   Terminal.app boundary.
 
 Ratchets grew later: single-function line counts, per-module dependency
 closure share, ingredient-list share of the tree — existing violations are
@@ -227,11 +230,11 @@ src/
               rubric rounds, git
   graph/      The graph engine: compiler-parsed dependencies, selection criteria,
               layout, ingredient lists, blueprint reconciliation — all pure functions
-  codex/      App Server JSON-RPC, sessions, history, stream projection,
-              transport, directory trust and archive policy
+  codex/      App Server JSON-RPC, provisioning, history queries, transport,
+              directory trust and archive policy
   plugin/     The MCP plugin: its only write is "record what the person said"
-  web/        App Server session registry, snapshot/SSE API, native renderer,
-              panel server, graph API and browser half
+  web/        Native seat registry, Terminal portal, panel server, graph API
+              and browser half
   architecture.test.ts   the standing guards
 docs/         PRD, BACKLOG, designs, handoffs. **The PRD is the only authority;
               BACKLOG is the single entry point for undone work.**
@@ -254,7 +257,8 @@ Key documents:
 - [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) — **the only authority**, including why the rebuild
 - [`docs/BACKLOG.md`](docs/BACKLOG.md) — what is undone and why, accumulated across sessions
 - [`docs/PLAN-2026-08-09-ring-v3.md`](docs/PLAN-2026-08-09-ring-v3.md) — ring v3: eight rulings, seven batches
-- [`docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md`](docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md) — pure App Server runtime and native stream contract
+- [`docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md`](docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md) — managed App Server plus official native TUI contract
+- [`docs/HANDOFF-2026-08-16-native-tui.md`](docs/HANDOFF-2026-08-16-native-tui.md) — current worktree handoff and the MCP ownership invariant
 - [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) — the live App Server behavior contract
 - [`docs/superpowers/specs/2026-08-12-project-graph-3d-design.md`](docs/superpowers/specs/2026-08-12-project-graph-3d-design.md) — the project graph's design and criteria
 - [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) — the seven hand-transcription surfaces and how each reached zero

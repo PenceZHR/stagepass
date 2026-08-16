@@ -55,12 +55,23 @@ Codex CLI 0.147.0 的本机帮助已验证 `resume` 同时接受 `[SESSION_ID] [
 ### 3.1 App Server daemon
 
 StagePass 用 `codex app-server daemon start` 获取官方 `socketPath`，通过该 Unix socket 的
-WebSocket 连接 App Server。此连接创建、恢复、读取和归档 thread，并观察结构化 turn
-状态；它不替官方 TUI 发起交互 turn，也不回答反向交互请求。
+WebSocket 连接 App Server。此控制连接创建、恢复、读取和归档 thread，但不是 turn 的
+订阅者或交互 owner；它不替官方 TUI 发起交互 turn，也不回答反向交互请求。
 
 新 thread 仅在用户显式打开阶段或派发阶段任务时创建，并用当前 Change/seat 的 cwd、
 sandbox、approval policy、model、effort 与 StagePass MCP config 初始化。已有 binding
 永远优先恢复。
+
+`thread/start` / `thread/resume` 会让调用连接隐式订阅 thread。StagePass 在完成 binding
+后、向 Terminal 投递任何内容前，必须在同一控制连接调用 `thread/unsubscribe`，再释放
+本地 session 对象。之后的状态通过 `thread/read { includeTurns: false }` 查询，turn 起止和
+结果用 `thread/turns/list` 只轮询最近一页；精确中断使用
+`turn/interrupt { threadId, turnId }`，不为此重新 resume。`thread/read`、`thread/list`、
+archive/unarchive 都不得恢复订阅。
+
+这是交互所有权的不变量：同一时刻只有官方 TUI 订阅并接收 approval、MCP tool approval
+和 MCP elicitation。不能用“收到后拒绝”冒充只读观察，因为 App Server 会把该拒绝解释为
+用户拒绝工具调用。
 
 ### 3.2 Terminal.app 与官方 TUI
 
@@ -98,19 +109,22 @@ tmux 字段。StagePass 重启后从 binding + App Server thread + Terminal mark
 
 派发流程：
 
-1. 打开/恢复 bound thread，并记录 baseline lastTurnId；activeTurnId 非空则拒绝重复派发。
-2. 把详尽 prompt 写入权限受限的临时文件，得到只含文件路径与动作的短信封。
-3. 获取 `(Change, seat)` 输入 lease。
-4. 若 TUI 未打开或 stale，执行带可选 `[PROMPT]` 的 `codex resume`；若 TUI 已打开，
+1. 创建/恢复 bound thread，完成 binding 后在控制连接执行 `thread/unsubscribe`；若 TUI
+   已打开则不再 `thread/resume`，只确认控制连接处于未订阅状态。
+2. 用 `thread/turns/list` 的最近一页确认没有 in-progress turn；有则拒绝重复派发。
+3. 把详尽 prompt 写入权限受限的临时文件，得到只含文件路径与动作的唯一短信封。
+4. 获取 `(Change, seat)` 输入 lease。
+5. 若 TUI 未打开或 stale，执行带可选 `[PROMPT]` 的 `codex resume`；若 TUI 已打开，
    Terminal 控制层向唯一 marker tab 递交信封。
-5. 从 App Server 等待同一 thread 出现 baseline 之后的新 turn，并观察明确终态。
-6. 终态后释放 prompt 文件和输入 lease；失败时不写“已完成”的假状态。
+6. 用 `thread/turns/list` 查找 `userMessages` 精确包含该唯一信封的 turn，再轮询同一 turnId 的
+   明确终态；不消费 turn/item 通知，也不重新订阅。
+7. 终态后释放 prompt 文件和输入 lease；失败时不写“已完成”的假状态。
 
 审批、文件修改确认、权限请求、MCP tool approval、StagePass elicitation、快捷键和 Ctrl+C
 仍全部出现在官方 TUI。StagePass 不解析 ANSI/屏幕文本作为业务事实。
 
-关闭窗口时如果 turn 已在 daemon 中运行，StagePass 保留 binding 与结构化观察；重新打开
-后 TUI resume 同一 thread。若当前 Codex 版本把特定交互请求绑定到已断开的客户端，turn
+关闭窗口时如果 turn 已在 daemon 中运行，StagePass 保留 binding，并可继续只读查询 turn
+状态；重新打开后 TUI resume 同一 thread。若当前 Codex 版本把特定交互请求绑定到已断开的客户端，turn
 可保持 pending，重新连接后由官方 TUI 恢复；验收必须实测这一断连路径，不能仅靠单测
 宣称。
 
@@ -147,7 +161,7 @@ changeId, seat, threadId, thread, terminal, action
 ## 6. 清理、归档与恢复
 
 - 普通 close-window：只关 Terminal，不归档、不解绑、不关闭 daemon thread。
-- 阶段批准：关闭目标 Terminal，归档 thread，释放 StagePass observer。
+- 阶段批准：关闭目标 Terminal，归档 thread，释放 StagePass 的逻辑 seat/输入 lease。
 - 删除 Change/项目：逐个关闭目标 Terminal，再按既有规则归档 thread；任何清理失败都
   阻止伪装删除成功。
 - StagePass 退出：不关闭 Terminal、不归档 thread、不停止 daemon，只关闭自己的控制

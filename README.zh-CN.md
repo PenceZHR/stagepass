@@ -6,8 +6,9 @@
 
 StagePass 是一个本地运行的交付控制面：它把一次改动摆上一条**八阶段的钻石环**，
 每个阶段跑 Codex 的对抗轮（红方产出、蓝方挑错、裁判判定），产出证据、找出问题，
-然后**停下来等人裁决**。这个隔离分支只运行一个受监管的 Codex App Server，
-StagePass 原生渲染结构化流和交互框；只有人的答案被账本接受后，状态才会推进。
+然后**停下来等人裁决**。这个隔离分支由 managed App Server 保存 Codex thread，
+Terminal.app 中的官方 Codex TUI 独占交互 turn、审批和 MCP 表单；StagePass 只控制流程并
+记录业务决定。只有人的答案被账本接受后，状态才会推进。
 
 ```
 PRD → Spec → Arch → ⟨BuildPlan ∥ TestPlan⟩ → ⟨Build ∥ Test⟩ → QA
@@ -27,7 +28,7 @@ Arch 是钻石的分叉点：计划轨和测试轨从这里分开、**互相看�
 
 | 层 | 内容 | 状态 |
 |---|---|---|
-| **L0–L5** | schema、状态机、闸门、租约、崩溃恢复、纯 App Server 托管、人工交互、对抗轮、rubric 出分 | ✅ 1057 项基线测试 + App Server 协议与浏览器验收 |
+| **L0–L5** | schema、状态机、闸门、租约、崩溃恢复、managed App Server 托管、原生 TUI 交互、对抗轮、rubric 出分 | ✅ 1093 项测试 + App Server 协议与原生 Terminal 验收 |
 | **环 v3** | 八阶段钻石环、两轨互盲、QA 三攻、打回重走、并行座位 | ✅ 六批落地（2026-08-09），CHG-001 真机沿新环走到 QA、又按打回重走 |
 | **项目图谱** | 黑洞 + 土星环的 3D 依赖图，Arch 图纸对账叠影 | ✅ 真机验过（2026-08-12）；判据的语义边界还有一个待拍板 |
 | **自举** | 用 StagePass 跑一个 Change，产出 StagePass 自己的下一个改动 | ❌ 还没发生 —— 这是「能不能叫 bootstrap」的判据 |
@@ -56,8 +57,8 @@ StagePass 对这些各有一条硬规则：
    "这一轮没提到"和"这一轮说它已经修好了"在库里是两种不同的行。
 2. **闸门读证据，不读模型的自我评价。** 阶段节点变绿只因为**账本里有人批准过它**，
    不是因为哪一轮报告说没问题。
-3. **裁决只有一条路径。** App Server 的审批和 elicitation 会出现在 StagePass
-   interaction sheet，但答案仍进入同一套用例与账本。渲染本身不能推动闸门。
+3. **裁决只有一条路径。** App Server 的审批和 elicitation 只出现在官方 Codex TUI；
+   StagePass MCP 把业务答案写入同一套用例与账本。渲染本身不能推动闸门。
 4. **写代码的和写测试的互盲。** 两轨只共享 Arch 契约，在 QA 对撞；QA 用变异攻击
    验测试本身（不改行为的变异必须全绿、还原改动必须变红）。
 
@@ -96,11 +97,11 @@ StagePass 对这些各有一条硬规则：
 | | 干什么 | **明确不干什么** |
 |---|---|---|
 | **状态机与闸门**（`src/domain`、`src/store`、`src/app`） | 状态转移、gate、fence、租约、恢复；组题、验答案、推进状态 | **不渲染任何东西** |
-| **App Server 工作台**（`src/web`） | 看和启动：阶段环、证据、图谱、归一化 Codex snapshot/event 和人工交互 | 从模型正文推断闸门状态，或绕过 StagePass 用例 |
+| **原生 TUI 入口**（`src/web`） | 看和启动：阶段环、证据、图谱、耐久 binding 和系统终端生命周期 | 渲染终端字节、代答 Codex 交互、从模型正文推断闸门状态，或绕过 StagePass 用例 |
 | **Codex 插件**（`src/plugin`） | 通过 MCP `elicitation` 向人提问，把答案发回来 | 不决策、不组题、不判断合法性 |
 
-**面板是投影，不是决策权威。** StagePass 物化 App Server 的 thread/turn/item 状态，
-再用自己的美术系统渲染；原始 JSON-RPC id 和 payload 不进入浏览器。
+**面板是投影，不是决策权威。** StagePass 读取耐久 thread 历史作为流程事实，并打开或
+聚焦官方 TUI；终端字节、反向请求、原始 JSON-RPC id 和 payload 都不进入浏览器。
 
 这条不靠自觉。`src/architecture.test.ts` 里的常驻护栏任何时候都不许红，起家的五条：
 
@@ -108,8 +109,9 @@ StagePass 对这些各有一条硬规则：
 2. 下层不许 import 上层；
 3. 没有零调用者的 export；
 4. 一个概念一个名字（阶段名不许有别名）；
-5. **生产运行时没有 PTY/TUI/私有记录路径。** 常驻扫描拒绝 `node-pty`、xterm、
-   `/pty/`、rollout 和 `state_5.sqlite`；只有 App Server client 可以启动 Codex。
+5. **生产运行时没有 PTY/浏览器终端/私有记录路径。** 常驻扫描拒绝 `node-pty`、xterm、
+   `/pty/`、rollout 和 `state_5.sqlite`；唯一交互客户端是通过固定 Terminal.app 边界打开的
+   官方 Codex TUI。
 
 后来又长出了几条**棘轮**：单函数行数、单模块依赖闭包占比、配料单占全树比例 ——
 现行违例逐个钉死在例外表里，只许缩、不许涨。图谱那批路由就是被闭包棘轮打红后
@@ -178,11 +180,9 @@ src/
   app/        用例层：问人、录需求、裁决、接受风险、新建与删除
   work/       长任务：job 租约、turn 循环、对抗轮次与 rubric 轮次的接线、git
   graph/      图谱引擎：真编译器解析依赖、判据、布局、配料单、图纸对账 —— 全部纯函数
-  codex/      App Server JSON-RPC、session、history、stream projection、transport、
-              目录信任与归档策略
+  codex/      App Server JSON-RPC、provision、history query、transport、目录信任与归档策略
   plugin/     MCP 插件：唯一的写入是"记下人说了什么"
-  web/        App Server session registry、snapshot/SSE API、原生 renderer、
-              面板服务端、图谱 API 与浏览器那半边
+  web/        原生 seat registry、Terminal portal、面板服务端、图谱 API 与浏览器那半边
   architecture.test.ts   常驻护栏
 docs/         PRD、BACKLOG、设计稿、交接。**PRD 是唯一权威，BACKLOG 是待办的唯一入口。**
 scripts/      panel、plugin server、dump-rubrics、regen-prompt-golden
@@ -202,7 +202,8 @@ SQLite 是唯一业务权威 —— `changes` 表上有触发器，任何一次�
 - [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) —— **唯一权威**，包括为什么重建
 - [`docs/BACKLOG.md`](docs/BACKLOG.md) —— 还没做的 + 为什么这么做，跨会话累积
 - [`docs/PLAN-2026-08-09-ring-v3.md`](docs/PLAN-2026-08-09-ring-v3.md) —— 环 v3：八条拍板 + 七批落地
-- [`docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md`](docs/superpowers/specs/2026-08-15-app-server-native-streaming-design.md) —— 纯 App Server 运行时与原生流契约
+- [`docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md`](docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md) —— managed App Server + 官方原生 TUI 契约
+- [`docs/HANDOFF-2026-08-16-native-tui.md`](docs/HANDOFF-2026-08-16-native-tui.md) —— 当前 worktree 交接与 MCP 所有权不变量
 - [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) —— 当前 App Server 行为契约
 - [`docs/superpowers/specs/2026-08-12-project-graph-3d-design.md`](docs/superpowers/specs/2026-08-12-project-graph-3d-design.md) —— 项目图谱的设计与判据
 - [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) —— 模型手抄标识符的七个面，以及每一个是怎么归零的
