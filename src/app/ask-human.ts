@@ -239,10 +239,21 @@ export async function askFollowUp(input: {
   timeoutMs: number;
 }): Promise<Answer | "session_died_before_asking" | Unanswered> {
   const { questions, changeId, phase, questionId } = input;
-  questions.ask({
-    id: questionId, changeId, phase, kind: input.kind,
-    question: input.question, expectedSnapshot: input.expectedSnapshot,
-  });
+  let existing = null;
+  try { existing = questions.read(questionId); } catch { /* 还没登记。 */ }
+  if (existing?.status === "answered") {
+    const answer = questions.readAnswerFor(questionId);
+    if (answer !== null) {
+      questions.settle(questionId);
+      return answer;
+    }
+  }
+  if (existing === null) {
+    questions.ask({
+      id: questionId, changeId, phase, kind: input.kind,
+      question: input.question, expectedSnapshot: input.expectedSnapshot,
+    });
+  }
   if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
     questions.settle(questionId);
     questions.recordOutcome(questionId,

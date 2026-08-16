@@ -239,6 +239,65 @@ async function revivedTurnNote(input: {
     + `产出可能已经落在工作区。重跑会另起一轮、不会用它；先看一眼再选。`;
 }
 
+/** 新问一题，或从持久账本续上重启前已经答完的那题。 */
+async function obtainGateAnswer(input: {
+  database: Database.Database;
+  questions: QuestionStore;
+  sessions: AskSessions;
+  changeId: string;
+  phase: Phase;
+  freshQuestion: Question | null;
+  expectedSnapshot: string;
+  launch: (input: { phase: Phase; prompt: string }) => void | Promise<void>;
+  timeoutMs: number;
+}): Promise<
+  | { readonly kind: "no_decision" }
+  | {
+    readonly kind: "unanswered";
+    readonly questionId: string;
+    readonly reason: Unanswered;
+    readonly threadId: string | null;
+  }
+  | {
+    readonly kind: "answered";
+    readonly question: Question;
+    readonly questionId: string;
+    readonly answer: Answer;
+  }
+> {
+  const interrupted = input.questions
+    .answered(input.changeId, "gate_decision")
+    .find((record) => record.phase === input.phase && !record.id.endsWith("-x"));
+  const question = interrupted?.question ?? input.freshQuestion;
+  if (!question) return { kind: "no_decision" };
+
+  const questionId = interrupted?.id
+    ?? `Q-${input.changeId}-${input.phase}-${Date.now()}`;
+  const stored = interrupted === undefined
+    ? null : input.questions.readAnswerFor(questionId);
+  if (stored !== null) {
+    return { kind: "answered", question, questionId, answer: stored };
+  }
+  input.questions.ask({
+    id: questionId, changeId: input.changeId, phase: input.phase,
+    kind: "gate_decision", question, expectedSnapshot: input.expectedSnapshot,
+  });
+  const askPrompt = launchAskPrompt("它会把 StagePass 的问题交给我来选。",
+    "不要替我做决定，不要解释我该选什么，调用完就停下。");
+  await input.launch({ phase: input.phase, prompt: askPrompt });
+  const waited = await waitForAnswer({
+    database: input.database, questions: input.questions, sessions: input.sessions,
+    changeId: input.changeId, phase: input.phase, questionId,
+    timeoutMs: input.timeoutMs, prompt: askPrompt,
+  });
+  return waited.answered
+    ? { kind: "answered", question, questionId, answer: waited.answer }
+    : {
+      kind: "unanswered", questionId,
+      reason: waited.reason, threadId: waited.threadId,
+    };
+}
+
 export async function decideGate(input: {
   database: Database.Database;
   sessions: AskSessions;
@@ -322,7 +381,7 @@ export async function decideGate(input: {
   const notes = new RoundNoteStore(database).latest(changeId, phase);
   // 轮次和派发同一份算法 —— 各算一套迟早说出两个「第几轮」，而人正拿它做决定。
   const round = roundFromLedger(changes.ledger(changeId), phase);
-  const question = gateDecisionQuestion({
+  const freshQuestion = gateDecisionQuestion({
     phase,
     gate,
     // 「什么挡着、出口、批准会怎样」由 gateDecisionQuestion 从 gate+openGaps 算
@@ -370,40 +429,25 @@ export async function decideGate(input: {
     approveAlternatives: approvalTargets(state, graph)
       .filter((target) => target !== recommendedApproval(state, graph)),
   });
-  // No question rather than an empty one: putting a decision to someone that
-  // they cannot make is worse than not asking (domain/question.ts).
-  if (!question) {
+  const questions = new QuestionStore(database);
+  const obtained = await obtainGateAnswer({
+    database, questions, sessions, changeId, phase, freshQuestion,
+    expectedSnapshot: gate.snapshot, launch: input.launch,
+    timeoutMs: input.timeoutMs,
+  });
+  if (obtained.kind === "no_decision") {
     return { outcome: { kind: "no_decision", phase }, closeSession: false };
   }
-
-  const questionId = `Q-${changeId}-${phase}-${Date.now()}`;
-  const questions = new QuestionStore(database);
-  questions.ask({
-    id: questionId, changeId, phase, kind: "gate_decision",
-    question, expectedSnapshot: gate.snapshot,
-  });
-
-  const askPrompt = launchAskPrompt("它会把 StagePass 的问题交给我来选。",
-    "不要替我做决定，不要解释我该选什么，调用完就停下。");
-  await input.launch({ phase, prompt: askPrompt });
-
-  const waited = await waitForAnswer({
-    database, questions, sessions, changeId, phase, questionId,
-    timeoutMs: input.timeoutMs,
-    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
-    prompt: askPrompt,
-  });
-  if (!waited.answered) {
-    // 题已经被 waitForAnswer 收掉了（那条规则只此一份）。
+  if (obtained.kind === "unanswered") {
     return {
       outcome: {
-        kind: "unanswered", phase, questionId,
-        reason: waited.reason, threadId: waited.threadId,
+        kind: "unanswered", phase, questionId: obtained.questionId,
+        reason: obtained.reason, threadId: obtained.threadId,
       },
       closeSession: true,
     };
   }
-  const first = waited.answer;
+  const { question, questionId, answer: first } = obtained;
 
   /*
    * **第二趟：只问那几条真的需要理由的。**

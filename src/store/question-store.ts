@@ -161,6 +161,28 @@ export class QuestionStore {
   }
 
   /**
+   * 已经由 MCP 写下、但 StagePass 还没消费的答案。
+   *
+   * 这不是历史列表；它专门回答恢复问题。面板进程可能在人按下提交之后、用例把
+   * 答案变成业务状态之前退出。答案已经是已确认事实，重启后必须能从这里续上，
+   * 不能再跑一次模型、也不能假装那个人没答过。
+   */
+  answered(changeId: string, kind?: QuestionKind): readonly QuestionRecord[] {
+    const rows = (kind === undefined
+      ? this.database.prepare(
+        `SELECT * FROM questions
+         WHERE change_id = ? AND status = 'answered'
+         ORDER BY updated_at DESC`,
+      ).all(changeId)
+      : this.database.prepare(
+        `SELECT * FROM questions
+         WHERE change_id = ? AND kind = ? AND status = 'answered'
+         ORDER BY updated_at DESC`,
+      ).all(changeId, kind)) as QuestionRow[];
+    return rows.map(toRecord);
+  }
+
+  /**
    * Record what the human said. This is the plugin's only write.
    *
    * It moves the question to `answered` and nothing else -- deliberately. The

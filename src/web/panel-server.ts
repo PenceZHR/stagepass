@@ -373,7 +373,13 @@ export class PanelSessions {
 
   async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
     if (line.includes("\n")) throw new Error("prompt_must_be_one_line");
-    if (!this.has(changeId, phase) || this.active(changeId, phase)) return false;
+    /*
+     * `has` 是这个面板进程内的 liveSeats，不是持久事实。服务一重启它必然是 false，
+     * 但 binding、App Server thread 和 Terminal 会话都还在；拿它当生死，会让已经
+     * 回答第一趟的两段表单永远补不出第二趟。`startTurn` 自己会按 binding 恢复/打开
+     * 原生 TUI，并在真正已有 turn 时拒绝，所以这里只拦明确 active 的输入所有者。
+     */
+    if (this.active(changeId, phase)) return false;
     try {
       await this.startTurn(changeId, phase, line);
       return true;

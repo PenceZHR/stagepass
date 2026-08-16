@@ -59,7 +59,8 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
 
 修复后：
 
-- 类型检查通过；完整测试为 1093/1093、249 suites、0 fail、0 skipped；
+- 类型检查通过；本轮持久状态恢复修复后的完整测试为 1101/1101、250 suites、
+  0 fail、0 skipped；
 - 回归测试覆盖新 thread、关闭后 resume、已打开 TUI 三条路径，且在 Terminal 收到信封前
   强制断言最后一个所有权操作是 `thread/unsubscribe`；
 - 真实 4173 实例对当前 `CHG-002 / PRD` 执行 `/api/terminal/open`，在不提交任何输入的
@@ -68,7 +69,38 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
 - 验收代码没有调用 Terminal `submit`、没有写 `answers`、没有选择业务项。随后只读审计
   发现该问题已在 `2026-08-16T08:59:41.072Z` 经 TUI/MCP 路径变为 `answered/accept`，
   thread 也已 idle；仅凭账本无法判定是谁在 TUI 中完成了选择，因此不把它归因于验收。
-  当前仍没有 `CHG-002` 的 `change_briefs` 行。
+当前仍没有 `CHG-002` 的 `change_briefs` 行。
+
+## 进程重启后的状态流恢复（同日补记）
+
+真实 `CHG-002 / PRD` 暴露了第二个独立故障：TUI/MCP 已经把 10 个回答完整写进
+`questions`，但面板进程在等待协程把回答生成 brief 之前重启。HTTP 协程消失，持久库中
+留下 `questions.status = answered`、`outcome_json = NULL`、无 `change_briefs`；旧实现下次
+会重新跑模型、重新提问，所以页面看起来像整个状态流失效。
+
+现在的恢复规则是：
+
+1. clarification、gate decision、waive 都先找同 Change / phase 下已经回答但未消费的题；
+2. 恢复只使用持久化的原题 schema 和原答案，不拿新模型提案套旧答案；两趟表单用确定的
+   `-x` 子题 id 继续；
+3. brief 与相关题的 settle 在同一个 SQLite 事务中提交；
+4. 面板明确显示「恢复上次回答」，不会静默重问或静默应用；快速恢复也不会误闯
+   Terminal、卡在旧页面；
+5. 面板重启后不再拿进程内 `liveSeats` 冒充持久会话是否存在，按 binding / App Server
+   thread 恢复；
+6. retry 派发前检查失败会记录失败并把 `running` 回滚到 `blocked`，不会留下
+   `running` 但没有 job 的假状态。
+
+验收证据：
+
+- 新增纯业务验收从 `PRD/pending → brief → running → settled → approve → Spec/pending`，
+  并核对 ledger 只有 create/start/settle/approve；
+- 用真实数据库的隔离副本在 4173 复现并恢复 `CHG-002`，页面、HTTP 与 SQLite 三层一致；
+- 切回真实库后只读核对：页面显示「恢复上次回答」，运行按钮禁用；数据库仍为
+  `briefs=0`、原题 `answered` 且未消费；没有自动应用那份可能不符合当前 Cocos 项目的
+  历史回答；
+- `/api/terminal/status` 返回同一 threadId，`thread=idle`、`terminal=open`、
+  `action=focus`；服务日志无错误。
 
 ## 唯一启动方式
 

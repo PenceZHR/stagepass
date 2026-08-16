@@ -291,6 +291,16 @@ export function panelView(input: {
     /** 人答出来的需求，null = 还没录。界面靠它决定能不能跑。 */
     brief,
     /**
+     * MCP 已经收到完整回答，但面板在把它落成 brief 之前重启了。只读地把这张脸
+     * 摆出来：页面要让人明确选择“恢复上次回答”，不能悄悄重问，也不能悄悄套用。
+     */
+    briefAnswerPending: brief === null && new QuestionStore(database)
+      .answered(changeId, "clarification")
+      .some((record) =>
+        record.id.startsWith(`BR-${changeId}-`)
+        && !record.id.endsWith("-x")
+        && record.question.message.includes("先把这次改动要什么说清楚")),
+    /**
      * 这个 Change 最近的一条活儿（跑过的轮、或被预检拒掉的派发）。null = 一条
      * 都没有。界面靠它做两件事：`blocked` 时说出**这一次**失败的真原因（交接
      * §5.5.4 —— 原来 `jobs.error` 屏幕上一个字都没有），以及判断「有一轮在飞」

@@ -3,9 +3,12 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { WAIVE_ACCEPT } from "../domain/question";
+import {
+  waiveFollowUpQuestion, waiveQuestion, WAIVE_ACCEPT,
+} from "../domain/question";
 import type { Phase } from "../domain/phase";
 import { ChangeStore } from "../store/change-store";
+import { CommandStore } from "../store/command-store";
 import { GapStore } from "../store/gap-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
@@ -157,6 +160,59 @@ describe("app · 接受风险这个用例（不经过 HTTP）", () => {
       result.outcome.kind === "unanswered" && result.outcome.reason,
       "session_died_before_answering",
     );
+    database.close();
+  });
+
+  it("重启后把已经答完的两趟风险表落库，不重开会话", async () => {
+    const database = freshDatabase();
+    openP1(database);
+    const gaps = new GapStore(database).all(CHANGE, "PRD");
+    const question = waiveQuestion({ phase: "PRD", waivable: gaps, round: 1 });
+    assert.ok(question);
+    const questions = new QuestionStore(database);
+    const gate = new CommandStore(database).gateFor(CHANGE);
+    const questionId = `W-${CHANGE}-PRD-interrupted`;
+    questions.ask({
+      id: questionId,
+      changeId: CHANGE,
+      phase: "PRD",
+      kind: "waive",
+      question,
+      expectedSnapshot: gate.snapshot,
+    });
+    const first = { action: "accept" as const, content: { W01: WAIVE_ACCEPT } };
+    questions.answer(questionId, first);
+    const followUp = waiveFollowUpQuestion(gaps, first);
+    assert.ok(followUp);
+    questions.ask({
+      id: `${questionId}-x`,
+      changeId: CHANGE,
+      phase: "PRD",
+      kind: "waive",
+      question: followUp,
+      expectedSnapshot: gate.snapshot,
+    });
+    questions.answer(`${questionId}-x`, {
+      action: "accept",
+      content: { W01x: "已有隔离措施，下一版补齐" },
+    });
+
+    const result = await waive({
+      database,
+      sessions: {
+        type: async () => { throw new Error("两趟都答完了，不该再问"); },
+        has: () => false,
+      },
+      changeId: CHANGE,
+      cannotAskNow: () => null,
+      launch: () => { throw new Error("两趟都答完了，不该重开会话"); },
+      timeoutMs: 10,
+    });
+
+    assert.equal(result.outcome.kind, "waived");
+    assert.equal(new GapStore(database).all(CHANGE, "PRD")[0]?.status, "waived");
+    assert.equal(questions.read(questionId).status, "applied");
+    assert.equal(questions.read(`${questionId}-x`).status, "applied");
     database.close();
   });
 

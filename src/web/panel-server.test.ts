@@ -11,9 +11,13 @@ import type {
 } from "../codex/app-server-protocol";
 import type { AppServerConnection } from "../codex/app-server-session";
 import { SCHEMA_SQL } from "../db/schema";
+import { readBriefProposal } from "../domain/brief";
+import { clarificationQuestion } from "../domain/question";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
+import { CommandStore } from "../store/command-store";
 import { ProjectStore } from "../store/project-store";
+import { QuestionStore } from "../store/question-store";
 import { createPanelServer } from "./panel-server";
 import type {
   NativeRuntimeSessions,
@@ -120,6 +124,7 @@ class FakeNativeSessions implements NativeRuntimeSessions {
   readonly archivedAndEnded: Array<{ changeId: string; seat: NativeSeat }> = [];
   readonly released: Array<{ changeId: string; seat: NativeSeat }> = [];
   readonly forgotten: string[] = [];
+  readonly started: Array<{ changeId: string; seat: NativeSeat; prompt: string }> = [];
   forgetError: Error | null = null;
 
   private answer(changeId: string, seat: NativeSeat, action: string): Promise<NativeSessionStatus> {
@@ -158,7 +163,14 @@ class FakeNativeSessions implements NativeRuntimeSessions {
   active(): boolean { return false; }
   quietForMs(): number | null { return null; }
   interrupt(): Promise<boolean> { return Promise.resolve(false); }
-  startTurn(): Promise<string> { return Promise.resolve("TURN-NATIVE"); }
+  startTurn(
+    changeId: string,
+    seat: NativeSeat,
+    prompt: string,
+  ): Promise<string> {
+    this.started.push({ changeId, seat, prompt });
+    return Promise.resolve("TURN-NATIVE");
+  }
   runTurn(): Promise<string> { return Promise.resolve("done"); }
   transportFor(_changeId: string, seat: NativeSeat) {
     return {
@@ -179,7 +191,9 @@ async function withPanel(body: (input: {
   connection: FakeConnection;
   native: FakeNativeSessions;
   sessions: ReturnType<typeof createPanelServer>["sessions"];
-}) => Promise<void>): Promise<void> {
+}) => Promise<void>, options: {
+  dirtyPaths?: () => readonly string[];
+} = {}): Promise<void> {
   const database = new Database(":memory:");
   database.pragma("foreign_keys = ON");
   database.exec(SCHEMA_SQL);
@@ -194,7 +208,7 @@ async function withPanel(body: (input: {
     nativeSessions: native,
     recoverEveryMs: 3_600_000,
     repo: {
-      dirtyPaths: () => [],
+      dirtyPaths: options.dirtyPaths ?? (() => []),
       commitAll: () => null,
       commitPaths: () => null,
       show: () => null,
@@ -284,6 +298,53 @@ describe("pure App Server panel", () => {
     });
   });
 
+  it("面板重启后会从持久 binding 续发补问，不拿内存里的 liveSeats 当生死", async () => {
+    await withPanel(async ({ native, sessions }) => {
+      assert.equal(native.has(), false, "模拟刚重启，内存注册表是空的");
+      assert.equal(await sessions.type("CHG-1", "PRD", "调用 stagepass_ask"), true);
+      assert.deepEqual(native.started, [{
+        changeId: "CHG-1",
+        seat: "PRD",
+        prompt: "调用 stagepass_ask",
+      }]);
+    });
+  });
+
+  it("主屏把已回答但未落 brief 的恢复入口明确摆出来", async () => {
+    await withPanel(async ({ base, database }) => {
+      const items = readBriefProposal([
+        "给谁用？ | 自己 | 团队 | 客户",
+        "怎么验收？ | 能启动 | 有测试 | 已上线",
+        "明确不做？ | 不联网 | 不改界面 | 不加依赖",
+      ].join("\n"));
+      const question = clarificationQuestion({
+        title: "CHG-1：先把这次改动要什么说清楚",
+        items,
+      });
+      assert.ok(question);
+      const questions = new QuestionStore(database);
+      questions.ask({
+        id: "BR-CHG-1-interrupted",
+        changeId: "CHG-1",
+        phase: "PRD",
+        kind: "clarification",
+        question,
+        expectedSnapshot: new CommandStore(database).gateFor("CHG-1").snapshot,
+      });
+      const content = Object.fromEntries(Object.entries(
+        question.requestedSchema.properties,
+      ).map(([id, field]) => [id, field.enum?.[0] ?? ""]));
+      questions.answer("BR-CHG-1-interrupted", { action: "accept", content });
+
+      const view = await (await fetch(`${base}/api/panel?change=CHG-1`)).json() as {
+        brief: string | null;
+        briefAnswerPending: boolean;
+      };
+      assert.equal(view.brief, null);
+      assert.equal(view.briefAnswerPending, true);
+    });
+  });
+
   it("跑轮只把提示交给原生 TUI，不调用 App Server turn/start", async () => {
     await withPanel(async ({ base, database, connection, native }) => {
       new ChangeStore(database).setBrief("CHG-1", "按 StagePass rubric 完成这次变更");
@@ -300,6 +361,37 @@ describe("pure App Server panel", () => {
       assert.ok(promptPath, "原生 TUI 收到的应该是短文件信封");
       assert.match(readFileSync(promptPath, "utf8"), /rubric|标准/i);
     });
+  });
+
+  it("retry 已推到 running 但派发被脏树拒绝时，当场回滚 blocked 并记下真因", async () => {
+    await withPanel(async ({ base, database }) => {
+      database.prepare(
+        "UPDATE projects SET phase_order = ? WHERE id = ?",
+      ).run(JSON.stringify(["Build", "QA"]), "PRJ-1");
+      const changes = new ChangeStore(database);
+      changes.create("CHG-BUILD", { projectId: "PRJ-1" });
+      changes.setBrief("CHG-BUILD", "按 StagePass rubric 完成这次变更");
+      changes.apply("CHG-BUILD", "start");
+      changes.apply("CHG-BUILD", "fail");
+      changes.apply("CHG-BUILD", "retry");
+      assert.equal(changes.read("CHG-BUILD").state.status, "running");
+
+      const response = await fetch(`${base}/api/run?change=CHG-BUILD`, { method: "POST" });
+      assert.equal(response.status, 200);
+      const refusal = await response.json() as { ran: boolean; reason: string; dirty: string[] };
+      assert.deepEqual(refusal, {
+        ran: false,
+        phase: "Build",
+        reason: "workspace_dirty",
+        dirty: ["半成品.md"],
+      });
+      assert.equal(changes.read("CHG-BUILD").state.status, "blocked");
+      const latest = database.prepare(
+        "SELECT status, error FROM jobs WHERE change_id = ? ORDER BY created_at DESC LIMIT 1",
+      ).get("CHG-BUILD") as { status: string; error: string };
+      assert.equal(latest.status, "failed");
+      assert.match(latest.error, /workspace_dirty.*半成品\.md/);
+    }, { dirtyPaths: () => ["半成品.md"] });
   });
 
   it("本机会话清理失败时拒绝删除并保留 Change", async () => {

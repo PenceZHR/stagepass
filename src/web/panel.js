@@ -553,14 +553,27 @@ async function dispatchThenEnter(request) {
   const at = phases.find((entry) => entry.current);
   closeSheet();
   const answered = request();               // 先发，别 await —— 它要等人答，几分钟
-  await wait(DISPATCH_THEN_ENTER_MS);
-  if (at) void enter(at.phase);
+  const first = await Promise.race([
+    answered.then((value) => ({ answered: true, value })),
+    wait(DISPATCH_THEN_ENTER_MS).then(() => ({ answered: false })),
+  ]);
+  /*
+   * 恢复一条已落库答案通常几十毫秒就完成：这时根本不该再钻进 Terminal。旧实现
+   * 无论请求是否已经结束都 `void enter()`，调用方随即 `leave()`，两段动画撞在同一个
+   * moving 锁上；leave 直接返回，页面永远保留恢复前的旧状态。
+   *
+   * 真要等人时才进入，并且等 enter 完成再把 pending promise 交回调用方。这样答案
+   * 恰好在进场动画中回来，后面的 leave 也不会撞锁。
+   */
+  if (first.answered) return first.value;
+  if (at) await enter(at.phase);
   return answered;
 }
 
 async function recordBrief() {
   briefButton.disabled = true;
-  briefButton.textContent = "模型在读仓库…";
+  briefButton.textContent = panelState?.briefAnswerPending
+    ? "正在恢复上次回答…" : "模型在读仓库…";
   // 成功那条路自己走了 leave()（里面已经 load 过），finally 不要再 load 一次 ——
   // 再 load 会把刚打开的弹窗内容重画，把那句结论盖掉。
   let briefLanded = false;
@@ -602,7 +615,8 @@ async function recordBrief() {
       return;   // leave() 已经 load() 过了
     }
   } finally {
-    briefButton.textContent = "说清楚我要什么";
+    briefButton.textContent = panelState?.briefAnswerPending
+      ? "恢复上次回答" : "说清楚我要什么";
     if (!briefLanded) await loadOrReconnect();
   }
 }
@@ -1993,7 +2007,9 @@ function drawSheet(phase) {
     // 没录需求是**最要紧的那件事**，盖过闸门那句 —— 不然人看到的是"跑它会派发一次
     // 真的 turn"，而按钮偏偏是灰的，两句话互相打脸。
     ?? (entry.current && panelState?.brief === null
-      ? "还没说清楚这次改动要什么。先按「说清楚我要什么」—— 没有它，红方只能自己猜。"
+      ? panelState?.briefAnswerPending
+        ? "上次回答已经完整收到，但面板在写入 brief 前重启了。按「恢复上次回答」续上，不会重新提问。"
+        : "还没说清楚这次改动要什么。先按「说清楚我要什么」—— 没有它，红方只能自己猜。"
       : entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry))
 
   /*
@@ -2026,6 +2042,8 @@ function drawSheet(phase) {
   const needsBrief = panelState?.brief === null;
   briefButton.hidden = !entry.current;
   briefButton.disabled = entry.live;
+  briefButton.textContent = panelState?.briefAnswerPending
+    ? "恢复上次回答" : "说清楚我要什么";
   // 批 2 的两步跟着 brief 那个按钮走同一个可见性：都是「说清这次要什么」的入口。
   // 不随 entry.live 禁用 —— 它们走旁路线程，不占这个阶段的座。
   briefDraftButton.hidden = !entry.current;
@@ -2112,6 +2130,21 @@ function roundInFlight(entry) {
 function nextStep(entry) {
   // 顺序 = 优先级。第一条命中的就是答案。
   /*
+   * brief 是所有派发前置条件的地基，且可能已经有一份待恢复的持久答案。它必须压在
+   * 通用 blocked 话术前面；否则同一张弹窗上面说「恢复上次回答」，下面却说
+   * 「先清掉这个路障」，人仍然不知道该按哪个。
+   */
+  if (entry.current && panelState?.brief === null) {
+    return {
+      what: panelState?.briefAnswerPending ? "恢复上次回答" : "说清楚我要什么",
+      why: panelState?.briefAnswerPending
+        ? "上次回答已经完整写进 StagePass，但面板在生成 brief 之前重启了。"
+          + "恢复会使用你当时真正看见并提交的那份题，不会重新让模型猜。"
+        : "还没人问过你这次要什么。没有它，红方只能自己编一份需求，"
+          + "而后面每个阶段都建在那份编出来的东西上。",
+    };
+  }
+  /*
    * **派发前的五条预检，摆在人按下去之前**（2026-08-07 真机）。
    *
    * 那天：闸门只放行 retry，人在选择器里选了它，题落地了，然后干净树预检当场
@@ -2151,13 +2184,6 @@ function nextStep(entry) {
       what: "回到当前阶段",
       why: `流程停在 ${panelState?.currentPhase ?? "别处"}，不是这里。`
         + "点开一个未来的阶段只是打开看看，不会推动任何东西。",
-    };
-  }
-  if (panelState?.brief === null) {
-    return {
-      what: "说清楚我要什么",
-      why: "还没人问过你这次要什么。没有它，红方只能自己编一份需求，"
-        + "而后面每个阶段都建在那份编出来的东西上。",
     };
   }
   if (panelState?.status === "blocked") {

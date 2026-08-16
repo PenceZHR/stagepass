@@ -3,7 +3,10 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
+import { ESCAPE_OPTION, readBriefProposal } from "../domain/brief";
+import { clarificationQuestion } from "../domain/question";
 import { ChangeStore } from "../store/change-store";
+import { CommandStore } from "../store/command-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
 import { recordBrief } from "./record-brief";
@@ -171,6 +174,101 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
     const brief = new ChangeStore(database).read(CHANGE).brief;
     assert.ok(brief && brief.includes("这次改动给谁用？"), "需求真的落库了");
     assert.equal(new QuestionStore(database).open(CHANGE), null);
+    database.close();
+  });
+
+  it("服务重启后续上已经落库的完整回答，不再重跑模型或重问人", async () => {
+    const database = freshDatabase();
+    const questions = new QuestionStore(database);
+    const items = readBriefProposal(PROPOSAL);
+    const question = clarificationQuestion({
+      title: `${CHANGE}：先把这次改动要什么说清楚`,
+      items,
+    });
+    assert.ok(question);
+    const questionId = `BR-${CHANGE}-interrupted`;
+    questions.ask({
+      id: questionId,
+      changeId: CHANGE,
+      phase: "PRD",
+      kind: "clarification",
+      question,
+      expectedSnapshot: new CommandStore(database).gateFor(CHANGE).snapshot,
+    });
+    const content = Object.fromEntries(Object.entries(
+      question.requestedSchema.properties,
+    ).map(([id, field]) => [id, field.enum?.[0] ?? ""]));
+    questions.answer(questionId, { action: "accept", content });
+
+    const result = await recordBrief({
+      database,
+      sessions: {
+        type: async () => { throw new Error("已经答完，不该再问人"); },
+        has: () => false,
+      },
+      changeId: CHANGE,
+      cannotAskNow: () => null,
+      propose: async () => { throw new Error("已经答完，不该再跑模型"); },
+      timeoutMs: 10,
+    });
+
+    assert.equal(result.outcome.kind, "recorded");
+    assert.match(new ChangeStore(database).read(CHANGE).brief ?? "", /这次改动给谁用/);
+    assert.equal(questions.read(questionId).status, "applied");
+    database.close();
+  });
+
+  it("重启发生在两趟表单之间时，只补问人要求自己写的那一格", async () => {
+    const database = freshDatabase();
+    const questions = new QuestionStore(database);
+    const items = readBriefProposal(PROPOSAL);
+    const question = clarificationQuestion({
+      title: `${CHANGE}：先把这次改动要什么说清楚`,
+      items,
+    });
+    assert.ok(question);
+    const questionId = `BR-${CHANGE}-follow-up-interrupted`;
+    questions.ask({
+      id: questionId,
+      changeId: CHANGE,
+      phase: "PRD",
+      kind: "clarification",
+      question,
+      expectedSnapshot: new CommandStore(database).gateFor(CHANGE).snapshot,
+    });
+    const content = Object.fromEntries(Object.entries(
+      question.requestedSchema.properties,
+    ).map(([id, field]) => [id, id === "B01" ? ESCAPE_OPTION : field.enum?.[0] ?? ""]));
+    questions.answer(questionId, { action: "accept", content });
+    let asked = 0;
+
+    const result = await recordBrief({
+      database,
+      sessions: {
+        type: async () => {
+          asked += 1;
+          const open = questions.open(CHANGE);
+          assert.ok(open);
+          assert.deepEqual(Object.keys(open.question.requestedSchema.properties), ["B01x", "BZ"]);
+          questions.answer(open.id, {
+            action: "accept",
+            content: { B01x: "给值班运营同学使用", BZ: "都答完了，提交" },
+          });
+          return true;
+        },
+        has: () => true,
+      },
+      changeId: CHANGE,
+      cannotAskNow: () => null,
+      propose: async () => { throw new Error("恢复时不该重跑模型"); },
+      timeoutMs: 10,
+    });
+
+    assert.equal(result.outcome.kind, "recorded");
+    assert.equal(asked, 1);
+    assert.match(new ChangeStore(database).read(CHANGE).brief ?? "", /给值班运营同学使用/);
+    assert.equal(questions.read(questionId).status, "applied");
+    assert.equal(questions.read(`${questionId}-x`).status, "applied");
     database.close();
   });
 

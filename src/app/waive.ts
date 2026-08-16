@@ -107,45 +107,52 @@ export async function waive(input: {
   const waivable = gaps.all(changeId, phase).filter((gap) =>
     gap.status === "open" && gap.kind === "finding" && gap.severity === "P1");
   // round：标题上「第几轮提的」的分母 —— 和派发、裁决同一份算法。
-  const question = waiveQuestion({
+  const freshQuestion = waiveQuestion({
     phase, waivable, round: roundFromLedger(changes.ledger(changeId), phase),
   });
+  const gate = new CommandStore(database).gateFor(changeId);
+  const questions = new QuestionStore(database);
+  // 同裁决和 brief：答案是持久事实，等待它的 HTTP 协程不是。重启后续旧题，不重问。
+  const interrupted = questions.answered(changeId, "waive").find((record) =>
+    record.phase === phase && !record.id.endsWith("-x"));
+  const question = interrupted?.question ?? freshQuestion;
   if (!question) {
     return { outcome: { kind: "nothing_waivable", phase }, closeSession: false };
   }
 
-  const gate = new CommandStore(database).gateFor(changeId);
-  const questionId = `W-${changeId}-${phase}-${Date.now()}`;
-  const questions = new QuestionStore(database);
-  questions.ask({
-    id: questionId, changeId, phase, kind: "waive",
-    question, expectedSnapshot: gate.snapshot,
-  });
+  const questionId = interrupted?.id ?? `W-${changeId}-${phase}-${Date.now()}`;
+  let answer = interrupted === undefined ? null : questions.readAnswerFor(questionId);
+  if (answer === null) {
+    questions.ask({
+      id: questionId, changeId, phase, kind: "waive",
+      question, expectedSnapshot: gate.snapshot,
+    });
 
-  const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
-    "不要替我做决定，不要评价这些风险，调用完就停下。");
-  await input.launch({ phase, prompt: askPrompt });
+    const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
+      "不要替我做决定，不要评价这些风险，调用完就停下。");
+    await input.launch({ phase, prompt: askPrompt });
 
-  const waited = await waitForAnswer({
-    database, questions, sessions, changeId, phase, questionId,
-    timeoutMs: input.timeoutMs,
-    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
-    prompt: askPrompt,
-  });
-  if (!waited.answered) {
-    /*
-     * **这条路原来漏了 `settle`。** 裁决和录需求都补过（2026-08-03 那次 63 分钟的
-     * 死题），这第四份拷贝没有 —— 现在收题在 `waitForAnswer` 里，只此一份。
-     */
-    return {
-      outcome: {
-        kind: "unanswered", phase, questionId,
-        reason: waited.reason, threadId: waited.threadId,
-      },
-      closeSession: true,
-    };
+    const waited = await waitForAnswer({
+      database, questions, sessions, changeId, phase, questionId,
+      timeoutMs: input.timeoutMs,
+      // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
+      prompt: askPrompt,
+    });
+    if (!waited.answered) {
+      /*
+       * **这条路原来漏了 `settle`。** 裁决和录需求都补过（2026-08-03 那次 63 分钟的
+       * 死题），这第四份拷贝没有 —— 现在收题在 `waitForAnswer` 里，只此一份。
+       */
+      return {
+        outcome: {
+          kind: "unanswered", phase, questionId,
+          reason: waited.reason, threadId: waited.threadId,
+        },
+        closeSession: true,
+      };
+    }
+    answer = waited.answer;
   }
-  const answer = waited.answer;
 
   /*
    * **第二趟：只问真被接受的那几条要理由。**

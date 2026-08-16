@@ -5,7 +5,7 @@ import {
   briefContract, readBriefProposal, briefFrom, followUpFields, BriefProposalVoidError,
 } from "../domain/brief";
 import {
-  clarificationQuestion, type Answer, type ClarificationItem,
+  clarificationQuestion, type Answer, type ClarificationItem, type Question,
 } from "../domain/question";
 import { ChangeStore } from "../store/change-store";
 import { CommandStore } from "../store/command-store";
@@ -97,6 +97,49 @@ export interface BriefResult {
   readonly closeSession: boolean;
 }
 
+/**
+ * 问题的 schema 就是人当时真正看见的表。恢复时从它重建 items，不能重新让模型
+ * 提一份问题：新问题哪怕只换了一个选项，也已经不是人回答的那一份。
+ */
+function itemsFromQuestion(question: Question): readonly ClarificationItem[] {
+  const required = new Set(question.requestedSchema.required);
+  return Object.entries(question.requestedSchema.properties).map(([id, field]) => ({
+    id,
+    question: field.title,
+    options: field.enum ?? [],
+    ...(required.has(id) ? {} : { optional: true }),
+  }));
+}
+
+function landBrief(input: {
+  database: Database.Database;
+  changes: ChangeStore;
+  questions: QuestionStore;
+  changeId: string;
+  questionIds: readonly string[];
+  items: readonly ClarificationItem[];
+  answer: Answer;
+  phase: Phase;
+}): BriefResult {
+  const brief = briefFrom(input.items, input.answer);
+  if (brief === null) {
+    input.database.transaction(() => {
+      input.questionIds.forEach((id) => input.questions.settle(id));
+    })();
+    return { outcome: { kind: "not_recorded", phase: input.phase }, closeSession: true };
+  }
+  /*
+   * 「需求写下了」和「答案已消费」是一件事的两面，必须同一事务。否则正好在两句
+   * 中间退出，下一次恢复会再次处理同一答案，或者库里出现 brief 已有、题仍 answered
+   * 的两张脸。
+  */
+  input.database.transaction(() => {
+    input.changes.setBrief(input.changeId, brief);
+    input.questionIds.forEach((id) => input.questions.settle(id));
+  })();
+  return { outcome: { kind: "recorded", phase: input.phase, brief }, closeSession: true };
+}
+
 export async function recordBrief(input: {
   database: Database.Database;
   sessions: AskSessions;
@@ -120,46 +163,26 @@ export async function recordBrief(input: {
   const busy = input.cannotAskNow(phase);
   if (busy) return { outcome: { kind: "busy", phase, busy }, closeSession: false };
 
-  // 第一步：让模型读仓库，提问题。
-  let items: readonly ClarificationItem[];
-  try {
-    items = readBriefProposal(await input.propose(briefContract({
-      changeTitle: change.title,
-    })));
-  } catch (error: unknown) {
-    return {
-      outcome: {
-        kind: "proposal_failed", phase,
-        reason: error instanceof BriefProposalVoidError ? error.code : "proposal_failed",
-        detail: error instanceof Error ? error.message : String(error),
-      },
-      closeSession: false,
-    };
-  }
-
-  /*
-   * 第二步：把它组成题问人。**两趟。**
-   *
-   * 第一趟纯选项格，一路回车就答得完；只有点了「都不对，我自己写」的那几题，才有
-   * 第二趟给他写字（`followUpFields`）。全用选项答完的人一个字都不用打。
-   *
-   * 为什么非分两趟不可：客户端**空的自由文本格会吃掉回车**，`optional` 不管用
-   * （2026-07-30 实测）。所以「选了就不用打字」只有在第一趟里根本没有文本格时才
-   * 是真的 —— 用户 2026-08-03 明确要求过这件事。
-   */
-  const gate = new CommandStore(database).gateFor(changeId);
   const questions = new QuestionStore(database);
 
+  const gate = new CommandStore(database).gateFor(changeId);
   /** 问一趟，等人答完。答上了给答案，没走通给一个说得清的下场。 */
   const askOnce = async (
-    fields: readonly ClarificationItem[], title: string,
-  ): Promise<Answer | BriefResult> => {
+    fields: readonly ClarificationItem[], title: string, fixedId?: string,
+  ): Promise<{ answer: Answer; questionId: string } | BriefResult> => {
     const question = clarificationQuestion({ title, items: fields })!;
-    const questionId = `BR-${changeId}-${Date.now()}`;
-    questions.ask({
-      id: questionId, changeId, phase, kind: "clarification",
-      question, expectedSnapshot: gate.snapshot,
-    });
+    const questionId = fixedId ?? `BR-${changeId}-${Date.now()}`;
+    let existing = null;
+    try { existing = questions.read(questionId); } catch { /* 还没登记，下面新建。 */ }
+    if (existing === null) {
+      questions.ask({
+        id: questionId, changeId, phase, kind: "clarification",
+        question, expectedSnapshot: gate.snapshot,
+      });
+    } else if (existing.status === "answered") {
+      const answer = questions.readAnswerFor(questionId);
+      if (answer !== null) return { answer, questionId };
+    }
 
     /*
      * **打进同一个会话，不另起进程。** 完整理由在 `PanelSessions.type` 那段注释里，
@@ -190,10 +213,70 @@ export async function recordBrief(input: {
         closeSession: true,
       };
     }
-    // 录需求拿到答案就用完了，没有下一步要拿着这道题走 —— 收掉。
-    questions.settle(questionId);
-    return waited.answer;
+    // 等整份 brief 原子落库时再 settle；这几毫秒里重启，下一次才能从 answered 续上。
+    return { answer: waited.answer, questionId };
   };
+
+  /*
+   * MCP 的 answer 是持久事实，HTTP 请求和等待协程不是。进程若在这两者之间重启，
+   * 旧实现会直接重新跑 propose，留下「题是 answered、brief 却永远没有」的死状态。
+   * 题面从当时存下来的 schema 重建，绝不拿新提案套旧答案。
+   */
+  const interrupted = questions.answered(changeId, "clarification").find((record) =>
+    record.id.startsWith(`BR-${changeId}-`)
+    && !record.id.endsWith("-x")
+    && record.question.message.includes("先把这次改动要什么说清楚"));
+  if (interrupted !== undefined) {
+    const firstAnswer = questions.readAnswerFor(interrupted.id);
+    const recoveredItems = itemsFromQuestion(interrupted.question);
+    if (firstAnswer !== null) {
+      const more = followUpFields(recoveredItems, firstAnswer);
+      if (more.length === 0) {
+        return landBrief({
+          database, changes, questions, changeId, questionIds: [interrupted.id],
+          items: recoveredItems, answer: firstAnswer, phase,
+        });
+      }
+      const second = await askOnce(
+        more, `${changeId}：你说要自己写的那几条`, `${interrupted.id}-x`,
+      );
+      if ("outcome" in second) return second;
+      return landBrief({
+        database, changes, questions, changeId,
+        questionIds: [interrupted.id, second.questionId],
+        items: recoveredItems,
+        answer: {
+          action: firstAnswer.action,
+          content: { ...firstAnswer.content, ...second.answer.content },
+        },
+        phase,
+      });
+    }
+  }
+
+  // 第一步：让模型读仓库，提问题。
+  let items: readonly ClarificationItem[];
+  try {
+    items = readBriefProposal(await input.propose(briefContract({
+      changeTitle: change.title,
+    })));
+  } catch (error: unknown) {
+    return {
+      outcome: {
+        kind: "proposal_failed", phase,
+        reason: error instanceof BriefProposalVoidError ? error.code : "proposal_failed",
+        detail: error instanceof Error ? error.message : String(error),
+      },
+      closeSession: false,
+    };
+  }
+
+  /*
+   * 第二步：把它组成题问人。**两趟。**
+   *
+   * 第一趟纯选项格，一路回车就答得完；只有点了「都不对，我自己写」的那几题，才有
+   * 第二趟给他写字（`followUpFields`）。全用选项答完的人一个字都不用打。
+   */
 
   const first = await askOnce(items, `${changeId}：先把这次改动要什么说清楚`);
   if ("outcome" in first) return first;
@@ -202,20 +285,22 @@ export async function recordBrief(input: {
    * 第二趟只在真有人要写字的时候才弹。**一条都没有就不弹** —— 「全用选项答完的人
    * 一个字都不用打」如果还要他再点一次「提交」，那句话就打了折。
    */
-  const more = followUpFields(items, first);
-  let content = first.content;
+  const more = followUpFields(items, first.answer);
+  let content = first.answer.content;
+  const questionIds = [first.questionId];
   if (more.length > 0) {
-    const second = await askOnce(more, `${changeId}：你说要自己写的那几条`);
+    const second = await askOnce(
+      more, `${changeId}：你说要自己写的那几条`, `${first.questionId}-x`,
+    );
     if ("outcome" in second) return second;
-    content = { ...content, ...second.content };
+    questionIds.push(second.questionId);
+    content = { ...content, ...second.answer.content };
   }
 
-  const brief = briefFrom(items, { action: first.action, content });
-  if (brief === null) {
-    // 按了 Esc，或者必答的没答完。**不拿一段空白往下走** —— 那等于又回到那份
-    // 编出来的 PRD。
-    return { outcome: { kind: "not_recorded", phase }, closeSession: true };
-  }
-  changes.setBrief(changeId, brief);
-  return { outcome: { kind: "recorded", phase, brief }, closeSession: true };
+  return landBrief({
+    database, changes, questions, changeId, questionIds,
+    items,
+    answer: { action: first.answer.action, content },
+    phase,
+  });
 }

@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../db/schema";
 import {
   APPROVE_AS_RECOMMENDED, decisionLabel, DECISION_FIELD,
-  RESPONSE_AGREE, RESPONSE_DISMISS,
+  gateDecisionQuestion, RESPONSE_AGREE, RESPONSE_DISMISS,
 } from "../domain/question";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
@@ -133,6 +133,59 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     assert.equal(result.outcome.kind, "unanswered");
     assert.equal(result.closeSession, true);
     assert.equal(new QuestionStore(database).open(CHANGE), null);
+    database.close();
+  });
+
+  it("服务重启后消费已经落库的裁决，不再弹第二张决定表", async () => {
+    const database = freshDatabase();
+    settledWithGaps(database);
+    const gaps = new GapStore(database).all(CHANGE, "PRD");
+    const gate = new CommandStore(database).gateFor(CHANGE);
+    const question = gateDecisionQuestion({
+      phase: "PRD",
+      gate,
+      summary: "第 1 轮已完成",
+      openGaps: gaps,
+      round: 1,
+      sendBackTargets: [],
+      approveAlternatives: [],
+    });
+    assert.ok(question);
+    const questionId = `Q-${CHANGE}-PRD-interrupted`;
+    const questions = new QuestionStore(database);
+    questions.ask({
+      id: questionId,
+      changeId: CHANGE,
+      phase: "PRD",
+      kind: "gate_decision",
+      question,
+      expectedSnapshot: gate.snapshot,
+    });
+    questions.answer(questionId, {
+      action: "accept",
+      content: {
+        R01: RESPONSE_AGREE,
+        R02: RESPONSE_AGREE,
+        [DECISION_FIELD]: decisionLabel("reject"),
+      },
+    });
+
+    const result = await decideGate({
+      database,
+      sessions: {
+        type: async () => { throw new Error("完整裁决已落库，不该重问"); },
+        has: () => false,
+      },
+      changeId: CHANGE,
+      cannotAskNow: () => null,
+      timeoutMs: 10,
+      ...inert,
+      launch: () => { throw new Error("完整裁决已落库，不该重开会话"); },
+    });
+
+    assert.equal(result.outcome.kind, "decided");
+    assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
+    assert.equal(questions.read(questionId).status, "applied");
     database.close();
   });
 
