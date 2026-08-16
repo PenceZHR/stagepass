@@ -238,6 +238,10 @@ async function withPanel(body: (input: {
 describe("pure App Server panel", () => {
   it("只开放归一化终端桥，旧 terminal / Codex 写路由和 PTY 都不存在", async () => {
     await withPanel(async ({ base, native }) => {
+      const terminalBridge = await fetch(`${base}/terminal-bridge.js`);
+      assert.equal(terminalBridge.status, 200);
+      assert.match(await terminalBridge.text(), /createTerminalBridge/);
+      assert.equal((await fetch(`${base}/codex-stream.js`)).status, 404);
       assert.equal((await fetch(`${base}/api/terminal?change=CHG-1&phase=PRD`, {
         method: "POST",
       })).status, 404);

@@ -705,7 +705,7 @@ git commit -m "feat: route every StagePass turn through native Codex TUI"
 - Modify: `src/web/panel-server.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing browser-controller tests**
+- [x] **Step 1: Write failing browser-controller tests**
 
 ```ts
 it("renders reopen when tmux lives but Terminal is closed", async () => {
@@ -726,7 +726,7 @@ it("close window never calls end-session", async () => {
 
 Also cover open/focus labels, unavailable errors, destructive confirmation for end-session, polling cleanup, and absence of EventSource/composer behavior.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/terminal-bridge.test.ts
@@ -734,7 +734,7 @@ node --import tsx --test --test-concurrency=1 src/web/terminal-bridge.test.ts
 
 Expected: FAIL because the controller is missing.
 
-- [ ] **Step 3: Implement the lifecycle-only controller**
+- [x] **Step 3: Implement the lifecycle-only controller**
 
 ```js
 export function createTerminalBridge({
@@ -751,7 +751,7 @@ export function createTerminalBridge({
 
 It consumes only `NativeSessionStatus`; never EventSource, WebSocket, escape handling, keyboard forwarding, prompt input, interaction form, or JSON-RPC.
 
-- [ ] **Step 4: Replace markup in the existing visual language**
+- [x] **Step 4: Replace markup in the existing visual language**
 
 ```html
 <section class="terminal-portal" id="terminal-portal" aria-live="polite">
@@ -769,11 +769,11 @@ It consumes only `NativeSessionStatus`; never EventSource, WebSocket, escape han
 
 Reuse cloud-sea background, sand variables, halo/portal motion, translucent border, serif display hierarchy, and reduced-motion rules. Do not add a black terminal rectangle or generic dashboard card. Explicitly explain that window close leaves Codex running in tmux.
 
-- [ ] **Step 5: Rewire browser integration**
+- [x] **Step 5: Rewire browser integration**
 
 Remove `createCodexStream`, composer lookups, and interaction dialog. `enter(phase)` creates the terminal bridge and calls `openOrFocus()` after the portal animation; `leave()` stops polling only. `openAside()` uses seat `aside`. Serve `/terminal-bridge.js`, remove `/codex-stream.js`, and typecheck the new file.
 
-- [ ] **Step 6: Validate and commit**
+- [x] **Step 6: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/terminal-bridge.test.ts src/architecture.test.ts

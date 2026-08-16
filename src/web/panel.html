@@ -1095,101 +1095,66 @@ body::after {
 .back:hover { color: var(--sand-strong); }
 .surface {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
-  border: 1px solid rgba(255,255,255,.18); border-radius: 18px;
-  background: oklch(0.145 0.03 295 / 82%); backdrop-filter: blur(20px);
-  box-shadow: 0 22px 80px rgba(31,24,37,.38); overflow: hidden;
+  border: 1px solid rgba(225,201,168,.16); border-radius: 18px;
+  background: oklch(0.16 0.03 295 / 46%); backdrop-filter: blur(18px);
+  box-shadow: inset 0 1px rgba(255,255,255,.025); overflow: hidden;
 }
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 
-.stream-surface {
-  flex: 1; min-height: 0; overflow: auto;
-  padding: clamp(20px, 3vw, 38px) clamp(20px, 4vw, 52px) 24px;
-  scroll-behavior: smooth;
+.terminal-portal {
+  position: relative; flex: 1; min-height: 0; isolation: isolate;
+  display: grid; align-content: center; justify-items: start;
+  padding: clamp(34px, 7vw, 92px); overflow: hidden;
 }
-.stream-status {
-  margin: 0 0 24px; padding-bottom: 11px;
-  border-bottom: 1px solid rgba(255,255,255,.1);
-  color: rgba(255,255,255,.42);
-  font: 750 9px/1 ui-sans-serif, sans-serif; letter-spacing: .18em;
-  text-transform: uppercase;
+.terminal-portal__halo {
+  position: absolute; z-index: -1; left: clamp(42px, 9vw, 132px); top: 50%;
+  width: clamp(180px, 28vw, 390px); aspect-ratio: 1; border-radius: 50%;
+  border: 1px solid rgba(225,201,168,.22);
+  box-shadow: 0 0 0 22px rgba(225,201,168,.025), 0 0 90px rgba(217,178,142,.11);
+  transform: translate(-35%, -50%);
 }
-.stream-status[data-status="running"] { color: var(--sand-strong); }
-.stream-status[data-status="failed"], .stream-status[data-status="error"] {
-  color: var(--problem);
+.terminal-portal__halo::before {
+  content: ""; position: absolute; inset: 18%; border-radius: inherit;
+  border: 1px solid rgba(255,255,255,.09);
+  box-shadow: inset 0 0 38px rgba(225,201,168,.05);
 }
-.stream-item { margin: 0; color: rgba(255,255,255,.82); }
-.stream-agent {
-  max-width: 72ch; padding: 0 0 30px;
-  font: 400 clamp(15px, 1.2vw, 17px)/1.86 var(--serif);
-  letter-spacing: -.012em;
+.terminal-portal__kicker {
+  margin: 0 0 20px; color: var(--sand-deep);
+  font: 800 9px/1 ui-sans-serif, sans-serif; letter-spacing: .2em;
 }
-.stream-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
-.stream-work {
-  padding: 12px 0; border-top: 1px solid rgba(255,255,255,.09);
+.terminal-portal h2 {
+  max-width: 680px; margin: 0;
+  font: 560 clamp(30px, 5vw, 62px)/.98 var(--serif); letter-spacing: -.055em;
+  text-wrap: balance;
 }
-.stream-work:last-child { border-bottom: 1px solid rgba(255,255,255,.09); }
-.stream-work-title {
-  cursor: pointer; color: rgba(255,255,255,.62); list-style-position: outside;
-  font: 650 11px/1.5 ui-sans-serif, sans-serif; letter-spacing: .025em;
+#terminal-summary {
+  max-width: 620px; min-height: 3.4em; margin: 24px 0 0;
+  color: rgba(255,255,255,.58); font: 400 14px/1.72 var(--serif);
 }
-.stream-work-title::marker { color: var(--sand-deep); }
-.stream-work-state {
-  margin-left: 10px; color: rgba(255,255,255,.3);
-  font: 600 9px/1 ui-monospace, monospace; text-transform: uppercase;
+#terminal-summary[data-state="running"] { color: rgba(228,207,173,.82); }
+#terminal-summary[data-state="error"],
+#terminal-summary[data-state="unavailable"] { color: var(--problem); }
+.terminal-portal__actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 30px;
 }
-.stream-work-body {
-  max-height: 240px; margin: 12px 0 2px; padding: 13px 15px; overflow: auto;
-  border-left: 1px solid rgba(225,201,168,.32);
-  background: rgba(8,6,15,.24); color: rgba(255,255,255,.7);
-  font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: pre-wrap; overflow-wrap: anywhere;
-}
-.composer {
-  display: grid; grid-template-columns: 1fr auto auto; align-items: end; gap: 10px;
-  padding: 14px 16px 16px; border-top: 1px solid rgba(255,255,255,.11);
-  background: oklch(0.155 0.035 295 / 92%);
-}
-.composer textarea {
-  width: 100%; min-height: 44px; max-height: 160px; resize: vertical;
-  padding: 11px 13px; border: 1px solid rgba(255,255,255,.13); border-radius: 11px;
-  outline: 0; background: rgba(255,255,255,.045); color: #fff;
-  font: 13px/1.55 ui-sans-serif, -apple-system, "PingFang SC", sans-serif;
-}
-.composer textarea:focus { border-color: rgba(225,201,168,.52); }
-.composer button, .interaction-action {
-  min-height: 40px; padding: 0 15px; border: 1px solid rgba(255,255,255,.15);
+.terminal-portal__actions button {
+  min-height: 42px; padding: 0 17px; border: 1px solid rgba(255,255,255,.16);
   border-radius: 999px; background: transparent; color: rgba(255,255,255,.68);
-  cursor: pointer; font: 750 10px/1 ui-sans-serif, sans-serif; letter-spacing: .08em;
+  cursor: pointer; font: 780 10px/1 ui-sans-serif, sans-serif;
+  letter-spacing: .09em; transition: color .2s, border-color .2s, background .2s;
 }
-.composer button:hover, .interaction-action:hover { color: #fff; border-color: var(--sand); }
-.composer button[type="submit"], .interaction-action.primary {
+.terminal-portal__actions button:hover:not(:disabled) {
+  color: #fff; border-color: var(--sand);
+}
+.terminal-portal__actions .enter {
   background: var(--sand-strong); border-color: var(--sand-strong);
   color: oklch(0.2 0.035 295);
 }
-.composer button:disabled, .interaction-action:disabled { opacity: .38; cursor: wait; }
-
-#codex-interaction { width: min(600px, calc(100vw - 36px)); }
-.interaction-head { margin-bottom: 22px; }
-.interaction-kicker {
-  color: var(--sand-deep); font: 800 9px/1 ui-sans-serif, sans-serif;
-  letter-spacing: .19em; text-transform: uppercase;
+.terminal-portal__actions .terminal-danger { color: rgba(255,255,255,.42); }
+.terminal-portal__actions .terminal-danger:hover:not(:disabled) {
+  color: var(--problem); border-color: rgba(217,178,142,.55); background: rgba(169,120,121,.08);
 }
-.interaction-title { margin: 12px 0 0; font: 560 27px/1.1 var(--serif); letter-spacing: -.035em; }
-.interaction-message {
-  margin: 13px 0 0; color: rgba(255,255,255,.62); white-space: pre-wrap;
-  font: 13px/1.75 ui-sans-serif, sans-serif;
-}
-.interaction-fields { display: grid; gap: 15px; margin: 10px 0 22px; }
-.interaction-field { display: grid; gap: 7px; }
-.interaction-label { color: rgba(255,255,255,.8); font: 500 13px/1.45 var(--serif); }
-.interaction-input {
-  width: 100%; min-height: 40px; padding: 9px 11px;
-  border: 1px solid rgba(255,255,255,.15); border-radius: 9px;
-  background: oklch(0.16 0.035 295); color: #fff;
-}
-.interaction-help { color: rgba(255,255,255,.4); }
-.interaction-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 9px; }
-.interaction-link { color: var(--sand-strong); }
+.terminal-portal__actions button:disabled { opacity: .4; cursor: wait; }
 
 /*
  * 窄屏不把桌面四栏缩成四条缝。工作区仍在原层级，只把每列里的卡片改成横向浏览；
@@ -1254,15 +1219,16 @@ body::after {
   #stage-view { padding: 15px 12px 12px; }
   .stage-title { font-size: 24px; }
   .stage-title .thread { display: none; }
-  .stream-surface { padding: 20px 17px; }
-  .composer { grid-template-columns: 1fr auto; }
-  .composer textarea { grid-column: 1 / -1; }
+  .terminal-portal { padding: 30px 22px; align-content: end; }
+  .terminal-portal h2 { font-size: clamp(32px, 11vw, 46px); }
+  .terminal-portal__actions { align-items: stretch; }
+  .terminal-portal__actions .enter { flex-basis: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   body::before, .halo::before, .live-flag i, .orbit-wrap,
   .sun-corona, .rays-long, .rays-short, .sun-card,
-  .stage-node.live button, .portal { animation: none !important; }
+  .stage-node.live button, .portal, .terminal-portal__halo { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
 /* ── 项目图谱（spec 2026-08-12）：第三个 view ─────────────────
@@ -1619,17 +1585,20 @@ body::after {
         <button class="back" id="back">← 返回阶段环</button>
       </div>
       <div class="surface">
-        <section class="stream-surface" id="codex-stream" aria-live="polite"></section>
-        <form class="composer" id="codex-composer">
-          <textarea id="codex-input" aria-label="给 Codex 的消息" rows="2"></textarea>
-          <button type="button" id="codex-interrupt" hidden>中断</button>
-          <button type="submit" id="codex-send">发送</button>
-        </form>
+        <section class="terminal-portal" id="terminal-portal" aria-live="polite">
+          <div class="terminal-portal__halo" aria-hidden="true"></div>
+          <p class="terminal-portal__kicker">SYSTEM TERMINAL · OFFICIAL CODEX TUI</p>
+          <h2 id="terminal-title">原生会话在系统终端中运行</h2>
+          <p id="terminal-summary">正在确认这条会话的本机状态…</p>
+          <div class="terminal-portal__actions">
+            <button class="enter" id="terminal-primary" type="button">打开系统终端</button>
+            <button class="back" id="terminal-close-window" type="button" hidden>关闭终端窗口</button>
+            <button class="terminal-danger" id="terminal-end-session" type="button">结束会话</button>
+          </div>
+        </section>
       </div>
-      <p class="note" id="stage-note">这是 App Server 的结构化会话流。正文、工具进度和需要你处理的交互各走自己的语义层。</p>
+      <p class="note" id="stage-note">窗口关闭只会分离显示；tmux、Codex 与当前任务会继续在后台运行。</p>
     </section>
-
-    <dialog class="sheet" id="codex-interaction" aria-labelledby="codex-interaction-title"></dialog>
 
     <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->
     <section class="view" id="graph-view" hidden>

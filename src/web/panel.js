@@ -1,4 +1,4 @@
-import { createCodexStream } from "./codex-stream.js";
+import { createTerminalBridge } from "./terminal-bridge.js";
 
 /*
  * The browser half of the StagePass workbench — Abstract Cloud & Sea + Circular
@@ -23,8 +23,8 @@ import { createCodexStream } from "./codex-stream.js";
  * 所以：觉得主屏少了点什么，答案是 renderStatus 或 drawSheet，不是往环那屏塞
  * 一块新东西。原来压在环底下那条决策区就是这么长出来的，已经整条撤掉了。
  *
- * The stage view consumes only StagePass-normalized App Server snapshots and
- * events. It never receives terminal bytes or JSON-RPC envelopes.
+ * The stage view controls only native Terminal lifecycle. Official Codex TUI
+ * output, input, approvals, MCP interaction, colors, and Ctrl+C stay native.
  */
 const params = new URLSearchParams(location.search);
 const changeId = params.get("change") || "CHG-1";
@@ -65,12 +65,10 @@ const columns = pick("columns");
 const stageName = pick("stage-name");
 const stageThread = pick("stage-thread");
 const stageNote = pick("stage-note");
-const codexSurface = pick("codex-stream");
-const codexComposer = /** @type {HTMLFormElement} */ (pick("codex-composer"));
-const codexInput = /** @type {HTMLTextAreaElement} */ (pick("codex-input"));
-const codexSend = button("codex-send");
-const codexInterrupt = button("codex-interrupt");
-const codexInteraction = dialog("codex-interaction");
+const terminalSummary = pick("terminal-summary");
+const terminalPrimary = button("terminal-primary");
+const terminalCloseWindow = button("terminal-close-window");
+const terminalEndSession = button("terminal-end-session");
 /** 会话底下那行注解的原话。say() 会盖掉它，进会话时还原。 */
 const NOTE_DEFAULT = stageNote.textContent;
 
@@ -130,7 +128,7 @@ const MARK = {
 let phases = [];
 let panelState = null;
 let current = null;
-let codex = null;
+let terminalBridge = null;
 let moving = false;
 /** 弹窗正在显示哪个阶段，没开时是 null。 */
 let sheetPhase = null;
@@ -2379,8 +2377,8 @@ function drawGaps(entry) {
 async function enter(phase) {
   if (moving) return;
   moving = true;
-  codex?.close();
-  codex = null;
+  terminalBridge?.close();
+  terminalBridge = null;
   current = phase;
 
   const entry = phases.find((item) => item.phase === phase);
@@ -2404,19 +2402,16 @@ async function enter(phase) {
   stageView.classList.add("active");
   await wait(120);
   moving = false;
-  codex = createCodexStream({
+  terminalBridge = createTerminalBridge({
     changeId,
     seat: phase,
-    surface: codexSurface,
-    form: codexComposer,
-    input: codexInput,
-    send: codexSend,
-    interrupt: codexInterrupt,
-    interaction: codexInteraction,
-    onStatus: ({ text }) => { stageNote.textContent = text; },
+    primary: terminalPrimary,
+    closeWindow: terminalCloseWindow,
+    endSession: terminalEndSession,
+    summary: terminalSummary,
   });
   try {
-    await codex.open();
+    await terminalBridge.openOrFocus();
   } catch (error) {
     stageNote.textContent = `会话没能打开：${error?.message ?? error}`;
   }
@@ -2425,8 +2420,8 @@ async function enter(phase) {
 async function leave() {
   if (moving) return;
   moving = true;
-  codex?.close();
-  codex = null;
+  terminalBridge?.close();
+  terminalBridge = null;
   current = null;
 
   stageView.classList.remove("active");
@@ -2452,8 +2447,8 @@ async function leave() {
  */
 function openGraphView(project) {
   // 台上如果是会话，按 leave() 的规矩收干净 —— 只是不播它的动画。
-  codex?.close();
-  codex = null;
+  terminalBridge?.close();
+  terminalBridge = null;
   current = null;
   stageView.classList.remove("active");
   stageView.hidden = true;

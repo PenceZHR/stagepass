@@ -589,8 +589,8 @@ export class PanelSessions implements CodexStreamPort {
 const ASSETS: Readonly<Record<string, { file: string; type: string }>> = {
   "/": { file: join(HERE, "panel.html"), type: "text/html; charset=utf-8" },
   "/panel.js": { file: join(HERE, "panel.js"), type: "text/javascript; charset=utf-8" },
-  "/codex-stream.js": {
-    file: join(HERE, "codex-stream.js"), type: "text/javascript; charset=utf-8",
+  "/terminal-bridge.js": {
+    file: join(HERE, "terminal-bridge.js"), type: "text/javascript; charset=utf-8",
   },
   // The cloud-sea ground is a real generated raster, not CSS pretending to be
   // one -- that was decided in the 2026-07-24 visual direction, not styled.
