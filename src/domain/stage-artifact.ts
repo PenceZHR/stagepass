@@ -73,7 +73,7 @@ export function assertStageRoundArtifact(value: StageRoundArtifact): void {
   if (!Number.isInteger(value.round) || value.round < 1) fail("round");
   if (value.jobId.trim() === "") fail("jobId");
   assertStrings(value.artifactIds, "artifactIds");
-  if (value.commit !== null && !/^[0-9a-f]{7,64}$/i.test(value.commit)) fail("commit");
+  if (value.commit !== null && !/^[0-9a-f]{7,40}$/.test(value.commit)) fail("commit");
   if (value.source !== "recorded" && value.source !== "reconstructed") fail("source");
   if (!Number.isFinite(Date.parse(value.settledAt))) fail("settledAt");
 

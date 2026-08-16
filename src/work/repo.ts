@@ -26,6 +26,12 @@ import { execFileSync } from "node:child_process";
  * 过一次 shell 就会变成另一条命令。
  */
 
+export interface RepoFileChange {
+  readonly path: string;
+  readonly previousPath?: string;
+  readonly change: "added" | "modified" | "deleted" | "renamed";
+}
+
 export interface RepoOps {
   /**
    * 工作树里还没提交的东西，路径原样。空数组 = 干净。
@@ -71,11 +77,45 @@ export interface RepoOps {
    * 而空图长得和「路径填错了」一模一样（图谱 spec：fail-loud 第 3 条）。
    */
   trackedFiles(cwd: string): readonly string[] | null;
+  /** 这个 commit 自己的文件增量；读不到 commit 就 null。 */
+  changedFiles(cwd: string, sha: string): readonly RepoFileChange[] | null;
+  /** commit 时该路径的正文。路径不存在或 commit 不可用就 null。 */
+  fileAt(cwd: string, sha: string, path: string): string | null;
+  /** commit 的父版本里该路径的正文，只给显式删除项使用。 */
+  fileBefore(cwd: string, sha: string, path: string): string | null;
+  /** 这个 commit 对该路径产生的 patch。 */
+  diffAt(cwd: string, sha: string, path: string): string | null;
 }
 
 /** 看着像不像一个 commit sha。产出是路径还是 commit，靠它分。 */
 export const looksLikeSha = (value: string): boolean =>
   /^[0-9a-f]{7,40}$/.test(value);
+
+function parseChangedFiles(raw: string): RepoFileChange[] {
+  const fields = raw.split("\0");
+  const changed: RepoFileChange[] = [];
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++];
+    if (status === undefined || status === "") continue;
+    const kind = status[0];
+    if (kind === "R") {
+      const previousPath = fields[index++];
+      const path = fields[index++];
+      if (previousPath === undefined || path === undefined || path === "") {
+        throw new Error("git_changed_files_malformed");
+      }
+      changed.push({ path, previousPath, change: "renamed" });
+      continue;
+    }
+    const path = fields[index++];
+    if (path === undefined || path === "") throw new Error("git_changed_files_malformed");
+    const change = kind === "A" || kind === "C"
+      ? "added"
+      : kind === "D" ? "deleted" : "modified";
+    changed.push({ path, change });
+  }
+  return changed.sort((left, right) => left.path.localeCompare(right.path));
+}
 
 export function createRepoOps(options: {
   run?: (cwd: string, args: readonly string[]) => string;
@@ -184,6 +224,42 @@ export function createRepoOps(options: {
           .filter((path) => path !== "");
       } catch {
         return null;   // 不是 git 仓库 —— 让调用方 fail-loud，不画空图
+      }
+    },
+    changedFiles(cwd, sha) {
+      if (!looksLikeSha(sha)) return null;
+      try {
+        return parseChangedFiles(run(cwd, [
+          "diff-tree", "--root", "--no-commit-id", "--name-status", "-z", "-r", "-M", sha,
+        ]));
+      } catch {
+        return null;
+      }
+    },
+    fileAt(cwd, sha, path) {
+      if (!looksLikeSha(sha)) return null;
+      try {
+        return run(cwd, ["show", `${sha}:${path}`]);
+      } catch {
+        return null;
+      }
+    },
+    fileBefore(cwd, sha, path) {
+      if (!looksLikeSha(sha)) return null;
+      try {
+        return run(cwd, ["show", `${sha}^:${path}`]);
+      } catch {
+        return null;
+      }
+    },
+    diffAt(cwd, sha, path) {
+      if (!looksLikeSha(sha)) return null;
+      try {
+        return run(cwd, [
+          "show", "--format=", "--find-renames", "--patch", sha, "--", path,
+        ]) || null;
+      } catch {
+        return null;
       }
     },
   };

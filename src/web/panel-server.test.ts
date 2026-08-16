@@ -214,6 +214,10 @@ async function withPanel(body: (input: {
       show: () => null,
       head: () => null,
       trackedFiles: () => [],
+      changedFiles: () => [],
+      fileAt: () => null,
+      fileBefore: () => null,
+      diffAt: () => null,
     },
     trust: { isTrusted: () => null },
   });

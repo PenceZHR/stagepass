@@ -134,7 +134,12 @@ function runner(
     evidence: new EvidenceStore(context.db),
     notes: new RoundNoteStore(context.db),
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
-    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null },
+    repo: repo ?? {
+      dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null,
+      show: () => null, head: () => null, trackedFiles: () => null,
+      changedFiles: () => null, fileAt: () => null, fileBefore: () => null,
+      diffAt: () => null,
+    },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
     writeRoundFile: (name: string, content: string) => {
@@ -436,6 +441,8 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
         return sha;
       },
       show: () => null, head: () => null, trackedFiles: () => null,
+      changedFiles: () => sha === null ? null : [],
+      fileAt: () => null, fileBefore: () => null, diffAt: () => null,
     };
   };
 
@@ -704,6 +711,8 @@ describe("L4 · E：产物有家，轮末自己入档，越界要报出来", () 
         return "beefdeadcafe";
       },
       show: () => null, head: () => null, trackedFiles: () => null,
+      changedFiles: () => [], fileAt: () => null, fileBefore: () => null,
+      diffAt: () => null,
     };
   };
 
