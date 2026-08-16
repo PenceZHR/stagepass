@@ -2478,9 +2478,10 @@ async function enter(phase) {
   }
 }
 
-async function leave() {
+async function leave({ reopenSheet = false } = {}) {
   if (moving) return;
   moving = true;
+  const phase = current;
   terminalBridge?.close();
   terminalBridge = null;
   window.stagepassArtifacts?.close();
@@ -2500,6 +2501,7 @@ async function leave() {
   moving = false;
 
   await loadOrReconnect();
+  if (reopenSheet && phase) openSheet(phase);
 }
 
 /*
@@ -2619,7 +2621,7 @@ async function confirmBriefEdit() {
   }
 }
 
-button("back").addEventListener("click", () => { void leave(); });
+button("back").addEventListener("click", () => { void leave({ reopenSheet: true }); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });

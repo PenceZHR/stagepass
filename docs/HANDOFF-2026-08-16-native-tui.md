@@ -109,8 +109,9 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
 视觉语言，但把结构判断留给人、文件细节留给 Codex：
 
 - 顶部固定显示阶段、持久状态、轮次、未决问题、下一步和显式的 macOS Terminal 控制；
-- 主画布按本轮文件、目录和生产关系投影结构，文件多时聚合目录，完整文件始终可从键盘可用
-  的横向清单进入；右侧常驻正文、DIFF、来源/依赖和关联问题；底部能回放已结算轮次；
+- 左侧把结算轮次、搜索和按目录分组的完整文件树收进同一列；当前轮次与当前文件始终可见，
+  不再依赖两条横向滚动带；中间主画布投影生产关系，右侧常驻正文、DIFF、来源/依赖和
+  关联问题；
 - PRD / Spec / Arch / BuildPlan / TestPlan / Build / Test / QA 各自有语义适配，默认选中对应角色
   的产物；Build 不再先打开 critic 文档；
 - 历史轮次只有在 Git 证据可证明时才保守重建。证据不足会明确显示“历史清单不完整”，
@@ -139,6 +140,31 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
 
 1. `docs/superpowers/specs/2026-08-16-stage-artifact-cockpit-design.md`；
 2. `docs/superpowers/plans/2026-08-16-stage-artifact-cockpit.md`。
+
+### 交互复核与返工（同日补记）
+
+第一版虽然功能齐全，但用 22 轮、22 个文件的真实数据自己走一遍后确认交互不可用：当前
+第 22 轮仍停在时间轴最左端，选中的根目录文件也停在文件横条最右端；用户必须同时拖两条
+横向滚动条，退出后还会丢回阶段环。现已按实际使用路径返工：
+
+- 轮次改成原生选择器，文件改成目录分组的垂直树；选中文件自动滚入视口，搜索同时收起
+  空目录组；1280 px 下三列没有页面级或文件树横向溢出；
+- “阶段产物 → 阶段详情”成为可逆路径，返回后重新打开同一 Stage 弹层，不再丢上下文；
+- `loading / ready / incomplete / empty / unavailable` 五种投影状态显式化；没有可靠历史时
+  轮次显示“轮次不可用”，空检查器收起，只保留一处可见原因；
+- 顶部下一步原因可展示三行并保留完整 title；浏览、搜索、切轮次和切详情页签仍全部只读。
+
+复核证据：
+
+- `pnpm typecheck` 通过；完整测试 1137/1137、259 suites、0 fail、0 skipped；
+- 隔离副本在 4173 实测第 22 轮、22 文件、搜索、文件选择、正文和来源/依赖页签、历史不完整
+  轮次、返回与重进；浏览器日志为空，隔离库计数仍为 `66|0|110|89|174|10|76|0`；
+- 真实 `CHG-002 / PRD` 实测非 Git 项目空态和返回；连续两次读前后业务计数均为
+  `1|0|7|4|3|0|0|0`，其中 `stage_round_artifacts=0`；浏览器日志为空；
+- 复杂数据截图：`docs/evidence/screenshots/stage-artifact-cockpit-2026-08-16.png`；真实空态截图：
+  `docs/evidence/screenshots/stage-artifact-empty-2026-08-16.png`。
+
+上述计数顺序统一为 `jobs|turns|questions|answers|change_events|change_evidence|gaps|stage_round_artifacts`。
 
 ## 唯一启动方式
 

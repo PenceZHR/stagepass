@@ -14,7 +14,8 @@ const canvas = pick("stage-artifact-canvas");
 const empty = pick("stage-artifact-empty");
 const list = pick("stage-artifact-list");
 const detail = pick("stage-artifact-detail");
-const timeline = pick("stage-artifact-timeline");
+const cockpit = pick("stage-view");
+const roundSelect = /** @type {HTMLSelectElement} */ (pick("stage-artifact-round"));
 const search = /** @type {HTMLInputElement} */ (pick("stage-artifact-search"));
 const stageState = pick("stage-state");
 const roundLabel = pick("stage-round-label");
@@ -59,6 +60,7 @@ let target = null;
 let model = null;
 let scene = null;
 let rows = new Map();
+let groups = new Map();
 let selectedPath = null;
 let selectedRound = null;
 let refreshTimer = null;
@@ -78,6 +80,11 @@ function showEmpty(message) {
 
 function hideEmpty() { empty.hidden = true; }
 
+function setProjectionState(state) {
+  cockpit.dataset.projection = state;
+  search.disabled = state !== "ready";
+}
+
 function setHeader(input) {
   const mark = input.state.mark === "approved" ? " · 已批准"
     : input.state.mark === "problem" ? " · 有问题" : "";
@@ -86,6 +93,7 @@ function setHeader(input) {
   next.textContent = input.nextStep?.what ?? "查看已结算产物";
   nextWhy.textContent = input.nextStep?.why
     ?? "这一页只投影事实；所有裁决仍在原生 Codex 选择器中完成。";
+  nextWhy.title = nextWhy.textContent;
   adapterLabel.textContent = ADAPTERS[input.phase]?.label ?? "STAGE EVIDENCE";
 }
 
@@ -101,34 +109,48 @@ function countChanges(files) {
   return words.join(" · ") || "没有文件变化";
 }
 
-function renderTimeline() {
-  timeline.replaceChildren();
+function renderRounds() {
+  roundSelect.replaceChildren();
   const rounds = [...(model?.rounds ?? [])].sort((left, right) => left.round - right.round);
   const incomplete = (model?.incompleteRounds ?? []).map((round) => ({ round, incomplete: true }));
   const entries = [...rounds, ...incomplete]
     .sort((left, right) => left.round - right.round);
   if (entries.length === 0) {
-    const message = document.createElement("span");
-    message.className = "stage-detail-hint";
-    message.textContent = "还没有已结算轮次";
-    timeline.append(message);
+    const option = document.createElement("option");
+    option.textContent = "还没有已结算轮次";
+    option.value = "";
+    roundSelect.append(option);
+    roundSelect.disabled = true;
     return;
   }
+  roundSelect.disabled = false;
   for (const entry of entries) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "stage-round-button";
-    button.dataset.incomplete = String(entry.incomplete === true);
-    button.setAttribute("aria-current", String(entry.round === selectedRound));
-    const title = document.createElement("strong");
-    title.textContent = `ROUND ${entry.round}`;
-    const summary = document.createElement("span");
-    summary.textContent = entry.incomplete === true
-      ? "历史清单不完整" : `${entry.source === "reconstructed" ? "保守重建 · " : ""}${countChanges(entry.files)}`;
-    button.append(title, summary);
-    button.addEventListener("click", () => { void load(entry.round); });
-    timeline.append(button);
+    const option = document.createElement("option");
+    option.value = String(entry.round);
+    option.textContent = `第 ${entry.round} 轮 — ${entry.incomplete === true
+      ? "历史清单不完整"
+      : `${entry.source === "reconstructed" ? "保守重建 · " : ""}${countChanges(entry.files)}`}`;
+    option.selected = entry.round === selectedRound;
+    roundSelect.append(option);
   }
+}
+
+function renderUnavailableRound() {
+  roundSelect.replaceChildren();
+  const option = document.createElement("option");
+  option.textContent = "轮次不可用";
+  option.value = "";
+  roundSelect.append(option);
+  roundSelect.disabled = true;
+}
+
+function renderLoadingRound() {
+  roundSelect.replaceChildren();
+  const option = document.createElement("option");
+  option.textContent = "正在读取轮次…";
+  option.value = "";
+  roundSelect.append(option);
+  roundSelect.disabled = true;
 }
 
 function fileMeta(file) {
@@ -137,28 +159,51 @@ function fileMeta(file) {
 
 function renderList() {
   rows = new Map();
+  groups = new Map();
   list.replaceChildren();
   const fragment = document.createDocumentFragment();
+  const byFolder = new Map();
   for (const file of model?.scene.files ?? []) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "stage-file-row";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", String(file.path === selectedPath));
-    row.title = file.path;
-    const change = document.createElement("span");
-    change.className = "stage-file-change";
-    change.dataset.change = file.display;
-    const path = document.createElement("span");
-    path.className = "stage-file-path";
-    path.textContent = file.path;
-    const meta = document.createElement("span");
-    meta.className = "stage-file-meta";
-    meta.textContent = fileMeta(file);
-    row.append(change, path, meta);
-    row.addEventListener("click", () => { void selectFile(file.path); });
-    rows.set(file.path, row);
-    fragment.append(row);
+    const folder = file.folder || ".";
+    const files = byFolder.get(folder) ?? [];
+    files.push(file);
+    byFolder.set(folder, files);
+  }
+  for (const [folder, files] of byFolder) {
+    const group = document.createElement("section");
+    group.className = "stage-file-group";
+    const heading = document.createElement("div");
+    heading.className = "stage-file-group-heading";
+    appendText(heading, "span", folder === "." ? "仓库根目录" : `${folder}/`);
+    appendText(heading, "small", String(files.length));
+    const items = document.createElement("div");
+    items.setAttribute("role", "group");
+    group.append(heading, items);
+    const paths = [];
+    for (const file of files) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "stage-file-row";
+      row.setAttribute("role", "treeitem");
+      row.setAttribute("aria-selected", String(file.path === selectedPath));
+      row.title = file.path;
+      const change = document.createElement("span");
+      change.className = "stage-file-change";
+      change.dataset.change = file.display;
+      const path = document.createElement("span");
+      path.className = "stage-file-path";
+      path.textContent = folder === "." ? file.path : file.path.slice(folder.length + 1);
+      const meta = document.createElement("span");
+      meta.className = "stage-file-meta";
+      meta.textContent = fileMeta(file);
+      row.append(change, path, meta);
+      row.addEventListener("click", () => { void selectFile(file.path); });
+      rows.set(file.path, row);
+      paths.push(file.path);
+      items.append(row);
+    }
+    groups.set(group, paths);
+    fragment.append(group);
   }
   list.append(fragment);
   filterFiles(search.value);
@@ -171,6 +216,9 @@ function filterFiles(value) {
     const show = needle === "" || path.toLocaleLowerCase().includes(needle);
     row.hidden = !show;
     if (show) visible.push(path);
+  }
+  for (const [group, paths] of groups) {
+    group.hidden = !paths.some((path) => rows.get(path)?.hidden === false);
   }
   scene?.filter(needle === "" ? null : visible);
 }
@@ -386,6 +434,7 @@ async function selectFile(path) {
   for (const [candidate, row] of rows) {
     row.setAttribute("aria-selected", String(candidate === path));
   }
+  rows.get(path)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   scene?.select(path);
   renderDetailMessage(path, "正在读取这轮固定下来的正文与差异…");
   const version = ++requestVersion;
@@ -421,7 +470,10 @@ function installScene() {
 async function load(round = selectedRound, quiet = false) {
   if (target === null || closed) return;
   const version = ++requestVersion;
-  if (!quiet) showEmpty("正在从产物账本建立本轮投影…");
+  if (!quiet) {
+    setProjectionState("loading");
+    showEmpty("正在从产物账本建立本轮投影…");
+  }
   const query = new URLSearchParams({ change: target.changeId, phase: target.phase });
   if (round !== null) query.set("round", String(round));
   try {
@@ -431,10 +483,12 @@ async function load(round = selectedRound, quiet = false) {
       model = null;
       selectedRound = null;
       scene?.setModel({ inputs: [], folders: [], files: [], production: [] });
-      list.replaceChildren(); timeline.replaceChildren();
+      list.replaceChildren();
+      renderUnavailableRound();
       roundLabel.textContent = "产物不可用";
+      setProjectionState("unavailable");
       showEmpty(FAILURE_WORDS[body.error] ?? `阶段产物读取失败（${body.error ?? status}）。`);
-      renderDetailMessage("没有可读投影", empty.textContent);
+      renderDetailMessage("没有可读文件", "返回阶段详情查看原因与下一步。 ");
       return;
     }
     model = body;
@@ -442,21 +496,24 @@ async function load(round = selectedRound, quiet = false) {
     roundLabel.textContent = selectedRound === null
       ? "尚无已结算轮次"
       : `第 ${selectedRound} 轮${body.scene.source === "reconstructed" ? " · 保守重建" : " · 已结算"}`;
-    renderTimeline();
+    renderRounds();
     const keep = body.scene.files.some((file) => file.path === selectedPath)
       ? selectedPath : preferredFile();
     selectedPath = keep;
     scene?.setModel(body.scene);
     renderList();
     if (body.incomplete) {
+      setProjectionState("incomplete");
       showEmpty("这一轮发生过，但旧数据不足以证明完整文件集合；StagePass 没有拿当前工作树来冒充历史。 ");
-      renderDetailMessage("历史清单不完整", "你仍可从时间轴切回有证据的轮次。 ");
+      renderDetailMessage("历史清单不完整", "你仍可从轮次选择器切回有证据的轮次。 ");
     } else if (body.scene.empty) {
+      setProjectionState("empty");
       showEmpty(selectedRound === null
         ? "这个阶段还没有已结算产物。顶部的下一步会告诉你现在该做什么。"
         : "这一轮已结算，但产物清单中没有文件。这里不会拿未结算工作树填空。 ");
       renderDetailMessage("尚无文件", "上游入口和轮次事实仍保留；文件产生后会出现在这里。 ");
     } else {
+      setProjectionState("ready");
       hideEmpty();
       if (keep !== null) void selectFile(keep);
     }
@@ -465,7 +522,15 @@ async function load(round = selectedRound, quiet = false) {
       + "。浏览不会启动 turn 或推动闸门。";
   } catch (error) {
     if (error?.name !== "AbortError" && version === requestVersion) {
+      model = null;
+      selectedRound = null;
+      scene?.setModel({ inputs: [], folders: [], files: [], production: [] });
+      list.replaceChildren();
+      renderUnavailableRound();
+      roundLabel.textContent = "产物不可用";
+      setProjectionState("unavailable");
       showEmpty("产物 API 暂时不可达；已结算事实没有被改动。 ");
+      renderDetailMessage("没有可读文件", "返回阶段详情查看原因与下一步。 ");
     }
   }
 }
@@ -482,7 +547,9 @@ function close() {
   selectedPath = null;
   selectedRound = null;
   rows.clear();
+  groups.clear();
   search.value = "";
+  delete cockpit.dataset.projection;
 }
 
 function open(input) {
@@ -490,12 +557,24 @@ function open(input) {
   closed = false;
   target = input;
   setHeader(input);
+  list.replaceChildren();
+  rows.clear();
+  groups.clear();
+  renderLoadingRound();
+  renderDetailMessage("正在读取阶段产物", "正在从产物账本建立只读投影…");
+  roundLabel.textContent = "读取中";
+  note.textContent = "只读加载中；不会启动 turn、推动闸门或改写项目文件。";
   installScene();
+  setProjectionState("loading");
   showEmpty("正在从产物账本建立本轮投影…");
   void load(null);
   refreshTimer = setInterval(() => { void load(selectedRound, true); }, 5_000);
 }
 
 search.addEventListener("input", () => { filterFiles(search.value); });
+roundSelect.addEventListener("change", () => {
+  const round = Number(roundSelect.value);
+  if (Number.isInteger(round) && round > 0) void load(round);
+});
 
 window.stagepassArtifacts = { open, close };

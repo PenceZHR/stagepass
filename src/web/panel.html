@@ -1603,34 +1603,41 @@ body::after {
             <button class="back terminal-danger" id="terminal-close-window" type="button" hidden>关闭窗口</button>
           </div>
         </div>
-        <button class="back stage-cockpit-back" id="back" type="button">← 返回阶段环</button>
+        <button class="back stage-cockpit-back" id="back" type="button">← 阶段详情</button>
       </header>
 
       <div class="stage-cockpit-body">
-        <section class="stage-artifact-space" aria-labelledby="stage-artifact-heading">
-          <div class="stage-artifact-tools">
-            <div>
-              <p>PRODUCTION LINEAGE</p>
-              <h2 id="stage-artifact-heading">本轮文件结构</h2>
-            </div>
-            <label class="stage-artifact-search">
-              <span class="sr-only">搜索本轮文件</span>
-              <input id="stage-artifact-search" type="search" autocomplete="off"
-                     placeholder="搜索本轮文件…">
-            </label>
+        <aside class="stage-artifact-navigator" aria-labelledby="stage-artifact-heading">
+          <div class="stage-artifact-nav-head">
+            <p>PRODUCTION LINEAGE</p>
+            <h2 id="stage-artifact-heading">轮次与文件</h2>
           </div>
+          <label class="stage-round-control">
+            <span>结算轮次</span>
+            <select id="stage-artifact-round" aria-label="选择结算轮次"></select>
+          </label>
+          <label class="stage-artifact-search">
+            <span class="sr-only">搜索本轮文件</span>
+            <input id="stage-artifact-search" type="search" autocomplete="off"
+                   placeholder="搜索本轮文件…">
+          </label>
+          <div class="stage-artifact-legend" aria-hidden="true">
+            <span data-change="added">新增</span><span data-change="modified">修改</span>
+            <span data-change="unchanged">沿用</span><span data-change="deleted">删除</span>
+            <span data-change="replaced">替换</span>
+          </div>
+          <div id="stage-artifact-list" role="tree" aria-label="本轮文件"></div>
+          <p class="note" id="stage-note">浏览产物只读取已结算事实；不会启动 turn、推动闸门或改写项目文件。</p>
+        </aside>
+
+        <section class="stage-artifact-space" aria-label="本轮生产关系图">
           <div class="stage-artifact-canvas" id="stage-artifact-canvas">
+            <div class="stage-artifact-map-label" aria-hidden="true">
+              <span>STRUCTURE MAP</span><strong>本轮生产关系</strong>
+            </div>
             <div class="stage-artifact-empty" id="stage-artifact-empty" role="status">
               正在从产物账本建立本轮投影…
             </div>
-          </div>
-          <div class="stage-artifact-file-rail" aria-label="本轮全部文件">
-            <div class="stage-artifact-legend" aria-hidden="true">
-              <span data-change="added">新增</span><span data-change="modified">修改</span>
-              <span data-change="unchanged">沿用</span><span data-change="deleted">删除</span>
-              <span data-change="replaced">替换</span>
-            </div>
-            <div id="stage-artifact-list" role="listbox" aria-label="本轮文件"></div>
           </div>
         </section>
 
@@ -1644,15 +1651,6 @@ body::after {
           </div>
         </aside>
       </div>
-
-      <footer class="stage-artifact-history">
-        <div>
-          <small>SETTLED ROUNDS</small>
-          <strong>轮次时间轴</strong>
-        </div>
-        <div id="stage-artifact-timeline" aria-label="已结算轮次"></div>
-        <p class="note" id="stage-note">浏览产物只读取已结算事实；不会启动 turn、推动闸门或改写项目文件。</p>
-      </footer>
     </section>
 
     <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->
