@@ -129,6 +129,8 @@ let panelState = null;
 let current = null;
 let terminalBridge = null;
 let moving = false;
+/** 进入全屏驾驶舱前 Workspace 是否已经收起；返回时原样恢复。 */
+let stageWorkspaceWasCollapsed = false;
 /** 弹窗正在显示哪个阶段，没开时是 null。 */
 let sheetPhase = null;
 /** run / ask 留下的一句话，盖过默认说明，直到弹窗重开。 */
@@ -159,6 +161,21 @@ function statusOf(entry) {
   if (entry.threadId) return { short: "有线程", long: "有线程，点开会恢复它的历史。" };
   if (entry.current) return { short: "待运行", long: "Change 就停在这个阶段。跑它会派发一次真的 turn。" };
   return { short: "未开始", long: "还没轮到它。点开只会进入结构化会话，不会自动发起 turn。" };
+}
+
+const CURRENT_STAGE_WORDS = {
+  pending: "待运行",
+  running: "正在运行",
+  settled: "已结算",
+  blocked: "已阻塞",
+};
+
+/** 驾驶栏说业务状态，不拿「有没有线程」覆盖当前 Change 的持久状态。 */
+function cockpitStatusOf(entry) {
+  if (entry.current && panelState?.currentPhase === entry.phase) {
+    return CURRENT_STAGE_WORDS[panelState.status] ?? panelState.status;
+  }
+  return statusOf(entry).short;
 }
 
 /**
@@ -2406,10 +2423,14 @@ async function enter(phase) {
   terminalBridge = null;
   window.stagepassArtifacts?.close();
   current = phase;
+  stageWorkspaceWasCollapsed = columns.classList.contains("collapsed");
+  columns.classList.add("collapsed");
+  columns.classList.add("stage-focus");
 
   const entry = phases.find((item) => item.phase === phase);
   stageName.textContent = phase;
-  stageThread.textContent = entry?.threadId ? entry.threadId.slice(0, 8) : "新线程";
+  stageThread.textContent = entry?.threadId ? entry.threadId.slice(0, 8)
+    : entry ? "未绑定线程" : "旁路会话";
   // 上一次 run / ask 的结果不该跟着你进下一个阶段。ask() 会在这之后再写一次。
   stageNote.textContent = NOTE_DEFAULT;
 
@@ -2441,7 +2462,7 @@ async function enter(phase) {
     phase,
     threadId: entry?.threadId ?? null,
     state: {
-      status: entry ? statusOf(entry).short : "旁路会话",
+      status: entry ? cockpitStatusOf(entry) : "旁路会话",
       current: entry?.current ?? false,
       live: entry?.live ?? false,
       mark: entry?.mark ?? null,
@@ -2468,6 +2489,8 @@ async function leave() {
   stageView.classList.remove("active");
   await wait(420);
   stageView.hidden = true;
+  columns.classList.remove("stage-focus");
+  columns.classList.toggle("collapsed", stageWorkspaceWasCollapsed);
 
   orbitView.hidden = false;
   orbitView.classList.add("entering");

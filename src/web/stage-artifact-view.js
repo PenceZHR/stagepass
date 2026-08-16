@@ -25,14 +25,14 @@ const adapterLabel = pick("stage-artifact-adapter");
 const note = pick("stage-note");
 
 const ADAPTERS = {
-  PRD: { label: "REQUIREMENT EVIDENCE", prefer: /\.md$/i },
-  Spec: { label: "BEHAVIOR CONTRACT", prefer: /\.md$/i },
-  Arch: { label: "ARCHITECTURE PROJECTION", prefer: /arch\.graph\.json$|\.md$/i },
-  BuildPlan: { label: "IMPLEMENTATION MAP", prefer: /\.md$/i },
-  TestPlan: { label: "TEST STRATEGY", prefer: /\.md$/i },
-  Build: { label: "CODE DELIVERY", prefer: /\.(?:ts|tsx|js|jsx|mjs|cjs)$/i },
-  Test: { label: "TEST DELIVERY", prefer: /(?:\.test\.|\/tests?\/)/i },
-  QA: { label: "VERIFICATION EVIDENCE", prefer: /\.json$|\.md$/i },
+  PRD: { label: "REQUIREMENT EVIDENCE", role: "producer", prefer: /\.md$/i },
+  Spec: { label: "BEHAVIOR CONTRACT", role: "producer", prefer: /\.md$/i },
+  Arch: { label: "ARCHITECTURE PROJECTION", role: "structured", prefer: /arch\.graph\.json$|\.md$/i },
+  BuildPlan: { label: "IMPLEMENTATION MAP", role: "producer", prefer: /\.md$/i },
+  TestPlan: { label: "TEST STRATEGY", role: "producer", prefer: /\.md$/i },
+  Build: { label: "CODE DELIVERY", role: "delivery", prefer: /\.(?:ts|tsx|js|jsx|mjs|cjs)$/i },
+  Test: { label: "TEST DELIVERY", role: "delivery", prefer: /(?:\.test\.|\/tests?\/)/i },
+  QA: { label: "VERIFICATION EVIDENCE", role: "structured", prefer: /\.json$|\.md$/i },
 };
 
 const CHANGE_WORDS = {
@@ -178,7 +178,9 @@ function filterFiles(value) {
 function preferredFile() {
   const files = model?.scene.files ?? [];
   const adapter = ADAPTERS[target?.phase];
-  return files.find((file) => adapter?.prefer.test(file.path))?.path
+  return files.find((file) => file.role === adapter?.role && adapter.prefer.test(file.path))?.path
+    ?? files.find((file) => file.role === adapter?.role)?.path
+    ?? files.find((file) => adapter?.prefer.test(file.path))?.path
     ?? files.find((file) => file.display !== "deleted")?.path
     ?? files[0]?.path
     ?? null;

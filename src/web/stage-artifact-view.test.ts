@@ -31,6 +31,14 @@ describe("Stage artifact cockpit browser contract", () => {
     assert.match(view, /aria-selected/);
     assert.match(scene, /stage-artifact-fallback/);
     assert.match(scene, /new THREE\.WebGLRenderer/);
+    assert.match(scene, /aggregatedFolders/);
+  });
+
+  it("gives the cockpit the full workbench and restores the previous workspace state", () => {
+    const panel = read("panel.js");
+    assert.match(panel, /stageWorkspaceWasCollapsed/);
+    assert.match(panel, /columns\.classList\.add\("stage-focus"\)/);
+    assert.match(panel, /columns\.classList\.toggle\("collapsed", stageWorkspaceWasCollapsed\)/);
   });
 
   it("renders untrusted file content only through textContent", () => {

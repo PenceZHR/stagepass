@@ -22,6 +22,21 @@ const TINT = {
 
 const asPosition = (node) => new THREE.Vector3(node.x, node.y, node.z);
 
+function glowTexture() {
+  const surface = document.createElement("canvas");
+  surface.width = 64;
+  surface.height = 64;
+  const brush = surface.getContext("2d");
+  const fade = brush.createRadialGradient(32, 32, 0, 32, 32, 32);
+  fade.addColorStop(0, "rgba(255,255,255,.95)");
+  fade.addColorStop(.22, "rgba(255,255,255,.52)");
+  fade.addColorStop(.58, "rgba(255,255,255,.11)");
+  fade.addColorStop(1, "rgba(255,255,255,0)");
+  brush.fillStyle = fade;
+  brush.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(surface);
+}
+
 function fallbackScene(container, callbacks) {
   const root = document.createElement("div");
   root.className = "stage-artifact-fallback";
@@ -163,6 +178,7 @@ export function createStageArtifactScene(container, callbacks) {
   let selected = null;
   let frame = 0;
   let stopped = false;
+  const glow = glowTexture();
 
   function nodeMaterial(color, opacity = 1) {
     return new THREE.MeshStandardMaterial({
@@ -176,12 +192,26 @@ export function createStageArtifactScene(container, callbacks) {
     });
   }
 
-  function put(id, node, kind, mesh) {
+  function put(id, node, kind, mesh, showLabel = true) {
     const group = new THREE.Group();
     group.position.copy(asPosition(node));
     mesh.userData.id = id;
     mesh.userData.path = kind === "file" ? node.path : null;
-    group.add(mesh, labelFor(node, kind));
+    const label = labelFor(node, kind);
+    label.visible = showLabel;
+    group.userData = { label, showLabel };
+    const tint = kind === "input" ? TINT.input
+      : kind === "folder" ? TINT.folder : TINT[node.display];
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glow,
+      color: tint,
+      transparent: true,
+      opacity: kind === "folder" ? .58 : .42,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }));
+    halo.scale.setScalar(kind === "folder" ? 6.5 : kind === "input" ? 4.6 : 3.4);
+    group.add(halo, mesh, label);
     stable.add(group);
     objects.set(id, group);
     if (kind === "file") {
@@ -211,14 +241,14 @@ export function createStageArtifactScene(container, callbacks) {
     put(node.id, node, "folder", shell);
   }
 
-  function addFile(node) {
+  function addFile(node, showLabel) {
     const size = node.display === "deleted" ? .54 : .68;
     const geometry = node.display === "replaced"
       ? new THREE.OctahedronGeometry(size, 0)
       : new THREE.IcosahedronGeometry(size, 0);
     const core = new THREE.Mesh(geometry, nodeMaterial(TINT[node.display]));
     if (node.display === "deleted") core.rotation.z = Math.PI / 4;
-    put(node.id, node, "file", core);
+    put(node.id, node, "file", core, showLabel);
   }
 
   function setModel(next) {
@@ -227,13 +257,16 @@ export function createStageArtifactScene(container, callbacks) {
     objects.clear(); paths.clear(); hits.length = 0;
     selected = null;
     model = next;
+    const aggregatedFolders = new Set(
+      (next?.folders ?? []).filter((folder) => folder.aggregated).map((folder) => folder.path),
+    );
     for (const node of next?.inputs ?? []) addInput(node);
     for (const node of next?.folders ?? []) addFolder(node);
-    for (const node of next?.files ?? []) addFile(node);
+    for (const node of next?.files ?? []) addFile(node, !aggregatedFolders.has(node.folder));
     for (const edge of next?.production ?? []) {
       const from = objects.get(edge.from);
       const to = objects.get(edge.to);
-      if (from && to) stable.add(lineBetween(from.position, to.position, TINT.folder, .12));
+      if (from && to) stable.add(lineBetween(from.position, to.position, TINT.folder, .20));
     }
   }
 
@@ -242,6 +275,7 @@ export function createStageArtifactScene(container, callbacks) {
     disposeTree(dependencyLines);
     for (const [candidate, group] of paths) {
       group.scale.setScalar(candidate === path ? 1.55 : 1);
+      group.userData.label.visible = group.userData.showLabel || candidate === path;
       const mesh = group.children.find((child) => child.isMesh);
       if (mesh?.material) mesh.material.emissiveIntensity = candidate === path ? .95 : .28;
     }
@@ -312,6 +346,7 @@ export function createStageArtifactScene(container, callbacks) {
       controls.dispose();
       disposeTree(stable);
       disposeTree(dependencyLines);
+      glow.dispose();
       renderer.dispose();
       renderer.domElement.remove();
       labels.domElement.remove();
