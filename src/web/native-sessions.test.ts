@@ -202,6 +202,20 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 
 describe("native StagePass sessions", () => {
+  it("rejects an unknown Change before reporting a synthetic empty status", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      await assert.rejects(
+        f.make().status("CHG-MISSING", "PRD"),
+        (error) => error instanceof NativeSessionsError && error.code === "no_such_change",
+      );
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("binds on explicit open and concurrent calls reuse one thread and tmux", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);

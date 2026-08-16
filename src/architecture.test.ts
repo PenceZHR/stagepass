@@ -179,6 +179,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "web/session-recovery.ts": 5,
   // Change/seat 到 thread + tmux + Terminal 的可重建状态机。
   "web/native-sessions.ts": 5,
+  // 原生终端的 HTTP 边界只回归一化状态，不回 ANSI、输入或 JSON-RPC。
+  "web/terminal-api.ts": 5,
   "web/stream-session.ts": 5,
   "web/codex-stream-api.ts": 5,
   "web/panel-listener.ts": 5,

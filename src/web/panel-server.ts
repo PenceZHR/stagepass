@@ -70,6 +70,8 @@ import {
   type StreamSessions,
 } from "./stream-session";
 import type { ReservedPanelListener } from "./panel-listener";
+import type { NativeSessionsPort } from "./native-sessions";
+import { serveTerminalApi } from "./terminal-api";
 
 /**
  * StagePass Web workbench backed exclusively by one supervised Codex App Server.
@@ -225,6 +227,8 @@ export interface PanelOptions {
   }) => CodexTransport;
   readonly streams: StreamSessions;
   readonly history: AppServerHistory;
+  /** Native Terminal lifecycle; browser receives state only, never terminal bytes. */
+  readonly nativeSessions?: NativeSessionsPort;
   /**
    * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
    * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
@@ -1796,7 +1800,25 @@ export async function handle(
     response.end(readFileSync(asset.file));
     return;
   }
-  if (await serveStructuredCodex(url, request, response, sessions, options)) return;
+  if (options.nativeSessions !== undefined && await serveTerminalApi(
+    url,
+    request,
+    response,
+    {
+      sessions: options.nativeSessions,
+      configFor: (changeId, seat) => pluginAppServerConfigFor(
+        database,
+        changeId,
+        seat === ASIDE ? undefined : seat,
+      ),
+    },
+  )) return;
+  // During the cutover, history reads remain available to server-side code;
+  // browser write routes are gone because the official native client owns input.
+  if (
+    request.method === "GET"
+    && await serveStructuredCodex(url, request, response, sessions, options)
+  ) return;
 
   if (url.pathname === "/api/panel" && request.method === "GET") {
     servePanel(url, response, sessions, options);
@@ -2059,42 +2081,6 @@ export async function handle(
 
   if (url.pathname === "/api/parallel" && request.method === "GET") {
     return serveParallel(database, url, response);
-  }
-
-  /*
-   * **明确打开一个可交互 Codex 会话。** 和「只读历史」分开。
-   *
-   * 只读 snapshot 绝不起 turn，所以要有一个显式动作创建或恢复会话。人按下去
-   * 就知道自己在打开一个 Codex —— 这正是
-   * 用户 2026-08-03 那句话要的：「我点进入终端只是想看看状态……而不是点了就报废。」
-   *
-   * 带插件：这条路上起的 Codex 人是要跟它说话的，手上没有 StagePass 的工具就
-   * 只能得到「没有这个工具」。
-   */
-  if (url.pathname === "/api/terminal" && request.method === "POST") {
-    const changeId = url.searchParams.get("change") ?? "";
-    const phase = url.searchParams.get("phase") ?? "";
-    if (!isPhase(phase) || phase === "Done") {
-      response.writeHead(400).end("no such phase");
-      return;
-    }
-    // 账本闲着才许起：一个阶段同时只许一个进程（PRD §6.5 规则 5），而正在跑的
-    // 那一轮拥有这个座位。批 3 起按阶段问 —— 并行座位的轮不挡别的阶段开终端。
-    const busy = phaseBusy(database, changeId, phase);
-    if (busy) { json(response, { opened: false, ...busy }); return; }
-    try {
-      await sessions.openForChat(
-        changeId,
-        phase,
-        pluginAppServerConfigFor(database, changeId),
-      );
-    } catch (error: unknown) {
-      response.writeHead(409).end(
-        error instanceof Error ? error.message : "could not open Codex");
-      return;
-    }
-    json(response, { opened: true, phase });
-    return;
   }
 
   if (url.pathname === "/api/aside" && request.method === "POST") {

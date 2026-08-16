@@ -62,6 +62,7 @@ export interface NativeSessionsPort {
 
 type NativeSessionsErrorCode =
   | "binding_failed"
+  | "no_such_change"
   | "thread_unavailable"
   | "turn_busy"
   | "project_path_missing"
@@ -113,6 +114,7 @@ export class NativeSessions implements NativeSessionsPort {
   }
 
   async status(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
+    this.assertChange(changeId);
     const identity = identityOf(changeId, seat);
     const target = targetOf(changeId, seat);
     const binding = this.bound(changeId, seat);
@@ -157,6 +159,7 @@ export class NativeSessions implements NativeSessionsPort {
     config: Readonly<Record<string, unknown>>,
     options: { readonly showTerminal: boolean },
   ): Promise<NativeSessionStatus> {
+    this.assertChange(changeId);
     const key = keyOf(changeId, seat);
     const existing = this.opening.get(key);
     if (existing !== undefined) return existing;
@@ -169,11 +172,13 @@ export class NativeSessions implements NativeSessionsPort {
   }
 
   async focus(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
+    this.assertChange(changeId);
     await this.options.terminal.focus(targetOf(changeId, seat));
     return this.status(changeId, seat);
   }
 
   async closeWindow(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
+    this.assertChange(changeId);
     const identity = identityOf(changeId, seat);
     const target = targetOf(changeId, seat);
     const tmux = await this.options.tmux.status(identity);
@@ -183,6 +188,7 @@ export class NativeSessions implements NativeSessionsPort {
   }
 
   async endSession(changeId: string, seat: NativeSeat): Promise<NativeSessionStatus> {
+    this.assertChange(changeId);
     const identity = identityOf(changeId, seat);
     const target = targetOf(changeId, seat);
     const tmux = await this.options.tmux.status(identity);
@@ -396,6 +402,14 @@ export class NativeSessions implements NativeSessionsPort {
         this.options.tmux.ensureSession(identity, threadId, cwd),
       submit: (sessionName, envelope) => this.options.tmux.submit(sessionName, envelope),
     };
+  }
+
+  private assertChange(changeId: string): void {
+    try {
+      new ChangeStore(this.options.database).read(changeId);
+    } catch {
+      throw new NativeSessionsError("no_such_change", `no such Change: ${changeId}`);
+    }
   }
 
   private async cleanupBound(binding: BoundThread, seat: string): Promise<void> {

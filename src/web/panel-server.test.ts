@@ -15,6 +15,11 @@ import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { createPanelServer } from "./panel-server";
+import type {
+  NativeSeat,
+  NativeSessionStatus,
+  NativeSessionsPort,
+} from "./native-sessions";
 import { StreamSessions } from "./stream-session";
 
 class FakeConnection implements AppServerConnection {
@@ -110,10 +115,43 @@ class FakeConnection implements AppServerConnection {
   }
 }
 
+class FakeNativeSessions implements NativeSessionsPort {
+  readonly calls: string[] = [];
+
+  private answer(changeId: string, seat: NativeSeat, action: string): Promise<NativeSessionStatus> {
+    this.calls.push(`${action}:${changeId}/${seat}`);
+    return Promise.resolve({
+      changeId,
+      seat,
+      threadId: "THREAD-NATIVE",
+      thread: "idle",
+      tmuxSession: "sp_0123456789abcdef0123",
+      tmux: action === "close-window" || action === "end-session" ? "detached" : "attached",
+      terminal: action === "close-window" || action === "end-session" ? "closed" : "open",
+      action: action === "close-window" || action === "end-session" ? "reopen" : "focus",
+    });
+  }
+
+  status(changeId: string, seat: NativeSeat) { return this.answer(changeId, seat, "status"); }
+  open(changeId: string, seat: NativeSeat) { return this.answer(changeId, seat, "open"); }
+  focus(changeId: string, seat: NativeSeat) { return this.answer(changeId, seat, "focus"); }
+  closeWindow(changeId: string, seat: NativeSeat) {
+    return this.answer(changeId, seat, "close-window");
+  }
+  endSession(changeId: string, seat: NativeSeat) {
+    return this.answer(changeId, seat, "end-session");
+  }
+  archiveAndEnd(): Promise<void> { return Promise.resolve(); }
+  releaseObserver(): void {}
+  forget(): Promise<void> { return Promise.resolve(); }
+  closeControlConnection(): void {}
+}
+
 async function withPanel(body: (input: {
   base: string;
   database: Database.Database;
   connection: FakeConnection;
+  native: FakeNativeSessions;
   sessions: ReturnType<typeof createPanelServer>["sessions"];
 }) => Promise<void>): Promise<void> {
   const database = new Database(":memory:");
@@ -124,6 +162,7 @@ async function withPanel(body: (input: {
   const connection = new FakeConnection();
   const host = new AppServerSessionHost(connection);
   const history = new AppServerHistory(connection);
+  const native = new FakeNativeSessions();
   const streams = new StreamSessions({
     database,
     host,
@@ -140,6 +179,7 @@ async function withPanel(body: (input: {
         throw new Error("background turns are outside this routing test");
       },
     }),
+    nativeSessions: native,
     recoverEveryMs: 3_600_000,
     repo: {
       dirtyPaths: () => [],
@@ -158,7 +198,7 @@ async function withPanel(body: (input: {
     (created.server.address() as AddressInfo).port
   }`;
   try {
-    await body({ base, database, connection, sessions: created.sessions });
+    await body({ base, database, connection, native, sessions: created.sessions });
   } finally {
     history.dispose();
     created.sessions.closeAll();
@@ -169,32 +209,25 @@ async function withPanel(body: (input: {
 }
 
 describe("pure App Server panel", () => {
-  it("显式进入阶段只启动临时 thread，首个 turn 才绑定，旧 PTY 路由不存在", async () => {
-    await withPanel(async ({ base, database, connection }) => {
-      const opened = await fetch(`${base}/api/terminal?change=CHG-1&phase=PRD`, {
+  it("只开放归一化终端桥，旧 terminal / Codex 写路由和 PTY 都不存在", async () => {
+    await withPanel(async ({ base, native }) => {
+      assert.equal((await fetch(`${base}/api/terminal?change=CHG-1&phase=PRD`, {
         method: "POST",
-      });
-      assert.equal(opened.status, 200);
-      assert.equal(connection.calls[0]?.method, "thread/start");
-      assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
-      assert.equal((await fetch(`${base}/pty/CHG-1/PRD`)).status, 404);
-
-      const snapshot = await fetch(
-        `${base}/api/codex/snapshot?change=CHG-1&seat=PRD`,
-      );
-      assert.equal(snapshot.status, 200);
-      assert.equal((await snapshot.json() as { threadId: string }).threadId, "THREAD-1");
-
-      const started = await fetch(`${base}/api/codex/turn`, {
+      })).status, 404);
+      assert.equal((await fetch(`${base}/api/codex/turn`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ changeId: "CHG-1", seat: "PRD", prompt: "开始" }),
+        body: JSON.stringify({ changeId: "CHG-1", seat: "PRD", prompt: "raw" }),
+      })).status, 404);
+      assert.equal((await fetch(`${base}/pty/CHG-1/PRD`)).status, 404);
+
+      const opened = await fetch(`${base}/api/terminal/open`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ changeId: "CHG-1", seat: "PRD" }),
       });
-      assert.equal(started.status, 200);
-      assert.equal(
-        new BindingStore(database).find("CHG-1", "PRD")?.status,
-        "bound",
-      );
+      assert.equal(opened.status, 200);
+      assert.deepEqual(native.calls, ["open:CHG-1/PRD"]);
     });
   });
 
@@ -213,20 +246,20 @@ describe("pure App Server panel", () => {
     });
   });
 
-  it("关闭活跃阶段会走 turn/interrupt，不杀终端进程", async () => {
-    await withPanel(async ({ base, connection }) => {
-      await fetch(`${base}/api/terminal?change=CHG-1&phase=PRD`, { method: "POST" });
-      const started = await fetch(`${base}/api/codex/turn`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ changeId: "CHG-1", seat: "PRD", prompt: "开始" }),
-      });
-      assert.equal(started.status, 200);
-      const closed = await fetch(`${base}/api/close?change=CHG-1&phase=PRD`, {
-        method: "POST",
-      });
-      assert.equal(closed.status, 200);
-      assert.ok(connection.calls.some((call) => call.method === "turn/interrupt"));
+  it("关闭窗口与结束会话是两条独立的本机动作", async () => {
+    await withPanel(async ({ base, native }) => {
+      for (const action of ["close-window", "end-session"]) {
+        const response = await fetch(`${base}/api/terminal/${action}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ changeId: "CHG-1", seat: "PRD" }),
+        });
+        assert.equal(response.status, 200);
+      }
+      assert.deepEqual(native.calls, [
+        "close-window:CHG-1/PRD",
+        "end-session:CHG-1/PRD",
+      ]);
     });
   });
 });
