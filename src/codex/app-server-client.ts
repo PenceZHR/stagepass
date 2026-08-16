@@ -1,4 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { EventEmitter } from "node:events";
+import type { Readable, Writable } from "node:stream";
 
 import {
   asRecord,
@@ -35,6 +37,19 @@ export interface AppServerClientOptions {
   readonly onServerRequest: (message: AppServerRequest) => Promise<unknown>;
   readonly onStderr?: (message: string) => void;
   readonly process?: ProcessOps;
+}
+
+export type AppServerClientCallbacks = Pick<
+  AppServerClientOptions,
+  "onNotification" | "onServerRequest" | "onStderr"
+>;
+
+export interface AppServerProcessLike extends EventEmitter {
+  readonly pid?: number;
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  readonly stderr: Readable;
+  kill(signal?: NodeJS.Signals): boolean;
 }
 
 export class AppServerError extends Error {
@@ -86,6 +101,13 @@ export class AppServerClient {
     return new AppServerClient(child, options);
   }
 
+  static attach(
+    transport: AppServerProcessLike,
+    callbacks: AppServerClientCallbacks,
+  ): AppServerClient {
+    return new AppServerClient(transport, callbacks);
+  }
+
   readonly pid: number | null;
 
   private readonly pending = new Map<RpcId, PendingRequest>();
@@ -103,8 +125,8 @@ export class AppServerClient {
   private resolveExit!: (facts: AppServerExit) => void;
 
   private constructor(
-    private readonly child: ChildProcessWithoutNullStreams,
-    private readonly options: AppServerClientOptions,
+    private readonly child: ChildProcessWithoutNullStreams | AppServerProcessLike,
+    private readonly options: AppServerClientCallbacks,
   ) {
     this.pid = child.pid ?? null;
     this.notificationListeners.add(options.onNotification);

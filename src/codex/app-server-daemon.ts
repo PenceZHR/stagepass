@@ -1,9 +1,12 @@
 import {
-  AppServerClient,
   AppServerError,
   type AppServerClientOptions,
   type AppServerExit,
 } from "./app-server-client";
+import {
+  connectUnixAppServer,
+  type UnixAppServerOptions,
+} from "./app-server-websocket";
 import type { AppServerConnection } from "./app-server-session";
 import {
   createProcessOps,
@@ -15,7 +18,7 @@ export interface AppServerControlClient extends AppServerConnection {
   close(graceMs?: number): Promise<AppServerExit>;
 }
 
-const MANAGED_PROXY_INITIALIZE_TIMEOUT_MS = 10_000;
+const MANAGED_WEBSOCKET_INITIALIZE_TIMEOUT_MS = 10_000;
 
 export interface ManagedAppServer {
   readonly client: AppServerControlClient;
@@ -27,7 +30,9 @@ interface ManagedAppServerOptions extends Pick<
   "command" | "cwd" | "env" | "onNotification" | "onServerRequest" | "onStderr"
 > {
   readonly process?: ProcessOps;
-  readonly clientFactory?: (options: AppServerClientOptions) => AppServerControlClient;
+  readonly clientFactory?: (
+    options: UnixAppServerOptions,
+  ) => AppServerControlClient | Promise<AppServerControlClient>;
 }
 
 export class ManagedAppServerError extends Error {
@@ -49,7 +54,20 @@ function publicDetail(value: string): string {
     .slice(0, 1_000);
 }
 
-/** Start the durable Codex daemon and attach StagePass through its stdio proxy. */
+function managedSocketPath(stdout: string): string {
+  try {
+    const status = JSON.parse(stdout.trim()) as { socketPath?: unknown };
+    if (typeof status.socketPath === "string" && status.socketPath.startsWith("/")) {
+      return status.socketPath;
+    }
+  } catch { /* mapped to the stable startup error below */ }
+  throw new ManagedAppServerError(
+    "app_server_daemon_unavailable",
+    "Codex managed daemon did not report an absolute socketPath",
+  );
+}
+
+/** Start the durable Codex daemon and attach StagePass to its WebSocket socket. */
 export async function startManagedAppServer(
   options: ManagedAppServerOptions,
 ): Promise<ManagedAppServer> {
@@ -70,20 +88,14 @@ export async function startManagedAppServer(
     );
   }
 
-  // App Server documents stdio as JSONL and Unix sockets as remote TUI endpoints.
-  // Source: https://developers.openai.com/codex/app-server#protocol
-  const client = (options.clientFactory ?? AppServerClient.spawn)({
-    command: options.command,
-    args: ["app-server", "proxy"],
-    cwd: options.cwd,
-    ...(options.env === undefined ? {} : { env: options.env }),
+  const client = await (options.clientFactory ?? connectUnixAppServer)({
+    socketPath: managedSocketPath(started.stdout),
     onNotification: options.onNotification,
     onServerRequest: options.onServerRequest,
     ...(options.onStderr === undefined ? {} : { onStderr: options.onStderr }),
-    process,
   });
   try {
-    await client.initialize(MANAGED_PROXY_INITIALIZE_TIMEOUT_MS);
+    await client.initialize(MANAGED_WEBSOCKET_INITIALIZE_TIMEOUT_MS);
   } catch (error) {
     try { await client.close(1_000); } catch { /* preserve initialize failure */ }
     if (
@@ -92,8 +104,7 @@ export async function startManagedAppServer(
     ) {
       throw new ManagedAppServerError(
         "app_server_daemon_unavailable",
-        "Codex managed proxy did not answer initialize; run "
-        + "`codex app-server daemon enable-remote-control` once, then restart StagePass",
+        "Codex managed daemon WebSocket did not answer initialize",
       );
     }
     throw error;

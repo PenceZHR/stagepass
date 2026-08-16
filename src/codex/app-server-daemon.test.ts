@@ -21,7 +21,7 @@ import type {
 const successful = (): ProcessResult => ({
   code: 0,
   signal: null,
-  stdout: "",
+  stdout: JSON.stringify({ socketPath: "/tmp/codex-app-server.sock" }),
   stderr: "",
 });
 
@@ -84,10 +84,10 @@ const callbacks = {
 };
 
 describe("managed App Server owner", () => {
-  it("starts the daemon, opens its proxy, and closes only the proxy", async () => {
+  it("starts the daemon, opens its WebSocket, and closes only that connection", async () => {
     const process = new RecordingProcess();
     const client = new RecordingClient();
-    const factories: Array<Readonly<{ command: string; args: readonly string[] }>> = [];
+    const socketPaths: string[] = [];
 
     const runtime = await startManagedAppServer({
       command: "codex",
@@ -95,7 +95,7 @@ describe("managed App Server owner", () => {
       process,
       ...callbacks,
       clientFactory: (options) => {
-        factories.push(options);
+        socketPaths.push(options.socketPath);
         return client;
       },
     });
@@ -105,14 +105,12 @@ describe("managed App Server owner", () => {
     assert.deepEqual(process.runs.map(({ command, args }) => [command, ...args]), [[
       "codex", "app-server", "daemon", "start",
     ]]);
-    assert.deepEqual(factories.map(({ command, args }) => [command, ...args]), [[
-      "codex", "app-server", "proxy",
-    ]]);
+    assert.deepEqual(socketPaths, ["/tmp/codex-app-server.sock"]);
     assert.equal(client.initialized, 1);
     assert.equal(client.closed, 1);
   });
 
-  it("names a daemon start failure and never creates a proxy client", async () => {
+  it("names a daemon start failure and never creates a WebSocket client", async () => {
     const process = new RecordingProcess({
       code: 1,
       signal: null,
@@ -139,7 +137,7 @@ describe("managed App Server owner", () => {
     assert.equal(factories, 0);
   });
 
-  it("closes a proxy that fails during initialize", async () => {
+  it("closes a WebSocket connection that fails during initialize", async () => {
     const client = new RecordingClient(new Error("initialize failed"));
 
     await assert.rejects(
@@ -157,7 +155,7 @@ describe("managed App Server owner", () => {
     assert.equal(client.closed, 1);
   });
 
-  it("bounds a silent proxy and names the one-time remote-control prerequisite", async () => {
+  it("bounds a silent daemon WebSocket", async () => {
     const client = new RecordingClient(new AppServerError(
       "app_server_request_timeout",
       "codex app-server request timed out: initialize",
@@ -173,7 +171,7 @@ describe("managed App Server owner", () => {
       }),
       (error: unknown) => error instanceof ManagedAppServerError
         && error.code === "app_server_daemon_unavailable"
-        && /enable-remote-control/.test(error.message),
+        && /WebSocket did not answer initialize/.test(error.message),
     );
 
     assert.deepEqual(client.initializeTimeouts, [10_000]);
