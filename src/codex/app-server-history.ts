@@ -225,6 +225,50 @@ export class AppServerHistory {
     };
   }
 
+  async readThreadStatus(threadId: string): Promise<string | null> {
+    let result: unknown;
+    try {
+      result = await this.connection.request("thread/read", {
+        threadId,
+        includeTurns: false,
+      }, this.requestTimeoutMs);
+    } catch (error) {
+      if (explicitMissing(error, threadId)) return null;
+      throw error;
+    }
+    const raw = asRecord(asRecord(result).thread);
+    if (raw.id !== threadId) {
+      throw new AppServerHistoryError(
+        "app_server_protocol_error",
+        "codex app-server thread/read returned a different thread",
+      );
+    }
+    const status = asRecord(raw.status).type;
+    return typeof status === "string" ? status : "notLoaded";
+  }
+
+  async readRecentTurns(threadId: string, limit = 20): Promise<readonly HistoryTurn[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new AppServerHistoryError(
+        "invalid_recent_turn_limit",
+        "recent turn limit must be an integer from 1 to 100",
+      );
+    }
+    let result: unknown;
+    try {
+      result = await this.connection.request("thread/turns/list", {
+        threadId,
+        limit,
+        sortDirection: "desc",
+        itemsView: "full",
+      }, this.requestTimeoutMs);
+    } catch (error) {
+      if (explicitMissing(error, threadId)) return [];
+      throw error;
+    }
+    return records(asRecord(result).data).map(normalizeTurn);
+  }
+
   async availability(threadId: string): Promise<ThreadAvailability> {
     if (await this.listIncludes(threadId, false)) return "open";
     if (await this.listIncludes(threadId, true)) return "archived";
@@ -243,6 +287,24 @@ export class AppServerHistory {
     await this.connection.request(
       "thread/unarchive",
       { threadId },
+      this.requestTimeoutMs,
+    );
+  }
+
+  /** Stop this control connection from receiving this thread's reverse requests. */
+  async unsubscribeThread(threadId: string): Promise<void> {
+    await this.connection.request(
+      "thread/unsubscribe",
+      { threadId },
+      this.requestTimeoutMs,
+    );
+  }
+
+  /** Interrupt by protocol identity without subscribing as an interaction owner. */
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    await this.connection.request(
+      "turn/interrupt",
+      { threadId, turnId },
       this.requestTimeoutMs,
     );
   }

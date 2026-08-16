@@ -4,12 +4,14 @@ import {
   archiveFinished,
   type ArchiveOps,
 } from "../codex/archive";
-import {
-  AppServerSessionError,
-  type AppServerSession,
-  type AppServerSessionOptions,
-  type CompletedTurn,
+import { AppServerError } from "../codex/app-server-client";
+import type {
+  AppServerSessionOptions,
 } from "../codex/app-server-session";
+import type {
+  AppServerHistory,
+  HistoryTurn,
+} from "../codex/app-server-history";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { PromptFile, PromptFiles } from "../codex/prompt-file";
 import {
@@ -111,11 +113,15 @@ interface NativeSessionsOptions extends Pick<
 > {
   readonly database: Database.Database;
   readonly host: AppServerSessionHost;
-  readonly history: ArchiveOps;
+  readonly history: ArchiveOps & Pick<
+    AppServerHistory,
+    "readThreadStatus" | "readRecentTurns" | "unsubscribeThread" | "interruptTurn"
+  >;
   readonly terminal: TerminalAppOps;
   readonly promptFiles: PromptFiles;
   readonly cwdFor?: (changeId: string) => string | null;
   readonly closeControlConnection?: () => void;
+  readonly pollIntervalMs?: number;
 }
 
 function keyOf(changeId: string, seat: NativeSeat): string {
@@ -138,12 +144,15 @@ interface ActiveNativeTurn {
 }
 
 const DEFAULT_TURN_TIMEOUT_MS = 180 * 60_000;
+const DEFAULT_THREAD_POLL_INTERVAL_MS = 500;
+const RECENT_TURN_POLL_LIMIT = 5;
 
 /** Durable seat lifecycle reconstructed from binding + App Server + Terminal marker. */
 export class NativeSessions implements NativeRuntimeSessions {
   private readonly bindings: BindingStore;
   private readonly opening = new Map<string, Promise<NativeSessionStatus>>();
   private readonly inputLeases = new Set<string>();
+  private readonly liveSeats = new Set<string>();
   private readonly releaseWhenIdle = new Set<string>();
   private readonly activeTurns = new Map<string, ActiveNativeTurn>();
   private readonly lastActivity = new Map<string, number>();
@@ -171,11 +180,13 @@ export class NativeSessions implements NativeRuntimeSessions {
       else if (inspected.kind === "missing") thread = "missing";
       else if (inspected.kind === "archived") thread = "archived";
       else {
-        thread = this.options.host.session(binding.threadId)?.snapshot().activeTurnId === null
-          ? "idle"
-          : this.options.host.session(binding.threadId) === null
-            ? "idle"
-            : "running";
+        try {
+          thread = await this.options.history.readThreadStatus(binding.threadId) === "active"
+            ? "running"
+            : "idle";
+        } catch {
+          thread = "unavailable";
+        }
       }
     }
     return {
@@ -193,8 +204,7 @@ export class NativeSessions implements NativeRuntimeSessions {
   }
 
   has(changeId: string, seat: NativeSeat): boolean {
-    const binding = this.bound(changeId, seat);
-    return binding !== null && this.options.host.session(binding.threadId) !== null;
+    return this.liveSeats.has(keyOf(changeId, seat));
   }
 
   active(changeId: string, seat: NativeSeat): boolean {
@@ -210,11 +220,15 @@ export class NativeSessions implements NativeRuntimeSessions {
     this.assertChange(changeId);
     const binding = this.bound(changeId, seat);
     if (binding === null) return false;
-    const session = this.options.host.session(binding.threadId);
-    if (session === null) return false;
-    const turnId = session.snapshot().activeTurnId;
+    const active = this.activeTurns.get(keyOf(changeId, seat));
+    const recent = active === undefined
+      ? await this.options.history.readRecentTurns(binding.threadId, RECENT_TURN_POLL_LIMIT)
+      : [];
+    const turnId = active?.turnId ?? recent.find(
+      (turn) => turn.status === "inProgress",
+    )?.id ?? null;
     if (turnId === null) return false;
-    await session.interrupt(turnId);
+    await this.options.history.interruptTurn(binding.threadId, turnId);
     return true;
   }
 
@@ -300,8 +314,7 @@ export class NativeSessions implements NativeRuntimeSessions {
       this.releaseWhenIdle.add(key);
       return;
     }
-    const binding = this.bound(changeId, seat);
-    if (binding !== null) this.options.host.close(binding.threadId);
+    this.liveSeats.delete(key);
   }
 
   async forget(changeId: string): Promise<void> {
@@ -329,6 +342,7 @@ export class NativeSessions implements NativeRuntimeSessions {
 
   closeControlConnection(): void {
     this.options.host.closeAll();
+    this.liveSeats.clear();
     this.options.closeControlConnection?.();
   }
 
@@ -373,12 +387,11 @@ export class NativeSessions implements NativeRuntimeSessions {
         throw new NativeSessionsError("binding_failed", "native seat has no bound thread");
       }
       onThread?.(opened.threadId);
-      const session = this.options.host.session(opened.threadId);
-      if (session === null) {
-        throw new NativeSessionsError("thread_unavailable", "native observer is unavailable");
-      }
-      const baseline = session.snapshot();
-      if (baseline.activeTurnId !== null) {
+      const before = await this.options.history.readRecentTurns(
+        opened.threadId,
+        RECENT_TURN_POLL_LIMIT,
+      );
+      if (before.some((turn) => turn.status === "inProgress")) {
         throw new NativeSessionsError("turn_busy", `${changeId}/${seat} already has a turn`);
       }
       promptFile = this.options.promptFiles.create(prompt);
@@ -402,14 +415,14 @@ export class NativeSessions implements NativeRuntimeSessions {
       } else {
         await this.options.terminal.open(target, promptFile.envelope);
       }
-      const turnId = await this.withDisconnect(session.awaitNextTurn(
-        baseline.lastTurnId,
+      const turnId = await this.withDisconnect(this.waitForEnvelopeTurn(
+        opened.threadId,
+        promptFile.envelope,
         timeoutMs,
       ));
       this.lastActivity.set(key, Date.now());
       const completion = this.completeTurn(
         key,
-        session,
         turnId,
         opened.threadId,
         promptFile,
@@ -422,22 +435,26 @@ export class NativeSessions implements NativeRuntimeSessions {
     } catch (error) {
       promptFile?.release();
       this.inputLeases.delete(key);
+      if (this.releaseWhenIdle.delete(key)) this.liveSeats.delete(key);
       throw this.normalizeTurnError(error);
     }
   }
 
   private async completeTurn(
     key: string,
-    session: AppServerSession,
     turnId: string,
     threadId: string,
     promptFile: PromptFile,
     timeoutMs: number,
   ): Promise<TurnDelivery> {
     try {
-      const outcome = await this.withDisconnect(session.awaitTurn(turnId, timeoutMs));
+      const outcome = await this.withDisconnect(this.waitForCompletedTurn(
+        threadId,
+        turnId,
+        timeoutMs,
+      ));
       this.assertCompleted(outcome);
-      return { threadId, text: outcome.text };
+      return { threadId, text: outcome.agentText };
     } catch (error) {
       throw this.normalizeTurnError(error);
     } finally {
@@ -445,20 +462,68 @@ export class NativeSessions implements NativeRuntimeSessions {
       this.inputLeases.delete(key);
       if (this.activeTurns.get(key)?.turnId === turnId) this.activeTurns.delete(key);
       this.lastActivity.set(key, Date.now());
-      if (this.releaseWhenIdle.delete(key)) this.options.host.close(threadId);
+      if (this.releaseWhenIdle.delete(key)) this.liveSeats.delete(key);
     }
   }
 
-  private assertCompleted(outcome: CompletedTurn): void {
+  private assertCompleted(outcome: HistoryTurn): void {
     if (outcome.status === "failed") {
-      throw new CodexTurnError("codex_turn_failed", `codex turn ${outcome.turnId} failed`);
+      throw new CodexTurnError("codex_turn_failed", `codex turn ${outcome.id} failed`);
     }
     if (outcome.status === "interrupted") {
       throw new CodexTurnError(
         "codex_turn_interrupted",
-        `codex turn ${outcome.turnId} was interrupted`,
+        `codex turn ${outcome.id} was interrupted`,
       );
     }
+  }
+
+  private async waitForEnvelopeTurn(
+    threadId: string,
+    envelope: string,
+    timeoutMs: number,
+  ): Promise<string> {
+    return this.pollRecentTurns(threadId, timeoutMs, (turns) => turns.find(
+      (turn) => turn.userMessages.includes(envelope),
+    )?.id ?? null);
+  }
+
+  private async waitForCompletedTurn(
+    threadId: string,
+    turnId: string,
+    timeoutMs: number,
+  ): Promise<HistoryTurn> {
+    return this.pollRecentTurns(threadId, timeoutMs, (turns) => {
+      const turn = turns.find((candidate) => candidate.id === turnId);
+      return turn !== undefined && turn.status !== "inProgress" ? turn : null;
+    });
+  }
+
+  private async pollRecentTurns<T>(
+    threadId: string,
+    timeoutMs: number,
+    select: (turns: readonly HistoryTurn[]) => T | null,
+  ): Promise<T> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const selected = select(await this.options.history.readRecentTurns(
+        threadId,
+        RECENT_TURN_POLL_LIMIT,
+      ));
+      if (selected !== null) return selected;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, Math.min(
+          this.options.pollIntervalMs ?? DEFAULT_THREAD_POLL_INTERVAL_MS,
+          remaining,
+        ));
+      });
+    } while (Date.now() <= deadline);
+    throw new CodexTurnError(
+      "codex_turn_timeout",
+      "native Codex turn did not finish before the deadline",
+    );
   }
 
   private async withDisconnect<T>(pending: Promise<T>): Promise<T> {
@@ -474,16 +539,7 @@ export class NativeSessions implements NativeRuntimeSessions {
   }
 
   private normalizeTurnError(error: unknown): unknown {
-    if (
-      error instanceof AppServerSessionError
-      && (error.code === "turn_start_timeout" || error.code === "turn_timeout")
-    ) {
-      return new CodexTurnError(
-        "codex_turn_timeout",
-        "native Codex turn did not finish before the deadline",
-      );
-    }
-    if (error instanceof AppServerSessionError && error.code === "app_server_disconnected") {
+    if (error instanceof AppServerError && error.code === "app_server_disconnected") {
       return new CodexUnavailableError("app_server_disconnected");
     }
     return error;
@@ -513,29 +569,48 @@ export class NativeSessions implements NativeRuntimeSessions {
       }
     }
 
-    const session = await this.options.host.open(
-      threadId,
-      this.sessionOptions(changeId, config),
-    );
-    if (binding === null) {
-      try {
-        this.bind(changeId, seat, session.threadId);
-      } catch (error) {
-        this.options.host.close(session.threadId);
-        throw new NativeSessionsError(
-          "binding_failed",
-          error instanceof Error ? error.message : String(error),
-        );
+    let resolvedThreadId = threadId;
+    const currentTarget = threadId === null
+      ? null
+      : targetOf(changeId, seat, threadId, this.cwd(changeId));
+    const terminalState = currentTarget === null
+      ? "closed"
+      : await this.options.terminal.status(currentTarget).catch(() => "unavailable" as const);
+    if (threadId === null || terminalState !== "open") {
+      const session = await this.options.host.open(
+        threadId,
+        this.sessionOptions(changeId, config),
+      );
+      resolvedThreadId = session.threadId;
+      if (binding === null) {
+        try {
+          this.bind(changeId, seat, session.threadId);
+        } catch (error) {
+          this.options.host.close(session.threadId);
+          throw new NativeSessionsError(
+            "binding_failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
+    }
+    if (resolvedThreadId === null) {
+      throw new NativeSessionsError("binding_failed", "native seat has no bound thread");
+    }
+    try {
+      await this.options.history.unsubscribeThread(resolvedThreadId);
+    } finally {
+      this.options.host.close(resolvedThreadId);
     }
     if (showTerminal) {
       await this.options.terminal.open(targetOf(
         changeId,
         seat,
-        session.threadId,
+        resolvedThreadId,
         this.cwd(changeId),
       ));
     }
+    this.liveSeats.add(keyOf(changeId, seat));
     return this.status(changeId, seat);
   }
 
@@ -601,7 +676,7 @@ export class NativeSessions implements NativeRuntimeSessions {
     }
   }
 
-  private async cleanupBound(binding: BoundThread, seat: string): Promise<void> {
+  private async cleanupBound(binding: BoundThread, seat: NativeSeat | "Done"): Promise<void> {
     const outcome = await archiveFinished(binding.threadId, this.options.history);
     const archiveFailed = outcome === "still_open" || outcome === "unknown";
     await this.options.terminal.close(targetOf(
@@ -611,6 +686,7 @@ export class NativeSessions implements NativeRuntimeSessions {
       this.cwd(binding.changeId),
     ));
     this.options.host.close(binding.threadId);
+    if (seat !== "Done") this.liveSeats.delete(keyOf(binding.changeId, seat));
     if (archiveFailed) {
       throw new NativeSessionsError(
         "session_cleanup_failed",

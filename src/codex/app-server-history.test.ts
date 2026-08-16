@@ -260,6 +260,63 @@ describe("App Server history", () => {
     ]);
   });
 
+  it("交给原生 TUI 前解除 thread 订阅，并可从控制连接精确中断 turn", async () => {
+    const connection = new FakeConnection().reply(
+      { status: "unsubscribed" },
+      {},
+    );
+    const history = new AppServerHistory(connection);
+
+    await history.unsubscribeThread("T-1");
+    await history.interruptTurn("T-1", "TURN-1");
+
+    assert.deepEqual(connection.calls, [
+      { method: "thread/unsubscribe", params: { threadId: "T-1" } },
+      { method: "turn/interrupt", params: { threadId: "T-1", turnId: "TURN-1" } },
+    ]);
+  });
+
+  it("只读状态不拉完整历史，轮询 turn 只取最近一页", async () => {
+    const response = readResponse() as {
+      thread: { turns: unknown[] };
+    };
+    const connection = new FakeConnection().reply(
+      {
+        thread: {
+          id: "T-JUDGE",
+          status: { type: "active", activeFlags: [] },
+        },
+      },
+      {
+        data: [response.thread.turns[3]],
+        nextCursor: "OLDER",
+        backwardsCursor: "NEWER",
+      },
+    );
+    const history = new AppServerHistory(connection);
+
+    assert.equal(await history.readThreadStatus("T-JUDGE"), "active");
+    assert.deepEqual(
+      (await history.readRecentTurns("T-JUDGE", 20)).map((turn) => turn.id),
+      ["TURN-4"],
+    );
+    assert.deepEqual(connection.calls, [
+      {
+        method: "thread/read",
+        params: { threadId: "T-JUDGE", includeTurns: false },
+      },
+      {
+        method: "thread/turns/list",
+        params: {
+          threadId: "T-JUDGE",
+          limit: 20,
+          sortDirection: "desc",
+          itemsView: "full",
+        },
+      },
+    ]);
+  });
+
   it("能判断 checkpoint 之后是否有含指定提示词的终态 turn", async () => {
     const connection = new FakeConnection().reply(readResponse());
     const found = await new AppServerHistory(connection).readThread("T-JUDGE");

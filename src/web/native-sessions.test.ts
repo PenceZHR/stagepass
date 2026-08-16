@@ -6,7 +6,11 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 
 import type { AppServerNotification } from "../codex/app-server-protocol";
-import type { ThreadAvailability } from "../codex/app-server-history";
+import type {
+  HistoryTurn,
+  ThreadAvailability,
+  ThreadHistory,
+} from "../codex/app-server-history";
 import type { AppServerConnection } from "../codex/app-server-session";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { ArchiveOps } from "../codex/archive";
@@ -35,6 +39,7 @@ class FakeRuntime implements AppServerConnection, ArchiveOps {
   startedThreads = 0;
   private nextThread = 1;
   private readonly states = new Map<string, ThreadAvailability | "unavailable">();
+  private readonly histories = new Map<string, HistoryTurn[]>();
   private readonly notifications = new Set<(message: AppServerNotification) => void>();
   private readonly disconnects = new Set<(error: Error) => void>();
 
@@ -44,12 +49,15 @@ class FakeRuntime implements AppServerConnection, ArchiveOps {
       this.startedThreads += 1;
       const id = `019f0000-0000-7000-8000-${String(this.nextThread++).padStart(12, "0")}`;
       this.states.set(id, "open");
+      this.histories.set(id, []);
       return Promise.resolve({ thread: { id, turns: [] } });
     }
     if (method === "thread/resume") {
       const id = String(params.threadId);
+      if (!this.histories.has(id)) this.histories.set(id, []);
       return Promise.resolve({ thread: { id, turns: [] } });
     }
+    if (method === "thread/unsubscribe") return Promise.resolve({ status: "unsubscribed" });
     if (method === "turn/interrupt") return Promise.resolve({});
     throw new Error(`unexpected request ${method}`);
   }
@@ -82,11 +90,85 @@ class FakeRuntime implements AppServerConnection, ArchiveOps {
     return Promise.resolve();
   }
 
+  readThread(threadId: string): Promise<ThreadHistory | null> {
+    const turns = this.histories.get(threadId);
+    if (turns === undefined) return Promise.resolve(null);
+    return Promise.resolve({
+      id: threadId,
+      parentThreadId: null,
+      status: turns.some((turn) => turn.status === "inProgress") ? "active" : "idle",
+      turns,
+      turnCount: turns.length,
+      userMessages: turns.flatMap((turn) => turn.userMessages),
+      allText: turns.map((turn) => turn.allText).filter(Boolean).join("\n"),
+      lastCompletedText: [...turns].reverse().find(
+        (turn) => turn.status === "completed",
+      )?.agentText ?? null,
+      childThreadIds: [],
+      contextUsage: null,
+    });
+  }
+
+  async readThreadStatus(threadId: string): Promise<string | null> {
+    return (await this.readThread(threadId))?.status ?? null;
+  }
+
+  async readRecentTurns(threadId: string, limit = 20): Promise<readonly HistoryTurn[]> {
+    return [...(this.histories.get(threadId) ?? [])].reverse().slice(0, limit);
+  }
+
+  async unsubscribeThread(threadId: string): Promise<void> {
+    await this.request("thread/unsubscribe", { threadId });
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    await this.request("turn/interrupt", { threadId, turnId });
+  }
+
   set(threadId: string, state: ThreadAvailability | "unavailable"): void {
     this.states.set(threadId, state);
   }
 
   emit(method: string, params: Readonly<Record<string, unknown>>): void {
+    const threadId = typeof params.threadId === "string" ? params.threadId : "";
+    const rawTurn = params.turn !== null && typeof params.turn === "object"
+      ? params.turn as Readonly<Record<string, unknown>>
+      : {};
+    const turnId = typeof rawTurn.id === "string" ? rawTurn.id : "";
+    const items = Array.isArray(rawTurn.items)
+      ? rawTurn.items as ReadonlyArray<Readonly<Record<string, unknown>>>
+      : [];
+    if (method === "turn/started" && threadId !== "" && turnId !== "") {
+      const userMessages = items.flatMap((item) => item.type === "userMessage"
+        && Array.isArray(item.content)
+        ? (item.content as ReadonlyArray<Readonly<Record<string, unknown>>>).flatMap(
+          (part) => part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+        )
+        : []);
+      const turns = this.histories.get(threadId) ?? [];
+      this.histories.set(threadId, [...turns, {
+        id: turnId,
+        status: "inProgress",
+        userMessages,
+        agentText: "",
+        allText: userMessages.join("\n"),
+      }]);
+    }
+    if (method === "turn/completed" && threadId !== "" && turnId !== "") {
+      const turns = this.histories.get(threadId) ?? [];
+      const agentText = items.flatMap((item) => item.type === "agentMessage"
+        && typeof item.text === "string" ? [item.text] : []).join("\n");
+      this.histories.set(threadId, turns.map((turn) => turn.id === turnId
+        ? {
+            ...turn,
+            status: rawTurn.status === "failed" || rawTurn.status === "interrupted"
+              ? rawTurn.status
+              : "completed",
+            agentText,
+            allText: [...turn.userMessages, agentText].filter(Boolean).join("\n"),
+          }
+        : turn));
+    }
     for (const listener of this.notifications) listener({ method, params });
   }
 }
@@ -161,6 +243,7 @@ function fixture(root: string) {
     sandbox: "workspace-write",
     approvalPolicy: "on-request",
     effort: "xhigh",
+    pollIntervalMs: 1,
   });
   return { database, runtime, terminal, make };
 }
@@ -177,6 +260,13 @@ async function until(predicate: () => boolean): Promise<void> {
 
 function promptPath(envelope: string): string {
   return envelope.slice(envelope.indexOf("：") + 1);
+}
+
+function envelopeItem(envelope: string): Readonly<Record<string, unknown>> {
+  return {
+    type: "userMessage",
+    content: [{ type: "text", text: envelope }],
+  };
 }
 
 function finish(runtime: FakeRuntime, threadId: string, turnId: string, text = "done"): void {
@@ -309,12 +399,21 @@ describe("native StagePass sessions", () => {
       f.terminal.onDeliver = ({ target, envelope, kind }) => {
         assert.equal(kind, "open");
         assert.equal(target.threadId, THREAD_ONE);
+        assert.equal(
+          f.runtime.calls.at(-1),
+          "thread/unsubscribe",
+          "control connection must release MCP ownership before Terminal input",
+        );
         path = promptPath(envelope);
         assert.equal(existsSync(path), true);
         assert.match(readFileSync(path, "utf8"), /FULL RUBRIC/);
         f.runtime.emit("turn/started", {
           threadId: target.threadId,
-          turn: { id: "TURN-NATIVE", status: "inProgress", items: [] },
+          turn: {
+            id: "TURN-NATIVE",
+            status: "inProgress",
+            items: [envelopeItem(envelope)],
+          },
         });
       };
 
@@ -344,11 +443,20 @@ describe("native StagePass sessions", () => {
     try {
       const sessions = f.make();
       const opened = await sessions.open("CHG-1", "PRD", config, { showTerminal: true });
-      f.terminal.onDeliver = ({ target, kind }) => {
+      f.terminal.onDeliver = ({ target, envelope, kind }) => {
         assert.equal(kind, "submit");
+        assert.equal(
+          f.runtime.calls.at(-1),
+          "thread/unsubscribe",
+          "a live TUI must still be the only MCP reverse-request owner",
+        );
         f.runtime.emit("turn/started", {
           threadId: target.threadId,
-          turn: { id: "TURN-SUBMIT", status: "inProgress", items: [] },
+          turn: {
+            id: "TURN-SUBMIT",
+            status: "inProgress",
+            items: [envelopeItem(envelope)],
+          },
         });
       };
 
@@ -357,6 +465,11 @@ describe("native StagePass sessions", () => {
       assert.equal(f.terminal.opened.length, 1, "dispatch must not reopen a live client");
       finish(f.runtime, opened.threadId!, "TURN-SUBMIT", "submitted");
       assert.equal(await running, "submitted");
+      assert.equal(
+        f.runtime.calls.filter((method) => method === "thread/resume").length,
+        0,
+        "polling a live TUI must never resubscribe the control connection",
+      );
     } finally {
       f.database.close();
       rmSync(root, { recursive: true, force: true });
@@ -375,11 +488,15 @@ describe("native StagePass sessions", () => {
         raced = true;
         f.terminal.states.delete(target.marker);
       };
-      f.terminal.onDeliver = ({ target, kind }) => {
+      f.terminal.onDeliver = ({ target, envelope, kind }) => {
         assert.equal(kind, "open");
         f.runtime.emit("turn/started", {
           threadId: target.threadId,
-          turn: { id: "TURN-RESUMED", status: "inProgress", items: [] },
+          turn: {
+            id: "TURN-RESUMED",
+            status: "inProgress",
+            items: [envelopeItem(envelope)],
+          },
         });
       };
 
@@ -400,10 +517,14 @@ describe("native StagePass sessions", () => {
     const f = fixture(root);
     try {
       const sessions = f.make();
-      f.terminal.onDeliver = ({ target }) => {
+      f.terminal.onDeliver = ({ target, envelope }) => {
         f.runtime.emit("turn/started", {
           threadId: target.threadId,
-          turn: { id: "TURN-INTERRUPT", status: "inProgress", items: [] },
+          turn: {
+            id: "TURN-INTERRUPT",
+            status: "inProgress",
+            items: [envelopeItem(envelope)],
+          },
         });
       };
       await sessions.startTurn("CHG-1", "PRD", "details", config, 500);
@@ -430,7 +551,11 @@ describe("native StagePass sessions", () => {
         path = promptPath(envelope);
         f.runtime.emit("turn/started", {
           threadId: target.threadId,
-          turn: { id: "TURN-STARTED", status: "inProgress", items: [] },
+          turn: {
+            id: "TURN-STARTED",
+            status: "inProgress",
+            items: [envelopeItem(envelope)],
+          },
         });
       };
 
