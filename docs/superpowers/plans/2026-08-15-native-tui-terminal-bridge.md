@@ -537,7 +537,7 @@ git commit -m "feat: bind StagePass seats to durable native TUI sessions"
 - Modify: `src/web/panel-server.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing route tests**
+- [x] **Step 1: Write failing route tests**
 
 ```ts
 it("close-window preserves runtime while end-session terminates it", async () => {
@@ -551,7 +551,7 @@ it("close-window preserves runtime while end-session terminates it", async () =>
 
 Test all routes, invalid identity/method/body size, idempotence, and mappings: `tmux_unavailable`/`terminal_automation_denied` → 503, `terminal_window_ambiguous`/`turn_busy` → 409, `no_such_change` → 404, invalid request/seat → 400. Old `/api/terminal?change=&phase=` and `/api/codex/*` write routes must return 404 after cutover.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/terminal-api.test.ts src/web/panel-server.test.ts
@@ -559,7 +559,7 @@ node --import tsx --test --test-concurrency=1 src/web/terminal-api.test.ts src/w
 
 Expected: FAIL because the new routes are missing.
 
-- [ ] **Step 3: Implement the route-only API**
+- [x] **Step 3: Implement the route-only API**
 
 ```ts
 export async function serveTerminalApi(
@@ -575,11 +575,11 @@ export async function serveTerminalApi(
 
 Own exactly `GET /api/terminal/status?change=&seat=` and POST `/api/terminal/open`, `/focus`, `/close-window`, `/end-session`. POST bodies are `{ "changeId": "...", "seat": "PRD" }`. Responses contain only normalized state, never screen text, ANSI, prompt, RPC, environment, or window ids.
 
-- [ ] **Step 4: Delegate from panel server without raising ratchets**
+- [x] **Step 4: Delegate from panel server without raising ratchets**
 
 Add `nativeSessions` to `PanelOptions`, call `serveTerminalApi` before business routes, and delete the old `/api/terminal` block. If `handle()` grows, extract an existing helper rather than raising the line ratchet.
 
-- [ ] **Step 5: Validate and commit**
+- [x] **Step 5: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/terminal-api.test.ts src/web/panel-server.test.ts src/architecture.test.ts
