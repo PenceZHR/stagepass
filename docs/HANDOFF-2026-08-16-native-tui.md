@@ -14,7 +14,8 @@ worktree：`/Users/zhanghr/Desktop/stagepass/.claude/worktrees/native-streaming-
 Web 只负责业务状态与打开、聚焦、关闭、恢复对应的系统终端。
 
 原 worktree `/Users/zhanghr/Desktop/stagepass` 未被覆盖。真实数据库和全部既有 binding
-继续复用，不迁移、不复制、不读取 Codex 私有 session 文件。
+继续原位复用，不复制、不读取 Codex 私有 session 文件；本分支只对真实库执行幂等 schema
+迁移，新增 append-only 的 `stage_round_artifacts`，不回填或猜测旧轮次事实。
 
 ## 不可破坏的 MCP 所有权规则
 
@@ -101,6 +102,43 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
   历史回答；
 - `/api/terminal/status` 返回同一 threadId，`thread=idle`、`terminal=open`、
   `action=focus`；服务日志无错误。
+
+## Stage 产物驾驶舱（同日完成）
+
+阶段页不再是一块空白终端入口。现在它是一张只读的产物驾驶舱，沿用项目既有黑洞/轨道
+视觉语言，但把结构判断留给人、文件细节留给 Codex：
+
+- 顶部固定显示阶段、持久状态、轮次、未决问题、下一步和显式的 macOS Terminal 控制；
+- 主画布按本轮文件、目录和生产关系投影结构，文件多时聚合目录，完整文件始终可从键盘可用
+  的横向清单进入；右侧常驻正文、DIFF、来源/依赖和关联问题；底部能回放已结算轮次；
+- PRD / Spec / Arch / BuildPlan / TestPlan / Build / Test / QA 各自有语义适配，默认选中对应角色
+  的产物；Build 不再先打开 critic 文档；
+- 历史轮次只有在 Git 证据可证明时才保守重建。证据不足会明确显示“历史清单不完整”，
+  不拿当前工作树冒充过去；目录不是 Git 仓库时同样响亮降级；
+- 新结算轮次的 manifest 与 evidence、gap、settle 在同一事务提交；重放幂等，冲突重放失败；
+- 文件读取受 Change → Project → repository root、commit fence、路径白名单、realpath/symlink、
+  2 MiB、binary 和历史删除约束保护。浏览器不能传 commit/ref；两个新接口只有 GET；
+- 进入驾驶舱只刷新终端状态，不自动打开、聚焦 Terminal，也不启动 turn 或推动闸门；退出时
+  原样恢复进入前的 Workspace 收起状态。
+
+验收证据：
+
+- `pnpm typecheck` 通过；`npm test` 为 1133/1133、259 suites、0 fail；
+- 在 4173 用真实数据库的隔离副本完成搜索、轮次 1 回放、轮次 2 不完整提示、正文、DIFF、
+  来源/依赖、返回阶段环和重新进入；浏览器控制台 0 error/warning；
+- 浏览前后隔离库计数逐项相同：`66|0|110|89|174|10|0|76`，证明没有启动 turn、回答问题
+  或推进闸门；
+- 截图：`docs/evidence/screenshots/stage-artifact-cockpit-2026-08-16.png`；
+- 真实库启动前备份到 `/private/tmp/stagepass-panel-before-cockpit-2026-08-16.db`，随后只新增
+  `stage_round_artifacts` 表，当前 0 行；真实 `CHG-002` 启动和浏览前后始终为
+  `PRD/blocked`，业务计数始终 `1|0|6|4|3|0|0`；最新 clarification 仍是
+  `outcome={kind:unanswered, reason:session_died_before_answering}`，没有自动应用旧选择；
+- 真实页面明确显示“请 Codex 问我”和上轮失败原因；浏览器控制台无错误。
+
+设计与实施依据：
+
+1. `docs/superpowers/specs/2026-08-16-stage-artifact-cockpit-design.md`；
+2. `docs/superpowers/plans/2026-08-16-stage-artifact-cockpit.md`。
 
 ## 唯一启动方式
 
