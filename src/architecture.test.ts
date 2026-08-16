@@ -191,6 +191,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
   // 「HTTP 进、JSON 出」的界面层，读的最高一层是 store（0）和 graph（0/2）。
   "web/graph-api.ts": 5,
+  "web/stage-artifact-api.ts": 5,
 
   "domain/question.ts": 3,
   "domain/brief.ts": 3,

@@ -40,6 +40,7 @@ import { createRepoOps } from "../src/work/repo";
 import { createTerminalAppOps } from "../src/system/terminal-app";
 import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createGraphApi } from "../src/web/graph-api";
+import { createStageArtifactApi } from "../src/web/stage-artifact-api";
 import { reservePanelListener } from "../src/web/panel-listener";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
 import { NativeSessions } from "../src/web/native-sessions";
@@ -337,6 +338,7 @@ const { server, sessions } = createPanelServer({
    * import —— 它的依赖闭包有一条只许缩的棘轮，理由写在 PanelOptions.graph 上。
    */
   graph: createGraphApi({ database, repo }),
+  stageArtifacts: createStageArtifactApi({ database, repo }),
   history,
   nativeSessions,
 }, reserved);

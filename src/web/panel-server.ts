@@ -242,6 +242,10 @@ export interface PanelOptions {
   readonly graph?: (
     url: URL, request: IncomingMessage, response: ServerResponse,
   ) => Promise<boolean>;
+  /** Stage 产物的两条只读路由；和 graph 一样在入口接线，避免扩大本模块闭包。 */
+  readonly stageArtifacts?: (
+    url: URL, request: IncomingMessage, response: ServerResponse,
+  ) => Promise<boolean>;
   /**
    * 一轮最多等多久。默认 180 分钟。
    *
@@ -1744,6 +1748,8 @@ export async function handle(
 
   // 项目图谱（spec 2026-08-12）。注入的 —— 理由见 PanelOptions.graph。
   if (options.graph !== undefined && await options.graph(url, request, response)) return;
+  if (options.stageArtifacts !== undefined
+    && await options.stageArtifacts(url, request, response)) return;
 
   /*
    * 新建 Project / Change。
