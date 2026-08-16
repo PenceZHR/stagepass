@@ -65,7 +65,10 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
 - 真实 4173 实例对当前 `CHG-002 / PRD` 执行 `/api/terminal/open`，在不提交任何输入的
   前提下完成真实 daemon `thread/unsubscribe`，返回原 threadId、`thread=running`、
   `terminal=open`、`action=focus`；
-- 当前业务选择保持 pending，验收没有替用户选择任何产品答案。
+- 验收代码没有调用 Terminal `submit`、没有写 `answers`、没有选择业务项。随后只读审计
+  发现该问题已在 `2026-08-16T08:59:41.072Z` 经 TUI/MCP 路径变为 `answered/accept`，
+  thread 也已 idle；仅凭账本无法判定是谁在 TUI 中完成了选择，因此不把它归因于验收。
+  当前仍没有 `CHG-002` 的 `change_briefs` 行。
 
 ## 唯一启动方式
 
