@@ -3,10 +3,12 @@ import type Database from "better-sqlite3";
 import type { Finding } from "../domain/gate";
 import type { Verdict } from "../domain/gap";
 import type { Phase } from "../domain/phase";
+import type { StageRoundArtifact } from "../domain/stage-artifact";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { ParallelStore } from "../store/parallel-store";
+import { StageArtifactStore } from "../store/stage-artifact-store";
 import { JobStore, type Job } from "./job-store";
 
 /**
@@ -31,6 +33,7 @@ import { JobStore, type Job } from "./job-store";
 
 export interface TurnOutcome {
   readonly artifactIds: readonly string[];
+  readonly artifactManifest?: Omit<StageRoundArtifact, "settledAt">;
   /**
    * Problems this round found. Re-finding an open one is not re-adding it.
    *
@@ -207,6 +210,7 @@ export class TurnLoop {
   private readonly changes: ChangeStore;
   private readonly evidence: EvidenceStore;
   private readonly gaps: GapStore;
+  private readonly artifacts: StageArtifactStore;
   private readonly jobs: JobStore;
   private readonly clock: () => Date;
 
@@ -216,6 +220,7 @@ export class TurnLoop {
     this.changes = new ChangeStore(dependencies.database, { now });
     this.evidence = new EvidenceStore(dependencies.database, now);
     this.gaps = new GapStore(dependencies.database, now);
+    this.artifacts = new StageArtifactStore(dependencies.database);
     this.jobs = new JobStore(dependencies.database, now);
   }
 
@@ -357,6 +362,18 @@ export class TurnLoop {
       const phase = (job.phase ?? this.changes.read(job.changeId).state.phase) as Phase;
       const landing = seatOf();
       this.dependencies.database.transaction(() => {
+        if (outcome.artifactManifest !== undefined) {
+          const manifest = outcome.artifactManifest;
+          if (manifest.changeId !== job.changeId || manifest.phase !== phase
+            || manifest.jobId !== job.id || manifest.source !== "recorded"
+            || JSON.stringify(manifest.artifactIds) !== JSON.stringify(outcome.artifactIds)) {
+            throw new Error(`stage_artifact_identity_mismatch:${job.id}`);
+          }
+          this.artifacts.record({
+            ...manifest,
+            settledAt: this.clock().toISOString(),
+          });
+        }
         // Artifacts belong to the round that made them, so they are replaced.
         // Problems do not: they go to `gaps`, where a later round that never
         // mentions one leaves it open. The old shape put blockers here and

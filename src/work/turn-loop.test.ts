@@ -4,11 +4,13 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import type { Finding } from "../domain/gate";
+import type { StageRoundArtifact } from "../domain/stage-artifact";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { CommandStore } from "../store/command-store";
 import { JobStore } from "./job-store";
+import { StageArtifactStore } from "../store/stage-artifact-store";
 import {
   LEASE_TTL_MS, recoverStuckTurns, ScriptedTurnRunner, STRANDED_GRACE_MS, TurnLoop,
   type TurnOutcome, type TurnRunner,
@@ -336,6 +338,75 @@ describe("L1 · a phase runs, produces evidence, and the gate reads it", () => {
     } finally {
       database.close();
     }
+  });
+});
+
+describe("L1 · 轮次产物和结算是同一个事务", () => {
+  const manifest: Omit<StageRoundArtifact, "settledAt"> = {
+    changeId: "CHG-1",
+    phase: "PRD",
+    round: 1,
+    jobId: "JOB-MANIFEST",
+    artifactIds: ["docs/stagepass/CHG-1/PRD-r1.md"],
+    commit: "a1b2c3d",
+    source: "recorded",
+    files: [{
+      path: "docs/stagepass/CHG-1/PRD-r1.md",
+      role: "producer",
+      change: "added",
+    }],
+    upstream: [],
+  };
+
+  it("manifest、evidence 和 settled 一起落地", async () => {
+    const context = open([{
+      artifactIds: manifest.artifactIds,
+      blockers: [],
+      artifactManifest: manifest,
+    }]);
+    context.loop.queueTurn({
+      changeId: "CHG-1", jobId: manifest.jobId,
+      deadlineAt: DEADLINE, maxAttempts: 1,
+    });
+
+    assert.deepEqual(await context.loop.runOnce(WORKER), {
+      kind: "settled", jobId: manifest.jobId,
+    });
+    assert.equal(context.changes.read("CHG-1").state.status, "settled");
+    assert.deepEqual(
+      new EvidenceStore(context.database).read("CHG-1", "PRD").artifactIds,
+      manifest.artifactIds,
+    );
+    assert.equal(
+      new StageArtifactStore(context.database).read("CHG-1", "PRD", 1)?.settledAt,
+      AT,
+    );
+  });
+
+  it("manifest 插入失败时 evidence 和 settle 全部回滚", async () => {
+    const context = open([{
+      artifactIds: manifest.artifactIds,
+      blockers: [],
+      artifactManifest: manifest,
+    }]);
+    context.database.exec(`
+      CREATE TRIGGER fail_manifest BEFORE INSERT ON stage_round_artifacts
+      BEGIN SELECT RAISE(ABORT, 'manifest failed'); END;
+    `);
+    context.loop.queueTurn({
+      changeId: "CHG-1", jobId: manifest.jobId,
+      deadlineAt: DEADLINE, maxAttempts: 1,
+    });
+
+    assert.deepEqual(await context.loop.runOnce(WORKER), {
+      kind: "failed", jobId: manifest.jobId, reason: "manifest failed",
+    });
+    assert.equal(context.changes.read("CHG-1").state.status, "blocked");
+    assert.deepEqual(
+      new EvidenceStore(context.database).read("CHG-1", "PRD").artifactIds,
+      [],
+    );
+    assert.equal(new StageArtifactStore(context.database).list("CHG-1", "PRD").length, 0);
   });
 });
 

@@ -5,6 +5,12 @@ import { join } from "node:path";
 
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
 import {
+  isRepoRelativePath,
+  type ArtifactRole,
+  type StageArtifactFile,
+  type StageArtifactUpstream,
+} from "../domain/stage-artifact";
+import {
   commitsWholeTree, parallelTwinOf, producesCommit, requiresHumanEdit,
   upstreamOf, type Phase,
 } from "../domain/phase";
@@ -87,6 +93,61 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
  */
 const describeArtifact = (id: string): string =>
   looksLikeSha(id) ? `commit ${id}（用 \`git show ${id}\` 看这一轮的改动）` : id;
+
+interface ProducedRound {
+  readonly artifactIds: readonly string[];
+  readonly commit: string | null;
+}
+
+function roleOf(changeId: string, phase: Phase, round: number, path: string): ArtifactRole {
+  if (path === redDocPath(changeId, phase, round)) return "producer";
+  if (path === blueDocPath(changeId, phase, round)) return "critic";
+  if (path === `${artifactHome(changeId)}/arch.graph.json`) return "structured";
+  return "delivery";
+}
+
+function roundFiles(input: {
+  changeId: string;
+  phase: Phase;
+  round: number;
+  reported: readonly string[];
+  produced: ProducedRound;
+  cwd: string | null;
+  repo: RepoOps;
+}): readonly StageArtifactFile[] {
+  const files = new Map<string, StageArtifactFile>();
+  if (input.produced.commit !== null && input.cwd !== null) {
+    const changed = input.repo.changedFiles(input.cwd, input.produced.commit);
+    if (changed === null) {
+      throw new Error(`round_commit_unreadable:${input.produced.commit}`);
+    }
+    for (const file of changed) {
+      files.set(file.path, {
+        path: file.path,
+        ...(file.previousPath === undefined ? {} : { previousPath: file.previousPath }),
+        role: roleOf(input.changeId, input.phase, input.round, file.path),
+        change: file.change,
+      });
+    }
+  }
+
+  const fixed = [
+    redDocPath(input.changeId, input.phase, input.round),
+    blueDocPath(input.changeId, input.phase, input.round),
+  ];
+  const fallback = input.produced.commit === null
+    ? [...fixed, ...input.reported.filter(isRepoRelativePath)]
+    : fixed;
+  for (const path of fallback) {
+    if (files.has(path)) continue;
+    files.set(path, {
+      path,
+      role: roleOf(input.changeId, input.phase, input.round, path),
+      change: "modified",
+    });
+  }
+  return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
 
 export class RoundTurnRunner implements TurnRunner {
   constructor(private readonly options: RoundTurnRunnerOptions) {}
@@ -172,6 +233,13 @@ export class RoundTurnRunner implements TurnRunner {
       }),
     };
 
+    const upstream: StageArtifactUpstream[] = upstreamOf(
+      phase, this.options.changes.graphOf(job.changeId),
+    ).map((each) => ({
+      phase: each,
+      artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
+    })).filter((entry) => entry.artifactIds.length > 0);
+
     const settled = await runRubricRound({
       projectId: change.projectId,
       changeId: job.changeId,
@@ -221,31 +289,12 @@ export class RoundTurnRunner implements TurnRunner {
           `requirement-${job.changeId}.md`,
           `# ${job.changeId}：人自己答出来的需求\n\n${change.brief}\n`,
         )}`,
-        ...(() => {
-          /*
-           * **喂给红方的上游产物 = 真正的上游**（`upstreamOf`，§8.6·①）。
-           *
-           * 这里原来自己取主线顺序的前缀，于是 TestPlan 的红方会收到一份 Plan
-           * 的文档当输入 —— 而 TestPlan 从来没消费过 Plan 的任何东西。同一个错
-           * 想法在 `upstreamOf` 里有第一份拷贝，两处现在读同一张 `CONSUMES` 表。
-           *
-           * 顺带修掉一件更小的：原来数的是 `PHASES`（全序，还含 Fix），不是这个
-           * Change 自己的图。
-           */
-          const upstream = upstreamOf(
-            phase, this.options.changes.graphOf(job.changeId))
-            .map((each) => ({
-              phase: each,
-              artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
-            }))
-            .filter((entry) => entry.artifactIds.length > 0);
-          return upstream.length === 0 ? [] : [
-            "",
-            "已批准的上游产物（先看完再动手，它们是这一阶段的输入）：",
-            ...upstream.map((entry) =>
-              `- ${entry.phase}: ${entry.artifactIds.map(describeArtifact).join("、")}`),
-          ];
-        })(),
+        ...(upstream.length === 0 ? [] : [
+          "",
+          "已批准的上游产物（先看完再动手，它们是这一阶段的输入）：",
+          ...upstream.map((entry) =>
+            `- ${entry.phase}: ${entry.artifactIds.map(describeArtifact).join("、")}`),
+        ]),
         /*
          * **输出路径由 StagePass 指定，不让红方自己起名**（E，用户 2026-08-04 拍板）。
          *
@@ -311,7 +360,7 @@ export class RoundTurnRunner implements TurnRunner {
         this.options.gaps.all(job.changeId, phase), round));
     }
 
-    const artifactIds = this.producedBy(job.changeId, phase, round, settled.artifactIds);
+    const produced = this.producedBy(job.changeId, phase, round, settled.artifactIds);
 
     /*
      * **越界的文件当场报出来，不自动收拾**（用户 2026-08-04 拍板）。
@@ -337,7 +386,26 @@ export class RoundTurnRunner implements TurnRunner {
     }
 
     return {
-      artifactIds,
+      artifactIds: produced.artifactIds,
+      artifactManifest: {
+        changeId: job.changeId,
+        phase,
+        round,
+        jobId: job.id,
+        artifactIds: produced.artifactIds,
+        commit: produced.commit,
+        source: "recorded",
+        files: roundFiles({
+          changeId: job.changeId,
+          phase,
+          round,
+          reported: settled.artifactIds,
+          produced,
+          cwd,
+          repo: this.options.repo,
+        }),
+        upstream,
+      },
       // 空的，理由见文件开头 —— 这一轮的问题已经落库了。
       blockers: [],
       verdicts: {},
@@ -508,12 +576,12 @@ export class RoundTurnRunner implements TurnRunner {
    */
   private producedBy(
     changeId: string,
-    phase: string,
+    phase: Phase,
     round: number,
     reported: readonly string[],
-  ): readonly string[] {
+  ): ProducedRound {
     const cwd = this.options.workspaceFor(changeId);
-    if (cwd === null) return reported;
+    if (cwd === null) return { artifactIds: reported, commit: null };
     if (!producesCommit(phase)) {
       /*
        * **设计/报告类阶段轮末把产物目录窄提交掉**（E，2026-08-05）。
@@ -529,9 +597,9 @@ export class RoundTurnRunner implements TurnRunner {
        * 提交失败（不是 git 仓库、目录是空的）也照样返回路径 —— 记账失败不该
        * 吃掉一轮真产出。
        */
-      this.options.repo.commitPaths(
+      const commit = this.options.repo.commitPaths(
         cwd, [artifactHome(changeId)], `StagePass ${changeId} ${phase} 第 ${round} 轮`);
-      return reported;
+      return { artifactIds: reported, commit };
     }
     /*
      * **Test 窄提交**（批 4 · 案 B）：产物目录 + 红方报的落点文件，逐个点名 ——
@@ -542,7 +610,7 @@ export class RoundTurnRunner implements TurnRunner {
       const sha = this.options.repo.commitPaths(
         cwd, [artifactHome(changeId), ...reported],
         `StagePass ${changeId} ${phase} 第 ${round} 轮`);
-      return sha === null ? [] : [sha];
+      return { artifactIds: sha === null ? [] : [sha], commit: sha };
     }
     /*
      * **Build 整树提交前的挡门**（批 4 · 案 B）：对轨（Test）正在跑一轮时，
@@ -556,6 +624,6 @@ export class RoundTurnRunner implements TurnRunner {
     }
     const sha = this.options.repo.commitAll(
       cwd, `StagePass ${changeId} ${phase} 第 ${round} 轮`);
-    return sha === null ? [] : [sha];
+    return { artifactIds: sha === null ? [] : [sha], commit: sha };
   }
 }

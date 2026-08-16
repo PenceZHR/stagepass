@@ -8,6 +8,7 @@ import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { RoundNoteStore } from "../store/round-note-store";
+import { StageArtifactStore } from "../store/stage-artifact-store";
 import { WorklistStore } from "../store/worklist-store";
 import { GapStore } from "../store/gap-store";
 import type { Gap } from "../domain/gap";
@@ -441,7 +442,9 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
         return sha;
       },
       show: () => null, head: () => null, trackedFiles: () => null,
-      changedFiles: () => sha === null ? null : [],
+      changedFiles: () => sha === null ? null : [
+        { path: "src/feature.ts", change: "added" as const },
+      ],
       fileAt: () => null, fileBefore: () => null, diffAt: () => null,
     };
   };
@@ -464,6 +467,17 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     );
     // 提交信息要说得出是哪个 Change 的第几轮 —— 人在 git log 里看得懂。
     assert.match(repo.calls[0] ?? "", new RegExp(CHANGE));
+    const manifest = new StageArtifactStore(context.db).read(CHANGE, "Build", 1);
+    assert.ok(manifest);
+    assert.equal(manifest.jobId, "J1");
+    assert.equal(manifest.commit, "a1b2c3d4e5f6");
+    assert.deepEqual(manifest.upstream.map((entry) => entry.phase),
+      ["PRD", "Spec", "Arch", "BuildPlan"]);
+    assert.deepEqual(manifest.files.map((file) => [file.path, file.role]), [
+      [`docs/stagepass/${CHANGE}/Build-r1-opposition.md`, "critic"],
+      [`docs/stagepass/${CHANGE}/Build-r1.md`, "producer"],
+      ["src/feature.ts", "delivery"],
+    ]);
   });
 
   it("**红方什么都没改 —— 不许伪装成有产出**", async () => {
@@ -499,7 +513,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     }
     assert.equal(context.changes.read(CHANGE).state.phase, "Test");
 
-    const repo = fakeRepo("7e57c0dec0mm17");
+    const repo = fakeRepo("7e57c0dec0ff17");
     const loop = new TurnLoop({
       database: context.db,
       runner: runner(context, new ScriptedCodexTransport([judgeSays]),
@@ -509,7 +523,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
 
     assert.deepEqual(
       new EvidenceStore(context.db).read(CHANGE, "Test").artifactIds,
-      ["7e57c0dec0mm17"], "Test 的产出还是红方报的路径");
+      ["7e57c0dec0ff17"], "Test 的产出还是红方报的路径");
     /*
      * **而且走的是窄提交**（批 4 · 案 B）：产物目录 + 红方声明的落点，逐个点名 ——
      * 结构上卷不走别人的半成品，这正是它不要求干净树、能和 Build 并行的机械前提。
@@ -533,7 +547,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     }
     assert.equal(context.changes.read(CHANGE).state.phase, "Build");
 
-    const repo = fakeRepo("bu1lds4a");
+    const repo = fakeRepo("b011d54a");
     const base = runner(context, new ScriptedCodexTransport([judgeSays]),
       () => answer(), repo);
     // 对轨（Test 座）正在跑一轮 —— 树上有它写了一半的文件。
