@@ -114,7 +114,7 @@ export class AppServerClient {
     this.bindProcess();
   }
 
-  async initialize(): Promise<Readonly<Record<string, unknown>>> {
+  async initialize(timeoutMs?: number): Promise<Readonly<Record<string, unknown>>> {
     const result = await this.request("initialize", {
       clientInfo: {
         name: "stagepass",
@@ -125,7 +125,7 @@ export class AppServerClient {
         experimentalApi: true,
         requestAttestation: false,
       },
-    });
+    }, timeoutMs);
     this.notify("initialized");
     return asRecord(result);
   }

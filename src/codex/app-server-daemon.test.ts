@@ -10,7 +10,7 @@ import {
   startManagedAppServer,
   type AppServerControlClient,
 } from "./app-server-daemon";
-import type { AppServerExit } from "./app-server-client";
+import { AppServerError, type AppServerExit } from "./app-server-client";
 import type { AppServerConnection } from "./app-server-session";
 import type {
   ProcessOps,
@@ -43,11 +43,13 @@ class RecordingProcess implements ProcessOps {
 class RecordingClient implements AppServerControlClient, AppServerConnection {
   initialized = 0;
   closed = 0;
+  readonly initializeTimeouts: Array<number | undefined> = [];
 
   constructor(private readonly initializeError: Error | null = null) {}
 
-  async initialize(): Promise<Readonly<Record<string, unknown>>> {
+  async initialize(timeoutMs?: number): Promise<Readonly<Record<string, unknown>>> {
     this.initialized += 1;
+    this.initializeTimeouts.push(timeoutMs);
     if (this.initializeError !== null) throw this.initializeError;
     return {};
   }
@@ -152,6 +154,29 @@ describe("managed App Server owner", () => {
     );
 
     assert.equal(client.initialized, 1);
+    assert.equal(client.closed, 1);
+  });
+
+  it("bounds a silent proxy and names the one-time remote-control prerequisite", async () => {
+    const client = new RecordingClient(new AppServerError(
+      "app_server_request_timeout",
+      "codex app-server request timed out: initialize",
+    ));
+
+    await assert.rejects(
+      startManagedAppServer({
+        command: "codex",
+        cwd: "/repo",
+        process: new RecordingProcess(),
+        ...callbacks,
+        clientFactory: () => client,
+      }),
+      (error: unknown) => error instanceof ManagedAppServerError
+        && error.code === "app_server_daemon_unavailable"
+        && /enable-remote-control/.test(error.message),
+    );
+
+    assert.deepEqual(client.initializeTimeouts, [10_000]);
     assert.equal(client.closed, 1);
   });
 });
