@@ -54,6 +54,7 @@ server/db/ship.db-journal
 # local pipeline/runtime artifacts
 /.codex/
 /.agents/
+/.superpowers/
 /plugins/
 /.ship/changes/
 /.tmp/

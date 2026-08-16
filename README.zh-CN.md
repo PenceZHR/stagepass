@@ -4,211 +4,157 @@
 
 > **模型不能自己给自己放行。**
 
-StagePass 是一个本地运行的交付控制面：它把一次改动摆上一条**八阶段的钻石环**，
-每个阶段跑 Codex 的对抗轮（红方产出、蓝方挑错、裁判判定），产出证据、找出问题，
-然后**停下来等人裁决**。这个隔离分支由 managed App Server 保存 Codex thread，
-Terminal.app 中的官方 Codex TUI 独占交互 turn、审批和 MCP 表单；StagePass 只控制流程并
-记录业务决定。只有人的答案被账本接受后，状态才会推进。
+StagePass 是一个 **macOS 原生的 Codex 本地交付控制面**。它给一次软件改动一条可追溯的
+流程、独立对抗审查、可见的阶段产物，以及每个闸门上由人掌握的最终决定。浏览器负责
+把控结构和展示事实；Terminal.app 里的官方 Codex TUI 负责所有交互 turn、MCP 提问、
+审批和中断。
 
+StagePass 明确只定位于 macOS。它不提供浏览器终端、PTY 兼容层、tmux 会话管理，也不
+承诺 Windows / Linux 的替代运行方式。
+
+## 为什么需要它
+
+让模型自己判断“这一阶段做完了吗”，等于让它给自己批卷。普通 Agent 流程里，上一轮
+的问题可能因为下一轮没再提就消失；一句自信的“没有阻塞项”可能打开闸门；同一个推理
+错误还可能同时进入实现和测试。
+
+StagePass 用硬规则处理这些问题：
+
+1. **沉默不能关闭问题。** gap 跨轮保留，只有带理由的复核或人的明确决定才能改变它。
+2. **闸门读取持久事实。** 阶段只能通过状态机和账本推进，不能因为界面文本看起来成功。
+3. **模型不拥有最终裁决。** 业务选择通过 Codex MCP elicitation 正面问人，再由唯一一条
+   StagePass 用例写入账本。
+4. **Build 与 Test 互盲。** 两轨只共享 Arch 契约，不读取对方实现，最后在 QA 对撞。
+5. **模型不手抄标识符。** 精确 ID 来自协议和数据库事实；模型只输出枚举选择和散文。
+
+## 八阶段钻石
+
+```text
+PRD → Spec → Arch → BuildPlan ─→ Build ─┐
+                  └→ TestPlan  ─→ Test ─┴→ QA
 ```
-PRD → Spec → Arch → ⟨BuildPlan ∥ TestPlan⟩ → ⟨Build ∥ Test⟩ → QA
-                 └────────── 两轨互盲 ──────────┘
+
+Arch 是分叉点。BuildPlan/Build 与 TestPlan/Test 形成两条受控轨道。QA 运行真实测试、
+用变异攻击测试本身，再把失败归因到 Build、Test 或 Arch。打回就是重走：依赖被否定事实
+的下游批准不会被静默保留。
+
+每个活动阶段都跑一轮对抗：
+
+```text
+红方产出 → 蓝方攻击 → 裁判裁定 → rubric 角色出分 → 人的闸门
 ```
 
-Arch 是钻石的分叉点：计划轨和测试轨从这里分开、**互相看不见**（Build 连读测试
-都不许），到 QA 对撞 —— QA 读代码、跑测试、做两方向变异攻击，发现的问题按
-三向归因打回 Build / Test / Arch，打回就是**重走**（中间被跳过的阶段不再被默认
-正确），并行攒的座位全部清掉重来。
+## Stage 产物驾驶舱
 
----
+打开阶段后，现在进入的是只读产物驾驶舱，不再是一整页空白的 Terminal 跳转入口。它
+展示：
 
-## ⚠️ 状态：地基全绿，环已闭合，自举还没发生
+- 这一轮实际消费的上游 Stage 证据；
+- 真实目录，以及每个新增、修改、沿用、删除或替换的文件；
+- 以生产谱系为大结构的阶段星图；
+- 选择代码文件后才出现的直接依赖、被依赖和爆炸半径；
+- 历史轮次固定下来的正文与 Git diff；
+- 文件级问题、Stage 级问题和明确的下一步；
+- 始终可见、但与浏览动作分开的“打开 / 聚焦 Codex”按钮。
 
-这还不是可以拿来用的软件。**下面这张表是真的**，没做的就是没做：
+驾驶舱读取 append-only 的逐轮产物账本。旧轮次只能通过精确的 Stage 路径或已有 evidence
+commit 保守重建；证据不够就明确标成“不完整”，不会拿当前工作树冒充过去。文件读取
+同时受 Change → Project 归属、manifest 路径白名单、realpath、大小和账本 commit 限制；
+浏览器不能提交任意 Git ref。
 
-| 层 | 内容 | 状态 |
-|---|---|---|
-| **L0–L5** | schema、状态机、闸门、租约、崩溃恢复、managed App Server 托管、原生 TUI 交互、对抗轮、rubric 出分 | ✅ 1093 项测试 + App Server 协议与原生 Terminal 验收 |
-| **环 v3** | 八阶段钻石环、两轨互盲、QA 三攻、打回重走、并行座位 | ✅ 六批落地（2026-08-09），CHG-001 真机沿新环走到 QA、又按打回重走 |
-| **项目图谱** | 黑洞 + 土星环的 3D 依赖图，Arch 图纸对账叠影 | ✅ 真机验过（2026-08-12）；判据的语义边界还有一个待拍板 |
-| **自举** | 用 StagePass 跑一个 Change，产出 StagePass 自己的下一个改动 | ❌ 还没发生 —— 这是「能不能叫 bootstrap」的判据 |
+每个文件都能从键盘可聚焦的清单进入。WebGL 不可用时，空间场景会降级为二维目录投影，
+不会丢文件，也不会丢详情入口。
 
-**下层验收不通过，不许动上层。** 这是这个仓库的建造纪律，不是建议 —— 它也是这份
-README 存在的方式：每一行都对应一件真的跑过的事。
+## 项目黑洞图
 
-> 重建之前那版 README 描述的是一套**从未运行过**的架构。那套东西已经连同旧代码
-> 一起删掉了，重建从 2026-07-28 开始。把没跑通的东西写成完成态，正是那份 README
-> 变成废纸的原因。十二阶段的旧主线也已退休（TechSpec 并进 Arch、Review 收编进
-> QA、Fix 变成打回交互）—— 名字留给历史，账本里的旧行永不改写。
+阶段环中心的太阳打开整个项目的依赖图。依赖由 TypeScript 编译器解析，不靠正则猜：
 
----
+- 黑洞代表依赖压力。被依赖得越多的层越靠中心，爆炸半径大的模块越向内沉；
+- 健康依赖向内，向外爬的弧直接暴露分层违规；
+- Arch 产出 `arch.graph.json`，StagePass 把图纸的概念和关系与真实代码机械对账并叠在图上；
+- 素材与生成目录按项目持久判据留在代码场景之外。
 
-## 它要解决的问题
+项目黑洞回答“这个仓库是什么结构”；Stage 驾驶舱回答“这一轮生产了什么”。二者共享
+美术语言，不共享业务状态。
 
-让模型自己判断"这一阶段做完了没有"，等于让它给自己打分。真实的失败长这样：
+## 原生 Codex 的所有权
 
-- 第二轮重新生成了文档，**上一轮的问题没被提起，于是就算解决了**；
-- 模型报告"没有阻塞项"，闸门打开，问题带进下一阶段；
-- 写代码的和写测试的是同一个脑子，测试钉住的是实现文本，不是行为。
+StagePass 保存耐久的 Codex App Server thread 和归一化生命周期事实。Terminal.app 中
+的官方 Codex TUI 始终是唯一交互客户端：
 
-StagePass 对这些各有一条硬规则：
+- 键盘输入、ANSI 颜色、MCP 表单、审批和 `Ctrl+C` 都由 Terminal 直接承载；
+- 浏览器不接收、不重绘终端字节；
+- 关闭 Terminal 窗口只丢弃这个客户端，再打开会 resume 同一个已绑定 thread；
+- 进入 Stage 只刷新终端状态。只有人点击明确按钮时才打开或聚焦 Terminal。
 
-1. **沉默不能关闭一个问题。** `gaps` 表里的问题跨轮存活，关掉它必须说明理由 ——
-   "这一轮没提到"和"这一轮说它已经修好了"在库里是两种不同的行。
-2. **闸门读证据，不读模型的自我评价。** 阶段节点变绿只因为**账本里有人批准过它**，
-   不是因为哪一轮报告说没问题。
-3. **裁决只有一条路径。** App Server 的审批和 elicitation 只出现在官方 Codex TUI；
-   StagePass MCP 把业务答案写入同一套用例与账本。渲染本身不能推动闸门。
-4. **写代码的和写测试的互盲。** 两轨只共享 Arch 契约，在 QA 对撞；QA 用变异攻击
-   验测试本身（不改行为的变异必须全绿、还原改动必须变红）。
+第一次使用时，macOS 可能要求运行 StagePass 的进程获得 Terminal 自动化权限。请在
+**系统设置 → 隐私与安全性 → 自动化**中允许。StagePass 无法唯一识别受管 Terminal
+窗口时会失败关闭，不会猜一个窗口操作。
 
-### 第五条，是花大代价换来的
+## 当前真实状态
 
-**凡是 StagePass 会拿去做精确相等匹配的字符串，都不许出现在模型必须写出来的文本里。**
-起因是一个裁判把 36 字符的 UUID 抄漏了一段，四条答得整整齐齐的判定一起作废。之后
-盘完全系统，这样的面有七个，其中五个已经烧过至少一次。
+| 能力 | 状态 |
+|---|---|
+| SQLite 状态机、闸门、租约与崩溃恢复 | 已实现，并由离线套件覆盖 |
+| 八阶段钻石、两轨互盲、QA 归因与打回重走 | 已实现；真实 Change 走过这条环 |
+| managed App Server thread + 官方原生 Codex TUI | 已实现，之前已在 macOS 真机验收 |
+| 项目黑洞图 + Arch 对账 | 已实现，之前已在 macOS 真机验收 |
+| append-only 逐轮产物 + Stage 驾驶舱 | 已在这个实验 worktree 实现；最终 4173 浏览器证据记录在当前交接文档 |
+| StagePass 完整生产并交付自己的下一次 Change | 还没挣到；这仍是 bootstrap 的判据 |
 
-于是模型的输出里现在只允许有**枚举里的选择**和**散文**。标识符一律不经模型的嘴：
-线程血缘从 `thread/read` 自己认；插件的三个工具没有一个收标识符；
-反方要判的 rubric 按 `1..N` 编号，缺号或重号整份作废，而不是错位挂到别的标准上。
+这里没有任何跨平台运行承诺。渲染面只是投影，不是决策权威：查看 Stage、文件、轮次或
+图谱都不能启动 turn，也不能写业务状态。
 
----
+## 只在 4173 启动
 
-## 项目图谱：黑洞、土星环、和 Arch 的图纸
+环境要求：
 
-面板环心的太阳，点开是这个项目的**真实依赖图**（用真 TS 编译器解析，不是正则）：
+- macOS 与 Terminal.app；
+- Node.js 20+ 与 pnpm；
+- 支持 `codex app-server` 的 Codex CLI；
+- macOS 允许 StagePass 控制 Terminal 的自动化权限。
 
-- **中心是黑洞，引力就是依赖方向** —— 被依赖得越狠的层，环带越靠内；同一环带里
-  爆炸半径越大的星越沉向内缘。`tests` 谁也不被依赖，在最外圈。
-- **违规一眼可见**：正常依赖全部指向内，向外爬的弧就是"依赖了比自己外层的东西"。
-- **Arch 阶段必须产出机器可读的图纸**（`arch.graph.json`：概念 / 关系 / 认领），
-  图纸和真代码机械对账，结果叠在环上 —— 规划的概念悬在承载它的星正上方，
-  需求里有、代码里没有的概念是玫瑰色幽灵，挂在最外环之外的规划轨道上。
-- 对账不判红，它摊事实：概念未落地、概念散落、模块超载、模块无主、关系没实现、
-  计划外依赖 —— 六类发现侧栏逐条可读，图上各有画法。
-
-哪些目录算"关键代码"由人在面板上勾（存进库），素材和生成物按目录聚成一张门牌
-清单，不进场景。图**不缓存**：全程 ~200ms，永远等于磁盘上那棵树。
-
----
-
-## 三个部分，职责不重叠
-
-| | 干什么 | **明确不干什么** |
-|---|---|---|
-| **状态机与闸门**（`src/domain`、`src/store`、`src/app`） | 状态转移、gate、fence、租约、恢复；组题、验答案、推进状态 | **不渲染任何东西** |
-| **原生 TUI 入口**（`src/web`） | 看和启动：阶段环、证据、图谱、耐久 binding 和系统终端生命周期 | 渲染终端字节、代答 Codex 交互、从模型正文推断闸门状态，或绕过 StagePass 用例 |
-| **Codex 插件**（`src/plugin`） | 通过 MCP `elicitation` 向人提问，把答案发回来 | 不决策、不组题、不判断合法性 |
-
-**面板是投影，不是决策权威。** StagePass 读取耐久 thread 历史作为流程事实，并打开或
-聚焦官方 TUI；终端字节、反向请求、原始 JSON-RPC id 和 payload 都不进入浏览器。
-
-这条不靠自觉。`src/architecture.test.ts` 里的常驻护栏任何时候都不许红，起家的五条：
-
-1. 每个模块声明自己属于哪一层；
-2. 下层不许 import 上层；
-3. 没有零调用者的 export；
-4. 一个概念一个名字（阶段名不许有别名）；
-5. **生产运行时没有 PTY/浏览器终端/私有记录路径。** 常驻扫描拒绝 `node-pty`、xterm、
-   `/pty/`、rollout 和 `state_5.sqlite`；唯一交互客户端是通过固定 Terminal.app 边界打开的
-   官方 Codex TUI。
-
-后来又长出了几条**棘轮**：单函数行数、单模块依赖闭包占比、配料单占全树比例 ——
-现行违例逐个钉死在例外表里，只许缩、不许涨。图谱那批路由就是被闭包棘轮打红后
-改成注入接线的：护栏红得对，就照它说的改。
-
-### 看状态不该有副作用
-
-读取 snapshot、打开图谱都不写库，也不启动 turn。**看一眼就是看一眼。**
-打开 Codex thread 和开始 turn 是两个不同动作。
-
----
-
-## 现在能跑什么
+安装并校验：
 
 ```bash
 pnpm install
-pnpm check            # 严格 typecheck + 完整离线测试
+pnpm check
 ```
 
-需要真 Codex 的：
+在这个 worktree 启动真实本地控制面：
 
 ```bash
 pnpm panel -- --db /Users/zhanghr/.stagepass/panel.db --port 4173
 ```
 
-`pnpm panel` 的参数全都是可选的：
+然后打开 [http://127.0.0.1:4173](http://127.0.0.1:4173)。**4173 是唯一支持的产品端口**：
+如果被占用，先停掉旧 StagePass，再在 4173 重启；不要换端口并行起第二份。
 
-```bash
-node --import tsx scripts/panel.ts \
-  --db <路径> --port 4173 \
-  --project-name <名字> --project-path <目录> \
-  --model <模型名> --effort minimal|low|medium|high|xhigh \
-  --ask-timeout <分钟> --turn-timeout <分钟> --round-budget <轮数>
-```
+不带 `--db` 时，面板会建立一个用于隔离查看的临时数据库。除非明确给出真实数据库路径，
+它不会迁移或替换真实数据。
 
-思考预算默认 `xhigh`：一轮对抗反正要几分钟起步，省那点预算换回一份判得更浅的结论
-不划算。不带 `--db` 会建一个临时库，可以随便点，不碰任何真数据。
+## 架构边界
 
-Codex 升级后用 `pnpm schema:app-server` 生成本机精确协议 schema，再跑完整校验。
+| 区域 | 负责 | 明确不负责 |
+|---|---|---|
+| `src/domain`、`src/store`、`src/app` | 状态、闸门、证据、问题与裁决 | 渲染 |
+| `src/work`、`src/codex`、`src/system` | job、Git 事实、App Server 协议、原生 Terminal 生命周期 | 浏览器 UI 决策 |
+| `src/graph` | 编译器依赖图、确定性布局、安全产物读取 | 流程状态转移 |
+| `src/web` | 只读投影、HTTP 边界、原生客户端控制 | 终端字节或第二条裁决路径 |
+| `src/plugin` | MCP elicitation 桥 | 判断什么操作合法 |
 
-### 环境要求
+SQLite 是唯一业务权威，状态更新必须在写入时带着匹配的账本事实。
+`src/architecture.test.ts` 机械守护向下分层、生产 export 必须有调用者、阶段词汇唯一、生产
+运行时没有 PTY / 私有状态路径，以及单函数和依赖闭包棘轮。
 
-- **Node 20+**（开发用的是 25.9）、**pnpm**。
-- **带 `app-server` 的 Codex CLI**（已在 0.147.0 验证）。
+关键文档：
 
-### 两个会咬人的坑
-
-**只有 App Server 明确认定 thread missing 才能 detach binding。** timeout、断线或
-协议错误只能说明“暂时不可用”，不能说明“已经不存在”；混淆两者会把归档或短暂不可达
-的会话静默换成新线程。
-
-**子 Agent 的线程拒绝父线程之外的任何输入。** `codex resume <子Agent线程>` 起得来、
-MCP server 也照常加载，但一提交就是 `■ This sub-agent is controlled by its parent.
-Direct input is disabled.` —— 而且**和父线程还活着没有关系**。2026-08-03 在 0.146.0
-上实测。任何"直接驱动子 Agent 线程"的设计都不成立。
-
----
-
-## 仓库长什么样
-
-```
-src/
-  domain/     纯逻辑：阶段、状态机、gate、gap、租约、轮次、提问、模板与出厂标准
-              —— 无 IO，可穷举证明
-  store/      SQLite 读写：change、evidence、gap、binding、rubric、并行座位、旁路账本
-  app/        用例层：问人、录需求、裁决、接受风险、新建与删除
-  work/       长任务：job 租约、turn 循环、对抗轮次与 rubric 轮次的接线、git
-  graph/      图谱引擎：真编译器解析依赖、判据、布局、配料单、图纸对账 —— 全部纯函数
-  codex/      App Server JSON-RPC、provision、history query、transport、目录信任与归档策略
-  plugin/     MCP 插件：唯一的写入是"记下人说了什么"
-  web/        原生 seat registry、Terminal portal、面板服务端、图谱 API 与浏览器那半边
-  architecture.test.ts   常驻护栏
-docs/         PRD、BACKLOG、设计稿、交接。**PRD 是唯一权威，BACKLOG 是待办的唯一入口。**
-scripts/      panel、plugin server、dump-rubrics、regen-prompt-golden
-```
-
-SQLite 是唯一业务权威 —— `changes` 表上有触发器，任何一次没有配套账本行的状态更新都会
-被数据库**当场**拒绝。
-
-有两样东西是逐字节钉死的，这是故意的：
-
-- `src/domain/round-prompt.golden.txt` —— 各阶段的裁判提示词。改其中一个阶段，
-  其余的必须一字不差；正是这一条挡着它们重新长回一份共用模板。
-- 插件的工具契约 —— 三个工具，**没有一个收标识符**。
-
-主要文档：
-
-- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) —— **唯一权威**，包括为什么重建
-- [`docs/BACKLOG.md`](docs/BACKLOG.md) —— 还没做的 + 为什么这么做，跨会话累积
-- [`docs/PLAN-2026-08-09-ring-v3.md`](docs/PLAN-2026-08-09-ring-v3.md) —— 环 v3：八条拍板 + 七批落地
-- [`docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md`](docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md) —— managed App Server + 官方原生 TUI 契约
-- [`docs/HANDOFF-2026-08-16-native-tui.md`](docs/HANDOFF-2026-08-16-native-tui.md) —— 当前 worktree 交接与 MCP 所有权不变量
-- [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) —— 当前 App Server 行为契约
-- [`docs/superpowers/specs/2026-08-12-project-graph-3d-design.md`](docs/superpowers/specs/2026-08-12-project-graph-3d-design.md) —— 项目图谱的设计与判据
-- [`docs/DESIGN-no-hand-transcription-2026-08-02.md`](docs/DESIGN-no-hand-transcription-2026-08-02.md) —— 模型手抄标识符的七个面，以及每一个是怎么归零的
-
----
+- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) —— 产品唯一权威
+- [`docs/BACKLOG.md`](docs/BACKLOG.md) —— 未完成事项的唯一清单
+- [`docs/HANDOFF-2026-08-16-native-tui.md`](docs/HANDOFF-2026-08-16-native-tui.md) —— 当前 worktree 与验证交接
+- [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) —— 实测 App Server 行为契约
+- [`docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md`](docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md) —— 原生 TUI 所有权契约
+- [`docs/superpowers/specs/2026-08-16-stage-artifact-cockpit-design.md`](docs/superpowers/specs/2026-08-16-stage-artifact-cockpit-design.md) —— 驾驶舱设计与验收标准
 
 ## 许可
 
