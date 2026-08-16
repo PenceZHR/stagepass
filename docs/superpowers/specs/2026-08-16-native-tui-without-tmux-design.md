@@ -31,7 +31,7 @@ Terminal.app ──> 官方 codex resume TUI ┘
 thread、历史和 daemon 状态不删除。再次打开时使用同一个 threadId 执行：
 
 ```bash
-codex resume --remote unix:// --cd <project-path> <thread-id> [prompt-envelope]
+codex resume -c 'tui.terminal_title=[]' --remote unix:// --cd <project-path> <thread-id> [prompt-envelope]
 ```
 
 Codex CLI 0.147.0 的本机帮助已验证 `resume` 同时接受 `[SESSION_ID] [PROMPT]`、
@@ -66,15 +66,20 @@ sandbox、approval policy、model、effort 与 StagePass MCP config 初始化。
 
 Terminal marker 继续由 `(changeId, seat)` 的固定哈希生成，但它只代表 StagePass 原生
 客户端身份，不再代表 tmux session。marker 不含标题、路径、提示词或其他用户文本。
+marker 写在 StagePass 创建的专用 Terminal tab `custom title` 中；resume 命令显式把
+`tui.terminal_title` 设为空列表，避免 Codex 的 OSC 0 标题刷新覆盖 marker。状态判断使用
+tab 的 `processes` 是否含 `codex`，不依赖 Terminal 的 `busy` 标志或易失的窗口 id。
 
 Terminal 控制层提供五个能力：
 
 - `status`：按 marker 返回 `closed`、`open` 或 `stale`；`stale` 表示 tab 仍在但 Codex
   前台进程已经退出。
-- `open`：没有 marker 时新开 tab；stale 时在原 tab 执行 resume；open 时只聚焦。
+- `open`：没有 marker 时新开 tab；stale 表示 `exec codex` 已结束、原 tab 没有 shell，
+  因此安全关闭该专用 dead 窗口并新开 TUI；open 时只聚焦。两种恢复都沿用同一 threadId。
 - `focus`：只抬起唯一目标窗口/tab，不创建客户端。
 - `submit`：仅在目标 TUI 已打开、App Server 显示 thread idle 且 StagePass 持有输入
-  lease 时，把短文件信封递交给该 tab。
+ lease 时，把短文件信封递交给该 tab。Terminal 把正文作为一次 paste 送入后等待 0.2 秒，
+ 再发送独立空回车，跨过 Codex bracketed-paste 边界并真正提交。
 - `close`：只关闭唯一 marker 窗口；不触碰 thread binding。
 
 AppleScript 源码固定不插值。动态值全部通过 argv 进入，随后由严格校验和统一 POSIX
@@ -148,7 +153,8 @@ changeId, seat, threadId, thread, terminal, action
 - StagePass 退出：不关闭 Terminal、不归档 thread、不停止 daemon，只关闭自己的控制
   WebSocket。
 - Terminal.app 被退出：状态变 closed；下次 resume 同一 thread。
-- TUI 自己退出但 tab 留在 shell：状态变 stale；下次在该 tab resume 同一 thread。
+- TUI 自己退出且 `exec` 进程完成：tab 状态变 stale；下次关闭 dead 窗口并用新客户端
+  resume 同一 thread。
 - daemon 重启：StagePass 用原 config 恢复 bound thread，Terminal 客户端重新连接。
 - thread missing：明确 detach 旧 binding 后创建并绑定新 thread。
 
@@ -202,7 +208,7 @@ macOS 真机验证：
 1. 只在 4173 启动，点击阶段打开真实 Terminal.app 官方 Codex TUI。
 2. 再点同阶段只聚焦，不创建第二窗口或 thread。
 3. 关闭 Terminal 窗口后状态变 resume；再次打开恢复同一 threadId 和历史。
-4. TUI 主动退出留下 stale tab 后，再打开能在同一 tab resume。
+4. TUI 主动退出留下 stale dead tab 后，再打开会替换客户端并 resume 同一 threadId。
 5. 运行中关闭窗口，再打开后结构化 turn 状态和 approval/MCP 行为可继续或明确恢复。
 6. 文件信封任务能从 closed 和 open 两种状态各成功发起一次。
 7. 原生颜色、方向键、斜杠命令、MCP、approval 与 Ctrl+C 可用。
