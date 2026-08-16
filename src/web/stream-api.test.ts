@@ -127,11 +127,6 @@ async function withStreamPanel(body: (input: {
     database,
     streams,
     history,
-    appServerTransport: () => ({
-      async runTurn() {
-        throw new Error("background turn is outside stream API tests");
-      },
-    }),
     recoverEveryMs: 3_600_000,
     repo: {
       dirtyPaths: () => [],

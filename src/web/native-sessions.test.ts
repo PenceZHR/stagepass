@@ -350,6 +350,47 @@ describe("native StagePass sessions", () => {
     }
   });
 
+  it("startTurn returns at external start while cleanup remains attached to completion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      const sessions = f.make();
+      let promptPath = "";
+      f.tmux.onSubmit = (envelope) => {
+        promptPath = envelope.slice(envelope.indexOf("：") + 1);
+        f.runtime.emit("turn/started", {
+          threadId: THREAD_ONE,
+          turn: { id: "TURN-STARTED", status: "inProgress", items: [] },
+        });
+      };
+
+      assert.equal(
+        await sessions.startTurn("CHG-1", "PRD", "detailed prompt", config, 500),
+        "TURN-STARTED",
+      );
+      assert.equal(sessions.has("CHG-1", "PRD"), true);
+      assert.equal(sessions.active("CHG-1", "PRD"), true);
+      assert.equal(existsSync(promptPath), true);
+      sessions.releaseObserver("CHG-1", "PRD");
+
+      f.runtime.emit("turn/completed", {
+        threadId: THREAD_ONE,
+        turn: {
+          id: "TURN-STARTED",
+          status: "completed",
+          items: [{ type: "agentMessage", id: "ITEM-2", text: "finished later" }],
+        },
+      });
+      await until(() => !existsSync(promptPath));
+      assert.equal(sessions.active("CHG-1", "PRD"), false);
+      assert.equal(sessions.has("CHG-1", "PRD"), false);
+      assert.ok((sessions.quietForMs("CHG-1", "PRD") ?? -1) >= 0);
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("archive-and-end and Change-scoped forget clean only their owned runtime", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);

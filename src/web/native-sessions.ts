@@ -4,19 +4,25 @@ import {
   archiveFinished,
   type ArchiveOps,
 } from "../codex/archive";
-import type { AppServerSessionOptions } from "../codex/app-server-session";
-import { AppServerSessionHost } from "../codex/app-server-transport";
 import {
-  NativeTuiCodexTransport,
-  type NativeTuiTurnPort,
-} from "../codex/native-tui-session";
-import type { PromptFiles } from "../codex/prompt-file";
+  AppServerSessionError,
+  type AppServerSession,
+  type AppServerSessionOptions,
+  type CompletedTurn,
+} from "../codex/app-server-session";
+import { AppServerSessionHost } from "../codex/app-server-transport";
+import type { PromptFile, PromptFiles } from "../codex/prompt-file";
 import {
   tmuxSessionName,
   type TmuxIdentity,
   type TmuxOps,
 } from "../codex/tmux";
-import type { CodexTransport } from "../codex/transport";
+import {
+  CodexTurnError,
+  CodexUnavailableError,
+  type CodexTransport,
+  type TurnDelivery,
+} from "../codex/transport";
 import type { Phase } from "../domain/phase";
 import { ChangeStore } from "../store/change-store";
 import {
@@ -58,6 +64,32 @@ export interface NativeSessionsPort {
   releaseObserver(changeId: string, seat: NativeSeat): void;
   forget(changeId: string): Promise<void>;
   closeControlConnection(): void;
+}
+
+export interface NativeRuntimeSessions extends NativeSessionsPort {
+  has(changeId: string, seat: NativeSeat): boolean;
+  active(changeId: string, seat: NativeSeat): boolean;
+  quietForMs(changeId: string, seat: NativeSeat): number | null;
+  startTurn(
+    changeId: string,
+    seat: NativeSeat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs?: number,
+  ): Promise<string>;
+  runTurn(
+    changeId: string,
+    seat: NativeSeat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs: number,
+  ): Promise<string>;
+  transportFor(
+    changeId: string,
+    seat: NativeSeat,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs?: number,
+  ): CodexTransport;
 }
 
 type NativeSessionsErrorCode =
@@ -102,12 +134,22 @@ function targetOf(changeId: string, seat: string): TerminalTarget {
   return { sessionName, marker: `STAGEPASS:${sessionName}` };
 }
 
+interface ActiveNativeTurn {
+  readonly turnId: string;
+  readonly threadId: string;
+  readonly completion: Promise<TurnDelivery>;
+}
+
+const DEFAULT_TURN_TIMEOUT_MS = 180 * 60_000;
+
 /** Durable seat lifecycle reconstructed from binding + App Server + tmux + marker. */
-export class NativeSessions implements NativeSessionsPort {
+export class NativeSessions implements NativeRuntimeSessions {
   private readonly bindings: BindingStore;
   private readonly opening = new Map<string, Promise<NativeSessionStatus>>();
   private readonly inputLeases = new Set<string>();
   private readonly releaseWhenIdle = new Set<string>();
+  private readonly activeTurns = new Map<string, ActiveNativeTurn>();
+  private readonly lastActivity = new Map<string, number>();
 
   constructor(private readonly options: NativeSessionsOptions) {
     this.bindings = new BindingStore(options.database);
@@ -151,6 +193,43 @@ export class NativeSessions implements NativeSessionsPort {
           ? "reopen"
           : "open",
     };
+  }
+
+  has(changeId: string, seat: NativeSeat): boolean {
+    const binding = this.bound(changeId, seat);
+    return binding !== null && this.options.host.session(binding.threadId) !== null;
+  }
+
+  active(changeId: string, seat: NativeSeat): boolean {
+    return this.activeTurns.has(keyOf(changeId, seat));
+  }
+
+  quietForMs(changeId: string, seat: NativeSeat): number | null {
+    const at = this.lastActivity.get(keyOf(changeId, seat));
+    return at === undefined ? null : Math.max(0, Date.now() - at);
+  }
+
+  async startTurn(
+    changeId: string,
+    seat: NativeSeat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs = DEFAULT_TURN_TIMEOUT_MS,
+  ): Promise<string> {
+    const active = await this.dispatchTurn(changeId, seat, prompt, config, timeoutMs);
+    void active.completion.catch(() => {});
+    return active.turnId;
+  }
+
+  async runTurn(
+    changeId: string,
+    seat: NativeSeat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs: number,
+  ): Promise<string> {
+    const active = await this.dispatchTurn(changeId, seat, prompt, config, timeoutMs);
+    return (await active.completion).text;
   }
 
   open(
@@ -252,44 +331,139 @@ export class NativeSessions implements NativeSessionsPort {
   ): CodexTransport {
     return {
       runTurn: async (dispatch) => {
-        const key = keyOf(changeId, seat);
-        if (this.inputLeases.has(key)) {
-          throw new NativeSessionsError("turn_busy", `${changeId}/${seat} already owns an input`);
-        }
-        this.inputLeases.add(key);
-        try {
-          const opened = await this.open(changeId, seat, config, { showTerminal: true });
-          if (opened.threadId === null) {
-            throw new NativeSessionsError("binding_failed", "native seat has no bound thread");
-          }
-          const native = new NativeTuiCodexTransport(
-            this.options.host,
-            this.turnPort(),
-            this.options.promptFiles,
-            {
-              identity: identityOf(changeId, seat),
-              cwd: this.cwd(changeId),
-              sandbox: this.options.sandbox,
-              approvalPolicy: this.options.approvalPolicy,
-              effort: this.options.effort,
-              config,
-              ...(this.options.model === undefined ? {} : { model: this.options.model }),
-              ...(timeoutMs === undefined ? {} : {
-                timeoutMs,
-                turnStartTimeoutMs: timeoutMs,
-              }),
-            },
-          );
-          return await native.runTurn({ ...dispatch, threadId: opened.threadId });
-        } finally {
-          this.inputLeases.delete(key);
-          if (this.releaseWhenIdle.delete(key)) {
-            const binding = this.bound(changeId, seat);
-            if (binding !== null) this.options.host.close(binding.threadId);
-          }
-        }
+        const active = await this.dispatchTurn(
+          changeId,
+          seat,
+          dispatch.prompt,
+          config,
+          timeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+          dispatch.onThread,
+        );
+        return active.completion;
       },
     };
+  }
+
+  private async dispatchTurn(
+    changeId: string,
+    seat: NativeSeat,
+    prompt: string,
+    config: Readonly<Record<string, unknown>>,
+    timeoutMs: number,
+    onThread?: (threadId: string) => void,
+  ): Promise<ActiveNativeTurn> {
+    const key = keyOf(changeId, seat);
+    if (this.inputLeases.has(key)) {
+      throw new NativeSessionsError("turn_busy", `${changeId}/${seat} already owns an input`);
+    }
+    this.inputLeases.add(key);
+    let promptFile: PromptFile | null = null;
+    try {
+      const opened = await this.open(changeId, seat, config, { showTerminal: true });
+      if (opened.threadId === null) {
+        throw new NativeSessionsError("binding_failed", "native seat has no bound thread");
+      }
+      onThread?.(opened.threadId);
+      const session = this.options.host.session(opened.threadId);
+      if (session === null) {
+        throw new NativeSessionsError("thread_unavailable", "native observer is unavailable");
+      }
+      const baseline = session.snapshot();
+      if (baseline.activeTurnId !== null) {
+        throw new NativeSessionsError("turn_busy", `${changeId}/${seat} already has a turn`);
+      }
+      promptFile = this.options.promptFiles.create(prompt);
+      const tmux = await this.options.tmux.ensureSession(
+        identityOf(changeId, seat),
+        opened.threadId,
+        this.cwd(changeId),
+      );
+      await this.options.tmux.submit(tmux.name, promptFile.envelope);
+      const turnId = await this.withDisconnect(session.awaitNextTurn(
+        baseline.lastTurnId,
+        timeoutMs,
+      ));
+      this.lastActivity.set(key, Date.now());
+      const completion = this.completeTurn(
+        key,
+        session,
+        turnId,
+        opened.threadId,
+        promptFile,
+        timeoutMs,
+      );
+      const active = { turnId, threadId: opened.threadId, completion };
+      this.activeTurns.set(key, active);
+      void completion.catch(() => {});
+      return active;
+    } catch (error) {
+      promptFile?.release();
+      this.inputLeases.delete(key);
+      throw this.normalizeTurnError(error);
+    }
+  }
+
+  private async completeTurn(
+    key: string,
+    session: AppServerSession,
+    turnId: string,
+    threadId: string,
+    promptFile: PromptFile,
+    timeoutMs: number,
+  ): Promise<TurnDelivery> {
+    try {
+      const outcome = await this.withDisconnect(session.awaitTurn(turnId, timeoutMs));
+      this.assertCompleted(outcome);
+      return { threadId, text: outcome.text };
+    } catch (error) {
+      throw this.normalizeTurnError(error);
+    } finally {
+      promptFile.release();
+      this.inputLeases.delete(key);
+      if (this.activeTurns.get(key)?.turnId === turnId) this.activeTurns.delete(key);
+      this.lastActivity.set(key, Date.now());
+      if (this.releaseWhenIdle.delete(key)) this.options.host.close(threadId);
+    }
+  }
+
+  private assertCompleted(outcome: CompletedTurn): void {
+    if (outcome.status === "failed") {
+      throw new CodexTurnError("codex_turn_failed", `codex turn ${outcome.turnId} failed`);
+    }
+    if (outcome.status === "interrupted") {
+      throw new CodexTurnError(
+        "codex_turn_interrupted",
+        `codex turn ${outcome.turnId} was interrupted`,
+      );
+    }
+  }
+
+  private async withDisconnect<T>(pending: Promise<T>): Promise<T> {
+    let unsubscribe = (): void => {};
+    const disconnected = new Promise<never>((_resolve, reject) => {
+      unsubscribe = this.options.host.subscribeDisconnect(reject);
+    });
+    try {
+      return await Promise.race([pending, disconnected]);
+    } finally {
+      unsubscribe();
+    }
+  }
+
+  private normalizeTurnError(error: unknown): unknown {
+    if (
+      error instanceof AppServerSessionError
+      && (error.code === "turn_start_timeout" || error.code === "turn_timeout")
+    ) {
+      return new CodexTurnError(
+        "codex_turn_timeout",
+        "native Codex turn did not finish before the deadline",
+      );
+    }
+    if (error instanceof AppServerSessionError && error.code === "app_server_disconnected") {
+      return new CodexUnavailableError("app_server_disconnected");
+    }
+    return error;
   }
 
   private async openOnce(
@@ -394,14 +568,6 @@ export class NativeSessions implements NativeSessionsPort {
   private detach(binding: BoundThread): void {
     if (binding.kind === "aside") this.bindings.detachAside(binding.changeId);
     else this.bindings.detach(binding.changeId, binding.phase);
-  }
-
-  private turnPort(): NativeTuiTurnPort {
-    return {
-      ensure: (identity, threadId, cwd) =>
-        this.options.tmux.ensureSession(identity, threadId, cwd),
-      submit: (sessionName, envelope) => this.options.tmux.submit(sessionName, envelope),
-    };
   }
 
   private assertChange(changeId: string): void {

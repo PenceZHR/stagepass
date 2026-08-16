@@ -17,12 +17,17 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import Database from "better-sqlite3";
 
-import { AppServerClient } from "../src/codex/app-server-client";
 import { AppServerHistory } from "../src/codex/app-server-history";
 import {
-  AppServerCodexTransport,
   AppServerSessionHost,
 } from "../src/codex/app-server-transport";
+import {
+  startManagedAppServer,
+  type ManagedAppServer,
+} from "../src/codex/app-server-daemon";
+import { nativeTuiServerRequest } from "../src/codex/native-tui-session";
+import { createPromptFiles } from "../src/codex/prompt-file";
+import { createTmuxOps } from "../src/codex/tmux";
 import { prepareSchema } from "../src/db/schema";
 import { PHASES } from "../src/domain/phase";
 import { RUBRIC_ROLES } from "../src/domain/rubric";
@@ -33,10 +38,12 @@ import { GapStore } from "../src/store/gap-store";
 import { ProjectStore } from "../src/store/project-store";
 import { FACTORY_UPGRADE_REASON, RubricStore } from "../src/store/rubric-store";
 import { createRepoOps } from "../src/work/repo";
+import { createTerminalAppOps } from "../src/system/terminal-app";
 import { recoverStuckTurns } from "../src/work/turn-loop";
 import { createGraphApi } from "../src/web/graph-api";
 import { reservePanelListener } from "../src/web/panel-listener";
 import { createPanelServer, type PanelSessions } from "../src/web/panel-server";
+import { NativeSessions } from "../src/web/native-sessions";
 import { reconcileMissingBindings } from "../src/web/session-recovery";
 import { StreamSessions } from "../src/web/stream-session";
 
@@ -48,14 +55,14 @@ function argument(name: string): string | undefined {
 async function start(): Promise<void> {
 let startupServer: Server | null = null;
 let startupDatabase: Database.Database | null = null;
-let startupClient: AppServerClient | null = null;
+let startupAppServer: ManagedAppServer | null = null;
 let startupHistory: AppServerHistory | null = null;
 let startupSessions: PanelSessions | null = null;
 const cleanup = async (): Promise<void> => {
   startupSessions?.closeAll();
   startupHistory?.dispose();
-  if (startupClient !== null) {
-    try { await startupClient.close(1_000); } catch { /* preserve the startup error */ }
+  if (startupAppServer !== null) {
+    try { await startupAppServer.close(); } catch { /* preserve the startup error */ }
   }
   if (startupDatabase?.open === true) startupDatabase.close();
   if (startupServer?.listening === true) {
@@ -289,28 +296,36 @@ const repo = createRepoOps();
  * 这条分支的 Codex 运行时只有这一份 App Server 进程。所有阶段 thread 都复用它，
  * 反向的审批/elicitation 再按 threadId 路由回各自 session；绝不为每一轮另起进程。
  */
-let appServerHost: AppServerSessionHost | null = null;
-const appServerClient = AppServerClient.spawn({
+const appServer = await startManagedAppServer({
   command: "codex",
-  args: ["app-server", "--listen", "stdio://"],
   cwd: process.cwd(),
-  env: process.env,
   onNotification: () => {},
-  onServerRequest: (request) => appServerHost === null
-    ? Promise.reject(new Error("app-server session host is not ready"))
-    : appServerHost.handleServerRequest(request),
+  onServerRequest: nativeTuiServerRequest,
   onStderr: (message) => {
     if (message !== "") console.error(`[app-server] ${message}`);
   },
 });
-startupClient = appServerClient;
-appServerHost = new AppServerSessionHost(appServerClient);
-await appServerClient.initialize();
-const history = new AppServerHistory(appServerClient);
+startupAppServer = appServer;
+const appServerHost = new AppServerSessionHost(appServer.client);
+const history = new AppServerHistory(appServer.client);
 startupHistory = history;
 const streamSessions = new StreamSessions({
   database,
   host: appServerHost,
+  sandbox: "workspace-write",
+  approvalPolicy: "on-request",
+  effort,
+  ...(model === undefined ? {} : { model }),
+});
+const tmux = createTmuxOps();
+console.log(`tmux    ${await tmux.version()}`);
+const nativeSessions = new NativeSessions({
+  database,
+  host: appServerHost,
+  history,
+  tmux,
+  terminal: createTerminalAppOps(),
+  promptFiles: createPromptFiles(),
   sandbox: "workspace-write",
   approvalPolicy: "on-request",
   effort,
@@ -337,16 +352,7 @@ const { server, sessions } = createPanelServer({
   graph: createGraphApi({ database, repo }),
   streams: streamSessions,
   history,
-  appServerTransport: ({ cwd, config, timeoutMs }) =>
-    new AppServerCodexTransport(appServerHost!, {
-      cwd,
-      sandbox: "workspace-write",
-      approvalPolicy: "on-request",
-      effort,
-      config,
-      ...(model === undefined ? {} : { model }),
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    }),
+  nativeSessions,
 }, reserved);
 startupSessions = sessions;
 

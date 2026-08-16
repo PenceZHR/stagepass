@@ -16,7 +16,6 @@ import type Database from "better-sqlite3";
 import {
   commitsWholeTree, isPhase, requiresHumanEdit, upstreamOf, type Phase,
 } from "../domain/phase";
-import type { CodexTransport } from "../codex/transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
 import {
   childThreadsOf, readThreadTranscript, readThreadUserMessages,
@@ -61,7 +60,6 @@ import {
 } from "./session-recovery";
 import {
   serveCodexStreamApi,
-  ThreadBindingAfterTurnStartError,
   type CodexStreamPort,
 } from "./codex-stream-api";
 import {
@@ -70,7 +68,10 @@ import {
   type StreamSessions,
 } from "./stream-session";
 import type { ReservedPanelListener } from "./panel-listener";
-import type { NativeSessionsPort } from "./native-sessions";
+import type {
+  NativeRuntimeSessions,
+  NativeSeat,
+} from "./native-sessions";
 import { serveTerminalApi } from "./terminal-api";
 
 /**
@@ -100,6 +101,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  */
 export const ASIDE = "aside" as const;
 type Seat = Phase | typeof ASIDE;
+
+function nativeSeatOf(seat: Seat): NativeSeat {
+  if (seat === "Done") throw new Error("phase_not_active");
+  return seat;
+}
 
 /**
  * 把 StagePass 的插件挂给一次 Codex 启动。
@@ -219,16 +225,10 @@ const ARTIFACT_MAX_BYTES = 2_000_000;
 
 export interface PanelOptions {
   readonly database: Database.Database;
-  /** Every Codex turn in this worktree crosses this structured seam. */
-  readonly appServerTransport: (input: {
-    readonly cwd: string;
-    readonly config: Readonly<Record<string, unknown>>;
-    readonly timeoutMs?: number;
-  }) => CodexTransport;
   readonly streams: StreamSessions;
   readonly history: AppServerHistory;
   /** Native Terminal lifecycle; browser receives state only, never terminal bytes. */
-  readonly nativeSessions?: NativeSessionsPort;
+  readonly nativeSessions?: NativeRuntimeSessions;
   /**
    * brief 的草稿和工作稿放哪（批 2「模型起草，人改」—— 人要在编辑器里打开这个
    * 目录里的文件）。默认 ~/.stagepass/briefs。可注入是为了测试不摸真目录。
@@ -335,11 +335,13 @@ export class PanelSessions implements CodexStreamPort {
   }
 
   has(changeId: string, phase: Seat): boolean {
-    return this.options.streams.has(changeId, phase);
+    return this.options.nativeSessions?.has(changeId, nativeSeatOf(phase))
+      ?? this.options.streams.has(changeId, phase);
   }
 
   active(changeId: string, phase: Seat): boolean {
-    return this.options.streams.active(changeId, phase);
+    return this.options.nativeSessions?.active(changeId, nativeSeatOf(phase))
+      ?? this.options.streams.active(changeId, phase);
   }
 
   async open(
@@ -356,7 +358,15 @@ export class PanelSessions implements CodexStreamPort {
     phase: Seat,
     config: Readonly<Record<string, unknown>>,
   ): Promise<void> {
-    await this.open(changeId, phase, { config });
+    if (this.options.nativeSessions === undefined) {
+      throw new Error("native_sessions_unavailable");
+    }
+    await this.options.nativeSessions.open(
+      changeId,
+      nativeSeatOf(phase),
+      config,
+      { showTerminal: true },
+    );
   }
 
   async startTurn(
@@ -369,26 +379,15 @@ export class PanelSessions implements CodexStreamPort {
       phase === ASIDE ? undefined : phase,
     ),
   ): Promise<string> {
-    const session = await this.open(changeId, phase, { config });
-    const turnId = await this.options.streams.startTurn(changeId, phase, prompt);
-    try {
-      this.bind(changeId, phase, session.threadId);
-    } catch (error) {
-      const cause = error instanceof Error
-        ? `${error.name}: ${error.message}`
-        : String(error);
-      console.error(
-        `[panel] thread_binding_failed_after_turn_start ${changeId}/${phase}`
-        + ` thread=${session.threadId} turn=${turnId} —— ${cause}`,
-      );
-      throw new ThreadBindingAfterTurnStartError(
-        changeId,
-        phase,
-        session.threadId,
-        turnId,
-      );
+    if (this.options.nativeSessions === undefined) {
+      throw new Error("native_sessions_unavailable");
     }
-    return turnId;
+    return this.options.nativeSessions.startTurn(
+      changeId,
+      nativeSeatOf(phase),
+      prompt,
+      config,
+    );
   }
 
   async runTurn(
@@ -398,17 +397,16 @@ export class PanelSessions implements CodexStreamPort {
     config: Readonly<Record<string, unknown>>,
     timeoutMs: number,
   ): Promise<string> {
-    const turnId = await this.startTurn(changeId, phase, prompt, config);
-    const outcome = await this.options.streams.awaitTurn(
+    if (this.options.nativeSessions === undefined) {
+      throw new Error("native_sessions_unavailable");
+    }
+    return this.options.nativeSessions.runTurn(
       changeId,
-      phase,
-      turnId,
+      nativeSeatOf(phase),
+      prompt,
+      config,
       timeoutMs,
     );
-    if (outcome.status !== "completed") {
-      throw new Error(`codex_turn_${outcome.status}`);
-    }
-    return outcome.text;
   }
 
   async type(changeId: string, phase: Seat, line: string): Promise<boolean> {
@@ -496,11 +494,26 @@ export class PanelSessions implements CodexStreamPort {
   }
 
   quietForMs(changeId: string, phase: Seat): number | null {
-    return this.options.streams.quietForMs(changeId, phase);
+    return this.options.nativeSessions?.quietForMs(changeId, nativeSeatOf(phase))
+      ?? this.options.streams.quietForMs(changeId, phase);
   }
 
-  close(changeId: string, phase: Seat): void {
+  releaseObserver(changeId: string, phase: Seat): void {
+    if (this.options.nativeSessions !== undefined) {
+      this.options.nativeSessions.releaseObserver(changeId, nativeSeatOf(phase));
+      return;
+    }
     this.options.streams.close(changeId, phase);
+  }
+
+  async archiveAndEnd(changeId: string, phase: Seat): Promise<void> {
+    if (this.options.nativeSessions === undefined) {
+      throw new Error("native_sessions_unavailable");
+    }
+    await this.options.nativeSessions.archiveAndEnd(
+      changeId,
+      nativeSeatOf(phase),
+    );
   }
 
   async interrupt(changeId: string, phase: Seat, turnId: string): Promise<void>;
@@ -521,11 +534,13 @@ export class PanelSessions implements CodexStreamPort {
     return true;
   }
 
-  forget(changeId: string): void {
+  async forget(changeId: string): Promise<void> {
+    await this.options.nativeSessions?.forget(changeId);
     this.options.streams.forget(changeId);
   }
 
   closeAll(): void {
+    this.options.nativeSessions?.closeControlConnection();
     this.options.streams.closeAll();
   }
 
@@ -542,12 +557,6 @@ export class PanelSessions implements CodexStreamPort {
     return phase === ASIDE
       ? { changeId, kind: "aside", phase: null, threadId: found.threadId }
       : { changeId, kind: "round", phase, threadId: found.threadId };
-  }
-
-  private bind(changeId: string, phase: Seat, threadId: string): void {
-    const bindings = new BindingStore(this.options.database);
-    if (phase === ASIDE) bindings.bindAside(changeId, threadId);
-    else bindings.bind(changeId, phase, threadId);
   }
 
   private detachBinding(binding: BoundThread): void {
@@ -666,6 +675,7 @@ async function runRound(input: {
 }> {
   const { changeId, phase, sessions, options } = input;
   const database = options.database;
+  if (phase === "Done") return { ran: false, phase, reason: "phase_not_active" };
 
   /*
    * §6.5 规则 5：一个阶段线程同一时刻只许有一个活进程。
@@ -689,7 +699,7 @@ async function runRound(input: {
     return { ran: false, phase, ...busy };
   }
   if (sessions.has(changeId, phase)) {
-    sessions.close(changeId, phase);
+    sessions.releaseObserver(changeId, phase);
   }
   /*
    * **这一轮跑在哪个座位上**（批 3）：主线，或者一个开着的并行座位。
@@ -787,16 +797,17 @@ async function runRound(input: {
   if (refused !== null) return refuse(refused);
   const workspace = sessions.workspaceFor(changeId);
   if (workspace === null) throw new ProjectPathMissingError(changeId);
+  if (options.nativeSessions === undefined) throw new Error("native_sessions_unavailable");
 
   const loop = new TurnLoop({
     database,
     runner: new RoundTurnRunner({
-      transport: options.appServerTransport({
-        cwd: workspace,
-        config: pluginAppServerConfigFor(database, changeId, phase),
-        ...(options.turnTimeoutMs === undefined
-          ? {} : { timeoutMs: options.turnTimeoutMs }),
-      }),
+      transport: options.nativeSessions.transportFor(
+        changeId,
+        nativeSeatOf(phase),
+        pluginAppServerConfigFor(database, changeId, phase),
+        options.turnTimeoutMs,
+      ),
       gaps: new GapStore(database),
       rubrics: new RubricStore(database),
       changes: new ChangeStore(database),
@@ -846,7 +857,7 @@ async function runRound(input: {
   /*
    * **硬顶有两份（App Server turn 和 job 截止），它们必须是同一个数；租约不再是第三份。**
    *
-   *   App Server  等 `turn/completed`（`AppServerCodexTransport.timeoutMs`） = turnMs
+   *   原生观察器 等 `turn/completed`（`NativeSessions` 的 timeoutMs）       = turnMs
    *   job 截止    到点把 job 判 `deadline_reached`（`domain/lease.ts`）      = turnMs
    *   租约        短租 + 跑轮期间心跳续（`LEASE_TTL_MS`，turn-loop.ts）
    *
@@ -1125,20 +1136,37 @@ function serveStructuredCodex(
  * 在这之前删除路径压根不存在 —— 真库里那条空的 `CHG-1` 就是这么留下的。
  * 从 `handle()` 里搬出来（函数上限逼的），行为一个字没变。
  */
-function handleWorkspaceDelete(
+async function handleWorkspaceDelete(
   url: URL,
   response: ServerResponse,
   database: Database.Database,
   sessions: PanelSessions,
-): void {
+): Promise<void> {
   const isBusy = (id: string): ReturnType<BusyCheck> => phaseBusy(database, id);
-  const forget = (id: string): void => { sessions.forget(id); };
+  const forgotten = new Set<string>();
+  const forget = (id: string): void => {
+    if (!forgotten.has(id)) throw new Error(`native_session_cleanup_missing:${id}`);
+  };
   // 删掉的 Change 不该在 Codex 里留活线程 —— 归档的理由在 `app/workspace.ts`。
   const archive = (threadId: string): void => { sessions.archive.archive(threadId); };
 
   if (url.pathname === "/api/change") {
+    const changeId = url.searchParams.get("change") ?? "";
+    try {
+      new ChangeStore(database).read(changeId);
+    } catch {
+      response.writeHead(404).end("no such change");
+      return;
+    }
+    const busy = isBusy(changeId);
+    if (busy !== null) {
+      json(response, { deleted: false, ...busy });
+      return;
+    }
+    await sessions.forget(changeId);
+    forgotten.add(changeId);
     const outcome = deleteChange({
-      database, changeId: url.searchParams.get("change") ?? "",
+      database, changeId,
       isBusy, forget, archive,
     });
     if (outcome.kind === "no_such_change") {
@@ -1151,8 +1179,25 @@ function handleWorkspaceDelete(
     return;
   }
 
+  const projectId = url.searchParams.get("project") ?? "";
+  if (!new ProjectStore(database).list().some((project) => project.id === projectId)) {
+    response.writeHead(404).end("no_such_project");
+    return;
+  }
+  const changes = new ChangeStore(database).list(projectId);
+  for (const change of changes) {
+    const busy = isBusy(change.id);
+    if (busy !== null) {
+      json(response, { deleted: false, changeId: change.id, ...busy });
+      return;
+    }
+  }
+  for (const change of changes) {
+    await sessions.forget(change.id);
+    forgotten.add(change.id);
+  }
   const outcome = deleteProject({
-    database, projectId: url.searchParams.get("project") ?? "",
+    database, projectId,
     isBusy, forget, archive,
   });
   if (outcome.kind === "no_such_project") {
@@ -1500,7 +1545,7 @@ async function serveClose(
   if (phase === ASIDE) {
     const had = sessions.has(changeId, ASIDE);
     await sessions.interrupt(changeId, ASIDE);
-    sessions.close(changeId, ASIDE);
+    sessions.releaseObserver(changeId, ASIDE);
     /*
      * **出旁路结账**：记下当时的 HEAD。前后不同 = 这一趟动过手，`needsNote`
      * 为真，界面据此向人要一句「这次旁路做了什么」—— 那句话是下游唯一能知道
@@ -1520,7 +1565,7 @@ async function serveClose(
   if (!isPhase(phase)) { response.writeHead(400).end("no such phase"); return; }
   const was = sessions.has(changeId, phase);
   await sessions.interrupt(changeId, phase);
-  sessions.close(changeId, phase);
+  sessions.releaseObserver(changeId, phase);
 
   // 只收「这个阶段」的账（批 3 起 busy 按阶段问）——
   // 人关一个历史阶段的闲终端，不该顺手把正在跑的那一轮打掉。
@@ -1870,7 +1915,7 @@ export async function handle(
 
   if (request.method === "DELETE"
     && (url.pathname === "/api/change" || url.pathname === "/api/project")) {
-    handleWorkspaceDelete(url, response, database, sessions);
+    await handleWorkspaceDelete(url, response, database, sessions);
     return;
   }
 
@@ -1950,7 +1995,7 @@ export async function handle(
       rerun: async (phase) => {
         // 那个阶段的终端这时还活着（题就是送进去的），所以先关掉它 —— 不然
         // `runRound` 会撞上 §6.5 规则 5 直接拒。
-        sessions.close(changeId, phase);
+        sessions.releaseObserver(changeId, phase);
         return runRound({ changeId, phase, sessions, options });
       },
       /*
@@ -1960,6 +2005,7 @@ export async function handle(
        */
       onApproved: async ({ phase, threadId }) => {
         const done = await archiveFinished(threadId, sessions.archive);
+        await sessions.archiveAndEnd(changeId, phase);
         console.log(`[panel] ${changeId}/${phase} 已批准，线程 ${threadId} —— ${done}`);
       },
       roundBudget: options.roundBudget ?? 5,
@@ -1969,7 +2015,7 @@ export async function handle(
       response.writeHead(404).end("no such change");
       return;
     }
-    if (closeSession) sessions.close(changeId, outcome.phase);
+    if (closeSession) sessions.releaseObserver(changeId, outcome.phase);
     json(response, decideBody(outcome));
     return;
   }
@@ -2029,7 +2075,7 @@ export async function handle(
       response.writeHead(404).end("no such change");
       return;
     }
-    if (closeSession) sessions.close(changeId, outcome.phase);
+    if (closeSession) sessions.releaseObserver(changeId, outcome.phase);
     json(response, briefBody(outcome));
     return;
   }
@@ -2051,7 +2097,7 @@ export async function handle(
       response.writeHead(404).end("no such change");
       return;
     }
-    if (closeSession) sessions.close(changeId, outcome.phase);
+    if (closeSession) sessions.releaseObserver(changeId, outcome.phase);
     json(response, waiveBody(outcome));
     return;
   }

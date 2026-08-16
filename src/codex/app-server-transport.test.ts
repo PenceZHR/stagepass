@@ -3,16 +3,11 @@ import { describe, it } from "node:test";
 
 import type { AppServerNotification } from "./app-server-protocol";
 import type { AppServerConnection } from "./app-server-session";
+import { AppServerSessionHost } from "./app-server-transport";
 import { CodexUnavailableError } from "./transport";
-import {
-  AppServerCodexTransport,
-  AppServerSessionHost,
-  CodexTurnError,
-} from "./app-server-transport";
 
 class FakeConnection implements AppServerConnection {
   readonly calls: string[] = [];
-  terminal: "completed" | "failed" | "interrupted" | "none" = "completed";
   private readonly listeners = new Set<(message: AppServerNotification) => void>();
   private readonly disconnectListeners = new Set<(error: Error) => void>();
 
@@ -26,24 +21,6 @@ class FakeConnection implements AppServerConnection {
     }
     if (method === "thread/resume") {
       return Promise.resolve({ thread: { id: params.threadId, turns: [] } });
-    }
-    if (method === "turn/start") {
-      if (this.terminal !== "none") {
-        const status = this.terminal;
-        queueMicrotask(() => this.emit("turn/completed", {
-          threadId: params.threadId,
-          turn: {
-            id: "TURN-1",
-            status,
-            items: status === "completed"
-              ? [{ type: "agentMessage", id: "ITEM-1", text: "final answer" }]
-              : [],
-          },
-        }));
-      }
-      return Promise.resolve({
-        turn: { id: "TURN-1", status: "inProgress", items: [] },
-      });
     }
     throw new Error(`unexpected request: ${method}`);
   }
@@ -63,95 +40,51 @@ class FakeConnection implements AppServerConnection {
       listener(new Error("fake app-server exited"));
     }
   }
-
-  private emit(method: string, params: Record<string, unknown>): void {
-    for (const listener of this.listeners) listener({ method, params });
-  }
 }
 
-function transport(connection: FakeConnection, timeoutMs = 100): AppServerCodexTransport {
-  return new AppServerCodexTransport(new AppServerSessionHost(connection), {
-    cwd: "/repo",
-    sandbox: "workspace-write",
-    approvalPolicy: "on-request",
-    effort: "xhigh",
-    timeoutMs,
-  });
-}
+const OPTIONS = {
+  cwd: "/repo",
+  sandbox: "workspace-write",
+  approvalPolicy: "on-request",
+  effort: "xhigh",
+} as const;
 
-describe("AppServerCodexTransport", () => {
-  it("publishes a new thread before starting and completing its turn", async () => {
+describe("AppServerSessionHost observer", () => {
+  it("starts or resumes an observer but never starts a turn", async () => {
     const connection = new FakeConnection();
-    const timeline = connection.calls;
+    const host = new AppServerSessionHost(connection);
 
-    const delivery = await transport(connection).runTurn({
-      threadId: null,
-      prompt: "Return the contract",
-      onThread: (threadId) => timeline.push(`onThread:${threadId}`),
-    });
+    const fresh = await host.open(null, OPTIONS);
+    const resumed = await host.open("THREAD-OLD", OPTIONS);
 
-    assert.deepEqual(timeline, [
-      "thread/start",
-      "onThread:THREAD-1",
-      "turn/start",
-    ]);
-    assert.deepEqual(delivery, {
-      threadId: "THREAD-1",
-      text: "final answer",
-    });
+    assert.equal(fresh.threadId, "THREAD-1");
+    assert.equal(resumed.threadId, "THREAD-OLD");
+    assert.deepEqual(connection.calls, ["thread/start", "thread/resume"]);
+    assert.equal(connection.calls.includes("turn/start"), false);
+    assert.equal("runTurn" in host, false);
   });
 
-  it("resumes exactly the supplied thread", async () => {
+  it("reuses one observer and releases it without touching the thread", async () => {
     const connection = new FakeConnection();
-
-    const delivery = await transport(connection).runTurn({
-      threadId: "THREAD-OLD",
-      prompt: "Continue",
-    });
-
-    assert.equal(delivery.threadId, "THREAD-OLD");
-    assert.deepEqual(connection.calls, ["thread/resume", "turn/start"]);
+    const host = new AppServerSessionHost(connection);
+    const first = await host.open("THREAD-OLD", OPTIONS);
+    const second = await host.open("THREAD-OLD", OPTIONS);
+    assert.equal(second, first);
+    host.close("THREAD-OLD");
+    assert.equal(host.session("THREAD-OLD"), null);
+    assert.deepEqual(connection.calls, ["thread/resume"]);
   });
 
-  for (const status of ["failed", "interrupted"] as const) {
-    it(`keeps terminal ${status} distinct from a completed answer`, async () => {
-      const connection = new FakeConnection();
-      connection.terminal = status;
-
-      await assert.rejects(
-        transport(connection).runTurn({ threadId: null, prompt: "Go" }),
-        (error: unknown) =>
-          error instanceof CodexTurnError
-          && error.code === `codex_turn_${status}`,
-      );
-    });
-  }
-
-  it("fails a bounded wait instead of pretending the turn completed", async () => {
+  it("fails native observers immediately when the proxy disconnects", async () => {
     const connection = new FakeConnection();
-    connection.terminal = "none";
-
+    const host = new AppServerSessionHost(connection);
+    const disconnected = new Promise<never>((_resolve, reject) => {
+      host.subscribeDisconnect(reject);
+    });
+    connection.disconnect();
     await assert.rejects(
-      transport(connection, 10).runTurn({ threadId: null, prompt: "Go" }),
-      (error: unknown) =>
-        error instanceof CodexTurnError && error.code === "codex_turn_timeout",
-    );
-  });
-
-  it("fails immediately when the shared app-server disconnects", async () => {
-    const connection = new FakeConnection();
-    connection.terminal = "none";
-
-    const running = transport(connection, 1_000).runTurn({
-      threadId: null,
-      prompt: "Go",
-    });
-    queueMicrotask(() => connection.disconnect());
-
-    await assert.rejects(
-      running,
-      (error: unknown) =>
-        error instanceof CodexUnavailableError
+      disconnected,
+      (error: unknown) => error instanceof CodexUnavailableError
         && error.detail === "app_server_disconnected",
     );
   });

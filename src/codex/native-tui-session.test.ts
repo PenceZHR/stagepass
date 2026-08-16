@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import type { AppServerNotification, AppServerRequest } from "./app-server-protocol";
 import type { AppServerConnection } from "./app-server-session";
 import { AppServerSessionError } from "./app-server-session";
-import { AppServerSessionHost, CodexTurnError } from "./app-server-transport";
+import { AppServerSessionHost } from "./app-server-transport";
 import {
   NativeTuiCodexTransport,
   nativeTuiServerRequest,
@@ -19,7 +19,7 @@ import {
   type PromptFiles,
 } from "./prompt-file";
 import type { TmuxIdentity, TmuxSession } from "./tmux";
-import { CodexUnavailableError } from "./transport";
+import { CodexTurnError, CodexUnavailableError } from "./transport";
 
 const THREAD_ID = "019f0000-0000-7000-8000-000000000001";
 const IDENTITY = { changeId: "CHG-1", seat: "PRD" } as const;

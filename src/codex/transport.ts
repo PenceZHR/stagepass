@@ -53,6 +53,19 @@ export class CodexUnavailableError extends Error {
   }
 }
 
+export class CodexTurnError extends Error {
+  constructor(
+    readonly code:
+      | "codex_turn_failed"
+      | "codex_turn_interrupted"
+      | "codex_turn_timeout",
+    message: string,
+  ) {
+    super(message);
+    this.name = "CodexTurnError";
+  }
+}
+
 /**
  * A scripted stand-in, for proving everything around the transport.
  *

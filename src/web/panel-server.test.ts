@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import Database from "better-sqlite3";
@@ -16,9 +17,9 @@ import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { createPanelServer } from "./panel-server";
 import type {
+  NativeRuntimeSessions,
   NativeSeat,
   NativeSessionStatus,
-  NativeSessionsPort,
 } from "./native-sessions";
 import { StreamSessions } from "./stream-session";
 
@@ -115,8 +116,13 @@ class FakeConnection implements AppServerConnection {
   }
 }
 
-class FakeNativeSessions implements NativeSessionsPort {
+class FakeNativeSessions implements NativeRuntimeSessions {
   readonly calls: string[] = [];
+  readonly submissions: Array<{ seat: NativeSeat; prompt: string }> = [];
+  readonly archivedAndEnded: Array<{ changeId: string; seat: NativeSeat }> = [];
+  readonly released: Array<{ changeId: string; seat: NativeSeat }> = [];
+  readonly forgotten: string[] = [];
+  forgetError: Error | null = null;
 
   private answer(changeId: string, seat: NativeSeat, action: string): Promise<NativeSessionStatus> {
     this.calls.push(`${action}:${changeId}/${seat}`);
@@ -141,10 +147,36 @@ class FakeNativeSessions implements NativeSessionsPort {
   endSession(changeId: string, seat: NativeSeat) {
     return this.answer(changeId, seat, "end-session");
   }
-  archiveAndEnd(): Promise<void> { return Promise.resolve(); }
-  releaseObserver(): void {}
-  forget(): Promise<void> { return Promise.resolve(); }
+  archiveAndEnd(changeId: string, seat: NativeSeat): Promise<void> {
+    this.archivedAndEnded.push({ changeId, seat });
+    return Promise.resolve();
+  }
+  releaseObserver(changeId: string, seat: NativeSeat): void {
+    this.released.push({ changeId, seat });
+  }
+  forget(changeId: string): Promise<void> {
+    this.forgotten.push(changeId);
+    return this.forgetError === null
+      ? Promise.resolve()
+      : Promise.reject(this.forgetError);
+  }
   closeControlConnection(): void {}
+  has(): boolean { return false; }
+  active(): boolean { return false; }
+  quietForMs(): number | null { return null; }
+  startTurn(): Promise<string> { return Promise.resolve("TURN-NATIVE"); }
+  runTurn(): Promise<string> { return Promise.resolve("done"); }
+  transportFor(_changeId: string, seat: NativeSeat) {
+    return {
+      runTurn: async ({ prompt }: { prompt: string }) => {
+        this.submissions.push({ seat, prompt });
+        return {
+          threadId: "THREAD-NATIVE",
+          text: '```json\n{"red":{"artifactIds":[],"gaps":[],"summary":""},"blue":{"artifactIds":[],"gaps":[],"summary":""},"verdicts":[]}\n```',
+        };
+      },
+    };
+  }
 }
 
 async function withPanel(body: (input: {
@@ -174,11 +206,6 @@ async function withPanel(body: (input: {
     database,
     history,
     streams,
-    appServerTransport: () => ({
-      async runTurn() {
-        throw new Error("background turns are outside this routing test");
-      },
-    }),
     nativeSessions: native,
     recoverEveryMs: 3_600_000,
     repo: {
@@ -260,6 +287,44 @@ describe("pure App Server panel", () => {
         "close-window:CHG-1/PRD",
         "end-session:CHG-1/PRD",
       ]);
+    });
+  });
+
+  it("普通收尾只释放观察者，批准收尾才归档并结束原生会话", async () => {
+    await withPanel(async ({ native, sessions }) => {
+      sessions.releaseObserver("CHG-1", "PRD");
+      await sessions.archiveAndEnd("CHG-1", "PRD");
+      assert.deepEqual(native.released, [{ changeId: "CHG-1", seat: "PRD" }]);
+      assert.deepEqual(native.archivedAndEnded, [{ changeId: "CHG-1", seat: "PRD" }]);
+    });
+  });
+
+  it("跑轮只把提示交给原生 TUI，不调用 App Server turn/start", async () => {
+    await withPanel(async ({ base, database, connection, native }) => {
+      new ChangeStore(database).setBrief("CHG-1", "按 StagePass rubric 完成这次变更");
+      const response = await fetch(`${base}/api/run?change=CHG-1`, { method: "POST" });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json() as { ran: boolean }).ran, true);
+      for (let attempt = 0; attempt < 20 && native.submissions.length === 0; attempt += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      assert.equal(connection.calls.some(({ method }) => method === "turn/start"), false);
+      assert.equal(native.submissions.length, 1);
+      assert.equal(native.submissions[0]!.seat, "PRD");
+      const promptPath = native.submissions[0]!.prompt.match(/(\/[^\s：]+\.md)/)?.[1];
+      assert.ok(promptPath, "原生 TUI 收到的应该是短文件信封");
+      assert.match(readFileSync(promptPath, "utf8"), /rubric|标准/i);
+    });
+  });
+
+  it("本机会话清理失败时拒绝删除并保留 Change", async () => {
+    await withPanel(async ({ base, database, native }) => {
+      native.forgetError = new Error("tmux cleanup failed");
+      const response = await fetch(`${base}/api/change?change=CHG-1`, { method: "DELETE" });
+      assert.equal(response.status, 500);
+      assert.match(await response.text(), /tmux cleanup failed/);
+      assert.deepEqual(native.forgotten, ["CHG-1"]);
+      assert.equal(new ChangeStore(database).read("CHG-1").id, "CHG-1");
     });
   });
 });

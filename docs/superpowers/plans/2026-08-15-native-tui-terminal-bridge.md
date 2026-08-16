@@ -601,7 +601,7 @@ git commit -m "feat: expose native Terminal lifecycle API"
 - Modify: `src/work/round-turn-runner.test.ts`
 - Modify: `src/architecture.test.ts`
 
-- [ ] **Step 1: Write failing end-to-end routing tests**
+- [x] **Step 1: Write failing end-to-end routing tests**
 
 Exercise the real `/api/run` seam with fakes and prove:
 
@@ -622,7 +622,7 @@ assert.deepEqual(nativeSessions.archivedAndEnded, [
 
 Prove routine business cleanup calls `releaseObserver`, while approved gate/delete calls `archiveAndEnd`/`forget`.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/panel-server.test.ts src/codex/app-server-transport.test.ts src/codex/turn-runner.test.ts src/work/round-turn-runner.test.ts
@@ -630,7 +630,7 @@ node --import tsx --test --test-concurrency=1 src/web/panel-server.test.ts src/c
 
 Expected: FAIL because production still dispatches direct App Server `turn/start`.
 
-- [ ] **Step 3: Replace the panel runtime seam**
+- [x] **Step 3: Replace the panel runtime seam**
 
 Replace `streams + appServerTransport` in `PanelOptions` with:
 
@@ -651,7 +651,7 @@ archiveAndEnd(changeId, seat): Promise<void>;
 
 Keep `has`, `active`, `quietForMs`, `recordCount`, and `turnEnded` backed by native state plus `AppServerHistory`. Rename internal `close` calls to `releaseObserver`; it must not close a Terminal window or kill tmux.
 
-- [ ] **Step 4: Wire managed runtime in `scripts/panel.ts`**
+- [x] **Step 4: Wire managed runtime in `scripts/panel.ts`**
 
 ```ts
 const appServer = await startManagedAppServer({
@@ -680,11 +680,11 @@ const nativeSessions = new NativeSessions({
 
 SIGINT/SIGTERM closes HTTP, DB, history subscription, and proxy control connection only. It does not stop daemon, kill tmux, close Terminal, archive, or delete binding.
 
-- [ ] **Step 5: Update archive and delete ownership**
+- [x] **Step 5: Update archive and delete ownership**
 
 Approved gate calls `archiveFinished` then `nativeSessions.archiveAndEnd(changeId, phase)`. Change/project delete calls `nativeSessions.forget` before deleting bindings and reports cleanup failure rather than claiming success.
 
-- [ ] **Step 6: Validate and commit**
+- [x] **Step 6: Validate and commit**
 
 ```bash
 node --import tsx --test --test-concurrency=1 src/web/panel-server.test.ts src/codex/app-server-transport.test.ts src/codex/turn-runner.test.ts src/work/round-turn-runner.test.ts src/app/decide-gate.test.ts src/app/workspace.test.ts src/architecture.test.ts

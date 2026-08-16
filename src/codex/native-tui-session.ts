@@ -3,16 +3,14 @@ import {
   AppServerSessionError,
   type AppServerSessionOptions,
 } from "./app-server-session";
-import {
-  AppServerSessionHost,
-  CodexTurnError,
-} from "./app-server-transport";
+import { AppServerSessionHost } from "./app-server-transport";
 import type { PromptFiles } from "./prompt-file";
 import type {
   TmuxIdentity,
   TmuxSession,
 } from "./tmux";
 import {
+  CodexTurnError,
   CodexUnavailableError,
   type CodexTransport,
   type TurnDelivery,

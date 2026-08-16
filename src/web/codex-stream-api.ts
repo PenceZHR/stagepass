@@ -9,7 +9,7 @@ const BODY_LIMIT = 64 * 1024;
 export type CodexStreamSeat = Exclude<Phase, "Done"> | "aside";
 
 /** The App Server accepted the turn, but StagePass could not make its seat durable. */
-export class ThreadBindingAfterTurnStartError extends Error {
+class ThreadBindingAfterTurnStartError extends Error {
   readonly code = "thread_binding_failed_after_turn_start" as const;
 
   constructor(

@@ -7,27 +7,7 @@ import {
 } from "./app-server-session";
 import {
   CodexUnavailableError,
-  type CodexTransport,
-  type TurnDelivery,
-  type TurnDispatch,
 } from "./transport";
-
-export interface AppServerTransportOptions extends AppServerSessionOptions {
-  readonly timeoutMs?: number;
-}
-
-export class CodexTurnError extends Error {
-  constructor(
-    readonly code:
-      | "codex_turn_failed"
-      | "codex_turn_interrupted"
-      | "codex_turn_timeout",
-    message: string,
-  ) {
-    super(message);
-    this.name = "CodexTurnError";
-  }
-}
 
 /**
  * Shared owner of App Server sessions.
@@ -111,60 +91,5 @@ export class AppServerSessionHost {
     const waiter = { reject };
     this.disconnectWaiters.add(waiter);
     return () => this.disconnectWaiters.delete(waiter);
-  }
-}
-
-/** CodexTransport implementation backed exclusively by structured App Server RPC. */
-export class AppServerCodexTransport implements CodexTransport {
-  constructor(
-    private readonly host: AppServerSessionHost,
-    private readonly options: AppServerTransportOptions,
-  ) {}
-
-  async runTurn(dispatch: TurnDispatch): Promise<TurnDelivery> {
-    const session = await this.host.open(dispatch.threadId, this.sessionOptions());
-    dispatch.onThread?.(session.threadId);
-    const turnId = await session.startTurn(dispatch.prompt);
-    let outcome;
-    try {
-      let unsubscribe = (): void => {};
-      const disconnected = new Promise<never>((_resolve, reject) => {
-        unsubscribe = this.host.subscribeDisconnect(reject);
-      });
-      try {
-        outcome = await Promise.race([
-          session.awaitTurn(turnId, this.options.timeoutMs ?? 0),
-          disconnected,
-        ]);
-      } finally {
-        unsubscribe();
-      }
-    } catch (error) {
-      if (error instanceof AppServerSessionError && error.code === "turn_timeout") {
-        throw new CodexTurnError(
-          "codex_turn_timeout",
-          `codex turn ${turnId} did not finish before the deadline`,
-        );
-      }
-      throw error;
-    }
-    if (outcome.status === "failed") {
-      throw new CodexTurnError("codex_turn_failed", `codex turn ${turnId} failed`);
-    }
-    if (outcome.status === "interrupted") {
-      throw new CodexTurnError(
-        "codex_turn_interrupted",
-        `codex turn ${turnId} was interrupted`,
-      );
-    }
-    return { threadId: session.threadId, text: outcome.text };
-  }
-
-  private sessionOptions(): AppServerSessionOptions {
-    const {
-      timeoutMs: _timeoutMs,
-      ...sessionOptions
-    } = this.options;
-    return sessionOptions;
   }
 }
