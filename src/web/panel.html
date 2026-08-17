@@ -1566,21 +1566,13 @@ body::after {
         -->
         <p class="last-outcome" id="last-outcome" hidden></p>
         <!--
-          在等你答的那道题（C 方案）。以前它只活在 Codex TUI 的 elicitation 表单里，
-          要模型挂着一轮把它端过去；挂不住就是 session_died_before_answering。
-          现在题在库里等着，你什么时候答都行。
+          闸门按钮排在**题的前面**。
 
-          格子横铺（`#open-question-fields` 是 auto-fit 网格）：一道裁决最多十格，
-          竖着排会把下面的闸门按钮顶出视野，而那两样是同一个动作的两半。
+          2026-08-17 先试过把它钉在动作带底上（sticky）。真机命中测试当场打脸：
+          那条不透明的横杠压在题的尾巴上，七个单选和提交按钮一个都点不到 ——
+          人点下去什么也不发生，和「按钮坏了」完全同形。排在题前面就永远看得见，
+          而且什么都不挡。
         -->
-        <form class="open-question" id="open-question" hidden>
-          <p class="open-question-head" id="open-question-head"></p>
-          <div id="open-question-fields"></div>
-          <div class="open-question-foot">
-            <button type="submit" id="open-question-submit">提交</button>
-            <p class="open-question-note" id="open-question-note" hidden></p>
-          </div>
-        </form>
         <div class="stage-gates" id="stage-gates-row">
           <!--
             旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
@@ -1598,6 +1590,22 @@ body::after {
           <button class="run" id="waive" type="button" hidden>接受风险</button>
           <button class="ask" id="ask" type="button" hidden>请 Codex 问我</button>
         </div>
+        <!--
+          在等你答的那道题（C 方案）。以前它只活在 Codex TUI 的 elicitation 表单里，
+          要模型挂着一轮把它端过去；挂不住就是 session_died_before_answering。
+          现在题在库里等着，你什么时候答都行。
+
+          格子横铺（`#open-question-fields` 是 auto-fit 网格）：一道裁决最多十格，
+          竖着排的话整道题会长得没边，而这一带是要和下半屏分高度的。
+        -->
+        <form class="open-question" id="open-question" hidden>
+          <p class="open-question-head" id="open-question-head"></p>
+          <div id="open-question-fields"></div>
+          <div class="open-question-foot">
+            <button type="submit" id="open-question-submit">提交</button>
+            <p class="open-question-note" id="open-question-note" hidden></p>
+          </div>
+        </form>
       </section>
 
       <div class="stage-cockpit-body">

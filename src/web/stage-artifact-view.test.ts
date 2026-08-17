@@ -148,6 +148,48 @@ describe("Stage artifact cockpit browser contract", () => {
     }
   });
 
+  it("sizes the two resident halves by leftover space, never by viewport fraction", () => {
+    /*
+     * 2026-08-17 真机，两条都是当天撞出来的：
+     *
+     * 1. 动作带原来写 `max-height: 52vh`。945px 高的窗口上它是 491px、内容 459px，
+     *    看着正好；换到 720px 的真窗口，52vh = 374px 把下半屏压到只剩 81px ——
+     *    三个标题挤在一起，一行内容都读不到。**「常驻」不是「DOM 里有」。**
+     *    视口比例根本不是判据：这一带该占多少取决于顶带用掉多少、下半屏至少
+     *    要留多少。
+     *
+     * 2. 闸门那一排曾经 `position: sticky` 钉在带底、带不透明背景。命中测试当场
+     *    打脸：那条横杠压在题的尾巴上，七个单选和提交按钮一个都点不到。
+     *    **在会滚的内容上面浮一块不透明的东西，就是在制造点不到的控件。**
+     */
+    const css = read("stage-artifact.css");
+    const act = css.slice(css.indexOf(".stage-act {"));
+    const actRule = act.slice(0, act.indexOf("}"));
+    assert.doesNotMatch(actRule, /max-height/, "动作带不许封顶 —— 它有多高由题决定");
+    assert.doesNotMatch(actRule, /overflow/, "动作带不许自己滚 —— 整页只有一个滚动容器");
+    assert.match(actRule, /flex:\s*0 0 auto/);
+
+    // 整页那个滚动容器。没有它，动作带一长就把下半屏挤没。
+    const view = css.slice(css.indexOf("#stage-view {"));
+    assert.match(view.slice(0, view.indexOf("}")), /overflow-y:\s*auto/);
+
+    const gates = css.slice(css.indexOf(".stage-gates {"));
+    const gatesRule = gates.slice(0, gates.indexOf("}"));
+    assert.doesNotMatch(gatesRule, /position:\s*(sticky|fixed|absolute)/,
+      "闸门那一排不许浮在会滚的内容上面");
+
+    const body = css.slice(css.indexOf(".stage-cockpit-body {"));
+    assert.match(body.slice(0, body.indexOf("}")), /min-height:\s*\d+px/,
+      "下半屏要有 px 保底，否则会被动作带压没");
+
+    // 按钮排在题**前面** —— 排在后面就又要靠浮起来才看得见。
+    const html = read("panel.html");
+    assert.ok(
+      html.indexOf('id="stage-gates-row"') < html.indexOf('id="open-question"'),
+      "闸门按钮要排在答题表单前面",
+    );
+  });
+
   it("builds the star map only while it is on screen", () => {
     // 星图默认不在屏幕上了。一进阶段就 installScene 等于开一个 WebGL 场景在
     // 看不见的地方转 —— 白烧电，而且 setSize 量的是一个还没有尺寸的盒子。
