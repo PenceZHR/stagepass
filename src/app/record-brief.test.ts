@@ -45,26 +45,32 @@ function freshDatabase(): Database.Database {
  * 一个「人会答」的会话：`type` 一被调用，就把当前那道题按 `pick` 答掉。
  * 这正是真实时序 —— 模型调 `stagepass_ask`、人在选择器里按，插件写库。
  */
+/**
+ * 一个「人会答」的浏览器。
+ *
+ * C 方案之后题落在库里等人，没有谁被打字唤醒 —— 所以这里不再挂在 `type` 上，
+ * 而是像人一样过一会儿去答。定时器 `unref` 掉，库一关就自己停。
+ */
 function answeringSessions(
   database: Database.Database,
   pick: (field: string, options: readonly string[]) => string,
 ): AskSessions {
   const questions = new QuestionStore(database);
-  return {
-    type: async () => {
-      const open = questions.open(CHANGE);
-      if (!open) return true;
-      const content: Record<string, string> = {};
-      for (const [field, spec] of Object.entries(
-        open.question.requestedSchema.properties,
-      )) {
-        content[field] = pick(field, spec.enum ?? []);
-      }
-      questions.answer(open.id, { action: "accept", content });
-      return true;
-    },
-    has: () => true,
+  const answerOpen = (): void => {
+    if (!database.open) { clearInterval(timer); return; }
+    const open = questions.open(CHANGE);
+    if (!open) return;
+    const content: Record<string, string> = {};
+    for (const [field, spec] of Object.entries(
+      open.question.requestedSchema.properties,
+    )) {
+      content[field] = pick(field, spec.enum ?? []);
+    }
+    questions.answer(open.id, { action: "accept", content });
   };
+  const timer = setInterval(answerOpen, 20);
+  timer.unref();
+  return { type: async () => { answerOpen(); return true; }, has: () => true };
 }
 
 describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）", () => {
@@ -122,18 +128,24 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
     database.close();
   });
 
-  it("会话在问出去之前就死了 —— **不许假装问出去了**", async () => {
+  it("会话死了也不影响这道题 —— 它在浏览器里等人", async () => {
+    /*
+     * 以前这道题要打进会话让模型转达，所以「会话死了」= 人永远看不到它，
+     * 用例得回 `not_asked` 并把题收掉。
+     *
+     * C 方案之后题就摆在页面上，**跟会话活不活着没关系**。会话死了照样问得出来，
+     * 没答上就是没答上（`no_answer_in_time`），不是「没问出去」。
+     */
     const database = freshDatabase();
     const result = await recordBrief({
-      database, sessions: { type: async () => false, has: () => true },
+      database, sessions: { type: async () => false, has: () => false },
       changeId: CHANGE, cannotAskNow: () => null,
-      propose: async () => PROPOSAL, timeoutMs: 10,
+      propose: async () => PROPOSAL, timeoutMs: 1_200,
     });
-    assert.equal(result.outcome.kind, "not_asked");
-    assert.equal(
-      new QuestionStore(database).open(CHANGE), null,
-      "题落了库，人却永远看不到它 —— 那道题必须收掉",
-    );
+    assert.equal(result.outcome.kind, "unanswered");
+    if (result.outcome.kind === "unanswered") {
+      assert.equal(result.outcome.reason, "no_answer_in_time");
+    }
     database.close();
   });
 
@@ -152,23 +164,24 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
 
   it("**全用选项答完的人一个字都不用打** —— 一趟就录进去", async () => {
     const database = freshDatabase();
-    let rounds = 0;
+    const questions = new QuestionStore(database);
+    const asked: string[] = [];
     const sessions = answeringSessions(database, (_, options) => {
       // 一律选第一个 —— 也就是「都不对，我自己写」一次都没点。
+      const open = questions.open(CHANGE);
+      if (open && !asked.includes(open.id)) asked.push(open.id);
       return options[0] ?? "";
     });
     const result = await recordBrief({
-      database,
-      sessions: {
-        type: async (...args) => { rounds += 1; return sessions.type(...args); },
-        has: sessions.has,
-      },
+      database, sessions,
       changeId: CHANGE, cannotAskNow: () => null,
       propose: async () => PROPOSAL, timeoutMs: 2_000,
     });
 
     assert.equal(result.outcome.kind, "recorded");
-    assert.equal(rounds, 1, "没人要写字，第二趟就不该弹 —— 弹了那句话就打了折");
+    // 判据从「打了几次字」换成「弹了几张表」—— 现在没有人被打字唤醒，
+    // 但「第二趟该不该弹」这条判据一个字没变。
+    assert.deepEqual(asked, [asked[0]], "没人要写字，第二趟就不该弹 —— 弹了那句话就打了折");
     assert.equal(result.closeSession, true, "办完了也要关，否则下一次派发永远是灰的");
 
     const brief = new ChangeStore(database).read(CHANGE).brief;
@@ -244,24 +257,29 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
 
     const result = await recordBrief({
       database,
-      sessions: {
-        type: async () => {
-          asked += 1;
+      sessions: (() => {
+        // 第二趟也在浏览器里答 —— 过一会儿才有动作，不再靠打字触发。
+        const answerSecond = (): void => {
+          if (!database.open) { clearInterval(timer); return; }
           const open = questions.open(CHANGE);
-          assert.ok(open);
-          assert.deepEqual(Object.keys(open.question.requestedSchema.properties), ["B01x", "BZ"]);
+          if (!open) return;
+          asked += 1;
+          assert.deepEqual(
+            Object.keys(open.question.requestedSchema.properties), ["B01x", "BZ"],
+          );
           questions.answer(open.id, {
             action: "accept",
             content: { B01x: "给值班运营同学使用", BZ: "都答完了，提交" },
           });
-          return true;
-        },
-        has: () => true,
-      },
+        };
+        const timer = setInterval(answerSecond, 20);
+        timer.unref();
+        return { type: async () => { answerSecond(); return true; }, has: () => true };
+      })(),
       changeId: CHANGE,
       cannotAskNow: () => null,
       propose: async () => { throw new Error("恢复时不该重跑模型"); },
-      timeoutMs: 10,
+      timeoutMs: 3_000,
     });
 
     assert.equal(result.outcome.kind, "recorded");
@@ -277,16 +295,17 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
     const result = await recordBrief({
       database,
       // action 是 decline：人按了 Esc。
+      // 人按了 Esc（action = decline）。题在浏览器里，所以过一会儿才有动作。
       sessions: (() => {
         const questions = new QuestionStore(database);
-        return {
-          type: async () => {
-            const open = questions.open(CHANGE);
-            if (open) questions.answer(open.id, { action: "decline", content: {} });
-            return true;
-          },
-          has: () => true,
+        const decline = (): void => {
+          if (!database.open) { clearInterval(timer); return; }
+          const open = questions.open(CHANGE);
+          if (open) questions.answer(open.id, { action: "decline", content: {} });
         };
+        const timer = setInterval(decline, 20);
+        timer.unref();
+        return { type: async () => { decline(); return true; }, has: () => true };
       })(),
       changeId: CHANGE, cannotAskNow: () => null,
       propose: async () => PROPOSAL, timeoutMs: 2_000,

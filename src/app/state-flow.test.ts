@@ -29,25 +29,26 @@ describe("acceptance · 一条 Change 从需求录入走到下一阶段", () => 
     changes.create("CHG-E2E", { projectId: "PRJ-E2E", title: "跑通状态流" });
     const questions = new QuestionStore(database);
 
+    // 录需求的表也在浏览器里答（C 方案）—— 像人一样过一会儿去答。
+    const answeringBrief = setInterval(() => {
+      if (!database.open) { clearInterval(answeringBrief); return; }
+      const open = questions.open("CHG-E2E");
+      if (!open) return;
+      const content = Object.fromEntries(Object.entries(
+        open.question.requestedSchema.properties,
+      ).map(([id, field]) => [id, field.enum?.[0] ?? ""]));
+      questions.answer(open.id, { action: "accept", content });
+    }, 20);
+    answeringBrief.unref();
     const brief = await recordBrief({
       database,
       changeId: "CHG-E2E",
       cannotAskNow: () => null,
       propose: async () => PROPOSAL,
-      sessions: {
-        has: () => true,
-        type: async () => {
-          const open = questions.open("CHG-E2E");
-          assert.ok(open);
-          const content = Object.fromEntries(Object.entries(
-            open.question.requestedSchema.properties,
-          ).map(([id, field]) => [id, field.enum?.[0] ?? ""]));
-          questions.answer(open.id, { action: "accept", content });
-          return true;
-        },
-      },
-      timeoutMs: 1_000,
+      sessions: { has: () => true, type: async () => true },
+      timeoutMs: 5_000,
     });
+    clearInterval(answeringBrief);
     assert.equal(brief.outcome.kind, "recorded");
     assert.ok(changes.read("CHG-E2E").brief);
     assert.equal(changes.read("CHG-E2E").state.status, "pending");

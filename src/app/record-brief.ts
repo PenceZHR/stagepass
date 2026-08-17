@@ -26,19 +26,6 @@ import { waitForAnswer, type AskSessions, type Unanswered } from "./ask-human";
  */
 
 /**
- * 打进 composer 那一行，叫模型去调 `stagepass_ask`。
- *
- * **和 `ask-human.ts` 里那一行不是同一句**，两边说的不是同一件事：那边是「问哪
- * 一个由 StagePass 决定」（裁决 / 接受风险），这边是「把这次改动要什么交给我来
- * 答」。合成一句会让其中一条路的模型收到一句不对题的指令。
- *
- * **必须是一行** —— composer 里一个换行就是提交。
- */
-const BRIEF_ASK_LINE =
-  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数**。"
-  + "它会把「这次改动要什么」交给我来答。不要替我回答，不要猜我想要什么，调用完就停下。";
-
-/**
  * 跑一次普通 turn 让模型读仓库、提问题，回它说的那段话。
  *
  * **会话怎么起、超时多少、插件怎么注册，全在 `web/` 那层。** 这一层只知道
@@ -185,23 +172,13 @@ export async function recordBrief(input: {
     }
 
     /*
-     * **打进同一个会话，不另起进程。** 完整理由在 `PanelSessions.type` 那段注释里，
-     * 两句话：`launchInto` 会把活着会话的 argv 丢掉；`close` 再起会掐断浏览器正在
-     * 读的流。两条都踩过。
+     * 不再打进会话叫模型转达 —— 和裁决、接受风险同一个理由。这张表是 StagePass
+     * 起草好的（模型只写了草稿的内容，表的形状是这一侧的），题落进库里，
+     * 面板画到浏览器上，人在那儿答。会话死不死跟这道题没关系了。
      */
-    if (!await sessions.type(changeId, phase, BRIEF_ASK_LINE)) {
-      // 会话在这中间死了。**不许假装问出去了** —— 题已经落库，人却永远看不到它。
-      questions.settle(questionId);
-      return { outcome: { kind: "not_asked", phase }, closeSession: false };
-    }
-
     const waited = await waitForAnswer({
       database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: input.timeoutMs,
-      // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）；
-      // 补问也要用这一句 —— ask-human 那句对录需求不对题。
-      prompt: BRIEF_ASK_LINE,
-      retypeLine: BRIEF_ASK_LINE,
+      timeoutMs: input.timeoutMs, waitsInBrowser: true,
     });
     if (!waited.answered) {
       // 题已经被 waitForAnswer 收掉了。

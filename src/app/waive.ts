@@ -9,7 +9,7 @@ import { CommandStore } from "../store/command-store";
 import { GapStore } from "../store/gap-store";
 import { QuestionStore } from "../store/question-store";
 import {
-  askFollowUp, launchAskPrompt, waitForAnswer, type AskSessions, type Unanswered,
+  askFollowUp, waitForAnswer, type AskSessions, type Unanswered,
 } from "./ask-human";
 
 /**
@@ -128,15 +128,14 @@ export async function waive(input: {
       question, expectedSnapshot: gate.snapshot,
     });
 
-    const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
-      "不要替我做决定，不要评价这些风险，调用完就停下。");
-    await input.launch({ phase, prompt: askPrompt });
-
+    /*
+     * 不再派一轮去当信使 —— 和裁决那条路同一个理由（`decide-gate.ts`）：
+     * 「哪几条风险可以带着走」这张表是 StagePass 自己算的，模型只是把它端给人。
+     * 题落进库里，面板画到浏览器上，人在那儿答。
+     */
     const waited = await waitForAnswer({
       database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: input.timeoutMs,
-      // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
-      prompt: askPrompt,
+      timeoutMs: input.timeoutMs, waitsInBrowser: true,
     });
     if (!waited.answered) {
       /*
@@ -167,7 +166,7 @@ export async function waive(input: {
       database, questions, sessions, changeId, phase, question: moreWaive,
       kind: "waive",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: input.timeoutMs, waitsInBrowser: true,
     });
     if (typeof second === "string") {
       return {

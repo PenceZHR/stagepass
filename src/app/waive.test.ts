@@ -65,15 +65,24 @@ async function waiveAnswering(
     type: async () => options.alive ?? true,
     has: () => options.alive ?? true,
   };
+  /*
+   * 人在**浏览器**里按下去的那一刻 —— 不再由 `launch` 触发（C 方案之后这条路
+   * 不派信使了），而是像人一样过一会儿去答。库一关就自己停。
+   */
+  let timer: ReturnType<typeof setInterval> | null = null;
+  if (answer) {
+    const answerOpen = (): void => {
+      if (!database.open) { if (timer) clearInterval(timer); return; }
+      const open = questions.open(CHANGE);
+      if (open) questions.answer(open.id, answer(open.id));
+    };
+    timer = setInterval(answerOpen, 20);
+    timer.unref();
+  }
   const running = waive({
     database, sessions, changeId: CHANGE,
     cannotAskNow: () => null,
-    launch: () => {
-      if (!answer) return;
-      // 人在选择器里按下去的那一刻 —— 插件写库，用例的循环下一拍就读到。
-      const open = questions.open(CHANGE);
-      if (open) questions.answer(open.id, answer(open.id));
-    },
+    launch: () => {},
     timeoutMs: 3_000,
   });
   return running;
@@ -151,14 +160,18 @@ describe("app · 接受风险这个用例（不经过 HTTP）", () => {
     database.close();
   });
 
-  it("进程死了和人还没答，说的**不是**同一句话", async () => {
+  it("会话死了也不影响这道题 —— 它在浏览器里等人", async () => {
+    /*
+     * 以前这道题要派一轮让模型转达，所以「会话死了」= 人永远看不到它。
+     * C 方案之后题就摆在页面上，跟会话活不活着没关系 —— 没答上就是没答上。
+     */
     const database = freshDatabase();
     openP1(database);
     const result = await waiveAnswering(database, null, { alive: false });
     assert.equal(result.outcome.kind, "unanswered");
     assert.equal(
       result.outcome.kind === "unanswered" && result.outcome.reason,
-      "session_died_before_answering",
+      "no_answer_in_time",
     );
     database.close();
   });
@@ -230,8 +243,8 @@ describe("app · 接受风险这个用例（不经过 HTTP）", () => {
     ] as never);
 
     /*
-     * 第一趟纯选项格，第二趟才要理由 —— 所以这里答两次：`launch` 那一次答第一趟，
-     * 第二趟是 `askFollowUp` 打进同一个会话，`type` 返回 true 之后题就落库了。
+     * 第一趟纯选项格，第二趟才要理由 —— 两趟都在浏览器里答，所以这里挂一个定时器
+     * 像人一样一趟一趟地答，不再由 `launch` / `type` 触发。
      */
     const questions = new QuestionStore(database);
     const answerWhatever = (): void => {
@@ -250,13 +263,19 @@ describe("app · 接受风险这个用例（不经过 HTTP）", () => {
       type: async () => { answerWhatever(); return true; },
       has: () => true,
     };
+    const timer = setInterval(() => {
+      if (!database.open) { clearInterval(timer); return; }
+      answerWhatever();
+    }, 20);
+    timer.unref();
 
     const result = await waive({
       database, sessions, changeId: CHANGE,
       cannotAskNow: () => null,
-      launch: () => { answerWhatever(); },
+      launch: () => {},
       timeoutMs: 3_000,
     });
+    clearInterval(timer);
 
     assert.equal(result.outcome.kind, "waived");
     assert.deepEqual(
