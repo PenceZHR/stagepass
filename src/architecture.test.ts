@@ -48,6 +48,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
   "domain/stage-artifact.ts": 0,
   /*
+   * 一轮的格子文件（C 方案的地基）。纯函数：铺结构、读回来、判合不合规，
+   * 除了 `domain/phase` 什么都不碰，所以和它同层。
+   */
+  "domain/round-slots.ts": 0,
+  /*
    * 真依赖图的解析器（H 档第一块）。它**只 import `typescript`**，我们自己的
    * 东西一个都不碰 —— 所以放最低层，谁都够得着。
    *
