@@ -29,8 +29,8 @@ describe("Questions the model drafted into its sheet", () => {
 
     const question = draftedQuestions({ phase: "PRD", drafted: read.filled })!;
     assert.match(question.message, /PRD/);
-    assert.deepEqual(Object.keys(question.requestedSchema.properties), ["G-01"]);
-    const field = question.requestedSchema.properties["G-01"]!;
+    assert.deepEqual(Object.keys(question.requestedSchema.properties), ["B-01"]);
+    const field = question.requestedSchema.properties["B-01"]!;
     assert.match(field.title, /结算失败时分数保留吗/);
     assert.match(field.title, /PRD 3\.2 没写/);
     assert.deepEqual(field.enum, [...DRAFTED_OPTIONS]);
@@ -43,7 +43,7 @@ describe("Questions the model drafted into its sheet", () => {
     );
     assert.equal(read.ok, true);
     const question = draftedQuestions({ phase: "PRD", drafted: read.filled })!;
-    assert.deepEqual(Object.keys(question.requestedSchema.properties), ["G-01", "G-02", "G-10"]);
+    assert.deepEqual(Object.keys(question.requestedSchema.properties), ["B-01", "B-02", "B-10"]);
   });
 
   it("survives the full ten a round is allowed to ask", () => {

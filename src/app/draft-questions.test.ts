@@ -72,9 +72,9 @@ describe("Questions the model drafts into a sheet", () => {
       const record = f.questions.read(result.questionId!);
       assert.equal(record.kind, "clarification");
       const fields = record.question.requestedSchema.properties;
-      assert.deepEqual(Object.keys(fields), ["G-01", "G-02"]);
-      assert.match(fields["G-01"]!.title, /结算失败时分数保留吗/);
-      assert.deepEqual(fields["G-01"]!.enum, [...DRAFTED_OPTIONS]);
+      assert.deepEqual(Object.keys(fields), ["B-01", "B-02"]);
+      assert.match(fields["B-01"]!.title, /结算失败时分数保留吗/);
+      assert.deepEqual(fields["B-01"]!.enum, [...DRAFTED_OPTIONS]);
     });
   });
 

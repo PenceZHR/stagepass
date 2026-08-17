@@ -3,6 +3,7 @@ import {
   TurnResultUnparsableError,
 } from "./turn";
 import { parseTurnResult } from "./turn";
+import type { FilledSlot, SlotDocumentResult } from "./round-slots";
 import { isHumanGap, templateGapId } from "./gap";
 import {
   missingSections, renderTemplate, type TemplateSection,
@@ -1310,5 +1311,55 @@ export function readRound(
       verdicts,
     },
     blueOverall: overallIn(transcript.blue),
+  };
+}
+
+/**
+ * 一轮的产出从**格子文件**读，不从自由文本里捞。
+ *
+ * 旧路让模型自己写一段 ```json，于是形状是它发明的：2026-08-02 反方发明了
+ * `{"id","question"}`（没有 severity）整轮作废；2026-08-05 红方把 blockers 交成
+ * 字符串数组，解析在「要不要用」之前就抛，蓝方同一轮 11 条有效发现陪葬；
+ * 2026-08-06 反方漏了 `artifactIds`，每一轮都整轮作废。
+ *
+ * 现在结构是 StagePass 铺的，模型只填值；`artifactIds` 也预填，根本不问它要。
+ * **哪一边不合规就说是哪一边** —— 这两件事人要做的完全不同。
+ */
+export function readRoundFromSlots(input: {
+  readonly phase: string;
+  readonly round: number;
+  readonly red: SlotDocumentResult;
+  readonly blue: SlotDocumentResult;
+  readonly verdicts: Readonly<Record<string, Verdict>>;
+  readonly blueOverall: string | null;
+}): { readonly ok: true; readonly reading: RoundReading }
+  | { readonly ok: false; readonly reason: string } {
+  if (!input.red.ok) return { ok: false, reason: `正方的格子文件：${input.red.reason}` };
+  if (!input.blue.ok) return { ok: false, reason: `反方的格子文件：${input.blue.reason}` };
+
+  const asFinding = (slot: FilledSlot) => ({
+    id: slot.id,
+    severity: slot.severity as "P0" | "P1" | "P2",
+    title: slot.title as string,
+    where: slot.where ?? null,
+    why: slot.why ?? null,
+    owner: slot.owner ?? null,
+  });
+
+  /*
+   * 红方的发现只在它评别人的阶段算数（Review / QA）—— 和旧解析器的
+   * `discardBlockers: !redReviewsOthers(phase)` 一字不差。换的是来源，不是规则。
+   */
+  const found = redReviewsOthers(input.phase)
+    ? dedupeById([...input.red.filled.map(asFinding), ...input.blue.filled.map(asFinding)])
+    : input.blue.filled.map(asFinding);
+
+  return {
+    ok: true,
+    reading: {
+      artifactIds: input.red.artifacts,
+      outcome: { round: input.round, found, verdicts: input.verdicts },
+      blueOverall: input.blueOverall,
+    },
   };
 }

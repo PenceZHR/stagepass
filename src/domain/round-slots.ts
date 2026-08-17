@@ -98,14 +98,19 @@ export type SlotDocumentResult =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * 格子的 id。**补零**：`G-01` … `G-15`。
+ * 格子的 id。**带角色、补零**：红方 `R-01` … `R-15`，反方 `B-01` … `B-15`。
+ *
+ * 角色前缀不是装饰：一轮里红蓝两份文件会被并到同一份发现名单上，而名单是按 id
+ * 去重的。两边都叫 `G-01` 的话，后来的那条会被当成重复直接吃掉 —— 实测里
+ * 红方那条就这么没了。
  *
  * 不补零的话字典序是 `G-1, G-10, G-11, …, G-2` —— 而问句表要经过
  * `domain/question.ts` 的 `compose`，那里有一条 `order_not_sorted` 守卫
  * （2026-07-30 实测出来的客户端行为：表单按字段名排序）。补零之后字典序和
  * 数字序一致，文件本身读起来也不会 G-10 排在 G-2 前面。
  */
-const slotId = (index: number): string => `G-${String(index + 1).padStart(2, "0")}`;
+const slotId = (role: SlotRole, index: number): string =>
+  `${role === "red" ? "R" : "B"}-${String(index + 1).padStart(2, "0")}`;
 
 const headOf = (header: SlotHeader): Readonly<Record<string, unknown>> => ({
   change: header.changeId,
@@ -123,7 +128,7 @@ export function createSlotDocument(header: SlotHeader): string {
     ...(header.wantsOverall === true ? { overall: null } : {}),
     slots: Array.from({ length: SLOT_COUNT }, (_, index) =>
       Object.fromEntries(header.shape.keys.map((key) =>
-        [key, key === "id" ? slotId(index) : null]))),
+        [key, key === "id" ? slotId(header.role, index) : null]))),
   }, null, 2)}\n`;
 }
 
@@ -247,11 +252,11 @@ export function readSlotDocument(
     const keys = Object.keys(slot).sort();
     if (JSON.stringify(keys) !== JSON.stringify([...header.shape.keys].sort())) {
       return refuse(
-        `${slotId(index)} 的字段被改过：只能填值，不能增删字段（实际 ${keys.join(", ")}）。`,
+        `${slotId(header.role, index)} 的字段被改过：只能填值，不能增删字段（实际 ${keys.join(", ")}）。`,
       );
     }
-    if (slot.id !== slotId(index)) {
-      return refuse(`第 ${index + 1} 个格子的 id 应该是 ${slotId(index)}，实际 ${
+    if (slot.id !== slotId(header.role, index)) {
+      return refuse(`第 ${index + 1} 个格子的 id 应该是 ${slotId(header.role, index)}，实际 ${
         JSON.stringify(slot.id)
       }；id 由 StagePass 写死，不该被改。`);
     }
@@ -266,7 +271,7 @@ export function readSlotDocument(
     const missing = header.shape.required.filter((key) => values.get(key) == null);
     if (missing.length > 0) {
       return refuse(
-        `${slotId(index)} 填了一半：有内容但没有 ${missing.join(" 和 ")}。`
+        `${slotId(header.role, index)} 填了一半：有内容但没有 ${missing.join(" 和 ")}。`
         + "半条比没有更糟，本轮作废。",
       );
     }
@@ -274,12 +279,12 @@ export function readSlotDocument(
       const value = values.get(key) ?? null;
       if (value !== null && !allowed.includes(value)) {
         return refuse(
-          `${slotId(index)} 的 ${key} 必须是 ${allowed.join(" / ")} 之一，`
+          `${slotId(header.role, index)} 的 ${key} 必须是 ${allowed.join(" / ")} 之一，`
           + `实际 ${JSON.stringify(slot[key])}。`,
         );
       }
     }
-    filled.push({ id: slotId(index), ...Object.fromEntries(values) } as FilledSlot);
+    filled.push({ id: slotId(header.role, index), ...Object.fromEntries(values) } as FilledSlot);
   }
 
   if (filled.length > SLOT_FILL_LIMIT) {

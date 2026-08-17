@@ -97,7 +97,7 @@ describe("Slot files on disk", () => {
       const files = createSlotFiles({ root });
       const head = { ...HEAD, shape: QUESTION_SHAPE, options: OPTIONS };
       const doc = JSON.parse(readFileSync(files.lay(head), "utf8"));
-      assert.deepEqual({ ...doc.slots[0] }, { id: "G-01", question: null, why: null });
+      assert.deepEqual({ ...doc.slots[0] }, { id: "B-01", question: null, why: null });
       assert.equal(Array.isArray(doc.options), true);
     });
   });
