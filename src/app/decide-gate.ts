@@ -297,7 +297,7 @@ async function obtainGateAnswer(input: {
   const waited = await waitForAnswer({
     database: input.database, questions: input.questions, sessions: input.sessions,
     changeId: input.changeId, phase: input.phase, questionId,
-    timeoutMs: input.timeoutMs, waitsInBrowser: true,
+    timeoutMs: input.timeoutMs,
   });
   return waited.answered
     ? { kind: "answered", question, questionId, answer: waited.answer }
@@ -476,7 +476,7 @@ export async function decideGate(input: {
       database, questions, sessions, changeId, phase, question: more,
       kind: "gate_decision",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs, waitsInBrowser: true,
+      timeoutMs: input.timeoutMs,
     });
     if (typeof second === "string") {
       return {

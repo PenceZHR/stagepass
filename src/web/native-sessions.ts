@@ -133,14 +133,8 @@ function targetOf(
   seat: string,
   threadId: string,
   cwd: string,
-  config?: Readonly<Record<string, unknown>>,
 ): TerminalTarget {
-  return {
-    marker: terminalMarker(changeId, seat),
-    threadId,
-    cwd,
-    ...(config === undefined ? {} : { config }),
-  };
+  return { marker: terminalMarker(changeId, seat), threadId, cwd };
 }
 
 interface ActiveNativeTurn {
@@ -406,7 +400,6 @@ export class NativeSessions implements NativeRuntimeSessions {
         seat,
         opened.threadId,
         this.cwd(changeId),
-        config,
       );
       const terminal = await this.options.terminal.status(target);
       if (terminal === "open") {
@@ -615,7 +608,6 @@ export class NativeSessions implements NativeRuntimeSessions {
         seat,
         resolvedThreadId,
         this.cwd(changeId),
-        config,
       ));
     }
     this.liveSeats.add(keyOf(changeId, seat));

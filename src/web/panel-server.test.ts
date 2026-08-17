@@ -312,11 +312,11 @@ describe("pure App Server panel", () => {
   it("面板重启后会从持久 binding 续发补问，不拿内存里的 liveSeats 当生死", async () => {
     await withPanel(async ({ native, sessions }) => {
       assert.equal(native.has(), false, "模拟刚重启，内存注册表是空的");
-      assert.equal(await sessions.type("CHG-1", "PRD", "调用 stagepass_ask"), true);
+      assert.equal(await sessions.type("CHG-1", "PRD", "随便打一行"), true);
       assert.deepEqual(native.started, [{
         changeId: "CHG-1",
         seat: "PRD",
-        prompt: "调用 stagepass_ask",
+        prompt: "随便打一行",
       }]);
     });
   });

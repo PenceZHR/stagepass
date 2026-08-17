@@ -135,7 +135,7 @@ export async function waive(input: {
      */
     const waited = await waitForAnswer({
       database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: input.timeoutMs, waitsInBrowser: true,
+      timeoutMs: input.timeoutMs,
     });
     if (!waited.answered) {
       /*
@@ -166,7 +166,7 @@ export async function waive(input: {
       database, questions, sessions, changeId, phase, question: moreWaive,
       kind: "waive",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs, waitsInBrowser: true,
+      timeoutMs: input.timeoutMs,
     });
     if (typeof second === "string") {
       return {

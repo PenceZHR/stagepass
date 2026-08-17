@@ -2,7 +2,6 @@ import type Database from "better-sqlite3";
 
 import type { Phase } from "../domain/phase";
 import type { Answer, Question, QuestionKind } from "../domain/question";
-import { BindingStore } from "../store/binding-store";
 import type { QuestionStore } from "../store/question-store";
 
 /**
@@ -66,29 +65,6 @@ export interface AskSessions {
 }
 
 /**
- * 打进 composer 那一行，叫模型去调 `stagepass_ask`。
- *
- * **必须是一行** —— composer 里一个换行就是提交（`PanelSessions.type`）。
- */
-export const ASK_TOOL_LINE =
-  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——"
-  + "问哪一个由 StagePass 决定。不要替我做决定、不要猜我想选什么，调用完就停下。";
-
-/**
- * 起会话（`launchInto`）时带的提示词：调 `stagepass_ask`、别替人答。
- *
- * 前两句在每个落点一字不差 —— 拷贝必然漂移，而漂移的那一天某条路上的模型会说
- * 「没有这个工具」。后两句跟着这次问的是什么走。多行没关系：这是 argv 的 prompt，
- * 不进 composer（composer 那条路用 `ASK_TOOL_LINE`，一行是它的硬约束）。
- */
-export const launchAskPrompt = (hands: string, dont: string): string => [
-  "调用 stagepass 这个 MCP 服务器的 stagepass_ask 工具一次。**它不收任何参数** ——",
-  "问哪一个由 StagePass 决定。",
-  hands,
-  dont,
-].join("\n");
-
-/**
  * 没答上的两种。**它们要做的事完全不同** —— 一种是人还没去答，另一种是那边的
  * 进程早就没了；原来两种回来的都是同一个空结果。
  */
@@ -123,19 +99,24 @@ export type AnswerWait =
  *
  * > 2026-08-03 真机撞到：裁决表挂了 63 分钟（截止 45 分钟），会话被收掉了，而
  * > 那道题在库里还是 `open` —— 一道**没有任何人在等**的题。人这时候开个终端让
- * > 模型调 `stagepass_ask`，就会被端出这道死题；答了还会被 fence 以
+ * > 打开面板，就会被端出这道死题；答了还会被 fence 以
  * > `GateMovedError` 拒掉。
  *
  * 裁决和录需求当时都补上了 `settle`，**接受风险那份没有**（2026-08-05 发现）。
  * 四份拷贝里漏掉一份，是这种形状的错误的默认结局 —— 所以这里不是「再补一份」，
  * 是把四份合成一份。
  *
- * ## 两条硬约束
+ ## 会话不再是判据（2026-08-17）
  *
- * - **进程没了就别再等了。** 2026-07-30 实测：阶段绑的线程被 Codex 归档，
- *   `codex resume` 一起来就退，而这里原来只盯答案 —— 对着一个死掉的终端等满 15
- *   分钟，界面上一句话都没有。「在等你选」和「那边早就没了」长得一模一样，正是
- *   这个项目从头到尾在防的那种。
+ * 以前题要打进会话让模型转达，所以「会话没了」= 答案永远不会来，这里要盯着进程、
+ * 还要防「turn 结束了而题没答」（模型一个工具都没调就完了 turn）。
+ *
+ * C 方案之后题就摆在页面上，人什么时候答都行 —— 那两类死法整类消失，连同它们的
+ * 探测机器（`recordCount` / `turnEnded` / 补打一行）一起拆掉。**没有留回退**：
+ * 两条路同时活着，就是同一件事只有一条做对。
+ *
+ * ## 一条硬约束
+ *
  * - **没答上就把题收掉**，在返回之前。答上了**不收** —— 裁决那条路后面还要
  *   `assertFenceHolds` / `apply` 拿着这道题走闸门，提前收掉就把它抽走了。
  *   要在成功之后也收的（录需求、第二趟追问）自己收，那是它们的事。
@@ -148,72 +129,10 @@ export async function waitForAnswer(input: {
   phase: Phase;
   questionId: string;
   timeoutMs: number;
-  /**
-   * 把这道题送进会话的**那句话**（argv 的提示词，或打进 composer 的 ask 行）。
-   * 给了才开「turn 已死」探测 —— 探测认的就是这句话装在哪一轮里。
-   */
-  prompt?: string;
-  /**
-   * 这道题**在浏览器里等人**（C 方案），没往任何会话里送过。
-   *
-   * 送进过会话的题，会话就是它的命 —— 会话没了，答案永远不会来，所以 `has()` 是
-   * 活性判据。而落在库里等人的题**压根没有会话这回事**：再拿 `has()` 判活，
-   * 会把每一道题都在第一圈当场判死。
-   *
-   * 默认 false：老调用方（包括不递 `prompt` 那一种）行为一个字不变。
-   */
-  waitsInBrowser?: boolean;
-  /**
-   * 补问时打进 composer 的那一行。默认 `ASK_TOOL_LINE`；录需求要递自己那句 ——
-   * 两句调的是同一个工具，但措辞对着不同的事，混用会让模型收到一句不对题的指令
-   * （`record-brief.ts` 顶上的理由）。**必须是一行**：composer 里换行就是提交。
-   */
-  retypeLine?: string;
 }): Promise<AnswerWait> {
-  const { questions, sessions, changeId, phase, questionId } = input;
+  const { questions, questionId } = input;
   const deadline = Date.now() + input.timeoutMs;
-  let reason: Unanswered = "no_answer_in_time";
-  /*
-   * **「turn 结束了而题没答」是第三种死法**，前两个判据都看不见它：进程活着
-   * （会话仍可恢复），答案永远不会来（人对表单的任何动作都会落答案，所以没答案
-   * = 模型压根没把题端给人）。2026-08-09 真机：模型一个工具都没调、吐了条空话
-   * 就完了 turn，人对着静止的 composer 干等了 12 分钟。
-   *
-   * 治法和 transport 的「补一下回车」同一个形状，三重闸：那一轮**确实结束**
-   * （App Server turn 已结束）、答案**确实没有**、只补一次。补的那句是
-   * `ASK_TOOL_LINE` —— 新的一轮，探测的起点和认的话都要跟着换。
-   */
-  let needle = input.prompt ?? null;
-  let from = needle !== null
-    ? await sessions.recordCount?.(changeId, phase) ?? null
-    : null;
-  // 见 `waitsInBrowser` 那条注释。默认仍是「会话就是这道题的命」，老调用方一个字不用改。
-  const relayed = input.waitsInBrowser !== true;
-  let retyped = false;
   while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
-    if (relayed && !sessions.has(changeId, phase)) {
-      reason = "session_died_before_answering";
-      break;
-    }
-    if (from !== null && needle !== null
-      && await sessions.turnEnded?.(changeId, phase, from, needle) === true
-      // 答案和 task_complete 之间隔着模型收尾的那几秒，但还是再看一眼 —— 有了
-      // 答案就不该补，多打的那一轮只会白白弹一次「此刻没有在等任何问题」。
-      && !questions.readAnswerFor(questionId)) {
-      if (retyped) {
-        reason = "ask_turn_ended_without_answer";
-        break;
-      }
-      retyped = true;
-      const line = input.retypeLine ?? ASK_TOOL_LINE;
-      // 起点先取、再打字：打进去的那句话之后的记录才算新一轮的。
-      from = await sessions.recordCount?.(changeId, phase) ?? from;
-      needle = line;
-      if (!await sessions.type(changeId, phase, line)) {
-        reason = "session_died_before_answering";
-        break;
-      }
-    }
     await new Promise((resolve) => { setTimeout(resolve, 1_000); });
   }
   const answer = questions.readAnswerFor(questionId);
@@ -221,14 +140,9 @@ export async function waitForAnswer(input: {
   questions.settle(questionId);
   // 「没答上」也是下场，必须留得住（§3.2·5）—— `applied` + 空下场和一次正常
   // 落地在库里长得一模一样，事后谁也说不清这道题发生过什么。
-  questions.recordOutcome(questionId, { kind: "unanswered", reason });
-  return {
-    answered: false,
-    reason,
-    threadId: reason === "session_died_before_answering"
-      ? new BindingStore(input.database).find(changeId, phase)?.threadId ?? null
-      : null,
-  };
+  questions.recordOutcome(questionId, { kind: "unanswered", reason: "no_answer_in_time" });
+  // 没有会话了，也就没有「那条线程的 id」可给 —— 解药不再是 unarchive。
+  return { answered: false, reason: "no_answer_in_time", threadId: null };
 }
 
 /**
@@ -249,8 +163,6 @@ export async function askFollowUp(input: {
   questionId: string;
   expectedSnapshot: string;
   timeoutMs: number;
-  /** 这一趟也在浏览器里答（C 方案）：不往会话里打字，也不拿会话判活。 */
-  waitsInBrowser?: boolean;
 }): Promise<Answer | "session_died_before_asking" | Unanswered> {
   const { questions, changeId, phase, questionId } = input;
   let existing = null;
@@ -268,22 +180,8 @@ export async function askFollowUp(input: {
       question: input.question, expectedSnapshot: input.expectedSnapshot,
     });
   }
-  /*
-   * 浏览器那条路上第二趟和第一趟一样：题登记完就摆在页面上，没有谁要被打字唤醒。
-   * 往一个不存在的会话里打字只会得到一个假的 `session_died_before_asking`。
-   */
-  if (input.waitsInBrowser !== true) {
-    if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
-      questions.settle(questionId);
-      questions.recordOutcome(questionId,
-        { kind: "unanswered", reason: "session_died_before_asking" });
-      return "session_died_before_asking";
-    }
-  }
-  // 第二趟是打进 composer 的那句 ask 行送出去的 —— 探测认它。
-  const waited = input.waitsInBrowser === true
-    ? await waitForAnswer({ ...input, waitsInBrowser: true })
-    : await waitForAnswer({ ...input, prompt: ASK_TOOL_LINE });
+  // 第二趟和第一趟一样：题登记完就摆在页面上，没有谁要被打字唤醒。
+  const waited = await waitForAnswer(input);
   if (!waited.answered) return waited.reason;
   // 第二趟的答案没有下一步要拿着这道题走，所以这里就收掉。
   questions.settle(questionId);

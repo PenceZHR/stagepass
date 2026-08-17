@@ -6,22 +6,21 @@ import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
-import { ASK_TOOL_LINE, waitForAnswer, type AskSessions } from "./ask-human";
+import { waitForAnswer, type AskSessions } from "./ask-human";
 
 /**
- * `waitForAnswer` 的「turn 已死」探测。
+ * `waitForAnswer`：题在浏览器里等人。
  *
- * 2026-08-09 真机：裁决会话的模型一个工具都没调、吐了条空话就结束了 turn ——
- * 而这里的活性判据只有「答案落没落」和「进程死没死」，于是人对着一个静止的
- * composer 干等了 12 分钟。这组测试钉的就是那个症状：turn 结束而题没答，
- * 要先补问一次，再不行就把「为什么没答上」说出来并落库。
+ * 2026-08-17 之前这里还要盯着会话（题是打进会话让模型转达的），于是有两种死法：
+ * 会话没了、以及「turn 结束了而题没答」。C 方案之后题就摆在页面上，那两类整类
+ * 消失，连同它们的探测机器一起拆掉了 —— 这组测试钉的是剩下的那一条：
+ * 答上了就交出去，没答上就把题收掉并把下场留住。
  */
 
 const PROJECT = "PRJ-A";
 const CHANGE = "CHG-A";
 const PHASE = "PRD" as const;
 const QUESTION = "Q-1";
-const PROMPT = "调用 stagepass_ask 一次";
 
 function freshDatabase(): Database.Database {
   const database = new Database(":memory:");
@@ -56,105 +55,6 @@ function outcomeOf(database: Database.Database): unknown {
   };
 }
 
-describe("waitForAnswer：ask 那一轮结束了而题没答", () => {
-  it("先补问一次；再死一次才放弃，且下场落库", async () => {
-    const database = freshDatabase();
-    const questions = asked(database);
-    const typed: string[] = [];
-    const sessions: AskSessions = {
-      type: async (_change, _phase, line) => { typed.push(line); return true; },
-      has: () => true,
-      recordCount: () => 7,
-      // 无论第一句提示词还是补问的那句，那一轮都「结束了」—— 连抽两次风。
-      turnEnded: () => true,
-    };
-
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 60_000, prompt: PROMPT,
-    });
-
-    assert.equal(waited.answered, false);
-    if (!waited.answered) {
-      assert.equal(waited.reason, "ask_turn_ended_without_answer");
-    }
-    // 补问恰好一次，打的是那句固定的 ask 行。
-    assert.deepEqual(typed, [ASK_TOOL_LINE]);
-    assert.deepEqual(outcomeOf(database), {
-      status: "applied",
-      outcome: { kind: "unanswered", reason: "ask_turn_ended_without_answer" },
-    });
-  });
-
-  it("补问救回来了：第二轮里人答了，正常返回答案", async () => {
-    const database = freshDatabase();
-    const questions = asked(database);
-    let ended = true; // 第一轮已经死了
-    const sessions: AskSessions = {
-      type: async () => {
-        // 补问送达 → 这一轮「还在跑」，且人马上答了。
-        ended = false;
-        questions.answer(QUESTION, { action: "accept", content: {} });
-        return true;
-      },
-      has: () => true,
-      recordCount: () => 7,
-      turnEnded: () => ended,
-    };
-
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 60_000, prompt: PROMPT,
-    });
-
-    assert.equal(waited.answered, true);
-  });
-
-  it("认不出线程（recordCount 说 null）就不探，不乱补", async () => {
-    const database = freshDatabase();
-    const questions = asked(database);
-    const typed: string[] = [];
-    const sessions: AskSessions = {
-      type: async (_c, _p, line) => { typed.push(line); return true; },
-      has: () => true,
-      recordCount: () => null,
-      turnEnded: () => true, // 就算它说结束了也不该被问到
-    };
-
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 0, prompt: PROMPT,
-    });
-
-    assert.equal(waited.answered, false);
-    if (!waited.answered) assert.equal(waited.reason, "no_answer_in_time");
-    assert.deepEqual(typed, []);
-  });
-
-  it("没递 prompt（老调用方）行为不变，但下场照样落库", async () => {
-    const database = freshDatabase();
-    const questions = asked(database);
-    const sessions: AskSessions = {
-      type: async () => true,
-      has: () => false, // 进程直接就没了
-    };
-
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 60_000,
-    });
-
-    assert.equal(waited.answered, false);
-    if (!waited.answered) {
-      assert.equal(waited.reason, "session_died_before_answering");
-    }
-    assert.deepEqual(outcomeOf(database), {
-      status: "applied",
-      outcome: { kind: "unanswered", reason: "session_died_before_answering" },
-    });
-  });
-});
-
 describe("waitForAnswer：题在浏览器里等人（C 方案）", () => {
   it("没有会话也照等 —— 没有人需要挂着一轮", async () => {
     // 旧路要模型挂着把表单端给人，所以「会话没了」= 这道题废了。C 之下题落在库里，
@@ -170,7 +70,6 @@ describe("waitForAnswer：题在浏览器里等人（C 方案）", () => {
     const waiting = waitForAnswer({
       database, questions, sessions, changeId: CHANGE, phase: PHASE,
       questionId: QUESTION, timeoutMs: 4_000,
-      waitsInBrowser: true, // 没往任何会话里送过 —— 就没有会话可死
     });
 
     // 人过一会儿在浏览器里答了
@@ -184,19 +83,24 @@ describe("waitForAnswer：题在浏览器里等人（C 方案）", () => {
     database.close();
   });
 
-  it("还是认得出会话死了 —— 只要这道题确实送进过会话", async () => {
+  it("没答上就是没答上，题要收掉、下场要留住", async () => {
+    // 「没答上」也是下场（§3.2·5）—— `applied` + 空下场和一次正常落地在库里
+    // 长得一模一样，事后谁也说不清这道题发生过什么。
     const database = freshDatabase();
     const questions = asked(database);
     const sessions: AskSessions = { type: async () => true, has: () => false };
 
     const waited = await waitForAnswer({
       database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 4_000,
-      prompt: PROMPT, // 送进过会话
+      questionId: QUESTION, timeoutMs: 1_200,
     });
 
     assert.equal(waited.answered, false);
-    assert.equal(waited.reason, "session_died_before_answering");
+    assert.equal(waited.answered === false && waited.reason, "no_answer_in_time");
+    assert.deepEqual(outcomeOf(database), {
+      status: "applied",
+      outcome: { kind: "unanswered", reason: "no_answer_in_time" },
+    });
     database.close();
   });
 });

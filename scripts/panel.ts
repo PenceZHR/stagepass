@@ -25,7 +25,6 @@ import {
   startManagedAppServer,
   type ManagedAppServer,
 } from "../src/codex/app-server-daemon";
-import { nativeTuiServerRequest } from "../src/codex/native-tui-owner";
 import { createPromptFiles } from "../src/codex/prompt-file";
 import { prepareSchema } from "../src/db/schema";
 import { PHASES } from "../src/domain/phase";
@@ -299,7 +298,19 @@ const appServer = await startManagedAppServer({
   command: "codex",
   cwd: process.cwd(),
   onNotification: () => {},
-  onServerRequest: nativeTuiServerRequest,
+  /*
+   * StagePass 不再注册任何 MCP server，所以正常情况下**不该有**反向请求打回来。
+   * 收到一条就说明有别处给这条线程配了 MCP，而它把审批/elicitation 路由到了
+   * 这条控制连接上 —— 那属于官方 TUI，我们绝不代答，但也绝不安静地拒。
+   */
+  onServerRequest: (request) => {
+    console.error(
+      `[app-server] 反向请求 ${request.method} 打到了 StagePass 控制连接上`
+      + `（thread ${String((request.params as { threadId?: unknown }).threadId)}）。`
+      + "交互归官方 TUI；StagePass 这一侧已经不注册任何 MCP server。",
+    );
+    return Promise.reject(new Error("interaction_owner_is_native_tui"));
+  },
   onStderr: (message) => {
     if (message !== "") console.error(`[app-server] ${message}`);
   },

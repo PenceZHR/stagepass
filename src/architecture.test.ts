@@ -112,8 +112,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/app-server-websocket.ts": 2,
   // 详细提示词只落进 0600 临时文件；给原生 TUI 的只是短信封和路径。
   "codex/prompt-file.ts": 2,
-  // 反向交互仍归原生 TUI；StagePass 只观察结构化 turn 终态。
-  "codex/native-tui-owner.ts": 2,
   "system/process.ts": 2,
   /*
    * 格子文件落盘。持久路径（`~/.stagepass/rounds`），不是临时目录 —— 清掉之后
@@ -225,10 +223,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 同层，但**不认识会话** —— 没有人需要挂着一轮，所以也没有「会话死了」这种下场。
    */
   "app/draft-questions.ts": 3,
-  "plugin/protocol.ts": 3,
-  "plugin/server.ts": 3,
-  // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
-  // 模型听的人，而插件在 L3 —— 这两个类型再高一层，L3 就 import 不到了。
+  // 「逐条问、只收内容」那套。和 question 同层 —— 2026-08-17 拆掉 MCP 之后念它给
+  // 人听的是浏览器，但类型的位置没变。
   // 名单里装的是 gap（L1）和 criterion（L5），但装的是什么不决定它住哪层，
   // **谁必须够得着它**才决定。
   "domain/worklist.ts": 3,

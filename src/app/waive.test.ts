@@ -155,7 +155,7 @@ describe("app · 接受风险这个用例（不经过 HTTP）", () => {
     assert.equal(result.closeSession, true, "放弃了就该把那个会话关掉");
     assert.equal(
       new QuestionStore(database).open(CHANGE), null,
-      "留着一道 open 的题 —— 下一个调 stagepass_ask 的会被端出这道死题",
+      "留着一道 open 的题 —— 下一个打开面板的人会被端出这道死题",
     );
     database.close();
   });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -228,93 +228,6 @@ describe("Terminal.app disposable Codex client", () => {
     assert.match(marker, /^STAGEPASS:sp_[0-9a-f]{20}$/);
     assert.equal(marker, terminalMarker("CHG-1", "PRD"));
     assert.notEqual(marker, terminalMarker("CHG-1", "Tech"));
-  });
-});
-
-describe("Codex MCP config reaches the resumed TUI", () => {
-  // 2026-08-17 真机：TUI 在正确的线程上恢复了，读到了题面，然后说
-  // 「无法调用：当前会话未提供 stagepass_ask 工具」。rollout 里能看到它执行
-  // `ALL_TOOLS.filter(...)` 找不到那个工具就 throw 了。
-  //
-  // 成因：StagePass 在 thread/start 时把 mcp_servers.stagepass.* 作为**线程配置**
-  // 交给 app-server，但交给 Terminal 的 `codex resume` 只带了 tui.terminal_title。
-  // 官方 TUI 是另一个客户端，它拿的是全局 config.toml —— 那里面没有 stagepass。
-  // 控制连接握着会话配置，而真正跑 turn 的是 TUI：配置必须跟着命令行一起过去。
-  const CONFIG = {
-    "mcp_servers.stagepass.command": "npx",
-    "mcp_servers.stagepass.args": ["tsx", "/repo/src/plugin/server.ts"],
-    "mcp_servers.stagepass.env": {
-      STAGEPASS_DB: "/db/panel.db",
-      STAGEPASS_CHANGE: "CHG-002",
-      STAGEPASS_PHASE: "PRD",
-    },
-    "mcp_servers.stagepass.default_tools_approval_mode": "auto",
-  } as const;
-
-  it("passes every seat config entry as a codex -c override", async () => {
-    const recorded = recordingProcess(() => response("open", 0, "opened"));
-    const terminal = createTerminalAppOps({ process: recorded.process });
-
-    await terminal.open({ ...TARGET, config: CONFIG });
-
-    const command = recorded.calls[0]!.args.at(-1)!;
-    assert.match(command, /-c 'mcp_servers\.stagepass\.command="npx"'/);
-    assert.match(
-      command,
-      /-c 'mcp_servers\.stagepass\.args=\["tsx","\/repo\/src\/plugin\/server\.ts"\]'/,
-    );
-    assert.match(
-      command,
-      /-c 'mcp_servers\.stagepass\.env=\{STAGEPASS_DB="\/db\/panel\.db",STAGEPASS_CHANGE="CHG-002",STAGEPASS_PHASE="PRD"\}'/,
-    );
-    assert.match(command, /-c 'mcp_servers\.stagepass\.default_tools_approval_mode="auto"'/);
-    assert.match(command, /-c 'tui\.terminal_title=\[\]'/, "原有的标题抑制不能丢");
-  });
-
-  it("keeps the envelope last so codex still reads it as the prompt", async () => {
-    const recorded = recordingProcess(() => response("open", 0, "opened"));
-    const terminal = createTerminalAppOps({ process: recorded.process });
-
-    await terminal.open({ ...TARGET, config: CONFIG }, "读取文件：/tmp/prompt.md");
-
-    const command = recorded.calls[0]!.args.at(-1)!;
-    assert.match(command, /'读取文件：\/tmp\/prompt\.md'$/);
-    assert.ok(
-      command.indexOf("mcp_servers.stagepass.command") < command.indexOf("--cd"),
-      "-c 覆盖必须排在 --cd 之前，位置参数不能被它们挤开",
-    );
-  });
-
-  it("never lets a config value break out of its shell word", async () => {
-    // 安全的引用**保留**危险字符，只是让它们变成字面量 —— 所以断言「字符串里没有
-    // 那段文本」是错的判据。真正要问的是：交给 shell 之后它是不是一个参数。
-    // 这里就用真的 shell 把命令拆开数一遍。
-    const recorded = recordingProcess(() => response("open", 0, "opened"));
-    const terminal = createTerminalAppOps({ process: recorded.process });
-    const payload = "a'; touch /tmp/stagepass-pwned; echo '";
-
-    await terminal.open({ ...TARGET, config: { "mcp_servers.evil.command": payload } });
-
-    const command = recorded.calls[0]!.args.at(-1)!;
-    const argv = command.replace(/^exec codex resume/, "");
-    const printed = execFileSync("/bin/sh", ["-c", `printf '%s\\n' ${argv}`], {
-      encoding: "utf8",
-    }).split("\n");
-
-    assert.ok(
-      printed.includes(`mcp_servers.evil.command=${JSON.stringify(payload)}`),
-      "整个 key=value 必须原样落成一个参数",
-    );
-    assert.equal(existsSync("/tmp/stagepass-pwned"), false, "shell 不该执行注入进来的命令");
-  });
-
-  it("changes nothing when a seat carries no config", async () => {
-    const recorded = recordingProcess(() => response("open", 0, "opened"));
-    const terminal = createTerminalAppOps({ process: recorded.process });
-
-    await terminal.open(TARGET);
-
-    assert.doesNotMatch(recorded.calls[0]!.args.at(-1)!, /mcp_servers/);
   });
 });
 

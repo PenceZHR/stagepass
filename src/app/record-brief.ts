@@ -178,7 +178,7 @@ export async function recordBrief(input: {
      */
     const waited = await waitForAnswer({
       database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: input.timeoutMs, waitsInBrowser: true,
+      timeoutMs: input.timeoutMs,
     });
     if (!waited.answered) {
       // 题已经被 waitForAnswer 收掉了。

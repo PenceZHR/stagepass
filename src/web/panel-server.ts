@@ -9,7 +9,7 @@ import {
   mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 
@@ -145,6 +145,7 @@ const phaseBusy = (
     : { reason: "phase_already_running", busy: job.status, jobId: job.id };
 };
 
+
 /**
  * 问人之前：账本闲着**而且**没有活进程。
  *
@@ -170,45 +171,19 @@ const cannotAskNow = (
 
 
 
-interface StagePassPluginConfig {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly env: Readonly<Record<string, string>>;
-  readonly defaultToolsApprovalMode: string;
-}
-
-const stagepassPluginFor = (
-  database: { name: string }, changeId: string,
-  /**
-   * 这个会话是为哪个阶段起的（批 4 · P0 第 1 条）。跑轮的裁判会话必须给 ——
-   * worklist 按 (Change, 阶段) 取，并行的两条轨才各答各的。旁路/问人会话不给
-   * （它们不答 worklist），插件退回按 Change 取。
-   */
-  phase?: Phase,
-): StagePassPluginConfig => ({
-  command: "npx",
-  args: ["tsx", join(HERE, "..", "plugin", "server.ts")],
-  env: {
-    STAGEPASS_DB: resolve(database.name),
-    STAGEPASS_CHANGE: changeId,
-    ...(phase === undefined ? {} : { STAGEPASS_PHASE: phase }),
-  },
-  defaultToolsApprovalMode: "auto",
-});
-
-
+/**
+ * 这一侧不再给 Codex 注册任何 MCP server。
+ *
+ * 三条问人的路（裁决 / 录需求 / 接受风险）现在都在浏览器里答，模型不再是信使。
+ * 而 2026-08-17 实测过：MCP 只在**线程创建那一刻**绑得上，事后补不了，
+ * `codex resume --remote` 上的 `-c` 对它无效 —— 那条路本身就是不稳的。
+ *
+ * 保留这个函数是因为会话配置这个位置还在（模型、沙箱、审批策略都从这儿走），
+ * 只是里面不再有 `mcp_servers.*`。
+ */
 const pluginAppServerConfigFor = (
-  database: { name: string }, changeId: string, phase?: Phase,
-): Readonly<Record<string, unknown>> => {
-  const plugin = stagepassPluginFor(database, changeId, phase);
-  return {
-    "mcp_servers.stagepass.command": plugin.command,
-    "mcp_servers.stagepass.args": plugin.args,
-    "mcp_servers.stagepass.env": plugin.env,
-    "mcp_servers.stagepass.default_tools_approval_mode":
-      plugin.defaultToolsApprovalMode,
-  };
-};
+  _database: { name: string }, _changeId: string, _phase?: Phase,
+): Readonly<Record<string, unknown>> => ({});
 
 /**
  * 一份产出最大读多大，超过就只报大小、不读。
