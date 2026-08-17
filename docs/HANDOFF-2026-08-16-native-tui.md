@@ -166,6 +166,60 @@ thread 立即由官方 TUI 显示一次性 MCP tool approval，随后显示 Stag
 
 上述计数顺序统一为 `jobs|turns|questions|answers|change_events|change_evidence|gaps|stage_round_artifacts`。
 
+### 2026-08-17 返工：星图从来没有真的显示过
+
+上面「驾驶舱已验收」那两节**在图这一项上是假的**，两张截图记录的是坏掉的状态。
+
+真相：`stage-artifact-scene.js` 用 `renderer.setSize(w, h, false)`。`updateStyle=false`
+让 three 只改 drawing buffer，不写 canvas 的 CSS 尺寸；而 canvas 是**替换元素**，
+`width: auto` 解析成 width 属性而不是包含块，所以样式表里的 `inset: 0` 对它无效。
+retina 上 canvas 因此变成容器的 2 倍（实测 1274×1292 装在 637×646 里），
+`.stage-artifact-canvas` 又是 `overflow: hidden` —— **人只看得见左上角四分之一，
+而全部几何都落在看不见的右下角**。控制台一声不吭，1137 条测试全绿。
+
+已经跑通的项目图谱 `graph-scene.js` 用的是默认 `updateStyle`，两边本来就不一致。
+
+为什么测试挡不住：`stage-artifact-view.test.ts` 全部是对**源码文本的正则**，
+`assert.match(scene, /new THREE.WebGLRenderer/)` 只证明这行字符串在文件里。
+浏览器模块从来没有被套件解析过，更没有被渲染过。同一份文件里还有一条
+`assert.doesNotMatch(css, /#stage-artifact-timeline|.stage-round-button/)` ——
+它把设计 §3.4 明确要求的底部轮次时间轴**反过来钉死成禁止项**。
+
+这一轮改了什么：
+
+1. **canvas 尺寸**：样式表把 `.stage-artifact-canvas canvas` 钉成 `100%/100%`，
+   `setSize` 只管 drawing buffer。几何不再依赖 JS 的时序 —— 实测把宿主宽度改成
+   480 / 618 / 325 / 563，canvas 每次都精确等于容器。（先试过「让 three 写内联
+   px」，但 ResizeObserver 会在布局只走了一半时回调：1440→1280 那一下它报的高度
+   已是新的、宽度还是旧的，然后不再回调，canvas 从此比容器宽。）
+2. **布局重写**（`stage-artifact-layout.ts`）：目录变成圆环上互不重叠的区域，
+   文件按向日葵铺在**自己**目录的锚点周围；新增 `hub`（这一轮）和 `folder.radius`。
+   谱系边从 `上游 × 目录` 的笛卡尔积（2 上游 × 3 目录 = 6 条一条也不成立的线）
+   改成 `input-round` / `round-folder` / `folder-file`，每个节点一条。
+3. **场景**：目录画成看得出来的地（圆盘 + 描边，整块可点即展开密目录），
+   角色决定形状（producer 片 / critic 环 / delivery 晶体 / structured 多面体），
+   相机按内容取景，且**只在图的形状变了时**取景。
+4. **轮询不再打断人**：`setModel` 与文件树、详情面板都按签名跳过无变化的重建。
+   实测 12 秒窗口内 `/api/stage-file` 请求数从「每 5 秒一次」变成 **0**。
+5. **时间轴回来了**，但是换行排布，任何轮数下都不出现横向滚动条（22 轮排成 2 行，
+   当前轮始终可见）；删掉那条禁止它的断言。
+6. **右栏不再被长路径顶穿**（`overflow-wrap: anywhere` + `overflow-x: hidden`）。
+
+新增的测试：`stage-artifact-layout.test.ts` 三条**真的几何断言**（文件离自己的目录
+最近、目录区域两两不重叠、谱系边不是笛卡尔积），以及一组「浏览器模块必须按
+ES module 解析」——用 `node --check` 之前要先抄成 `.mjs`，因为 `.js` 走的是
+CommonJS 宽松模式，`let x` 撞 `function x(){}` 在那边合法、在浏览器里是 SyntaxError。
+这条在返工过程中真的抓到过两次我自己写的重名声明。
+
+验收：`pnpm typecheck` 通过；完整测试 1148/1148、260 suites、0 fail、0 skipped。
+浏览器实测在 **4174** 用真实库的只读快照（`sqlite3 .backup`）跑，没有碰用户那份
+`~/.stagepass/panel.db`，也没有动 4173 上正在跑的面板：CHG-001/Build 第 22 轮与
+第 1 轮、22 个文件、角色形状可辨、时间轴切轮、1440 与 1280 两个窗口宽度、
+CHG-002/PRD 的非 Git 空态，控制台 0 error。
+
+**还没做**：`docs/evidence/screenshots/` 下那两张 8-16 的截图仍是坏掉的那一版，
+没有替换；README 的能力表没有跟着改。
+
 ## 唯一启动方式
 
 ```bash
