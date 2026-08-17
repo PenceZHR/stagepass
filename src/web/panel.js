@@ -1822,10 +1822,18 @@ const GATE_REFUSAL_WORDS = {
  * 每个选项是一个 radio，**value 是序号不是原文** —— 长措辞一旦要被谁抄一遍就迟早
  * 抄歪，而抄歪之后落进库里的是一个看起来合法的错答案。提交时只发序号。
  */
-let openQuestionId = null;
 function drawOpenQuestion(entry) {
   const question = entry?.openQuestion ?? null;
-  openQuestionId = question?.id ?? null;
+  /*
+   * 把题号写在**表单自己身上**，不留在闭包变量里。
+   *
+   * 闭包变量会和屏幕上画着的东西对不上：重画走的是别的入口时它没跟着换，人按下
+   * 提交，服务端拿到的是一道**已经不在等**的题号，回一句「这道题已经不是此刻在等
+   * 的那道了」——而屏幕上明明就是对的那道。判据得是「人现在看着的是哪一道」，
+   * 那只有 DOM 知道。
+   */
+  if (question === null) openQuestionForm.removeAttribute("data-question");
+  else openQuestionForm.dataset.question = question.id;
   openQuestionForm.hidden = question === null;
   openQuestionNote.hidden = true;
   openQuestionFields.replaceChildren();
@@ -1854,8 +1862,9 @@ function drawOpenQuestion(entry) {
 
 openQuestionForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (openQuestionId === null) return;
-  const query = new URLSearchParams({ change: changeId, question: openQuestionId });
+  const asked = openQuestionForm.dataset.question;
+  if (asked === undefined) return;
+  const query = new URLSearchParams({ change: changeId, question: asked });
   for (const [name, value] of new FormData(openQuestionForm)) {
     query.set(name, String(value));
   }
@@ -1872,11 +1881,22 @@ async function submitAnswer(query) {
     return;
   }
   const code = await response.text();
-  openQuestionNote.textContent = code === "question_moved_on"
-    ? "这道题已经不是此刻在等的那道了 —— 页面刷新一下再看。"
-    : code === "bad_choice"
-      ? "每一条都要选一个才能提交。"
-      : `提交没成功：${code}`;
+  if (code === "question_moved_on" || code === "nothing_to_answer") {
+    /*
+     * 人看着的那道题和此刻在等的不是同一道 —— 十有八九是这中间又问出来一道新的
+     * （`questions.ask` 会把上一道 supersede 掉）。**别让人自己去刷新**：他刚做完
+     * 一次选择，凭什么再让他猜一遍现在该看哪儿。直接重画，把当前那道摆出来。
+     */
+    await load();
+    openQuestionNote.hidden = false;
+    openQuestionNote.textContent = document.getElementById("open-question").hidden
+      ? "那道题已经被别处答掉了，这儿没有要你答的了。"
+      : "这中间又问出来一道新的，已经换成它了 —— 你的上一次选择没有被记下。";
+    return;
+  }
+  openQuestionNote.textContent = code === "bad_choice"
+    ? "每一条都要选一个才能提交。"
+    : `提交没成功：${code}`;
 }
 
 function lastOutcomeWords(outcome) {

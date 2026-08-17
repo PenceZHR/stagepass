@@ -59,13 +59,37 @@ describe("Choices the browser sends back", () => {
       expectedSnapshot: "snap",
     });
 
-    const open = openQuestionOf(questions, "CHG-A")!;
+    const open = openQuestionOf(questions, "CHG-A", "PRD")!;
     const answer = answerFromChoices(open, { "G-01": "2" })!;
     assert.doesNotThrow(() => {
       questions.answer(open.id, { action: "accept", content: answer });
     });
     const stored = questions.readAnswerFor("Q-1");
     assert.equal(stored?.content["G-01"], "先接受这个风险（问题还在，只是不再挡闸门）");
+    database.close();
+  });
+
+  it("shows a question only on the phase it belongs to", () => {
+    // 库里「在等的那道题」是 Change 级的，但它记着自己属于哪个阶段。不收窄的话，
+    // 一道 Build 的裁决会出现在 BuildPlan、Spec、QA 每一个弹层里。
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    new ProjectStore(database).ensure("PRJ-A", "p", "/tmp/x");
+    new ChangeStore(database).create("CHG-A", { projectId: "PRJ-A" });
+    const questions = new QuestionStore(database);
+    questions.ask({
+      id: "Q-1", changeId: "CHG-A", phase: "Build", kind: "gate_decision",
+      question: draftedQuestions({
+        phase: "Build", drafted: [{ id: "G-01", question: "裁决？", why: null }],
+      })!,
+      expectedSnapshot: "snap",
+    });
+
+    assert.notEqual(openQuestionOf(questions, "CHG-A", "Build"), null);
+    for (const other of ["BuildPlan", "Spec", "QA", "PRD"]) {
+      assert.equal(openQuestionOf(questions, "CHG-A", other), null, other);
+    }
     database.close();
   });
 });

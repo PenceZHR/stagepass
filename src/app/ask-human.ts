@@ -154,6 +154,16 @@ export async function waitForAnswer(input: {
    */
   prompt?: string;
   /**
+   * 这道题**在浏览器里等人**（C 方案），没往任何会话里送过。
+   *
+   * 送进过会话的题，会话就是它的命 —— 会话没了，答案永远不会来，所以 `has()` 是
+   * 活性判据。而落在库里等人的题**压根没有会话这回事**：再拿 `has()` 判活，
+   * 会把每一道题都在第一圈当场判死。
+   *
+   * 默认 false：老调用方（包括不递 `prompt` 那一种）行为一个字不变。
+   */
+  waitsInBrowser?: boolean;
+  /**
    * 补问时打进 composer 的那一行。默认 `ASK_TOOL_LINE`；录需求要递自己那句 ——
    * 两句调的是同一个工具，但措辞对着不同的事，混用会让模型收到一句不对题的指令
    * （`record-brief.ts` 顶上的理由）。**必须是一行**：composer 里换行就是提交。
@@ -177,9 +187,11 @@ export async function waitForAnswer(input: {
   let from = needle !== null
     ? await sessions.recordCount?.(changeId, phase) ?? null
     : null;
+  // 见 `waitsInBrowser` 那条注释。默认仍是「会话就是这道题的命」，老调用方一个字不用改。
+  const relayed = input.waitsInBrowser !== true;
   let retyped = false;
   while (Date.now() < deadline && !questions.readAnswerFor(questionId)) {
-    if (!sessions.has(changeId, phase)) {
+    if (relayed && !sessions.has(changeId, phase)) {
       reason = "session_died_before_answering";
       break;
     }
@@ -237,6 +249,8 @@ export async function askFollowUp(input: {
   questionId: string;
   expectedSnapshot: string;
   timeoutMs: number;
+  /** 这一趟也在浏览器里答（C 方案）：不往会话里打字，也不拿会话判活。 */
+  waitsInBrowser?: boolean;
 }): Promise<Answer | "session_died_before_asking" | Unanswered> {
   const { questions, changeId, phase, questionId } = input;
   let existing = null;
@@ -254,14 +268,22 @@ export async function askFollowUp(input: {
       question: input.question, expectedSnapshot: input.expectedSnapshot,
     });
   }
-  if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
-    questions.settle(questionId);
-    questions.recordOutcome(questionId,
-      { kind: "unanswered", reason: "session_died_before_asking" });
-    return "session_died_before_asking";
+  /*
+   * 浏览器那条路上第二趟和第一趟一样：题登记完就摆在页面上，没有谁要被打字唤醒。
+   * 往一个不存在的会话里打字只会得到一个假的 `session_died_before_asking`。
+   */
+  if (input.waitsInBrowser !== true) {
+    if (!await input.sessions.type(changeId, phase, ASK_TOOL_LINE)) {
+      questions.settle(questionId);
+      questions.recordOutcome(questionId,
+        { kind: "unanswered", reason: "session_died_before_asking" });
+      return "session_died_before_asking";
+    }
   }
   // 第二趟是打进 composer 的那句 ask 行送出去的 —— 探测认它。
-  const waited = await waitForAnswer({ ...input, prompt: ASK_TOOL_LINE });
+  const waited = input.waitsInBrowser === true
+    ? await waitForAnswer({ ...input, waitsInBrowser: true })
+    : await waitForAnswer({ ...input, prompt: ASK_TOOL_LINE });
   if (!waited.answered) return waited.reason;
   // 第二趟的答案没有下一步要拿着这道题走，所以这里就收掉。
   questions.settle(questionId);

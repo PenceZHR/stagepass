@@ -154,3 +154,49 @@ describe("waitForAnswer：ask 那一轮结束了而题没答", () => {
     });
   });
 });
+
+describe("waitForAnswer：题在浏览器里等人（C 方案）", () => {
+  it("没有会话也照等 —— 没有人需要挂着一轮", async () => {
+    // 旧路要模型挂着把表单端给人，所以「会话没了」= 这道题废了。C 之下题落在库里，
+    // 人在浏览器里答，压根没有会话这回事 —— 再把 has() 当活性判据就会把每一道题
+    // 都当场判死。
+    const database = freshDatabase();
+    const questions = asked(database);
+    const sessions: AskSessions = {
+      type: async () => false,
+      has: () => false, // 没有任何会话
+    };
+
+    const waiting = waitForAnswer({
+      database, questions, sessions, changeId: CHANGE, phase: PHASE,
+      questionId: QUESTION, timeoutMs: 4_000,
+      waitsInBrowser: true, // 没往任何会话里送过 —— 就没有会话可死
+    });
+
+    // 人过一会儿在浏览器里答了
+    setTimeout(() => {
+      questions.answer(QUESTION, { action: "accept", content: { decision: "批准" } });
+    }, 300);
+
+    const waited = await waiting;
+    assert.equal(waited.answered, true);
+    assert.equal(waited.answer?.content.decision, "批准");
+    database.close();
+  });
+
+  it("还是认得出会话死了 —— 只要这道题确实送进过会话", async () => {
+    const database = freshDatabase();
+    const questions = asked(database);
+    const sessions: AskSessions = { type: async () => true, has: () => false };
+
+    const waited = await waitForAnswer({
+      database, questions, sessions, changeId: CHANGE, phase: PHASE,
+      questionId: QUESTION, timeoutMs: 4_000,
+      prompt: PROMPT, // 送进过会话
+    });
+
+    assert.equal(waited.answered, false);
+    assert.equal(waited.reason, "session_died_before_answering");
+    database.close();
+  });
+});

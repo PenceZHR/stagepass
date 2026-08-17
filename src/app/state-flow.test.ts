@@ -76,24 +76,32 @@ describe("acceptance · 一条 Change 从需求录入走到下一阶段", () => 
     }), { kind: "settled", jobId: "JOB-E2E-PRD-1" });
     assert.equal(changes.read("CHG-E2E").state.status, "settled");
 
+    const answering = setInterval(() => {
+      if (!database.open) { clearInterval(answering); return; }
+      const open = questions.open("CHG-E2E");
+      if (!open) return;
+      questions.answer(open.id, {
+        action: "accept",
+        content: { [DECISION_FIELD]: decisionLabel("approve") },
+      });
+    }, 20);
+    answering.unref();
     const decision = await decideGate({
       database,
       changeId: "CHG-E2E",
       cannotAskNow: () => null,
-      launch: () => {
-        const open = questions.open("CHG-E2E");
-        assert.ok(open);
-        questions.answer(open.id, {
-          action: "accept",
-          content: { [DECISION_FIELD]: decisionLabel("approve") },
-        });
-      },
+      /*
+       * C 方案：闸门的题不再派一轮去转达，它落进库里等人 —— 人在**浏览器**里答。
+       * 所以这里也不再挂在 `launch` 上，而是像人一样过一会儿去答。
+       */
+      launch: () => {},
       rerun: async () => null,
       onApproved: () => {},
       roundBudget: 5,
-      timeoutMs: 1_000,
+      timeoutMs: 5_000,
       sessions: { has: () => true, type: async () => true },
     });
+    clearInterval(answering);
     assert.equal(decision.outcome.kind, "decided");
     assert.deepEqual(changes.read("CHG-E2E").state, {
       phase: "Spec",

@@ -145,6 +145,22 @@ function childThreadIds(turns: readonly unknown[]): string[] {
   return [...found];
 }
 
+/**
+ * 一条**还没收到过第一条用户消息**的线程。
+ *
+ * 2026-08-17 真机：裁决选了「再来一轮」，续跑那一刀新建了线程，紧接着就去问它
+ * 「有没有在跑的 turn」，app-server 回 `not materialized yet`，整个 job 当场 failed。
+ *
+ * 而这条线程**可证明**有零轮 turn —— 它连第一条消息都还没收到。那是答案，不是错误。
+ * 只认这一句话，别的协议错误照抛（吞掉所有失败就是把「读不出来」变成「没有」，
+ * 那正是这个项目从头到尾在防的那一类）。
+ */
+function notYetMaterialized(error: unknown, threadId: string): boolean {
+  if (!(error instanceof AppServerError)) return false;
+  if (error.code !== "app_server_request_failed" || error.rpcCode !== -32600) return false;
+  return error.message.startsWith(`thread ${threadId} is not materialized yet`);
+}
+
 function explicitMissing(error: unknown, threadId: string): boolean {
   if (!(error instanceof AppServerError)) return false;
   if (error.code !== "app_server_request_failed" || error.rpcCode !== -32600) {
@@ -264,6 +280,7 @@ export class AppServerHistory {
       }, this.requestTimeoutMs);
     } catch (error) {
       if (explicitMissing(error, threadId)) return [];
+      if (notYetMaterialized(error, threadId)) return [];
       throw error;
     }
     return records(asRecord(result).data).map(normalizeTurn);

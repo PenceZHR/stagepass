@@ -204,7 +204,7 @@ function phasesFor(input: {
        * C 方案之后人在**浏览器里**答，所以这道题必须发到浏览器 —— 以前它只活在
        * Codex TUI 的 elicitation 表单里，面板这边一个字都看不到。
        */
-      openQuestion: openQuestionOf(questions, changeId),
+      openQuestion: openQuestionOf(questions, changeId, phase),
     };
   });
 }
@@ -218,6 +218,14 @@ function phasesFor(input: {
 export function openQuestionOf(
   questions: QuestionStore,
   changeId: string,
+  /**
+   * 只画在**它自己那个阶段**的弹层里。
+   *
+   * 库里「在等的那道题」是 Change 级的（一个 Change 同时只等一道），但它记着自己
+   * 属于哪个阶段。不按阶段收窄的话，同一道 Build 的裁决会出现在 BuildPlan、Spec、
+   * QA 每一个弹层里 —— 人在哪一个上面答都一样，而屏幕说的是「这是这个阶段的事」。
+   */
+  phase: string,
 ): {
   readonly id: string;
   readonly message: string;
@@ -228,7 +236,7 @@ export function openQuestionOf(
   }[];
 } | null {
   const record = questions.open(changeId);
-  if (record === null) return null;
+  if (record === null || record.phase !== phase) return null;
   const schema = record.question.requestedSchema;
   return {
     id: record.id,

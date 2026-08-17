@@ -22,7 +22,7 @@ import { WorklistStore } from "../store/worklist-store";
 import { RubricStore } from "../store/rubric-store";
 import { TurnStore } from "../store/turn-store";
 import {
-  askFollowUp, launchAskPrompt, waitForAnswer, type AskSessions, type Unanswered,
+  askFollowUp, waitForAnswer, type AskSessions, type Unanswered,
 } from "./ask-human";
 
 /**
@@ -282,13 +282,22 @@ async function obtainGateAnswer(input: {
     id: questionId, changeId: input.changeId, phase: input.phase,
     kind: "gate_decision", question, expectedSnapshot: input.expectedSnapshot,
   });
-  const askPrompt = launchAskPrompt("它会把 StagePass 的问题交给我来选。",
-    "不要替我做决定，不要解释我该选什么，调用完就停下。");
-  await input.launch({ phase: input.phase, prompt: askPrompt });
+  /*
+   * **不再派一轮去当信使。**
+   *
+   * 闸门这道题的措辞、选项、合法目标全是 StagePass 自己算出来的（`gateDecisionQuestion`）——
+   * 模型在这条路上从来只是个把表单端到人面前的信使。而为了这一次转达，我们要：
+   * 起一个会话、注入 MCP 配置、等它调工具、还要防它「一个工具都没调就结束了 turn」。
+   *
+   * 2026-08-17 实测：那条线程从 2026-08-15 建立起一次 MCP 调用都没有过，
+   * 而 MCP 的注册只在线程创建那一刻绑得上、事后补不了。信使这条路本身就是不稳的。
+   *
+   * 题已经在库里了，面板会把它画到浏览器上（`openQuestionOf`）。人在那儿答。
+   */
   const waited = await waitForAnswer({
     database: input.database, questions: input.questions, sessions: input.sessions,
     changeId: input.changeId, phase: input.phase, questionId,
-    timeoutMs: input.timeoutMs, prompt: askPrompt,
+    timeoutMs: input.timeoutMs, waitsInBrowser: true,
   });
   return waited.answered
     ? { kind: "answered", question, questionId, answer: waited.answer }
@@ -467,7 +476,7 @@ export async function decideGate(input: {
       database, questions, sessions, changeId, phase, question: more,
       kind: "gate_decision",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs,
+      timeoutMs: input.timeoutMs, waitsInBrowser: true,
     });
     if (typeof second === "string") {
       return {

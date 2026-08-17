@@ -325,4 +325,32 @@ describe("App Server history", () => {
     assert.equal(threadTurnEnded(found, 3, "尚未回答"), false);
     assert.equal(threadTurnEnded(found, 4, "第三问"), false);
   });
+
+  it("一条还没跑过 turn 的新线程，问它有几轮就是零轮，不是失败", async () => {
+    /*
+     * 2026-08-17 真机：裁决选了「再来一轮」，续跑那一刀新建了线程，紧接着
+     * `readRecentTurns` 去问它有没有在跑的 turn —— app-server 回
+     * `thread ... is not materialized yet; thread/turns/list is unavailable
+     * before first user message`，整个 job 当场 failed。
+     *
+     * 一条还没收到过第一条用户消息的线程，**可证明**有零轮 turn。那是答案，不是错误。
+     */
+    const fresh = new FakeConnection().reply(new AppServerError(
+      "app_server_request_failed",
+      "thread 01a00f16-1cca-7303-a489-fc90d225ae5a is not materialized yet; "
+      + "thread/turns/list is unavailable before first user message",
+      -32600,
+    ));
+    assert.deepEqual(
+      await new AppServerHistory(fresh).readRecentTurns("01a00f16-1cca-7303-a489-fc90d225ae5a", 5),
+      [],
+    );
+
+    // 别的协议错误照抛 —— 不能拿这条把所有失败都吞掉。
+    const other = new AppServerError("app_server_request_failed", "invalid limit", -32600);
+    await assert.rejects(
+      new AppServerHistory(new FakeConnection().reply(other)).readRecentTurns("T-X", 5),
+      (error) => error === other,
+    );
+  });
 });

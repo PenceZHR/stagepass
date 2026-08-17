@@ -1968,7 +1968,11 @@ export async function handle(
    */
   if (url.pathname === "/api/answer" && request.method === "POST") {
     const changeId = url.searchParams.get("change") ?? "";
-    const open = openQuestionOf(new QuestionStore(database), changeId);
+    const questions = new QuestionStore(database);
+    const pending = questions.open(changeId);
+    const open = pending === null
+      ? null
+      : openQuestionOf(questions, changeId, pending.phase);
     if (open === null) {
       response.writeHead(409).end("nothing_to_answer");
       return;
@@ -1993,7 +1997,7 @@ export async function handle(
      * 表单是从浏览器来的，但落进库里的形状必须和以前一字不差 —— 换的是人在哪儿答，
      * 不是账本的语义。
      */
-    new QuestionStore(database).answer(open.id, { action: "accept", content: answer });
+    questions.answer(open.id, { action: "accept", content: answer });
     json(response, { answered: true, question: open.id });
     return;
   }

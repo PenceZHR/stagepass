@@ -69,15 +69,19 @@ const inert = {
 };
 
 /**
- * 一个「人会答」的会话：题一出现就按 `content` 答掉。
+ * 一个「人会答」的浏览器：题一出现就按 `content` 答掉。
  *
- * 第一趟由 `launch` 触发（起会话把题送进去），第二趟由 `type` 触发（打进同一个
- * 会话）—— 两处都调这个。
+ * C 方案之后两趟都在浏览器里答，没有谁被打字唤醒 —— 所以这里也不再挂在
+ * `launch` / `type` 上，而是像人一样**过一会儿**去答。`waitForAnswer` 一秒轮询
+ * 一次，定时器 `unref` 掉，不会拖着进程不退出。
  */
 function answerer(database: Database.Database, content: Record<string, string>) {
   const questions = new QuestionStore(database);
   const answered = new Set<string>();
+  let timer: ReturnType<typeof setInterval> | null = null;
   const answerOpen = (): void => {
+    // 测试结束会关库；这个定时器比测试活得久，关了就自己停，别把噪音甩给下一条。
+    if (!database.open) { if (timer) clearInterval(timer); return; }
     const open = questions.open(CHANGE);
     if (!open || answered.has(open.id)) return;
     answered.add(open.id);
@@ -88,11 +92,13 @@ function answerer(database: Database.Database, content: Record<string, string>) 
     }
     questions.answer(open.id, { action: "accept", content: mine });
   };
+  timer = setInterval(answerOpen, 20);
+  timer.unref();
   const sessions: AskSessions = {
     type: async () => { answerOpen(); return true; },
     has: () => true,
   };
-  return { sessions, answerOpen };
+  return { sessions, answerOpen, stop: () => { clearInterval(timer); } };
 }
 
 describe("app · 裁决这个用例（不经过 HTTP）", () => {
