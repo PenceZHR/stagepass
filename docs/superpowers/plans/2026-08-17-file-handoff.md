@@ -65,11 +65,31 @@ readonly readRoundFile: (path: string) => string | null;             // 不在�
    丢的规则不动，只换来源。
 4. `round-prompt.golden.txt` 会变，**那是要人看的**，别自动接受。
 
-### 第二刀：问人改在浏览器里答（这一刀才解掉 CHG-002 的卡）
+### 第二刀：问人改在浏览器里答 —— **除了最后一根接线，都已落地并真机验过**
 
-**域这一层已经通了**：`createSlotFiles().lay({shape: QUESTION_SHAPE, options: DRAFTED_OPTIONS})`
-→ 模型填 → `collect()` → `draftedQuestions()` → 现成的 `Question`。
-剩下的是把它接进 `/api/ask`，加一条 `POST /api/answer`，和面板上那张表。
+已经通的（2026-08-17 夜）：
+
+```
+draftQuestions()  铺格子 → 跑一轮 → 读回来 → 落进账本 → 立刻返回（不挂着等）
+    ↓
+openQuestionOf()  面板把在等的那道题发到浏览器
+    ↓
+浏览器一组 radio（value 是序号，不是选项原文）
+    ↓
+POST /api/answer  按 schema 把序号映射回原文 → questions.answer({action,content})
+    ↓
+账本 status = answered
+```
+
+**真机验过**：隔离副本上造一道两问的题，选 → 提交 → 库里 `answered`，
+答案是完整措辞；半张表被拒；答完表单消失。
+
+**只差**：`/api/ask`（`web/panel-server.ts:1853`）现在还走老路（发一轮让模型调
+`stagepass_ask`）。把它换成 `draftQuestions()` 就整条通了。
+
+真机点出来、单测碰不到的一个坑（已修并补测）：`questions.answer` 收的是
+elicitation 那个信封 `{action, content}`，不是裸答案表 —— 塞裸表炸
+`answer_action_unknown`。换的是人在哪儿答，不是账本的语义。
 
 现状：`/api/ask`（`web/panel-server.ts:1853`）发起一轮，让模型去调
 `stagepass_ask`，人在 **TUI 的 MCP elicitation 表单**里答。
