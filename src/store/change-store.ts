@@ -478,13 +478,24 @@ export class ChangeStore {
         `DELETE FROM rubric_criteria WHERE rubric_id IN
            (SELECT id FROM rubrics WHERE change_id = ?)`,
       ).run(changeId);
-      for (const table of [
-        "turns", "jobs", "rubric_assessments", "rubrics", "questions",
-        "commands", "gaps", "round_notes", "round_worklist",
-        "change_bindings", "change_briefs", "stage_round_artifacts", "change_evidence", "change_states",
-        "change_events",
-      ]) {
-        this.database.prepare(`DELETE FROM ${table} WHERE change_id = ?`).run(changeId);
+      /*
+       * **谁引用了 changes，问 schema，不写手抄的清单。**
+       *
+       * 原来这里是一串手写表名。2026-08-17 真机：删 CHG-001 直接炸
+       * `SQLITE_CONSTRAINT_FOREIGNKEY` —— `aside_visits`（旁路会话，2026-08-11 加的）
+       * 引用了 changes，却没人记得往这串名字里补一个。
+       *
+       * 手写清单漏一张是这种错误的默认结局，而漏掉的那张要等到有人删一条**正好用过
+       * 那张表**的 Change 才会炸。所以判据换成「schema 说谁引用了它」——
+       * 下一次加表，这里自动跟上。
+       */
+      const children = this.database.prepare(`
+        SELECT m.name AS tbl
+        FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+        WHERE m.type = 'table' AND f."table" = 'changes'
+      `).all() as { tbl: string }[];
+      for (const { tbl } of children) {
+        this.database.prepare(`DELETE FROM ${tbl} WHERE change_id = ?`).run(changeId);
       }
       this.database.prepare("DELETE FROM changes WHERE id = ?").run(changeId);
     });

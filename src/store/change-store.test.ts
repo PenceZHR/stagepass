@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "../db/schema";
 import { IllegalTransitionError, type ChangeState } from "../domain/change-state";
 import { ChangeNotFoundError, ChangeStore } from "./change-store";
+import { ProjectStore } from "./project-store";
 
 /**
  * L0's other half: the ledger cannot be bypassed.
@@ -654,5 +655,66 @@ describe("L0 · 批 4：分叉开座，收编与卫生", () => {
     // 图上没有 TestPlan / Test —— 两个分叉点都开不出座。
     assert.equal(changes.read("CHG-P").state.phase, "Build");
     assert.deepEqual(seats(database), []);
+  });
+});
+
+describe("删一个 Change：每一张引用它的表都要被清干净", () => {
+  it("schema 里引用 changes 的表，一张都不许留下行", () => {
+    /*
+     * 2026-08-17 真机：删 CHG-001 直接炸 SQLITE_CONSTRAINT_FOREIGNKEY ——
+     * `aside_visits`（旁路会话，2026-08-11 加的）引用了 changes，但没进
+     * `ChangeStore.delete` 的那张手写表名清单。
+     *
+     * 所以这条**不写死表名**：从 schema 里问出「谁引用了 changes」，逐张查残留。
+     * 下一次再加表，忘了登记就在这里红 —— 手写清单漏一张是这种错误的默认结局。
+     */
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+
+    const referring = database.prepare(`
+      select m.name as tbl
+      from sqlite_master m, pragma_foreign_key_list(m.name) f
+      where m.type = 'table' and f."table" = 'changes'
+      order by m.name
+    `).all() as { tbl: string }[];
+    assert.ok(referring.length > 5, "至少该问出十几张表来，问不出来这条就是空转的");
+
+    new ProjectStore(database).ensure("PRJ-A", "p", "/tmp/x");
+    new ChangeStore(database).create("CHG-DEL", { projectId: "PRJ-A" });
+    /*
+     * 每张表种一行。必填列按类型给个占位值 —— 这条钉的是「清单别漏」，
+     * 不是「这些行有意义」。
+     */
+    const seeded: string[] = [];
+    for (const { tbl } of referring) {
+      const columns = database.prepare(`PRAGMA table_info(${tbl})`).all() as {
+        name: string; type: string; notnull: number; dflt_value: unknown;
+      }[];
+      const required = columns.filter(
+        (c) => c.notnull === 1 && c.dflt_value === null,
+      );
+      const values = required.map((c) =>
+        c.name === "change_id" ? "CHG-DEL"
+          : /INT|REAL/i.test(c.type) ? 1 : "x");
+      try {
+        database.prepare(
+          `INSERT INTO ${tbl} (${required.map((c) => c.name).join(",")})`
+          + ` VALUES (${required.map(() => "?").join(",")})`,
+        ).run(...values);
+        seeded.push(tbl);
+      } catch { /* 种不进去的跳过 */ }
+    }
+    assert.ok(seeded.includes("aside_visits"), "aside_visits 应该能被种进去");
+
+    new ChangeStore(database).delete("CHG-DEL");
+
+    for (const { tbl } of referring) {
+      const left = database.prepare(
+        `SELECT count(*) as n FROM ${tbl} WHERE change_id = ?`,
+      ).get("CHG-DEL") as { n: number };
+      assert.equal(left.n, 0, `${tbl} 还留着 ${left.n} 行`);
+    }
+    database.close();
   });
 });
