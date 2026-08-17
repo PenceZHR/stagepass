@@ -39,9 +39,9 @@ readonly readRoundFile: (path: string) => string | null;             // 不在�
 而且注释里已经写明「文件不在」和「写了但对不上号」必须分开 —— 正是格子文件要的
 两种失败。**格子文件不需要新建 IO 层，直接插进来。**
 
-## 剩下的三刀，按顺序
+## 三刀，全部落地（2026-08-17）
 
-### 第一刀：轮次契约改走格子（模型 → StagePass 这个方向）
+### 第一刀：轮次契约改走格子 —— ✅ 已落地
 
 这是「整轮作废」那一类不稳定的来源，自成一体，不依赖浏览器改动。
 
@@ -65,7 +65,7 @@ readonly readRoundFile: (path: string) => string | null;             // 不在�
    丢的规则不动，只换来源。
 4. `round-prompt.golden.txt` 会变，**那是要人看的**，别自动接受。
 
-### 第二刀：问人改在浏览器里答 —— **除了最后一根接线，都已落地并真机验过**
+### 第二刀：问人改在浏览器里答 —— ✅ 已落地并真机验过
 
 已经通的（2026-08-17 夜）：
 
@@ -84,14 +84,15 @@ POST /api/answer  按 schema 把序号映射回原文 → questions.answer({acti
 **真机验过**：隔离副本上造一道两问的题，选 → 提交 → 库里 `answered`，
 答案是完整措辞；半张表被拒；答完表单消失。
 
-**只差**：`/api/ask`（`web/panel-server.ts:1853`）现在还走老路（发一轮让模型调
-`stagepass_ask`）。把它换成 `draftQuestions()` 就整条通了。
+三条问人的路（裁决 `/api/ask`、录需求 `/api/brief`、接受风险 `/api/waive`）都换完了。
+一个语义跟着变了、而且是对的：**「会话死了」不再等于「这道题废了」** —— 题就摆在
+页面上，跟会话活不活着没关系。
 
 真机点出来、单测碰不到的一个坑（已修并补测）：`questions.answer` 收的是
 elicitation 那个信封 `{action, content}`，不是裸答案表 —— 塞裸表炸
 `answer_action_unknown`。换的是人在哪儿答，不是账本的语义。
 
-### 第三刀：把 MCP 整条拆掉
+### 第三刀：把 MCP 整条拆掉 —— ✅ 已落地
 
 **必须等第二刀落地之后**，否则问人这条路会断。要拆的：
 
@@ -104,11 +105,18 @@ elicitation 那个信封 `{action, content}`，不是裸答案表 —— 塞裸�
 
 不留回退。两条路同时活着，就是「同一件事两条路只有一条做对」。
 
-## 顺带清掉的两笔
+## 顺带清掉的
 
-- **零轮次线程会被绑进 binding**（`web/native-sessions.ts`，`openOnce` 里
+- ✅ **MCP 进程泄漏**：拆掉 MCP 之后不再有 `plugin/server.ts` 被拉起。
+- ✅ **还没跑过 turn 的新线程被判失败**：`readRecentTurns` 撞上
+  `not materialized yet` 会让整个 job failed（真机在「再来一轮」续跑时点出来）。
+  一条连第一条用户消息都没收到的线程可证明有零轮 turn —— 那是答案不是错误。
+
+## 还没做
+
+- **零轮次线程仍会被绑进 binding**（`web/native-sessions.ts`，`openOnce` 里
   `host.open` 之后立刻 `bind`）。Codex 让零轮次线程保持 ephemeral，于是它永远进不了
-  `thread/list`，下次被判 missing → detach → 再建一条，无限churn。
-  `90fd19e` 给旧的 `StreamSessions` 立过「零轮次不绑」的规矩，原生 TUI 这条路没跟上。
-- **21 个 `plugin/server.ts` 进程没人回收**（每次 resume 起一个）。第三刀拆掉 MCP
-  之后这条自动消失。
+  `thread/list`，下次被判 missing → detach → 再建一条。`90fd19e` 给旧的
+  `StreamSessions` 立过「零轮次不绑」的规矩，原生 TUI 这条路没跟上。
+- **一整轮红蓝真跑**没有验过 —— 格子文件那条路的单测齐了，但它最终的判据是
+  真机上跑一轮红蓝出来。
