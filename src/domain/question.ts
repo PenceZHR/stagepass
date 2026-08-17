@@ -937,3 +937,29 @@ export function waiveFrom(
   });
   return out;
 }
+
+/**
+ * 模型这一轮起草的问题 → 一次 elicitation。
+ *
+ * 格子文件（`domain/round-slots.ts`）里模型只写了问句和理由；**可选项是这一侧的**，
+ * 每道题都一样，所以措辞在这个文件里，不在格子层。
+ *
+ * 字段 id 直接用格子 id（`G-01` … `G-15`，补过零），于是 `compose` 那条
+ * `order_not_sorted` 守卫天然满足 —— 那是 2026-07-30 在客户端上实测出来的排序行为。
+ */
+export function draftedQuestions(input: {
+  readonly phase: string;
+  readonly drafted: readonly Readonly<Record<string, string | null>>[];
+}): Question | null {
+  if (input.drafted.length === 0) return null;
+  return compose(`${input.phase}：这一轮它想问你的`, input.drafted.map((slot) => ({
+    id: String(slot.id),
+    title: [slot.question, slot.why].filter((part) => part).join("　—　"),
+    options: DRAFTED_OPTIONS,
+  })));
+}
+
+/** 每道题都是这四个。和 `responseFields` 用的是同一组措辞，不另发明一套。 */
+export const DRAFTED_OPTIONS = [
+  RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE, RESPONSE_OWN,
+] as const;
