@@ -11,6 +11,13 @@ export interface TerminalTarget {
   readonly marker: string;
   readonly threadId: string;
   readonly cwd: string;
+  /**
+   * 这个座位的会话配置（`mcp_servers.stagepass.*` 之类），原样来自交给
+   * `thread/start` 的那一份。官方 TUI 是独立客户端，不会继承控制连接的会话配置，
+   * 所以它必须在命令行上再拿一遍 —— 否则 TUI 里没有 StagePass 的工具，
+   * 模型只能回一句「当前会话未提供 stagepass_ask 工具」。
+   */
+  readonly config?: Readonly<Record<string, unknown>>;
 }
 
 export interface TerminalAppOps {
@@ -57,9 +64,33 @@ function posixShellArg(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+/** `-c key=value` 要的是 TOML 值，不是 JSON。 */
+function tomlValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `[${value.map(tomlValue).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${key}=${tomlValue(item)}`);
+    return `{${entries.join(",")}}`;
+  }
+  throw new TerminalAppError(
+    "invalid_terminal_target",
+    `session config value cannot be expressed as TOML: ${String(value)}`,
+  );
+}
+
+function configOverrides(config: Readonly<Record<string, unknown>> | undefined): string[] {
+  return Object.entries(config ?? {})
+    .map(([key, value]) => `-c ${posixShellArg(`${key}=${tomlValue(value)}`)}`);
+}
+
 function resumeCommand(target: TerminalTarget, prompt?: string): string {
   return [
-    "exec codex resume -c 'tui.terminal_title=[]' --remote unix:// --cd",
+    "exec codex resume -c 'tui.terminal_title=[]'",
+    // 位置参数在最后：所有 -c 覆盖都排在 --cd 之前。
+    ...configOverrides(target.config),
+    "--remote unix:// --cd",
     posixShellArg(target.cwd),
     posixShellArg(target.threadId),
     ...(prompt === undefined ? [] : [posixShellArg(prompt)]),

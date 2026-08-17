@@ -390,6 +390,48 @@ describe("native StagePass sessions", () => {
     }
   });
 
+  it("hands the seat config to Terminal so the TUI gets the StagePass MCP tools", async () => {
+    // 2026-08-17 真机：TUI 在正确的线程上恢复、读到了题面，然后回
+    // 「无法调用：当前会话未提供 stagepass_ask 工具」。控制连接在 thread/start
+    // 时给了 mcp_servers.stagepass.*，但官方 TUI 是另一个客户端，拿的是全局
+    // config.toml —— 那里没有 stagepass。配置必须跟着 Terminal 命令一起过去。
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      const sessions = f.make();
+      await sessions.open("CHG-1", "PRD", config, { showTerminal: true });
+      assert.deepEqual(f.terminal.opened.at(-1)!.target.config, config);
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("carries the seat config on the turn-dispatch path too", async () => {
+    const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
+    const f = fixture(root);
+    try {
+      const sessions = f.make();
+      let delivered: TerminalDelivery | null = null;
+      f.terminal.onDeliver = (entry) => {
+        delivered = entry;
+        f.runtime.emit("turn/started", {
+          threadId: entry.target.threadId,
+          turn: { id: "TURN-CFG", status: "inProgress", items: [envelopeItem(entry.envelope)] },
+        });
+      };
+      const transport = sessions.transportFor("CHG-1", "PRD", config, 500);
+      const running = transport.runTurn({ threadId: null, prompt: "task" });
+      await until(() => delivered !== null);
+      assert.deepEqual(delivered!.target.config, config);
+      finish(f.runtime, THREAD_ONE, "TURN-CFG");
+      await running;
+    } finally {
+      f.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("opens closed or stale clients with the private-file envelope and holds the lease", async () => {
     const root = mkdtempSync(join(tmpdir(), "stagepass-native-sessions-test-"));
     const f = fixture(root);

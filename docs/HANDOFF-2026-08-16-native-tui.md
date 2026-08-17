@@ -282,3 +282,37 @@ pnpm panel -- --db /Users/zhanghr/.stagepass/panel.db --port 4173
 升级 Codex 后先生成并核对官方 App Server schema，再跑类型检查和完整测试，最后只在
 4173 真机验证 start/resume、文件信封、MCP approval/elicitation、interrupt、窗口关闭与
 恢复。任何实现都不得用“拒绝反向请求”冒充只读观察者。
+
+### 2026-08-17 真机故障：TUI 里没有 StagePass 的工具
+
+症状：TUI 在正确的线程上恢复了，题面也读到了，然后回一句
+「无法调用：当前会话未提供 `stagepass_ask` 工具」并结束这一轮。
+
+rollout（`01a0058a…` 第 441/442 行）里能看到它先自己找了一遍：
+
+```js
+const matches = ALL_TOOLS.filter(({name}) => /stagepass/i.test(name) && /ask/i.test(name));
+if (matches.length !== 1) throw new Error(`Expected exactly one stagepass ask tool; found ${matches.length}.`);
+```
+
+→ `Script failed`。工具表里确实没有。
+
+成因是和「MCP 所有权」同一条缝的另一半：StagePass 在 `thread/start` 时把
+`mcp_servers.stagepass.*` 作为**线程配置**交给 app-server，但交给 Terminal 的
+`codex resume` 只带了 `-c tui.terminal_title=[]`。官方 TUI 是**另一个客户端**，
+不继承控制连接的会话配置，它读的是全局 `~/.codex/config.toml` —— 那里面没有
+stagepass。控制连接握着配置，真正跑 turn 的却是 TUI。
+
+8-16 那次验收之所以看得见表单，是因为那一轮是在 StagePass 自己那条已配置的会话上
+跑的；一旦被 TUI 冷恢复，配置就没了。
+
+修法：`TerminalTarget` 带上 `config`，`resumeCommand` 把每一项按 TOML 序列化成
+`-c key=value`（位置参数仍在最后），`NativeSessions` 在 open 和 turn 派发两条路上
+都把座位配置传下去。生成的命令与 `src/plugin/server.ts` 开头文档的格式一致。
+
+注入这条单独验：安全的引用**会保留**危险字符、只是让它们变成字面量，所以
+「断言字符串里没有那段文本」是错判据。测试改成用真的 `/bin/sh` 把命令拆开数参数，
+并确认注入的 `touch` 没有被执行。
+
+**遗留**：这次排查顺带看到 21 个 `src/plugin/server.ts` MCP 进程还活着 ——
+每次 resume 起一个，没人回收。没有处理。
