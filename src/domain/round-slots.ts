@@ -25,6 +25,16 @@ export interface SlotHeader {
   readonly changeId: string;
   readonly phase: Phase;
   readonly round: number;
+  /**
+   * 这一轮它产出的东西 —— **由 StagePass 预填，模型一个字都不用写**。
+   *
+   * 旧契约要模型自己交 `artifactIds`。2026-08-06 真机：反方按新契约答出来的东西里
+   * 没有那一格，于是**每一轮都整轮作废**。而这些路径 StagePass 本来就知道
+   * （`<Phase>-r<N>.md` / `-opposition.md`），根本不该问模型要。
+   */
+  readonly artifacts: readonly string[];
+  /** 这一阶段要不要模型给一句总评。不要的阶段这一格根本不出现。 */
+  readonly wantsOverall?: boolean;
 }
 
 export interface FilledSlot {
@@ -37,7 +47,12 @@ export interface FilledSlot {
 }
 
 export type SlotDocumentResult =
-  | { readonly ok: true; readonly filled: readonly FilledSlot[] }
+  | {
+    readonly ok: true;
+    readonly filled: readonly FilledSlot[];
+    readonly artifacts: readonly string[];
+    readonly overall: string | null;
+  }
   | { readonly ok: false; readonly reason: string };
 
 const slotId = (index: number): string => `G-${index + 1}`;
@@ -50,6 +65,8 @@ export function createSlotDocument(header: SlotHeader): string {
       round: header.round,
       maxFilled: SLOT_FILL_LIMIT,
     },
+    artifacts: [...header.artifacts],
+    ...(header.wantsOverall === true ? { overall: null } : {}),
     slots: Array.from({ length: SLOT_COUNT }, (_, index) => ({
       id: slotId(index),
       severity: null,
@@ -100,6 +117,29 @@ export function readSlotDocument(
       `抬头被改过，或这一份属于别的轮次/座位：期待 ${expectedHead}，`
       + `实际 ${JSON.stringify(document.stagepass)}。`,
     );
+  }
+
+  // 产出路径是 StagePass 自己填的，模型碰它就是越界。
+  const expectedArtifacts = JSON.stringify([...header.artifacts]);
+  if (JSON.stringify(document.artifacts) !== expectedArtifacts) {
+    return refuse(
+      `artifacts 是 StagePass 填好的，不该被改：期待 ${expectedArtifacts}，`
+      + `实际 ${JSON.stringify(document.artifacts)}。`,
+    );
+  }
+
+  const wantsOverall = header.wantsOverall === true;
+  if (wantsOverall !== ("overall" in document)) {
+    return refuse(wantsOverall
+      ? "这一阶段要一句总评，但文件里没有 overall 这一格。"
+      : "这一阶段不要总评，文件里不该出现 overall 这一格。");
+  }
+  let overall: string | null = null;
+  if (wantsOverall) {
+    if (document.overall !== null && typeof document.overall !== "string") {
+      return refuse(`overall 只能是一句话或留空，实际 ${JSON.stringify(document.overall)}。`);
+    }
+    overall = text(document.overall);
   }
 
   const slots = document.slots;
@@ -153,5 +193,5 @@ export function readSlotDocument(
       + "本轮作废 —— 不截断，否则「它到底想说几条」查不清。",
     );
   }
-  return { ok: true, filled };
+  return { ok: true, filled, artifacts: [...header.artifacts], overall };
 }
