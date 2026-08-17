@@ -48,7 +48,10 @@ describe("Stage artifact cockpit browser contract", () => {
     const scene = read("stage-artifact-scene.js");
     for (const id of [
       "stage-artifact-canvas", "stage-artifact-list", "stage-artifact-detail",
-      "stage-artifact-round", "stage-artifact-search", "stage-next",
+      "stage-artifact-round", "stage-artifact-search", "next-step",
+      // 星图现在藏在一个按钮后面（用户 2026-08-17），那个按钮就成了到达它的
+      // 唯一入口 —— 它不在，键盘用户根本没有路可以走到画布上。
+      "stage-graph-toggle",
     ]) {
       assert.match(html, new RegExp(`id=["']${id}["']`), id);
     }
@@ -88,12 +91,86 @@ describe("Stage artifact cockpit browser contract", () => {
     assert.match(scene, /signature === builtSignature/);
   });
 
-  it("returns from artifacts to the same Stage detail instead of losing context", () => {
+  it("says everything about one Stage on one page instead of three layers", () => {
+    /*
+     * 用户 2026-08-17 的原话：「现在每个 stage 点开圆圈有一个界面，进去又有了
+     * 一个界面，是不对的，交互太乱了，统一成一个页面。」
+     *
+     * 拆掉的是中间那层 `<dialog id="sheet">`。这条钉的是**层数**：环上点一下
+     * 直接到阶段页，弹层带来的那几块就画在同一页上。
+     */
     const html = read("panel.html");
     const panel = read("panel.js");
-    assert.match(html, />← 阶段详情<\/button>/);
-    assert.match(panel, /leave\(\{ reopenSheet: true \}\)/);
-    assert.match(panel, /if \(reopenSheet && phase\) openSheet\(phase\)/);
+    // 阶段弹层整个不在了。新建 Project / Change 那两个 <dialog> 不算 —— 它们
+    // 打断你去填一件事，填完就走，是真弹窗。
+    assert.doesNotMatch(html, /<dialog[^>]*\sid=["']sheet["']/);
+    assert.doesNotMatch(html, /id=["']tab-rubric["']/);
+    assert.doesNotMatch(panel, /openSheet\(/);
+    assert.doesNotMatch(panel, /reopenSheet/);
+    assert.match(panel, /addEventListener\("click", \(\) => \{ void enter\(entry\.phase\); \}\)/);
+    assert.match(html, />← 阶段环<\/button>/);
+
+    // 弹层那几块现在长在阶段页里 —— 不是搬进了另一个容器又藏起来。
+    const page = html.slice(
+      html.indexOf('id="stage-view"'), html.indexOf('id="graph-view"'));
+    for (const id of [
+      "stage-line", "next-step", "last-outcome", "open-question",
+      "stage-gaps", "stage-rubric", "run", "ask", "waive", "brief",
+    ]) {
+      assert.match(page, new RegExp(`id=["']${id}["']`), id);
+    }
+  });
+
+  it("keeps exactly two surfaces behind a click, and switches by data-mode", () => {
+    /*
+     * 用户 2026-08-17 第二句：「星图可以内部再点击一个按钮跳转出来切换，其余
+     * 语义要明确。」只有关系图和标准允许藏在一次点击后面 —— 第三个开关就是
+     * 又开始往回长层。
+     *
+     * 切态用 `data-mode` 而不是 `[hidden]`：display:grid|flex 会盖掉 UA 给
+     * `[hidden]` 的 display:none，这个仓库为它流过两次血。
+     */
+    const html = read("panel.html");
+    const panel = read("panel.js");
+    const css = read("stage-artifact.css");
+    assert.match(html, /id=["']stage-graph-toggle["']/);
+    assert.match(html, /id=["']stage-rubric-toggle["']/);
+    assert.match(panel, /function setStageMode\(mode\)/);
+    assert.match(panel, /stageSecondary\.dataset\.mode = mode/);
+    assert.doesNotMatch(panel, /stageRubric\.hidden/);
+    assert.doesNotMatch(panel, /stageGaps\.hidden/);
+    for (const mode of ["files", "graph", "rubric"]) {
+      assert.match(
+        css,
+        new RegExp(`\\.stage-secondary\\[data-mode="${mode}"\\] \\.stage-pane-${mode}`),
+        mode,
+      );
+    }
+  });
+
+  it("builds the star map only while it is on screen", () => {
+    // 星图默认不在屏幕上了。一进阶段就 installScene 等于开一个 WebGL 场景在
+    // 看不见的地方转 —— 白烧电，而且 setSize 量的是一个还没有尺寸的盒子。
+    const view = read("stage-artifact-view.js");
+    const openBody = view.slice(view.indexOf("function open(input)"));
+    assert.doesNotMatch(openBody.slice(0, openBody.indexOf("\n}")), /installScene/);
+    assert.match(view, /function setMode\(next\)[\s\S]*?installScene\(\)/);
+    assert.match(view, /window\.stagepassArtifacts\s*=\s*\{[^}]*setMode/);
+  });
+
+  it("never leaves another Stage's gate actions standing on the aside page", () => {
+    /*
+     * 旁路不在任何一条轨道上（DESIGN §3.3）：没有闸门、没有问题、没有可裁决的
+     * 东西。这些按钮平时的可见性由 `entry.current` 决定，而旁路根本没有 entry ——
+     * 不显式清一遍，上一个阶段那排按钮就原样挂在旁路页上，按下去发的是**别的
+     * 阶段**的动作。答题表单尤其：一道 Build 的裁决不许出现在旁路上。
+     */
+    const panel = read("panel.js");
+    assert.match(panel, /function clearStageActions\(\)/);
+    assert.match(panel, /if \(!entry\) \{ clearStageActions\(\); return; \}/);
+    assert.match(panel, /clearStageActions\(\)[\s\S]*?drawOpenQuestion\(null\)/);
+    // 题号仍然写在表单自己身上，不是闭包变量：判据得是「人现在看着的是哪一道」。
+    assert.match(panel, /openQuestionForm\.dataset\.question = question\.id/);
   });
 
   it("collapses unavailable projections instead of repeating a full empty inspector", () => {

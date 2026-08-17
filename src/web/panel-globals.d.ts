@@ -9,20 +9,18 @@ declare module "three/addons/controls/OrbitControls.js";
 
 /** panel.js ↔ graph-view.js 唯一的握手（图谱 spec 2026-08-12）。 */
 interface Window {
+  /*
+   * 阶段页上产物那半边（stage-artifact-view.js）。
+   *
+   * 2026-08-17 三层合一页时**把握手削到只剩真用得上的三个字段**：原来还传
+   * threadId / current / live / mark / openGaps / nextStep，而它们在那边一个都
+   * 没被读 —— 顶带上那几格已经改由 panel.js 自己画。传过去没人读的字段迟早
+   * 变成两份会打架的事实。
+   */
   stagepassArtifacts?: {
-    open(stage: {
-      changeId: string;
-      phase: string;
-      threadId: string | null;
-      state: {
-        status: string;
-        current: boolean;
-        live: boolean;
-        mark: string | null;
-        openGaps: number;
-      };
-      nextStep: { what: string; why: string } | null;
-    }): void;
+    open(stage: { changeId: string; phase: string; status: string }): void;
+    /** 产物区切态。rubric 归 panel.js，这边只认 files / graph。 */
+    setMode(mode: "files" | "graph"): void;
     close(): void;
   };
   stagepassGraph?: {

@@ -749,32 +749,20 @@ body::after {
 }
 
 /*
- * ── 阶段弹窗 ──────────────────────────────────────────────
+ * ── 弹窗 ──────────────────────────────────────────────────
  *
- * 点环上的小圈打开，显示这个阶段现在的问题（用户 2026-07-29 第 3 条）。它和左侧
- * 常驻面板是两层：**悬停看概要，点击看明细**。
+ * 2026-08-17 之后这里**只剩新建 Project / 新建 Change 两个表单**。阶段那个弹层
+ * 已经并进 `#stage-view` 那一页（用户：「统一成一个页面」），不要再往回搭。
  *
- * 用原生 <dialog showModal> 而不是自己拿 div 搭：Esc 关闭、焦点收拢、以及 top
- * layer —— 最后一条要紧，因为 .columns 上有 transition 和 overflow:hidden，自搭
- * 的浮层会被裁掉或者压在环下面。交接 §5.0.2 明确写着"弹窗会盖住环，所以它必须能
- * 干脆地关掉"，Esc 是最干脆的那条，白拿。
- *
- * **这里没有 approve / reject 按钮，而且不许有。** 裁决只发生在 Codex 自己的
- * elicitation 选择器里（PRD §1、§5.2b）。弹窗的主动作是"把这个裁决交给 Codex
- * 问我"—— 它组题、把问题送进那个阶段的终端，然后等你在 Codex 里选。面板显示闸门
- * 说了什么，永远不提供改变它的控件。
+ * 留下来的这两个是真弹窗：它们打断你去填一件事，填完就走。用原生
+ * <dialog showModal> 而不是自己拿 div 搭：Esc 关闭、焦点收拢、以及 top layer ——
+ * 最后一条要紧，因为 .columns 上有 transition 和 overflow:hidden，自搭的浮层会被
+ * 裁掉或者压在环下面。
  */
 /*
  * flex 列是**必须的**，不是排版偏好：`.sheet-body` 的 `overflow-y: auto` 只有在
  * 高度被约束住时才会滚。不给它约束，内容长了就整体撑破 max-height，然后被
  * `overflow: hidden` 从底下裁掉 —— 先没的正是底部那排动作按钮。
- */
-/*
- * 尺寸 2026-07-30 放大过一次，理由是内容变了而不是想大一点：产出的**正文**从这天起
- * 显示在这里，而一份 PRD 有三千多字。放大之前 `.sheet-body` 只有 273px 高，比正文框
- * 本身还矮 —— 于是外层滚一层、里层再滚一层，一次看得见十行。
- *
- * 弹窗仍然是弹窗：Esc / ✕ / 点遮罩三条关闭路径一条没动，它也仍然不常驻（交接 §5.0.2）。
  */
 .sheet {
   display: flex; flex-direction: column;
@@ -808,19 +796,6 @@ body::after {
   font: 500 14px/1 ui-sans-serif, sans-serif; transition: background .2s, color .2s;
 }
 .sheet-close:hover { background: rgba(255,255,255,.1); color: #fff; }
-
-.sheet-tabs {
-  flex: 0 0 auto;
-  display: flex; gap: 4px; padding: 0 22px; border-bottom: 1px solid rgba(255,255,255,.1);
-}
-.sheet-tab {
-  padding: 11px 14px 10px; border: 0; border-bottom: 2px solid transparent;
-  background: transparent; color: rgba(255,255,255,.46); cursor: pointer;
-  font: 750 10px/1 ui-sans-serif, sans-serif; letter-spacing: .14em; text-transform: uppercase;
-  transition: color .2s, border-color .2s;
-}
-.sheet-tab:hover { color: rgba(255,255,255,.78); }
-.sheet-tab[aria-selected="true"] { color: var(--sand-strong); border-bottom-color: var(--sand-deep); }
 
 .sheet-body { flex: 1 1 auto; min-height: 0; padding: 6px 26px 18px; overflow-y: auto; }
 
@@ -1506,26 +1481,60 @@ body::after {
       </div>
     </dialog>
 
-    <dialog class="sheet" id="sheet">
-      <div class="sheet-head">
-        <div>
-          <small id="sheet-kicker">Stage</small>
-          <h2 id="sheet-title">—</h2>
-          <span class="mark-pill" id="sheet-mark"></span>
+    <!--
+      ── 阶段这一页（用户 2026-08-17 拍板：三层合成一页）─────────────
+
+      在这之前点一个阶段要穿三层：环 → `#sheet` 弹层 → `#stage-view` 驾驶舱。
+      用户原话：「进去又有了一个界面，是不对的，交互太乱了，统一成一个页面。」
+
+      现在环是家，这一页就是一个阶段的全部。**每一块只回答一个问题**，块和它
+      回答的那个问题要对得上 —— 这是用户当天的第二句要求（「其余语义要明确」）：
+
+        顶带    我在哪
+        动作带  该我干什么
+        问题栏  什么挡着闸门
+        轮次条  我在看哪一轮
+        文件栏  这一轮碰了哪些文件
+        正文栏  这个文件是什么
+        副屏    这些文件之间什么关系（星图）／ 什么算过关（标准）
+
+      **只有副屏允许藏在按钮后面**（用户明说星图可以）。其余一律常驻 —— 往这里
+      加页签或折叠区之前先读这句：那种藏法正是这次要拆掉的东西。
+
+      合并顺手消掉了四份重复（原来弹层和驾驶舱各画一遍）：下一步、阶段名、
+      未决问题数、轮次标签。每一份现在只剩一个出处。
+
+      这里仍然**没有 approve / reject，而且不许有**：裁决只发生在人被正面问到的
+      那道题里（PRD §1、§5.2b）。动作带上的按钮全是「去问」和「去跑」，不是判。
+    -->
+    <section class="view" id="stage-view" hidden>
+      <header class="stage-cockpit-head">
+        <div class="stage-cockpit-identity">
+          <p id="stage-kicker">STAGE</p>
+          <div class="stage-title">
+            <span id="stage-name">—</span>
+            <span class="thread" id="stage-thread"></span>
+          </div>
+          <div class="stage-cockpit-state">
+            <span id="stage-state">正在读取阶段状态</span>
+          </div>
+          <span class="mark-pill" id="stage-mark"></span>
         </div>
-        <button class="sheet-close" id="sheet-close" type="button" aria-label="关闭">✕</button>
-      </div>
+        <div class="stage-terminal-control" aria-live="polite">
+          <p id="terminal-summary">正在确认这条会话的本机状态…</p>
+          <div class="terminal-portal__actions">
+            <button class="enter" id="terminal-primary" type="button">打开系统终端</button>
+            <button class="back terminal-danger" id="terminal-close-window" type="button" hidden>关闭窗口</button>
+          </div>
+        </div>
+        <button class="back stage-cockpit-back" id="back" type="button">← 阶段环</button>
+      </header>
+
       <!--
-        两个页签，不是把两块内容摞起来。改标准是一件要专门去做的事（它改变什么
-        能挡闸门），摞在问题下面会让人一边看问题一边顺手改标准 —— 那正是最不该
-        顺手的一件事。
+        动作带：该我干什么。原来这一整块住在弹层里，所以要「点进去」才看得见。
       -->
-      <div class="sheet-tabs" role="tablist">
-        <button class="sheet-tab" id="tab-gaps" type="button" role="tab" aria-selected="true">问题</button>
-        <button class="sheet-tab" id="tab-rubric" type="button" role="tab" aria-selected="false">标准</button>
-      </div>
-      <div class="sheet-body">
-        <p class="sheet-line" id="sheet-line"></p>
+      <section class="stage-act" aria-label="该我干什么">
+        <p class="sheet-line" id="stage-line"></p>
         <!--
           这一轮走到哪一步（§2.3）。三段是三个**看得见的里程碑**（裁判起来 /
           红方出现 / 蓝方出现），不是编出来的百分比 —— 说不出走到哪就一段都不亮：
@@ -1545,6 +1554,9 @@ body::after {
 
           需求文档 §1 说这个产品要「让缺少完整软件工程经验的用户也能按可靠流程完成
           开发」。**说出下一步就是这条本身**，不是装饰。
+
+          驾驶舱那份拷贝（`#stage-next` / `#stage-next-why`）已经删掉 —— 同一句话
+          两个出处，迟早有一天只有一个跟上。
         -->
         <p class="next-step" id="next-step" hidden></p>
         <!--
@@ -1557,113 +1569,119 @@ body::after {
           在等你答的那道题（C 方案）。以前它只活在 Codex TUI 的 elicitation 表单里，
           要模型挂着一轮把它端过去；挂不住就是 session_died_before_answering。
           现在题在库里等着，你什么时候答都行。
+
+          格子横铺（`#open-question-fields` 是 auto-fit 网格）：一道裁决最多十格，
+          竖着排会把下面的闸门按钮顶出视野，而那两样是同一个动作的两半。
         -->
         <form class="open-question" id="open-question" hidden>
           <p class="open-question-head" id="open-question-head"></p>
           <div id="open-question-fields"></div>
-          <button type="submit" id="open-question-submit">提交</button>
-          <p class="open-question-note" id="open-question-note" hidden></p>
+          <div class="open-question-foot">
+            <button type="submit" id="open-question-submit">提交</button>
+            <p class="open-question-note" id="open-question-note" hidden></p>
+          </div>
         </form>
-        <div id="sheet-gaps"></div>
-        <div id="sheet-rubric" hidden></div>
-      </div>
-      <div class="sheet-foot">
-        <button class="enter" id="enter" type="button">查看阶段产物</button>
-        <!--
-          旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
-          挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
-          而它恰恰是唯一不属于任何阶段的东西。彗星说对了这件事 —— 不在任何一条
-          轨道上、能到达环上任何地方、而且留下尾迹（动过手的那几趟进账本）。
-        -->
-        <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
-        <!--
-          批 2「模型起草，人改」：在旁路会话里谈好 → 起草落成文件 → 人在编辑器里
-          改 → 定稿。未经修改的草稿不算 brief（机械判据在服务端，不在这儿）。
-        -->
-        <button class="run" id="brief-draft" type="button" hidden>闲聊起草 brief</button>
-        <button class="run" id="brief-confirm" type="button" hidden>brief 定稿（我改完了）</button>
-        <button class="run" id="run" type="button" hidden>跑这个阶段</button>
-        <button class="run" id="waive" type="button" hidden>接受风险</button>
-        <button class="ask" id="ask" type="button" hidden>请 Codex 问我</button>
-      </div>
-    </dialog>
-
-    <section class="view" id="stage-view" hidden>
-      <header class="stage-cockpit-head">
-        <div class="stage-cockpit-identity">
-          <p>STAGE ARTIFACT COCKPIT</p>
-          <div class="stage-title">
-            <span id="stage-name">—</span>
-            <span class="thread" id="stage-thread"></span>
-          </div>
-          <div class="stage-cockpit-state">
-            <span id="stage-state">正在读取阶段状态</span>
-            <span id="stage-round-label">尚无轮次</span>
-            <span id="stage-gap-count">0 个未决问题</span>
-          </div>
+        <div class="stage-gates" id="stage-gates-row">
+          <!--
+            旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
+            挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
+            而它恰恰是唯一不属于任何阶段的东西。
+          -->
+          <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
+          <!--
+            批 2「模型起草，人改」：在旁路会话里谈好 → 起草落成文件 → 人在编辑器里
+            改 → 定稿。未经修改的草稿不算 brief（机械判据在服务端，不在这儿）。
+          -->
+          <button class="run" id="brief-draft" type="button" hidden>闲聊起草 brief</button>
+          <button class="run" id="brief-confirm" type="button" hidden>brief 定稿（我改完了）</button>
+          <button class="run" id="run" type="button" hidden>跑这个阶段</button>
+          <button class="run" id="waive" type="button" hidden>接受风险</button>
+          <button class="ask" id="ask" type="button" hidden>请 Codex 问我</button>
         </div>
-        <div class="stage-cockpit-next">
-          <small>NEXT CONTROLLED MOVE</small>
-          <strong id="stage-next">读取下一步…</strong>
-          <span id="stage-next-why"></span>
-        </div>
-        <div class="stage-terminal-control" aria-live="polite">
-          <p id="terminal-summary">正在确认这条会话的本机状态…</p>
-          <div class="terminal-portal__actions">
-            <button class="enter" id="terminal-primary" type="button">打开系统终端</button>
-            <button class="back terminal-danger" id="terminal-close-window" type="button" hidden>关闭窗口</button>
-          </div>
-        </div>
-        <button class="back stage-cockpit-back" id="back" type="button">← 阶段详情</button>
-      </header>
+      </section>
 
       <div class="stage-cockpit-body">
-        <aside class="stage-artifact-navigator" aria-labelledby="stage-artifact-heading">
+        <!--
+          闸门在看什么：这个阶段产出了什么（正文一起），以及什么挡着它。
+          整个阶段的，**不随轮次变** —— 所以它站在轮次条外面，不压在轮次条底下。
+
+          产出和问题必须同栏：**只看得见「有人挑了三条毛病」而看不见「他挑的是
+          什么东西」，那个列表是悬着的**（用户 2026-07-30）。Build 的产出是一个
+          commit，而 `/api/stage-artifacts` 明确拒收 commit —— 右边那两栏读不到它，
+          所以这一份不是右边的重复。
+        -->
+        <aside class="stage-problems" aria-labelledby="stage-problems-heading">
           <div class="stage-artifact-nav-head">
-            <p>PRODUCTION LINEAGE</p>
-            <h2 id="stage-artifact-heading">轮次与文件</h2>
+            <p>WHAT THE GATE LOOKS AT</p>
+            <h2 id="stage-problems-heading">闸门在看什么</h2>
           </div>
-          <label class="stage-artifact-search">
-            <span class="sr-only">搜索本轮文件</span>
-            <input id="stage-artifact-search" type="search" autocomplete="off"
-                   placeholder="搜索本轮文件…">
-          </label>
-          <div class="stage-artifact-legend" aria-hidden="true">
-            <span data-change="added">新增</span><span data-change="modified">修改</span>
-            <span data-change="unchanged">沿用</span><span data-change="deleted">删除</span>
-            <span data-change="replaced">替换</span>
-          </div>
-          <div id="stage-artifact-list" role="tree" aria-label="本轮文件"></div>
-          <p class="note" id="stage-note">浏览产物只读取已结算事实；不会启动 turn、推动闸门或改写项目文件。</p>
+          <div id="stage-gaps"></div>
         </aside>
 
-        <section class="stage-artifact-space" aria-label="本轮生产关系图">
-          <div class="stage-artifact-canvas" id="stage-artifact-canvas">
-            <div class="stage-artifact-map-label" aria-hidden="true">
-              <span>STRUCTURE MAP</span><strong>本轮生产关系</strong>
-            </div>
-            <div class="stage-artifact-empty" id="stage-artifact-empty" role="status">
-              正在从产物账本建立本轮投影…
-            </div>
-          </div>
-          <footer class="stage-artifact-timeline">
+        <!--
+          产物区。三态由 `data-mode` 一处决定，**不用 [hidden]** —— display:grid /
+          flex 会盖掉 UA 给 [hidden] 的 display:none，这个坑这个仓库踩过两次
+          （`.round-progress` 和 `.graph-row` 各一次）。
+        -->
+        <section class="stage-secondary" id="stage-secondary" data-mode="files">
+          <div class="stage-round-bar">
             <div class="stage-timeline-head">
-              <span>ROUND TIMELINE</span>
+              <span>我在看哪一轮</span>
               <strong id="stage-timeline-summary">读取中</strong>
             </div>
             <div id="stage-artifact-round" role="tablist" aria-label="选择结算轮次"></div>
-          </footer>
-        </section>
+            <div class="stage-secondary-switch">
+              <button class="stage-switch" id="stage-graph-toggle" type="button"
+                      aria-pressed="false">看这一轮的关系图</button>
+              <button class="stage-switch" id="stage-rubric-toggle" type="button"
+                      aria-pressed="false">改判定标准</button>
+            </div>
+          </div>
 
-        <aside class="stage-artifact-inspector" aria-labelledby="stage-artifact-detail-title">
-          <div class="stage-inspector-kicker">
-            <span>READ-ONLY FILE</span><span id="stage-artifact-adapter">STAGE EVIDENCE</span>
+          <div class="stage-pane stage-pane-files">
+            <aside class="stage-artifact-navigator" aria-labelledby="stage-artifact-heading">
+              <div class="stage-artifact-nav-head">
+                <p>PRODUCTION LINEAGE</p>
+                <h2 id="stage-artifact-heading">这一轮碰了哪些文件</h2>
+              </div>
+              <label class="stage-artifact-search">
+                <span class="sr-only">搜索本轮文件</span>
+                <input id="stage-artifact-search" type="search" autocomplete="off"
+                       placeholder="搜索本轮文件…">
+              </label>
+              <div class="stage-artifact-legend" aria-hidden="true">
+                <span data-change="added">新增</span><span data-change="modified">修改</span>
+                <span data-change="unchanged">沿用</span><span data-change="deleted">删除</span>
+                <span data-change="replaced">替换</span>
+              </div>
+              <div id="stage-artifact-list" role="tree" aria-label="本轮文件"></div>
+              <p class="note" id="stage-note">浏览产物只读取已结算事实；不会启动 turn、推动闸门或改写项目文件。</p>
+            </aside>
+
+            <aside class="stage-artifact-inspector" aria-labelledby="stage-artifact-detail-title">
+              <div class="stage-inspector-kicker">
+                <span>READ-ONLY FILE</span><span id="stage-artifact-adapter">STAGE EVIDENCE</span>
+              </div>
+              <div id="stage-artifact-detail">
+                <h2 id="stage-artifact-detail-title">选择一个文件</h2>
+                <p>关系图与文件清单共用同一个选择。这里会显示正文、差异、来源、依赖和关联问题。</p>
+              </div>
+            </aside>
           </div>
-          <div id="stage-artifact-detail">
-            <h2 id="stage-artifact-detail-title">选择一个文件</h2>
-            <p>画布与文件清单共用同一个选择。这里会显示正文、差异、来源、依赖和关联问题。</p>
+
+          <div class="stage-pane stage-pane-graph" aria-label="本轮生产关系图">
+            <div class="stage-artifact-canvas" id="stage-artifact-canvas">
+              <div class="stage-artifact-map-label" aria-hidden="true">
+                <span>STRUCTURE MAP</span><strong>本轮生产关系</strong>
+              </div>
+              <div class="stage-artifact-empty" id="stage-artifact-empty" role="status">
+                正在从产物账本建立本轮投影…
+              </div>
+            </div>
           </div>
-        </aside>
+
+          <div class="stage-pane stage-pane-rubric" id="stage-rubric"></div>
+        </section>
       </div>
     </section>
 

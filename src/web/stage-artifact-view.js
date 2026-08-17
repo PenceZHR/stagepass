@@ -19,10 +19,6 @@ const roundStrip = pick("stage-artifact-round");
 const timelineSummary = pick("stage-timeline-summary");
 const search = /** @type {HTMLInputElement} */ (pick("stage-artifact-search"));
 const stageState = pick("stage-state");
-const roundLabel = pick("stage-round-label");
-const gapCount = pick("stage-gap-count");
-const next = pick("stage-next");
-const nextWhy = pick("stage-next-why");
 const adapterLabel = pick("stage-artifact-adapter");
 const note = pick("stage-note");
 
@@ -70,6 +66,8 @@ let detailKey = null;
 let refreshTimer = null;
 let requestVersion = 0;
 let closed = true;
+/** 产物区这边在哪一态：files 或 graph。星图的场景只在 graph 上存在。 */
+let mode = "files";
 
 async function fetchJson(path, signal) {
   const response = await fetch(path, { signal });
@@ -89,15 +87,15 @@ function setProjectionState(state) {
   search.disabled = state !== "ready";
 }
 
+/**
+ * 顶带上归这边写的那一格。
+ *
+ * 2026-08-17 三层合一页之后这里**只剩状态一句**：下一步、判定章、未决问题数、
+ * 轮次标签原来在这儿各画一份，而弹层里也各有一份 —— 同一句话两个出处，迟早
+ * 有一天只有一个跟上。四份重复现在都归 panel.js 那半边或轮次条独有。
+ */
 function setHeader(input) {
-  const mark = input.state.mark === "approved" ? " · 已批准"
-    : input.state.mark === "problem" ? " · 有问题" : "";
-  stageState.textContent = `${input.state.status}${mark}`;
-  gapCount.textContent = `${input.state.openGaps} 个未决问题`;
-  next.textContent = input.nextStep?.what ?? "查看已结算产物";
-  nextWhy.textContent = input.nextStep?.why
-    ?? "这一页只投影事实；所有裁决仍在原生 Codex 选择器中完成。";
-  nextWhy.title = nextWhy.textContent;
+  stageState.textContent = input.status;
   adapterLabel.textContent = ADAPTERS[input.phase]?.label ?? "STAGE EVIDENCE";
 }
 
@@ -518,17 +516,13 @@ async function load(round = selectedRound, quiet = false) {
       scene?.setModel({ inputs: [], folders: [], files: [], production: [] });
       list.replaceChildren();
       renderUnavailableRound();
-      roundLabel.textContent = "产物不可用";
       setProjectionState("unavailable");
       showEmpty(FAILURE_WORDS[body.error] ?? `阶段产物读取失败（${body.error ?? status}）。`);
-      renderDetailMessage("没有可读文件", "返回阶段详情查看原因与下一步。 ");
+      renderDetailMessage("没有可读文件", "原因与下一步在这一页上边那条动作带里。 ");
       return;
     }
     model = body;
     selectedRound = body.selectedRound;
-    roundLabel.textContent = selectedRound === null
-      ? "尚无已结算轮次"
-      : `第 ${selectedRound} 轮${body.scene.source === "reconstructed" ? " · 保守重建" : " · 已结算"}`;
     renderRounds();
     const keep = body.scene.files.some((file) => file.path === selectedPath)
       ? selectedPath : preferredFile();
@@ -542,7 +536,7 @@ async function load(round = selectedRound, quiet = false) {
     } else if (body.scene.empty) {
       setProjectionState("empty");
       showEmpty(selectedRound === null
-        ? "这个阶段还没有已结算产物。顶部的下一步会告诉你现在该做什么。"
+        ? "这个阶段还没有已结算产物。上边那条动作带会告诉你现在该做什么。"
         : "这一轮已结算，但产物清单中没有文件。这里不会拿未结算工作树填空。 ");
       renderDetailMessage("尚无文件", "上游入口和轮次事实仍保留；文件产生后会出现在这里。 ");
     } else {
@@ -564,10 +558,9 @@ async function load(round = selectedRound, quiet = false) {
       scene?.setModel({ inputs: [], folders: [], files: [], production: [] });
       list.replaceChildren();
       renderUnavailableRound();
-      roundLabel.textContent = "产物不可用";
       setProjectionState("unavailable");
       showEmpty("产物 API 暂时不可达；已结算事实没有被改动。 ");
-      renderDetailMessage("没有可读文件", "返回阶段详情查看原因与下一步。 ");
+      renderDetailMessage("没有可读文件", "原因与下一步在这一页上边那条动作带里。 ");
     }
   }
 }
@@ -579,6 +572,7 @@ function close() {
   refreshTimer = null;
   scene?.dispose();
   scene = null;
+  mode = "files";
   target = null;
   model = null;
   selectedPath = null;
@@ -592,6 +586,28 @@ function close() {
   delete cockpit.dataset.projection;
 }
 
+/**
+ * 产物区切到 files 还是 graph（rubric 那一态归 panel.js，这边只当它是「不是
+ * graph」）。
+ *
+ * **星图的场景按需建、切走就停。** 2026-08-17 之前它是一进阶段就 `installScene()`：
+ * 而合成一页之后星图默认不在屏幕上，那等于开一个 WebGL 场景在看不见的地方转 ——
+ * 白烧电，而且 `setSize` 量的是一个还没有尺寸的盒子。
+ */
+function setMode(next) {
+  mode = next === "graph" ? "graph" : "files";
+  if (mode !== "graph") {
+    scene?.dispose();
+    scene = null;
+    return;
+  }
+  if (closed || scene !== null) return;
+  installScene();
+  // 场景是刚建的，它手上还没有模型 —— 已经读到的那一份现在就交给它，
+  // 不然要等下一次 5 秒轮询才看得见东西。
+  if (model !== null) scene.setModel(model.scene);
+}
+
 function open(input) {
   close();
   closed = false;
@@ -602,9 +618,7 @@ function open(input) {
   groups.clear();
   renderLoadingRound();
   renderDetailMessage("正在读取阶段产物", "正在从产物账本建立只读投影…");
-  roundLabel.textContent = "读取中";
   note.textContent = "只读加载中；不会启动 turn、推动闸门或改写项目文件。";
-  installScene();
   setProjectionState("loading");
   showEmpty("正在从产物账本建立本轮投影…");
   void load(null);
@@ -613,4 +627,4 @@ function open(input) {
 
 search.addEventListener("input", () => { filterFiles(search.value); });
 
-window.stagepassArtifacts = { open, close };
+window.stagepassArtifacts = { open, close, setMode };

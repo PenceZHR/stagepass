@@ -14,17 +14,21 @@ import { createTerminalBridge } from "./terminal-bridge.js";
  *  - Entering a stage fires the portal, converges, and brings the stage in from
  *    slightly small, ~680ms. Repeat triggers are blocked or navigations race.
  *
- * 信息分两层（用户 2026-07-29 定，交接 §5.0.2）。这条决定这个文件的形状：
+ * 信息分两层（用户 2026-07-29 定，交接 §5.0.2；2026-08-17 收成两层）：
  *
  *   悬停一个阶段 → 左侧 40% 的常驻面板刷成它的**概要**
- *   点击一个阶段 → 弹窗显示它的**明细**（全部问题 + 闸门 + 动作）
+ *   点击一个阶段 → **进阶段那一页**，那里是它的全部
  *   环那一屏本身**什么都不加**
  *
- * 所以：觉得主屏少了点什么，答案是 renderStatus 或 drawSheet，不是往环那屏塞
+ * 中间原来还有一层弹窗（`<dialog id="sheet">`）。用户 2026-08-17 的原话：
+ * 「点开圆圈有一个界面，进去又有了一个界面，是不对的，交互太乱了，统一成一个
+ * 页面。」于是弹窗整层拆掉，它的内容并进阶段页，**不要再搭回来**。
+ *
+ * 所以：觉得主屏少了点什么，答案是 renderStatus 或 drawStage，不是往环那屏塞
  * 一块新东西。原来压在环底下那条决策区就是这么长出来的，已经整条撤掉了。
  *
- * The stage view is a read-only projection of settled artifacts. Official Codex
- * TUI output, input, approvals, MCP interaction, colors, and Ctrl+C stay native.
+ * 阶段页里的产物那半边是已结算事实的只读投影。Official Codex TUI output, input,
+ * approvals, colors, and Ctrl+C stay native.
  */
 const params = new URLSearchParams(location.search);
 const changeId = params.get("change") || "CHG-1";
@@ -87,17 +91,16 @@ const sunTitle = pick("sun-title");
 const sunLine = pick("sun-line");
 const sunCount = pick("sun-count");
 
-// 点小环打开的弹窗
-const sheet = dialog("sheet");
-const sheetKicker = pick("sheet-kicker");
-const sheetTitle = pick("sheet-title");
-const sheetMark = pick("sheet-mark");
-const sheetLine = pick("sheet-line");
-const sheetGaps = pick("sheet-gaps");
-const sheetRubric = pick("sheet-rubric");
-const tabGaps = pick("tab-gaps");
-const tabRubric = pick("tab-rubric");
-const enterButton = button("enter");
+// 阶段那一页上归 panel.js 管的几块（另一半归 stage-artifact-view.js）
+const stageKicker = pick("stage-kicker");
+const stageMark = pick("stage-mark");
+const stageLine = pick("stage-line");
+const stageGaps = pick("stage-gaps");
+const stageRubric = pick("stage-rubric");
+const stageSecondary = pick("stage-secondary");
+const stageGatesRow = pick("stage-gates-row");
+const graphToggle = button("stage-graph-toggle");
+const rubricToggle = button("stage-rubric-toggle");
 const waiveButton = button("waive");
 const briefButton = button("brief");
 const briefDraftButton = button("brief-draft");
@@ -133,14 +136,17 @@ let panelState = null;
 let current = null;
 let terminalBridge = null;
 let moving = false;
-/** 进入全屏驾驶舱前 Workspace 是否已经收起；返回时原样恢复。 */
+/** 进入阶段页前 Workspace 是否已经收起；返回时原样恢复。 */
 let stageWorkspaceWasCollapsed = false;
-/** 弹窗正在显示哪个阶段，没开时是 null。 */
-let sheetPhase = null;
-/** run / ask 留下的一句话，盖过默认说明，直到弹窗重开。 */
+/**
+ * run / ask 留下的一句话，盖过默认说明，直到重新进这个阶段。
+ *
+ * 台上是哪个阶段由 `current` 一个变量说了算 —— 弹层那一层没有了，不再有
+ * 「弹窗开着的阶段」和「驾驶舱里的阶段」两份状态可以对不上。
+ */
 let notice = null;
-/** 弹窗当前在哪个页签。 */
-let sheetTab = "gaps";
+/** 产物区在哪一态：files / graph / rubric。 */
+let stageMode = "files";
 /** 正在编辑的那份 rubric —— 角色、作用域、以及还没保存的 criteria。 */
 let editing = null;
 
@@ -301,7 +307,7 @@ async function pollProgress() {
   const words = progressWords(progress);
   if (words === null) return;
   // 写在弹窗那一行。人是从弹窗里按下「跑这个阶段」的，结果就该回到那儿。
-  sheetLine.textContent = words + contextWords(progress);
+  stageLine.textContent = words + contextWords(progress);
   if (progress.status === "running" && !progress.processGone) {
     runButton.textContent = `在跑 ${spell(progress.job?.elapsedMs ?? 0)}`;
   }
@@ -426,7 +432,7 @@ async function run() {
    * 跑的是哪个座位（批 3）：主线的格子不带 phase（老语义）；开着并行座位的
    * 格子把自己的阶段带上 —— 服务端按它路由到座位。
    */
-  const at = phases.find((each) => each.phase === sheetPhase);
+  const at = phases.find((each) => each.phase === current);
   const seatParam = at && !at.current && at.seat !== null
     ? `&phase=${encodeURIComponent(at.phase)}` : "";
   runButton.disabled = true;
@@ -469,7 +475,7 @@ async function run() {
  */
 function say(message) {
   notice = message;
-  sheetLine.textContent = message;
+  stageLine.textContent = message;
   stageNote.textContent = message;
 }
 
@@ -524,7 +530,7 @@ async function ask() {
   askButton.disabled = true;
   askButton.textContent = "已送进 Codex…";
   try {
-    const result = await (await dispatchThenEnter(() => fetch(
+    const result = await (await dispatchThenShow(() => fetch(
       `/api/ask?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     ))).json();
     const broke = crashed(result);
@@ -570,24 +576,26 @@ async function ask() {
  */
 const DISPATCH_THEN_ENTER_MS = 1200;
 
-async function dispatchThenEnter(request) {
-  const at = phases.find((entry) => entry.current);
-  closeSheet();
+async function dispatchThenShow(request) {
   const answered = request();               // 先发，别 await —— 它要等人答，几分钟
   const first = await Promise.race([
     answered.then((value) => ({ answered: true, value })),
     wait(DISPATCH_THEN_ENTER_MS).then(() => ({ answered: false })),
   ]);
   /*
-   * 恢复一条已落库答案通常几十毫秒就完成：这时根本不该再钻进 Terminal。旧实现
-   * 无论请求是否已经结束都 `void enter()`，调用方随即 `leave()`，两段动画撞在同一个
-   * moving 锁上；leave 直接返回，页面永远保留恢复前的旧状态。
+   * 三层合一页之后这里**不再导航**：这三个按钮只画在当前阶段那一页上，按下去的
+   * 人本来就站在那一页。原来它要先关弹窗、再 `enter()` 走一遍进场动画，而那正是
+   * 「点开圆圈有一个界面，进去又有了一个界面」的一段。
    *
-   * 真要等人时才进入，并且等 enter 完成再把 pending promise 交回调用方。这样答案
-   * 恰好在进场动画中回来，后面的 leave 也不会撞锁。
+   * 要跟上的只有终端那一格 —— 派发可能刚开出一条新会话，人得看得见「有个东西在
+   * Terminal 里等你」。恢复一条已落库答案几十毫秒就回来，那时连这一下都不必。
    */
   if (first.answered) return first.value;
-  if (at) await enter(at.phase);
+  try {
+    await terminalBridge?.refresh();
+  } catch {
+    /* 终端状态读不到不该把这次派发也算失败 —— 下面那句结论照常说。 */
+  }
   return answered;
 }
 
@@ -599,7 +607,7 @@ async function recordBrief() {
   // 再 load 会把刚打开的弹窗内容重画，把那句结论盖掉。
   let briefLanded = false;
   try {
-    const result = await (await dispatchThenEnter(() => fetch(
+    const result = await (await dispatchThenShow(() => fetch(
       `/api/brief?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     ))).json();
     const broke = crashed(result);
@@ -615,25 +623,27 @@ async function recordBrief() {
       say("没记下任何需求 —— 你按了 Esc，或者有必答的没填。");
     } else {
       /*
-       * 录完之后**把人带回阶段环**，别留在一个已经被关掉的终端前面。
+       * 录完之后**别把人扔在一个已经被关掉的终端前面**。
        *
        * 服务端在需求落库之后会关掉那个会话（它的活干完了，不关就一直挡着
        * 「跑这个阶段」）。但从人那边看，答完选择器紧接着屏幕就死了 —— 用户
        * 2026-07-30 报的「Terminal shut down / can't type anything」就是这个。
        * 事情是成的，观感是崩的。
        *
-       * 所以主动走回环上，并把那个阶段的卡片打开：结论、以及现在亮起来的
-       * 「跑这个阶段」，都在人的视线里。
+       * 原来的解法是走回环上、再把那个阶段的弹窗打开。三层合一页之后不用走了：
+       * 结论、以及现在亮起来的「跑这个阶段」，本来就在人正看着的这一页上。
+       * 刷一遍状态，让终端那一格自己说出「它关掉了」。
        */
       briefLanded = true;
-      const at = phases.find((entry) => entry.current)?.phase ?? null;
-      await leave();
-      if (at) {
-        openSheet(at);
-        say("需求记下了，那个终端的活也干完了（所以它关掉了）。"
-          + "现在可以跑这个阶段 —— 红方会拿着你写的东西去做，而不是自己猜。");
+      await loadOrReconnect();
+      try {
+        await terminalBridge?.refresh();
+      } catch {
+        /* 见 dispatchThenShow：终端状态读不到不改变「需求已经记下了」这件事。 */
       }
-      return;   // leave() 已经 load() 过了
+      say("需求记下了，那个终端的活也干完了（所以它关掉了）。"
+        + "现在可以跑这个阶段 —— 红方会拿着你写的东西去做，而不是自己猜。");
+      return;   // 上面已经 load 过了
     }
   } finally {
     briefButton.textContent = panelState?.briefAnswerPending
@@ -652,7 +662,7 @@ async function waive() {
   waiveButton.disabled = true;
   waiveButton.textContent = "已送进终端…";
   try {
-    const result = await (await dispatchThenEnter(() => fetch(
+    const result = await (await dispatchThenShow(() => fetch(
       `/api/waive?change=${encodeURIComponent(changeId)}`, { method: "POST" },
     ))).json();
     const broke = crashed(result);
@@ -1556,13 +1566,14 @@ function drawOrbit() {
     state.textContent = entry.mark ? MARK[entry.mark].label : status.short;
     button.append(pip, name, state);
 
-    // 悬停 → 左边那块常驻面板刷成这个阶段；离开所有节点 → 回到 Change 概览。
-    // 点击 → 弹窗看明细。两层，不是二选一（交接 §5.0.2）。
+    // 悬停 → 左边那块常驻面板刷成这个阶段的**概要**；离开所有节点 → 回到 Change
+    // 概览。点击 → **直接进阶段那一页**，那里有这个阶段的全部（2026-08-17）。
+    // 中间那层弹窗没有了：它当年的全部内容现在就画在阶段页上。
     button.addEventListener("mouseenter", () => { hoverOn(entry.phase); });
     button.addEventListener("focus", () => { hoverOn(entry.phase); });
     button.addEventListener("mouseleave", hoverOff);
     button.addEventListener("blur", hoverOff);
-    button.addEventListener("click", () => { openSheet(entry.phase); });
+    button.addEventListener("click", () => { void enter(entry.phase); });
 
     node.append(button);
     wrap.append(node);
@@ -1729,8 +1740,8 @@ async function load() {
 
   drawProgress();
   renderStatus(null);
-  // run / ask 走完都会 load()，闸门和问题可能已经变了 —— 弹窗还开着就重画它。
-  if (sheetPhase) drawSheet(sheetPhase);
+  // run / ask 走完都会 load()，闸门和问题可能已经变了 —— 人还在阶段页上就重画它。
+  if (current !== null) drawStage(current);
 
   /*
    * **一轮可能不是这个页面派出去的**：D 的「再来一轮」在 /api/ask 里就续跑了，
@@ -2084,30 +2095,23 @@ function hoverOff() {
  */
 const GAP_STATUS = { open: "未解决", closed: "已关闭", waived: "已接受风险" };
 
-function openSheet(phase) {
-  notice = null;
-  // 每次打开都回到「问题」。改标准是要专门去做的事，不该因为上次停在那儿就
-  // 直接把人放在一个能改闸门的页面上。
-  showTab("gaps");
-  drawSheet(phase);
-  if (!sheet.open) sheet.showModal();
-}
+/** 动作带底上那一排。列在一处，免得加了第六个按钮而收整排的判据还只数五个。 */
+const GATE_BUTTONS = [briefButton, briefDraftButton, briefConfirmButton,
+  runButton, waiveButton, askButton];
 
-function closeSheet() {
-  sheetPhase = null;
-  notice = null;
-  if (sheet.open) sheet.close();
-}
-
-function drawSheet(phase) {
+/**
+ * 阶段页上归 panel.js 的那几块：顶带的身份、动作带、闸门在看什么。
+ *
+ * `phases` 里没有这个 phase（旁路会话就是这样）时把它们清空 —— 旁路不是一个
+ * 阶段，它没有闸门、没有问题、也没有可裁决的东西。
+ */
+function drawStage(phase) {
   const entry = phases.find((item) => item.phase === phase);
-  if (!entry) { closeSheet(); return; }
-  sheetPhase = phase;
+  if (!entry) { clearStageActions(); return; }
 
-  sheetKicker.textContent = entry.current ? "Current Stage" : "Stage";
-  sheetTitle.textContent = entry.phase;
-  paintMark(sheetMark, entry.mark);
-  sheetLine.textContent = notice
+  stageKicker.textContent = entry.current ? "CURRENT STAGE" : "STAGE";
+  paintMark(stageMark, entry.mark);
+  stageLine.textContent = notice
     // 没录需求是**最要紧的那件事**，盖过闸门那句 —— 不然人看到的是"跑它会派发一次
     // 真的 turn"，而按钮偏偏是灰的，两句话互相打脸。
     ?? (entry.current && panelState?.brief === null
@@ -2117,7 +2121,7 @@ function drawSheet(phase) {
       : entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry))
 
   /*
-   * 上次裁决被拒 —— **留得住**（§3.2·5）。它原来只写进 stageNote / sheetLine，
+   * 上次裁决被拒 —— **留得住**（§3.2·5）。它原来只写进 stageNote / stageLine，
    * 而「进程已经结束了」会盖掉它，那正是答完之后必然发生的事。这里每次重画都从
    * 库里的 lastOutcome 来：盖不掉，刷新也还在；下一次裁决落地它自己就换掉了。
    */
@@ -2128,7 +2132,7 @@ function drawSheet(phase) {
   drawOpenQuestion(entry);
 
   drawGaps(entry);
-  sheetGaps.prepend(drawProduced(entry));
+  stageGaps.prepend(drawProduced(entry));
 
   // run / ask 只出现在 Change 真正停着的那个阶段上：跑哪个阶段由状态机决定，不由
   // 你点开了谁决定。点开一个未来的阶段只是打开看看。
@@ -2189,7 +2193,35 @@ function drawSheet(phase) {
   askButton.disabled = decidable.length === 0 || entry.live
     || (onlyRetry && barred);
 
+  syncGatesRow();
   drawNextStep(entry);
+}
+
+/** 闸门那一排：一个按钮都不露脸时整排收掉，别在动作带底上钉一条空黑带。 */
+function syncGatesRow() {
+  stageGatesRow.hidden = GATE_BUTTONS.every((each) => each.hidden);
+}
+
+/**
+ * 旁路会话那一页：**一个闸门动作都不许留在屏幕上**。
+ *
+ * 旁路不在任何一条轨道上（DESIGN §3.3），它没有闸门、没有问题、没有可裁决的
+ * 东西。这些按钮的可见性平时由 `entry.current` 决定，而旁路根本没有 entry ——
+ * 不显式清一遍，上一个阶段留下的那排按钮就原样挂在旁路页上，按下去发的是**别的
+ * 阶段**的动作。答题表单尤其：一道 Build 的裁决不许出现在旁路上。
+ */
+function clearStageActions() {
+  stageKicker.textContent = "ASIDE";
+  paintMark(stageMark, null);
+  stageLine.textContent = notice
+    ?? "旁路会话不属于任何阶段：这里没有闸门、没有问题，也不会推动任何东西。";
+  lastOutcomeLine.hidden = true;
+  nextStepLine.hidden = true;
+  roundProgress.hidden = true;
+  drawOpenQuestion(null);
+  stageGaps.replaceChildren();
+  for (const each of GATE_BUTTONS) each.hidden = true;
+  syncGatesRow();
 }
 
 /**
@@ -2336,7 +2368,7 @@ function nextStep(entry) {
 /**
  * 读过的产出正文，`阶段\n路径` -> 那次响应。
  *
- * 有它是因为 `drawSheet` 会被重画好几次（load 之后、切页签、按完按钮），每次都重新
+ * 有它是因为 `drawStage` 会被重画好几次（load 之后、切副屏、按完按钮），每次都重新
  * 取一遍会让正文闪成「读取中…」再回来。`load()` 里清掉 —— 一轮跑完文件就是新的了。
  */
 const artifactCache = new Map();
@@ -2443,7 +2475,7 @@ function drawGaps(entry) {
     empty.textContent = entry.threadId || entry.current
       ? "这个阶段还没有记录到问题。"
       : "还没轮到这个阶段，没有问题可看。";
-    sheetGaps.replaceChildren(empty);
+    stageGaps.replaceChildren(empty);
     return;
   }
 
@@ -2461,7 +2493,7 @@ function drawGaps(entry) {
     ? `${open} 项挡着闸门 · 共 ${entry.gaps.length} 项`
     : `${entry.gaps.length} 项，都已了结`;
 
-  sheetGaps.replaceChildren(heading, ...sorted.map((gap) => {
+  stageGaps.replaceChildren(heading, ...sorted.map((gap) => {
     const row = document.createElement("div");
     row.className = `gap ${gap.status}`;
 
@@ -2504,7 +2536,15 @@ function drawGaps(entry) {
   }));
 }
 
-/** Ring -> stage. Timed and guarded; see the note at the top. */
+/**
+ * Ring -> stage. Timed and guarded; see the note at the top.
+ *
+ * 这是**进入一个阶段的唯一入口**（2026-08-17 起）：点环上的圆圈直接到这儿，
+ * 中间那层弹窗没有了。进来看到的就是这个阶段的全部。
+ *
+ * 它仍然是**纯查看**：只读状态，不自动拉起或聚焦 Terminal.app、不启动 turn、
+ * 不推闸门。屏幕上那几个闸门按钮要人自己按 —— 「看状态不该有副作用」。
+ */
 async function enter(phase) {
   if (moving) return;
   moving = true;
@@ -2512,6 +2552,8 @@ async function enter(phase) {
   terminalBridge = null;
   window.stagepassArtifacts?.close();
   current = phase;
+  // 上一个阶段的 run / ask 结论不跟着你进下一个阶段。
+  notice = null;
   stageWorkspaceWasCollapsed = columns.classList.contains("collapsed");
   columns.classList.add("collapsed");
   columns.classList.add("stage-focus");
@@ -2520,8 +2562,16 @@ async function enter(phase) {
   stageName.textContent = phase;
   stageThread.textContent = entry?.threadId ? entry.threadId.slice(0, 8)
     : entry ? "未绑定线程" : "旁路会话";
-  // 上一次 run / ask 的结果不该跟着你进下一个阶段。ask() 会在这之后再写一次。
   stageNote.textContent = NOTE_DEFAULT;
+  /*
+   * 每次进来都回到「文件」。改标准是要专门去做的事，不该因为上次停在那儿就
+   * 直接把人放在一个能改闸门的编辑器前面 —— 这条规矩从弹层的页签继承下来，
+   * 换了载体没换意思。
+   */
+  setStageMode("files");
+  // 动作带和问题栏必须在进场动画**之前**画好：动画结束那一刻屏幕就是终态，
+  // 不该让人先看见一屏空壳再逐块填上。
+  drawStage(phase);
 
   portal.classList.remove("go");
   void portal.offsetWidth; // restart the animation rather than skip it
@@ -2545,19 +2595,10 @@ async function enter(phase) {
     closeWindow: terminalCloseWindow,
     summary: terminalSummary,
   });
-  const step = entry ? nextStep(entry) : null;
   window.stagepassArtifacts?.open({
     changeId,
     phase,
-    threadId: entry?.threadId ?? null,
-    state: {
-      status: entry ? cockpitStatusOf(entry) : "旁路会话",
-      current: entry?.current ?? false,
-      live: entry?.live ?? false,
-      mark: entry?.mark ?? null,
-      openGaps: entry ? openGaps(entry).length : 0,
-    },
-    nextStep: step,
+    status: entry ? cockpitStatusOf(entry) : "旁路会话",
   });
   try {
     // 进入 Stage 是纯查看：只读状态，不自动拉起或聚焦 Terminal.app。
@@ -2567,14 +2608,14 @@ async function enter(phase) {
   }
 }
 
-async function leave({ reopenSheet = false } = {}) {
+async function leave() {
   if (moving) return;
   moving = true;
-  const phase = current;
   terminalBridge?.close();
   terminalBridge = null;
   window.stagepassArtifacts?.close();
   current = null;
+  notice = null;
 
   stageView.classList.remove("active");
   await wait(420);
@@ -2590,7 +2631,6 @@ async function leave({ reopenSheet = false } = {}) {
   moving = false;
 
   await loadOrReconnect();
-  if (reopenSheet && phase) openSheet(phase);
 }
 
 /*
@@ -2633,7 +2673,6 @@ pick("graph-back").addEventListener("click", () => closeGraphView());
  * phaseBusy（这正是旁路的定义），所以这里也没有 disabled 逻辑可写。
  */
 async function openAside() {
-  closeSheet();
   await enter("aside");
 }
 
@@ -2660,7 +2699,6 @@ async function draftBriefFromAside() {
   briefDraftButton.textContent = "模型在整理那段对话…";
   const pending = fetch(
     `/api/brief-draft?change=${encodeURIComponent(changeId)}`, { method: "POST" });
-  closeSheet();
   await enter("aside");
   stageNote.textContent = "正在让模型把这段对话整理成 brief 草稿 ——"
     + "它就在这个窗口里跑，几分钟。写好之后这行会给出草稿文件的路径。";
@@ -2701,7 +2739,7 @@ async function confirmBriefEdit() {
             + "下游每个阶段的任务书从此读的是新的这份。"
           : ""));
       await loadOrReconnect();
-      if (sheetPhase) drawSheet(sheetPhase);
+      if (current !== null) drawStage(current);
     } else {
       say(CONFIRM_BRIEF_WORDS[result.kind] ?? `没定稿成：${result.kind}`);
     }
@@ -2710,7 +2748,7 @@ async function confirmBriefEdit() {
   }
 }
 
-button("back").addEventListener("click", () => { void leave({ reopenSheet: true }); });
+button("back").addEventListener("click", () => { void leave(); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });
@@ -2880,19 +2918,19 @@ changeTitle.addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); void createChange(); }
 });
 
-enterButton.addEventListener("click", () => {
-  const phase = sheetPhase;
-  closeSheet();
-  if (phase) void enter(phase);
+/*
+ * 副屏那两个按钮。**这一页上只有这两样允许藏在一次点击后面**（用户 2026-08-17）：
+ * 关系图和标准。别再加第三个 —— 加一个就是又开始往回长层。
+ *
+ * 两个都是 toggle：再按一次回到文件。所以「按下去会发生什么」写在 aria-pressed
+ * 上，而不是靠人记住自己现在在哪一态。
+ */
+graphToggle.addEventListener("click", () => {
+  setStageMode(stageMode === "graph" ? "files" : "graph");
 });
-button("sheet-close").addEventListener("click", () => { closeSheet(); });
-// 点遮罩也关。<dialog> 的遮罩不是独立元素，点在它上面时 event.target 就是 dialog
-// 自己 —— 点在内容上时 target 是里面的节点，所以这个判断足够分开两者。
-sheet.addEventListener("click", (event) => {
-  if (event.target === sheet) closeSheet();
+rubricToggle.addEventListener("click", () => {
+  setStageMode(stageMode === "rubric" ? "files" : "rubric");
 });
-// Esc 走原生的 cancel/close，不经过 closeSheet，所以状态要在这里跟上。
-sheet.addEventListener("close", () => { sheetPhase = null; notice = null; });
 
 // Applied before the first paint, and without a transition -- animating from
 // three columns to none on load would look like the page changing its mind.
@@ -2917,22 +2955,35 @@ void loadOrReconnect();
  */
 const ROLE_LABEL = { producer: "正方", critic: "反方", verdict: "裁判" };
 
-function showTab(name) {
-  sheetTab = name;
-  tabGaps.setAttribute("aria-selected", String(name === "gaps"));
-  tabRubric.setAttribute("aria-selected", String(name === "rubric"));
-  sheetGaps.hidden = name !== "gaps";
-  sheetRubric.hidden = name !== "rubric";
-  if (name !== "rubric") return;
+/**
+ * 产物区切到哪一态：files / graph / rubric。
+ *
+ * **可见性由 `data-mode` 一处决定，不用 `[hidden]`** —— display:grid|flex 会盖掉
+ * UA 给 `[hidden]` 的 `display:none`，这个仓库为它流过两次血（`.round-progress`
+ * 和 `.graph-row`）。这里只写一个属性，谁露脸全在样式表里。
+ *
+ * 星图的场景**按需建、切走就停**：它默认不在屏幕上，一进阶段就建一个 WebGL
+ * 场景在看不见的地方转，是白烧电。
+ */
+function setStageMode(mode) {
+  stageMode = mode;
+  stageSecondary.dataset.mode = mode;
+  graphToggle.setAttribute("aria-pressed", String(mode === "graph"));
+  rubricToggle.setAttribute("aria-pressed", String(mode === "rubric"));
+  graphToggle.textContent = mode === "graph" ? "回到文件" : "看这一轮的关系图";
+  rubricToggle.textContent = mode === "rubric" ? "回到文件" : "改判定标准";
+  window.stagepassArtifacts?.setMode(mode === "graph" ? "graph" : "files");
+
+  if (mode !== "rubric") return;
   // 先清空再去取：不清的话，切过来的一瞬间显示的是**上一个阶段**那份 rubric，
   // 等 fetch 回来才换掉。那一下看着像数据串了。
-  sheetRubric.replaceChildren();
-  void loadRubric(sheetPhase, editing?.role ?? "producer")
+  stageRubric.replaceChildren();
+  void loadRubric(current, editing?.role ?? "producer")
     .catch((error) => {
       const failed = document.createElement("p");
       failed.className = "rubric-note bad";
       failed.textContent = `读不到这个阶段的标准：${error.message}`;
-      sheetRubric.replaceChildren(failed);
+      stageRubric.replaceChildren(failed);
     });
 }
 
@@ -2972,7 +3023,7 @@ function wouldRetire() {
 }
 
 function drawRubric() {
-  if (!editing) { sheetRubric.replaceChildren(); return; }
+  if (!editing) { stageRubric.replaceChildren(); return; }
   const parts = [];
 
   const roles = document.createElement("div");
@@ -2984,7 +3035,7 @@ function drawRubric() {
     button.setAttribute("aria-pressed", String(role === editing.role));
     button.textContent = ROLE_LABEL[role];
     button.addEventListener("click", () => {
-      sheetRubric.replaceChildren();
+      stageRubric.replaceChildren();
       void loadRubric(editing.phase, role).catch(() => { /* 上面那条已经报过 */ });
     });
     roles.append(button);
@@ -3084,7 +3135,7 @@ function drawRubric() {
     parts.push(note);
   }
 
-  sheetRubric.replaceChildren(...parts);
+  stageRubric.replaceChildren(...parts);
 }
 
 const VERDICT_LABEL = {
@@ -3231,8 +3282,6 @@ async function saveRubric() {
   await loadOrReconnect(); // 环上的颜色可能变了
 }
 
-tabGaps.addEventListener("click", () => { showTab("gaps"); });
-tabRubric.addEventListener("click", () => { showTab("rubric"); });
 sunButton.addEventListener("click", () => { sunToGraph(); });
 sunButton.addEventListener("pointerenter", () => { showSunCard(); });
 sunButton.addEventListener("pointerleave", () => { hideSunCard(); });

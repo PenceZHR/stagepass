@@ -1,8 +1,20 @@
 /*
- * Stage 产物驾驶舱。
+ * 阶段这一页。
  *
- * 它借项目黑洞图的雾紫、沙金、星体和细线语汇，但信息结构不同：左边是本轮生产谱系，
- * 右边是一块常驻只读检查台。没有传统 IDE 的工具栏，也不把每件事装进圆角卡片。
+ * 它借项目黑洞图的雾紫、沙金、星体和细线语汇，但信息结构不同：没有传统 IDE 的
+ * 工具栏，也不把每件事装进圆角卡片。
+ *
+ * 2026-08-17 之前这里只是「产物驾驶舱」，是第三层；弹层那一层并进来之后，这一页
+ * 就是一个阶段的全部。纵向四段，每段只回答一个问题：
+ *
+ *   .stage-cockpit-head   我在哪
+ *   .stage-act            该我干什么          ← 从弹层搬进来的
+ *   .stage-problems       闸门在看什么        ← 从弹层搬进来的
+ *   .stage-secondary      产物区（三态）
+ *
+ * 产物区的三态由 `data-mode` 一处决定：files / graph / rubric。**不要改用
+ * [hidden] 切**：display:grid|flex 会盖掉 UA 给 [hidden] 的 display:none，
+ * 这个仓库为它流过两次血（`.round-progress` 和 `.graph-row`）。
  */
 
 #stage-view {
@@ -34,7 +46,7 @@
   flex: 0 0 auto;
   min-height: 112px;
   display: grid;
-  grid-template-columns: minmax(190px, .8fr) minmax(260px, 1.15fr) minmax(250px, .9fr) auto;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(250px, .9fr) auto;
   align-items: center;
   gap: 24px;
   padding: 17px 20px 15px 24px;
@@ -42,9 +54,10 @@
   background: rgba(27, 23, 35, .72);
   backdrop-filter: blur(24px);
 }
+/* 判定章跟着阶段名走，不再单独占一格 —— 它说的是「我在哪」的一部分。 */
+.stage-cockpit-identity .mark-pill { margin-top: 9px; }
 
 .stage-cockpit-identity > p,
-.stage-cockpit-next small,
 .stage-inspector-kicker {
   margin: 0;
   color: var(--sand-deep);
@@ -72,31 +85,6 @@
   content: "·";
   margin-right: 13px;
   color: rgba(225, 201, 168, .35);
-}
-
-.stage-cockpit-next {
-  min-width: 0;
-  padding-left: 22px;
-  border-left: 1px solid var(--stage-line);
-}
-
-.stage-cockpit-next strong,
-.stage-cockpit-next span { display: block; }
-.stage-cockpit-next strong {
-  margin-top: 9px;
-  color: var(--stage-ink);
-  font: 560 16px/1.2 var(--serif);
-  letter-spacing: -.01em;
-}
-.stage-cockpit-next span {
-  margin-top: 5px;
-  color: var(--stage-dim);
-  font-size: 10.5px;
-  line-height: 1.45;
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
 }
 
 .stage-terminal-control {
@@ -128,11 +116,213 @@
 }
 .stage-cockpit-back { align-self: start; white-space: nowrap; }
 
+/*
+ * ── 动作带：该我干什么 ─────────────────────────────────────
+ *
+ * 横贯全宽，紧挨着顶带 —— 这一屏上唯一真等着人的东西在这里。
+ *
+ * **封顶 + 自己滚**：一道裁决最多十格，格子多的时候不封顶它会把下面整个产物区
+ * 顶出视野。封顶之后滚的是它自己，产物区的位置不动。
+ */
+.stage-act {
+  flex: 0 0 auto;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding: 4px 24px 0;
+  border-bottom: 1px solid var(--stage-line);
+  background: rgba(225, 198, 160, .045);
+}
+/* 里面那几块（sheet-line / next-step / last-outcome / round-progress / gap 等）
+   的样式仍在 panel.html 里，按类名生效，没有一条依赖当年那个 <dialog>。 */
+.stage-act .sheet-line { margin-top: 12px; }
+
+/*
+ * 闸门那一排**钉在动作带底上**。
+ *
+ * 2026-08-17 真机量出来的：这条 Change 上「状态句 + 下一步 + 上次被拒 + 一道三格
+ * 的题 + 按钮」是 459px，而带子封顶 416px —— 按钮整排落在折叠线下 27px，要在带子
+ * 里再滚一下才看得见。而「答题」和「按下跑这个阶段」是同一件事的两半。
+ *
+ * 光把顶抬高治不了：换一道十格的题照样溢出。钉底才是不随题目大小变的那条 ——
+ * 题在下面滚，动作永远在原地。
+ */
+.stage-gates {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 0 14px;
+  /* 半透明会让滚上来的正文从按钮底下透出去 —— 钉住的东西必须自己挡住背后。 */
+  background: rgba(31, 26, 40, .97);
+  box-shadow: 0 -1px 0 var(--stage-line);
+}
+/*
+ * 一个按钮都不显示时整排收掉，不留一条钉在底上的空黑带。
+ *
+ * 判据由 panel.js 写在 `hidden` 上（`:empty` 不行 —— 元素里有缩进文本节点，
+ * 那条选择器永远不匹配，是一条静默的死规则）。而 display:flex 会盖掉 UA 给
+ * `[hidden]` 的 display:none，所以这一行必须写出来。
+ */
+.stage-gates[hidden] { display: none; }
+
+/*
+ * 在等你答的那道题。格子**横铺**：竖着排会把闸门按钮顶出视野，而答题和按下
+ * 「跑这个阶段」是同一件事的两半。
+ */
+.open-question {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(225, 198, 160, .34);
+  border-radius: 12px;
+  background: rgba(225, 198, 160, .06);
+}
+.open-question[hidden] { display: none; }
+.open-question-head {
+  margin: 0 0 12px;
+  color: var(--stage-ink);
+  font: 500 13.5px/1.6 var(--serif);
+}
+#open-question-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+#open-question-fields fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 9px 12px 11px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .14);
+}
+#open-question-fields legend {
+  padding: 0 4px;
+  color: var(--sand-strong);
+  font: 600 10px/1.4 ui-sans-serif, -apple-system, sans-serif;
+  letter-spacing: .06em;
+}
+#open-question-fields label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  color: rgba(255, 255, 255, .78);
+  font: 400 12px/1.5 var(--serif);
+  cursor: pointer;
+}
+#open-question-fields input { margin-top: 3px; accent-color: var(--sand-deep); }
+.open-question-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+#open-question-submit {
+  min-height: 34px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879);
+  color: #302d38;
+  cursor: pointer;
+  font: 820 10px/1 ui-sans-serif, sans-serif;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.open-question-note {
+  margin: 0;
+  color: var(--stage-dim);
+  font: 400 11.5px/1.5 var(--serif);
+}
+.open-question-note[hidden] { display: none; }
+
 .stage-cockpit-body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(220px, 24fr) minmax(320px, 46fr) minmax(300px, 30fr);
+  grid-template-columns: minmax(260px, 27fr) minmax(0, 73fr);
+}
+
+/* ── 闸门在看什么：产出 + 挡着的问题。整阶段的，不随轮次变。 ── */
+.stage-problems {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--stage-line);
+  background: rgba(19, 16, 25, .72);
+}
+#stage-gaps {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 18px;
+}
+/* 弹层里这些块靠 .sheet-body 的内边距活着；这里自己给。 */
+#stage-gaps .sheet-section:first-child { margin-top: 4px; }
+
+/* ── 产物区：三态，data-mode 一处说了算 ── */
+.stage-secondary {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.stage-round-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 16px 11px;
+  border-bottom: 1px solid var(--stage-line);
+  background: rgba(20, 17, 26, .62);
+}
+.stage-round-bar .stage-timeline-head { margin-bottom: 0; }
+.stage-round-bar #stage-artifact-round { flex: 1 1 auto; }
+/* 标准不按轮次分 —— 切到标准时轮次条不该还在上面暗示它管着下面。 */
+.stage-secondary[data-mode="rubric"] #stage-artifact-round,
+.stage-secondary[data-mode="rubric"] .stage-timeline-head { display: none; }
+
+.stage-secondary-switch {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+.stage-switch {
+  padding: 6px 12px;
+  border: 1px solid rgba(225, 201, 168, .22);
+  border-radius: 999px;
+  background: rgba(30, 26, 38, .8);
+  color: var(--stage-dim);
+  cursor: pointer;
+  font: 600 10px/1 ui-sans-serif, -apple-system, sans-serif;
+  letter-spacing: .06em;
+  transition: border-color .16s, color .16s, background .16s;
+}
+.stage-switch:hover { border-color: rgba(225, 201, 168, .5); color: var(--stage-ink); }
+.stage-switch[aria-pressed="true"] {
+  border-color: var(--sand);
+  background: rgba(225, 201, 168, .14);
+  color: var(--stage-ink);
+}
+.stage-switch:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(225, 201, 168, .12); }
+
+.stage-pane { min-width: 0; min-height: 0; display: none; }
+.stage-secondary[data-mode="files"] .stage-pane-files {
+  display: grid;
+  grid-template-columns: minmax(220px, 38fr) minmax(0, 62fr);
+}
+.stage-secondary[data-mode="graph"] .stage-pane-graph { display: block; }
+.stage-secondary[data-mode="rubric"] .stage-pane-rubric {
+  display: block;
+  overflow-y: auto;
+  padding: 6px 22px 24px;
 }
 
 .stage-artifact-navigator {
@@ -191,22 +381,7 @@
   box-shadow: 0 0 0 3px rgba(225, 201, 168, .08);
 }
 
-.stage-artifact-space {
-  position: relative;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border-right: 1px solid var(--stage-line);
-}
-
-/* 轮次时间轴。换行铺开，任何轮数下都不产生横向滚动条。 */
-.stage-artifact-timeline {
-  padding: 10px 16px 13px;
-  border-top: 1px solid var(--stage-line);
-  background: rgba(20, 17, 26, .62);
-}
+/* 轮次时间轴。换行铺开，任何轮数下都不产生横向滚动条（22 轮那次的教训）。 */
 .stage-timeline-head {
   display: flex;
   align-items: baseline;
@@ -591,10 +766,14 @@
   border-left: 2px solid var(--rose);
 }
 
-#stage-view[data-projection="unavailable"] .stage-cockpit-body,
-#stage-view[data-projection="empty"] .stage-cockpit-body,
-#stage-view[data-projection="incomplete"] .stage-cockpit-body {
-  grid-template-columns: minmax(220px, 24fr) minmax(0, 76fr);
+/*
+ * 投影不可用 / 空 / 不完整时，右边那块只读检查台没有东西可读 —— 收起来，把
+ * 宽度还给文件清单，而不是重复一遍同一句「没有可读文件」。
+ */
+#stage-view[data-projection="unavailable"] .stage-pane-files,
+#stage-view[data-projection="empty"] .stage-pane-files,
+#stage-view[data-projection="incomplete"] .stage-pane-files {
+  grid-template-columns: minmax(0, 1fr);
 }
 #stage-view[data-projection="unavailable"] .stage-artifact-inspector,
 #stage-view[data-projection="empty"] .stage-artifact-inspector,
@@ -604,35 +783,35 @@
 
 @media (max-width: 1050px) {
   .stage-cockpit-head {
-    grid-template-columns: 1fr 1fr auto;
+    grid-template-columns: 1fr auto;
     gap: 14px;
   }
-  .stage-terminal-control { grid-column: 1 / 3; padding: 10px 0 0; border-left: 0; border-top: 1px solid var(--stage-line); }
-  .stage-cockpit-back { grid-column: 3; grid-row: 1; }
+  .stage-terminal-control { grid-column: 1 / 2; padding: 10px 0 0; border-left: 0; border-top: 1px solid var(--stage-line); }
+  .stage-cockpit-back { grid-column: 2; grid-row: 1; }
   .stage-cockpit-body {
-    grid-template-columns: 220px minmax(0, 1fr);
-    grid-template-rows: minmax(260px, 1fr) minmax(280px, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, auto) minmax(320px, 1fr);
   }
-  .stage-artifact-navigator { grid-row: 1 / 3; }
-  .stage-artifact-space { grid-column: 2; grid-row: 1; border-right: 0; border-bottom: 1px solid var(--stage-line); }
-  .stage-artifact-inspector { grid-column: 2; grid-row: 2; }
-  #stage-view[data-projection="unavailable"] .stage-cockpit-body,
-  #stage-view[data-projection="empty"] .stage-cockpit-body,
-  #stage-view[data-projection="incomplete"] .stage-cockpit-body {
-    grid-template-columns: 220px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
+  .stage-problems { border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  .stage-secondary[data-mode="files"] .stage-pane-files {
+    grid-template-columns: 210px minmax(0, 1fr);
   }
 }
 
 @media (max-width: 760px) {
   #stage-view { min-height: 100svh; }
   .stage-cockpit-head { display: flex; flex-direction: column; align-items: stretch; }
-  .stage-cockpit-next,
   .stage-terminal-control { padding: 10px 0 0; border-left: 0; border-top: 1px solid var(--stage-line); }
   .stage-cockpit-back { position: absolute; right: 16px; top: 14px; }
+  /* 这么窄的时候整页一条纵队自己滚；动作带跟着不再单独封顶，否则页内套页内滚。 */
+  .stage-act { max-height: none; overflow-y: visible; }
   .stage-cockpit-body { display: block; overflow-y: auto; }
-  .stage-artifact-navigator { min-height: 360px; }
-  .stage-artifact-space { min-height: 600px; border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  .stage-problems { border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  #stage-gaps { overflow-y: visible; }
+  .stage-secondary { display: block; }
+  .stage-secondary[data-mode="files"] .stage-pane-files { grid-template-columns: minmax(0, 1fr); }
+  .stage-artifact-navigator { min-height: 360px; border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  .stage-pane-graph { min-height: 600px; }
   .stage-artifact-inspector { min-height: 520px; }
 }
 
