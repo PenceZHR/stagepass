@@ -15,7 +15,8 @@ const empty = pick("stage-artifact-empty");
 const list = pick("stage-artifact-list");
 const detail = pick("stage-artifact-detail");
 const cockpit = pick("stage-view");
-const roundSelect = /** @type {HTMLSelectElement} */ (pick("stage-artifact-round"));
+const roundStrip = pick("stage-artifact-round");
+const timelineSummary = pick("stage-timeline-summary");
 const search = /** @type {HTMLInputElement} */ (pick("stage-artifact-search"));
 const stageState = pick("stage-state");
 const roundLabel = pick("stage-round-label");
@@ -63,6 +64,9 @@ let rows = new Map();
 let groups = new Map();
 let selectedPath = null;
 let selectedRound = null;
+let listSignature = null;
+let timelineSignature = null;
+let detailKey = null;
 let refreshTimer = null;
 let requestVersion = 0;
 let closed = true;
@@ -109,55 +113,83 @@ function countChanges(files) {
   return words.join(" · ") || "没有文件变化";
 }
 
-function renderRounds() {
-  roundSelect.replaceChildren();
+function roundEntries() {
   const rounds = [...(model?.rounds ?? [])].sort((left, right) => left.round - right.round);
   const incomplete = (model?.incompleteRounds ?? []).map((round) => ({ round, incomplete: true }));
-  const entries = [...rounds, ...incomplete]
-    .sort((left, right) => left.round - right.round);
+  return [...rounds, ...incomplete].sort((left, right) => left.round - right.round);
+}
+
+function describeRound(entry) {
+  if (entry === undefined) return "";
+  if (entry.incomplete === true) return `第 ${entry.round} 轮 · 历史清单不完整`;
+  return `第 ${entry.round} 轮 · ${entry.source === "reconstructed" ? "保守重建 · " : "已结算 · "}`
+    + countChanges(entry.files);
+}
+
+/**
+ * 时间轴换行排布，永远不出现横向滚动条 —— 上一版把 22 个轮次塞进一条横带里，
+ * 当前轮停在最左端看不见，人得同时拖两条横向滚动条才找得到自己在哪。
+ */
+function renderRounds() {
+  const entries = roundEntries();
   if (entries.length === 0) {
-    const option = document.createElement("option");
-    option.textContent = "还没有已结算轮次";
-    option.value = "";
-    roundSelect.append(option);
-    roundSelect.disabled = true;
+    renderTimelineMessage("还没有已结算轮次");
     return;
   }
-  roundSelect.disabled = false;
-  for (const entry of entries) {
-    const option = document.createElement("option");
-    option.value = String(entry.round);
-    option.textContent = `第 ${entry.round} 轮 — ${entry.incomplete === true
-      ? "历史清单不完整"
-      : `${entry.source === "reconstructed" ? "保守重建 · " : ""}${countChanges(entry.files)}`}`;
-    option.selected = entry.round === selectedRound;
-    roundSelect.append(option);
+  const signature = JSON.stringify([entries.map((entry) => [entry.round, entry.incomplete === true]), selectedRound]);
+  if (signature !== timelineSignature) {
+    timelineSignature = signature;
+    roundStrip.replaceChildren();
+    for (const entry of entries) {
+      const tick = document.createElement("button");
+      tick.type = "button";
+      tick.className = "stage-round-tick";
+      tick.setAttribute("role", "tab");
+      tick.dataset.round = String(entry.round);
+      tick.dataset.state = entry.incomplete === true ? "incomplete"
+        : entry.source === "reconstructed" ? "reconstructed" : "settled";
+      tick.setAttribute("aria-selected", String(entry.round === selectedRound));
+      tick.title = describeRound(entry);
+      tick.textContent = String(entry.round);
+      tick.addEventListener("click", () => { void load(entry.round); });
+      roundStrip.append(tick);
+    }
+  } else {
+    for (const tick of roundStrip.children) {
+      tick.setAttribute("aria-selected", String(Number(tick.dataset.round) === selectedRound));
+    }
   }
+  timelineSummary.textContent = describeRound(
+    entries.find((entry) => entry.round === selectedRound),
+  ) || `共 ${entries.length} 轮`;
 }
 
-function renderUnavailableRound() {
-  roundSelect.replaceChildren();
-  const option = document.createElement("option");
-  option.textContent = "轮次不可用";
-  option.value = "";
-  roundSelect.append(option);
-  roundSelect.disabled = true;
+function renderTimelineMessage(message) {
+  timelineSignature = null;
+  roundStrip.replaceChildren();
+  timelineSummary.textContent = message;
 }
 
-function renderLoadingRound() {
-  roundSelect.replaceChildren();
-  const option = document.createElement("option");
-  option.textContent = "正在读取轮次…";
-  option.value = "";
-  roundSelect.append(option);
-  roundSelect.disabled = true;
-}
+const renderUnavailableRound = () => { renderTimelineMessage("轮次不可用"); };
+const renderLoadingRound = () => { renderTimelineMessage("正在读取轮次…"); };
 
 function fileMeta(file) {
   return `${CHANGE_WORDS[file.display] ?? file.display} · ${file.role} · R${file.changedInRound}`;
 }
 
 function renderList() {
+  // 每 5 秒把整棵文件树拆了重建，会把人滚到的位置和展开状态一起清掉。
+  const signature = JSON.stringify(
+    (model?.scene.files ?? []).map((file) => [file.path, file.display, file.role]),
+  );
+  if (signature === listSignature) {
+    for (const [candidate, row] of rows) {
+      row.setAttribute("aria-selected", String(candidate === selectedPath));
+    }
+    filterFiles(search.value);
+    return;
+  }
+  listSignature = signature;
   rows = new Map();
   groups = new Map();
   list.replaceChildren();
@@ -431,6 +463,7 @@ async function selectFile(path) {
   const file = model?.scene.files.find((candidate) => candidate.path === path);
   if (!file || selectedRound === null || target === null) return;
   selectedPath = path;
+  detailKey = `${selectedRound}::${path}`;
   for (const [candidate, row] of rows) {
     row.setAttribute("aria-selected", String(candidate === path));
   }
@@ -515,7 +548,11 @@ async function load(round = selectedRound, quiet = false) {
     } else {
       setProjectionState("ready");
       hideEmpty();
-      if (keep !== null) void selectFile(keep);
+      // 只有真的换了轮次或换了文件才重读正文。轮询期间人正在读的那一屏
+      // 不能被自己刷掉 —— 旧实现每 5 秒把详情打回“正在读取”，滚动位置和
+      // 正文/DIFF/来源的页签选择一起没。
+      const wanted = keep === null ? null : `${selectedRound}::${keep}`;
+      if (keep !== null && wanted !== detailKey) void selectFile(keep);
     }
     note.textContent = `只读 · ${body.scene.files.length} 个文件 · ${body.scene.inputs.length} 个上游入口`
       + (body.stageFacts.length > 0 ? ` · ${body.stageFacts.length} 个阶段级问题` : "")
@@ -546,6 +583,9 @@ function close() {
   model = null;
   selectedPath = null;
   selectedRound = null;
+  listSignature = null;
+  timelineSignature = null;
+  detailKey = null;
   rows.clear();
   groups.clear();
   search.value = "";
@@ -572,9 +612,5 @@ function open(input) {
 }
 
 search.addEventListener("input", () => { filterFiles(search.value); });
-roundSelect.addEventListener("change", () => {
-  const round = Number(roundSelect.value);
-  if (Number.isInteger(round) && round > 0) void load(round);
-});
 
 window.stagepassArtifacts = { open, close };

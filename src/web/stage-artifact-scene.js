@@ -10,6 +10,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const TINT = {
   input: 0xc4a2b8,
+  round: 0xf0c987,
   folder: 0xd9b28e,
   added: 0x9fae8e,
   modified: 0xd9b28e,
@@ -19,6 +20,17 @@ const TINT = {
   dependency: 0x8fbf9d,
   dependent: 0xdf9d66,
 };
+
+/** 角色决定形状：文档是片、代码是晶体、结构化证据是多面体、反方是环。 */
+const ROLE_GEOMETRY = {
+  producer: (size) => new THREE.CylinderGeometry(size, size, size * .22, 6),
+  critic: (size) => new THREE.TorusGeometry(size * .78, size * .26, 8, 18),
+  delivery: (size) => new THREE.IcosahedronGeometry(size, 0),
+  structured: (size) => new THREE.OctahedronGeometry(size * 1.05, 0),
+};
+
+/** 看这张图的固定仰角：够高能看清目录分区，够低还认得出这是一个平面。 */
+const ELEVATION = Math.PI * .3;
 
 const asPosition = (node) => new THREE.Vector3(node.x, node.y, node.z);
 
@@ -106,7 +118,8 @@ function labelFor(node, kind) {
   text.className = "stage-artifact-node-label";
   text.dataset.kind = kind;
   text.textContent = kind === "folder" ? `${node.path}/ · ${node.count}`
-    : kind === "input" ? `${node.phase} 输入` : node.name;
+    : kind === "input" ? `${node.phase} 输入`
+      : kind === "round" ? `第 ${node.round} 轮` : node.name;
   const label = new CSS2DObject(text);
   label.position.y = kind === "file" ? 1.45 : 1.8;
   return label;
@@ -174,6 +187,10 @@ export function createStageArtifactScene(container, callbacks) {
   const objects = new Map();
   const paths = new Map();
   const hits = [];
+  const folderHits = [];
+  const expanded = new Set();
+  let framedSignature = null;
+  let builtSignature = null;
   let model = null;
   let selected = null;
   let frame = 0;
@@ -232,42 +249,148 @@ export function createStageArtifactScene(container, callbacks) {
     put(node.id, node, "input", ring);
   }
 
-  function addFolder(node) {
-    const shell = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(1.22 + Math.min(node.count, 12) * .035, 1),
-      nodeMaterial(TINT.folder, .82),
+  function addRound(node) {
+    const core = new THREE.Mesh(
+      new THREE.TorusGeometry(1.5, .16, 12, 48),
+      new THREE.MeshBasicMaterial({
+        color: TINT.round, transparent: true, opacity: .78,
+        blending: THREE.AdditiveBlending,
+      }),
     );
-    shell.scale.y = .6;
-    put(node.id, node, "folder", shell);
+    core.rotation.x = Math.PI / 2;
+    put(node.id, node, "round", core);
+  }
+
+  /** 目录画成一块能认出来的地，不是又一颗球。 */
+  function addFolder(node) {
+    const group = new THREE.Group();
+    group.position.copy(asPosition(node));
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(node.radius, 56),
+      new THREE.MeshBasicMaterial({
+        color: TINT.folder, transparent: true, opacity: .055,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }),
+    );
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.y = -.35;
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(node.radius - .07, node.radius, 72),
+      new THREE.MeshBasicMaterial({
+        color: TINT.folder, transparent: true, opacity: .3,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      }),
+    );
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = -.34;
+    // 整块地都是点击目标。只让 0.07 宽的描边可点，等于没有。
+    disc.userData.id = node.id;
+    disc.userData.folder = node.path;
+    const label = labelFor(node, "folder");
+    label.position.y = 0;
+    label.position.z = node.radius + .9;
+    group.add(disc, rim, label);
+    group.userData = { label, showLabel: true };
+    stable.add(group);
+    objects.set(node.id, group);
+    folderHits.push(disc);
   }
 
   function addFile(node, showLabel) {
-    const size = node.display === "deleted" ? .54 : .68;
-    const geometry = node.display === "replaced"
-      ? new THREE.OctahedronGeometry(size, 0)
-      : new THREE.IcosahedronGeometry(size, 0);
-    const core = new THREE.Mesh(geometry, nodeMaterial(TINT[node.display]));
+    const size = node.display === "deleted" ? .5 : .66;
+    const build = ROLE_GEOMETRY[node.role] ?? ROLE_GEOMETRY.delivery;
+    const core = new THREE.Mesh(build(size), nodeMaterial(TINT[node.display]));
     if (node.display === "deleted") core.rotation.z = Math.PI / 4;
+    if (node.display === "replaced") core.rotation.y = Math.PI / 4;
     put(node.id, node, "file", core, showLabel);
   }
 
+  /** 这一份投影的全部可见事实。一样就没必要重建。 */
+  function signatureOf(next) {
+    if (!next) return "";
+    return JSON.stringify([
+      next.round,
+      next.source,
+      next.hub?.round ?? null,
+      next.inputs?.map((node) => node.id),
+      next.folders?.map((node) => [node.id, node.count, node.radius]),
+      next.files?.map((node) => [node.id, node.display, node.role]),
+      [...expanded].sort(),
+    ]);
+  }
+
   function setModel(next) {
+    // 5 秒一次的轮询绝大多数时候什么都没变。照旧全拆全建会把几何体、材质和
+    // 标签元素每 5 秒扔掉重做一遍 —— 屏幕上是标签闪一下，机器上是白烧。
+    const signature = signatureOf(next);
+    if (signature === builtSignature) {
+      model = next;
+      return;
+    }
+    builtSignature = signature;
     disposeTree(stable);
     disposeTree(dependencyLines);
-    objects.clear(); paths.clear(); hits.length = 0;
+    objects.clear(); paths.clear(); hits.length = 0; folderHits.length = 0;
     selected = null;
     model = next;
-    const aggregatedFolders = new Set(
-      (next?.folders ?? []).filter((folder) => folder.aggregated).map((folder) => folder.path),
+    const collapsed = new Set(
+      (next?.folders ?? [])
+        .filter((folder) => folder.aggregated && !expanded.has(folder.path))
+        .map((folder) => folder.path),
     );
+    if (next?.hub) addRound(next.hub);
     for (const node of next?.inputs ?? []) addInput(node);
     for (const node of next?.folders ?? []) addFolder(node);
-    for (const node of next?.files ?? []) addFile(node, !aggregatedFolders.has(node.folder));
+    for (const node of next?.files ?? []) addFile(node, !collapsed.has(node.folder));
     for (const edge of next?.production ?? []) {
       const from = objects.get(edge.from);
       const to = objects.get(edge.to);
-      if (from && to) stable.add(lineBetween(from.position, to.position, TINT.folder, .20));
+      if (!from || !to) continue;
+      stable.add(lineBetween(
+        from.position, to.position,
+        edge.kind === "folder-file" ? TINT.folder : TINT.round,
+        edge.kind === "folder-file" ? .13 : .3,
+      ));
     }
+    // 只有图的形状变了才重新取景。5 秒一次的轮询不能把人正在看的角度抢走。
+    const shape = `${next?.round ?? ""}|${(next?.files ?? []).map((file) => file.id).join(",")}`;
+    if (shape !== framedSignature) {
+      framedSignature = shape;
+      frameContent(next);
+    }
+  }
+
+  /** 把相机推到刚好装下整张图的地方 —— 内容不该缩在角落里。 */
+  function frameContent(next) {
+    const points = [
+      ...(next?.hub ? [next.hub] : []),
+      ...(next?.inputs ?? []),
+      ...(next?.files ?? []),
+    ];
+    const bounds = new THREE.Box3();
+    if (points.length === 0) bounds.setFromCenterAndSize(new THREE.Vector3(), new THREE.Vector3(20, 1, 20));
+    else for (const point of points) bounds.expandByPoint(asPosition(point));
+    for (const folder of next?.folders ?? []) {
+      bounds.expandByPoint(new THREE.Vector3(folder.x - folder.radius, 0, folder.z - folder.radius));
+      bounds.expandByPoint(new THREE.Vector3(folder.x + folder.radius, 0, folder.z + folder.radius));
+    }
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const aspect = Math.max(.35, camera.aspect);
+    // 相机的仰角固定在 ELEVATION，地面在竖直方向上被压缩成 sin(仰角)。
+    // 不把这一下算进去，取景就会以为自己需要退得比实际远得多。
+    const vertical = Math.max(size.z * Math.sin(ELEVATION), size.x / aspect, 12);
+    const distance = (vertical / 2) / Math.tan((camera.fov * Math.PI) / 360) * 1.1;
+    controls.minDistance = Math.max(8, distance * .25);
+    controls.maxDistance = distance * 3.2;
+    controls.target.copy(center);
+    camera.position.set(
+      center.x,
+      center.y + distance * Math.sin(ELEVATION),
+      center.z + distance * Math.cos(ELEVATION),
+    );
+    camera.updateProjectionMatrix();
+    controls.update();
   }
 
   function select(path, dependencies = null) {
@@ -308,13 +431,37 @@ export function createStageArtifactScene(container, callbacks) {
     pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster.intersectObjects(hits, false)[0]?.object;
-    if (hit?.userData.path) callbacks.onSelect(hit.userData.path);
+    if (hit?.userData.path) {
+      callbacks.onSelect(hit.userData.path);
+      return;
+    }
+    // 点密目录 = 把它摊开。设计里说的“放大或点目录才展开”。
+    const folder = raycaster.intersectObjects(folderHits, false)[0]?.object;
+    const path = folder?.userData.folder;
+    if (path === undefined) return;
+    if (expanded.has(path)) expanded.delete(path);
+    else expanded.add(path);
+    const keep = selected;
+    setModel(model);
+    if (keep !== null) select(keep);
   };
   renderer.domElement.addEventListener("pointerup", onPointer);
 
+  let sizedWidth = 0;
+  let sizedHeight = 0;
+  /**
+   * ResizeObserver 会在布局只走了一半的时候回调 —— 实测把窗口从 1440 收到 1280，
+   * 它报的高度已经是新的、宽度还是旧的，然后就不再回调了，canvas 从此比容器宽。
+   * 所以每帧对一次尺寸，不一致才真的改；一致时只是两次属性读取。
+   */
   const resize = () => {
     const width = Math.max(1, container.clientWidth);
     const height = Math.max(1, container.clientHeight);
+    if (width === sizedWidth && height === sizedHeight) return;
+    sizedWidth = width;
+    sizedHeight = height;
+    // updateStyle = false：canvas 的 CSS 尺寸由样式表的 100% 说了算，这里只调
+    // drawing buffer 的分辨率。三个地方各管各的，谁都不会写歪几何。
     renderer.setSize(width, height, false);
     labels.setSize(width, height);
     camera.aspect = width / height;
@@ -327,6 +474,7 @@ export function createStageArtifactScene(container, callbacks) {
   const paint = () => {
     if (stopped) return;
     frame = requestAnimationFrame(paint);
+    resize();
     controls.update();
     renderer.render(world, camera);
     labels.render(world, camera);

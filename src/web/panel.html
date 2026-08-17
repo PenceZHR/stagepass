@@ -1612,10 +1612,6 @@ body::after {
             <p>PRODUCTION LINEAGE</p>
             <h2 id="stage-artifact-heading">轮次与文件</h2>
           </div>
-          <label class="stage-round-control">
-            <span>结算轮次</span>
-            <select id="stage-artifact-round" aria-label="选择结算轮次"></select>
-          </label>
           <label class="stage-artifact-search">
             <span class="sr-only">搜索本轮文件</span>
             <input id="stage-artifact-search" type="search" autocomplete="off"
@@ -1639,6 +1635,13 @@ body::after {
               正在从产物账本建立本轮投影…
             </div>
           </div>
+          <footer class="stage-artifact-timeline">
+            <div class="stage-timeline-head">
+              <span>ROUND TIMELINE</span>
+              <strong id="stage-timeline-summary">读取中</strong>
+            </div>
+            <div id="stage-artifact-round" role="tablist" aria-label="选择结算轮次"></div>
+          </footer>
         </section>
 
         <aside class="stage-artifact-inspector" aria-labelledby="stage-artifact-detail-title">
