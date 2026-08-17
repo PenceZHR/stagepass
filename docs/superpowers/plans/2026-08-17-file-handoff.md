@@ -6,10 +6,26 @@
 
 ## 已落地（2026-08-17 夜）
 
-- [x] `src/domain/round-slots.ts` —— 格子文件的完整契约：铺结构、预填 id 与
-      artifacts、按阶段决定要不要 overall、读回来时逐条判、`slotContract()` 题面文本。
-      14 条测试，每条守卫做过变异验证（逐个拆掉确认变红）。
+**地基与纯域逻辑全部做完，1190/1190 绿。** 剩下的都是接线和界面。
+
 - [x] 合并进主 worktree（快进，64 个提交），全绿。
+- [x] `src/domain/round-slots.ts` —— 格子文件的完整契约。**按声明的形状走**，
+      轮次契约和问人共用同一套保证（结构预铺、id 预填、上限 10、余量 15、
+      任何一条对不上就整份拒绝）：
+      - `BLOCKER_SHAPE`：severity / title / where / why / owner
+      - `QUESTION_SHAPE`：question / why；可选项由调用方传入，措辞归 `question.ts`
+      - 抬头带 `role`，红蓝两份不可能互换
+      - `artifacts` 预填，模型碰它算越界
+      - id 补零成 `G-01`…`G-15`（见下）
+      20 条测试，每条守卫做过变异验证。
+- [x] `src/system/slot-files.ts` —— 落盘。`~/.stagepass/rounds/<change>/<phase>/r<round>-<role>.json`，
+      **持久路径不是临时目录**；重铺幂等；「文件不在」和「一个字没填」分得开。7 条测试。
+- [x] `domain/question.ts` 的 `draftedQuestions()` —— 填好的问句格子 → 那张
+      「10 字段业务表单」，走的是现成的 `compose`，账本语义一个字没动。4 条测试。
+
+**途中抓到并修掉的一个坑**：格子 id 不补零的话字典序是 `G-1, G-10, G-11, …, G-2`，
+撞上 `compose` 的 `order_not_sorted` 守卫（2026-07-30 实测的客户端排序行为），
+整批问题发不出去。变异验证确认这条补零是承重的。
 
 ## 关键发现：文件 IO 的接缝已经在了
 
@@ -50,6 +66,10 @@ readonly readRoundFile: (path: string) => string | null;             // 不在�
 4. `round-prompt.golden.txt` 会变，**那是要人看的**，别自动接受。
 
 ### 第二刀：问人改在浏览器里答（这一刀才解掉 CHG-002 的卡）
+
+**域这一层已经通了**：`createSlotFiles().lay({shape: QUESTION_SHAPE, options: DRAFTED_OPTIONS})`
+→ 模型填 → `collect()` → `draftedQuestions()` → 现成的 `Question`。
+剩下的是把它接进 `/api/ask`，加一条 `POST /api/answer`，和面板上那张表。
 
 现状：`/api/ask`（`web/panel-server.ts:1853`）发起一轮，让模型去调
 `stagepass_ask`，人在 **TUI 的 MCP elicitation 表单**里答。
