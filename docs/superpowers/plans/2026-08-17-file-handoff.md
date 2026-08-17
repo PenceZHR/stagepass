@@ -91,23 +91,6 @@ POST /api/answer  按 schema 把序号映射回原文 → questions.answer({acti
 elicitation 那个信封 `{action, content}`，不是裸答案表 —— 塞裸表炸
 `answer_action_unknown`。换的是人在哪儿答，不是账本的语义。
 
-现状：`/api/ask`（`web/panel-server.ts:1853`）发起一轮，让模型去调
-`stagepass_ask`，人在 **TUI 的 MCP elicitation 表单**里答。
-
-**注意：问题的形状和 blocker 不一样**（问题是「问句 + 可选项」，blocker 是
-`severity/title/where/why`）。所以 `round-slots.ts` 要泛化成「一种声明好的格子形状」，
-让轮次契约和问人各用各的形状，共用同一套保证（预填 id、上限 10、余量 15、
-整份拒绝）。**这一步是新设计，不是接线，动手前先定形状。**
-
-然后：
-
-1. 模型把问题填进格子文件 → StagePass 读出来写进 `questions`（`store/question-store.ts`）；
-2. 面板渲染成表单（`questions` 和恢复机制都不用动）；
-3. 人在浏览器里答 → 新增一条 `POST /api/answer` → `questions.answer()`
-   （`store/question-store.ts:192` 是**唯一**的答案入口，插件那条也是走它，
-   所以账本语义天然一致）；
-4. 答案写进回答文件，下一轮信封指过去。
-
 ### 第三刀：把 MCP 整条拆掉
 
 **必须等第二刀落地之后**，否则问人这条路会断。要拆的：
