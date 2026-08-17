@@ -198,6 +198,13 @@ function phasesFor(input: {
       produced,
       /** 上次裁决的下场（§3.2·5）。留得住的状态，不是弹窗里一闪而过的那句。 */
       lastOutcome: questions.latestOutcomeFor(changeId, phase),
+      /**
+       * 此刻在等人答的那道题。
+       *
+       * C 方案之后人在**浏览器里**答，所以这道题必须发到浏览器 —— 以前它只活在
+       * Codex TUI 的 elicitation 表单里，面板这边一个字都看不到。
+       */
+      openQuestion: openQuestionOf(questions, changeId),
     };
   });
 }
@@ -207,6 +214,64 @@ function phasesFor(input: {
  *
  * **只读**：选一个项目只是把 Change 列表收窄，它不起任何一轮、不动任何一道闸门。
  */
+/** 在等人答的那道题，摊平成浏览器直接能画的形状。没有就是 null。 */
+export function openQuestionOf(
+  questions: QuestionStore,
+  changeId: string,
+): {
+  readonly id: string;
+  readonly message: string;
+  readonly fields: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly options: readonly string[];
+  }[];
+} | null {
+  const record = questions.open(changeId);
+  if (record === null) return null;
+  const schema = record.question.requestedSchema;
+  return {
+    id: record.id,
+    message: record.question.message,
+    // 顺序就是 schema 里的顺序 —— 格子 id 补过零，所以它同时也是人该看到的顺序。
+    fields: Object.entries(schema.properties).map(([id, field]) => ({
+      id,
+      title: field.title,
+      options: [...(field.enum ?? [])],
+    })),
+  };
+}
+
+/**
+ * 浏览器交回来的选择 → 落进账本的那份答案。
+ *
+ * 浏览器交的是**序号**，不是选项原文。理由和 `stagepass_next` 不收 id 是同一条：
+ * 长措辞（「先接受这个风险（问题还在，只是不再挡闸门）」）一旦要被谁抄一遍，
+ * 就迟早抄歪，而抄歪之后落进库里的是一个看起来合法的错答案。
+ *
+ * 对不上号就是 null —— 不猜、不取最近的一个。
+ */
+export function answerFromChoices(
+  question: {
+    readonly fields: readonly {
+      readonly id: string;
+      readonly options: readonly string[];
+    }[];
+  },
+  choices: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> | null {
+  const answer: Record<string, string> = {};
+  for (const field of question.fields) {
+    const raw = choices[field.id];
+    // `Number("")` 是 0 —— 空格子会静静地答成第一个选项。空的就是没答。
+    if (raw === undefined || raw.trim() === "") return null;
+    const index = Number(raw);
+    if (!Number.isInteger(index) || index < 0 || index >= field.options.length) return null;
+    answer[field.id] = field.options[index]!;
+  }
+  return answer;
+}
+
 export function panelView(input: {
   database: Database.Database;
   sessions: LiveSessions;

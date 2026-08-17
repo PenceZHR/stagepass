@@ -53,7 +53,13 @@ import {
 import { recordBrief, type BriefOutcome } from "../app/record-brief";
 import { confirmBrief, draftBrief, STAGEPASS_SAID } from "../app/converge-brief";
 import { waive, type WaiveOutcome } from "../app/waive";
-import { panelView, progressView } from "./panel-view";
+import {
+  answerFromChoices,
+  openQuestionOf,
+  panelView,
+  progressView,
+} from "./panel-view";
+import { QuestionStore } from "../store/question-store";
 import {
   reconcileMissingBindings, type BindingRecoveryReport,
 } from "./session-recovery";
@@ -1947,6 +1953,43 @@ export async function handle(
     }
     if (closeSession) sessions.releaseObserver(changeId, outcome.phase);
     json(response, briefBody(outcome));
+    return;
+  }
+
+  /*
+   * 人在**浏览器里**答那道题（C 方案）。
+   *
+   * 以前这道题只活在 Codex TUI 的 elicitation 表单里，要模型挂着一轮把它端过去；
+   * 挂不住就是 `session_died_before_answering`。现在题在库里等着，这里只是把人的
+   * 选择记下来。
+   *
+   * 交的是**序号**不是原文（`answerFromChoices`），而且参数走 query —— `src/web/`
+   * 里不许出现 JSON.parse（第五条常驻护栏）。
+   */
+  if (url.pathname === "/api/answer" && request.method === "POST") {
+    const changeId = url.searchParams.get("change") ?? "";
+    const open = openQuestionOf(new QuestionStore(database), changeId);
+    if (open === null) {
+      response.writeHead(409).end("nothing_to_answer");
+      return;
+    }
+    if (url.searchParams.get("question") !== open.id) {
+      // 人看到的那道题和此刻在等的不是同一道 —— 界面停在旧状态上，不能就这么落。
+      response.writeHead(409).end("question_moved_on");
+      return;
+    }
+    const choices: Record<string, string> = {};
+    for (const field of open.fields) {
+      const value = url.searchParams.get(field.id);
+      if (value !== null) choices[field.id] = value;
+    }
+    const answer = answerFromChoices(open, choices);
+    if (answer === null) {
+      response.writeHead(400).end("bad_choice");
+      return;
+    }
+    new QuestionStore(database).answer(open.id, answer);
+    json(response, { answered: true, question: open.id });
     return;
   }
 
