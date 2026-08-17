@@ -220,6 +220,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "app/record-brief.ts": 3,
   // 批 2「模型起草，人改」：和 record-brief 同一族用例，同一层。
   "app/converge-brief.ts": 3,
+  /*
+   * C 方案：模型把问题填进格子文件，落进账本等人在浏览器里答。和 ask-human 同族、
+   * 同层，但**不认识会话** —— 没有人需要挂着一轮，所以也没有「会话死了」这种下场。
+   */
+  "app/draft-questions.ts": 3,
   "plugin/protocol.ts": 3,
   "plugin/server.ts": 3,
   // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
