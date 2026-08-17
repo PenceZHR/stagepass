@@ -72,7 +72,7 @@ function resumeCommand(target: TerminalTarget, prompt?: string): string {
  * duplicates before mutation. The resume command disables Codex terminal-title
  * management so its OSC output cannot overwrite the marker.
  */
-const TERMINAL_SCRIPT = String.raw`
+export const TERMINAL_SCRIPT = String.raw`
 on jsonResult(actionName, matchCount, resultName)
   return "{\"action\":\"" & actionName & "\",\"matches\":" & (matchCount as string) & ",\"result\":\"" & resultName & "\"}"
 end jsonResult

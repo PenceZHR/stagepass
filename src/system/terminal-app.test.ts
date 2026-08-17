@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   createTerminalAppOps,
   terminalMarker,
   TerminalAppError,
+  TERMINAL_SCRIPT,
 } from "./terminal-app";
 import type {
   ProcessOps,
@@ -222,5 +228,44 @@ describe("Terminal.app disposable Codex client", () => {
     assert.match(marker, /^STAGEPASS:sp_[0-9a-f]{20}$/);
     assert.equal(marker, terminalMarker("CHG-1", "PRD"));
     assert.notEqual(marker, terminalMarker("CHG-1", "Tech"));
+  });
+});
+
+describe("Terminal AppleScript source", () => {
+  // 这段脚本是 100 行静态 AppleScript，只有真机会执行它：单元测试全部用假的
+  // osascript，假的那个永远同意。语法错一次，开终端 / 聚焦 / 投递 / 关窗四个
+  // 动作会一起死在真机上，而套件全绿 —— 和「星图从没显示过」是同一类。
+  // osacompile 只编译不执行，不会碰 Terminal.app。
+  it("compiles as AppleScript", (t) => {
+    let osacompile: string;
+    try {
+      osacompile = execFileSync("/usr/bin/which", ["osacompile"], { encoding: "utf8" }).trim();
+    } catch {
+      t.skip("osacompile 不在这台机器上；AppleScript 语法未经检查");
+      return;
+    }
+    const dir = mkdtempSync(join(tmpdir(), "stagepass-applescript-"));
+    const source = join(dir, "terminal.applescript");
+    writeFileSync(source, TERMINAL_SCRIPT);
+    assert.doesNotThrow(() => {
+      execFileSync(osacompile, ["-l", "AppleScript", "-o", join(dir, "out.scpt"), source], {
+        stdio: "pipe",
+      });
+    });
+  });
+
+  it("never launches Terminal just to look at it", () => {
+    // 用户的界面原则：只读动作要真只读。`tell application "Terminal"` 会把没在跑的
+    // Terminal.app 拉起来，所以 status / close / focus / submit 必须在进 tell 之前
+    // 就用 `is not running` 短路返回；只有 open 才允许启动它。
+    const guard = TERMINAL_SCRIPT.indexOf('if application "Terminal" is not running then');
+    const tell = TERMINAL_SCRIPT.indexOf('tell application "Terminal"');
+    assert.ok(guard > 0, "缺少 `is not running` 短路");
+    assert.ok(guard < tell, "短路必须在 tell 之前，否则看一眼就把 Terminal 拉起来了");
+    const shortCircuit = TERMINAL_SCRIPT.slice(guard, tell);
+    for (const action of ["status", "close", "focus", "submit"]) {
+      assert.match(shortCircuit, new RegExp(`is "${action}"`), `${action} 会拉起 Terminal.app`);
+    }
+    assert.doesNotMatch(shortCircuit, /is "open"/, "open 本来就该启动 Terminal");
   });
 });
