@@ -220,6 +220,49 @@ CHG-002/PRD 的非 Git 空态，控制台 0 error。
 **还没做**：`docs/evidence/screenshots/` 下那两张 8-16 的截图仍是坏掉的那一版，
 没有替换；README 的能力表没有跟着改。
 
+### 2026-08-17 复审：原生 TUI 迁移
+
+按同样的方法查了一遍，结论和驾驶舱**相反** —— 这条链路建得是对的，几条核心主张
+我没能证伪，而且是正面验过的：
+
+- `thread/unsubscribe` 生产调用点只有一个（`native-sessions.ts:601`），在
+  `terminal.open()` 之前，且包在 `try/finally` 里；
+- 「同一控制连接」成立：`AppServerSessionHost` 和 `AppServerHistory` 在
+  `scripts/panel.ts:308-309` 包的是同一个 `appServer.client`；
+- `status()` 用 binding + 终端状态算，没拿进程内 `liveSeats` 冒充持久会话；
+  而 `dispatchTurn` 一定先 `open()`，所以 `liveSeats` 不会在活轮下变陈，
+  `session_died_before_answering` 不会被一个过期的集合误判出来；
+- `native-sessions.test.ts` 是**真的行为测试**：假运行时记录调用顺序，
+  断言在 Terminal 收到信封的那一刻触发（`calls.at(-1) === "thread/unsubscribe"`），
+  配真 SQLite、真临时目录、真提示词文件。和前端那种正则 grep 不是一个量级。
+
+补上的三道闸（都做过变异验证 —— 先把它弄坏，看见红，再修回来）：
+
+1. **AppleScript 必须能编译**。它是 100 行静态脚本，单测全用假 osascript，
+   假的永远同意；语法错一次，开/聚焦/投递/关窗会一起死在真机上而套件全绿。
+   用 `osacompile` 只编译不执行。（注：`end 处理器名` 写错 AppleScript 本来就不管，
+   所以那种改动测不出红；括号不配对可以。）
+2. **只读动作要真只读**：`status/close/focus/submit` 必须在进
+   `tell application "Terminal"` 之前用 `is not running` 短路，否则「看一眼」会把
+   没在跑的 Terminal.app 拉起来。现在钉住了，`open` 不在此列（它本就该启动）。
+3. **协议契约**（`src/codex/app-server-contract.test.ts`）。本文档上面那句
+   「升级 Codex 后先生成并核对官方 schema」只是一句靠人记得的话，仓库里既没有
+   基线也没有检查。现在对着本机 codex 的 `generate-json-schema` 核对我们用的
+   11 个方法及其参数 —— **实测 0.147.0 全部对得上**（`thread/unsubscribe{threadId}`、
+   `thread/read{threadId,includeTurns}`、`thread/turns/list{threadId,limit,sortDirection}`、
+   `turn/interrupt{threadId,turnId}`）。只导 schema，不起线程、不跑 turn。
+   codex 不在机器上时显式 skip，不静默通过。
+
+另外，反向请求的拒绝改成**会出声**。`nativeTuiServerRequest` 仍然拒绝（对的，
+绝不冒充官方客户端），但 8-16 那次故障的唯一症状在 TUI 里，StagePass 一声不吭，
+于是排查从「MCP server 是不是坏了」开始、方向整个反了。收到反向请求就是所有权
+交接回归的证据，现在会打出方法名和 threadId。
+
+**没能验的**：没有跑真 turn，所以端到端的 MCP approval / elicitation 归属仍然只有
+8-16 那次人工观察作证。另外，上面「MCP 故障与验收证据」那一节自己也承认，那次验收
+**动了真实业务状态**（`/api/terminal/open` 会开窗，事后无法判定 CHG-002 的那道题
+是谁答的）。验收流程本身需要一条不碰业务状态的路径，这一点还没解决。
+
 ## 唯一启动方式
 
 ```bash
