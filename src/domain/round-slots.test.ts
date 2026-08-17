@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   createSlotDocument,
   readSlotDocument,
+  slotContract,
   SLOT_COUNT,
   SLOT_FILL_LIMIT,
 } from "./round-slots";
@@ -154,5 +155,17 @@ describe("Round slot file", () => {
     const result = readSlotDocument(null, HEAD);
     assert.equal(result.ok, false);
     assert.match(result.reason, /没有/);
+  });
+
+  it("tells the model the path and the rules, not the shape", () => {
+    // 形状在文件里，不在提示词里 —— 这正是格子文件相对旧契约的关键差别。
+    const contract = slotContract("/x/r7.json");
+    assert.match(contract, /\/x\/r7\.json/);
+    assert.match(contract, new RegExp(`最多填 ${SLOT_FILL_LIMIT} 个`));
+    assert.match(contract, new RegExp(`${SLOT_COUNT} 个是余量`));
+    assert.match(contract, /不要新建文件/);
+    assert.match(contract, /半条不算数/);
+    // 不复述骨架：契约里不该出现字段清单
+    assert.doesNotMatch(contract, /"blockers"|artifactIds/);
   });
 });

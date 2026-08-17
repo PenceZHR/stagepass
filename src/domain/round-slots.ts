@@ -78,6 +78,35 @@ export function createSlotDocument(header: SlotHeader): string {
   }, null, 2)}\n`;
 }
 
+/**
+ * 交给模型的那段话。
+ *
+ * ## 为什么这一段可以短，而旧的 `RESULT_CONTRACT` 不许
+ *
+ * 旧契约必须把骨架原样印在提示词里，理由是「缺了会怎样」：
+ *
+ *   需求没被读到    → 模型少了信息，它会大声说读不到（可以赌）
+ *   **骨架没被读到** → 它答出来的形状不对，**整轮无法解析、直接作废**（不能赌）
+ *
+ * 格子文件把这条反转了：骨架现在在**文件里**，由 StagePass 写好。模型读不到文件，
+ * 落回第一种 —— 它会说读不到，而不是交出一个解析不了的形状。所以这里只需要说清
+ * 规矩，不需要复述形状。
+ */
+export function slotContract(path: string): string {
+  return [
+    `这一轮的产出格子已经铺好在：${path}`,
+    "打开它，**只填值**：",
+    "- 每个格子的 `id` 已经写死，不要改；",
+    "- `artifacts` 是 StagePass 填好的，不要动；",
+    "- `severity` 只能是 P0 / P1 / P2；",
+    "- 一个格子要么填完整（至少 `severity` 和 `title`），要么原样留空 —— 半条不算数；",
+    `- 这一轮最多填 ${SLOT_FILL_LIMIT} 个格子。文件里给了 ${SLOT_COUNT} 个是余量，不是配额；`,
+    "- 不要新建文件、不要增删字段、不要改动结构。",
+    "填完保存，然后结束这一轮；不用把内容再复述一遍。",
+    "没有要报的问题，就一个字都不填 —— 那是合法的。",
+  ].join("\n");
+}
+
 const refuse = (reason: string): SlotDocumentResult => ({ ok: false, reason });
 
 const text = (value: unknown): string | null =>
