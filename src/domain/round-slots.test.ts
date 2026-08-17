@@ -45,7 +45,7 @@ describe("Round slot file", () => {
     assert.deepEqual(doc.artifacts, ["docs/stagepass/CHG-002/PRD-r7.md"]);
     assert.equal("overall" in doc, false, "这一阶段没要总评，就不该出现这一格");
     assert.deepEqual(doc.slots[0], {
-      id: "G-1", severity: null, title: null, where: null, why: null, owner: null,
+      id: "G-01", severity: null, title: null, where: null, why: null, owner: null,
     });
     assert.deepEqual(doc.slots.at(-1).id, "G-15");
   });
@@ -58,8 +58,8 @@ describe("Round slot file", () => {
     const result = readSlotDocument(text, HEAD);
     assert.equal(result.ok, true);
     assert.deepEqual(result.filled, [
-      { id: "G-1", severity: "P1", title: "第一条", where: "docs/PRD.md §3", why: "没有可观测的判据", owner: null },
-      { id: "G-5", severity: "P0", title: "第五条", where: "docs/PRD.md §3", why: "没有可观测的判据", owner: null },
+      { id: "G-01", severity: "P1", title: "第一条", where: "docs/PRD.md §3", why: "没有可观测的判据", owner: null },
+      { id: "G-05", severity: "P0", title: "第五条", where: "docs/PRD.md §3", why: "没有可观测的判据", owner: null },
     ]);
   });
 
@@ -83,7 +83,7 @@ describe("Round slot file", () => {
     const text = reparse((doc) => { doc.slots[2].where = "src/a.ts"; });
     const result = readSlotDocument(text, HEAD);
     assert.equal(result.ok, false);
-    assert.match(result.reason, /G-3/);
+    assert.match(result.reason, /G-03/);
     assert.match(result.reason, /title/);
   });
 
@@ -185,14 +185,14 @@ describe("Round slot file", () => {
     const head = { ...HEAD, shape: QUESTION_SHAPE };
     const doc: any = JSON.parse(createSlotDocument(head));
     assert.deepEqual(doc.options, ASK_OPTIONS);
-    assert.deepEqual({ ...doc.slots[0] }, { id: "G-1", question: null, why: null });
+    assert.deepEqual({ ...doc.slots[0] }, { id: "G-01", question: null, why: null });
 
     doc.slots[0].question = "结算失败时分数保留吗？";
     doc.slots[0].why = "PRD 3.2 没写";
     const result = readSlotDocument(JSON.stringify(doc, null, 2), head);
     assert.equal(result.ok, true);
     assert.deepEqual(result.filled, [
-      { id: "G-1", question: "结算失败时分数保留吗？", why: "PRD 3.2 没写" },
+      { id: "G-01", question: "结算失败时分数保留吗？", why: "PRD 3.2 没写" },
     ]);
   });
 
@@ -223,5 +223,14 @@ describe("Round slot file", () => {
     assert.doesNotMatch(ask, /severity|P0/);
     assert.match(ask, /question/);
     assert.match(ask, /\/x\/ask\.json/);
+  });
+
+  it("numbers slots so lexical order matches numeric order", () => {
+    // `domain/question.ts` 的 compose 有一条 order_not_sorted 守卫（表单按字段名
+    // 排序，2026-07-30 实测的客户端行为）。不补零的话 G-10 会排在 G-2 前面。
+    const ids = JSON.parse(write()).slots.map((slot: any) => slot.id) as string[];
+    assert.deepEqual([...ids].sort(), ids, "字典序必须和铺出去的顺序一致");
+    assert.equal(ids[0], "G-01");
+    assert.equal(ids.at(-1), "G-15");
   });
 });

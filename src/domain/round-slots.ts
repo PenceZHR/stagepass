@@ -92,7 +92,15 @@ export type SlotDocumentResult =
   }
   | { readonly ok: false; readonly reason: string };
 
-const slotId = (index: number): string => `G-${index + 1}`;
+/**
+ * 格子的 id。**补零**：`G-01` … `G-15`。
+ *
+ * 不补零的话字典序是 `G-1, G-10, G-11, …, G-2` —— 而问句表要经过
+ * `domain/question.ts` 的 `compose`，那里有一条 `order_not_sorted` 守卫
+ * （2026-07-30 实测出来的客户端行为：表单按字段名排序）。补零之后字典序和
+ * 数字序一致，文件本身读起来也不会 G-10 排在 G-2 前面。
+ */
+const slotId = (index: number): string => `G-${String(index + 1).padStart(2, "0")}`;
 
 const headOf = (header: SlotHeader): Readonly<Record<string, unknown>> => ({
   change: header.changeId,
