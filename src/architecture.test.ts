@@ -115,6 +115,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 反向交互仍归原生 TUI；StagePass 只观察结构化 turn 终态。
   "codex/native-tui-owner.ts": 2,
   "system/process.ts": 2,
+  /*
+   * 格子文件落盘。持久路径（`~/.stagepass/rounds`），不是临时目录 —— 清掉之后
+   * 「模型没填」和「文件被清了」在账本上长得一模一样。它只认 domain 的形状，
+   * 不认识 Change 状态机和界面。
+   */
+  "system/slot-files.ts": 2,
   // 只按白名单 marker 发现/控制 macOS Terminal 标签，不持久化窗口 id。
   "system/terminal-app.ts": 2,
   // App Server 通知在这里收束成一条可重放的 thread 事件流；session 只在这层
