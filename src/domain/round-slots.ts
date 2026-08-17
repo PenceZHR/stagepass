@@ -17,14 +17,57 @@ export const SLOT_COUNT = 15;
 export const SLOT_FILL_LIMIT = 10;
 
 const SEVERITIES = ["P0", "P1", "P2"] as const;
-const SLOT_KEYS = ["id", "severity", "title", "where", "why", "owner"] as const;
 
 export type SlotSeverity = (typeof SEVERITIES)[number];
+
+/**
+ * 一种格子长什么样。
+ *
+ * 轮次契约（红蓝交问题）和问人（模型起草问题给人答）要的字段不一样，但**保证是同一套**：
+ * 结构预铺、id 预填、上限 10、余量 15、任何一条对不上就整份拒绝。所以形状是声明出来的，
+ * 不是各写一份解析器 —— 两份解析器迟早只有一份是对的。
+ */
+export interface SlotShape {
+  /** 格子里允许出现的全部键（含预填的 `id`）。多一个少一个都算改结构。 */
+  readonly keys: readonly string[];
+  /** 这个格子只要被动过，这些键就必须有值。缺一个 = 半条，整份拒绝。 */
+  readonly required: readonly string[];
+  /** 取值被钉死的键。 */
+  readonly enums?: Readonly<Record<string, readonly string[]>>;
+}
+
+/** 红蓝两方报问题用的形状。 */
+export const BLOCKER_SHAPE: SlotShape = {
+  keys: ["id", "severity", "title", "where", "why", "owner"],
+  required: ["severity", "title"],
+  enums: { severity: SEVERITIES },
+};
+
+/**
+ * 模型起草问题给人答用的形状。
+ *
+ * **可选项不在这里** —— 它们是 StagePass 的，每道题都一样（同意 / 不同意 /
+ * 先接受风险 / 我自己说），预填在文件的 `options` 那一节。模型只写问句和理由，
+ * 连选项都不用编，于是「选项被编歪」这一类不稳定根本不存在。
+ */
+export const QUESTION_SHAPE: SlotShape = {
+  keys: ["id", "question", "why"],
+  required: ["question"],
+};
+
+/** 每道题的可选项。StagePass 的，不是模型的 —— 每道题都一样。 */
+export const ASK_OPTIONS = ["同意", "不同意", "先接受风险", "我自己说"] as const;
+
+export type SlotRole = "red" | "blue";
 
 export interface SlotHeader {
   readonly changeId: string;
   readonly phase: Phase;
   readonly round: number;
+  /** 哪一方的那一份。没有它，红蓝两份文件可以互换而判不出来。 */
+  readonly role: SlotRole;
+  /** 这一份铺的是哪种格子。 */
+  readonly shape: SlotShape;
   /**
    * 这一轮它产出的东西 —— **由 StagePass 预填，模型一个字都不用写**。
    *
@@ -37,14 +80,8 @@ export interface SlotHeader {
   readonly wantsOverall?: boolean;
 }
 
-export interface FilledSlot {
-  readonly id: string;
-  readonly severity: SlotSeverity;
-  readonly title: string;
-  readonly where: string | null;
-  readonly why: string | null;
-  readonly owner: string | null;
-}
+/** 一个被填过的格子。键集合由形状决定，`id` 一定在。 */
+export type FilledSlot = Readonly<Record<string, string | null>> & { readonly id: string };
 
 export type SlotDocumentResult =
   | {
@@ -57,24 +94,23 @@ export type SlotDocumentResult =
 
 const slotId = (index: number): string => `G-${index + 1}`;
 
+const headOf = (header: SlotHeader): Readonly<Record<string, unknown>> => ({
+  change: header.changeId,
+  phase: header.phase,
+  round: header.round,
+  role: header.role,
+  maxFilled: SLOT_FILL_LIMIT,
+});
+
 export function createSlotDocument(header: SlotHeader): string {
   return `${JSON.stringify({
-    stagepass: {
-      change: header.changeId,
-      phase: header.phase,
-      round: header.round,
-      maxFilled: SLOT_FILL_LIMIT,
-    },
+    stagepass: headOf(header),
     artifacts: [...header.artifacts],
+    ...(header.shape === QUESTION_SHAPE ? { options: [...ASK_OPTIONS] } : {}),
     ...(header.wantsOverall === true ? { overall: null } : {}),
-    slots: Array.from({ length: SLOT_COUNT }, (_, index) => ({
-      id: slotId(index),
-      severity: null,
-      title: null,
-      where: null,
-      why: null,
-      owner: null,
-    })),
+    slots: Array.from({ length: SLOT_COUNT }, (_, index) =>
+      Object.fromEntries(header.shape.keys.map((key) =>
+        [key, key === "id" ? slotId(index) : null]))),
   }, null, 2)}\n`;
 }
 
@@ -92,14 +128,18 @@ export function createSlotDocument(header: SlotHeader): string {
  * 落回第一种 —— 它会说读不到，而不是交出一个解析不了的形状。所以这里只需要说清
  * 规矩，不需要复述形状。
  */
-export function slotContract(path: string): string {
+export function slotContract(path: string, shape: SlotShape): string {
+  const enums = Object.entries(shape.enums ?? {})
+    .map(([key, allowed]) => `- \`${key}\` 只能是 ${allowed.join(" / ")}；`);
   return [
     `这一轮的产出格子已经铺好在：${path}`,
     "打开它，**只填值**：",
     "- 每个格子的 `id` 已经写死，不要改；",
     "- `artifacts` 是 StagePass 填好的，不要动；",
-    "- `severity` 只能是 P0 / P1 / P2；",
-    "- 一个格子要么填完整（至少 `severity` 和 `title`），要么原样留空 —— 半条不算数；",
+    ...enums,
+    `- 一个格子要么填完整（至少 ${
+      shape.required.map((key) => `\`${key}\``).join(" 和 ")
+    }），要么原样留空 —— 半条不算数；`,
     `- 这一轮最多填 ${SLOT_FILL_LIMIT} 个格子。文件里给了 ${SLOT_COUNT} 个是余量，不是配额；`,
     "- 不要新建文件、不要增删字段、不要改动结构。",
     "填完保存，然后结束这一轮；不用把内容再复述一遍。",
@@ -135,12 +175,7 @@ export function readSlotDocument(
   }
 
   const document = parsed as Record<string, unknown>;
-  const expectedHead = JSON.stringify({
-    change: header.changeId,
-    phase: header.phase,
-    round: header.round,
-    maxFilled: SLOT_FILL_LIMIT,
-  });
+  const expectedHead = JSON.stringify(headOf(header));
   if (JSON.stringify(document.stagepass) !== expectedHead) {
     return refuse(
       `抬头被改过，或这一份属于别的轮次/座位：期待 ${expectedHead}，`
@@ -155,6 +190,18 @@ export function readSlotDocument(
       `artifacts 是 StagePass 填好的，不该被改：期待 ${expectedArtifacts}，`
       + `实际 ${JSON.stringify(document.artifacts)}。`,
     );
+  }
+
+  const wantsOptions = header.shape === QUESTION_SHAPE;
+  const expectedOptions = wantsOptions ? JSON.stringify([...ASK_OPTIONS]) : undefined;
+  if (wantsOptions && JSON.stringify(document.options) !== expectedOptions) {
+    return refuse(
+      `options 是 StagePass 定的，每道题都一样，不该被改：期待 ${expectedOptions}，`
+      + `实际 ${JSON.stringify(document.options)}。`,
+    );
+  }
+  if (!wantsOptions && "options" in document) {
+    return refuse("这一份不是问句表，不该出现 options 这一格。");
   }
 
   const wantsOverall = header.wantsOverall === true;
@@ -185,7 +232,7 @@ export function readSlotDocument(
     }
     const slot = raw as Record<string, unknown>;
     const keys = Object.keys(slot).sort();
-    if (JSON.stringify(keys) !== JSON.stringify([...SLOT_KEYS].sort())) {
+    if (JSON.stringify(keys) !== JSON.stringify([...header.shape.keys].sort())) {
       return refuse(
         `${slotId(index)} 的字段被改过：只能填值，不能增删字段（实际 ${keys.join(", ")}）。`,
       );
@@ -196,24 +243,30 @@ export function readSlotDocument(
       }；id 由 StagePass 写死，不该被改。`);
     }
 
-    const severity = text(slot.severity);
-    const title = text(slot.title);
-    const where = text(slot.where);
-    const why = text(slot.why);
-    const owner = text(slot.owner);
-    if (severity === null && title === null && where === null && why === null && owner === null) {
-      continue;
+    const values = new Map<string, string | null>();
+    for (const key of header.shape.keys) {
+      if (key === "id") continue;
+      values.set(key, text(slot[key]));
     }
-    if (title === null) {
-      return refuse(`${slotId(index)} 填了一半：有内容但没有 title。半条比没有更糟，本轮作废。`);
-    }
-    if (severity === null || !(SEVERITIES as readonly string[]).includes(severity)) {
+    if ([...values.values()].every((value) => value === null)) continue;
+
+    const missing = header.shape.required.filter((key) => values.get(key) == null);
+    if (missing.length > 0) {
       return refuse(
-        `${slotId(index)} 的 severity 必须是 ${SEVERITIES.join(" / ")} 之一，`
-        + `实际 ${JSON.stringify(slot.severity)}。`,
+        `${slotId(index)} 填了一半：有内容但没有 ${missing.join(" 和 ")}。`
+        + "半条比没有更糟，本轮作废。",
       );
     }
-    filled.push({ id: slotId(index), severity: severity as SlotSeverity, title, where, why, owner });
+    for (const [key, allowed] of Object.entries(header.shape.enums ?? {})) {
+      const value = values.get(key) ?? null;
+      if (value !== null && !allowed.includes(value)) {
+        return refuse(
+          `${slotId(index)} 的 ${key} 必须是 ${allowed.join(" / ")} 之一，`
+          + `实际 ${JSON.stringify(slot[key])}。`,
+        );
+      }
+    }
+    filled.push({ id: slotId(index), ...Object.fromEntries(values) } as FilledSlot);
   }
 
   if (filled.length > SLOT_FILL_LIMIT) {

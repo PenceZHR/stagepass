@@ -5,13 +5,16 @@ import {
   createSlotDocument,
   readSlotDocument,
   slotContract,
+  BLOCKER_SHAPE,
+  QUESTION_SHAPE,
+  ASK_OPTIONS,
   SLOT_COUNT,
   SLOT_FILL_LIMIT,
 } from "./round-slots";
 
 const HEAD = {
-  changeId: "CHG-002", phase: "PRD" as const, round: 7,
-  artifacts: ["docs/stagepass/CHG-002/PRD-r7.md"],
+  changeId: "CHG-002", phase: "PRD" as const, round: 7, role: "blue" as const,
+  artifacts: ["docs/stagepass/CHG-002/PRD-r7.md"], shape: BLOCKER_SHAPE,
 };
 const write = (): string => createSlotDocument(HEAD);
 const reparse = (mutate: (doc: any) => void): string => {
@@ -35,7 +38,7 @@ describe("Round slot file", () => {
     assert.equal(SLOT_COUNT, 15);
     assert.equal(SLOT_FILL_LIMIT, 10);
     assert.deepEqual(doc.stagepass, {
-      change: "CHG-002", phase: "PRD", round: 7, maxFilled: 10,
+      change: "CHG-002", phase: "PRD", round: 7, role: "blue", maxFilled: 10,
     });
     // 产出路径 StagePass 自己知道，不问模型要 —— 旧契约就是因为模型漏了这一格
     // 而每轮整轮作废。
@@ -138,7 +141,7 @@ describe("Round slot file", () => {
 
   it("carries an overall line only where the phase asks for one", () => {
     const wants = { ...HEAD, wantsOverall: true };
-    const doc = JSON.parse(createSlotDocument(wants));
+    const doc: any = JSON.parse(createSlotDocument(wants));
     assert.equal(doc.overall, null);
 
     const answered = JSON.stringify({ ...doc, overall: "够好了，两处措辞待改" }, null, 2);
@@ -159,7 +162,7 @@ describe("Round slot file", () => {
 
   it("tells the model the path and the rules, not the shape", () => {
     // 形状在文件里，不在提示词里 —— 这正是格子文件相对旧契约的关键差别。
-    const contract = slotContract("/x/r7.json");
+    const contract = slotContract("/x/r7.json", BLOCKER_SHAPE);
     assert.match(contract, /\/x\/r7\.json/);
     assert.match(contract, new RegExp(`最多填 ${SLOT_FILL_LIMIT} 个`));
     assert.match(contract, new RegExp(`${SLOT_COUNT} 个是余量`));
@@ -167,5 +170,58 @@ describe("Round slot file", () => {
     assert.match(contract, /半条不算数/);
     // 不复述骨架：契约里不该出现字段清单
     assert.doesNotMatch(contract, /"blockers"|artifactIds/);
+  });
+
+  it("refuses the other side's file for this side", () => {
+    // 红蓝各一份。没有 role，两份文件可以互换而判不出来。
+    const red = createSlotDocument({ ...HEAD, role: "red" });
+    assert.equal(readSlotDocument(red, HEAD).ok, false);
+    assert.equal(readSlotDocument(red, { ...HEAD, role: "red" }).ok, true);
+  });
+
+  it("lays out a question sheet whose options the model never writes", () => {
+    // 可选项是 StagePass 的，每道题都一样。模型只写问句和理由 ——
+    // 「选项被编歪」这一类不稳定因此根本不存在。
+    const head = { ...HEAD, shape: QUESTION_SHAPE };
+    const doc: any = JSON.parse(createSlotDocument(head));
+    assert.deepEqual(doc.options, ASK_OPTIONS);
+    assert.deepEqual({ ...doc.slots[0] }, { id: "G-1", question: null, why: null });
+
+    doc.slots[0].question = "结算失败时分数保留吗？";
+    doc.slots[0].why = "PRD 3.2 没写";
+    const result = readSlotDocument(JSON.stringify(doc, null, 2), head);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.filled, [
+      { id: "G-1", question: "结算失败时分数保留吗？", why: "PRD 3.2 没写" },
+    ]);
+  });
+
+  it("refuses a question sheet whose options the model touched", () => {
+    const head = { ...HEAD, shape: QUESTION_SHAPE };
+    const doc = JSON.parse(createSlotDocument(head));
+    doc.options.push("再想想");
+    assert.equal(readSlotDocument(JSON.stringify(doc, null, 2), head).ok, false);
+  });
+
+  it("applies the same guarantees to whichever shape is declared", () => {
+    const head = { ...HEAD, shape: QUESTION_SHAPE };
+    const base = JSON.parse(createSlotDocument(head));
+    // 半条：有 why 没 question
+    const half = JSON.parse(JSON.stringify(base)); half.slots[1].why = "只写了理由";
+    assert.equal(readSlotDocument(JSON.stringify(half), head).ok, false);
+    // 加字段
+    const extra = JSON.parse(JSON.stringify(base)); extra.slots[0].severity = "P0";
+    assert.equal(readSlotDocument(JSON.stringify(extra), head).ok, false);
+    // 超额
+    const many = JSON.parse(JSON.stringify(base));
+    for (let i = 0; i <= SLOT_FILL_LIMIT; i += 1) many.slots[i].question = `第 ${i} 问`;
+    assert.equal(readSlotDocument(JSON.stringify(many), head).ok, false);
+  });
+
+  it("says nothing about severity on a sheet that has no severity", () => {
+    const ask = slotContract("/x/ask.json", QUESTION_SHAPE);
+    assert.doesNotMatch(ask, /severity|P0/);
+    assert.match(ask, /question/);
+    assert.match(ask, /\/x\/ask\.json/);
   });
 });
