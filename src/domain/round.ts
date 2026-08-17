@@ -3,7 +3,10 @@ import {
   TurnResultUnparsableError,
 } from "./turn";
 import { parseTurnResult } from "./turn";
-import type { FilledSlot, SlotDocumentResult } from "./round-slots";
+import {
+  BLOCKER_SHAPE, slotContract,
+  type FilledSlot, type SlotDocumentResult,
+} from "./round-slots";
 import { isHumanGap, templateGapId } from "./gap";
 import {
   missingSections, renderTemplate, type TemplateSection,
@@ -85,6 +88,15 @@ export interface RoundInstructions {
    * 缺席就照旧把正文印进去 —— 这一层是纯的，不知道文件是谁写的。
    */
   readonly openGapsPath?: string | undefined;
+  /**
+   * 红蓝两方各自那份**格子文件**的路径（`domain/round-slots.ts`）。
+   *
+   * 给了就不再把 json 骨架印进提示词 —— 结构在文件里由 StagePass 铺好，模型只填值。
+   * 判据也跟着反过来：骨架没被读到以前是「整轮无法解析」（不能赌），现在是
+   * 「它会大声说读不到那个文件」（可以赌）。
+   */
+  readonly redSlotPath?: string | undefined;
+  readonly blueSlotPath?: string | undefined;
   /**
    * 这个阶段是被下游打回来的 —— 谁打的、为什么、哪一轮打的（§5.9.1 的回边）。
    *
@@ -676,9 +688,13 @@ export function judgePrompt(input: RoundInstructions): string {
     ]),
     ...redFixList(input.openGaps, input.openGapsPath),
     ...play.red.idRule,
-    `   要求它按下面的格式作答：`,
-    RESULT_CONTRACT,
-    ...contractNotes(input.contractNotesPath),
+    ...(input.redSlotPath === undefined
+      ? [`   要求它按下面的格式作答：`, RESULT_CONTRACT, ...contractNotes(input.contractNotesPath)]
+      : [
+        `   把这一轮的发现填进这份已经铺好的格子文件，**原样转达给${RED}**：`,
+        slotContract(input.redSlotPath, BLOCKER_SHAPE),
+        ...contractNotes(input.contractNotesPath),
+      ]),
     "",
     play.blue.task,
     /*
@@ -701,7 +717,20 @@ export function judgePrompt(input: RoundInstructions): string {
      * 指望它「参照上文」就是指望它转述 —— 只有原文加收件人才到得了。**
      */
     `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
-    ...(reportsFreeFormBlockers(input.phase)
+    ...(input.blueSlotPath !== undefined
+      ? [
+        slotContract(input.blueSlotPath, BLOCKER_SHAPE),
+        ...(reportsFreeFormBlockers(input.phase)
+          ? contractNotes(input.contractNotesPath)
+          /*
+           * 有模板的阶段：格子照铺（`overall` 那一格在里面），但问题清单不算数 ——
+           * 它这一阶段的判断全部走逐条判定。规则和旧解析器的 `discardBlockers`
+           * 一字不差，只是丢的地方从解析层挪到了 `readRoundFromSlots`。
+           */
+          : [`   **这个阶段不要在格子里列问题** —— 你的判断全部走下面那份逐条判定；`
+            + `格子文件里只填 \`overall\` 那一格。`]),
+      ]
+      : reportsFreeFormBlockers(input.phase)
       ? [RESULT_CONTRACT, ...contractNotes(input.contractNotesPath)]
       /*
        * 有模板的阶段不要问题清单了 —— **但仍然要那个 json 围栏**：`overall` 在
@@ -1190,7 +1219,7 @@ export interface RoundReading {
  * 而**这一句缺席是完全合法的**（老的反方不会写它，`RESULT_CONTRACT` 里也没有它）。
  * 把它加进那个函数的形状检查，等于让一次没写整体判断的回答整轮作废，而它不挡任何东西。
  */
-const overallIn = (text: string): string | null => {
+export const overallIn = (text: string): string | null => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonAnswerIn(text) ?? "");
@@ -1350,9 +1379,17 @@ export function readRoundFromSlots(input: {
    * 红方的发现只在它评别人的阶段算数（Review / QA）—— 和旧解析器的
    * `discardBlockers: !redReviewsOthers(phase)` 一字不差。换的是来源，不是规则。
    */
+  /*
+   * 有模板的阶段，反方的自由问题清单**不算数** —— 它的判断全部走逐条判定。
+   * 规则和旧解析器的 `discardBlockers: !reportsFreeFormBlockers(phase)` 一字不差，
+   * 换的只是丢在哪一层。
+   */
+  const blueFound = reportsFreeFormBlockers(input.phase)
+    ? input.blue.filled.map(asFinding)
+    : [];
   const found = redReviewsOthers(input.phase)
-    ? dedupeById([...input.red.filled.map(asFinding), ...input.blue.filled.map(asFinding)])
-    : input.blue.filled.map(asFinding);
+    ? dedupeById([...input.red.filled.map(asFinding), ...blueFound])
+    : blueFound;
 
   return {
     ok: true,

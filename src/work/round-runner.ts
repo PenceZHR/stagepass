@@ -1,10 +1,15 @@
 import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
+import { TurnResultUnparsableError } from "../domain/turn";
+import { blueDocPath, redDocPath } from "../domain/artifact-home";
+import { BLOCKER_SHAPE, type SlotHeader } from "../domain/round-slots";
+import type { SlotFiles } from "../system/slot-files";
 import { isEditGateGap } from "../domain/edit-gate";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import { templateFor } from "../domain/phase-template";
 import {
-  judgePrompt, readConclusion, readRound, readVerdicts, renderOpenGaps,
+  judgePrompt, overallIn, readConclusion, readRound, readRoundFromSlots,
+  readVerdicts, renderOpenGaps, type RoundReading,
   renderSettled,
   type RoundAgents, type RoundConclusion,
 } from "../domain/round";
@@ -152,6 +157,14 @@ export interface RoundDependencies {
    * 但数不对。人对这两件事该做的事完全不同（`readBlueRubricAnswers` 各给一句话）。
    */
   readonly readRoundFile: (path: string) => string | null;
+  /**
+   * 这一轮的格子文件（`domain/round-slots.ts`）。
+   *
+   * 给了就走格子那条路：派轮之前红蓝各铺一份，收轮之后从文件里读发现，
+   * **不再解析模型自己写的那段 json**。缺席就照旧解析 transcript ——
+   * 老调用方（和还没接上的测试）一个字不用改。
+   */
+  readonly slotFiles?: SlotFiles | undefined;
 }
 
 /** 这一轮认不出正反两方跑在哪两条线程上。 */
@@ -230,6 +243,55 @@ export interface RoundSettled {
   readonly conclusion: RoundConclusion | null;
   /** 反方对这一轮的整体判断，一句话。同样不动闸门。 */
   readonly blueOverall: string | null;
+}
+
+/**
+ * 派轮之前把红蓝两份格子文件铺好。**必须在派轮之前** —— 题面里带的是它的路径，
+ * 模型打开的时候它得已经在那儿。`slotFiles` 缺席就是走老路（解析 transcript）。
+ */
+function laySlots(
+  request: RoundRequest,
+  files: SlotFiles | undefined,
+): { readonly files: SlotFiles; readonly heads: {
+  readonly red: SlotHeader; readonly blue: SlotHeader;
+}; readonly paths: { readonly red: string; readonly blue: string } } | null {
+  if (files === undefined) return null;
+  const common = {
+    changeId: request.changeId, phase: request.phase, round: request.round,
+    shape: BLOCKER_SHAPE,
+  };
+  const heads = {
+    red: {
+      ...common, role: "red" as const,
+      artifacts: [redDocPath(request.changeId, request.phase, request.round)],
+    },
+    blue: {
+      ...common, role: "blue" as const,
+      artifacts: [blueDocPath(request.changeId, request.phase, request.round)],
+      // 反方那份总要给一句整体判断（人裁决时看的那张表上并排显示）。
+      wantsOverall: true,
+    },
+  };
+  return { files, heads, paths: { red: files.lay(heads.red), blue: files.lay(heads.blue) } };
+}
+
+/** 收轮之后从格子文件里读发现。哪一边不合规就说是哪一边。 */
+function collectSlots(
+  slots: NonNullable<ReturnType<typeof laySlots>>,
+  request: RoundRequest,
+  verdicts: Readonly<Record<string, Verdict>>,
+  blueOverall: string | null,
+): RoundReading {
+  const read = readRoundFromSlots({
+    phase: request.phase, round: request.round,
+    red: slots.files.collect(slots.heads.red),
+    blue: slots.files.collect(slots.heads.blue),
+    verdicts, blueOverall,
+  });
+  if (!read.ok) throw new TurnResultUnparsableError("slot_file_invalid", read.reason);
+  slots.files.discard(slots.heads.red);
+  slots.files.discard(slots.heads.blue);
+  return read.reading;
 }
 
 export async function runRound(
@@ -313,6 +375,8 @@ export async function runRound(
    * 只挪说明，骨架仍然原样印两遍 —— 判据在 `RESULT_CONTRACT` 那段注释里：
    * 骨架缺了整轮无法解析，说明缺了只是写得糙。
    */
+  const slots = laySlots(request, dependencies.slotFiles);
+
   const contractNotesPath = dependencies.writeRoundFile(
     "result-contract-notes.md",
     [
@@ -403,6 +467,9 @@ export async function runRound(
         : { template: templateFor(request.phase)! }),
       ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
       ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
+      ...(slots === null ? {} : {
+        redSlotPath: slots.paths.red, blueSlotPath: slots.paths.blue,
+      }),
       ...(settledPath === undefined ? {} : { settledPath }),
       ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
       contractNotesPath,
@@ -485,13 +552,15 @@ export async function runRound(
     };
   }
 
-  const reading = readRound({
-    phase: request.phase,
-    round: request.round,
-    red,
-    blue,
-    judge: delivery.text,
-  }, verdicts);
+  /*
+   * 走格子那条路时，产出从**文件**里读，不从 transcript 捞。哪一边不合规就说是
+   * 哪一边，理由原样进 `malformed` —— 那条通道本来就会带进下一轮。
+   */
+  const reading = slots === null
+    ? readRound({
+      phase: request.phase, round: request.round, red, blue, judge: delivery.text,
+    }, verdicts)
+    : collectSlots(slots, request, verdicts, overallIn(blue));
 
   const gaps = dependencies.gaps.settleRound(
     request.changeId, request.phase, reading.outcome,

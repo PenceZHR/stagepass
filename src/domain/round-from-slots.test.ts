@@ -50,8 +50,14 @@ describe("一轮的产出从格子文件读，不从自由文本捞", () => {
     assert.equal(reading.reading.blueOverall, "还差两处");
   });
 
-  it("不评别人的阶段，红方的发现照旧丢掉", () => {
-    // 和旧解析器一字不差的规则：只有 Review / QA 里红方报的问题算数。
+  it("有模板的阶段两边的自由清单都不算数 —— 判断全走逐条判定", () => {
+    /*
+     * 环 v3 里只有 QA 收自由问题清单（`reportsFreeFormBlockers`），红方的发现也
+     * 只有 QA 算数（`RED_REVIEWS_OTHERS`）。别的七个阶段两边都走 rubric 逐条判定，
+     * 格子文件在那儿只承载 `overall` 和产出路径。
+     *
+     * 规则一个字没变，换的只是丢在哪一层。
+     */
     const reading = readRoundFromSlots({
       phase: "PRD", round: 3,
       red: sheet("red", ["docs/PRD-r3.md"], [[0, "红方自审"]]),
@@ -60,7 +66,7 @@ describe("一轮的产出从格子文件读，不从自由文本捞", () => {
     });
     assert.equal(reading.ok, true);
     if (!reading.ok) return;
-    assert.deepEqual(reading.reading.outcome.found.map((f) => f.title), ["蓝方发现"]);
+    assert.deepEqual(reading.reading.outcome.found, []);
   });
 
   it("哪一边的格子文件不合规，整轮说得出是哪一边", () => {
@@ -84,5 +90,33 @@ describe("一轮的产出从格子文件读，不从自由文本捞", () => {
     assert.equal(reading.ok, true);
     if (!reading.ok) return;
     assert.deepEqual(reading.reading.outcome.found, []);
+  });
+
+  it("有模板的阶段，反方的自由问题清单不算数", () => {
+    // 规则和旧解析器的 `discardBlockers` 一字不差 —— 它这一阶段的判断全部走
+    // 逐条判定，自由清单丢在读的时候，不靠提示词叮嘱（叮嘱抓不到违反）。
+    const reading = readRoundFromSlots({
+      phase: "PRD", round: 3,
+      red: sheet("red", ["a.md"], []),
+      blue: sheet("blue", ["b.md"], [[0, "反方自己列的"]]),
+      verdicts: {}, blueOverall: "还行",
+    });
+    assert.equal(reading.ok, true);
+    if (!reading.ok) return;
+    assert.deepEqual(reading.reading.outcome.found, []);
+    assert.equal(reading.reading.blueOverall, "还行");
+  });
+
+  it("QA 是唯一收自由清单的阶段，产出路径照旧来自预填", () => {
+    const reading = readRoundFromSlots({
+      phase: "QA", round: 3,
+      red: sheet("red", ["docs/QA-r3.md"], []),
+      blue: sheet("blue", ["docs/QA-r3-opposition.md"], [[0, "反方发现"]]),
+      verdicts: {}, blueOverall: null,
+    });
+    assert.equal(reading.ok, true);
+    if (!reading.ok) return;
+    assert.deepEqual(reading.reading.outcome.found.map((f) => f.title), ["反方发现"]);
+    assert.deepEqual(reading.reading.artifactIds, ["docs/QA-r3.md"]);
   });
 });

@@ -60,6 +60,7 @@ import {
   progressView,
 } from "./panel-view";
 import { QuestionStore } from "../store/question-store";
+import { createSlotFiles } from "../system/slot-files";
 import {
   reconcileMissingBindings, type BindingRecoveryReport,
 } from "./session-recovery";
@@ -713,6 +714,12 @@ async function runRound(input: {
       readRoundFile: (path) => {
         try { return readFileSync(path, "utf-8"); } catch { return null; }
       },
+      /*
+       * 这一轮的格子文件（C 方案）。**持久路径**，不跟着上面那份题面走临时目录 ——
+       * 它装的是这一轮唯一的产出，被系统清掉之后「模型没填」和「文件被清了」
+       * 在账本上长得一模一样。
+       */
+      slotFiles: createSlotFiles(),
       worklist: new WorklistStore(database),
       readThread: (threadId) => readThreadTranscript({
         history: options.history,
