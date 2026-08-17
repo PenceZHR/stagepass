@@ -5,6 +5,8 @@ import { describe, it } from "node:test";
 import { join } from "node:path";
 
 import { BLOCKER_SHAPE, QUESTION_SHAPE } from "../domain/round-slots";
+
+const OPTIONS = ["同意", "不同意", "先接受风险", "我自己说"];
 import { createSlotFiles, DEFAULT_SLOT_ROOT } from "./slot-files";
 
 const HEAD = {
@@ -93,7 +95,7 @@ describe("Slot files on disk", () => {
   it("carries the question shape onto disk too", () => {
     withRoot((root) => {
       const files = createSlotFiles({ root });
-      const head = { ...HEAD, shape: QUESTION_SHAPE };
+      const head = { ...HEAD, shape: QUESTION_SHAPE, options: OPTIONS };
       const doc = JSON.parse(readFileSync(files.lay(head), "utf8"));
       assert.deepEqual({ ...doc.slots[0] }, { id: "G-01", question: null, why: null });
       assert.equal(Array.isArray(doc.options), true);

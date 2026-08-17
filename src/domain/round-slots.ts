@@ -55,9 +55,6 @@ export const QUESTION_SHAPE: SlotShape = {
   required: ["question"],
 };
 
-/** 每道题的可选项。StagePass 的，不是模型的 —— 每道题都一样。 */
-export const ASK_OPTIONS = ["同意", "不同意", "先接受风险", "我自己说"] as const;
-
 export type SlotRole = "red" | "blue";
 
 export interface SlotHeader {
@@ -76,6 +73,14 @@ export interface SlotHeader {
    * （`<Phase>-r<N>.md` / `-opposition.md`），根本不该问模型要。
    */
   readonly artifacts: readonly string[];
+  /**
+   * 每道题的可选项 —— **StagePass 的，不是模型的**，每道题都一样。
+   *
+   * 措辞归 `domain/question.ts`（`RESPONSE_AGREE` 那一组），这里只当数据收下：
+   * 这一层不该有第二套措辞，两套措辞迟早只有一套是对的。
+   * 问句表必须给，别的形状不许给。
+   */
+  readonly options?: readonly string[];
   /** 这一阶段要不要模型给一句总评。不要的阶段这一格根本不出现。 */
   readonly wantsOverall?: boolean;
 }
@@ -114,7 +119,7 @@ export function createSlotDocument(header: SlotHeader): string {
   return `${JSON.stringify({
     stagepass: headOf(header),
     artifacts: [...header.artifacts],
-    ...(header.shape === QUESTION_SHAPE ? { options: [...ASK_OPTIONS] } : {}),
+    ...(header.options === undefined ? {} : { options: [...header.options] }),
     ...(header.wantsOverall === true ? { overall: null } : {}),
     slots: Array.from({ length: SLOT_COUNT }, (_, index) =>
       Object.fromEntries(header.shape.keys.map((key) =>
@@ -200,8 +205,8 @@ export function readSlotDocument(
     );
   }
 
-  const wantsOptions = header.shape === QUESTION_SHAPE;
-  const expectedOptions = wantsOptions ? JSON.stringify([...ASK_OPTIONS]) : undefined;
+  const wantsOptions = header.options !== undefined;
+  const expectedOptions = wantsOptions ? JSON.stringify([...header.options!]) : undefined;
   if (wantsOptions && JSON.stringify(document.options) !== expectedOptions) {
     return refuse(
       `options 是 StagePass 定的，每道题都一样，不该被改：期待 ${expectedOptions}，`

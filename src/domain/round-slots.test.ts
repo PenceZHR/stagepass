@@ -7,10 +7,11 @@ import {
   slotContract,
   BLOCKER_SHAPE,
   QUESTION_SHAPE,
-  ASK_OPTIONS,
   SLOT_COUNT,
   SLOT_FILL_LIMIT,
 } from "./round-slots";
+
+const OPTIONS = ["同意", "不同意", "先接受风险", "我自己说"];
 
 const HEAD = {
   changeId: "CHG-002", phase: "PRD" as const, round: 7, role: "blue" as const,
@@ -182,9 +183,9 @@ describe("Round slot file", () => {
   it("lays out a question sheet whose options the model never writes", () => {
     // 可选项是 StagePass 的，每道题都一样。模型只写问句和理由 ——
     // 「选项被编歪」这一类不稳定因此根本不存在。
-    const head = { ...HEAD, shape: QUESTION_SHAPE };
+    const head = { ...HEAD, shape: QUESTION_SHAPE, options: OPTIONS };
     const doc: any = JSON.parse(createSlotDocument(head));
-    assert.deepEqual(doc.options, ASK_OPTIONS);
+    assert.deepEqual(doc.options, OPTIONS);
     assert.deepEqual({ ...doc.slots[0] }, { id: "G-01", question: null, why: null });
 
     doc.slots[0].question = "结算失败时分数保留吗？";
@@ -197,14 +198,14 @@ describe("Round slot file", () => {
   });
 
   it("refuses a question sheet whose options the model touched", () => {
-    const head = { ...HEAD, shape: QUESTION_SHAPE };
+    const head = { ...HEAD, shape: QUESTION_SHAPE, options: OPTIONS };
     const doc = JSON.parse(createSlotDocument(head));
     doc.options.push("再想想");
     assert.equal(readSlotDocument(JSON.stringify(doc, null, 2), head).ok, false);
   });
 
   it("applies the same guarantees to whichever shape is declared", () => {
-    const head = { ...HEAD, shape: QUESTION_SHAPE };
+    const head = { ...HEAD, shape: QUESTION_SHAPE, options: OPTIONS };
     const base = JSON.parse(createSlotDocument(head));
     // 半条：有 why 没 question
     const half = JSON.parse(JSON.stringify(base)); half.slots[1].why = "只写了理由";
