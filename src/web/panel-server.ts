@@ -1988,7 +1988,12 @@ export async function handle(
       response.writeHead(400).end("bad_choice");
       return;
     }
-    new QuestionStore(database).answer(open.id, answer);
+    /*
+     * 账本收的是 elicitation 那个信封（`{action, content}`），不是裸的答案表。
+     * 表单是从浏览器来的，但落进库里的形状必须和以前一字不差 —— 换的是人在哪儿答，
+     * 不是账本的语义。
+     */
+    new QuestionStore(database).answer(open.id, { action: "accept", content: answer });
     json(response, { answered: true, question: open.id });
     return;
   }

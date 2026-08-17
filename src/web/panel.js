@@ -104,6 +104,10 @@ const briefDraftButton = button("brief-draft");
 const briefConfirmButton = button("brief-confirm");
 const nextStepLine = pick("next-step");
 const lastOutcomeLine = pick("last-outcome");
+const openQuestionForm = /** @type {HTMLFormElement} */ (pick("open-question"));
+const openQuestionHead = pick("open-question-head");
+const openQuestionFields = pick("open-question-fields");
+const openQuestionNote = pick("open-question-note");
 const roundProgress = pick("round-progress");
 const runButton = button("run");
 const askButton = button("ask");
@@ -1812,6 +1816,69 @@ const GATE_REFUSAL_WORDS = {
  * 只有被拒的下场要挂出来 —— 落地成功的那些，环上的标记已经在说了；给它们也挂
  * 一条横幅，警示色就不再意味着警示。null = 没什么要挂的。
  */
+/**
+ * 在等人答的那道题。
+ *
+ * 每个选项是一个 radio，**value 是序号不是原文** —— 长措辞一旦要被谁抄一遍就迟早
+ * 抄歪，而抄歪之后落进库里的是一个看起来合法的错答案。提交时只发序号。
+ */
+let openQuestionId = null;
+function drawOpenQuestion(entry) {
+  const question = entry?.openQuestion ?? null;
+  openQuestionId = question?.id ?? null;
+  openQuestionForm.hidden = question === null;
+  openQuestionNote.hidden = true;
+  openQuestionFields.replaceChildren();
+  if (question === null) return;
+
+  openQuestionHead.textContent = question.message;
+  for (const field of question.fields) {
+    const box = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    legend.textContent = field.title;
+    box.append(legend);
+    for (const [index, option] of field.options.entries()) {
+      const label = document.createElement("label");
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = field.id;
+      radio.value = String(index);
+      const words = document.createElement("span");
+      words.textContent = option;
+      label.append(radio, words);
+      box.append(label);
+    }
+    openQuestionFields.append(box);
+  }
+}
+
+openQuestionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (openQuestionId === null) return;
+  const query = new URLSearchParams({ change: changeId, question: openQuestionId });
+  for (const [name, value] of new FormData(openQuestionForm)) {
+    query.set(name, String(value));
+  }
+  void submitAnswer(query);
+});
+
+async function submitAnswer(query) {
+  openQuestionNote.hidden = false;
+  openQuestionNote.textContent = "正在提交…";
+  const response = await fetch(`/api/answer?${query}`, { method: "POST" });
+  if (response.ok) {
+    openQuestionNote.textContent = "已记下。";
+    await load();
+    return;
+  }
+  const code = await response.text();
+  openQuestionNote.textContent = code === "question_moved_on"
+    ? "这道题已经不是此刻在等的那道了 —— 页面刷新一下再看。"
+    : code === "bad_choice"
+      ? "每一条都要选一个才能提交。"
+      : `提交没成功：${code}`;
+}
+
 function lastOutcomeWords(outcome) {
   if (!outcome) return null;
   if (outcome.kind === "unanswered") {
@@ -2037,6 +2104,8 @@ function drawSheet(phase) {
   const refusedWords = lastOutcomeWords(entry.lastOutcome);
   lastOutcomeLine.hidden = refusedWords === null;
   lastOutcomeLine.textContent = refusedWords ?? "";
+
+  drawOpenQuestion(entry);
 
   drawGaps(entry);
   sheetGaps.prepend(drawProduced(entry));

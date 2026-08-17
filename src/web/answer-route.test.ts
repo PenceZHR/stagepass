@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { answerFromChoices } from "./panel-view";
+import Database from "better-sqlite3";
+
+import { SCHEMA_SQL } from "../db/schema";
+import { draftedQuestions } from "../domain/question";
+import { ChangeStore } from "../store/change-store";
+import { ProjectStore } from "../store/project-store";
+import { QuestionStore } from "../store/question-store";
+import { answerFromChoices, openQuestionOf } from "./panel-view";
 
 const QUESTION = {
   fields: [
@@ -32,5 +39,33 @@ describe("Choices the browser sends back", () => {
 
   it("answers nothing when there is nothing to answer", () => {
     assert.deepEqual(answerFromChoices({ fields: [] }, {}), {});
+  });
+
+  it("hands the ledger the envelope it has always taken", () => {
+    // 换的是人在哪儿答，**不是账本的语义**。`questions.answer` 收的是
+    // elicitation 那个信封（`{action, content}`），不是裸的答案表 —— 直接塞答案表
+    // 会炸 `answer_action_unknown`，而这是真机点出来的，纯映射的单测碰不到。
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    new ProjectStore(database).ensure("PRJ-A", "p", "/tmp/x");
+    new ChangeStore(database).create("CHG-A", { projectId: "PRJ-A" });
+    const questions = new QuestionStore(database);
+    questions.ask({
+      id: "Q-1", changeId: "CHG-A", phase: "PRD", kind: "clarification",
+      question: draftedQuestions({
+        phase: "PRD", drafted: [{ id: "G-01", question: "保留吗？", why: null }],
+      })!,
+      expectedSnapshot: "snap",
+    });
+
+    const open = openQuestionOf(questions, "CHG-A")!;
+    const answer = answerFromChoices(open, { "G-01": "2" })!;
+    assert.doesNotThrow(() => {
+      questions.answer(open.id, { action: "accept", content: answer });
+    });
+    const stored = questions.readAnswerFor("Q-1");
+    assert.equal(stored?.content["G-01"], "先接受这个风险（问题还在，只是不再挡闸门）");
+    database.close();
   });
 });

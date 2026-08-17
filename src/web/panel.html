@@ -1553,6 +1553,17 @@ body::after {
           答完之后必然发生的事。这里每次重画都从库里的 lastOutcome 来，盖不掉。
         -->
         <p class="last-outcome" id="last-outcome" hidden></p>
+        <!--
+          在等你答的那道题（C 方案）。以前它只活在 Codex TUI 的 elicitation 表单里，
+          要模型挂着一轮把它端过去；挂不住就是 session_died_before_answering。
+          现在题在库里等着，你什么时候答都行。
+        -->
+        <form class="open-question" id="open-question" hidden>
+          <p class="open-question-head" id="open-question-head"></p>
+          <div id="open-question-fields"></div>
+          <button type="submit" id="open-question-submit">提交</button>
+          <p class="open-question-note" id="open-question-note" hidden></p>
+        </form>
         <div id="sheet-gaps"></div>
         <div id="sheet-rubric" hidden></div>
       </div>
