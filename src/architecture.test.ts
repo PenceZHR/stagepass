@@ -84,6 +84,14 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // change-store 的收编要在同一个事务里读它的行。
   "store/parallel-store.ts": 0,
   "store/project-store.ts": 0,
+  /*
+   * 插件进程的库句柄（用 Node 内置 `node:sqlite` 顶 better-sqlite3 的形状）。
+   *
+   * 和 `graph/module-graph.ts` 同一个理由放最低层：**它运行时只 import `node:sqlite`，
+   * 我们自己的东西一个都不碰**（better-sqlite3 只进 `import type`，编译后就没了）。
+   * 谁都够得着，而它够不着任何人 —— 一个换驱动的垫片不该有话语权。
+   */
+  "plugin/sqlite-handle.ts": 0,
 
   "domain/gate.ts": 1,
   "domain/lease.ts": 1,
@@ -96,6 +104,16 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 旁路账本（彗星，2026-08-11）。它只依赖 better-sqlite3 的类型，我们自己的
   // 东西一个都不 import —— 和 gap-store 同一层，理由也一样：纯存储。
   "store/aside-store.ts": 1,
+  /*
+   * 插件跟着 Codex 的工作目录认项目。只读 `store/project-store`（0），别的什么都不碰
+   * —— 和这一层其他「薄薄一层规则盖在 store 上」的模块同族。
+   */
+  "plugin/workspace.ts": 1,
+  /*
+   * 座位 = 一个 (Change, 阶段) 绑着的 Codex 会话。它够得着的最高一层是
+   * `codex/app-server-transport`（2），所以住这儿 —— 层数是依赖顶出来的，不是挑的。
+   */
+  "plugin/seats.ts": 2,
   "store/command-store.ts": 1,
   "work/job-store.ts": 1,
   "work/turn-loop.ts": 1,
@@ -110,8 +128,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/app-server-client.ts": 2,
   "codex/app-server-daemon.ts": 2,
   "codex/app-server-websocket.ts": 2,
-  // 详细提示词只落进 0600 临时文件；给原生 TUI 的只是短信封和路径。
-  "codex/prompt-file.ts": 2,
+  // 外部进程只从这一个缝里出去：codex app-server 与 osascript。
   "system/process.ts": 2,
   /*
    * 格子文件落盘。持久路径（`~/.stagepass/rounds`），不是临时目录 —— 清掉之后
@@ -119,8 +136,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 不认识 Change 状态机和界面。
    */
   "system/slot-files.ts": 2,
-  // 只按白名单 marker 发现/控制 macOS Terminal 标签，不持久化窗口 id。
-  "system/terminal-app.ts": 2,
   // App Server 通知在这里收束成一条可重放的 thread 事件流；session 只在这层
   // 持有 Codex thread/turn/item 生命周期，不认识 Change、phase 或界面。
   "codex/stream-state.ts": 2,
@@ -130,7 +145,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/archive.ts": 2,
   // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。
   "codex/trust.ts": 2,
-  "codex/turn-runner.ts": 2,
+  "codex/phase-instructions.ts": 2,
 
   "domain/round.ts": 4,
   // 「接受一条已知风险」这个用例（§4.1·J 从 `handle()` 里搬出来的第一个）。
@@ -190,17 +205,39 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 在接口写进去的那一刻就会红。
   // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
   "web/session-recovery.ts": 5,
-  // Change/seat 到 App Server thread + Terminal marker 的可重建状态机。
-  "web/native-sessions.ts": 5,
   // 原生终端的 HTTP 边界只回归一化状态，不回 ANSI、输入或 JSON-RPC。
-  "web/terminal-api.ts": 5,
-  "web/panel-listener.ts": 5,
-  "web/panel-server.ts": 5,
+  /*
+   * 插件那一面的数据装配（2026-08-18 定案：只做插件、网页端退休）。
+   *
+   * 和 `panel-server` 同层，理由也一样：它是**另一个界面的边界**——一边吃库，
+   * 一边吐 widget 要的形状。它调 `panel-view` 而不是自己再算一遍，所以不能比
+   * `panel-view` 低。
+   */
+  "plugin/panel-data.ts": 5,
+  /*
+   * 插件的数据口和进程边界，和 `panel-server` 同层同理由 —— 它俩是同一种东西的
+   * 两个版本：一个把库变成 HTTP 上的 JSON，一个把库变成 MCP 上的 JSON。
+   * 网页端退休后只剩后者。
+   */
+  "plugin/api.ts": 5,
+  /*
+   * 产物和图谱那四条路。和 `api.ts` 同层 —— 它是 `api.ts` 的一块，只因为要拖
+   * TypeScript 编译器才单独成文件（唯一的动态 import 边界，理由在文件开头）。
+   */
+  "plugin/repo-routes.ts": 5,
+  /*
+   * 会改库的那些路，和执行通道。
+   *
+   * `actions` 够得着 `app/decide-gate`（5），`runtime` 够得着整条跑轮链
+   * （`work/round-turn-runner` → rubric → …），所以都在这一层。`seats` 低一格：
+   * 它只认 App Server 和绑定表，不认识用例。
+   */
+  "plugin/actions.ts": 5,
+  "plugin/runtime.ts": 5,
+  "plugin/server.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
   // 「HTTP 进、JSON 出」的界面层，读的最高一层是 store（0）和 graph（0/2）。
-  "web/graph-api.ts": 5,
-  "web/stage-artifact-api.ts": 5,
 
   "domain/question.ts": 3,
   "domain/brief.ts": 3,
@@ -269,7 +306,9 @@ const GRAPH = parseModuleGraph(production);
  * reached, and one reachable from nowhere still does not.
  */
 const ENTRY_POINTS = [
-  "scripts/panel.ts",
+  // 插件的构建入口。面板进程（`scripts/panel.ts`）2026-08-18 随网页端一起删了 ——
+  // 现在这棵树只有一个产品出口：Codex 插件。
+  "scripts/plugin-build.ts",
 ].map((path) => ({
   path,
   text: readFileSync(join(process.cwd(), path), "utf-8"),
@@ -477,15 +516,62 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
   // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）；
   // 同日再抽 `serveParallel`、撤掉并行座位的入口（553 → 517）。
-  "web/panel-server.ts#handle": 484,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
-  // 91% —— 它一个模块够得着全树。同上，拆一块钉一块。
-  // 2026-08-05 J 批：搬走五块之后 89%。**它掉得比配料单慢，而这是对的** ——
-  // 搬出去的模块仍然在它下游，闭包照样够得着；真正变小的是「改它一次要读多少」。
-  "web/panel-server.ts": 0.89,
+  /*
+   * 插件进程是整个产品**唯一的入口**（网页端 2026-08-18 退休后就它一个），所以它
+   * 够得着大半棵树 —— 那是入口的定义，不是 panel-server 那种「一个模块把业务逻辑
+   * 全吃了」。这条护栏原来没碰到过这种情况，因为上一个入口在 `scripts/` 里，不算
+   * production 模块。
+   *
+   * **不给豁免，给棘轮。** 闭包只能靠删依赖变小，搬代码没用；而这些依赖都是真的
+   * （数据口 + 产物 + 图谱）。钉在实测值上，**涨一点就红** —— 于是「又给入口多挂
+   * 了一条依赖」这件事永远要经过一次显式的抬手。
+   *
+   * 它本身仍然被另外两条护栏管着：配料单不许过三成、单个函数不许长成一层。
+   * 那两条才是「它有没有在变成第二个 panel-server」的真判据。
+   */
+  "plugin/server.ts": 0.92,
+  "plugin/api.ts": 0.70,
+  "plugin/actions.ts": 0.73,
 };
+
+/*
+ * ## 2026-08-18：`plugin/server.ts` 到了 92%，和当年的 panel-server 一个数
+ *
+ * **这个数字现在已经不说明问题了，得说清楚为什么。**
+ *
+ * 执行通道接上之后，插件入口够得着整条跑轮链（`round-turn-runner` → rubric →
+ * domain 全家）。而它是**整个产品唯一的入口** —— 一个入口够得着全树是同义反复，
+ * 不是坏味道。panel-server 当年 91% 的真问题是**它自己 2177 行、`handle()` 484 行**，
+ * 那才是「改一次要读小半棵树」。
+ *
+ * `plugin/server.ts` 现在 230 行，全是管道；拿主意的都在 `api` / `actions` /
+ * `runtime` / `seats` 里，各自有测试。
+ *
+ * **所以这条护栏对「入口」这个位置该退休，换成另外两条守：** 配料单不许过 30%
+ * （改它一次要读多少），单个函数不许长成一层。它们现在都没红。在没人动手改这条
+ * 护栏之前，棘轮至少保证「又给入口挂了一条依赖」要经过一次显式抬手。
+ */
+
+/*
+ * ## 关于上面这两条，得说清楚它们和 panel-server 那条不是一回事
+ *
+ * 网页端退休后（2026-08-18），插件是整个产品**唯一的入口**，而 `api.ts` 是它唯一的
+ * 路由器。**接一条路，就多够得着那条路要的那一片** —— 闭包涨是路由器的定义，不是
+ * 坏味道。panel-server 当年 91% 的问题不在够得着多少，在于它自己**长到 2177 行、
+ * 把业务逻辑吃进去了**。
+ *
+ * 真正在管这件事的是另外两条，而它们现在都没红：
+ *
+ *   - **配料单不许过 30%** —— 「改它一次要读多少」，那才是痛感的度量；
+ *   - **单个函数不许长成一层** —— panel-server 的 `handle()` 当年 484 行。
+ *
+ * 所以这里给的仍然是棘轮而不是豁免：数字钉在实测值上，**再涨就红**，于是「又给
+ * 路由器挂了一条依赖」永远要经过一次显式的抬手。但抬手时该问的是上面那两条，
+ * 不是这一条。
+ */
 
 describe("standing · 没有一个函数长成一层", () => {
   /** 用真编译器量，不用正则猜函数边界 —— 边界猜错一次这条护栏就静默失效。 */

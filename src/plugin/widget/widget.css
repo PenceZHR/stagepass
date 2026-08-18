@@ -1,0 +1,106 @@
+/*
+ * Codex widget 专用版式 —— 只在 <html class="sp-widget"> 下生效，普通面板一个像素不受影响。
+ *
+ * ## 为什么需要它
+ *
+ * 实测：Codex 给 widget 的框是 736×720（inline）/ 687×644（fullscreen —— 它其实是
+ * 右侧面板的一个标签页，比 inline 还窄）。面板的 `@media (max-width: 820px)` 是给
+ * **手机**写的：整页竖排、`.col.stage { min-height: max(760px, 100svh) }`、body 可滚。
+ * 在 644px 高的框里，那套的结果是大环被推到屏幕外 —— 也就是「完全没法用」。
+ *
+ * ## 用的是面板自己已有的形态，不是新发明
+ *
+ * `.columns.collapsed` 本来就是 `0fr 0fr 10fr`：两个工作区列收成 0，第三列独占，
+ * 左上角出现「展开」入口。820px 那段把它显式关掉了（`display:block` + 强制
+ * `.col.workspace { display:flex }`）。这里只是**在 widget 里把它放回来**。
+ *
+ * 690 宽收起后：环所在的 `.orbit-stage` 拿到 60% ≈ 414px，减去左右 14px 留白，
+ * 高度方向约 580px —— `min(100cqw,100cqh)` 取到约 386px 的环。够看。
+ */
+
+/*
+ * 1. 高度：inline 和 fullscreen 的策略**相反**，别写一份。
+ *
+ * 08-18 踩过：一开始无条件写了 `height:100%; overflow:hidden`，结果 inline 一直
+ * 卡在 736×240 —— 一条窄缝。因为宿主是按 `document.body.scrollHeight` 决定给多高
+ * 的（asar 里同族沙箱的 sendHeight() 就这么写），文档不长高，它就不给高。
+ *
+ * 所以：
+ *   inline      —— 文档自己要有确定高度（700px），宿主才会把框撑到 ~700（封顶 720）；
+ *   fullscreen  —— 框已经定死（实测 657~687 × 644），铺满即可，不许再长。
+ */
+html.sp-widget { height: 700px; }
+html.sp-widget.sp-fullscreen { height: 100%; }
+html.sp-widget body {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/*
+ * 下面这一整段**只在窄的时候生效**。
+ * 一开始我写成无条件的，结果框一变宽（右侧面板被拉开）版式反而卡在单列 ——
+ * 宽度够了就该让面板自己那套桌面三列接管，widget 不该硬按着它。
+ */
+/*
+ * 2. ~~隐藏 Projects 那一列~~ —— **不再需要**。
+ *
+ * 那一列 2026-08-18 从 `panel.html` 里整个删了（用户：「我肯定是会在相应的
+ * project 下做的，只保留 change 即可」）。用 CSS 藏起来是垫片思路：留着一列
+ * 没人看得见、也没人维护的 UI 代码，下一个读它的人会以为它还活着。
+ */
+
+@media (max-width: 1180px) {
+
+/* 2. 把 820px 那段关掉的收起模式放回来 */
+html.sp-widget .columns,
+html.sp-widget .columns.collapsed {
+  display: grid;
+  min-height: 0;
+}
+html.sp-widget .columns.collapsed .col.workspace { display: flex; overflow: hidden; }
+html.sp-widget .columns.collapsed .col.workspace > * { opacity: 0; }
+html.sp-widget .columns.collapsed .expand { display: inline-flex; }
+html.sp-widget .col + .col { border-left: 1px solid oklch(0.89 0.025 75 / 11%); border-top: 0; }
+
+/* 3. 第三列不许再要 760px 的下限 —— 那正是把环顶出屏幕的那一条 */
+html.sp-widget .col.stage { min-height: 0; }
+
+/* 4. 环那屏回到左右分栏。竖排在 644px 高里放不下「状态 + 环」两段。 */
+html.sp-widget #orbit-view {
+  grid-template-columns: 38% 62%;
+  grid-template-rows: none;
+}
+html.sp-widget .status-panel {
+  padding: 20px 16px 14px 20px;
+  border-right: 1px solid oklch(0.89 0.025 75 / 9%);
+  border-bottom: 0;
+  overflow-y: auto;
+}
+html.sp-widget .columns.collapsed .status-panel { padding-top: 62px; }
+html.sp-widget .status-title { font-size: clamp(19px, 3.4vw, 25px); }
+html.sp-widget .orbit-stage { padding: 12px 14px 16px; }
+
+/*
+ * 5. 展开时那两列：横向滑动的卡片带（沿用 820px 那段的做法，它在这个宽度下是对的）。
+ *
+ * **带子必须压得很矮。** 34vh 一条、两条就吃掉 476px，700px 高的框里大环直接被挤出去 ——
+ * 而展开只是为了「挑一个然后回去看环」，不是一个要长期停留的界面。
+ */
+html.sp-widget .columns:not(.collapsed) {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);   /* Projects 没了，只剩 Changes + 环 */
+}
+html.sp-widget .columns:not(.collapsed) .col.workspace { max-height: 124px; }
+html.sp-widget .columns:not(.collapsed) .col-head { padding: 9px 14px 5px; }
+html.sp-widget .columns:not(.collapsed) .col-head small { margin-bottom: 2px; }
+html.sp-widget .columns:not(.collapsed) .rows { padding: 0 10px 9px; }
+
+/* 6. 顶栏压薄，644px 高里每一行都算数 */
+html.sp-widget .topbar { min-height: 46px; padding: 0 14px; }
+html.sp-widget .wordmark { font-size: 18px; }
+
+}  /* ← @media (max-width: 1180px) 结束 */
+
+/* 7. 底部那条探针读数栏会盖住内容 —— 给它让出位置（任何宽度都要） */
+html.sp-widget body { padding-bottom: 26px; box-sizing: border-box; }

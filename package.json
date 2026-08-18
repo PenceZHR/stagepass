@@ -7,8 +7,9 @@
     "test": "node --import tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.panel.json",
     "check": "pnpm typecheck && pnpm test",
-    "panel": "tsx scripts/panel.ts",
-    "schema:app-server": "codex app-server generate-json-schema --experimental --out docs/app-server-schema"
+    "schema:app-server": "codex app-server generate-json-schema --experimental --out docs/app-server-schema",
+    "plugin": "tsx scripts/plugin-build.ts",
+    "preview": "tsx scripts/plugin-preview.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
@@ -19,6 +20,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"
   }
