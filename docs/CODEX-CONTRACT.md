@@ -82,16 +82,22 @@ interaction id；回答后服务端把结果回到原 request。未知反向请�
 `thread/read` 返回的 `collabAgentToolCall` / `subAgentActivity` item 取得子线程顺序。
 红蓝正文直接读取各自 thread；读不到、未完成和空/坏契约都不能被解释为“没有问题”。
 
-## 8. MCP 配置
+## 8. 控制连接的所有权
 
-StagePass MCP 通过每条 thread 的 App Server `config` 注入，不写用户全局配置。配置包含
-当前数据库、Change，跑轮时还包含 phase。创建/恢复并注入配置后，StagePass 控制连接必须
-在向 Terminal 投递内容前调用 `thread/unsubscribe`；后续用不含 turns 的 `thread/read`
-查询状态，用 `thread/turns/list` 的有界最近页查询目标 turn。
+StagePass 没有自己的 MCP server —— 2026-08-17 (`894aa15`) 整条拆掉，不留回退。问人的题
+由 StagePass 自己算、落进账本、人在浏览器里答，不再派模型当信使。
 
-MCP tool approval 与 elicitation 的反向请求只送到官方 Codex TUI。StagePass 浏览器不代答，
-控制连接也不以“拒绝请求”的方式充当观察者；人的选择由 TUI 回到原 turn，StagePass MCP
-只负责把业务答案写入同一份 StagePass 账本。
+控制连接**永远不订阅**任何 thread：
+
+- 建线程 / 恢复时短暂 `thread/start` / `thread/resume`，向 Terminal 投递前必须
+  `thread/unsubscribe` 并释放本地 session；
+- 一轮的输入走 `turn/start { threadId, input }` 直发 —— 按线程 id 寻址，不需要订阅
+  （2026-08-17 真机验证，见 `HANDOFF-2026-08-17b-official-turn-start.md`）；
+- 因此这条连接收不到 `turn/*` 通知，**完成判定只能轮询** `thread/turns/list`；
+- 审批与 elicitation 属于官方 TUI —— 它是订阅者。StagePass 浏览器不代答，控制连接也不
+  以「拒绝请求」的方式充当观察者。
+
+线程存活先问 `thread/loaded/list`（零轮次线程只在这份名单里），问不到再翻 `thread/list`。
 
 ## 9. 升级核对
 
