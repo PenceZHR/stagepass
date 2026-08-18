@@ -64,6 +64,20 @@ describe("AppServerSession", () => {
     assert.equal(connection.requests[0]?.params.ephemeral, false);
   });
 
+  /*
+   * 打的是真实症状：**线程在 Codex App 的项目分类里看不见，只落在 Recents**。
+   * 成因是 `thread/start` 没带 `threadSource`（落库后 thread_source = null）。
+   * 这条差异在 API 层完全看不出来 —— `thread/read` 两边返回一模一样 —— 所以只能
+   * 在发出去的参数上守。
+   */
+  it("marks started threads as user threads so Codex files them under the project", async () => {
+    const connection = new FakeConnection();
+
+    await AppServerSession.start(connection, options);
+
+    assert.equal(connection.requests[0]?.params.threadSource, "user");
+  });
+
   it("resumes the exact bound thread", async () => {
     const connection = new FakeConnection();
 

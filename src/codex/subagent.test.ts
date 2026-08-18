@@ -6,10 +6,8 @@ import {
   childThreadsOf,
   readThreadTranscript,
   readThreadUserMessages,
-  readThreadWholeText,
   SubAgentNotFoundError,
   SubAgentUnfinishedError,
-  threadContextUsage,
 } from "./subagent";
 
 const turn = (id: string, status: "completed" | "inProgress", user: string, agent: string) => ({
@@ -48,13 +46,9 @@ const reader = (value: ThreadHistory | null | Error) => ({
 });
 
 describe("App Server subagent evidence", () => {
-  it("读最后完整回答、全部文本和用户输入", async () => {
+  it("读最后完整回答和用户输入", async () => {
     const history = reader(thread());
     assert.equal(await readThreadTranscript({ history, threadId: "T-1" }), "第二答");
-    assert.equal(
-      await readThreadWholeText({ history, threadId: "T-1" }),
-      "第一问\n第一答\n第二问\n第二答",
-    );
     assert.deepEqual(
       await readThreadUserMessages({ history, threadId: "T-1" }),
       ["第一问", "第二问"],
@@ -80,17 +74,6 @@ describe("App Server subagent evidence", () => {
       history: reader(thread()),
       parentThreadId: "T-1",
     }), ["T-RED", "T-BLUE"]);
-  });
-
-  it("上下文用量来自官方事件缓存；missing 返回 null", async () => {
-    assert.deepEqual(await threadContextUsage({
-      history: reader(thread()),
-      threadId: "T-1",
-    }), { used: 100, window: 1_000 });
-    assert.equal(await threadContextUsage({
-      history: reader(null),
-      threadId: "T-X",
-    }), null);
   });
 
   it("用户输入读取失败返回 null，不伪装成一句都没有", async () => {

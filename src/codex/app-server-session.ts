@@ -26,6 +26,23 @@ export interface AppServerConnection {
   subscribeDisconnect?(listener: (error: Error) => void): () => void;
 }
 
+/**
+ * `thread/start` 的 `threadSource` —— **决定这条线程进不进 Codex App 的项目分类**。
+ *
+ * 2026-08-18 真机实测：不传这个字段，线程落库时 `thread_source = null`，App 里
+ * **只出现在 Recents**，项目分类下看不到；传 `"user"` 就和 App 自己开的会话一样。
+ * 用户目视确认过两次（先没有、补上之后就有了）。
+ *
+ * 这个差异**在 API 层看不出来** —— 两条线程的 `thread/read` 返回完全相同，一个字节
+ * 都不差，只有 `~/.codex/state_5.sqlite` 的 `threads.thread_source` 列不一样。
+ *
+ * 另外别和 `source` 字段混：`ThreadSourceKind`（`cli|vscode|exec|appServer|subAgent…`）
+ * 是 `source` 的枚举；`thread_source` 是另一回事，实际取值只有 `user` / `subagent` /
+ * `null`，schema 里的类型就是个裸 string（说明还写成 "analytics source classification"，
+ * 光看描述完全想不到它管分类）。
+ */
+const THREAD_SOURCE = "user";
+
 export interface AppServerSessionOptions {
   readonly cwd: string;
   readonly sandbox: string;
@@ -357,6 +374,7 @@ export class AppServerSession {
       cwd: options.cwd,
       sandbox: options.sandbox,
       approvalPolicy: options.approvalPolicy,
+      threadSource: THREAD_SOURCE,
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.config === undefined ? {} : { config: options.config }),
     };

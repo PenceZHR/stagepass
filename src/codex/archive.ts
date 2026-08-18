@@ -9,14 +9,6 @@ export type ArchiveOps = Pick<
   "availability" | "archive" | "unarchive"
 >;
 
-export type ResumableOutcome =
-  | "already_open"
-  | "unarchived"
-  | "still_archived"
-  | "missing"
-  /** App Server was unavailable; this must never detach a durable binding. */
-  | "unavailable";
-
 async function availability(
   threadId: string,
   ops: ArchiveOps,
@@ -26,25 +18,6 @@ async function availability(
   } catch {
     return "unavailable";
   }
-}
-
-/** Make a bound thread resumable without reading Codex-owned files or sqlite. */
-export async function ensureResumable(
-  threadId: string,
-  ops: ArchiveOps,
-): Promise<ResumableOutcome> {
-  const before = await availability(threadId, ops);
-  if (before === "missing" || before === "unavailable") return before;
-  if (before === "open") return "already_open";
-  try {
-    await ops.unarchive(threadId);
-  } catch {
-    return "still_archived";
-  }
-  const after = await availability(threadId, ops);
-  if (after === "open") return "unarchived";
-  if (after === "missing" || after === "unavailable") return after;
-  return "still_archived";
 }
 
 export type ArchiveOutcome =

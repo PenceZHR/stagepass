@@ -212,8 +212,29 @@ describe("App Server history", () => {
     });
   });
 
-  it("通过 thread/list 的公开分页语义区分 open / archived / missing", async () => {
-    const open = new FakeConnection().reply({
+  it("零轮次线程只在 loaded/list 里，照样算 open", async () => {
+    // thread/list 看不见还没落盘的线程。2026-08-17 真机：面板据此报 missing →
+    // detach → 重绑，而 daemon 内存里它一直在。判据得先问 loaded。
+    const connection = new FakeConnection().reply({
+      data: ["T-OTHER", "T-WANTED"],
+      nextCursor: null,
+    });
+
+    assert.equal(
+      await new AppServerHistory(connection).availability("T-WANTED"),
+      "open",
+    );
+    assert.deepEqual(
+      connection.calls.map((call) => call.method),
+      ["thread/loaded/list"],
+      "loaded 命中就不该再去翻 thread/list",
+    );
+  });
+
+  it("loaded 里没有时，thread/list 的公开分页语义区分 open / archived / missing", async () => {
+    const notLoaded = { data: [], nextCursor: null };
+
+    const open = new FakeConnection().reply(notLoaded, {
       data: [{ id: "T-OTHER" }],
       nextCursor: "NEXT",
     }, {
@@ -224,10 +245,14 @@ describe("App Server history", () => {
       await new AppServerHistory(open).availability("T-WANTED"),
       "open",
     );
-    assert.equal(open.calls[0]?.method, "thread/list");
-    assert.equal(open.calls[1]?.params.cursor, "NEXT");
+    assert.deepEqual(
+      open.calls.map((call) => call.method),
+      ["thread/loaded/list", "thread/list", "thread/list"],
+    );
+    assert.equal(open.calls[2]?.params.cursor, "NEXT");
 
     const archived = new FakeConnection().reply(
+      notLoaded,
       { data: [], nextCursor: null },
       { data: [{ id: "T-WANTED" }], nextCursor: null },
     );
@@ -235,9 +260,15 @@ describe("App Server history", () => {
       await new AppServerHistory(archived).availability("T-WANTED"),
       "archived",
     );
-    assert.deepEqual(archived.calls.map((call) => call.params.archived), [false, true]);
+    assert.deepEqual(
+      archived.calls
+        .filter((call) => call.method === "thread/list")
+        .map((call) => call.params.archived),
+      [false, true],
+    );
 
     const absent = new FakeConnection().reply(
+      notLoaded,
       { data: [], nextCursor: null },
       { data: [], nextCursor: null },
     );

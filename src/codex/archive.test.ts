@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 
 import {
   archiveFinished,
-  ensureResumable,
   type ArchiveOps,
 } from "./archive";
 import type { ThreadAvailability } from "./app-server-history";
@@ -34,40 +33,10 @@ function fake(
 }
 
 describe("App Server archive policy", () => {
-  it("open 不动，archived 解开并二次确认", async () => {
-    const open = fake({ "T-OPEN": "open" });
-    assert.equal(await ensureResumable("T-OPEN", open), "already_open");
-    assert.deepEqual(open.calls, []);
-
-    const archived = fake({ "T-ARCHIVED": "archived" });
-    assert.equal(await ensureResumable("T-ARCHIVED", archived), "unarchived");
-    assert.deepEqual(archived.calls, ["unarchive T-ARCHIVED"]);
-  });
-
-  it("只有明确 missing 才说 missing；断线说 unavailable", async () => {
-    assert.equal(await ensureResumable("T-X", fake({})), "missing");
-    assert.equal(
-      await ensureResumable("T-X", fake({}, { unavailable: true })),
-      "unavailable",
-    );
-  });
-
-  it("请求失败或事后二次确认仍归档，不伪装成成功", async () => {
-    assert.equal(
-      await ensureResumable("T-1", fake({ "T-1": "archived" }, { throws: true })),
-      "still_archived",
-    );
-    assert.equal(
-      await ensureResumable("T-1", fake({ "T-1": "archived" }, { lies: true })),
-      "still_archived",
-    );
-  });
-
-  it("批准后才归档，且归档和解归档可逆", async () => {
+  it("批准后才归档", async () => {
     const ops = fake({ "T-FIX": "open" });
     assert.equal(await archiveFinished("T-FIX", ops), "archived");
-    assert.equal(await ensureResumable("T-FIX", ops), "unarchived");
-    assert.deepEqual(ops.calls, ["archive T-FIX", "unarchive T-FIX"]);
+    assert.deepEqual(ops.calls, ["archive T-FIX"]);
   });
 
   it("归档请求失败或状态没变时说真话", async () => {

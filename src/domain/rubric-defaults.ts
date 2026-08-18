@@ -364,7 +364,7 @@ const PRODUCER: Readonly<Record<Phase, readonly ProducerEntry[]>> = {
  *
  * Build 这一条 2026-08-04 加的，起因是同一条老规矩又被踩了一次：那一轮给 Build 的
  * producer 加了四条编码规范，也给反方的任务加了「去挑编码上的毛病」，**却没有人判
- * 反方到底挑没挑** —— 要求和判据又对不上了（见 `codex/turn-runner.ts` 里那段）。
+ * 反方到底挑没挑** —— 要求和判据又对不上了（见 `codex/phase-instructions.ts` 里那段）。
  */
 const CRITIC_EXTRA: Partial<Readonly<Record<Phase, readonly string[]>>> = {
   Build: [

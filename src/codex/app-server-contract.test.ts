@@ -24,7 +24,8 @@ const REQUIRED: Readonly<Record<string, readonly string[]>> = {
   "thread/archive": ["threadId"],
   "thread/unarchive": ["threadId"],
   "thread/list": [],
-  "turn/start": ["threadId"],
+  "thread/loaded/list": ["cursor", "limit"],
+  "turn/start": ["threadId", "input"],
   "turn/interrupt": ["threadId", "turnId"],
   "turn/steer": ["threadId"],
 };
