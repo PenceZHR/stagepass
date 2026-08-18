@@ -5,7 +5,7 @@
 
 ## 一、一句话状态
 
-**看的那一半全接完了，做的那一半接了大部分，`pnpm check` 1145 全绿。**
+**界面会调的路全部接完了，`pnpm check` 1161 全绿。**
 插件自给自足：不起 HTTP 服务、不连端口、机器上不需要任何东西在后台跑着。
 
 ```bash
@@ -33,12 +33,24 @@ pnpm preview    # 在浏览器里看同一份产物、同一个数据口（开�
 | `POST /api/aside` | ✅ | `store/aside-store` |
 | `POST /api/run` | ✅ | `plugin/runtime.ts` —— **执行通道** |
 | `POST /api/ask` | ✅ | `app/decide-gate` + 执行通道的 rerun |
-| `GET /api/progress` | ❌ | 要 `AppServerHistory` 的进度视图 |
-| `POST /api/brief`、`/api/brief-draft`、`/api/brief-confirm` | ❌ | 要执行通道里的「起草」那条 |
-| `POST /api/close` | ❌ | 要座位的收尾 |
+| `GET /api/progress` | ✅ | `plugin/api.ts` → 真 `progressView` |
+| `POST /api/brief`、`/api/brief-draft`、`/api/brief-confirm` | ✅ | `app/record-brief` + `app/converge-brief` |
+| `POST /api/close` | ✅ | `plugin/actions.ts`（**但前端现在没有调它的地方**，见 §五） |
 
-没接的**明着回 501 + 一句人话**（`reason` 字段），不静默。
+**界面会调的路已经全部接上了**（2026-08-18 晚）。剩下回 501 的只有「不认识的路径」，
+它照样带一句人话（`reason`），因为一个空 body 的 501 在屏幕上是「没问成：undefined」。
 上面那些 `409` 不是没接 —— 是「这个目录不是 git 仓库」，诚实的拒绝。
+
+### 接这四条时定的三件事
+
+- **进度不许起 daemon。** `/api/progress` 是只读的那一半，它拿到的是一个窄接口
+  （`ProgressSources`），起不来就是 `null`。而「没有连接」在进度上**不是「不知道」**：
+  daemon 是插件进程的孩子，它不在，那一轮就真的没了 —— 照实报 `processGone`。
+- **旁路有自己的座位。** `seats.asideTransport()` 绑 `change_bindings.kind='aside'`，
+  和阶段座位共用同一段跑轮代码，只差绑在哪一行。落错行的代价是「同一阶段只许一轮」
+  把一次闲聊当成一轮在跑。起草（`converge-brief`）就是照 `findAside` 认那段对话的。
+- **干完要放座位。** `runtime.releaseSeat()` 只放会话、不动绑定 —— 线程还在 Codex 里、
+  人还点得开、下一轮 resume 回同一条。不放的话 `has()` 永远真，界面一直显示「在跑」。
 
 ## 三、新加的模块
 
@@ -97,6 +109,11 @@ StagePass 起的 turn，它自己就是订阅者，所以审批 / elicitation �
   最可能是上面那条审批。
 - **`/api/stage-artifacts` 没在真数据上验过** —— 库里唯一有 Change 的项目
   （海战小游戏）不是 git 仓库，而唯一的仓库（demo）没有 Change。要验得先造一个组合。
+- **`/api/close` 接上了，但前端没有调它的地方。** 那个按钮跟着终端门户一起删掉了
+  （`panel.js` 现在一共只调 12 条路，`close` 不在里面）。路由按老契约接好并带测试，
+  界面要不要一个「停掉这一轮」的入口是产品决定 —— 没有它，人停不掉一轮在飞的活儿。
+- **`/api/aside` 同样没有调用者了。** 于是旁路账本（来过几趟、动没动手）永远是 0，
+  而彗星那一格是照它画的。这是删终端门户时掉的，不是这次接的四条带来的。
 
 ## 六、护栏上的一处判断，需要复核
 
@@ -110,6 +127,18 @@ StagePass 起的 turn，它自己就是订阅者，所以审批 / elicitation �
 
 **但这仍然是「改护栏来迁就自己的代码」的边缘。** 更干净的做法是让闭包护栏
 **排除声明过的入口**，而不是给入口一个越抬越高的棘轮。没做，留给复核的人定。
+
+### 2026-08-18 晚补：又抬了一次，这是第三次
+
+接完剩下四条路之后 `plugin/server.ts` 95.29%、`plugin/actions.ts` 76.47%，两个都超了。
+原因和前两次一模一样：**给路由器接一条界面本来就在调的路，闭包必然涨一格。**
+
+**一条每次正常改动都必须抬一次的棘轮，它没在拦什么，只是在教人抬数字。**
+而 §六 提的那条出路盖不住 `actions.ts` —— 它不是入口，是路由器。
+
+这次仍然只钉在实测值上（没改机制），因为改护栏该由人定。**但这件事现在该定了。**
+判据可以是：真正在管「有没有长成第二个 panel-server」的那两条，这次一条都没红 ——
+配料单不许过三成、单个函数不许长成一层。
 
 ## 七、被删掉的（这一天总计 8000+ 行）
 
