@@ -7,7 +7,7 @@
  * **点 3D 的球和点左边的列表是同一件事的两条路**（raycast 会点不准，列表永远点得准，
  * 键盘和屏幕阅读器也只认列表）—— 两边共用同一个选中态，谁点都一样。
  */
-import { createGraphScene } from "/graph-scene.js";
+import { createGraphScene } from "./graph-scene.js";
 
 const pick = (id) => document.getElementById(id);
 

@@ -2,7 +2,7 @@
  * Stage 产物驾驶舱的浏览器编排层：只读取已结算轮次，管理时间轴、搜索、选择和详情。
  * panel.js 只知道 open/close；这个模块不拥有闸门动作，也不触发原生会话。
  */
-import { createStageArtifactScene } from "/stage-artifact-scene.js";
+import { createStageArtifactScene } from "./stage-artifact-scene.js";
 
 const pick = (id) => {
   const found = document.getElementById(id);

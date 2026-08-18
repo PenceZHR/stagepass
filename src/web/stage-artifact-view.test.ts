@@ -10,7 +10,7 @@ const read = (name: string): string => readFileSync(join(WEB, name), "utf-8");
 
 const BROWSER_MODULES = [
   "panel.js", "stage-artifact-view.js", "stage-artifact-scene.js",
-  "graph-view.js", "graph-scene.js", "terminal-bridge.js",
+  "graph-view.js", "graph-scene.js",
 ];
 
 describe("Browser modules parse", () => {
@@ -36,8 +36,12 @@ describe("Stage artifact cockpit browser contract", () => {
     const panel = read("panel.js");
     const view = read("stage-artifact-view.js");
     assert.match(panel, /window\.stagepassArtifacts\?\.open\(/);
-    assert.match(panel, /await terminalBridge\.refresh\(\)/);
-    assert.doesNotMatch(panel, /await terminalBridge\.openOrFocus\(\)/);
+    /*
+     * 「进阶段页是纯查看」这条判据还在，守法变了：原来靠「只 refresh、不
+     * openOrFocus」来证；2026-08-18 网页端退休时 `terminal-bridge.js` 整个删了
+     * （插件里没有本机终端座位），所以改成守**一个都不许有**。
+     */
+    assert.doesNotMatch(panel, /terminalBridge/);
     assert.match(view, /window\.stagepassArtifacts\s*=\s*\{/);
     assert.doesNotMatch(view, /method:\s*["']POST["']/);
   });

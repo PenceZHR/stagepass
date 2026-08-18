@@ -57,18 +57,29 @@
   position: relative;
   z-index: 8;
   flex: 0 0 auto;
-  min-height: 112px;
+  min-height: 84px;
   display: grid;
   grid-template-columns: minmax(240px, 1.2fr) minmax(250px, .9fr) auto;
   align-items: center;
   gap: 24px;
-  padding: 17px 20px 15px 24px;
+  padding: 13px 20px 12px 24px;
   border-bottom: 1px solid var(--stage-line);
   background: rgba(27, 23, 35, .72);
   backdrop-filter: blur(24px);
 }
-/* 判定章跟着阶段名走，不再单独占一格 —— 它说的是「我在哪」的一部分。 */
-.stage-cockpit-identity .mark-pill { margin-top: 9px; }
+/*
+ * 「我在哪」压成两行：第一行是身份（阶段名 + 判定章 + kicker），第二行是状态。
+ * 原来是四层各自 margin-top 堆下来，光标题区就吃掉 112px —— 在看到正文之前
+ * 已经堆了八个块，人得从头读到尾才知道该干什么。
+ */
+.stage-cockpit-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 5px;
+}
+.stage-cockpit-identity .mark-pill { margin-top: 0; }
 
 .stage-cockpit-identity > p,
 .stage-inspector-kicker {
@@ -80,8 +91,8 @@
 }
 
 .stage-cockpit-identity .stage-title {
-  margin-top: 9px;
-  font-size: clamp(24px, 2.4vw, 34px);
+  margin-top: 0;
+  font-size: clamp(22px, 2.1vw, 30px);
 }
 
 .stage-cockpit-state {
@@ -89,7 +100,8 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 13px;
-  margin-top: 9px;
+  margin-top: 0;
+  flex: 1 0 100%;
   color: var(--stage-dim);
   font: 600 10px/1.2 ui-monospace, Menlo, monospace;
 }
@@ -100,10 +112,10 @@
   color: rgba(225, 201, 168, .35);
 }
 
+/* 终端状态是**异常时**才要紧的事，平时不该用一整条分隔线把它抬到和阶段名同级。 */
 .stage-terminal-control {
   min-width: 0;
-  padding-left: 22px;
-  border-left: 1px solid var(--stage-line);
+  padding-left: 0;
 }
 
 .stage-terminal-control #terminal-summary {
@@ -115,11 +127,11 @@
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .stage-terminal-control .terminal-portal__actions {
-  margin-top: 9px;
+  margin-top: 6px;
   gap: 7px;
 }
 .stage-terminal-control .terminal-portal__actions button {

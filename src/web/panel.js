@@ -1,4 +1,3 @@
-import { createTerminalBridge } from "./terminal-bridge.js";
 
 /*
  * The browser half of the StagePass workbench — Abstract Cloud & Sea + Circular
@@ -31,9 +30,14 @@ import { createTerminalBridge } from "./terminal-bridge.js";
  * approvals, colors, and Ctrl+C stay native.
  */
 const params = new URLSearchParams(location.search);
-const changeId = params.get("change") || "CHG-1";
-const projectParam = params.get("project");
-const startCollapsed = params.get("collapsed") === "1";
+/*
+ * 这三样**可变** —— 换 Change / 换项目走 `goTo()` 原地重画，不再整页重载（见下）。
+ * 它们只被读，改只发生在 `goTo()` 一处。
+ */
+let changeId = params.get("change") || window.__SP_CHANGE__ || "CHG-1";
+let projectParam = params.get("project") || window.__SP_PROJECT__ || null;
+// widget 里没有地址栏，起始状态由宿主给（插件默认收起，让大环独占那 ~700px）。
+const startCollapsed = params.get("collapsed") === "1" || window.__SP_COLLAPSED__ === true;
 
 /**
  * 按 id 取元素，**取不到就当场炸**。
@@ -69,9 +73,6 @@ const columns = pick("columns");
 const stageName = pick("stage-name");
 const stageThread = pick("stage-thread");
 const stageNote = pick("stage-note");
-const terminalSummary = pick("terminal-summary");
-const terminalPrimary = button("terminal-primary");
-const terminalCloseWindow = button("terminal-close-window");
 /** 会话底下那行注解的原话。say() 会盖掉它，进会话时还原。 */
 const NOTE_DEFAULT = stageNote.textContent;
 
@@ -134,7 +135,6 @@ const MARK = {
 let phases = [];
 let panelState = null;
 let current = null;
-let terminalBridge = null;
 let moving = false;
 /** 进入阶段页前 Workspace 是否已经收起；返回时原样恢复。 */
 let stageWorkspaceWasCollapsed = false;
@@ -289,6 +289,9 @@ function contextWords(progress) {
     + `（${Math.round(context.used / 1000)}k / ${Math.round(context.window / 1000)}k）。`;
 }
 
+/** 上一次轮询时那一轮还在不在跑。null = 这次 startProgress 还没看过。 */
+let progressWasRunning = null;
+
 async function pollProgress() {
   let progress;
   try {
@@ -303,6 +306,21 @@ async function pollProgress() {
     void loadOrReconnect();
     return;
   }
+  /*
+   * **跑完了就自己重画，不等人刷新。**
+   *
+   * 2026-08-18 用户真机：一轮跑完，环、闸门按钮、待答的题全停在旧状态 ——
+   * 只有进度条知道它完了，而进度条不会长出「跑这个阶段」的新状态。人只能 ⌘R。
+   * 判据是跳变（上次在跑、这次不在了），不是「这次不在跑」—— 后者每 tick 都真，
+   * 会把页面刷成筛子。重画走 load()，它会顺带 stopProgress()。
+   */
+  const runningNow = progress.status === "running" && !progress.processGone;
+  const wasRunning = progressWasRunning;
+  progressWasRunning = runningNow;
+  if (wasRunning === true && !runningNow) {
+    await loadOrReconnect();
+    return;
+  }
   paintRoundProgress(progress);
   const words = progressWords(progress);
   if (words === null) return;
@@ -315,6 +333,7 @@ async function pollProgress() {
 
 function startProgress() {
   if (progressTimer !== null) return;
+  progressWasRunning = null;
   void pollProgress();
   progressTimer = setInterval(() => { void pollProgress(); }, PROGRESS_EVERY_MS);
 }
@@ -327,26 +346,13 @@ function stopProgress() {
 }
 
 /**
- * 「没答上」的两种，翻成人话。
+ * 题挂着呢，翻成人话。
  *
- * 它们要做的事完全不同：一种是人还没去答，另一种是**那边的进程早就没了**。
- * 后者最常见的原因是这个阶段绑的线程被 Codex 归档了 —— 而解药要那个线程 id，
- * 所以服务端把它一起给了过来。
+ * 没有截止、没有会话可死 —— 题摆在这个阶段的弹层里，答完自动落地并继续
+ * （`/api/answer` 落完答案会把用例喊回来消费）。
  */
-function unansweredWords(result) {
-  if (result.reason === "ask_turn_ended_without_answer") {
-    // 补问过一次还是没端出问题来 —— 两次都是模型抽风，不是人没答。
-    return `${result.phase} 的 Codex 把那一轮跑完了，却没把问题交给你`
-      + "（补问过一次也一样）。会话已收 —— 再点一次就重新问。";
-  }
-  if (result.reason !== "session_died_before_answering") {
-    return "问题已经在终端里了，等你在 Codex 的选择器里选。";
-  }
-  return `${result.phase} 的 Codex 一起来就退了，所以没人被问到。`
-    + (result.threadId
-      ? "最常见的原因是这个阶段绑的线程被 Codex 归档了 ——"
-        + ` 在终端里跑 codex unarchive ${result.threadId} 再试一次。`
-      : "");
+function pendingWords(result) {
+  return `${result.phase} 的题就在下面 —— 答完自动落地，不用再按别的。`;
 }
 /**
  * 服务端把这次请求整个搞砸了吗。
@@ -528,7 +534,7 @@ function saidWhat(result) {
  */
 async function ask() {
   askButton.disabled = true;
-  askButton.textContent = "已送进 Codex…";
+  askButton.textContent = "正在起草…";
   try {
     const result = await (await dispatchThenShow(() => fetch(
       `/api/ask?change=${encodeURIComponent(changeId)}`, { method: "POST" },
@@ -541,7 +547,7 @@ async function ask() {
         ? "这个闸门现在没有可做的裁决。"
         : `没问成：${result.reason}`);
     } else if (!result.answered) {
-      say(unansweredWords(result));
+      say(pendingWords(result));
     } else {
       say(saidWhat(result));
     }
@@ -592,7 +598,6 @@ async function dispatchThenShow(request) {
    */
   if (first.answered) return first.value;
   try {
-    await terminalBridge?.refresh();
   } catch {
     /* 终端状态读不到不该把这次派发也算失败 —— 下面那句结论照常说。 */
   }
@@ -618,7 +623,7 @@ async function recordBrief() {
         ? "模型一条问题都没提出来。这不算「不需要问」—— 再试一次，或看终端里它说了什么。"
         : `没问成：${result.reason}${result.detail ? `（${result.detail}）` : ""}`);
     } else if (!result.answered) {
-      say(unansweredWords(result));
+      say(pendingWords(result));
     } else if (!result.recorded) {
       say("没记下任何需求 —— 你按了 Esc，或者有必答的没填。");
     } else {
@@ -637,8 +642,7 @@ async function recordBrief() {
       briefLanded = true;
       await loadOrReconnect();
       try {
-        await terminalBridge?.refresh();
-      } catch {
+          } catch {
         /* 见 dispatchThenShow：终端状态读不到不改变「需求已经记下了」这件事。 */
       }
       say("需求记下了，那个终端的活也干完了（所以它关掉了）。"
@@ -660,7 +664,7 @@ async function recordBrief() {
  */
 async function waive() {
   waiveButton.disabled = true;
-  waiveButton.textContent = "已送进终端…";
+  waiveButton.textContent = "正在起草…";
   try {
     const result = await (await dispatchThenShow(() => fetch(
       `/api/waive?change=${encodeURIComponent(changeId)}`, { method: "POST" },
@@ -673,7 +677,7 @@ async function waive() {
         ? "这个阶段没有可以接受的风险（只有 P1 的问题可以，P0 不行）。"
         : `没问成：${result.reason}`);
     } else if (!result.answered) {
-      say(unansweredWords(result));
+      say(pendingWords(result));
     } else if (result.reason === "gate_moved") {
       say("闸门在你想的这段时间里动了 —— 这个决定作废，重新看一遍再定。");
     } else if (!result.waived) {
@@ -1589,58 +1593,15 @@ function drawOrbit() {
  * no gate -- the design is explicit that picking a Project or a Change must
  * never change flow state.
  */
+/*
+ * 只画 Changes 一列。
+ *
+ * Projects 那一列 2026-08-18 整个删了：插件跑在 Codex 里，**项目就是 Codex 当前
+ * 打开的那个目录**，人不在这儿挑（用户原话：「我肯定是会在相应的 project 下做的，
+ * 只保留 change 即可」）。项目仍然是真实存在的东西 —— 它决定 Codex 在哪个仓库跑
+ * —— 只是不再需要一个让人选它的界面。
+ */
 function drawWorkspace(panel) {
-  const selected = panel.selectedProject
-    ?? panel.changes.find((change) => change.id === panel.changeId)?.projectId
-    ?? panel.projects[0]?.id;
-
-  const projectRows = panel.projects.map((project) => {
-    const row = document.createElement("button");
-    row.className = "row";
-    row.type = "button";
-    row.setAttribute("aria-selected", String(project.id === selected));
-
-    const name = document.createElement("strong");
-    name.textContent = project.name;
-    const sub = document.createElement("span");
-    sub.textContent = project.id;
-    const count = document.createElement("span");
-    count.className = "muted";
-    // **路径要看得见。** 一个项目最要紧的事实就是「Codex 会在哪跑」；不显示它，
-    // 「跑在正确的仓库」和「跑在恰好启动时那个仓库」在界面上一模一样。
-    count.textContent = project.path === null
-      ? `${project.changes} changes · 没有路径，跑不了`
-      : `${project.changes} changes · ${project.path}`;
-    if (project.path === null) count.classList.add("bad");
-    const remove = document.createElement("span");
-    remove.className = "remove";
-    remove.textContent = "\u00d7";
-    remove.title = "删掉这个项目";
-    remove.addEventListener("click", (event) => {
-      event.stopPropagation();
-      void removeThing("project", project.id,
-        `连同它底下的 ${project.changes} 个 Change 全部删掉。`);
-    });
-    // 图谱的入口只有环心的太阳（用户 2026-08-12 定）—— 行上不再放第二个。
-    row.append(name, sub, count, remove);
-
-    // Clicking a project toggles the workspace open and shut. Picking a
-    // DIFFERENT one selects it and opens; picking the one already selected
-    // collapses down to just this Change's orbit.
-    row.addEventListener("click", () => {
-      if (project.id !== selected) {
-        location.search =
-          `?change=${encodeURIComponent(changeId)}&project=${encodeURIComponent(project.id)}`;
-        return;
-      }
-      setCollapsed(!columns.classList.contains("collapsed"));
-    });
-    return row;
-  });
-  pick("projects").replaceChildren(...projectRows);
-  pick("project-count").textContent =
-    String(panel.projects.length).padStart(2, "0");
-
   const rows = panel.changes.map((change) => {
     const row = document.createElement("button");
     row.className = "row";
@@ -1664,7 +1625,7 @@ function drawWorkspace(panel) {
     // Switching Change reloads with a new id; it starts nothing and moves no
     // gate, which is what the design says selection must never do.
     row.addEventListener("click", () => {
-      location.search = `?change=${encodeURIComponent(change.id)}`;
+      goTo(`?change=${encodeURIComponent(change.id)}`);
     });
     return row;
   });
@@ -1723,7 +1684,31 @@ async function removeThing(kind, id, what) {
     return;
   }
   // 删掉的可能正是当前这一个 —— 那就没有「留在原地」这回事了。
-  location.search = "";
+  goTo("");
+}
+
+/**
+ * 换 Change / 换项目 —— **原地重画，不导航**。
+ *
+ * 原来这五处写的是 `location.search = …`，也就是整页重新加载。
+ *
+ * 在 Codex 的 widget 沙箱里那是**导航**，会把整个 widget 打死 —— 2026-08-18 实测：
+ * 点一下项目行就白屏，而且旧卡还活着继续回传，看着像「卡死」。而在浏览器里它也
+ * 只是慢：`load()` 本来就是整屏重画（workspace / orbit / map / progress / status /
+ * stage 全在里面），没有任何东西需要靠重载来重置。
+ *
+ * `history.replaceState` 不算导航，两边都允许 —— 地址栏还是对的，刷新也回得到同一屏。
+ */
+function goTo(query) {
+  const next = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query);
+  changeId = next.get("change") || "CHG-1";
+  projectParam = next.get("project");
+  try {
+    history.replaceState(null, "", `${location.pathname}${query === "" ? "" : query}`);
+  } catch {
+    // widget 里没有可写的地址栏时不该因此中断换页 —— 地址只是附带的。
+  }
+  void loadOrReconnect();
 }
 
 async function load() {
@@ -1853,18 +1838,20 @@ function drawOpenQuestion(entry) {
   openQuestionHead.textContent = question.message;
   for (const field of question.fields) {
     const box = document.createElement("fieldset");
+    if (field.multi) box.dataset.multi = "1";
     const legend = document.createElement("legend");
-    legend.textContent = field.title;
+    legend.textContent = field.multi ? `${field.title}（可多选）` : field.title;
     box.append(legend);
     for (const [index, option] of field.options.entries()) {
       const label = document.createElement("label");
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = field.id;
-      radio.value = String(index);
+      const pick = document.createElement("input");
+      // 多选画 checkbox，单选画 radio —— 由题的 schema 定，不由这里猜。
+      pick.type = field.multi ? "checkbox" : "radio";
+      pick.name = field.id;
+      pick.value = String(index);
       const words = document.createElement("span");
       words.textContent = option;
-      label.append(radio, words);
+      label.append(pick, words);
       box.append(label);
     }
     openQuestionFields.append(box);
@@ -1876,9 +1863,15 @@ openQuestionForm.addEventListener("submit", (event) => {
   const asked = openQuestionForm.dataset.question;
   if (asked === undefined) return;
   const query = new URLSearchParams({ change: changeId, question: asked });
+  /*
+   * checkbox 同名多条：收拢成一个逗号连的序号串（"0,2"），服务端按 multi 拆。
+   * 用 set 直接互相覆盖 —— 多选就只剩最后一个勾。
+   */
+  const picked = new Map();
   for (const [name, value] of new FormData(openQuestionForm)) {
-    query.set(name, String(value));
+    picked.set(name, [...(picked.get(name) ?? []), String(value)]);
   }
+  for (const [name, values] of picked) query.set(name, values.join(","));
   void submitAnswer(query);
 });
 
@@ -1887,8 +1880,41 @@ async function submitAnswer(query) {
   openQuestionNote.textContent = "正在提交…";
   const response = await fetch(`/api/answer?${query}`, { method: "POST" });
   if (response.ok) {
-    openQuestionNote.textContent = "已记下。";
+    /*
+     * 答案落库的同时服务端已经把它**消费掉了**（`driven` 里是下场）——
+     * 这里要把下场说出来，不能只说「已记下」：人答的是一次裁决 / 一份需求 /
+     * 一次接受风险，他要知道的是那件事成没成，不是数据库写没写。
+     */
+    const result = await response.json();
     await load();
+    openQuestionNote.hidden = false;
+    const driven = result.driven ?? null;
+    if (driven === null) {
+      openQuestionNote.textContent = "已记下。";
+    } else if (driven.pending) {
+      openQuestionNote.textContent = "记下了 —— 还差一步，补充题就在这儿。";
+    } else if (driven.failed) {
+      openQuestionNote.textContent = crashed(driven);
+    } else if (result.kind === "gate_decision") {
+      openQuestionNote.textContent = driven.reason === "gate_moved"
+        ? "闸门在你想的这段时间里动了 —— 这个决定作废，重新看一遍再定。"
+        : "裁决落地了。";
+      say(saidWhat(driven));
+    } else if (result.kind === "waive") {
+      openQuestionNote.textContent = driven.waived
+        ? `已接受 ${(driven.gapIds ?? []).length} 条 —— 它们还在，只是不再挡闸门。`
+        : driven.reason === "gate_moved"
+          ? "闸门在你想的这段时间里动了 —— 这个决定作废。"
+          : "没有接受任何风险。";
+    } else if (result.kind === "clarification") {
+      openQuestionNote.textContent = driven.recorded
+        ? "需求记下了。现在可以跑这个阶段。"
+        : driven.asked === false
+          ? `没落下去：${driven.reason ?? "原因不明"}`
+          : "没记下任何需求 —— 有必答的没填。";
+    } else {
+      openQuestionNote.textContent = "已记下。";
+    }
     return;
   }
   const code = await response.text();
@@ -2545,11 +2571,18 @@ function drawGaps(entry) {
  * 它仍然是**纯查看**：只读状态，不自动拉起或聚焦 Terminal.app、不启动 turn、
  * 不推闸门。屏幕上那几个闸门按钮要人自己按 —— 「看状态不该有副作用」。
  */
+/** 把「现在开着哪个阶段页」写进 URL —— 刷新回来还在这儿，也能被链接到。 */
+function rememberStage(phase) {
+  const next = new URLSearchParams(location.search);
+  if (phase === null) next.delete("stage");
+  else next.set("stage", phase);
+  history.replaceState(null, "", `${location.pathname}?${next.toString()}`);
+}
+
 async function enter(phase) {
   if (moving) return;
   moving = true;
-  terminalBridge?.close();
-  terminalBridge = null;
+  rememberStage(phase);
   window.stagepassArtifacts?.close();
   current = phase;
   // 上一个阶段的 run / ask 结论不跟着你进下一个阶段。
@@ -2588,31 +2621,25 @@ async function enter(phase) {
   stageView.classList.add("active");
   await wait(120);
   moving = false;
-  terminalBridge = createTerminalBridge({
-    changeId,
-    seat: phase,
-    primary: terminalPrimary,
-    closeWindow: terminalCloseWindow,
-    summary: terminalSummary,
-  });
+  /*
+   * 进入阶段页是**纯查看** —— 只读状态，不拉起任何东西。
+   *
+   * 这里原来还会去问「本机那条终端会话还活着吗」（`terminal-bridge.js`）。
+   * 2026-08-18 网页端退休时那条整个删了：插件里没有本机终端座位，一轮由
+   * app-server 开一条真 Codex 会话来跑，而「开一条会话」和「派发一轮」是同一件事，
+   * 已经是下面那颗派发按钮 —— 不需要第二个入口。
+   */
   window.stagepassArtifacts?.open({
     changeId,
     phase,
     status: entry ? cockpitStatusOf(entry) : "旁路会话",
   });
-  try {
-    // 进入 Stage 是纯查看：只读状态，不自动拉起或聚焦 Terminal.app。
-    await terminalBridge.refresh();
-  } catch (error) {
-    stageNote.textContent = `原生会话状态读取失败：${error?.message ?? error}`;
-  }
 }
 
 async function leave() {
   if (moving) return;
   moving = true;
-  terminalBridge?.close();
-  terminalBridge = null;
+  rememberStage(null);
   window.stagepassArtifacts?.close();
   current = null;
   notice = null;
@@ -2642,10 +2669,9 @@ async function leave() {
  */
 function openGraphView(project) {
   // 台上如果是会话，按 leave() 的规矩收干净 —— 只是不播它的动画。
-  terminalBridge?.close();
-  terminalBridge = null;
   window.stagepassArtifacts?.close();
   current = null;
+  rememberStage(null);
   stageView.classList.remove("active");
   stageView.hidden = true;
   orbitView.hidden = true;
@@ -2765,81 +2791,6 @@ button("expand").addEventListener("click", () => { setCollapsed(false); });
  * 交接 §5.0 第 4 条。**
  */
 /*
- * 新建 Project。
- *
- * 表单而不是 prompt：**路径是要粘贴、要核对的东西**。prompt 是两个先后弹出的框，
- * 看不见彼此，服务端的拒绝原因也只能落到一个 alert 里 —— 而这里的错（不是绝对路径 /
- * 目录不存在）恰恰需要贴在字段旁边说。
- *
- * 仍然不进主屏：它是个 <dialog>，和阶段弹窗同一个位置。
- */
-const projectSheet = dialog("project-sheet");
-const projectName = field("project-name");
-const projectPath = field("project-path");
-const projectError = pick("project-error");
-
-/** 服务端的拒绝原因，翻成人话。原样显示 `path_must_be_absolute` 等于没说。 */
-const PROJECT_REFUSALS = {
-  name_required: "名字不能空。",
-  path_required: "得给一个路径 —— Codex 要在某个目录里跑。",
-  path_must_be_absolute: "要绝对路径。相对路径相对谁？相对服务端的目录，那就又回到「不知道跑在哪」了。",
-  path_does_not_exist: "这个路径不存在。",
-  path_is_not_a_directory: "这是个文件，不是目录。",
-};
-
-function openProjectSheet() {
-  projectName.value = "";
-  projectPath.value = "";
-  projectError.hidden = true;
-  if (!projectSheet.open) projectSheet.showModal();
-  projectName.focus();
-}
-
-async function createProject() {
-  const name = projectName.value.trim();
-  const path = projectPath.value.trim();
-  // 先在本地挡掉空值，省一次往返；服务端仍然会各查一遍（两层都要有）。
-  if (name === "") { showProjectError("name_required"); projectName.focus(); return; }
-  if (path === "") { showProjectError("path_required"); projectPath.focus(); return; }
-
-  const response = await fetch(
-    `/api/project?name=${encodeURIComponent(name)}&path=${encodeURIComponent(path)}`,
-    { method: "POST" },
-  );
-  if (!response.ok) {
-    showProjectError((await response.text()).trim());
-    projectPath.focus();
-    return;
-  }
-  const created = await response.json();
-  projectSheet.close();
-  // 建完直接切过去 —— 建了却停在原地，人得再找一次它在哪。
-  location.search = `?change=${encodeURIComponent(changeId)}`
-    + `&project=${encodeURIComponent(created.id)}`;
-}
-
-function showProjectError(reason) {
-  projectError.textContent = PROJECT_REFUSALS[reason] ?? `没建成：${reason}`;
-  projectError.hidden = false;
-}
-
-button("new-project").addEventListener("click", () => {
-  openProjectSheet();
-});
-button("project-create").addEventListener("click", () => {
-  void createProject();
-});
-button("project-cancel").addEventListener("click", () => {
-  projectSheet.close();
-});
-// 在任一字段里回车就提交 —— 填完路径还要去找按钮，是没必要的一步。
-for (const field of [projectName, projectPath]) {
-  field.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") { event.preventDefault(); void createProject(); }
-  });
-}
-
-/*
  * 新建 Change。和新建 Project 同一个形状 —— 两个入口长得一样，人不用记两套。
  *
  * 顶上那句写的是「建在哪个项目、哪个仓库」：Change 落在哪个项目，就决定了 Codex 会
@@ -2902,7 +2853,7 @@ async function createChange() {
   }
   const created = await response.json();
   changeSheet.close();
-  location.search = `?change=${encodeURIComponent(created.id)}`;
+  goTo(`?change=${encodeURIComponent(created.id)}`);
 }
 
 button("new-change").addEventListener("click", () => {
@@ -2937,7 +2888,16 @@ rubricToggle.addEventListener("click", () => {
 if (startCollapsed) columns.classList.add("collapsed");
 addEventListener("resize", placeNodes);
 
-void loadOrReconnect();
+void loadOrReconnect().then(() => {
+  /*
+   * 刷新回来还站在原来那个阶段页上（B，2026-08-18 用户真机：刷新一次就被扔回
+   * 主环）。只认 load 之后真实存在的阶段 —— URL 是人手打得出来的东西。
+   */
+  const wanted = params.get("stage");
+  if (wanted !== null && phases.some((entry) => entry.phase === wanted)) {
+    void enter(wanted);
+  }
+});
 
 /*
  * ── 标准编辑器 ────────────────────────────────────────────

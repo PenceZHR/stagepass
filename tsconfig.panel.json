@@ -11,12 +11,7 @@
       "DOM.Iterable"
     ],
     "types": [],
-    "strict": false,
-    // 浏览器里 "/graph-scene.js" 由面板的 ASSETS 喂；tsc 不认识那条路，
-    // 在这里把它指回真文件 —— 检查的就是运行时真正加载的那份。
-    "paths": {
-      "/graph-scene.js": ["./src/web/graph-scene.js"]
-    }
+    "strict": false
   },
   "include": [
     "src/web/panel.js",

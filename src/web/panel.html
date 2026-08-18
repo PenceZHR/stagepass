@@ -117,10 +117,10 @@ body::after {
 .columns {
   position: relative; /* the expand pill is positioned against this */
   flex: 1; min-height: 0; display: grid;
-  grid-template-columns: 2fr 2fr 6fr;
+  grid-template-columns: 2fr 8fr;
   transition: grid-template-columns .52s cubic-bezier(.22,.8,.28,1);
 }
-.columns.collapsed { grid-template-columns: 0fr 0fr 10fr; }
+.columns.collapsed { grid-template-columns: 0fr 10fr; }
 .columns.collapsed .col.workspace { border-left-color: transparent; }
 .col { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .col + .col { border-left: 1px solid oklch(0.89 0.025 75 / 11%); }
@@ -1077,60 +1077,6 @@ body::after {
 }
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
 
-.terminal-portal {
-  position: relative; flex: 1; min-height: 0; isolation: isolate;
-  display: grid; align-content: center; justify-items: start;
-  padding: clamp(34px, 7vw, 92px); overflow: hidden;
-}
-.terminal-portal__halo {
-  position: absolute; z-index: -1; left: clamp(42px, 9vw, 132px); top: 50%;
-  width: clamp(180px, 28vw, 390px); aspect-ratio: 1; border-radius: 50%;
-  border: 1px solid rgba(225,201,168,.22);
-  box-shadow: 0 0 0 22px rgba(225,201,168,.025), 0 0 90px rgba(217,178,142,.11);
-  transform: translate(-35%, -50%);
-}
-.terminal-portal__halo::before {
-  content: ""; position: absolute; inset: 18%; border-radius: inherit;
-  border: 1px solid rgba(255,255,255,.09);
-  box-shadow: inset 0 0 38px rgba(225,201,168,.05);
-}
-.terminal-portal__kicker {
-  margin: 0 0 20px; color: var(--sand-deep);
-  font: 800 9px/1 ui-sans-serif, sans-serif; letter-spacing: .2em;
-}
-.terminal-portal h2 {
-  max-width: 680px; margin: 0;
-  font: 560 clamp(30px, 5vw, 62px)/.98 var(--serif); letter-spacing: -.055em;
-  text-wrap: balance;
-}
-#terminal-summary {
-  max-width: 620px; min-height: 3.4em; margin: 24px 0 0;
-  color: rgba(255,255,255,.58); font: 400 14px/1.72 var(--serif);
-}
-#terminal-summary[data-state="running"] { color: rgba(228,207,173,.82); }
-#terminal-summary[data-state="error"],
-#terminal-summary[data-state="unavailable"] { color: var(--problem); }
-.terminal-portal__actions {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 30px;
-}
-.terminal-portal__actions button {
-  min-height: 42px; padding: 0 17px; border: 1px solid rgba(255,255,255,.16);
-  border-radius: 999px; background: transparent; color: rgba(255,255,255,.68);
-  cursor: pointer; font: 780 10px/1 ui-sans-serif, sans-serif;
-  letter-spacing: .09em; transition: color .2s, border-color .2s, background .2s;
-}
-.terminal-portal__actions button:hover:not(:disabled) {
-  color: #fff; border-color: var(--sand);
-}
-.terminal-portal__actions .enter {
-  background: var(--sand-strong); border-color: var(--sand-strong);
-  color: oklch(0.2 0.035 295);
-}
-.terminal-portal__actions .terminal-danger { color: rgba(255,255,255,.42); }
-.terminal-portal__actions .terminal-danger:hover:not(:disabled) {
-  color: var(--problem); border-color: rgba(217,178,142,.55); background: rgba(169,120,121,.08);
-}
-.terminal-portal__actions button:disabled { opacity: .4; cursor: wait; }
 
 /*
  * 窄屏不把桌面四栏缩成四条缝。工作区仍在原层级，只把每列里的卡片改成横向浏览；
@@ -1195,16 +1141,12 @@ body::after {
   #stage-view { padding: 15px 12px 12px; }
   .stage-title { font-size: 24px; }
   .stage-title .thread { display: none; }
-  .terminal-portal { padding: 30px 22px; align-content: end; }
-  .terminal-portal h2 { font-size: clamp(32px, 11vw, 46px); }
-  .terminal-portal__actions { align-items: stretch; }
-  .terminal-portal__actions .enter { flex-basis: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   body::before, .halo::before, .live-flag i, .orbit-wrap,
   .sun-corona, .rays-long, .rays-short, .sun-card,
-  .stage-node.live button, .portal, .terminal-portal__halo { animation: none !important; }
+  .stage-node.live button, .portal { animation: none !important; }
   #orbit-view, #stage-view, .stage-node button { transition: none !important; }
 }
 /* ── 项目图谱（spec 2026-08-12）：第三个 view ─────────────────
@@ -1302,13 +1244,6 @@ body::after {
 
 <div class="columns" id="columns">
   <button class="expand" id="expand">☰ 展开工作区</button>
-  <section class="col workspace">
-    <div class="col-head"><small>Workspace</small><h2>Projects</h2>
-      <button class="new" id="new-project" type="button" title="新建 Project">+</button>
-      <span class="count" id="project-count">01</span></div>
-    <div class="rows" id="projects"></div>
-  </section>
-
   <section class="col workspace">
     <div class="col-head"><small>Workspace</small><h2>Changes</h2>
       <button class="new" id="new-change" type="button" title="新建 Change">+</button>
@@ -1418,36 +1353,6 @@ body::after {
       仍然不进主屏 —— 它是个 <dialog>，和阶段弹窗同一个位置（§5.0 第 4 条管的是
       环那一屏，不是弹窗）。
     -->
-    <dialog class="sheet" id="project-sheet">
-      <div class="sheet-head">
-        <div>
-          <small>New Project</small>
-          <h2>一个 Project 就是一个仓库</h2>
-        </div>
-        <button class="sheet-close" id="project-cancel" type="button" aria-label="取消">✕</button>
-      </div>
-      <div class="sheet-body">
-        <p class="sheet-line">Codex 会在你给的这个目录里跑。给错了它就改错仓库。</p>
-        <label class="field">
-          <span>名字</span>
-          <input id="project-name" type="text" autocomplete="off" placeholder="例如 my-app">
-        </label>
-        <label class="field">
-          <span>代码在哪（绝对路径）</span>
-          <input id="project-path" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="/Users/you/code/my-app">
-        </label>
-        <p class="rubric-note bad" id="project-error" hidden></p>
-        <!-- HTML 里不认 markdown：要加粗就用 <strong>，写 ** 只会原样显示两个星号。 -->
-        <p class="sheet-empty">
-          提示：Codex 的目录信任<strong>不从父目录继承</strong>，也不能由 StagePass 代设。
-          没被信任过的目录，第一次跑会停在信任提示上等你按一下。
-        </p>
-      </div>
-      <div class="sheet-foot">
-        <button class="ask" id="project-create" type="button">建立</button>
-      </div>
-    </dialog>
 
     <!--
       新建 Change。和新建 Project 同一个形状 —— 两个入口长得一样，人不用记两套。
@@ -1519,13 +1424,6 @@ body::after {
             <span id="stage-state">正在读取阶段状态</span>
           </div>
           <span class="mark-pill" id="stage-mark"></span>
-        </div>
-        <div class="stage-terminal-control" aria-live="polite">
-          <p id="terminal-summary">正在确认这条会话的本机状态…</p>
-          <div class="terminal-portal__actions">
-            <button class="enter" id="terminal-primary" type="button">打开系统终端</button>
-            <button class="back terminal-danger" id="terminal-close-window" type="button" hidden>关闭窗口</button>
-          </div>
         </div>
         <button class="back stage-cockpit-back" id="back" type="button">← 阶段环</button>
       </header>

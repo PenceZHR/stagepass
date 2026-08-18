@@ -4,6 +4,7 @@ import { PHASES, isRetired, type Phase } from "../domain/phase";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
+import { MULTI_JOIN } from "../domain/question";
 import { roundFromLedger } from "../domain/round";
 import type { AppServerHistory } from "../codex/app-server-history";
 import { AsideStore } from "../store/aside-store";
@@ -233,6 +234,7 @@ export function openQuestionOf(
     readonly id: string;
     readonly title: string;
     readonly options: readonly string[];
+    readonly multi: boolean;
   }[];
 } | null {
   const record = questions.open(changeId);
@@ -241,11 +243,12 @@ export function openQuestionOf(
   return {
     id: record.id,
     message: record.question.message,
-    // 顺序就是 schema 里的顺序 —— 格子 id 补过零，所以它同时也是人该看到的顺序。
+    // 顺序就是 schema 里的顺序（对象按插入序），也就是组题时写下的顺序。
     fields: Object.entries(schema.properties).map(([id, field]) => ({
       id,
       title: field.title,
       options: [...(field.enum ?? [])],
+      multi: field.multi === true,
     })),
   };
 }
@@ -264,6 +267,7 @@ export function answerFromChoices(
     readonly fields: readonly {
       readonly id: string;
       readonly options: readonly string[];
+      readonly multi?: boolean;
     }[];
   },
   choices: Readonly<Record<string, string>>,
@@ -273,9 +277,17 @@ export function answerFromChoices(
     const raw = choices[field.id];
     // `Number("")` 是 0 —— 空格子会静静地答成第一个选项。空的就是没答。
     if (raw === undefined || raw.trim() === "") return null;
-    const index = Number(raw);
-    if (!Number.isInteger(index) || index < 0 || index >= field.options.length) return null;
-    answer[field.id] = field.options[index]!;
+    /*
+     * 多选交上来的是逗号连的序号（"0,2"）。逐个换回原文，按 `MULTI_JOIN` 连成
+     * 一个字符串落进账本 —— `Answer` 的形状不动。重复选同一项按抄歪算，拒。
+     */
+    const indices = (field.multi === true ? raw.split(",") : [raw])
+      .map((part) => Number(part.trim()));
+    if (indices.some((index) =>
+      !Number.isInteger(index) || index < 0 || index >= field.options.length
+    )) return null;
+    if (new Set(indices).size !== indices.length) return null;
+    answer[field.id] = indices.map((index) => field.options[index]!).join(MULTI_JOIN);
   }
   return answer;
 }

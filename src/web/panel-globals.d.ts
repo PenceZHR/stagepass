@@ -9,6 +9,22 @@ declare module "three/addons/controls/OrbitControls.js";
 
 /** panel.js ↔ graph-view.js 唯一的握手（图谱 spec 2026-08-12）。 */
 interface Window {
+  /**
+   * 起始收起状态 —— 只有 Codex widget 那一面会设。
+   *
+   * 浏览器里这件事由 `?collapsed=1` 说；widget 里没有地址栏，只能由宿主注入的
+   * 那段序言给。插件默认收起：~700px 的框里，大环独占才看得清。
+   */
+  __SP_COLLAPSED__?: boolean;
+  /**
+   * 起始的 Change 和项目 —— 只有 Codex widget 那一面会设。
+   *
+   * 浏览器里这两样在地址栏（`?change=`/`?project=`）；widget 里没有地址栏，
+   * 由插件按 **Codex 当前打开的目录**认好之后从 `toolOutput` 交过来
+   * （用户 2026-08-18 定：项目不再由人挑）。
+   */
+  __SP_CHANGE__?: string;
+  __SP_PROJECT__?: string;
   /*
    * 阶段页上产物那半边（stage-artifact-view.js）。
    *
