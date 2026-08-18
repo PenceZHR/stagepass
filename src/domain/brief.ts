@@ -1,4 +1,4 @@
-import type { Answer, ClarificationItem } from "./question";
+import { MULTI_JOIN, type Answer, type ClarificationItem } from "./question";
 
 /**
  * 录入需求：模型读完仓库提问题，人在选择器里答，答出来的那一段就是需求。
@@ -135,7 +135,9 @@ export function briefContract(input: { changeTitle: string | null }): string {
     `按下面的格式提 1 到 ${MAX_ITEMS} 个问题，一行一个，用 | 分隔：`,
     "```brief",
     "问题？ | 选项一 | 选项二 | 选项三 | 选项四",
+    "可以同时选几项的问题？ | 多选 | 选项一 | 选项二 | 选项三",
     "```",
+    "答案天然可以同时成立的（「支持哪些平台」这类），在问题后面紧跟一格 `多选`。",
     `每个问题**至少 ${MIN_OPTIONS} 个选项，上限没有** —— 几个够用你自己判断，`,
     "你读过这个仓库，这件事你比我清楚。**两个选项通常是把开放问题伪装成一次表态**，",
     "不要那样做；真实的取舍有几种就列几种。",
@@ -165,7 +167,9 @@ export function readBriefProposal(text: string): ClarificationItem[] {
 
     const parts = line.split("|").map((part) => part.trim());
     const question = parts[0] ?? "";
-    const options = parts.slice(1).filter((part) => part !== "");
+    // 问题后紧跟一格「多选」= 这道题可多选。它是标记，不是选项。
+    const multi = parts[1] === "多选";
+    const options = parts.slice(multi ? 2 : 1).filter((part) => part !== "");
 
     if (question === "") {
       throw new BriefProposalVoidError("question_empty", line.slice(0, 60));
@@ -174,7 +178,10 @@ export function readBriefProposal(text: string): ClarificationItem[] {
       // 一个选项不是在问，是在通知；两个几乎总是一个假二分。
       throw new BriefProposalVoidError("too_few_options", question.slice(0, 40));
     }
-    proposed.push({ id: fieldId(proposed.length + 1), question, options });
+    proposed.push({
+      id: fieldId(proposed.length + 1), question, options,
+      ...(multi ? { multi: true } : {}),
+    });
   }
 
   if (proposed.length === 0) {
@@ -204,6 +211,7 @@ export function readBriefProposal(text: string): ClarificationItem[] {
     // 逃逸项排在最后，模型碰不到它。它现在还多一层意思：**点它就是在说「我要自己写」**，
     // 而那正是第二趟的入场券。
     options: [...item.options, ESCAPE_OPTION],
+    ...(item.multi === true ? { multi: true } : {}),
   }));
 
   /*
@@ -212,14 +220,15 @@ export function readBriefProposal(text: string): ClarificationItem[] {
    * 但它从自由文本改成了**两个选项** —— 同一个理由：第一趟里不许有任何空文本格。
    * 想说的人点「有，我来写」，第二趟给他一格。
    */
+  /*
+   * 没有「确认」格。那一格是 elicitation 选择器的门把手 ——「整张表只能从最后
+   * 一格提交」（2026-07-30 真机）。浏览器表单有真的提交按钮，门把手就只是一格
+   * 噪音。`briefFrom` 里跳过 CONFIRM_ID 的那句留着：老库里已答的题还带着它。
+   */
   return [...asked, {
     id: FREE_TEXT_ID,
     question: "上面没问到、但你想说的",
     options: [NOTHING_MORE_OPTION, SOMETHING_MORE_OPTION],
-  }, {
-    id: CONFIRM_ID,
-    question: "确认",
-    options: [CONFIRM_OPTION],
   }];
 }
 
@@ -262,7 +271,11 @@ export function followUpFields(
       });
       continue;
     }
-    if (read(item.id) !== ESCAPE_OPTION) continue;
+    // 多选的答案是原文用 MULTI_JOIN 连成的一串 —— 逃逸项混在里面也算点了。
+    const picks = item.multi === true
+      ? read(item.id).split(MULTI_JOIN).map((part) => part.trim())
+      : [read(item.id)];
+    if (!picks.includes(ESCAPE_OPTION)) continue;
     wanted.push({
       id: ownFieldId(item.id),
       question: `↑「${item.question}」—— 你自己怎么说？`,
@@ -271,12 +284,7 @@ export function followUpFields(
     });
   }
 
-  if (wanted.length === 0) return [];
-  return [...wanted, {
-    id: CONFIRM_ID,
-    question: "确认",
-    options: [CONFIRM_OPTION],
-  }];
+  return wanted;
 }
 
 /**
@@ -320,17 +328,26 @@ export function briefFrom(
      * 就是装饰。选了某一项又补充了文字，两句都留着：备选说明他大致同意哪一档，
      * 补充说明他到底要什么。
      */
-    const chosen = read(item.id);
+    const chosenRaw = read(item.id);
     const own = read(ownFieldId(item.id));
+    /*
+     * 多选拆开看：逃逸项（「都不对，我自己写」）从名单里摘出去，剩下的才是
+     * 实质选择。单选走同一条路 —— 名单里只有一项而已。
+     */
+    const picks = (item.multi === true
+      ? chosenRaw.split(MULTI_JOIN).map((part) => part.trim())
+      : [chosenRaw]
+    ).filter((part) => part !== "" && part !== ESCAPE_OPTION);
+    const chosen = picks.join(MULTI_JOIN);
 
     if (own !== "") {
-      lines.push(chosen === "" || chosen === ESCAPE_OPTION
+      lines.push(chosen === ""
         ? `- ${item.question}\n  ${own}`
         : `- ${item.question}\n  ${chosen}\n  （他补充：${own}）`);
       continue;
     }
     // 说了「都不对」却什么也没写 —— 这一题等于没答，不许拿一个空的逃逸项充数。
-    if (chosen === "" || chosen === ESCAPE_OPTION) return null;
+    if (chosen === "") return null;
     lines.push(`- ${item.question}\n  ${chosen}`);
   }
 

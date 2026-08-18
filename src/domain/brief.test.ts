@@ -64,20 +64,14 @@ describe("brief · 读模型提的问题清单", () => {
       ["只给我自己", "团队里的人", "外部用户", ESCAPE_OPTION]);
   });
 
-  it("**id 排序之后就是显示顺序** —— 客户端按字段名排，不按这里的书写顺序", () => {
+  it("题的顺序就是提出来的顺序，压轴是「还有别的要说」", () => {
     /*
-     * 2026-07-30 在 Codex TUI 实测出来的：这里按 `B1, B1x, …, B0` 的顺序写出去，
-     * 选择器画的第一格是 `B0`（`Field 1/17`）。客户端把 properties 排了序，
-     * 所以**顺序只能编码在名字里**。
-     *
-     * 这条测试盯的是补零和 `BZ` 那两个决定：任何一个被"简化"掉，它就红。
+     * elicitation 客户端那条「按字段名排序显示」的约束随客户端一起退场了 ——
+     * 表单画在自己的浏览器面板上，顺序就是这里的书写顺序。「确认」门把手格
+     * 也一起退场：浏览器有真的提交按钮。
      */
     const items = readBriefProposal(fenced(THREE));
-    const ids = items.map((item) => item.id);
-    assert.deepEqual(ids, [...ids].sort(),
-      "字段名排序必须等于要给人看的顺序，否则选择器会把题和它的自由填写格拆开");
-    // 每一题紧跟着自己那格；自由填写在倒数第二，提交格压轴。
-    assert.deepEqual(ids, ["B01", "B02", "B03", FREE_TEXT_ID, CONFIRM_ID]);
+    assert.deepEqual(items.map((item) => item.id), ["B01", "B02", "B03", FREE_TEXT_ID]);
   });
 
   it("第一趟每一格都必答 —— 它们全是选项格，回车总有值", () => {
@@ -87,22 +81,15 @@ describe("brief · 读模型提的问题清单", () => {
     }
   });
 
-  it("**最后那一格是选项格** —— 空文本格吃回车，而整张表只能从最后一格提交", () => {
+  it("没有「确认」门把手格 —— 浏览器有真的提交按钮", () => {
     /*
-     * 两条实测约束（2026-07-30）：空的自由文本格会吃掉回车（optional 不管用、
-     * 必填全答完也不管用），而提交只发生在最后一格。所以最后一格要么是选项格，
-     * 要么必填。
-     *
-     * 第一版选了必填 —— 用户 2026-07-31 明确否掉：「我明明已选了，但它还是让我
-     * 输入一些我自己的话，这是不对的。」现在走另一条路：压轴一格提交格，
-     * **回车永远有值可提交，而人一格字都不用打。**
+     * 那一格是 elicitation 选择器的产物：「整张表只能从最后一格提交」，所以要
+     * 压一格永远有值的选项格当门把手。浏览器表单里它只是一格噪音，拆掉。
+     * （老库里已答的题还带着它 —— `briefFrom` 跳过 CONFIRM_ID 的那句仍在测。）
      */
     const items = readBriefProposal(fenced(THREE));
-    const last = items.at(-1)!;
-    assert.equal(last.id, CONFIRM_ID);
-    assert.ok(last.options.length > 0,
-      "最后一格是可留空的自由文本 = 表单交不上去，而且不说为什么");
-    assert.notEqual(last.optional, true);
+    assert.equal(items.some((item) => item.id === CONFIRM_ID), false);
+    assert.equal(items.at(-1)!.id, FREE_TEXT_ID);
   });
 
   it("**全部用选项作答，一格字都不用打** —— 这正是那次投诉的反面", () => {
@@ -350,7 +337,7 @@ describe("brief · 第二趟只问自己要写的那几条", () => {
       B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: ESCAPE_OPTION,
       [FREE_TEXT_ID]: NOTHING_MORE_OPTION,
     }));
-    assert.deepEqual(more.map((item) => item.id), ["B01x", "B03x", CONFIRM_ID]);
+    assert.deepEqual(more.map((item) => item.id), ["B01x", "B03x"]);
     // 问题原文带着，否则第二趟就是几个没有上下文的空格子。
     assert.match(more[0]!.question, /这个改动主要给谁用？/);
   });
@@ -361,16 +348,16 @@ describe("brief · 第二趟只问自己要写的那几条", () => {
       B01: "只给我自己", B02: "有测试覆盖", B03: "不动数据库",
       [FREE_TEXT_ID]: SOMETHING_MORE_OPTION,
     }));
-    assert.deepEqual(more.map((item) => item.id), [ownFieldId(FREE_TEXT_ID), CONFIRM_ID]);
+    assert.deepEqual(more.map((item) => item.id), [ownFieldId(FREE_TEXT_ID)]);
   });
 
-  it("**第二趟压轴仍然是选项格** —— 空文本格吃回车那条约束还在", () => {
+  it("第二趟只有要写的那几格，别的什么都不带", () => {
     const items = readBriefProposal(fenced(THREE));
     const more = followUpFields(items, accept({
       B01: ESCAPE_OPTION, B02: "有测试覆盖", B03: "不动数据库",
       [FREE_TEXT_ID]: NOTHING_MORE_OPTION,
     }));
-    assert.deepEqual(more[more.length - 1]!.options, [CONFIRM_OPTION]);
+    assert.deepEqual(more.map((item) => item.id), ["B01x"]);
     // 中途改主意留空也交得上去 —— 那时这一题算没答，由 briefFrom 判。
     assert.equal(more[0]!.optional, true);
   });

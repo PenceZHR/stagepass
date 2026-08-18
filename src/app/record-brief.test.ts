@@ -4,20 +4,19 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { ESCAPE_OPTION, readBriefProposal } from "../domain/brief";
-import { clarificationQuestion } from "../domain/question";
+import { clarificationQuestion, MULTI_JOIN } from "../domain/question";
 import { ChangeStore } from "../store/change-store";
 import { CommandStore } from "../store/command-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
 import { recordBrief } from "./record-brief";
-import type { AskSessions } from "./ask-human";
 
 /**
  * 录需求这个用例，**不经过 HTTP，也不经过 Codex**。
  *
  * 「跑一次 turn 让模型提问题」是注进来的（`propose`），所以整条路能在一个假的
- * 提案上跑完 —— 原来验它必须起真服务器 + 假 pty + 一个装成 Codex 的 transport，
- * 而那三样加起来验的是那三样，不是这个用例。
+ * 提案上跑完。答题的节拍和真系统一样：用例起草完立刻返回 `asked`，测试替
+ * `/api/answer` 落答案、再喊一遍用例消费 —— 没有定时器、没有等待。
  */
 
 const PROJECT = "PRJ-A";
@@ -41,45 +40,41 @@ function freshDatabase(): Database.Database {
   return database;
 }
 
+const plain = { cannotAskNow: () => null };
+
 /**
- * 一个「人会答」的会话：`type` 一被调用，就把当前那道题按 `pick` 答掉。
- * 这正是真实时序 —— 题摆在面板上，人过一会儿在浏览器里按下提交。
+ * `/api/answer` 那个循环的镜像：问出来就按 `pick` 答掉、再喊一遍，直到终局。
+ * `seen` 收每一张真的弹出来的表 —— 「第二趟该不该弹」的判据靠它。
  */
-/**
- * 一个「人会答」的浏览器。
- *
- * C 方案之后题落在库里等人，没有谁被打字唤醒 —— 所以这里不再挂在 `type` 上，
- * 而是像人一样过一会儿去答。定时器 `unref` 掉，库一关就自己停。
- */
-function answeringSessions(
+async function drive(
   database: Database.Database,
+  propose: () => Promise<string>,
   pick: (field: string, options: readonly string[]) => string,
-): AskSessions {
+  seen?: string[][],
+): ReturnType<typeof recordBrief> {
   const questions = new QuestionStore(database);
-  const answerOpen = (): void => {
-    if (!database.open) { clearInterval(timer); return; }
+  for (let round = 0; round < 5; round += 1) {
+    const result = await recordBrief({
+      database, changeId: CHANGE, ...plain, propose,
+    });
+    if (result.outcome.kind !== "asked") return result;
     const open = questions.open(CHANGE);
-    if (!open) return;
+    assert.ok(open, "说了 asked 却没有 open 的题");
+    const fields = Object.entries(open.question.requestedSchema.properties);
+    seen?.push(fields.map(([id]) => id));
     const content: Record<string, string> = {};
-    for (const [field, spec] of Object.entries(
-      open.question.requestedSchema.properties,
-    )) {
-      content[field] = pick(field, spec.enum ?? []);
-    }
+    for (const [field, spec] of fields) content[field] = pick(field, spec.enum ?? []);
     questions.answer(open.id, { action: "accept", content });
-  };
-  const timer = setInterval(answerOpen, 20);
-  timer.unref();
-  return { type: async () => { answerOpen(); return true; }, has: () => true };
+  }
+  throw new Error("驱动 5 次还没到终局");
 }
 
 describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）", () => {
   it("没有这个 Change —— 说 no_such_change", async () => {
     const database = freshDatabase();
     const result = await recordBrief({
-      database, sessions: { type: async () => true, has: () => true },
-      changeId: "CHG-不存在", cannotAskNow: () => null,
-      propose: async () => PROPOSAL, timeoutMs: 10,
+      database, changeId: "CHG-不存在", ...plain,
+      propose: async () => PROPOSAL,
     });
     assert.deepEqual(result.outcome, { kind: "no_such_change" });
     database.close();
@@ -98,9 +93,8 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
       ["```brief\n这次改动给谁用？ | 只有我\n```", "too_few_options"],
     ] as const) {
       const result = await recordBrief({
-        database, sessions: { type: async () => true, has: () => true },
-        changeId: CHANGE, cannotAskNow: () => null,
-        propose: async () => proposal, timeoutMs: 10,
+        database, changeId: CHANGE, ...plain,
+        propose: async () => proposal,
       });
       assert.equal(result.outcome.kind, "proposal_failed");
       assert.equal(
@@ -116,10 +110,8 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
   it("跑 turn 本身炸了也照实说，**不静默跳过**", async () => {
     const database = freshDatabase();
     const result = await recordBrief({
-      database, sessions: { type: async () => true, has: () => true },
-      changeId: CHANGE, cannotAskNow: () => null,
+      database, changeId: CHANGE, ...plain,
       propose: async () => { throw new Error("codex 一起来就退了"); },
-      timeoutMs: 10,
     });
     assert.equal(result.outcome.kind, "proposal_failed");
     assert.equal(
@@ -128,60 +120,45 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
     database.close();
   });
 
-  it("会话死了也不影响这道题 —— 它在浏览器里等人", async () => {
-    /*
-     * 以前这道题要打进会话让模型转达，所以「会话死了」= 人永远看不到它，
-     * 用例得回 `not_asked` 并把题收掉。
-     *
-     * C 方案之后题就摆在页面上，**跟会话活不活着没关系**。会话死了照样问得出来，
-     * 没答上就是没答上（`no_answer_in_time`），不是「没问出去」。
-     */
+  /**
+   * **没人答就让题挂着 —— 那不是失败，也没有截止。** 再问一遍不重跑模型、
+   * 不另起草稿 —— 另起会把人正对着的那张表 supersede 掉，还白烧一轮。
+   */
+  it("没人答：题挂着，再问一遍不重跑模型", async () => {
     const database = freshDatabase();
-    const result = await recordBrief({
-      database, sessions: { type: async () => false, has: () => false },
-      changeId: CHANGE, cannotAskNow: () => null,
-      propose: async () => PROPOSAL, timeoutMs: 1_200,
+    let proposed = 0;
+    const propose = async (): Promise<string> => { proposed += 1; return PROPOSAL; };
+    const first = await recordBrief({
+      database, changeId: CHANGE, ...plain, propose,
     });
-    assert.equal(result.outcome.kind, "unanswered");
-    if (result.outcome.kind === "unanswered") {
-      assert.equal(result.outcome.reason, "no_answer_in_time");
-    }
-    database.close();
-  });
+    assert.equal(first.outcome.kind, "asked");
+    assert.equal(first.closeSession, false);
+    assert.equal(proposed, 1);
 
-  it("没人答就收题、关会话", async () => {
-    const database = freshDatabase();
-    const result = await recordBrief({
-      database, sessions: { type: async () => true, has: () => true },
-      changeId: CHANGE, cannotAskNow: () => null,
-      propose: async () => PROPOSAL, timeoutMs: 2_000,
+    const open = new QuestionStore(database).open(CHANGE);
+    assert.ok(open, "题该摆着等人");
+
+    const second = await recordBrief({
+      database, changeId: CHANGE, ...plain, propose,
     });
-    assert.equal(result.outcome.kind, "unanswered");
-    assert.equal(result.closeSession, true);
-    assert.equal(new QuestionStore(database).open(CHANGE), null);
+    assert.equal(second.outcome.kind, "asked");
+    assert.equal(
+      second.outcome.kind === "asked" && second.outcome.questionId, open.id,
+      "同一道题 —— 不许 supersede 人正对着的表",
+    );
+    assert.equal(proposed, 1, "重问一遍不许再烧一轮模型");
     database.close();
   });
 
   it("**全用选项答完的人一个字都不用打** —— 一趟就录进去", async () => {
     const database = freshDatabase();
-    const questions = new QuestionStore(database);
-    const asked: string[] = [];
-    const sessions = answeringSessions(database, (_, options) => {
-      // 一律选第一个 —— 也就是「都不对，我自己写」一次都没点。
-      const open = questions.open(CHANGE);
-      if (open && !asked.includes(open.id)) asked.push(open.id);
-      return options[0] ?? "";
-    });
-    const result = await recordBrief({
-      database, sessions,
-      changeId: CHANGE, cannotAskNow: () => null,
-      propose: async () => PROPOSAL, timeoutMs: 2_000,
-    });
+    const seen: string[][] = [];
+    // 一律选第一个 —— 也就是「都不对，我自己写」一次都没点。
+    const result = await drive(
+      database, async () => PROPOSAL, (_, options) => options[0] ?? "", seen);
 
     assert.equal(result.outcome.kind, "recorded");
-    // 判据从「打了几次字」换成「弹了几张表」—— 现在没有人被打字唤醒，
-    // 但「第二趟该不该弹」这条判据一个字没变。
-    assert.deepEqual(asked, [asked[0]], "没人要写字，第二趟就不该弹 —— 弹了那句话就打了折");
+    assert.equal(seen.length, 1, "没人要写字，第二趟就不该弹 —— 弹了那句话就打了折");
     assert.equal(result.closeSession, true, "办完了也要关，否则下一次派发永远是灰的");
 
     const brief = new ChangeStore(database).read(CHANGE).brief;
@@ -214,15 +191,8 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
     questions.answer(questionId, { action: "accept", content });
 
     const result = await recordBrief({
-      database,
-      sessions: {
-        type: async () => { throw new Error("已经答完，不该再问人"); },
-        has: () => false,
-      },
-      changeId: CHANGE,
-      cannotAskNow: () => null,
+      database, changeId: CHANGE, ...plain,
       propose: async () => { throw new Error("已经答完，不该再跑模型"); },
-      timeoutMs: 10,
     });
 
     assert.equal(result.outcome.kind, "recorded");
@@ -253,37 +223,18 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
       question.requestedSchema.properties,
     ).map(([id, field]) => [id, id === "B01" ? ESCAPE_OPTION : field.enum?.[0] ?? ""]));
     questions.answer(questionId, { action: "accept", content });
-    let asked = 0;
 
-    const result = await recordBrief({
+    const seen: string[][] = [];
+    const result = await drive(
       database,
-      sessions: (() => {
-        // 第二趟也在浏览器里答 —— 过一会儿才有动作，不再靠打字触发。
-        const answerSecond = (): void => {
-          if (!database.open) { clearInterval(timer); return; }
-          const open = questions.open(CHANGE);
-          if (!open) return;
-          asked += 1;
-          assert.deepEqual(
-            Object.keys(open.question.requestedSchema.properties), ["B01x", "BZ"],
-          );
-          questions.answer(open.id, {
-            action: "accept",
-            content: { B01x: "给值班运营同学使用", BZ: "都答完了，提交" },
-          });
-        };
-        const timer = setInterval(answerSecond, 20);
-        timer.unref();
-        return { type: async () => { answerSecond(); return true; }, has: () => true };
-      })(),
-      changeId: CHANGE,
-      cannotAskNow: () => null,
-      propose: async () => { throw new Error("恢复时不该重跑模型"); },
-      timeoutMs: 3_000,
-    });
+      async () => { throw new Error("恢复时不该重跑模型"); },
+      (field) => field === "B01x" ? "给值班运营同学使用" : "",
+      seen,
+    );
 
     assert.equal(result.outcome.kind, "recorded");
-    assert.equal(asked, 1);
+    // 第二趟只有那一格要写的（没有「确认」门把手 —— 浏览器有真提交按钮）。
+    assert.deepEqual(seen, [["B01x"]]);
     assert.match(new ChangeStore(database).read(CHANGE).brief ?? "", /给值班运营同学使用/);
     assert.equal(questions.read(questionId).status, "applied");
     assert.equal(questions.read(`${questionId}-x`).status, "applied");
@@ -292,29 +243,45 @@ describe("app · 录需求这个用例（不经过 HTTP，也不经过 Codex）"
 
   it("答不出一份需求就**不录** —— 不拿一段空白往下走", async () => {
     const database = freshDatabase();
+    const questions = new QuestionStore(database);
+    const first = await recordBrief({
+      database, changeId: CHANGE, ...plain, propose: async () => PROPOSAL,
+    });
+    assert.equal(first.outcome.kind, "asked");
+    // 人按了 Esc（action = decline）。
+    const open = questions.open(CHANGE);
+    assert.ok(open);
+    questions.answer(open.id, { action: "decline", content: {} });
+
     const result = await recordBrief({
-      database,
-      // action 是 decline：人按了 Esc。
-      // 人按了 Esc（action = decline）。题在浏览器里，所以过一会儿才有动作。
-      sessions: (() => {
-        const questions = new QuestionStore(database);
-        const decline = (): void => {
-          if (!database.open) { clearInterval(timer); return; }
-          const open = questions.open(CHANGE);
-          if (open) questions.answer(open.id, { action: "decline", content: {} });
-        };
-        const timer = setInterval(decline, 20);
-        timer.unref();
-        return { type: async () => { decline(); return true; }, has: () => true };
-      })(),
-      changeId: CHANGE, cannotAskNow: () => null,
-      propose: async () => PROPOSAL, timeoutMs: 2_000,
+      database, changeId: CHANGE, ...plain,
+      propose: async () => { throw new Error("已有答案，不该重跑模型"); },
     });
     assert.equal(result.outcome.kind, "not_recorded");
     assert.equal(
       new ChangeStore(database).read(CHANGE).brief, null,
       "拿一段空白往下走等于又回到那份编出来的 PRD",
     );
+    database.close();
+  });
+
+  it("多选题答几项，需求里就落几项", async () => {
+    const database = freshDatabase();
+    const multiProposal = [
+      "```brief",
+      "要支持哪些平台？ | 多选 | iOS | Android | Web",
+      "什么算做完？ | 能跑通一遍 | 有测试 | 上线了",
+      "```",
+    ].join("\n");
+    const result = await drive(
+      database, async () => multiProposal,
+      (field, options) => field === "B01"
+        ? [options[0]!, options[2]!].join(MULTI_JOIN)
+        : options[0] ?? "");
+
+    assert.equal(result.outcome.kind, "recorded");
+    const brief = new ChangeStore(database).read(CHANGE).brief ?? "";
+    assert.match(brief, /iOS；Web/, "两项都要落进需求");
     database.close();
   });
 });

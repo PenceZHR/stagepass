@@ -10,7 +10,7 @@ import {
 import { ChangeStore } from "../store/change-store";
 import { CommandStore } from "../store/command-store";
 import { QuestionStore } from "../store/question-store";
-import { waitForAnswer, type AskSessions, type Unanswered } from "./ask-human";
+import { draftOrRead } from "./ask-human";
 
 /**
  * **把「这次改动要什么」问出来**这个用例 —— 从 `handle()` 的 HTTP 分支里搬出来
@@ -52,16 +52,8 @@ export type BriefOutcome =
     readonly reason: string;
     readonly detail: string;
   }
-  /** 会话在问出去之前就死了。**不许假装问出去了** —— 题落了库，人却永远看不到。 */
-  | { readonly kind: "not_asked"; readonly phase: Phase }
-  /** 问出去了，但没答上来。 */
-  | {
-    readonly kind: "unanswered";
-    readonly phase: Phase;
-    readonly questionId: string;
-    readonly reason: Unanswered;
-    readonly threadId: string | null;
-  }
+  /** 题摆在页面上了。答落库时 `/api/answer` 会再走一遍这个用例。 */
+  | { readonly kind: "asked"; readonly phase: Phase; readonly questionId: string }
   /** 答了，但答不出一份需求（按了 Esc，或者必答的没答完）。 */
   | { readonly kind: "not_recorded"; readonly phase: Phase }
   /** 录进去了。 */
@@ -129,15 +121,13 @@ function landBrief(input: {
 
 export async function recordBrief(input: {
   database: Database.Database;
-  sessions: AskSessions;
   changeId: string;
   /** 现在能不能问人。判据在 `web/` 那层（它要看活进程和账本），这里只消费结论。 */
   cannotAskNow: (phase: Phase) =>
     { reason: string; busy: string; jobId?: string } | null;
   propose: ProposeBrief;
-  timeoutMs: number;
 }): Promise<BriefResult> {
-  const { database, sessions, changeId } = input;
+  const { database, changeId } = input;
   const changes = new ChangeStore(database);
   let change: { title: string | null; state: { phase: Phase } };
   try {
@@ -153,45 +143,27 @@ export async function recordBrief(input: {
   const questions = new QuestionStore(database);
 
   const gate = new CommandStore(database).gateFor(changeId);
-  /** 问一趟，等人答完。答上了给答案，没走通给一个说得清的下场。 */
-  const askOnce = async (
+  /**
+   * 问一趟：起草或捡答案，**不等**。答上了给答案；还挂着就给 `asked` ——
+   * 答落库时 `/api/answer` 会再把这个用例喊回来，从 `interrupted` 那条路续上。
+   *
+   * 答案**不在这里 settle**：等整份 brief 原子落库时一起收 —— 这几毫秒里重启，
+   * 下一次才能从 answered 续上。
+   */
+  const askOnce = (
     fields: readonly ClarificationItem[], title: string, fixedId?: string,
-  ): Promise<{ answer: Answer; questionId: string } | BriefResult> => {
+  ): { answer: Answer; questionId: string } | BriefResult => {
     const question = clarificationQuestion({ title, items: fields })!;
     const questionId = fixedId ?? `BR-${changeId}-${Date.now()}`;
-    let existing = null;
-    try { existing = questions.read(questionId); } catch { /* 还没登记，下面新建。 */ }
-    if (existing === null) {
-      questions.ask({
-        id: questionId, changeId, phase, kind: "clarification",
-        question, expectedSnapshot: gate.snapshot,
-      });
-    } else if (existing.status === "answered") {
-      const answer = questions.readAnswerFor(questionId);
-      if (answer !== null) return { answer, questionId };
-    }
-
-    /*
-     * 不再打进会话叫模型转达 —— 和裁决、接受风险同一个理由。这张表是 StagePass
-     * 起草好的（模型只写了草稿的内容，表的形状是这一侧的），题落进库里，
-     * 面板画到浏览器上，人在那儿答。会话死不死跟这道题没关系了。
-     */
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId, phase, questionId,
-      timeoutMs: input.timeoutMs,
+    const got = draftOrRead({
+      questions, changeId, phase, kind: "clarification",
+      question, questionId, expectedSnapshot: gate.snapshot,
     });
-    if (!waited.answered) {
-      // 题已经被 waitForAnswer 收掉了。
-      return {
-        outcome: {
-          kind: "unanswered", phase, questionId,
-          reason: waited.reason, threadId: waited.threadId,
-        },
-        closeSession: true,
-      };
-    }
-    // 等整份 brief 原子落库时再 settle；这几毫秒里重启，下一次才能从 answered 续上。
-    return { answer: waited.answer, questionId };
+    if (got.kind === "answered") return { answer: got.answer, questionId };
+    return {
+      outcome: { kind: "asked", phase, questionId },
+      closeSession: false,
+    };
   };
 
   /*
@@ -214,7 +186,7 @@ export async function recordBrief(input: {
           items: recoveredItems, answer: firstAnswer, phase,
         });
       }
-      const second = await askOnce(
+      const second = askOnce(
         more, `${changeId}：你说要自己写的那几条`, `${interrupted.id}-x`,
       );
       if ("outcome" in second) return second;
@@ -229,6 +201,21 @@ export async function recordBrief(input: {
         phase,
       });
     }
+  }
+
+  /*
+   * 已经有一道 open 的 BR 题挂着（第一趟还没答），就把它还回去 —— 往下走会
+   * **白跑一次模型轮**再起草一道新题，把人正对着的那张表 supersede 掉。
+   */
+  const alreadyOpen = questions.open(changeId);
+  if (
+    alreadyOpen !== null && alreadyOpen.kind === "clarification"
+    && alreadyOpen.id.startsWith(`BR-${changeId}-`)
+  ) {
+    return {
+      outcome: { kind: "asked", phase, questionId: alreadyOpen.id },
+      closeSession: false,
+    };
   }
 
   // 第一步：让模型读仓库，提问题。
@@ -255,7 +242,7 @@ export async function recordBrief(input: {
    * 第二趟给他写字（`followUpFields`）。全用选项答完的人一个字都不用打。
    */
 
-  const first = await askOnce(items, `${changeId}：先把这次改动要什么说清楚`);
+  const first = askOnce(items, `${changeId}：先把这次改动要什么说清楚`);
   if ("outcome" in first) return first;
 
   /*
@@ -266,7 +253,7 @@ export async function recordBrief(input: {
   let content = first.answer.content;
   const questionIds = [first.questionId];
   if (more.length > 0) {
-    const second = await askOnce(
+    const second = askOnce(
       more, `${changeId}：你说要自己写的那几条`, `${first.questionId}-x`,
     );
     if ("outcome" in second) return second;

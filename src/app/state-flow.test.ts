@@ -40,14 +40,23 @@ describe("acceptance · 一条 Change 从需求录入走到下一阶段", () => 
       questions.answer(open.id, { action: "accept", content });
     }, 20);
     answeringBrief.unref();
-    const brief = await recordBrief({
-      database,
-      changeId: "CHG-E2E",
+    /*
+     * 和真系统同一个节拍：起草完立刻返回 asked，答案落库后再喊一遍用例消费
+     * （`/api/answer` 那个循环）。上面的定时器扮演「人在浏览器里答」。
+     */
+    let brief = await recordBrief({
+      database, changeId: "CHG-E2E",
       cannotAskNow: () => null,
       propose: async () => PROPOSAL,
-      sessions: { has: () => true, type: async () => true },
-      timeoutMs: 5_000,
     });
+    for (let i = 0; i < 5 && brief.outcome.kind === "asked"; i += 1) {
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      brief = await recordBrief({
+        database, changeId: "CHG-E2E",
+        cannotAskNow: () => null,
+        propose: async () => PROPOSAL,
+      });
+    }
     clearInterval(answeringBrief);
     assert.equal(brief.outcome.kind, "recorded");
     assert.ok(changes.read("CHG-E2E").brief);
@@ -87,21 +96,20 @@ describe("acceptance · 一条 Change 从需求录入走到下一阶段", () => 
       });
     }, 20);
     answering.unref();
-    const decision = await decideGate({
+    const decideOnce = () => decideGate({
       database,
       changeId: "CHG-E2E",
       cannotAskNow: () => null,
-      /*
-       * C 方案：闸门的题不再派一轮去转达，它落进库里等人 —— 人在**浏览器**里答。
-       * 所以这里也不再挂在 `launch` 上，而是像人一样过一会儿去答。
-       */
-      launch: () => {},
       rerun: async () => null,
       onApproved: () => {},
       roundBudget: 5,
-      timeoutMs: 5_000,
-      sessions: { has: () => true, type: async () => true },
+      sessions: {},
     });
+    let decision = await decideOnce();
+    for (let i = 0; i < 5 && decision.outcome.kind === "asked"; i += 1) {
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      decision = await decideOnce();
+    }
     clearInterval(answering);
     assert.equal(decision.outcome.kind, "decided");
     assert.deepEqual(changes.read("CHG-E2E").state, {

@@ -6,21 +6,27 @@ import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
-import { waitForAnswer, type AskSessions } from "./ask-human";
+import { draftOrRead } from "./ask-human";
 
 /**
- * `waitForAnswer`：题在浏览器里等人。
+ * `draftOrRead`：问 = 起草，答 = 消费，**没有等待**。
  *
- * 2026-08-17 之前这里还要盯着会话（题是打进会话让模型转达的），于是有两种死法：
- * 会话没了、以及「turn 结束了而题没答」。C 方案之后题就摆在页面上，那两类整类
- * 消失，连同它们的探测机器一起拆掉了 —— 这组测试钉的是剩下的那一条：
- * 答上了就交出去，没答上就把题收掉并把下场留住。
+ * 2026-08-18 之前这里是一个每秒轮询、15 分钟死线的协程（`waitForAnswer`）——
+ * MCP 信使时代的遗物。真机三道闸门题全死于 `no_answer_in_time`：题落库了，
+ * 页面不刷新人看不见，等看见时死线已过半。现在起草完立刻返回，答案由
+ * `/api/answer` 落库后再把用例喊回来消费 —— 一道没答的题不是失败，
+ * 是一道还摆在页面上的题。
  */
 
 const PROJECT = "PRJ-A";
 const CHANGE = "CHG-A";
 const PHASE = "PRD" as const;
 const QUESTION = "Q-1";
+
+const SHAPE = {
+  message: "选一个",
+  requestedSchema: { type: "object" as const, properties: {}, required: [] },
+};
 
 function freshDatabase(): Database.Database {
   const database = new Database(":memory:");
@@ -31,76 +37,83 @@ function freshDatabase(): Database.Database {
   return database;
 }
 
-function asked(database: Database.Database): QuestionStore {
-  const questions = new QuestionStore(database);
-  questions.ask({
-    id: QUESTION, changeId: CHANGE, phase: PHASE, kind: "gate_decision",
-    question: {
-      message: "选一个",
-      requestedSchema: { type: "object", properties: {}, required: [] },
-    },
-    expectedSnapshot: "snap",
+function draft(questions: QuestionStore, settleOnAnswer?: boolean): ReturnType<typeof draftOrRead> {
+  return draftOrRead({
+    questions, changeId: CHANGE, phase: PHASE, kind: "gate_decision",
+    question: SHAPE, questionId: QUESTION, expectedSnapshot: "snap",
+    ...(settleOnAnswer === undefined ? {} : { settleOnAnswer }),
   });
-  return questions;
 }
 
-/** 库里这道题的下场 —— 「没答上」也必须留得住（§3.2·5）。 */
-function outcomeOf(database: Database.Database): unknown {
-  const row = database.prepare(
-    "SELECT status, outcome_json FROM questions WHERE id = ?",
-  ).get(QUESTION) as { status: string; outcome_json: string | null };
-  return {
-    status: row.status,
-    outcome: row.outcome_json === null ? null : JSON.parse(row.outcome_json),
-  };
+function statusOf(database: Database.Database): string {
+  return (database.prepare("SELECT status FROM questions WHERE id = ?")
+    .get(QUESTION) as { status: string }).status;
 }
 
-describe("waitForAnswer：题在浏览器里等人（C 方案）", () => {
-  it("没有会话也照等 —— 没有人需要挂着一轮", async () => {
-    // 旧路要模型挂着把表单端给人，所以「会话没了」= 这道题废了。C 之下题落在库里，
-    // 人在浏览器里答，压根没有会话这回事 —— 再把 has() 当活性判据就会把每一道题
-    // 都当场判死。
+describe("draftOrRead：问 = 起草，答 = 消费，没有等待", () => {
+  it("没登记就起草并立刻返回 pending —— 没有人挂着", () => {
     const database = freshDatabase();
-    const questions = asked(database);
-    const sessions: AskSessions = {
-      type: async () => false,
-      has: () => false, // 没有任何会话
-    };
-
-    const waiting = waitForAnswer({
-      database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 4_000,
-    });
-
-    // 人过一会儿在浏览器里答了
-    setTimeout(() => {
-      questions.answer(QUESTION, { action: "accept", content: { decision: "批准" } });
-    }, 300);
-
-    const waited = await waiting;
-    assert.equal(waited.answered, true);
-    assert.equal(waited.answer?.content.decision, "批准");
+    const questions = new QuestionStore(database);
+    assert.deepEqual(draft(questions), { kind: "pending" });
+    assert.equal(statusOf(database), "open");
     database.close();
   });
 
-  it("没答上就是没答上，题要收掉、下场要留住", async () => {
-    // 「没答上」也是下场（§3.2·5）—— `applied` + 空下场和一次正常落地在库里
-    // 长得一模一样，事后谁也说不清这道题发生过什么。
+  it("题还 open 就还是 pending，而且不重复登记", () => {
     const database = freshDatabase();
-    const questions = asked(database);
-    const sessions: AskSessions = { type: async () => true, has: () => false };
+    const questions = new QuestionStore(database);
+    draft(questions);
+    assert.deepEqual(draft(questions), { kind: "pending" });
+    const rows = database.prepare(
+      "SELECT COUNT(*) AS n FROM questions WHERE change_id = ?",
+    ).get(CHANGE) as { n: number };
+    assert.equal(rows.n, 1);
+    database.close();
+  });
 
-    const waited = await waitForAnswer({
-      database, questions, sessions, changeId: CHANGE, phase: PHASE,
-      questionId: QUESTION, timeoutMs: 1_200,
-    });
+  it("答过了就把答案交出去 —— 这就是「答 = 消费」的取件口", () => {
+    const database = freshDatabase();
+    const questions = new QuestionStore(database);
+    draft(questions);
+    questions.answer(QUESTION, { action: "accept", content: { decision: "批准" } });
 
-    assert.equal(waited.answered, false);
-    assert.equal(waited.answered === false && waited.reason, "no_answer_in_time");
-    assert.deepEqual(outcomeOf(database), {
-      status: "applied",
-      outcome: { kind: "unanswered", reason: "no_answer_in_time" },
+    const got = draft(questions);
+    assert.equal(got.kind, "answered");
+    assert.equal(got.kind === "answered" && got.answer.content.decision, "批准");
+    // 默认不收题 —— 裁决那条路后面还要拿着它走 fence / apply。
+    assert.equal(statusOf(database), "answered");
+    database.close();
+  });
+
+  it("settleOnAnswer：第二趟拿到答案就当场收题", () => {
+    const database = freshDatabase();
+    const questions = new QuestionStore(database);
+    draft(questions);
+    questions.answer(QUESTION, { action: "accept", content: { Tx: "理由" } });
+
+    const got = draft(questions, true);
+    assert.equal(got.kind, "answered");
+    assert.equal(statusOf(database), "applied");
+    database.close();
+  });
+
+  it("已经收尾（applied / superseded）的题当没登记 —— 这是一次新的问", () => {
+    const database = freshDatabase();
+    const questions = new QuestionStore(database);
+    draft(questions);
+    questions.answer(QUESTION, { action: "accept", content: {} });
+    questions.settle(QUESTION);
+
+    // 同一个 id 已 applied：不视为可取的答案，也不允许复活 —— ask 会拒绝重复 id，
+    // 所以这一层的正确行为是回 pending 之外先看清楚：新的问要用新的 id。
+    const again = draftOrRead({
+      questions, changeId: CHANGE, phase: PHASE, kind: "gate_decision",
+      question: SHAPE, questionId: "Q-2", expectedSnapshot: "snap",
     });
+    assert.deepEqual(again, { kind: "pending" });
+    assert.equal((database.prepare(
+      "SELECT status FROM questions WHERE id = 'Q-2'",
+    ).get() as { status: string }).status, "open");
     database.close();
   });
 });

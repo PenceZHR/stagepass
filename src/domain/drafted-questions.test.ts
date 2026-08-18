@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  BadQuestionShapeError,
   DRAFTED_OPTIONS,
   draftedQuestions,
 } from "./question";
@@ -50,10 +49,8 @@ describe("Questions the model drafted into its sheet", () => {
     const ten = Array.from({ length: 10 }, (_, i) => [i, `第 ${i + 1} 问`] as const);
     const read = readSlotDocument(sheetWith(ten), HEAD);
     assert.equal(read.ok, true);
-    assert.doesNotThrow(() => {
-      const question = draftedQuestions({ phase: "PRD", drafted: read.filled })!;
-      assert.equal(Object.keys(question.requestedSchema.properties).length, 10);
-    }, BadQuestionShapeError);
+    const question = draftedQuestions({ phase: "PRD", drafted: read.filled })!;
+    assert.equal(Object.keys(question.requestedSchema.properties).length, 10);
   });
 
   it("asks nothing when the model filled nothing", () => {

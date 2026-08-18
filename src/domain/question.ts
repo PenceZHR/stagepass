@@ -42,68 +42,45 @@ export interface RequestedSchema {
     readonly type: "string" | "boolean";
     readonly title: string;
     readonly enum?: readonly string[];
+    /** 这一格可以多选。答案是选中的原文用 `MULTI_JOIN` 连成的一个字符串。 */
+    readonly multi?: boolean;
   }>>;
 }
+
+/**
+ * 多选的答案在账本里是**一个字符串**：选中的选项原文按这个符号连起来。
+ * 不改 `Answer` 的形状 —— 老答案、老消费者一个都不用动。
+ */
+export const MULTI_JOIN = "；";
 
 export interface Question {
   readonly message: string;
   readonly requestedSchema: RequestedSchema;
 }
 
-/** 一格。`options` 空 = 自由文本；`optional` = 可以留空。 */
+/** 一格。`options` 空 = 自由文本；`optional` = 可以留空；`multi` = 可多选。 */
 interface Field {
   readonly id: string;
   readonly title: string;
   readonly options?: readonly string[] | undefined;
   readonly optional?: boolean | undefined;
-}
-
-export class BadQuestionShapeError extends Error {
-  constructor(
-    readonly code: "order_not_sorted" | "last_field_unsubmittable",
-    readonly detail: string,
-  ) {
-    super(`${code}: ${detail}`);
-    this.name = "BadQuestionShapeError";
-  }
+  readonly multi?: boolean | undefined;
 }
 
 /**
- * 一批格子变成一次 elicitation。**所有问题都从这里出去，只此一处。**
+ * 一批格子变成一道题。**所有问题都从这里出去，只此一处。**
  *
- * 它挡住两件 2026-07-30 在 Codex TUI 上实测出来的事。两条都是**客户端的行为**，
- * 不是产品选择 —— 所以判据放在这里，而不是靠每个组题的人自己记得。
+ * ## 顺序就是书写顺序
  *
- * ## 一、显示顺序 = 字段名排序，不是这里的书写顺序
- *
- * 实测：按 `B1, B1x, …, B8, B8x, B0` 写出去，选择器画出来的第一格是 `B0`。
- * 所以要控制顺序只能控制**名字**。这里要求传进来的顺序**已经等于排序后的顺序** ——
- * 不自己悄悄排：那样组题的人写下的顺序和人看到的顺序就永远对不上，而他不会知道。
- *
- * ## 二、最后一格必须能被回车提交
- *
- * 实测：光标停在一个**空的自由文本格**上按回车，屏幕上什么都不发生 —— `optional`
- * 不管用，必填项全答完也不管用，底下写着 `enter to submit all` 也不管用。而整张表
- * 只能从最后一格提交。**所以最后一格是「可留空的自由文本」= 这张表交不上去。**
- *
- * 选项格总有一个高亮着的候选值，回车提交得动；必填的自由文本会把「还差 1 个」显示
- * 出来，人知道该干什么。这两种都行，第三种不行。
+ * 这张表如今只画在自己的浏览器面板上（`openQuestionOf` 按 schema 里的插入顺序
+ * 摆格子）。以前这里有两条针对 Codex TUI elicitation 客户端的硬约束 ——
+ * 「显示顺序 = 字段名排序」和「最后一格必须能被回车提交」（都是 2026-07-30
+ * 真机行为）—— 那个客户端已经不在这条路上了，约束跟着拆掉。字段 id 不再需要
+ * 靠取名来排队。
  */
 function compose(message: string, fields: readonly Field[]): Question {
-  const ids = fields.map((field) => field.id);
-  const sorted = [...ids].sort();
-  if (ids.some((id, index) => id !== sorted[index])) {
-    throw new BadQuestionShapeError("order_not_sorted",
-      `${ids.join(",")} -> ${sorted.join(",")}`);
-  }
-
-  const last = fields[fields.length - 1];
-  if (last && (last.options ?? []).length === 0 && last.optional === true) {
-    throw new BadQuestionShapeError("last_field_unsubmittable", last.id);
-  }
-
   const properties: Record<string, {
-    type: "string"; title: string; enum?: readonly string[];
+    type: "string"; title: string; enum?: readonly string[]; multi?: boolean;
   }> = {};
   for (const field of fields) {
     const options = field.options ?? [];
@@ -111,7 +88,10 @@ function compose(message: string, fields: readonly Field[]): Question {
     // 一个零个选项的下拉框：人打不开、也填不进去，看着像界面坏了。
     properties[field.id] = options.length === 0
       ? { type: "string", title: field.title }
-      : { type: "string", title: field.title, enum: options };
+      : {
+        type: "string", title: field.title, enum: options,
+        ...(field.multi === true ? { multi: true } : {}),
+      };
   }
   return {
     message,
@@ -801,6 +781,8 @@ export interface ClarificationItem {
   readonly id: string;
   readonly question: string;
   readonly options: readonly string[];
+  /** 可多选（「支持哪些平台」这类）。答案是原文用 `MULTI_JOIN` 连成的字符串。 */
+  readonly multi?: boolean;
   /**
    * 这一格可以留空吗。默认不可以 —— 一道问出去的题默认是要答的。
    *
@@ -837,6 +819,7 @@ export function clarificationQuestion(input: {
     title: item.question,
     options: item.options,
     optional: item.optional,
+    multi: item.multi,
   })));
 }
 

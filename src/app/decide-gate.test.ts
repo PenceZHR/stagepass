@@ -18,14 +18,19 @@ import { RubricStore } from "../store/rubric-store";
 import { TurnStore } from "../store/turn-store";
 import { JobStore } from "../work/job-store";
 import { decideGate } from "./decide-gate";
-import type { AskSessions } from "./ask-human";
 
 /**
  * 裁决这个用例，**不经过 HTTP**。
  *
- * 这一条最值得单独验：它同时做四件事（组题、等人选、落表态、推闸门），而**顺序
- * 是承重的**。原来要看这个顺序对不对，只能起一个真服务器再从响应的 JSON 倒推；
- * 现在直接把库的前后状态摆出来。
+ * 这一条最值得单独验：它同时做四件事（组题、把题摆出去、落表态、推闸门），而
+ * **顺序是承重的**。原来要看这个顺序对不对，只能起一个真服务器再从响应的 JSON
+ * 倒推；现在直接把库的前后状态摆出来。
+ *
+ * ## 测试怎么「答题」
+ *
+ * 和真系统同一个节拍：`decideGate` 起草完立刻返回 `asked`，答案由 `/api/answer`
+ * 落库后**再走一遍**这个用例消费。`drive` 就是那个循环 —— 问出来就按 `content`
+ * 答掉、再喊一遍，直到出终局。没有定时器、没有等待。
  */
 
 const PROJECT = "PRJ-A";
@@ -60,53 +65,48 @@ function settledWithGaps(database: Database.Database): void {
   changes.apply(CHANGE, "settle");
 }
 
-/** 什么都不做的注入件 —— 这三样是 `web/` 的活，用例只该调它们。 */
+/** 什么都不做的注入件 —— 这几样是 `web/` 的活，用例只该调它们。 */
 const inert = {
-  launch: () => {},
+  sessions: {},
+  cannotAskNow: () => null,
   rerun: async () => "跑了一轮",
   onApproved: () => {},
   roundBudget: 5,
 };
 
+type Overrides = Partial<Parameters<typeof decideGate>[0]>;
+
 /**
- * 一个「人会答」的浏览器：题一出现就按 `content` 答掉。
- *
- * C 方案之后两趟都在浏览器里答，没有谁被打字唤醒 —— 所以这里也不再挂在
- * `launch` / `type` 上，而是像人一样**过一会儿**去答。`waitForAnswer` 一秒轮询
- * 一次，定时器 `unref` 掉，不会拖着进程不退出。
+ * `/api/answer` 那个循环的镜像：问出来就答掉、再喊一遍用例，直到出终局。
+ * 只答这道题真的有的格子 —— 多答一格会被 `readAnswer` 当成答错了题。
  */
-function answerer(database: Database.Database, content: Record<string, string>) {
+async function drive(
+  database: Database.Database,
+  content: Record<string, string>,
+  overrides: Overrides = {},
+): Promise<Awaited<ReturnType<typeof decideGate>>> {
   const questions = new QuestionStore(database);
-  const answered = new Set<string>();
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const answerOpen = (): void => {
-    // 测试结束会关库；这个定时器比测试活得久，关了就自己停，别把噪音甩给下一条。
-    if (!database.open) { if (timer) clearInterval(timer); return; }
+  for (let round = 0; round < 5; round += 1) {
+    const result = await decideGate({
+      database, changeId: CHANGE, ...inert, ...overrides,
+    } as Parameters<typeof decideGate>[0]);
+    if (result.outcome.kind !== "asked") return result;
     const open = questions.open(CHANGE);
-    if (!open || answered.has(open.id)) return;
-    answered.add(open.id);
-    // 只答这道题真的有的格子 —— 多答一格会被 `readAnswer` 当成答错了题。
+    assert.ok(open, "说了 asked 却没有 open 的题");
     const mine: Record<string, string> = {};
     for (const field of Object.keys(open.question.requestedSchema.properties)) {
       if (field in content) mine[field] = content[field]!;
     }
     questions.answer(open.id, { action: "accept", content: mine });
-  };
-  timer = setInterval(answerOpen, 20);
-  timer.unref();
-  const sessions: AskSessions = {
-    type: async () => { answerOpen(); return true; },
-    has: () => true,
-  };
-  return { sessions, answerOpen, stop: () => { clearInterval(timer); } };
+  }
+  throw new Error("驱动 5 次还没到终局");
 }
 
 describe("app · 裁决这个用例（不经过 HTTP）", () => {
   it("没有这个 Change —— 说 no_such_change", async () => {
     const database = freshDatabase();
     const result = await decideGate({
-      database, sessions: { type: async () => true, has: () => true },
-      changeId: "CHG-不存在", cannotAskNow: () => null, timeoutMs: 10, ...inert,
+      database, changeId: "CHG-不存在", ...inert,
     });
     assert.deepEqual(result.outcome, { kind: "no_such_change" });
     database.close();
@@ -118,27 +118,34 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
    */
   it("组不出一道他做得了的题就不问", async () => {
     const database = freshDatabase();
-    let launched = false;
-    const result = await decideGate({
-      database, sessions: { type: async () => true, has: () => true },
-      changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
-      ...inert, launch: () => { launched = true; },
-    });
+    const result = await decideGate({ database, changeId: CHANGE, ...inert });
     assert.equal(result.outcome.kind, "no_decision");
-    assert.equal(launched, false, "连会话都不该起");
+    assert.equal(new QuestionStore(database).open(CHANGE), null, "连题都不该落");
     database.close();
   });
 
-  it("没人答就收题、关会话", async () => {
+  /**
+   * **没人答就让题挂着 —— 那不是失败。** 旧形状是 15 分钟死线 + 收题 +
+   * `no_answer_in_time`（2026-08-18 真机：三道闸门题全死在这上面，人答了也
+   * 白答）。现在题没有截止；再问一遍也不另起 —— 另起会 supersede 掉人正对着
+   * 的那张表。
+   */
+  it("没人答：题挂着、不收、不重复起草", async () => {
     const database = freshDatabase();
     settledWithGaps(database);
-    const result = await decideGate({
-      database, sessions: { type: async () => true, has: () => true },
-      changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 2_000, ...inert,
-    });
-    assert.equal(result.outcome.kind, "unanswered");
-    assert.equal(result.closeSession, true);
-    assert.equal(new QuestionStore(database).open(CHANGE), null);
+    const first = await decideGate({ database, changeId: CHANGE, ...inert });
+    assert.equal(first.outcome.kind, "asked");
+    assert.equal(first.closeSession, false);
+
+    const open = new QuestionStore(database).open(CHANGE);
+    assert.ok(open, "题该摆着等人");
+
+    const second = await decideGate({ database, changeId: CHANGE, ...inert });
+    assert.equal(second.outcome.kind, "asked");
+    assert.equal(
+      second.outcome.kind === "asked" && second.outcome.questionId, open.id,
+      "同一道题 —— 不许 supersede 人正对着的表",
+    );
     database.close();
   });
 
@@ -176,18 +183,7 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       },
     });
 
-    const result = await decideGate({
-      database,
-      sessions: {
-        type: async () => { throw new Error("完整裁决已落库，不该重问"); },
-        has: () => false,
-      },
-      changeId: CHANGE,
-      cannotAskNow: () => null,
-      timeoutMs: 10,
-      ...inert,
-      launch: () => { throw new Error("完整裁决已落库，不该重开会话"); },
-    });
+    const result = await decideGate({ database, changeId: CHANGE, ...inert });
 
     assert.equal(result.outcome.kind, "decided");
     assert.equal(new ChangeStore(database).read(CHANGE).state.status, "pending");
@@ -212,16 +208,11 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       "两条 P1 开着的时候闸门不该放行 approve —— 这一条是下面那个断言的前提",
     );
 
-    const { sessions, answerOpen } = answerer(database, {
+    const result = await drive(database, {
       // 两条都驳回（`RESPONSE_DISMISS` 要理由，理由在第二趟那几格）。
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "这条说的是别的阶段的事", R02x: "范围是我改的，不是它写错",
       [DECISION_FIELD]: decisionLabel("approve"),
-    });
-
-    const result = await decideGate({
-      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
     });
 
     assert.equal(result.outcome.kind, "decided");
@@ -248,13 +239,9 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     const database = freshDatabase();
     settledWithGaps(database);
 
-    const { sessions, answerOpen } = answerer(database, {
+    const result = await drive(database, {
       R01: RESPONSE_AGREE, R02: RESPONSE_AGREE,
       [DECISION_FIELD]: decisionLabel("approve"),
-    });
-    const result = await decideGate({
-      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
     });
 
     assert.equal(result.outcome.kind, "decided");
@@ -277,15 +264,11 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     const database = freshDatabase();
     settledWithGaps(database);
     // 推荐是 Spec（主线下一步）。人选 TestPlan —— 这次改动不需要重写技术方案。
-    const { sessions, answerOpen } = answerer(database, {
+    const result = await drive(database, {
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "不成立", R02x: "不成立",
       U: "TestPlan",
       [DECISION_FIELD]: decisionLabel("approve"),
-    });
-    const result = await decideGate({
-      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
     });
 
     assert.equal(result.outcome.kind, "decided");
@@ -298,15 +281,11 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
   it("不选就走推荐那条 —— 这一格的存在不该改变默认", async () => {
     const database = freshDatabase();
     settledWithGaps(database);
-    const { sessions, answerOpen } = answerer(database, {
+    await drive(database, {
       R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
       R01x: "不成立", R02x: "不成立",
       U: APPROVE_AS_RECOMMENDED,
       [DECISION_FIELD]: decisionLabel("approve"),
-    });
-    await decideGate({
-      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
     });
     assert.equal(new ChangeStore(database).read(CHANGE).state.phase, "Spec");
   });
@@ -322,14 +301,10 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     ] as const) {
       const database = freshDatabase();
       settledWithGaps(database);
-      const { sessions, answerOpen } = answerer(database, {
+      const result = await drive(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
         R01x: "不成立", R02x: "不成立",
         [DECISION_FIELD]: decisionLabel(action),
-      });
-      const result = await decideGate({
-        database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-        timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
       });
       assert.equal(result.outcome.kind, "decided");
       assert.equal(
@@ -356,14 +331,10 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
     ] as const) {
       const database = freshDatabase();
       settledWithGaps(database);
-      const { sessions, answerOpen } = answerer(database, {
+      const result = await drive(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
         R01x: "不成立", R02x: "不成立",
         [DECISION_FIELD]: decisionLabel(action),
-      });
-      const result = await decideGate({
-        database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-        timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
       });
       assert.equal(result.outcome.kind, "decided");
       assert.equal(result.closeSession, closed, `${action} 之后关不关会话`);
@@ -382,11 +353,6 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
   it("**闸门那一步炸了 —— 说出来，别 500**，题要收掉、原因要留住", async () => {
     const database = freshDatabase();
     settledWithGaps(database);
-    const { sessions, answerOpen } = answerer(database, {
-      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
-      R01x: "不成立", R02x: "不成立",
-      [DECISION_FIELD]: decisionLabel("approve"),
-    });
     // 摆出那天的形状：账本记不下这次转移（老库的 CHECK 名单落后了）。
     database.exec(
       "CREATE TRIGGER boom BEFORE INSERT ON change_events"
@@ -394,9 +360,10 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       + " BEGIN SELECT RAISE(ABORT, 'action_not_allowed_in_this_database'); END",
     );
 
-    const result = await decideGate({
-      database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-      timeoutMs: 3_000, ...inert, launch: () => { answerOpen(); },
+    const result = await drive(database, {
+      R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
+      R01x: "不成立", R02x: "不成立",
+      [DECISION_FIELD]: decisionLabel("approve"),
     });
 
     assert.equal(result.outcome.kind, "decided", "异常穿出去了 —— 那就是一个 500");
@@ -424,15 +391,11 @@ describe("app · 裁决这个用例（不经过 HTTP）", () => {
       new BindingStore(database).bind(CHANGE, "PRD", "THREAD-PRD");
 
       const calls: string[] = [];
-      const { sessions, answerOpen } = answerer(database, {
+      await drive(database, {
         R01: RESPONSE_DISMISS, R02: RESPONSE_DISMISS,
         R01x: "不成立", R02x: "不成立",
         [DECISION_FIELD]: decisionLabel(action),
-      });
-      await decideGate({
-        database, sessions, changeId: CHANGE, cannotAskNow: () => null,
-        timeoutMs: 3_000, ...inert,
-        launch: () => { answerOpen(); },
+      }, {
         onApproved: ({ threadId }) => { calls.push(threadId); },
       });
       assert.equal(calls.length, archived, `${action} 触发归档的次数`);
@@ -464,17 +427,15 @@ describe("裁决题面的两条真机注记（2026-08-09）", () => {
 
     const probed: { threadId: string; prompt: string }[] = [];
     const result = await decideGate({
-      database, changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
-      ...inert,
+      database, changeId: CHANGE, ...inert,
       sessions: {
-        type: async () => true, has: () => true,
         threadTurnEnded: (threadId, _from, prompt) => {
           probed.push({ threadId, prompt });
           return true;
         },
       },
     });
-    assert.equal(result.outcome.kind, "unanswered");
+    assert.equal(result.outcome.kind, "asked");
     // 探的是那条 turn 自己的线程和提示词，不是阶段现在绑着的。
     assert.deepEqual(probed, [{ threadId: "THREAD-9", prompt: "第 1 轮的提示词" }]);
     const { message } = database.prepare(
@@ -501,14 +462,10 @@ describe("裁决题面的两条真机注记（2026-08-09）", () => {
     turns.markFailed("TURN-1", "codex_unavailable: turn did not complete");
 
     const result = await decideGate({
-      database, changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
-      ...inert,
-      sessions: {
-        type: async () => true, has: () => true,
-        threadTurnEnded: () => false,
-      },
+      database, changeId: CHANGE, ...inert,
+      sessions: { threadTurnEnded: () => false },
     });
-    assert.equal(result.outcome.kind, "unanswered");
+    assert.equal(result.outcome.kind, "asked");
     const { message } = database.prepare(
       "SELECT message FROM questions WHERE change_id = ? ORDER BY asked_at DESC LIMIT 1",
     ).get(CHANGE) as { message: string };
@@ -549,11 +506,8 @@ describe("裁决题面的两条真机注记（2026-08-09）", () => {
     changes.apply(CHANGE, "start");
     changes.apply(CHANGE, "settle");
 
-    const result = await decideGate({
-      database, changeId: CHANGE, cannotAskNow: () => null, timeoutMs: 10,
-      ...inert, sessions: { type: async () => true, has: () => true },
-    });
-    assert.equal(result.outcome.kind, "unanswered");
+    const result = await decideGate({ database, changeId: CHANGE, ...inert });
+    assert.equal(result.outcome.kind, "asked");
     const { message } = database.prepare(
       "SELECT message FROM questions WHERE change_id = ? ORDER BY asked_at DESC LIMIT 1",
     ).get(CHANGE) as { message: string };

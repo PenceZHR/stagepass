@@ -21,9 +21,7 @@ import { RoundNoteStore } from "../store/round-note-store";
 import { WorklistStore } from "../store/worklist-store";
 import { RubricStore } from "../store/rubric-store";
 import { TurnStore } from "../store/turn-store";
-import {
-  askFollowUp, waitForAnswer, type AskSessions, type Unanswered,
-} from "./ask-human";
+import { draftOrRead, type AskSessions } from "./ask-human";
 
 /**
  * **把这一轮的裁决交给人**这个用例 —— 从 `handle()` 的 HTTP 分支里搬出来
@@ -52,13 +50,14 @@ export type DecideOutcome =
    * （`domain/question.ts`）。
    */
   | { readonly kind: "no_decision"; readonly phase: Phase }
-  /** 问出去了，但没答上来。 */
+  /**
+   * 题摆在页面上了（这次新起草的，或上次就挂着的）。**这不是失败** —— 人什么
+   * 时候答都行；答落库时 `/api/answer` 会再走一遍这个用例，从这儿接着往下。
+   */
   | {
-    readonly kind: "unanswered";
+    readonly kind: "asked";
     readonly phase: Phase;
     readonly questionId: string;
-    readonly reason: Unanswered | "session_died_before_asking";
-    readonly threadId: string | null;
   }
   /** 他看见的那份证据在他想的时候被人动过了 —— 决定不落地。 */
   | {
@@ -240,71 +239,66 @@ async function revivedTurnNote(input: {
 }
 
 /** 新问一题，或从持久账本续上重启前已经答完的那题。 */
-async function obtainGateAnswer(input: {
-  database: Database.Database;
+function obtainGateAnswer(input: {
   questions: QuestionStore;
-  sessions: AskSessions;
   changeId: string;
   phase: Phase;
   freshQuestion: Question | null;
   expectedSnapshot: string;
-  launch: (input: { phase: Phase; prompt: string }) => void | Promise<void>;
-  timeoutMs: number;
-}): Promise<
+}):
   | { readonly kind: "no_decision" }
-  | {
-    readonly kind: "unanswered";
-    readonly questionId: string;
-    readonly reason: Unanswered;
-    readonly threadId: string | null;
-  }
+  | { readonly kind: "asked"; readonly questionId: string }
   | {
     readonly kind: "answered";
     readonly question: Question;
     readonly questionId: string;
     readonly answer: Answer;
-  }
-> {
+  } {
+  /*
+   * 先找答过还没消费的 —— 答案是持久事实，等待它的 HTTP 协程不是。
+   * 进程重启、或者人在 `/api/answer` 落完答案再把这个用例喊回来，都从这儿续上。
+   */
   const interrupted = input.questions
     .answered(input.changeId, "gate_decision")
     .find((record) => record.phase === input.phase && !record.id.endsWith("-x"));
-  const question = interrupted?.question ?? input.freshQuestion;
-  if (!question) return { kind: "no_decision" };
-
-  const questionId = interrupted?.id
-    ?? `Q-${input.changeId}-${input.phase}-${Date.now()}`;
-  const stored = interrupted === undefined
-    ? null : input.questions.readAnswerFor(questionId);
-  if (stored !== null) {
-    return { kind: "answered", question, questionId, answer: stored };
+  if (interrupted !== undefined) {
+    const stored = input.questions.readAnswerFor(interrupted.id);
+    if (stored !== null) {
+      return {
+        kind: "answered", question: interrupted.question,
+        questionId: interrupted.id, answer: stored,
+      };
+    }
   }
+  /*
+   * 已经有一道 open 的裁决题挂在这个阶段上，就不再另起 —— `questions.ask` 会把
+   * 它 supersede 掉，人正对着的那张表就作废了。想换一张新的（证据变了）由
+   * 明确的再问一次来做，不由「答案还没来」来做。
+   */
+  const open = input.questions.open(input.changeId);
+  if (
+    open !== null && open.kind === "gate_decision"
+    && open.phase === input.phase && !open.id.endsWith("-x")
+  ) {
+    return { kind: "asked", questionId: open.id };
+  }
+  if (!input.freshQuestion) return { kind: "no_decision" };
+
+  const questionId = `Q-${input.changeId}-${input.phase}-${Date.now()}`;
   input.questions.ask({
     id: questionId, changeId: input.changeId, phase: input.phase,
-    kind: "gate_decision", question, expectedSnapshot: input.expectedSnapshot,
+    kind: "gate_decision", question: input.freshQuestion,
+    expectedSnapshot: input.expectedSnapshot,
   });
   /*
-   * **不再派一轮去当信使。**
+   * 起草完就返回 —— **没有等待**。
    *
-   * 闸门这道题的措辞、选项、合法目标全是 StagePass 自己算出来的（`gateDecisionQuestion`）——
-   * 模型在这条路上从来只是个把表单端到人面前的信使。而为了这一次转达，我们要：
-   * 起一个会话、注入 MCP 配置、等它调工具、还要防它「一个工具都没调就结束了 turn」。
-   *
-   * 2026-08-17 实测：那条线程从 2026-08-15 建立起一次 MCP 调用都没有过，
-   * 而 MCP 的注册只在线程创建那一刻绑得上、事后补不了。信使这条路本身就是不稳的。
-   *
-   * 题已经在库里了，面板会把它画到浏览器上（`openQuestionOf`）。人在那儿答。
+   * 闸门这道题的措辞、选项、合法目标全是 StagePass 自己算出来的
+   * （`gateDecisionQuestion`），题落进库、面板画到浏览器上（`openQuestionOf`），
+   * 人什么时候答都行。答落库时 `/api/answer` 再把这个用例喊回来，
+   * 上面 `interrupted` 那条路会捡起答案接着走。
    */
-  const waited = await waitForAnswer({
-    database: input.database, questions: input.questions, sessions: input.sessions,
-    changeId: input.changeId, phase: input.phase, questionId,
-    timeoutMs: input.timeoutMs,
-  });
-  return waited.answered
-    ? { kind: "answered", question, questionId, answer: waited.answer }
-    : {
-      kind: "unanswered", questionId,
-      reason: waited.reason, threadId: waited.threadId,
-    };
+  return { kind: "asked", questionId };
 }
 
 export async function decideGate(input: {
@@ -314,7 +308,6 @@ export async function decideGate(input: {
   /** 现在能不能问人。判据在 `web/` 那层（它要看活进程和账本），这里只消费结论。 */
   cannotAskNow: (phase: Phase) =>
     { reason: string; busy: string; jobId?: string } | null;
-  launch: (input: { phase: Phase; prompt: string }) => void | Promise<void>;
   /**
    * 「再来一轮」时续跑那一轮。**先关会话再跑** —— 那个阶段的终端这时还活着
    * （题就是送进去的），不关 `runRound` 会撞上 §6.5 规则 5 直接拒。这不是绕过
@@ -332,7 +325,6 @@ export async function decideGate(input: {
   ) => void | Promise<void>;
   /** 一个阶段最多跑几轮。跑满之后把收敛数据摊出来，**不拦人** —— 阻断归人管。 */
   roundBudget: number;
-  timeoutMs: number;
 }): Promise<DecideResult> {
   const { database, sessions, changeId } = input;
   const changes = new ChangeStore(database);
@@ -439,21 +431,16 @@ export async function decideGate(input: {
       .filter((target) => target !== recommendedApproval(state, graph)),
   });
   const questions = new QuestionStore(database);
-  const obtained = await obtainGateAnswer({
-    database, questions, sessions, changeId, phase, freshQuestion,
-    expectedSnapshot: gate.snapshot, launch: input.launch,
-    timeoutMs: input.timeoutMs,
+  const obtained = obtainGateAnswer({
+    questions, changeId, phase, freshQuestion, expectedSnapshot: gate.snapshot,
   });
   if (obtained.kind === "no_decision") {
     return { outcome: { kind: "no_decision", phase }, closeSession: false };
   }
-  if (obtained.kind === "unanswered") {
+  if (obtained.kind === "asked") {
     return {
-      outcome: {
-        kind: "unanswered", phase, questionId: obtained.questionId,
-        reason: obtained.reason, threadId: obtained.threadId,
-      },
-      closeSession: true,
+      outcome: { kind: "asked", phase, questionId: obtained.questionId },
+      closeSession: false,
     };
   }
   const { question, questionId, answer: first } = obtained;
@@ -472,21 +459,24 @@ export async function decideGate(input: {
   let answer = first;
   const more = responseFollowUpQuestion(openGaps, first);
   if (more) {
-    const second = await askFollowUp({
-      database, questions, sessions, changeId, phase, question: more,
+    const second = draftOrRead({
+      questions, changeId, phase, question: more,
       kind: "gate_decision",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs,
+      settleOnAnswer: true,
     });
-    if (typeof second === "string") {
+    if (second.kind === "pending") {
+      // 第二趟摆出去了。第一趟的答案还躺在账本里（status = answered），
+      // 下一次被喊回来时从 interrupted 那条路把两趟合起来。
       return {
-        outcome: {
-          kind: "unanswered", phase, questionId, reason: second, threadId: null,
-        },
-        closeSession: true,
+        outcome: { kind: "asked", phase, questionId: `${questionId}-x` },
+        closeSession: false,
       };
     }
-    answer = { action: first.action, content: { ...first.content, ...second.content } };
+    answer = {
+      action: first.action,
+      content: { ...first.content, ...second.answer.content },
+    };
   }
 
   /*
