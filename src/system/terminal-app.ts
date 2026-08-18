@@ -42,6 +42,7 @@ export class TerminalAppError extends Error {
 
 const MARKER = /^STAGEPASS:sp_[0-9a-f]{20}$/;
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TTY = /^\/dev\/tty[a-z0-9]+$/;
 
 export function terminalMarker(changeId: string, seat: string): string {
   const suffix = createHash("sha256")
@@ -77,6 +78,10 @@ on jsonResult(actionName, matchCount, resultName)
   return "{\"action\":\"" & actionName & "\",\"matches\":" & (matchCount as string) & ",\"result\":\"" & resultName & "\"}"
 end jsonResult
 
+on jsonResultTty(actionName, matchCount, resultName, ttyValue)
+  return "{\"action\":\"" & actionName & "\",\"matches\":" & (matchCount as string) & ",\"result\":\"" & resultName & "\",\"tty\":\"" & ttyValue & "\"}"
+end jsonResultTty
+
 on run argv
   set actionName to item 1 of argv
   set markerValue to item 2 of argv
@@ -108,7 +113,7 @@ on run argv
 
     if actionName is "status" then
       if matchCount is 0 then return my jsonResult(actionName, 0, "closed")
-      if (processes of markedTab) contains "codex" then return my jsonResult(actionName, 1, "open")
+      if (processes of markedTab) contains "codex" then return my jsonResultTty(actionName, 1, "open", tty of markedTab)
       return my jsonResult(actionName, 1, "stale")
     end if
 
@@ -175,6 +180,8 @@ interface TerminalScriptResponse {
   readonly action: string;
   readonly matches: number;
   readonly result: string;
+  /** 只有 status 认出一个带标记的标签页时才有。用来核对里面跑的是哪条线程。 */
+  readonly tty?: string;
 }
 
 function parseResponse(stdout: string, action: string): TerminalScriptResponse {
@@ -189,6 +196,7 @@ function parseResponse(stdout: string, action: string): TerminalScriptResponse {
       || !Number.isInteger(value.matches)
       || !("result" in value)
       || typeof value.result !== "string"
+      || ("tty" in value && typeof value.tty !== "string")
     ) throw new Error("invalid response shape");
     return value as TerminalScriptResponse;
   } catch {
@@ -208,14 +216,43 @@ class ConcreteTerminalAppOps implements TerminalAppOps {
     this.#command = options.command ?? "/usr/bin/osascript";
   }
 
+  /*
+   * 「这个标签页开着」不等于「它是这条线程的窗口」。
+   *
+   * 2026-08-17 真机：CHG-002/PRD 的标记贴在一个跑着 `01a0058a…` 的标签页上，
+   * 而绑定当天 18:28 已经换成了 `01a010fb…`（旧线程被判 missing → detach →
+   * 重绑一条新的，**标签页没人管**）。AppleScript 只问「有没有 codex 在跑」，
+   * 答是，于是报 open、按钮写「聚焦系统终端」、`startTurn` 直接把提示词
+   * `do script` 打进那个陌生会话 —— 然后回头去新线程上等这份信封出现，
+   * 永远等不到。用户看到的就是「点了没送到终端」。
+   *
+   * 所以判据必须是**三条同时成立**：标签页在、codex 在跑、而且跑的就是
+   * `target.threadId`。第三条 AppleScript 查不了（它读不到进程参数），
+   * 所以拿标签页的 tty 回来，在这边用 ps 核。差一条就是 stale ——
+   * 而 stale 会让上层走「关掉重开」，那正是应该发生的事。
+   */
   async status(target: TerminalTarget): Promise<TerminalWindowState> {
     const response = await this.#perform("status", target, "");
-    if (
-      response.result === "open"
-      || response.result === "closed"
-      || response.result === "stale"
-    ) return response.result;
-    return this.#unexpected("status", response.result);
+    if (response.result === "closed" || response.result === "stale") return response.result;
+    if (response.result !== "open") return this.#unexpected("status", response.result);
+    return await this.#runsThread(response.tty, target.threadId) ? "open" : "stale";
+  }
+
+  /** 这个 tty 上有没有一个跑着这条线程的 codex。查不出来一律当没有。 */
+  async #runsThread(tty: string | undefined, threadId: string): Promise<boolean> {
+    if (tty === undefined || !TTY.test(tty)) return false;
+    let response;
+    try {
+      response = await this.#process.run({
+        command: "/bin/ps",
+        args: ["-t", tty.slice("/dev/".length), "-o", "args="],
+      });
+    } catch {
+      return false;
+    }
+    if (response.code !== 0) return false;
+    return response.stdout.split("\n").some((line) =>
+      line.includes("codex") && line.includes(threadId));
   }
 
   async open(
@@ -223,6 +260,15 @@ class ConcreteTerminalAppOps implements TerminalAppOps {
     prompt?: string,
   ): Promise<"opened" | "focused" | "resumed"> {
     this.#validateEnvelope(prompt);
+    /*
+     * 陌生会话不许复用。AppleScript 的 open 分支看见「有 codex 在跑」就 focus
+     * 完事 —— 而那条 codex 可能跑的是上一条线程（见 status 上面那段）。先关掉，
+     * 让它走 matchCount = 0 那条路重开一个挂着正确线程的标签页。
+     *
+     * 关掉的是**这个座位自己的**标签页（标记按 change+seat 算），而绑定早已
+     * 不指向它了 —— 留着它只会让下一次提交继续发错地方。
+     */
+    if (await this.status(target) === "stale") await this.close(target);
     const response = await this.#perform("open", target, resumeCommand(target, prompt));
     if (
       response.result === "opened"

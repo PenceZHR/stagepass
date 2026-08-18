@@ -44,19 +44,47 @@ function recordingProcess(
   };
 }
 
-function response(action: string, matches: number, outcome: string): ProcessResult {
-  return result(0, `${JSON.stringify({ action, matches, result: outcome })}\n`);
+function response(
+  action: string,
+  matches: number,
+  outcome: string,
+  tty?: string,
+): ProcessResult {
+  return result(0, `${JSON.stringify({
+    action,
+    matches,
+    result: outcome,
+    ...(tty === undefined ? {} : { tty }),
+  })}\n`);
 }
+
+const TTY = "/dev/ttys003";
+
+/** 假的 `ps -t`：这个 tty 上跑着这条线程的 codex。 */
+function psRunning(threadId: string): ProcessResult {
+  return result(0, `login -pf someone\ncodex resume --remote unix:// --cd /repo ${threadId}\n`);
+}
+
+const isPs = (request: ProcessRequest): boolean => request.command === "/bin/ps";
+const actionOf = (request: ProcessRequest): string => String(request.args.at(-3));
+const callFor = (calls: readonly ProcessRequest[], action: string): ProcessRequest => {
+  const found = calls.find((each) => !isPs(each) && actionOf(each) === action);
+  if (found === undefined) throw new Error(`no ${action} call`);
+  return found;
+};
 
 describe("Terminal.app disposable Codex client", () => {
   it("passes a shell-safe native resume command through fixed osascript argv", async () => {
-    const recorded = recordingProcess(() => response("open", 0, "opened"));
+    const recorded = recordingProcess((request) => actionOf(request) === "status"
+      ? response("status", 0, "closed")
+      : response("open", 0, "opened"));
     const terminal = createTerminalAppOps({ process: recorded.process });
 
     assert.equal(await terminal.open(TARGET), "opened");
-    assert.equal(recorded.calls[0]!.command, "/usr/bin/osascript");
-    assert.equal(recorded.calls[0]!.args[0], "-e");
-    const [action, marker, command] = recorded.calls[0]!.args.slice(-3);
+    const opened = callFor(recorded.calls, "open");
+    assert.equal(opened.command, "/usr/bin/osascript");
+    assert.equal(opened.args[0], "-e");
+    const [action, marker, command] = opened.args.slice(-3);
     assert.equal(action, "open");
     assert.equal(marker, TARGET.marker);
     assert.match(
@@ -66,7 +94,7 @@ describe("Terminal.app disposable Codex client", () => {
     assert.match(command!, /--cd '\/repo with space'/);
     assert.match(command!, /'019f0000-0000-7000-8000-000000000001'/);
     assert.equal(command!.includes(["t", "mux"].join("")), false);
-    const script = recorded.calls[0]!.args[1]!;
+    const script = opened.args[1]!;
     assert.match(script, /custom title of candidateTab is markerValue/);
     assert.match(script, /set custom title of markedTab to markerValue/);
     assert.doesNotMatch(script, /custom title of candidateWindow is markerValue/);
@@ -86,17 +114,21 @@ describe("Terminal.app disposable Codex client", () => {
   });
 
   it("quotes the optional file envelope without expanding shell syntax", async () => {
-    const recorded = recordingProcess(() => response("open", 0, "opened"));
+    const recorded = recordingProcess((request) => actionOf(request) === "status"
+      ? response("status", 0, "closed")
+      : response("open", 0, "opened"));
     const terminal = createTerminalAppOps({ process: recorded.process });
 
     await terminal.open(TARGET, "读取文件：/tmp/a'b $(touch nope).md");
-    const command = recorded.calls[0]!.args.at(-1)!;
+    const command = callFor(recorded.calls, "open").args.at(-1)!;
     assert.match(command, /'读取文件：\/tmp\/a'\"'\"'b \$\(touch nope\)\.md'$/);
   });
 
   it("maps closed, live, and stale Terminal states", async () => {
     const outcomes = ["closed", "open", "stale"];
-    const recorded = recordingProcess(() => response("status", 1, outcomes.shift()!));
+    const recorded = recordingProcess((request) => isPs(request)
+      ? psRunning(TARGET.threadId)
+      : response("status", 1, outcomes.shift()!, TTY));
     const terminal = createTerminalAppOps({ process: recorded.process });
 
     assert.equal(await terminal.status(TARGET), "closed");
@@ -104,15 +136,104 @@ describe("Terminal.app disposable Codex client", () => {
     assert.equal(await terminal.status(TARGET), "stale");
   });
 
-  it("opens a missing tab, focuses a live client, and resumes a stale tab", async () => {
-    const outcomes = ["opened", "focused", "resumed"];
-    const recorded = recordingProcess(() => response("open", 1, outcomes.shift()!));
+  it("calls a tab running someone else's thread stale, not open", async () => {
+    /*
+     * 2026-08-17 真机撞出来的那件事：CHG-002/PRD 的标记贴在一个跑着 `01a0058a…`
+     * 的标签页上，而绑定当天已经换成了 `01a010fb…`（旧线程判 missing → detach →
+     * 重绑）。旧判据只问「有没有 codex 在跑」，答是 → 报 open → 按钮写「聚焦」→
+     * startTurn 把提示词打进那个陌生会话，然后去新线程上等，永远等不到。
+     * 用户看到的就是「点了没送到终端」。
+     */
+    const other = "019f0000-0000-7000-8000-00000000dead";
+    const recorded = recordingProcess((request) => isPs(request)
+      ? psRunning(other)
+      : response("status", 1, "open", TTY));
     const terminal = createTerminalAppOps({ process: recorded.process });
 
-    assert.equal(await terminal.open(TARGET), "opened");
-    assert.equal(await terminal.open(TARGET), "focused");
-    assert.equal(await terminal.open(TARGET, "读取文件：/tmp/prompt.md"), "resumed");
-    assert.match(recorded.calls[2]!.args.at(-1)!, /prompt\.md/);
+    assert.equal(await terminal.status(TARGET), "stale");
+    const ps = recorded.calls.find(isPs)!;
+    assert.deepEqual(ps.args, ["-t", "ttys003", "-o", "args="]);
+  });
+
+  it("refuses to trust a tab whose tty it cannot read", async () => {
+    // 查不出来一律当没有：宁可多关一次窗，也不许把提示词发给一个没核对过的会话。
+    for (const answer of [
+      () => result(1, "", "ps: no such tty"),
+      () => result(0, "login -pf someone\n"),
+    ]) {
+      const recorded = recordingProcess((request) => isPs(request)
+        ? answer()
+        : response("status", 1, "open", TTY));
+      assert.equal(
+        await createTerminalAppOps({ process: recorded.process }).status(TARGET),
+        "stale",
+      );
+    }
+    // tty 缺失或长得不对，连 ps 都不该跑。
+    for (const tty of [undefined, "/etc/passwd", "ttys003"]) {
+      const recorded = recordingProcess((request) => isPs(request)
+        ? psRunning(TARGET.threadId)
+        : response("status", 1, "open", tty));
+      assert.equal(
+        await createTerminalAppOps({ process: recorded.process }).status(TARGET),
+        "stale",
+      );
+      assert.equal(recorded.calls.some(isPs), false);
+    }
+  });
+
+  it("opens a missing tab, focuses a live client, and resumes a stale tab", async () => {
+    const open = (status: string, outcome: string, thread = TARGET.threadId) =>
+      recordingProcess((request) => {
+        if (isPs(request)) return psRunning(thread);
+        if (actionOf(request) === "status") return response("status", 1, status, TTY);
+        if (actionOf(request) === "close") return response("close", 1, "closed");
+        return response("open", 1, outcome);
+      });
+
+    const missing = open("closed", "opened");
+    assert.equal(
+      await createTerminalAppOps({ process: missing.process }).open(TARGET),
+      "opened",
+    );
+    assert.equal(missing.calls.some((each) => !isPs(each) && actionOf(each) === "close"), false);
+
+    const live = open("open", "focused");
+    assert.equal(
+      await createTerminalAppOps({ process: live.process }).open(TARGET),
+      "focused",
+    );
+    assert.equal(live.calls.some((each) => !isPs(each) && actionOf(each) === "close"), false);
+
+    const withPrompt = open("closed", "resumed");
+    assert.equal(
+      await createTerminalAppOps({ process: withPrompt.process })
+        .open(TARGET, "读取文件：/tmp/prompt.md"),
+      "resumed",
+    );
+    assert.match(callFor(withPrompt.calls, "open").args.at(-1)!, /prompt\.md/);
+  });
+
+  it("closes a tab holding a stranger's thread before resuming this one", async () => {
+    /*
+     * AppleScript 的 open 分支看见「有 codex 在跑」就 focus 完事 —— 而那条 codex
+     * 可能跑的是上一条线程。不先关掉，提示词就会一直发给陌生人，而且**一次都不会
+     * 报错**：AppleScript 回的是 "focused"，一切看着都成功了。
+     */
+    const stranger = "019f0000-0000-7000-8000-00000000dead";
+    const recorded = recordingProcess((request) => {
+      if (isPs(request)) return psRunning(stranger);
+      if (actionOf(request) === "status") return response("status", 1, "open", TTY);
+      if (actionOf(request) === "close") return response("close", 1, "closed");
+      return response("open", 0, "opened");
+    });
+
+    assert.equal(
+      await createTerminalAppOps({ process: recorded.process }).open(TARGET),
+      "opened",
+    );
+    const order = recorded.calls.filter((each) => !isPs(each)).map(actionOf);
+    assert.deepEqual(order, ["status", "close", "open"]);
   });
 
   it("submits only to a unique live marked tab", async () => {
@@ -131,7 +252,8 @@ describe("Terminal.app disposable Codex client", () => {
     const script = recorded.calls[0]!.args[1]!;
     assert.match(
       script,
-      /if \(processes of markedTab\) contains "codex" then return my jsonResult\(actionName, 1, "open"\)/,
+      /if \(processes of markedTab\) contains "codex" then return my jsonResultTty\(actionName, 1, "open", tty of markedTab\)/,
+      "status 必须把 tty 带回来 —— 线程核对在 Node 那边做",
     );
     assert.match(
       script,
@@ -168,12 +290,14 @@ describe("Terminal.app disposable Codex client", () => {
 
   it("rediscovers by marker and never reuses an OS window id", async () => {
     let call = 0;
-    const recorded = recordingProcess(({ args }) => {
+    const recorded = recordingProcess((request) => {
+      if (isPs(request)) return psRunning(TARGET.threadId);
       call += 1;
       return result(0, JSON.stringify({
-        action: args.at(-3),
+        action: request.args.at(-3),
         matches: 1,
         result: call === 1 ? "open" : "focused",
+        tty: TTY,
         windowId: 987654,
       }));
     });
@@ -181,7 +305,8 @@ describe("Terminal.app disposable Codex client", () => {
 
     assert.equal(await terminal.status(TARGET), "open");
     await terminal.focus(TARGET);
-    assert.equal(recorded.calls[1]!.args.some((value) => value.includes("987654")), false);
+    const focused = callFor(recorded.calls, "focus");
+    assert.equal(focused.args.some((value) => value.includes("987654")), false);
   });
 
   it("maps denied Apple events", async () => {
