@@ -24,6 +24,8 @@
  * MCP server 是**按会话起**的。覆盖 `server.mjs` 之后，已经开着的那条 Codex 会话
  * 继续跑老进程 —— 卡还活着、还回传，但连的是老代码，看起来就像「改了没生效」。
  */
+import { spawn } from "node:child_process";
+
 import { build } from "esbuild";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -116,6 +118,16 @@ async function main(): Promise<void> {
    * `typescript` 走 external：它内部用动态 `require("fs")`，打进 ESM 会直接抛
    * `Dynamic require of "fs" is not supported`（2026-08-18 实测）。所以它必须以
    * 真 node_modules 的形式躺在插件目录里，见下面那次拷贝。
+   *
+   * ## banner：把 `require` 还给那些 CJS 依赖
+   *
+   * 同一个坑第二次踩，这次是 `ws`（`app-server-daemon` → WebSocket）。它是 CJS，
+   * 内部 `require("events")`；打成 ESM 之后 esbuild 生成的 `__require` 是一个
+   * **只会抛异常的桩**，于是产物在第一条消息之前就死，Codex 那边只看到「插件起不来」。
+   *
+   * 那个桩自己留了门：`typeof require !== "undefined"` 时它用真的。所以这里在每个
+   * 产物顶部把 `require` 定义出来 —— 一行 banner 治的是整类问题，而不是再挑一个
+   * 依赖出来 external（external 还要把它的 node_modules 一起搬进插件目录）。
    */
   await build({
     entryPoints: [join(ROOT, "src", "plugin", "server.ts")],
@@ -125,6 +137,10 @@ async function main(): Promise<void> {
     external: ["typescript"],
     bundle: true, minify: false, platform: "node", format: "esm",
     target: "node22", logLevel: "warning",
+    banner: {
+      js: "import { createRequire as __spCreateRequire } from \"node:module\";\n"
+        + "const require = __spCreateRequire(import.meta.url);",
+    },
   });
 
   /*
@@ -178,11 +194,54 @@ async function main(): Promise<void> {
     cpSync(icon, join(OUT, "assets", "app-icon.png"));
   } catch { /* 图标可选 —— 缺了不该让构建失败 */ }
 
+  await smokeStart();
+
   const kb = (text: string): string => `${Math.round(text.length / 1024)} KB`;
   console.log(`widget   ${kb(widget)}`);
   console.log(`server   ${kb(readFileSync(join(OUT, "server.mjs"), "utf-8"))}`);
   console.log(`装到     ${OUT.replace(homedir(), "~")}`);
   console.log("\n**装完要开一条新的 Codex 会话** —— MCP server 按会话起，旧会话还跑着老代码。");
+}
+
+/**
+ * **产物真的起得来吗。**
+ *
+ * 2026-08-18 的教训：`pnpm check` 1145 全绿、构建打印「装到 …」，而装上去那份
+ * `server.mjs` 在第一条消息之前就抛 `Dynamic require of "events"`（`ws` 是 CJS，
+ * 打成 ESM 之后它的 `require` 变成一个只会抛的桩）。三次构建**没有一次启动成功**，
+ * 而没人发现 —— 因为机器上那条还开着的会话是更早那份代码起的，一直在正常回话。
+ *
+ * 单测证不了这件事：它测的是源码，而这个失败只存在于**打包之后**。所以判据放在
+ * 这里，就是产物本身：起一个真进程，送一条真 `initialize`，收不到回答就让构建失败。
+ * 「装好了」这句话从此有据可依。
+ */
+async function smokeStart(): Promise<void> {
+  const child = spawn(process.execPath, [join(OUT, "server.mjs")], {
+    cwd: OUT, stdio: ["pipe", "pipe", "pipe"],
+  });
+  const said: string[] = [];
+  const complained: string[] = [];
+  child.stdout.on("data", (chunk: Buffer) => said.push(chunk.toString()));
+  child.stderr.on("data", (chunk: Buffer) => complained.push(chunk.toString()));
+
+  const answered = new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), 10_000);
+    child.stdout.on("data", () => {
+      if (said.join("").includes("serverInfo")) { clearTimeout(timer); resolve(true); }
+    });
+    child.on("exit", () => { clearTimeout(timer); resolve(false); });
+  });
+  child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0", id: 0, method: "initialize", params: {},
+  })}\n`);
+
+  const ok = await answered;
+  child.kill();
+  if (ok) return;
+  throw new Error(
+    "装上去的 server.mjs 起不来 —— Codex 那边只会看到「插件启动失败」。\n"
+    + `stderr：${complained.join("").slice(0, 1200) || "（一个字都没说，多半是启动就退了）"}`,
+  );
 }
 
 /*
