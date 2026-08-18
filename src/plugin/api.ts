@@ -4,6 +4,8 @@ import type Database from "better-sqlite3";
 
 import { rubricFor } from "../app/edit-rubric";
 import { isPhase } from "../domain/phase";
+import type { AppServerHistory } from "../codex/app-server-history";
+import { progressView, type LiveSessions } from "../web/panel-view";
 import { EvidenceStore } from "../store/evidence-store";
 import { ParallelStore } from "../store/parallel-store";
 import { ProjectStore } from "../store/project-store";
@@ -27,15 +29,33 @@ import { panelPayload } from "./panel-data";
  *
  * - **能读**：从库里读出来，和面板给的是同一份（调的就是同一个 `panelView`）。
  * - **读不到**：`404`，界面本来就会处理（比如 Change 不在库里）。
- * - **还没接上**：`501` + `not_wired_yet` + 路径。**这一条最重要** —— 派发、问人、
- *   裁决这些要等执行通道（第 3 步）。让它们静默失败，人会以为「点了没反应是 bug」；
- *   明着回一个「这条还没接上」，人至少知道自己在等什么。
+ * - **这儿没有**：`501` + `not_wired_yet` + 路径 + **一句人话**。让它静默失败，人会
+ *   以为「点了没反应是 bug」；明着说一句，人至少知道自己在等什么。
  */
+
+/**
+ * 进度要问的两样：座位活着吗、绑的线程读得到吗。
+ *
+ * 故意是结构类型而不是 `PluginSeats` / `AppServerHistory`：这一层是只读的那一半，
+ * 它**不该拿得到派轮的能力**。给它一个只能问不能起的窄面，测试也能塞假的进来。
+ */
+export interface ProgressSources {
+  readonly sessions: LiveSessions;
+  readonly history: Pick<AppServerHistory, "readThread">;
+}
 
 export interface ApiDeps {
   readonly database: Database.Database;
   /** 图谱那两条路要问 git 「这个仓库跟踪了哪些文件」。 */
   readonly repo: RepoOps;
+  /**
+   * 现在有没有一条活着的控制连接。**没起过就是 `null`，这里绝不去起**
+   * —— 看一眼不该在机器上留下一个 daemon（用户的界面原则：看状态不该有副作用）。
+   *
+   * 不给 = 当作没有。那不是「不知道」而是事实：daemon 是插件进程的孩子，
+   * 它不在，StagePass 派出去的那一轮就真的没了。
+   */
+  readonly live?: () => ProgressSources | null;
 }
 
 export interface ApiResponse {
@@ -79,6 +99,8 @@ export async function handleApi(path: string, deps: ApiDeps): Promise<ApiRespons
 
   if (pathname === "/api/artifact") return artifact(params, deps);
 
+  if (pathname === "/api/progress") return progress(changeId, deps);
+
   /*
    * 产物和图谱 —— **唯一一处动态 import**。
    *
@@ -92,10 +114,11 @@ export async function handleApi(path: string, deps: ApiDeps): Promise<ApiRespons
   }
 
   /*
-   * 剩下的分两类，但对界面来说要长得一样：一个说得出「为什么现在没有」的回答。
+   * 剩下的两类，对界面来说要长得一样：一个说得出「为什么现在没有」的回答。
    *
-   * `/api/progress` 要 App Server 的历史、`/api/run` 要派发能力 —— 都在第 3 步。
-   * 产物和 rubric 那几条是纯读，接得上，只是还没接（下一轮）。
+   * 一是 `/api/terminal/*` 这种**插件里没有对应物**的路（旧面板的终端门户，
+   * 前端已经不再要了）；二是会改库的那些 —— 那些走 `actions.ts`，到这儿来
+   * 说明界面把方法用错了。
    */
   return {
     status: 501,
@@ -110,7 +133,8 @@ export async function handleApi(path: string, deps: ApiDeps): Promise<ApiRespons
        * 「请 Codex 问我」，看到的就是它，读起来和「坏了」一模一样，所以他报的是
        * 「没反应」。回一个 501 不等于把话说清楚了；**话是这个字段说的。**
        */
-      reason: "这条还没接上 —— 派发、问人、裁决都要等执行通道（下一步在做）",
+      reason: "插件里没有这条路。它要么是旧面板才有的（终端门户），"
+        + "要么该用 POST 走动作那一侧。",
     },
   };
 }
@@ -178,6 +202,33 @@ function artifact(params: URLSearchParams, deps: ApiDeps): ApiResponse {
 }
 
 /** 这个 Change 的代码在哪。没有项目、或者项目没路径，都算「没有」。 */
+/**
+ * 一轮跑到哪了。界面在跑的时候每隔几秒问一次。
+ *
+ * 判据一个字都不在这里 —— 全在 `progressView`（面板用的是同一个）。这里只做两件事：
+ * 把「现在有没有活着的控制连接」翻成它要的两个接口，和把「没有这个 Change」翻成 404。
+ *
+ * ## 没有连接时报的不是「不知道」，是「没了」
+ *
+ * daemon 是插件进程的孩子。插件重启，它跟着没；而库里那条 `running` 还挂着。
+ * 这时 `live=false` → `processGone=true` **是事实，不是降级** —— 那一格正是为这种
+ * 死法存在的：不然界面会一直显示「在跑」，一路显示到 30 分钟超时。
+ *
+ * 读不出线程时 `stage` 给 `null`，界面照实说「还看不出走到哪一步」。**不编一个阶段名**。
+ */
+async function progress(changeId: string, deps: ApiDeps): Promise<ApiResponse> {
+  const live = deps.live?.() ?? null;
+  const view = await progressView({
+    database: deps.database,
+    sessions: live?.sessions ?? { has: () => false, quietForMs: () => null },
+    history: live?.history ?? { readThread: async () => null },
+    changeId,
+  });
+  return view === null
+    ? { status: 404, body: { error: "no_such_change" } }
+    : { status: 200, body: view };
+}
+
 function projectRoot(database: Database.Database, changeId: string): string | null {
   try {
     const change = new ChangeStore(database).read(changeId);

@@ -7,7 +7,7 @@ import { AppServerHistory } from "../codex/app-server-history";
 import { startManagedAppServer, type ManagedAppServer } from "../codex/app-server-daemon";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/phase-instructions";
-import { childThreadsOf, readThreadTranscript } from "../codex/subagent";
+import { childThreadsOf, readThreadTranscript, readThreadUserMessages } from "../codex/subagent";
 import type { Phase } from "../domain/phase";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
@@ -22,7 +22,7 @@ import { JobStore } from "../work/job-store";
 import type { RepoOps } from "../work/repo";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { TurnLoop } from "../work/turn-loop";
-import { PluginSeats } from "./seats";
+import { ASIDE, PluginSeats } from "./seats";
 
 /**
  * 插件这一侧的执行通道 —— 一轮真的怎么跑起来。
@@ -222,11 +222,60 @@ export class PluginRuntime {
   }
 
   /**
+   * 在这个阶段的座位上问模型一句，回它说的话。录需求靠它去提问题。
+   *
+   * 和 `runRound` 的区别：那条是**排一轮活儿**（进账本、有 job、有租约），这条只是
+   * 借这条线程说句话。所以它不碰账本 —— 「模型在读仓库」不是这个阶段的一轮。
+   */
+  async askInPhase(changeId: string, phase: Phase, prompt: string): Promise<string> {
+    const { seats } = await this.ready();
+    // `threadId` 由座位自己从绑定表认（见 `seats.seatOn`），这里给 null 不是「开新线程」。
+    return (await seats.transportFor(changeId, phase).runTurn({ threadId: null, prompt })).text;
+  }
+
+  /** 旁路线程上说一句。没有那条线程就当场开一条 —— 人按「旁路窗口」就是这个意思。 */
+  async talkAside(changeId: string, prompt: string): Promise<string> {
+    const { seats } = await this.ready();
+    return (await seats.asideTransport(changeId).runTurn({ threadId: null, prompt })).text;
+  }
+
+  /**
+   * 这条线程上人说过哪些话。**`null` = 读不出来**，和「读到了，一句都没有」是两件事
+   * —— 起草那道闸靠这个区分（`app/converge-brief.ts` 里那段注释说的就是它）。
+   */
+  async saidIn(threadId: string): Promise<readonly string[] | null> {
+    const { history } = await this.ready();
+    return readThreadUserMessages({ history, threadId });
+  }
+
+  /**
+   * 放掉一个座位的会话。**没起过连接就什么都不用做** —— 那时也没有会话可放。
+   *
+   * 这里不 `await ready()`：为了放掉一个不存在的会话去起一个 daemon 是纯粹的荒谬。
+   */
+  releaseSeat(changeId: string, seat: Phase | typeof ASIDE): void {
+    this.seats?.release(changeId, seat);
+  }
+
+  /**
    * 归档要用的那一小片历史接口。**没起过 app-server 就是 null** —— 那时也没有
    * 线程可归档，返回 null 比按需起一个子进程诚实（归档不该顺手拉起一个 daemon）。
    */
   archiveOps(): AppServerHistory | null {
     return this.history;
+  }
+
+  /**
+   * 进度那一屏要问的两样。同上：**没起过就是 null，这里绝不去起。**
+   *
+   * 而「没有连接」在进度上不是「不知道」：daemon 是这个进程的孩子，它不在，
+   * StagePass 派出去的那一轮就真的没了 —— `api.ts` 据此报 `processGone`，
+   * 那一格正是为这种死法存在的。
+   */
+  liveProgress(): { seats: PluginSeats; history: AppServerHistory } | null {
+    return this.seats === null || this.history === null
+      ? null
+      : { seats: this.seats, history: this.history };
   }
 
   /** 一个阶段最多跑几轮。裁决那条路要用它摊开收敛数据。 */

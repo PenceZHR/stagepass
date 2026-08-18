@@ -148,3 +148,63 @@ describe("plugin · 没接上的路要说人话", () => {
     }
   });
 });
+
+/**
+ * `/api/progress` —— 一轮在跑的时候，界面每两秒问一次「它到哪了」。
+ *
+ * 这一屏存在的理由（`panel-view.ts` 的 `progressView`）：**「在跑」和「已经死了」
+ * 在界面上是同一个样子**。插件这一面还多一种死法 —— app-server daemon 是插件进程
+ * 的孩子，插件重启它就没了，而库里那条 `running` 还挂着。
+ */
+describe("plugin · 进度", () => {
+  it("没有活着的座位时，库里那条 running 报「进程没了」，不报「在跑」", async () => {
+    const database = open();
+    try {
+      new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+
+      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo });
+
+      assert.equal(answer.status, 200);
+      const view = answer.body as { status: string; live: boolean; processGone: boolean };
+      assert.equal(view.status, "running");
+      assert.equal(view.live, false);
+      assert.equal(view.processGone, true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("座位活着就照实说，并把「多久没动静」原样带上", async () => {
+    const database = open();
+    try {
+      new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+
+      const answer = await handleApi("/api/progress?change=CHG-1", {
+        database,
+        repo,
+        live: () => ({
+          sessions: { has: () => true, quietForMs: () => 42_000 },
+          history: { readThread: async () => null },
+        }),
+      });
+
+      const view = answer.body as { live: boolean; processGone: boolean; quietForMs: number | null };
+      assert.equal(view.live, true);
+      assert.equal(view.processGone, false);
+      assert.equal(view.quietForMs, 42_000);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("没有这个 Change 就是 404 —— 不是一份空进度", async () => {
+    const database = open();
+    try {
+      const answer = await handleApi("/api/progress?change=CHG-404", { database, repo });
+
+      assert.equal(answer.status, 404);
+    } finally {
+      database.close();
+    }
+  });
+});

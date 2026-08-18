@@ -35,6 +35,14 @@ import { ProjectStore } from "../store/project-store";
  * 决定，不是这一层的：这一层只保证请求有人接、不会静默挂住。
  */
 
+/**
+ * 旁路座位的名字。**它不是一个阶段** —— 类型上就不该能和 `Phase` 混着传。
+ *
+ * 界面用同一个字段（`?phase=`）说「哪个座位」，所以这个名字要能出现在那儿；
+ * 而账本里它是另一种行（`change_bindings.kind = 'aside'`），不是某个阶段的行。
+ */
+export const ASIDE = "aside" as const;
+
 export interface SeatOptions extends Pick<
   AppServerSessionOptions, "sandbox" | "approvalPolicy" | "effort" | "model"
 > {
@@ -89,14 +97,43 @@ export class PluginSeats {
    * 是最难查的一种状态。
    */
   transportFor(changeId: string, phase: Phase): CodexTransport {
+    return this.seatOn(changeId, phase);
+  }
+
+  /**
+   * 旁路那条线程的通道 —— 「这个 Change 的闲聊」，一个 Change 一条。
+   *
+   * 它**不属于任何阶段**：不产出、不推闸门、不占阶段座位。所以绑的是 `aside` 那一行
+   * （schema 用部分唯一索引钉死一条）。落错行的代价很具体：「同一阶段只许一轮」
+   * 会把一次闲聊当成一轮在跑，从此这个阶段派不动。
+   *
+   * 起草需求（`app/converge-brief.ts`）就是照 `findAside` 去认这段对话的 —— 线程
+   * 不记在这儿，那条路永远停在「先去开旁路窗口谈」，而人明明已经谈过了。
+   */
+  asideTransport(changeId: string): CodexTransport {
+    return this.seatOn(changeId, ASIDE);
+  }
+
+  /**
+   * 一个座位怎么跑一轮。阶段座位和旁路只差**绑在哪一行**，别的一个字不差 ——
+   * 所以它们共用这一段，而不是各写一份迟早会分叉的拷贝。
+   */
+  private seatOn(changeId: string, seat: Phase | typeof ASIDE): CodexTransport {
+    const bindings = (): BindingStore => new BindingStore(this.options.database);
+    const found = (): { threadId: string; status: string } | null =>
+      seat === ASIDE ? bindings().findAside(changeId) : bindings().find(changeId, seat);
+    const remember = (threadId: string): void => {
+      if (seat === ASIDE) bindings().bindAside(changeId, threadId);
+      else bindings().bind(changeId, seat, threadId);
+    };
+
     return {
       runTurn: async (dispatch) => {
         const cwd = this.workspaceFor(changeId);
         if (cwd === null) {
           throw new SeatError("project_path_missing", `${changeId} 的项目没有路径，跑不了`);
         }
-        const bindings = new BindingStore(this.options.database);
-        const bound = bindings.find(changeId, phase);
+        const bound = found();
         const session = await this.options.host.open(
           bound?.status === "bound" ? bound.threadId : null,
           {
@@ -107,9 +144,7 @@ export class PluginSeats {
             ...(this.options.model === undefined ? {} : { model: this.options.model }),
           },
         );
-        if (bound?.threadId !== session.threadId) {
-          bindings.bind(changeId, phase, session.threadId);
-        }
+        if (bound?.threadId !== session.threadId) remember(session.threadId);
         this.watch(session.threadId, session);
         dispatch.onThread?.(session.threadId);
 
@@ -118,6 +153,24 @@ export class PluginSeats {
         return { threadId: session.threadId, text: done.text };
       },
     };
+  }
+
+  /**
+   * 放掉这个座位的会话 —— 活干完了，或者人当场把它关了。
+   *
+   * **只放会话，不动绑定。** 线程还在 Codex 里、人还点得开、下一轮 resume 回同一条；
+   * 放掉的只是「StagePass 手上这条连接」。抹掉绑定等于把那段历史丢了。
+   *
+   * 不放的代价很具体：`has()` 永远是真 → 进度那一屏的 `live` 一直是真 → 界面一直
+   * 显示「在跑」，而账本上早就没有活儿了。
+   */
+  release(changeId: string, seat: Phase | typeof ASIDE): void {
+    const bindings = new BindingStore(this.options.database);
+    const bound = seat === ASIDE ? bindings.findAside(changeId) : bindings.find(changeId, seat);
+    if (bound === null || bound.status !== "bound") return;
+    this.options.host.close(bound.threadId);
+    this.lastEventAt.delete(bound.threadId);
+    this.watching.delete(bound.threadId);
   }
 
   /** 这个座位现在有没有活着的会话。用于「同一阶段只许一轮」那条判据。 */

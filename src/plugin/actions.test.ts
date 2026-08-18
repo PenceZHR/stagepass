@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
+import { JobStore } from "../work/job-store";
 import { ProjectStore } from "../store/project-store";
 import { handleAction, type ActionDeps } from "./actions";
 import { openDatabase } from "./sqlite-handle";
@@ -20,15 +21,31 @@ const runtime = {
   runRound: () => { throw new Error("这一组不该派轮"); },
   roundBudget: 5,
   archiveOps: () => null,
+  // 放座位是同步的、而且没起过连接时什么都不用做 —— 这里就是那种情况。
+  releaseSeat: () => {},
 } as unknown as ActionDeps["runtime"];
 
+/**
+ * brief 的两份文件。**注进来而不是让它写真磁盘** —— 生产在 `~/.stagepass/briefs/`，
+ * 测试要是也写那儿，跑一次单测就污染了用户真实的草稿。
+ */
+const files = new Map<string, string>();
+const briefFiles = {
+  write: (name: string, content: string): string => {
+    files.set(name, content);
+    return `/fake/briefs/${name}`;
+  },
+  read: (name: string): string | null => files.get(name) ?? null,
+};
+
 function open(): ActionDeps {
+  files.clear();
   const database = openDatabase(":memory:");
   database.pragma("foreign_keys = ON");
   database.exec(SCHEMA_SQL);
   new ProjectStore(database, () => new Date(AT)).ensure("PRJ-1", "小游戏", "/tmp/repo");
   new ChangeStore(database, { now: () => new Date(AT) }).create("CHG-1", { projectId: "PRJ-1" });
-  return { database, repo, runtime, workspaceFor: () => "/tmp/repo" };
+  return { database, repo, runtime, briefFiles, workspaceFor: () => "/tmp/repo" };
 }
 
 const call = (path: string, deps: ActionDeps, body = ""): ReturnType<typeof handleAction> => {
@@ -130,15 +147,20 @@ describe("plugin · 会改库的那些路", () => {
     }
   });
 
-  it("还没接上的动作照样说人话", async () => {
+  /*
+   * 界面会 POST 的路已经全部接上，所以这条打的是**最后那种**失败：路径不认识。
+   * 它照样得说人话 —— 一个空 body 的 501 在屏幕上是「没问成：undefined」，
+   * 和「坏了」一模一样，人报的会是「没反应」。
+   */
+  it("不认识的路照样说人话，不空着回一个状态码", async () => {
     const deps = open();
     try {
-      // brief 那条要执行通道里的「起草」，还没接 —— 它必须带着能显示的理由回来。
-      const answer = await call("/api/brief?change=CHG-1", deps);
+      const answer = await call("/api/nope?change=CHG-1", deps);
 
       assert.equal(answer.status, 501);
       const body = answer.body as { reason?: string };
       assert.equal(typeof body.reason, "string");
+      assert.equal(body.reason !== undefined && body.reason.length > 8, true);
     } finally {
       deps.database.close();
     }
@@ -173,6 +195,197 @@ describe("plugin · 会改库的那些路", () => {
       assert.deepEqual(answer.body, { ran: true, phase: "PRD", jobId: "JOB-1" });
     } finally {
       database.close();
+    }
+  });
+});
+
+/**
+ * brief 那三条：起草（旁路谈完整理成草稿）、定稿（人改过的那份落库）、
+ * 录需求（模型提问题、人答、答案落成 brief）。
+ *
+ * 三条都**只做翻译** —— 判据全在 `app/converge-brief.ts` 和 `app/record-brief.ts` 里。
+ * 这一组要证的是「翻译到位了」：每一种下场都有一句人看得懂的话，没有一种是 501。
+ */
+describe("plugin · 需求那三条", () => {
+  /*
+   * 打的是真实症状：**旁路里聊完，按「起草」，屏幕上一句「没问成：undefined」。**
+   * 没谈过是一个正常结局，它必须说得出「先去哪儿做什么」，而不是一个未接的路。
+   */
+  it("没有旁路对话时说去哪儿谈，不是 501", async () => {
+    const deps = open();
+    try {
+      const answer = await call("/api/brief-draft?change=CHG-1", deps);
+
+      assert.equal(answer.status, 200);
+      assert.equal((answer.body as { kind: string }).kind, "no_aside_conversation");
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  /*
+   * **机械判据**：终稿和草稿逐字相同 = 没人编辑过 = 不算 brief。
+   * 这一条是「不许凭空造需求」的最后一道，翻译错了它就等于不存在。
+   */
+  it("工作稿一个字没改就不收，说得出是这条判据挡的", async () => {
+    const deps = open();
+    try {
+      files.set("CHG-1-draft.md", "四节草稿");
+      files.set("CHG-1.md", "四节草稿");
+
+      const answer = await call("/api/brief-confirm?change=CHG-1", deps);
+
+      assert.equal(answer.status, 200);
+      assert.equal((answer.body as { kind: string }).kind, "draft_unedited");
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  it("人改过的那份落进库里", async () => {
+    const deps = open();
+    try {
+      files.set("CHG-1-draft.md", "四节草稿");
+      files.set("CHG-1.md", "四节草稿 —— 人补的边界");
+
+      const answer = await call("/api/brief-confirm?change=CHG-1", deps);
+
+      assert.equal((answer.body as { kind: string }).kind, "recorded");
+      assert.equal(new ChangeStore(deps.database).read("CHG-1").brief, "四节草稿 —— 人补的边界");
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  /*
+   * 录需求要模型先提问题。它跑在**当前阶段的座位**上 —— 跑错座位的代价不是报错，
+   * 是这一问占掉了另一个阶段的线程，而「同一阶段只许一轮」从此挡住那边。
+   */
+  it("录需求把题问在当前阶段的座位上，并把题摆到页面上", async () => {
+    const deps = open();
+    const asked: Array<{ phase: string; prompt: string }> = [];
+    try {
+      const answer = await call("/api/brief?change=CHG-1", {
+        ...deps,
+        runtime: {
+          ...deps.runtime,
+          askInPhase: async (_id: string, phase: string, prompt: string) => {
+            asked.push({ phase, prompt });
+            /* 提案的形状是「问题 | 选项 | 选项 | 选项」（`domain/brief.ts`），不是散文。 */
+            return "这次改动要解决什么问题？ | 现在打不开 | 太慢 | 数据会丢\n"
+              + "什么算做完？ | 能打开 | 一秒内出图 | 有回归测试";
+          },
+        } as unknown as ActionDeps["runtime"],
+      });
+
+      assert.equal(answer.status, 200);
+      assert.equal(asked[0]?.phase, "PRD");
+      assert.equal((answer.body as { asked: boolean }).asked, true);
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  it("没有这个 Change 就是 404 —— 三条都一样", async () => {
+    const deps = open();
+    try {
+      for (const path of ["/api/brief", "/api/brief-draft", "/api/brief-confirm"]) {
+        assert.equal((await call(`${path}?change=CHG-404`, deps)).status, 404, path);
+      }
+    } finally {
+      deps.database.close();
+    }
+  });
+});
+
+/**
+ * `/api/close` —— 人当场把一个座位收掉。
+ *
+ * ## 光放掉会话不算出口
+ *
+ * 「这个 (Change,阶段) 上有没有活儿」有两个来源：手上那条会话，和账本里 queued /
+ * running 的 job。只收前者的话，账本上那一轮照旧挂着、Change 停在 `running` 等满
+ * 三小时超时，而这段时间里人**一个能按的都没有**。所以两个都收。
+ *
+ * 这仍然不是裁决入口：中止一轮不推闸门、不对任何产物下判断，只陈述「人把这一轮停了」。
+ */
+describe("plugin · 收掉一个座位", () => {
+  it("账本上那一轮当场记成人中止的，Change 从 running 里出来", async () => {
+    const deps = open();
+    try {
+      new ChangeStore(deps.database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      new JobStore(deps.database).enqueue({
+        id: "JOB-1", changeId: "CHG-1", kind: "turn",
+        deadlineAt: Date.now() + 1000, maxAttempts: 1, phase: "PRD",
+      });
+
+      const answer = await call("/api/close?change=CHG-1&phase=PRD", deps);
+
+      assert.equal(answer.status, 200);
+      assert.equal((answer.body as { aborted?: string }).aborted, "JOB-1");
+      const job = new JobStore(deps.database).read("JOB-1");
+      // 中止落在账本上的形状是「失败 + 说得出是谁停的」，不是一个单独的状态。
+      assert.equal(job.status, "failed");
+      assert.equal(job.error, "aborted_by_human");
+      assert.notEqual(new ChangeStore(deps.database).read("CHG-1").state.status, "running");
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  /*
+   * 只收**这个阶段**的账。人关一个历史阶段的闲座位，不该顺手把正在跑的那一轮打掉
+   * —— 那是「点了一下关闭，另一个阶段的三小时白跑了」。
+   */
+  it("关一个没有活儿的阶段，不动别的阶段那一轮", async () => {
+    const deps = open();
+    try {
+      new ChangeStore(deps.database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      new JobStore(deps.database).enqueue({
+        id: "JOB-1", changeId: "CHG-1", kind: "turn",
+        deadlineAt: Date.now() + 1000, maxAttempts: 1, phase: "PRD",
+      });
+
+      const answer = await call("/api/close?change=CHG-1&phase=Spec", deps);
+
+      assert.equal(answer.status, 200);
+      assert.equal((answer.body as { aborted?: string }).aborted, undefined);
+      assert.equal(new JobStore(deps.database).read("JOB-1").status, "queued");
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  /*
+   * 出旁路要**结账**：比一次 HEAD。前后不同 = 这一趟动过手，`needsNote` 为真，
+   * 界面据此向人要一句「这次旁路做了什么」—— 那是下游唯一能知道环外发生过什么的地方。
+   */
+  it("出旁路时结账，并说得出要不要问那句话", async () => {
+    const deps = open();
+    try {
+      await call("/api/aside?change=CHG-1", deps);
+
+      const answer = await call("/api/close?change=CHG-1&phase=aside", deps);
+
+      assert.equal(answer.status, 200);
+      const body = answer.body as { phase: string; visit?: number; needsNote?: boolean };
+      assert.equal(body.phase, "aside");
+      assert.equal(body.visit, 1);
+      assert.equal(body.needsNote, false);
+    } finally {
+      deps.database.close();
+    }
+  });
+
+  it("阶段名不认识就说清楚，不当成「关掉了」", async () => {
+    const deps = open();
+    try {
+      const answer = await call("/api/close?change=CHG-1&phase=Nope", deps);
+
+      assert.equal(answer.status, 400);
+      assert.equal((answer.body as { error: string }).error, "no_such_phase");
+    } finally {
+      deps.database.close();
     }
   });
 });

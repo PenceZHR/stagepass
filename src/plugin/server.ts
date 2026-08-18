@@ -1,13 +1,13 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 
 import { prepareSchema } from "../db/schema";
 import { createRepoOps } from "../work/repo";
-import { handleAction } from "./actions";
+import { handleAction, type ActionDeps } from "./actions";
 import { PluginRuntime } from "./runtime";
-import { handleApi } from "./api";
+import { handleApi, type ApiDeps } from "./api";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 import { openDatabase } from "./sqlite-handle";
@@ -39,6 +39,11 @@ const HERE = new URL(".", import.meta.url).pathname;
 const LOG = join(HERE, "plugin.log");
 const PANEL_URI = "ui://stagepass/panel";
 const DB_PATH = process.env["STAGEPASS_DB"] ?? join(homedir(), ".stagepass", "panel.db");
+/**
+ * brief 的草稿和工作稿。人要**在编辑器里**改工作稿，所以它得是磁盘上一个说得出
+ * 路径的文件 —— 「改没改过」那条机械判据比的就是这两份。
+ */
+const BRIEFS_DIR = process.env["STAGEPASS_BRIEFS"] ?? join(homedir(), ".stagepass", "briefs");
 
 /** 排障用。写不进去也不能让 server 倒下 —— 日志不是功能。 */
 function log(direction: string, message: unknown): void {
@@ -66,8 +71,20 @@ function database(): Database.Database {
 
 /** 图谱那两条路要问 git。整层可注入，这里是唯一的真实现。 */
 const repo = createRepoOps();
-function deps(): { database: Database.Database; repo: ReturnType<typeof createRepoOps> } {
-  return { database: database(), repo };
+function deps(): ApiDeps {
+  return {
+    database: database(),
+    repo,
+    /*
+     * 进度那一屏问「现在有没有活着的座位」。**只问已经建好的那个 runtime，
+     * 不建新的** —— `writeDeps()` 会开可写句柄并跑迁移，而看一眼进度不该做这些。
+     * 一轮都没派过时这里就是 null，进度照实报「进程没了」。
+     */
+    live: () => {
+      const live = runtime?.liveProgress() ?? null;
+      return live === null ? null : { sessions: live.seats, history: live.history };
+    },
+  };
 }
 
 /**
@@ -80,12 +97,7 @@ function deps(): { database: Database.Database; repo: ReturnType<typeof createRe
  */
 let writable: Database.Database | null = null;
 let runtime: PluginRuntime | null = null;
-function writeDeps(): {
-  database: Database.Database;
-  repo: ReturnType<typeof createRepoOps>;
-  workspaceFor: (changeId: string) => string | null;
-  runtime: PluginRuntime;
-} {
+function writeDeps(): ActionDeps {
   if (writable === null) {
     writable = openDatabase(DB_PATH);
     prepareSchema(writable);
@@ -97,6 +109,18 @@ function writeDeps(): {
   runtime ??= new PluginRuntime({ database: writable, repo });
   return {
     runtime,
+    briefFiles: {
+      write: (name, content) => {
+        mkdirSync(BRIEFS_DIR, { recursive: true });
+        const path = join(BRIEFS_DIR, name);
+        writeFileSync(path, content, "utf-8");
+        return path;
+      },
+      // 不在就是 null —— 「还没起草」是一个正常状态，不是读取失败。
+      read: (name) => {
+        try { return readFileSync(join(BRIEFS_DIR, name), "utf-8"); } catch { return null; }
+      },
+    },
     database: writable,
     repo,
     workspaceFor: (changeId) => {

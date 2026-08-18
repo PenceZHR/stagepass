@@ -2,8 +2,10 @@ import type Database from "better-sqlite3";
 
 import type { RepoOps } from "../work/repo";
 
+import { confirmBrief, draftBrief } from "../app/converge-brief";
 import { decideGate } from "../app/decide-gate";
 import { saveRubric as applyRubricEdit } from "../app/edit-rubric";
+import { recordBrief } from "../app/record-brief";
 import { waive } from "../app/waive";
 import { createChange, createProject } from "../app/workspace";
 import { isPhase, type Phase } from "../domain/phase";
@@ -11,11 +13,13 @@ import { RUBRIC_ROLES, type RubricRole } from "../domain/rubric";
 import { parseRubricEdit, UnreadableEditError } from "../domain/rubric-edit";
 import { archiveFinished } from "../codex/archive";
 import { AsideStore } from "../store/aside-store";
+import { ParallelStore } from "../store/parallel-store";
 import { ChangeStore } from "../store/change-store";
 import { JobStore } from "../work/job-store";
 import { QuestionStore } from "../store/question-store";
 import { answerFromChoices, openQuestionOf } from "../web/panel-view";
 import type { PluginRuntime } from "./runtime";
+import { ASIDE } from "./seats";
 
 /**
  * 会改库的那些路 —— 答题、豁免、建 Change / 项目、存判据、进出旁路。
@@ -42,6 +46,16 @@ export interface ActionDeps {
   readonly workspaceFor: (changeId: string) => string | null;
   /** 执行通道。派一轮、裁决里的「再来一轮」都从它走。 */
   readonly runtime: PluginRuntime;
+  /**
+   * brief 的两份文件（草稿 + 工作稿）落在哪。生产在 `~/.stagepass/briefs/`。
+   *
+   * **注进来而不是在这一层直接写磁盘**：这两份文件是「改没改过」那条机械判据的
+   * 唯一依据，测试要能在不碰用户真实草稿的前提下把两份都摆出来。
+   */
+  readonly briefFiles: {
+    write(name: string, content: string): string;
+    read(name: string): string | null;
+  };
 }
 
 export interface ActionResponse {
@@ -89,14 +103,25 @@ export async function handleAction(
   if (pathname === "/api/aside") return aside(deps, params, changeId, body);
   if (pathname === "/api/run") return run(deps, params, changeId);
   if (pathname === "/api/ask") return ask(deps, changeId);
+  if (pathname === "/api/brief") return brief(deps, changeId);
+  if (pathname === "/api/brief-draft") return briefDraft(deps, changeId);
+  if (pathname === "/api/brief-confirm") return briefConfirm(deps, changeId);
+  if (pathname === "/api/close") return close(deps, params, changeId);
 
+  /*
+   * 界面会 POST 的路**已经全部接上**（2026-08-18 晚）。所以走到这里只剩一种情况：
+   * 路径不认识 —— 界面比服务端新，或者写错了。
+   *
+   * 仍然回 501 + `reason`：见 `api.ts` 里那条注释，**501 不等于把话说清楚了**，
+   * 话是这个字段说的。少了它，屏幕上是「没问成：undefined」。
+   */
   return {
     status: 501,
     body: {
       error: "not_wired_yet",
       path: pathname,
-      // 见 `api.ts` 里那条注释：501 不等于把话说清楚了，话是这个字段说的。
-      reason: "这条还没接上 —— 派发和问人要等执行通道（下一步在做）",
+      reason: "插件里没有这条路 —— 界面要的东西如果本该有，那是漏接了。"
+        + "先核对装着的插件是不是最新那份（装完要开新会话）。",
     },
   };
 }
@@ -179,6 +204,164 @@ async function waiveGap(database: Database.Database, changeId: string): Promise<
         },
       };
   }
+}
+
+/**
+ * 录需求：模型提问题 → 人在页面上答 → 答案落成 brief。
+ *
+ * 提问题那一趟跑在**当前阶段的座位**上。跑错座位不会报错 —— 它会占掉另一个阶段的
+ * 线程，而「同一阶段只许一轮」从此挡住那边，症状离原因隔着好几屏。
+ *
+ * 干完要**把座位放掉**：不放，`progressView` 的 `live` 一直是真，界面会一直显示
+ * 「在跑」，一路显示到人自己起疑。放弃那条路同理，理由在 `BriefResult.closeSession`。
+ */
+async function brief(deps: ActionDeps, changeId: string): Promise<ActionResponse> {
+  const database = deps.database;
+  const { outcome, closeSession } = await recordBrief({
+    database,
+    changeId,
+    cannotAskNow: (phase) => cannotAskNow(database, changeId, phase),
+    propose: (prompt) => deps.runtime.askInPhase(
+      changeId, new ChangeStore(database).read(changeId).state.phase, prompt,
+    ),
+  });
+  if (outcome.kind === "no_such_change") return fail(404, "no_such_change");
+  if (closeSession) deps.runtime.releaseSeat(changeId, outcome.phase);
+
+  const phase = outcome.phase;
+  switch (outcome.kind) {
+    case "busy":
+      return { status: 200, body: { asked: false, phase, ...outcome.busy } };
+    case "proposal_failed":
+      return {
+        status: 200,
+        body: { asked: false, reason: outcome.reason, detail: outcome.detail, phase },
+      };
+    case "asked":
+      /*
+       * 题摆在页面上了，还没答。**这不是失败** —— 答落库时 `/api/answer` 会再走
+       * 一遍这个用例，那时才有 recorded / not_recorded 的结论。
+       */
+      return {
+        status: 200,
+        body: { asked: true, answered: false, phase, questionId: outcome.questionId },
+      };
+    case "not_recorded":
+      return { status: 200, body: { asked: true, answered: true, recorded: false, phase } };
+    case "recorded":
+      return {
+        status: 200,
+        body: { asked: true, answered: true, recorded: true, phase, brief: outcome.brief },
+      };
+  }
+}
+
+/**
+ * 把旁路里谈过的东西整理成一份草稿。
+ *
+ * 判据全在 `app/converge-brief.ts`：没有旁路线程、人一句没说、读不出那段记录 ——
+ * 三种是三个不同的答案，**界面按 `kind` 逐条说人话**，所以下场原样交出去。
+ */
+async function briefDraft(deps: ActionDeps, changeId: string): Promise<ActionResponse> {
+  const outcome = await draftBrief({
+    database: deps.database,
+    changeId,
+    saidIn: (threadId) => deps.runtime.saidIn(threadId),
+    runTurn: (_threadId, prompt) => deps.runtime.talkAside(changeId, prompt),
+    writeBriefFile: deps.briefFiles.write,
+  });
+  return outcome.kind === "no_such_change"
+    ? fail(404, "no_such_change")
+    : { status: 200, body: outcome };
+}
+
+/** 人改过的那份落库。机械判据（逐字相同 = 没改过 = 不算 brief）在用例里。 */
+function briefConfirm(deps: ActionDeps, changeId: string): ActionResponse {
+  const outcome = confirmBrief({
+    database: deps.database,
+    changeId,
+    readBriefFile: deps.briefFiles.read,
+  });
+  return outcome.kind === "no_such_change"
+    ? fail(404, "no_such_change")
+    : { status: 200, body: outcome };
+}
+
+/**
+ * 收掉一个座位 —— 以及，有一轮在飞时，**把那一轮当场收掉**。
+ *
+ * ## 光放掉会话不算出口
+ *
+ * 「这个 (Change,阶段) 上有没有活儿」有两个来源：手上那条会话，和账本里 queued /
+ * running 的 job。原来只收前者：会话放掉了，账本上那一轮照旧挂着，Change 停在
+ * `running` 等满三小时超时 —— 这段时间里人一个能按的都没有，而界面上什么都不说。
+ *
+ * 所以两个都收：会话放掉，账本上的活儿记成 `aborted_by_human`、Change 收回可重试。
+ * 迟到的工人失败由 `TurnLoop.runOnce` 的「谁先收尾谁说了算」兜住，不会把账翻回去。
+ *
+ * ## 只收这个阶段的账
+ *
+ * 人关一个历史阶段的闲座位，不该顺手把另一个阶段正在跑的那一轮打掉 —— 那是
+ * 「点了一下关闭，三小时白跑了」。
+ *
+ * 这不是裁决入口：中止一轮不推闸门、不对任何产物下判断，只陈述「人把这一轮停了」，
+ * 和收尸人对过期租约做的是同一件事，只是由人当场触发。
+ */
+function close(
+  deps: ActionDeps,
+  params: URLSearchParams,
+  changeId: string,
+): ActionResponse {
+  const database = deps.database;
+  const phase = params.get("phase") ?? "";
+
+  /*
+   * 旁路只有会话可收，没有账 —— 它不产出、不占座、没有 job。
+   * 但它有**结账**：比一次 HEAD，前后不同说明这一趟动过手。
+   */
+  if (phase === ASIDE) {
+    deps.runtime.releaseSeat(changeId, ASIDE);
+    const root = deps.workspaceFor(changeId);
+    const settled = new AsideStore(database).close(
+      changeId, root === null ? null : deps.repo.head(root),
+    );
+    return {
+      status: 200,
+      body: {
+        closed: true, phase,
+        ...(settled === null ? {} : { visit: settled.visit.seq, needsNote: settled.needsNote }),
+      },
+    };
+  }
+  if (!isPhase(phase)) return fail(400, "no_such_phase");
+
+  deps.runtime.releaseSeat(changeId, phase);
+
+  const jobs = new JobStore(database);
+  const busy = jobs.busyFor(changeId, phase);
+  if (busy === null) return { status: 200, body: { closed: true, phase } };
+
+  let state: { phase: Phase; status: string } | null = null;
+  try {
+    const read = new ChangeStore(database).read(changeId).state;
+    state = { phase: read.phase, status: read.status };
+  } catch { /* Change 已经没了 —— 没有账可收 */ }
+
+  const seat = state !== null && state.phase !== phase
+    ? new ParallelStore(database).find(changeId, phase)
+    : null;
+  if (state === null || (state.phase !== phase && seat === null)) {
+    return { status: 200, body: { closed: true, phase } };
+  }
+
+  jobs.abort(busy.id, "aborted_by_human");
+  // 中止落在这一轮的座位上：主线收主线，并行座位收座位。
+  if (state.phase === phase) {
+    if (state.status === "running") new ChangeStore(database).apply(changeId, "fail");
+  } else if (seat?.status === "running") {
+    new ParallelStore(database).apply(changeId, phase, "fail");
+  }
+  return { status: 200, body: { closed: true, phase, aborted: busy.id } };
 }
 
 function newChange(database: Database.Database, params: URLSearchParams): ActionResponse {
