@@ -149,10 +149,3 @@ export function materializeStageRound(
     files: [...files.values()].sort((left, right) => left.path.localeCompare(right.path)),
   };
 }
-
-export function compareStageRounds(
-  previous: StageRoundArtifact | null,
-  current: StageRoundArtifact,
-): readonly MaterializedStageArtifactFile[] {
-  return materializeStageRound(previous === null ? [current] : [previous, current], current.round).files;
-}

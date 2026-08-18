@@ -64,7 +64,7 @@ export type BoundThread =
       readonly threadId: string;
     };
 
-export class ChangeNotBoundError extends Error {
+class ChangeNotBoundError extends Error {
   constructor(readonly changeId: string, readonly phase: Phase) {
     super(`Change ${changeId} has no Codex thread bound to its ${phase} phase`);
     this.name = "ChangeNotBoundError";

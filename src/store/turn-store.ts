@@ -40,7 +40,7 @@ export interface TurnRecord {
   readonly error: string | null;
 }
 
-export class TurnNotFoundError extends Error {
+class TurnNotFoundError extends Error {
   constructor(readonly turnId: string) {
     super(`No turn with id ${turnId}`);
     this.name = "TurnNotFoundError";
@@ -48,7 +48,7 @@ export class TurnNotFoundError extends Error {
 }
 
 /** Raised when a turn is moved from a state that move does not start in. */
-export class TurnNotInStatusError extends Error {
+class TurnNotInStatusError extends Error {
   constructor(
     readonly turnId: string,
     readonly expected: TurnStatus,

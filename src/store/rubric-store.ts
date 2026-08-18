@@ -126,7 +126,7 @@ export interface RubricStoreOptions {
  * 两种都对不上。别改这句话的措辞：改了之后，所有已经升过的那些会在下一次升级里
  * 被当成「人改过的」跳过。
  */
-export const FACTORY_UPGRADE_REASON = "出厂标准升级（这一份从未被人改过）";
+const FACTORY_UPGRADE_REASON = "出厂标准升级（这一份从未被人改过）";
 
 export class RubricStore {
   private readonly now: () => Date;

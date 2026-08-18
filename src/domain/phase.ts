@@ -347,9 +347,6 @@ export function redReviewsOthers(phase: string): boolean {
   return isPhase(phase) && RED_REVIEWS_OTHERS.has(phase);
 }
 
-/** The phase every Change starts in. */
-export const FIRST_PHASE: Phase = "PRD";
-
 /**
  * The phase a Change ends in. Nothing leaves it.
  *

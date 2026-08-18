@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 
 import {
   assertStageRoundArtifact,
-  compareStageRounds,
   materializeStageRound,
   type StageRoundArtifact,
 } from "./stage-artifact";
@@ -32,7 +31,7 @@ const R1: StageRoundArtifact = {
 describe("stage artifact manifest", () => {
   it("treats the first round's files as added", () => {
     assert.deepEqual(
-      compareStageRounds(null, R1).map((file) => file.display),
+      materializeStageRound([R1], 1).files.map((file) => file.display),
       ["added", "added", "added"],
     );
   });

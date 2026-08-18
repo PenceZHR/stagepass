@@ -11,7 +11,7 @@ import {
   RESULT_CONTRACT,
   TurnResultUnparsableError,
 } from "./turn";
-import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
+import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/phase-instructions";
 
 describe("L2 · a request the far end can act on", () => {
   /**
