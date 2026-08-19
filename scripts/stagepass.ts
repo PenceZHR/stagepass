@@ -169,7 +169,7 @@ function readBody(request: { on: (event: string, fn: (chunk?: Buffer) => void) =
   });
 }
 
-createServer((request, response) => { void (async () => {
+const server = createServer((request, response) => { void (async () => {
   const url = new URL(request.url ?? "/", "http://stagepass.invalid");
 
   if (url.pathname.startsWith("/api/")) {
@@ -220,7 +220,26 @@ createServer((request, response) => { void (async () => {
     response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
     response.end(`读不到 ${file}：${String(error)}`);
   }
-})(); }).listen(PORT, "127.0.0.1", () => {
+})(); });
+
+/*
+ * **起不来要说人话。**
+ *
+ * 端口被占是最常见的一种（上一个工作台还开着、或者别的东西占了 4399），而 node
+ * 默认吐的是一段 `EADDRINUSE` 加十几行栈 —— 人从里面读不出「关掉那个再起」这句话。
+ */
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`起不来：${PORT} 端口已经被占了。`);
+    console.error("多半是上一个工作台还开着 —— 关掉它，或者换个端口：");
+    console.error(`  STAGEPASS_PORT=4400 pnpm start ${TARGET === process.cwd() ? "" : TARGET}`.trimEnd());
+  } else {
+    console.error(`起不来：${error.message}`);
+  }
+  process.exit(1);
+});
+
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`工作台  http://127.0.0.1:${PORT}/`);
   console.log(`项目    ${bound.name}（${bound.path.replace(homedir(), "~")}）`);
   console.log(`库      ${DB.replace(homedir(), "~")}`);

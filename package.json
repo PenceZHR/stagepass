@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
+    "start": "tsx scripts/stagepass.ts",
     "test": "node --import tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.panel.json",
     "check": "pnpm typecheck && pnpm test",
