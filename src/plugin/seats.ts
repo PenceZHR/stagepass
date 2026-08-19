@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 
+import type { AppServerHistory } from "../codex/app-server-history";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import type { AppServerSessionOptions } from "../codex/app-server-session";
 import type { CodexTransport } from "../codex/transport";
@@ -7,6 +8,7 @@ import type { Phase } from "../domain/phase";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
+import { awaitTurnByPolling } from "./await-turn";
 
 /**
  * 一个座位 = 一个 (Change, 阶段) 绑着的 Codex 会话。
@@ -48,6 +50,13 @@ export interface SeatOptions extends Pick<
 > {
   readonly database: Database.Database;
   readonly host: AppServerSessionHost;
+  /**
+   * 读线程历史。**退订之后这是唯一的信息来源** —— 一轮跑完没有、裁判说了什么，
+   * 全从这儿轮询着问（`await-turn.ts`）。
+   */
+  readonly history: Pick<AppServerHistory, "readThread">;
+  /** 轮询间隔。一轮 60~343 分钟，晚几秒无所谓；默认 5 秒。 */
+  readonly pollEveryMs?: number;
   /** 一轮的硬顶。到点算这一轮失败，而不是无限等下去。 */
   readonly turnTimeoutMs: number;
 }
@@ -72,6 +81,18 @@ export class PluginSeats {
    * 的依据**，而那两种在界面上完全同形。
    */
   private readonly lastEventAt = new Map<string, number>();
+
+  /**
+   * 这个进程手上正在飞的轮（按 threadId）。
+   *
+   * **退订之后 `has()` 不能再问「我们还持有会话吗」** —— 那个答案从派轮的下一毫秒起
+   * 永远是「不持有」（线程已经还给人了），于是进度那一屏会对每一轮在跑的活儿报
+   * 「进程没了」。它会**主动说谎**，比没有这一格更糟。
+   *
+   * 换成这个：轮派出去就记上，轮询判定结束（成、败、超时都算）就抹掉。插件重启它是
+   * 空的 —— 那时 `processGone` 为真，而那正是事实：轮询的那条腿死了，没人在收这一轮。
+   */
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly options: SeatOptions) {}
 
@@ -148,9 +169,40 @@ export class PluginSeats {
         this.watch(session.threadId, session);
         dispatch.onThread?.(session.threadId);
 
-        const turnId = await session.startTurn(dispatch.prompt);
-        const done = await session.awaitTurn(turnId, this.options.turnTimeoutMs);
-        return { threadId: session.threadId, text: done.text };
+        /*
+         * **基线要在派轮之前数。** 判据是「轮次数超过基线」，而不是「最后一轮完成了」
+         * —— 后者在派轮之前就成立（上一轮早完成了），会当场返回上一轮的结论。
+         */
+        const before = await this.options.history.readThread(session.threadId);
+        const baselineTurns = before?.turnCount ?? 0;
+
+        this.inFlight.add(session.threadId);
+        await session.startTurn(dispatch.prompt);
+
+        /*
+         * **发完就把线程还给人。** 不退订的话，人在 Codex 里点开它只会看到
+         * 「This is open in another app」—— 而「人要看得见它跑」是这套东西存在的理由。
+         *
+         * 退订之后我们收不到流了，所以完成判定改成轮询历史。那是 2026-08-18 定案里
+         * 唯一要新写的一段，代价盘在 `docs/DESIGN-thread-ownership-2026-08-18.md`。
+         */
+        await this.options.host.unsubscribe(session.threadId);
+
+        try {
+          const done = await awaitTurnByPolling({
+            history: this.options.history,
+            threadId: session.threadId,
+            baselineTurns,
+            timeoutMs: this.options.turnTimeoutMs,
+            everyMs: this.options.pollEveryMs ?? 5_000,
+            now: () => Date.now(),
+            sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+          });
+          return { threadId: session.threadId, text: done.text };
+        } finally {
+          // 成、败、超时都算「不在飞了」。漏掉任何一条，这个座位从此永远显示在跑。
+          this.inFlight.delete(session.threadId);
+        }
       },
     };
   }
@@ -173,23 +225,34 @@ export class PluginSeats {
     this.watching.delete(bound.threadId);
   }
 
-  /** 这个座位现在有没有活着的会话。用于「同一阶段只许一轮」那条判据。 */
+  /**
+   * 这个座位现在有没有一轮在飞。
+   *
+   * **问的不是「我们还持有那条线程吗」** —— 派完轮就退订了（线程还给人），那个答案
+   * 永远是否。问的是「这个进程手上还有没有一轮没收尾」。
+   */
   has(changeId: string, phase: Phase): boolean {
     const bound = new BindingStore(this.options.database).find(changeId, phase);
     if (bound === null || bound.status !== "bound") return false;
-    return this.options.host.session(bound.threadId) !== null;
+    return this.inFlight.has(bound.threadId);
   }
 
   /**
-   * 这个座位多久没动静了（毫秒）。null = 没有开着的会话。
+   * 这个座位多久没动静了（毫秒）。`null` = **说不出来**。
    *
-   * 「在跑」有三种：真在跑、进程死了、进程活着但卡住（等许可、模型僵住）。
-   * 后两种和第一种在界面上完全同形，所以要有这个数 —— 但它只提醒，不下结论。
+   * ## 它在 2026-08-18 之后变粗了，而且经常就是 null
+   *
+   * 这个数原来来自事件流：「最后一次收到事件到现在多久」。退订之后我们收不到流了，
+   * 所以除了派轮那一瞬间，这里基本没有新的观察点。
+   *
+   * **不编。** 说不出来就返回 null，界面照实说「说不出来」—— 这一格存在的意义就是
+   * 不再让人猜，编一个数出来等于白做。代价盘在
+   * `docs/DESIGN-thread-ownership-2026-08-18.md` §5.1，是定案时接受了的。
    */
   quietForMs(changeId: string, phase: Phase): number | null {
     const bound = new BindingStore(this.options.database).find(changeId, phase);
     if (bound === null || bound.status !== "bound") return null;
-    if (this.options.host.session(bound.threadId) === null) return null;
+    if (!this.inFlight.has(bound.threadId)) return null;
     const at = this.lastEventAt.get(bound.threadId);
     return at === undefined ? null : Date.now() - at;
   }

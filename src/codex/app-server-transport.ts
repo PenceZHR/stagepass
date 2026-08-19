@@ -55,6 +55,20 @@ export class AppServerSessionHost {
     return session;
   }
 
+  /**
+   * 把这条线程还给人。
+   *
+   * 2026-08-18 实测（`docs/DESIGN-thread-ownership-2026-08-18.md` §11）：Codex App 说
+   * 「This is open in another app」看的是**订阅**，而**关掉连接不等于退订** ——
+   * 两条只差一次显式 `thread/unsubscribe` 的线程，一条打得开、一条打不开。
+   *
+   * 退订之后这条连接收不到它的事件了，这是**故意的**：流让出去，人才进得来。
+   */
+  async unsubscribe(threadId: string): Promise<void> {
+    await this.connection.request("thread/unsubscribe", { threadId });
+    this.sessions.delete(threadId);
+  }
+
   session(threadId: string): AppServerSession | null {
     return this.sessions.get(threadId) ?? null;
   }

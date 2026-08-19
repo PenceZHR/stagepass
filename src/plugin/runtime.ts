@@ -107,6 +107,7 @@ export class PluginRuntime {
     this.seats = new PluginSeats({
       database: this.options.database,
       host,
+      history: this.history,
       turnTimeoutMs: this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
       sandbox: "workspace-write",
       approvalPolicy: "on-request",

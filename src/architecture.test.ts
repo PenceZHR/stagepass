@@ -93,6 +93,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    */
   "plugin/sqlite-handle.ts": 0,
 
+
   "domain/gate.ts": 1,
   "domain/lease.ts": 1,
   "domain/gap.ts": 1,
@@ -114,6 +115,14 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * `codex/app-server-transport`（2），所以住这儿 —— 层数是依赖顶出来的，不是挑的。
    */
   "plugin/seats.ts": 2,
+  /*
+   * 「这一轮跑完了没」的轮询判定（2026-08-18 让出订阅权之后唯一新写的那段）。
+   *
+   * 运行时它其实谁都不 import —— 历史接口和时钟全是注进来的，`AppServerHistory`
+   * 只进 `import type`。但那条边在图上仍然算数，而**层数是依赖顶出来的、不是挑的**，
+   * 所以它跟着 `app-server-history` 住在 2。
+   */
+  "plugin/await-turn.ts": 2,
   /*
    * 一轮跑完叫一声人（系统通知）。读 store（0）和 `system/process`（2），
    * 不认识用例、不认识界面 —— 层数照旧是依赖顶出来的。
@@ -555,8 +564,8 @@ const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
    * 配料单不许过三成、单个函数不许长成一层。
    */
   "plugin/server.ts": 0.96,
-  "plugin/api.ts": 0.68,
-  "plugin/actions.ts": 0.77,
+  "plugin/api.ts": 0.66,
+  "plugin/actions.ts": 0.78,
 };
 
 /*

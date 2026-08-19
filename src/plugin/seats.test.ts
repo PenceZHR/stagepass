@@ -21,6 +21,8 @@ const AT = "2026-07-28T00:00:00.000Z";
  */
 class FakeConnection implements AppServerConnection {
   readonly methods: string[] = [];
+  /** 轮询完成判定读到的轮次。`turn/start` 之后多一轮 —— 那就是「这一轮跑完了」。 */
+  readonly turns: string[] = [];
   private readonly listeners = new Set<(message: AppServerNotification) => void>();
 
   request(method: string, params: Readonly<Record<string, unknown>> = {}): Promise<unknown> {
@@ -29,7 +31,19 @@ class FakeConnection implements AppServerConnection {
     if (method === "thread/resume") {
       return Promise.resolve({ thread: { id: params.threadId, turns: [] } });
     }
+    if (method === "thread/unsubscribe") return Promise.resolve({ status: "unsubscribed" });
+    if (method === "thread/read") {
+      return Promise.resolve({
+        thread: {
+          id: "THREAD-A",
+          turns: this.turns.map((text) => ({
+            id: "T", status: "completed", items: [{ type: "agentMessage", text }],
+          })),
+        },
+      });
+    }
     if (method === "turn/start") {
+      this.turns.push("收到。");
       setTimeout(() => {
         this.emit("turn/completed", {
           threadId: "THREAD-A",
@@ -65,9 +79,19 @@ function open() {
 }
 
 function seatsOn(database: ReturnType<typeof open>) {
+  const connection = new FakeConnection();
   return new PluginSeats({
     database,
-    host: new AppServerSessionHost(new FakeConnection()),
+    host: new AppServerSessionHost(connection),
+    /* 退订之后完成判定只能问历史 —— 这里跟着假连接的轮次数走。 */
+    history: {
+      readThread: async () => ({
+        turnCount: connection.turns.length,
+        turns: connection.turns.map((text) => ({ status: "completed", agentText: text })),
+        lastCompletedText: connection.turns[connection.turns.length - 1] ?? null,
+      }),
+    } as never,
+    pollEveryMs: 1,
     turnTimeoutMs: 2_000,
     sandbox: "workspace-write",
     approvalPolicy: "on-request",
@@ -104,16 +128,24 @@ describe("plugin · 旁路座位", () => {
    * 干完活不放掉会话，`has()` 就永远是真 —— 进度那一屏的 `live` 跟着一直真，
    * 而账本上早就没有活儿了。人只能自己起疑，界面一个字都不会说。
    */
-  it("座位放掉之后就不再算活着", async () => {
+  /*
+   * 2026-08-18 之后 `has()` 问的是「手上有没有一轮在飞」，而一轮跑完它自然就不在飞了
+   * —— 所以这条改成打 `release` 真正的不变量：**只放会话，不动绑定**。
+   *
+   * 抹掉绑定的代价很具体：下一轮会开一条新线程，而人正看着的那条从此和 StagePass
+   * 失联 —— 那段历史还在 Codex 里，却再也没人认得它。
+   */
+  it("放掉座位只放会话，绑定原样留着 —— 下一轮回同一条线程", async () => {
     const database = open();
     try {
       const seats = seatsOn(database);
       await seats.transportFor("CHG-1", "PRD").runTurn({ threadId: null, prompt: "问一句" });
-      assert.equal(seats.has("CHG-1", "PRD"), true);
+      const before = new BindingStore(database).find("CHG-1", "PRD");
 
       seats.release("CHG-1", "PRD");
 
       assert.equal(seats.has("CHG-1", "PRD"), false);
+      assert.deepEqual(new BindingStore(database).find("CHG-1", "PRD"), before);
     } finally {
       database.close();
     }
@@ -125,6 +157,50 @@ describe("plugin · 旁路座位", () => {
       await seatsOn(database).asideTransport("CHG-1").runTurn({ threadId: null, prompt: "聊聊" });
 
       assert.equal(new BindingStore(database).find("CHG-1", "PRD"), null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("plugin · 发完一轮就把线程还给人", () => {
+  /*
+   * 打的是真实症状：**人在 Codex 里点开那条线程，显示「This is open in another app」。**
+   *
+   * 2026-08-18 实测（`docs/DESIGN-thread-ownership-2026-08-18.md` §11）：「占用」看的是
+   * **订阅**。而**关掉连接不等于退订** —— 两条线程唯一的区别就是有没有显式
+   * `thread/unsubscribe`，一条打得开、一条打不开。
+   *
+   * 所以派完一轮必须显式退订。不退订，人全程都进不去看它跑 —— 而「人要看得见它跑」
+   * 正是这套东西存在的理由。
+   */
+  it("turn 发出去之后显式退订，而且是在等它跑完之前", async () => {
+    const database = open();
+    try {
+      const connection = new FakeConnection();
+      const seats = new PluginSeats({
+        database,
+        host: new AppServerSessionHost(connection),
+        history: {
+          readThread: async () => ({
+            turnCount: connection.turns.length,
+            turns: connection.turns.map((text) => ({ status: "completed", agentText: text })),
+            lastCompletedText: connection.turns[connection.turns.length - 1] ?? null,
+          }),
+        } as never,
+        pollEveryMs: 1,
+        turnTimeoutMs: 2_000,
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        effort: "xhigh",
+      });
+
+      await seats.transportFor("CHG-1", "PRD").runTurn({ threadId: null, prompt: "跑一轮" });
+
+      const started = connection.methods.indexOf("turn/start");
+      const dropped = connection.methods.indexOf("thread/unsubscribe");
+      assert.notEqual(dropped, -1, "一次都没退订 —— 人点开会看到「被别的 app 占着」");
+      assert.equal(dropped > started, true, "退订要在发完 turn 之后");
     } finally {
       database.close();
     }
