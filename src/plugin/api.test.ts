@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
+import { JobStore } from "../work/job-store";
 import { ProjectStore } from "../store/project-store";
 import { handleApi, type ApiDeps } from "./api";
 import { openDatabase } from "./sqlite-handle";
@@ -203,6 +204,60 @@ describe("plugin · 进度", () => {
       const answer = await handleApi("/api/progress?change=CHG-404", { database, repo });
 
       assert.equal(answer.status, 404);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("plugin · 「进程没了」要跨进程说得准", () => {
+  /*
+   * 打的是真机症状（2026-08-19 04:54）：一轮跑了 47 分钟、租约 20 秒前还在续，
+   * 而工作台报 `processGone: true`。
+   *
+   * 判据原来问的是「**我这个进程**手上有没有这一轮」。同时开着工作台和插件之后，
+   * 那句话就成了假话：轮归另一个进程，这个进程当然没有 —— 于是屏幕上说「它死了」，
+   * 而它正跑得好好的。人照着这句话按「中止这一轮」，会把一轮真活儿掐掉。
+   *
+   * **跨进程唯一说得准的是租约**：谁在续，谁就活着。那本来就是账本的用途。
+   */
+  it("租约还在续 —— 不管归哪个进程，都不许说「进程没了」", async () => {
+    const database = open();
+    try {
+      new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      const jobs = new JobStore(database);
+      jobs.enqueue({
+        id: "JOB-1", changeId: "CHG-1", kind: "turn",
+        deadlineAt: Date.now() + 3_600_000, maxAttempts: 1, phase: "PRD",
+      });
+      // 别的进程领走并且正在续租。
+      jobs.claimNext({ owner: "别的进程", token: "T-1", now: Date.now(), ttlMs: 60_000 });
+
+      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo });
+
+      const view = answer.body as { processGone: boolean; live: boolean };
+      assert.equal(view.processGone, false, "租约在续，它没死");
+      assert.equal(view.live, true, "有人在跑它");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("租约过期了才叫「进程没了」", async () => {
+    const database = open();
+    try {
+      new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      const jobs = new JobStore(database);
+      jobs.enqueue({
+        id: "JOB-1", changeId: "CHG-1", kind: "turn",
+        deadlineAt: Date.now() + 3_600_000, maxAttempts: 1, phase: "PRD",
+      });
+      // 领走了，但租约是很久以前到期的 —— 收尸人还没来得及收。
+      jobs.claimNext({ owner: "死掉的进程", token: "T-1", now: Date.now() - 600_000, ttlMs: 60_000 });
+
+      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo });
+
+      assert.equal((answer.body as { processGone: boolean }).processGone, true);
     } finally {
       database.close();
     }

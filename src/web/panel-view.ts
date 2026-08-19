@@ -461,8 +461,21 @@ export async function progressView(input: {
     return null;   // 没有这个 Change。调用者翻成 404。
   }
   const phase = state.phase;
-  const live = sessions.has(changeId, phase);
   const job = new JobStore(database).latestFor(changeId);
+  /*
+   * **「还有人在跑它吗」跨进程只有租约说得准。**
+   *
+   * 2026-08-19 真机：一轮跑了 47 分钟、租约 20 秒前还在续，而界面报「进程没了」——
+   * 因为判据问的是「**我这个进程**手上有没有」，而那一轮归另一个进程（工作台和插件
+   * 可以同时开着）。人照着那句话按「中止这一轮」，掐掉的是一轮真活儿。
+   *
+   * 手上有（`sessions.has`）当然算活；手上没有但**租约还在续**，同样算活。
+   */
+  const leased = job !== null
+    && (job.status === "running" || job.status === "queued")
+    && job.leaseExpiresAt !== null
+    && job.leaseExpiresAt > Date.now();
+  const live = sessions.has(changeId, phase) || leased;
 
   /*
    * 裁判派生了哪几个子 Agent —— 这是唯一能说出「红方在写 / 蓝方在挑」的信号。

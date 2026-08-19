@@ -157,14 +157,21 @@ export class JobStore {
     error: string | null;
     /** 跑在哪个阶段。null = 老行（或拒绝那类不分阶段的记录）。 */
     phase: string | null;
+    /**
+     * 租约到期的时刻（毫秒）。`null` = 没人领着。
+     *
+     * **这是「还有人在跑它吗」跨进程唯一说得准的东西。** 工作台和插件可能同时开着，
+     * 「我这个进程手上有没有」在另一个进程那里永远是假的 —— 而续租是谁都看得见的。
+     */
+    leaseExpiresAt: number | null;
   } | null {
     const row = this.database.prepare(
-      `SELECT id, status, attempt, created_at, error, phase FROM jobs
+      `SELECT id, status, attempt, created_at, error, phase, expires_at FROM jobs
         WHERE change_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).get(changeId) as
       | {
           id: string; status: JobStatus; attempt: number; created_at: string;
-          error: string | null; phase: string | null;
+          error: string | null; phase: string | null; expires_at: number | null;
         }
       | undefined;
     return row === undefined
@@ -172,6 +179,7 @@ export class JobStore {
       : {
           id: row.id, status: row.status, attempt: row.attempt,
           createdAt: row.created_at, error: row.error, phase: row.phase ?? null,
+          leaseExpiresAt: row.expires_at ?? null,
         };
   }
 
