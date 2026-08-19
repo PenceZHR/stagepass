@@ -15,6 +15,7 @@ import { SCHEMA_SQL } from "../db/schema";
 import { RESULT_CONTRACT } from "../domain/turn";
 import { ScriptedCodexTransport, type CodexTransport } from "../codex/transport";
 import { ChangeStore } from "../store/change-store";
+import { SubAgentNotFoundError } from "../codex/subagent";
 import { GapStore } from "../store/gap-store";
 import { WorklistStore } from "../store/worklist-store";
 import { RoundAgentsNotFoundError, runRound } from "./round-runner";
@@ -644,5 +645,57 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     });
 
     assert.deepEqual(settled.malformed, []);
+  });
+});
+
+describe("L4 · 裁判线程死了不算这一轮的错", () => {
+  /*
+   * 真机链（2026-08-18 深夜）：绑定指着一条**在 Codex 里已不存在**的线程（第一轮
+   * 失败留下的零轮次幽灵）。数基线那一步拿它去 `childThreads`，如实抛
+   * `SubAgentNotFoundError` —— 于是每一次派轮都死在 turn 之前的同一句
+   * `no App Server thread …` 上，座位层「resume 不成就开新线程」的恢复**根本没
+   * 机会跑**。这个座位被毒死了。
+   *
+   * 一条读不到的裁判线程没有孩子可数 —— 基线就是空。真正的换线程发生在 transport
+   * 里（座位层），这里只要别在它前面倒下。
+   */
+  it("数基线时裁判线程读不到 —— 当作没有孩子，这一轮照常跑", async () => {
+    const db = database();
+    const gaps = new GapStore(db, () => new Date(AT));
+    const scripted = new ScriptedCodexTransport([verdicts({})], "JUDGE-NEW");
+    /*
+     * 真座位（`plugin/seats.ts`）对死线程的恢复是：resume 被拒 → 解绑 → 开新线程，
+     * 交回来的是**新** id。ScriptedCodexTransport 会原样回显 dispatch.threadId，
+     * 这层壳把那次恢复演出来 —— 本组测的只是「数基线别在恢复之前倒下」。
+     */
+    const transport = {
+      dispatches: scripted.dispatches,
+      runTurn: async (dispatch: Parameters<typeof scripted.runTurn>[0]) => {
+        const done = await scripted.runTurn({ ...dispatch, threadId: null });
+        return done;
+      },
+    };
+
+    const settled = await runRound(
+      { changeId: CHANGE, phase: "Fix", round: 2, task: "写 Spec", judgeThreadId: "JUDGE-GHOST" },
+      {
+        transport,
+        gaps,
+        childThreads: (parentThreadId: string) => {
+          if (parentThreadId === "JUDGE-GHOST") {
+            throw new SubAgentNotFoundError(parentThreadId);
+          }
+          return Promise.resolve(spawnedBy(transport)());
+        },
+        ...inMemoryDeps(),
+        worklist: worklistOf(db),
+        readThread: roles(
+          answer({ artifactIds: ["spec.md"] }),
+          answer({ blockers: [] }),
+        ),
+      },
+    );
+
+    assert.equal(settled.judgeThreadId, "JUDGE-NEW");
   });
 });

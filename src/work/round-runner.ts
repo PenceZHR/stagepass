@@ -1,3 +1,4 @@
+import { SubAgentNotFoundError } from "../codex/subagent";
 import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
 import { TurnResultUnparsableError } from "../domain/turn";
 import { blueDocPath, redDocPath } from "../domain/artifact-home";
@@ -396,9 +397,24 @@ export async function runRound(
    *
    * 新线程时 `judgeThreadId` 是 null，此时它还不存在，孩子当然也没有。
    */
-  const before = request.judgeThreadId === null
-    ? []
-    : await dependencies.childThreads(request.judgeThreadId);
+   /*
+    * **裁判线程读不到 = 没有孩子可数**，不是这一轮的错。
+    *
+    * 真机链（2026-08-18 深夜）：绑定指着一条 Codex 里已不存在的线程（第一轮失败留下
+    * 的零轮次幽灵），这一步如实抛 `no App Server thread …` —— 于是每次派轮都死在
+    * turn 之前的同一句上，座位层「resume 不成就开新线程」的恢复根本没机会跑。
+    *
+    * 只接 `SubAgentNotFoundError`（明确的「没有这条线程」）；断线、超时那些照旧抛
+    * —— 那时装作基线为空会把别人的孩子当成这一轮新生的。
+    */
+  let before: readonly string[] = [];
+  if (request.judgeThreadId !== null) {
+    try {
+      before = await dependencies.childThreads(request.judgeThreadId);
+    } catch (error) {
+      if (!(error instanceof SubAgentNotFoundError)) throw error;
+    }
+  }
 
   /*
    * **名单要在 turn 之前开好** —— 裁判一起来就可能调 `stagepass_next`。

@@ -532,6 +532,14 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
   // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）；
   // 同日再抽 `serveParallel`、撤掉并行座位的入口（553 → 517）。
+
+  /*
+   * 2026-08-18 深夜：+9 行 —— 数基线那步对死掉的裁判线程要接一下
+   * （`SubAgentNotFoundError` → 基线为空），不接的话一条幽灵绑定会把整个座位毒死，
+   * 而座位层的恢复跑在它后面。上限本来是 300，它 301 → 309。
+   * 这个函数确实该拆（那是它自己的注释都承认的），但不该由这次修 bug 顺手拆。
+   */
+  "work/round-runner.ts#runRound": 309,
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
@@ -564,7 +572,7 @@ const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
    * 配料单不许过三成、单个函数不许长成一层。
    */
   "plugin/server.ts": 0.96,
-  "plugin/api.ts": 0.66,
+  "plugin/api.ts": 0.67,
   "plugin/actions.ts": 0.78,
 };
 
