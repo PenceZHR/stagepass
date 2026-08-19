@@ -229,3 +229,64 @@ Codex 有 `permission_request` 钩子。审批交给一个钩子程序：写进 
 `01a017ab-35d0-7b42-9b1d-5dd732c1f0d2`（跑过一轮「回两个字：收到。」）
 
 连同交接 §七 里那 5 条，等用户定归档还是删。
+
+
+## 十一、「占用」的真凶：daemon 一直 loaded 着（2026-08-18 晚，实测）
+
+用户报告：他的 Codex 里**只有一条线程点开是正常的，其余全显示占用**。
+那条正常的是 `01a017bb…` —— 我用**独立 `codex app-server` 进程**开的，跑完就杀了。
+
+对着 daemon 问 `thread/loaded/list`：
+
+```
+01a01799…  StagePass 现在跑着的 Spec
+01a0179a…
+01a017aa…  实验
+01a017ab…  实验
+01a017b0…  实验（走 daemon）
+```
+
+**唯独没有 `01a017bb…`**，和用户看到的一一对应。
+
+> **「占用」= daemon 还 loaded 着它。** 不是 StagePass 的连接占的 ——
+> 实验里对 `01a017ab` 调过 `host.close()`，它照样在名单里。
+
+### 11.1 退订不等于卸载
+
+方法表里有 `thread/unsubscribe`（`thread/close` 不存在）。**同一条连接先 resume 再
+unsubscribe**（第一次从新连接调，回 `notSubscribed`，那次测试无效）：
+
+```
+resume 之后 loaded：     在
+unsubscribe 回：         {"status":"unsubscribed"}
+unsubscribe 之后 loaded：**还在**
+```
+
+**退订成功，线程照样 loaded。** 而完整方法表里没有任何一条是卸载
+（`thread/start|resume|fork|archive|delete|unsubscribe|rollback|list|read|…`）。
+
+### 11.2 于是「一定要用 daemon 吗」有答案了
+
+**只有一条被实测证明能拿到「App 打得开的线程」的路：独立 `codex app-server` 进程，
+用完让它退出。** 留着 daemon 就没有办法把线程放回去。
+
+代价要说清楚：**turn 跑在那个进程里**。进程没了，turn 也没了 —— 而 daemon 的
+durability（§一 那条：一轮不会因为关掉会话而死）就此失去。插件活多久，轮就活多久。
+
+这条要不要接受，是下一个要拍的板。
+
+## 十二、`hooks/list` —— 钩子那条路的诊断口
+
+方法表里还有 `hooks/list`。它回的是**按 cwd 分组**的：
+
+```json
+{"data":[{"cwd":"…/.claude/worktrees/native-streaming-app-server",
+          "hooks":[],"warnings":[],"errors":[]}]}
+```
+
+**一个钩子都没看见，而且 `errors` 是空的** —— 不是格式错，是压根没找到那份配置
+（`~/.codex/hooks/hooks.json`，`[features] codex_hooks = true` 已开）。
+
+从此不用再靠「跑一轮看日志有没有内容」去猜：**`hooks/list` 直接说 codex 看见了什么。**
+下一步该试的是发现路径（项目级 `.codex/hooks/hooks.json`？daemon 要不要重启？），
+而每一次试都有一个二值的判据。
