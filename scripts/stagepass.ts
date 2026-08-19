@@ -102,7 +102,17 @@ function writeDeps(): ActionDeps {
  * 绑不上就**不起**：一个不知道自己在哪个项目的工作台，屏幕上说的每句话都可疑
  * （今晚那个「面包屑写着库里不存在的 CHG-1」就是这么来的）。
  */
-const bound = bindProject(writeDeps().database, process.cwd());
+/*
+ * 工作台服务哪个项目：**命令行给的那个，不给就是当前目录**。
+ *
+ *     pnpm stagepass                      # 当前仓库
+ *     pnpm stagepass ~/Desktop/某项目      # 另一个仓库
+ *
+ * 参数这条是必需的，不是方便：工作台的代码住在 StagePass 自己的仓库里，而人要看的
+ * 往往是**别的**仓库 —— 只认 cwd 的话，他得先 cd 过去再用绝对路径调起这个脚本。
+ */
+const TARGET = process.argv[2] ?? process.cwd();
+const bound = bindProject(writeDeps().database, TARGET);
 if (bound.kind !== "bound") {
   console.error(`起不来：${bound.path} 不是 git 仓库。`);
   console.error("Codex 按仓库认项目 —— 不是仓库的目录在它那儿根本不是一个项目，");
