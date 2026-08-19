@@ -257,6 +257,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * HTTP 上的 JSON。**判据一条都不在它们里面。**
    */
   "web/serve.ts": 5,
+  /*
+   * 工作台绑在它所在的仓库上（2026-08-19 定案：依附一个项目，不再自己管项目）。
+   * 它调 `app/workspace` 的建项目用例（5），所以住这层 —— 层数是依赖顶出来的。
+   */
+  "web/bind-project.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
   // 「HTTP 进、JSON 出」的界面层，读的最高一层是 store（0）和 graph（0/2）。

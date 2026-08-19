@@ -36,6 +36,7 @@ import { openDatabase } from "../src/plugin/sqlite-handle";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { createRepoOps } from "../src/work/repo";
+import { bindProject } from "../src/web/bind-project";
 import { serveRequest } from "../src/web/serve";
 
 const PORT = Number(process.env["STAGEPASS_PORT"] ?? 4399);
@@ -47,6 +48,7 @@ const repo = createRepoOps();
 
 /** 只读句柄。**看一眼在物理上就不可能写坏什么。** */
 const readable = openDatabase(DB, { readOnly: true });
+
 
 /**
  * 会写的那个 —— 第一次要写时才开，**那时才跑迁移**。
@@ -88,6 +90,24 @@ function writeDeps(): ActionDeps {
       }
     },
   };
+}
+
+/**
+ * **工作台绑在它自己所在的那个仓库上**（用户 2026-08-19 定案：依附在一个项目下，
+ * 不再自己管理项目）。
+ *
+ * 绑定要写库（可能得建这个项目），所以走可写那个句柄 —— 这是唯一一次「还没有人
+ * 点任何东西就写库」，而它是启动的前提，不是某个人的动作。
+ *
+ * 绑不上就**不起**：一个不知道自己在哪个项目的工作台，屏幕上说的每句话都可疑
+ * （今晚那个「面包屑写着库里不存在的 CHG-1」就是这么来的）。
+ */
+const bound = bindProject(writeDeps().database, process.cwd());
+if (bound.kind !== "bound") {
+  console.error(`起不来：${bound.path} 不是 git 仓库。`);
+  console.error("Codex 按仓库认项目 —— 不是仓库的目录在它那儿根本不是一个项目，");
+  console.error("StagePass 开出来的会话你在 Codex 里看不到。先 git init，再起工作台。");
+  process.exit(1);
 }
 
 const ROOT = join(new URL(".", import.meta.url).pathname, "..");
@@ -143,9 +163,14 @@ createServer((request, response) => { void (async () => {
   const url = new URL(request.url ?? "/", "http://stagepass.invalid");
 
   if (url.pathname.startsWith("/api/")) {
+    /*
+     * **每条请求都带上绑定的那个项目。** 工作台只服务一个项目，「看哪个」不再是
+     * 一个要人回答的问题 —— 界面传来的 `?project=` 一律以绑定的为准。
+     */
+    url.searchParams.set("project", bound.id);
     const answer = await serveRequest(
       request.method ?? "GET",
-      `${url.pathname}${url.search}`,
+      `${url.pathname}?${url.searchParams.toString()}`,
       request.method === "POST" ? await readBody(request) : "",
       { read: { database: readable, repo }, write: writeDeps },
     );
@@ -187,6 +212,7 @@ createServer((request, response) => { void (async () => {
   }
 })(); }).listen(PORT, "127.0.0.1", () => {
   console.log(`工作台  http://127.0.0.1:${PORT}/`);
+  console.log(`项目    ${bound.name}（${bound.path.replace(homedir(), "~")}）`);
   console.log(`库      ${DB.replace(homedir(), "~")}`);
   console.log("\n开在哪都行：Codex 的 in-app browser、Claude Code 的 Browser pane、普通浏览器。");
 });
