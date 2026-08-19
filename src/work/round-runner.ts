@@ -295,6 +295,71 @@ function collectSlots(
   return read.reading;
 }
 
+/**
+ * 把这一轮的题面落成文件，返回它的路径。
+ *
+ * **抽出来是为了「给我题面，我自己跑」那条路**（2026-08-19 定案）：准备一轮和派发
+ * 一轮是两件事，而它们原来长在同一个函数里 —— 想把题面交给人，就只能重复一份准备
+ * 逻辑，那是这棵树最恨的「同一规则两份拷贝」。
+ *
+ * 这一步是纯重构：行为一个字没变。
+ */
+function writeRoundScript(
+  request: RoundRequest,
+  dependencies: Pick<RoundDependencies, "writeRoundFile">,
+  prepared: {
+    readonly openGaps: Parameters<typeof judgePrompt>[0]["openGaps"];
+    readonly openGapsPath: Parameters<typeof judgePrompt>[0]["openGapsPath"];
+    readonly slots: { readonly paths: { readonly red: string; readonly blue: string } } | null;
+    readonly settledPath: string | undefined;
+    readonly contractNotesPath: Parameters<typeof judgePrompt>[0]["contractNotesPath"];
+  },
+): string {
+  return dependencies.writeRoundFile(
+    `round-script-${request.phase}-r${request.round}.md`,
+    judgePrompt({
+      phase: request.phase,
+      round: request.round,
+      task: request.task,
+      openGaps: prepared.openGaps,
+      openGapsPath: prepared.openGapsPath,
+      /*
+       * 有模板的阶段每一轮都带着它。**这一层不判「哪个阶段有」** —— 那归
+       * `domain/phase-template.ts`，它返回 null 就是没有，一行都不印。
+       */
+      ...(templateFor(request.phase) === null
+        ? {}
+        : { template: templateFor(request.phase)! }),
+      ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
+      ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
+      ...(prepared.slots === null ? {} : {
+        redSlotPath: prepared.slots.paths.red, blueSlotPath: prepared.slots.paths.blue,
+      }),
+      ...(prepared.settledPath === undefined ? {} : { settledPath: prepared.settledPath }),
+      ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
+      contractNotesPath: prepared.contractNotesPath,
+    }),
+  );
+}
+
+/**
+ * 会话里送的那个信封。**内容一个字不带** —— 身份和轮次、题面文件的路径、「先读它」。
+ *
+ * 裁判不读文件就没法开工（它连答案格式都不知道），读了才有全部指令。半份内容在
+ * 信封、半份在文件才是最坏的形状：那会让它觉得信封已经够了。
+ */
+function roundEnvelope(
+  request: Pick<RoundRequest, "phase" | "round">,
+  scriptPath: string,
+): string {
+  return [
+    `你是本轮的裁判。阶段：${request.phase}，第 ${request.round} 轮。`,
+    `这一轮的完整题面在这个文件里，**先读它，从头到尾**：${scriptPath}`,
+    "读完照它执行。要转达给正反两方的内容、答案的格式、停机条件都只在题面里 ——",
+    "题面之外没有第二份指令。",
+  ].join("\n");
+}
+
 export async function runRound(
   request: RoundRequest,
   dependencies: RoundDependencies,
@@ -466,41 +531,16 @@ export async function runRound(
    * 附带的机械收益：transport 认「自己那一轮」靠 App Server 返回的 turn id；
    * 信封里的路径每轮都在新的临时目录里，提示词也更短、更独特。
    */
-  const scriptPath = dependencies.writeRoundFile(
-    `round-script-${request.phase}-r${request.round}.md`,
-    judgePrompt({
-      phase: request.phase,
-      round: request.round,
-      task: request.task,
-      openGaps,
-      openGapsPath,
-      /*
-       * 有模板的阶段每一轮都带着它。**这一层不判「哪个阶段有」** —— 那归
-       * `domain/phase-template.ts`，它返回 null 就是没有，一行都不印。
-       */
-      ...(templateFor(request.phase) === null
-        ? {}
-        : { template: templateFor(request.phase)! }),
-      ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
-      ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
-      ...(slots === null ? {} : {
-        redSlotPath: slots.paths.red, blueSlotPath: slots.paths.blue,
-      }),
-      ...(settledPath === undefined ? {} : { settledPath }),
-      ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
-      contractNotesPath,
-    }),
-  );
+  const scriptPath = writeRoundScript(request, dependencies, {
+    openGaps, openGapsPath, slots, settledPath, contractNotesPath,
+  });
+  const envelope = roundEnvelope(request, scriptPath);
+
   let delivery;
   try {
     delivery = await dependencies.transport.runTurn({
       threadId: request.judgeThreadId,
-      prompt: [
-        `你是本轮的裁判。阶段：${request.phase}，第 ${request.round} 轮。`,
-        `这一轮的完整题面在这个文件里，**先读它，从头到尾**：${scriptPath}`,
-        "读完照它执行。要转达给正反两方的内容、答案的格式、停机条件都只在题面里 ——",
-        "题面之外没有第二份指令。",
-      ].join("\n"),
+      prompt: envelope,
     });
   } catch (error) {
     // 派轮炸了 —— 名单先收工，再把错原样抛上去（失败仍然是失败）。
