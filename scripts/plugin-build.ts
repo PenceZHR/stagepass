@@ -216,6 +216,11 @@ async function main(): Promise<void> {
  * 「装好了」这句话从此有据可依。
  */
 async function smokeStart(): Promise<void> {
+  /*
+   * 送进去的两条：`initialize` 证明它起得来，`prompts/list` 证明**它自带的那条
+   * 命令还在**。第二条是 2026-08-18 加的实验（斜杠命令那条路走不走得通），
+   * 判据必须钉在产物上 —— 声明了能力却不实现方法，Codex 那边是静默不显示。
+   */
   const child = spawn(process.execPath, [join(OUT, "server.mjs")], {
     cwd: OUT, stdio: ["pipe", "pipe", "pipe"],
   });
@@ -224,22 +229,27 @@ async function smokeStart(): Promise<void> {
   child.stdout.on("data", (chunk: Buffer) => said.push(chunk.toString()));
   child.stderr.on("data", (chunk: Buffer) => complained.push(chunk.toString()));
 
+  const wanted = ["serverInfo", "\"prompts\":["];
   const answered = new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), 10_000);
     child.stdout.on("data", () => {
-      if (said.join("").includes("serverInfo")) { clearTimeout(timer); resolve(true); }
+      if (wanted.every((mark) => said.join("").includes(mark))) {
+        clearTimeout(timer);
+        resolve(true);
+      }
     });
     child.on("exit", () => { clearTimeout(timer); resolve(false); });
   });
-  child.stdin.write(`${JSON.stringify({
-    jsonrpc: "2.0", id: 0, method: "initialize", params: {},
-  })}\n`);
+  for (const [id, method] of [[0, "initialize"], [1, "prompts/list"]] as const) {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params: {} })}\n`);
+  }
 
   const ok = await answered;
   child.kill();
   if (ok) return;
   throw new Error(
-    "装上去的 server.mjs 起不来 —— Codex 那边只会看到「插件启动失败」。\n"
+    "装上去的 server.mjs 没答全 —— Codex 那边会看到「插件启动失败」或者少一条命令。\n"
+    + `收到：${said.join("").slice(0, 600) || "（什么都没有）"}\n`
     + `stderr：${complained.join("").slice(0, 1200) || "（一个字都没说，多半是启动就退了）"}`,
   );
 }

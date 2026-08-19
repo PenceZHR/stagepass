@@ -227,6 +227,58 @@ const TOOLS = [
   },
 ];
 
+/**
+ * 插件自带的命令（MCP `prompts/*`）。
+ *
+ * ## 它想解决什么
+ *
+ * 打开面板今天靠**跟模型说一句话**，而模型可能不去调那个工具 —— 用户 2026-08-18：
+ * 「提示词很不稳定」。插件 manifest 里没有 `commands` 这一类（把已装的 15 个插件的
+ * 键全列过一遍，只有 `mcpServers` / `skills` / `apps`），所以协议这一层的 `prompts`
+ * 是唯一可能通向「插件自带一条斜杠命令」的路。
+ *
+ * ## 这是一个实验，判据在日志里
+ *
+ * **Codex 会不会把 server 的 prompts 显示成命令，没有验证过。** 之前它一次都没问过
+ * `prompts/list` —— 但那说明不了什么，因为我们从来没在 `initialize` 里声明过这个能力，
+ * 客户端不问是对的。声明 + 实现之后再看：
+ *
+ *   grep 'prompts/list' plugin.log
+ *
+ * 有，这条路通；没有，这条路排除掉，别再猜。
+ */
+const PROMPTS = [
+  {
+    name: "stagepass",
+    title: "打开 StagePass 面板",
+    description: "打开 StagePass：阶段环、判据、产物。项目自动取 Codex 当前打开的目录。",
+    arguments: [
+      { name: "change", description: "要看的 Change，如 CHG-002。不给就取这个项目下第一条。", required: false },
+    ],
+  },
+];
+
+/**
+ * 命令展开成的那句话。
+ *
+ * **写成一条指令而不是一句请求** —— 这条路的全部意义是把「模型要不要调那个工具」
+ * 从一次判断变成一次执行。它仍然经过模型（协议里没有「直接挂 widget」这回事），
+ * 但至少措辞不再每次都不一样。
+ */
+function promptMessages(args: Record<string, unknown>): unknown[] {
+  const change = typeof args["change"] === "string" && args["change"] !== ""
+    ? args["change"] : null;
+  return [{
+    role: "user",
+    content: {
+      type: "text",
+      text: "调用 stagepass_panel 工具打开 StagePass 面板"
+        + (change === null ? "" : `，change=${change}`)
+        + "。除此之外不要做别的，也不要解释。",
+    },
+  }];
+}
+
 function handle(message: Record<string, unknown>): void {
   log(">>", message);
   const id = message["id"];
@@ -237,12 +289,28 @@ function handle(message: Record<string, unknown>): void {
   if (method === "initialize") {
     ok({
       protocolVersion: params["protocolVersion"] ?? "2025-06-18",
-      capabilities: { tools: {}, resources: {} },
+      // `prompts` 是 2026-08-18 加的实验，见 `PROMPTS` 上面那段。
+      capabilities: { tools: {}, resources: {}, prompts: {} },
       serverInfo: { name: "stagepass", version: "0.1.0" },
     });
     return;
   }
   if (method === "tools/list") { ok({ tools: TOOLS }); return; }
+  if (method === "prompts/list") { ok({ prompts: PROMPTS }); return; }
+  if (method === "prompts/get") {
+    const name = params["name"];
+    if (!PROMPTS.some((prompt) => prompt.name === name)) {
+      if (id !== undefined) {
+        send({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown prompt: ${String(name)}` } });
+      }
+      return;
+    }
+    ok({
+      description: PROMPTS[0]!.description,
+      messages: promptMessages((params["arguments"] ?? {}) as Record<string, unknown>),
+    });
+    return;
+  }
   if (method === "resources/list") {
     ok({ resources: [{ uri: PANEL_URI, name: "StagePass 面板", mimeType: "text/html+skybridge" }] });
     return;
