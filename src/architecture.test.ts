@@ -251,6 +251,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "plugin/actions.ts": 5,
   "plugin/runtime.ts": 5,
   "plugin/server.ts": 5,
+  /*
+   * 浏览器那一面的请求边界（2026-08-19 定案：状态流转回 WebUI）。和 `plugin/server`
+   * 同层同理由 —— 它俩是同一种东西的两个版本：一个把库变成 MCP 上的 JSON，一个变成
+   * HTTP 上的 JSON。**判据一条都不在它们里面。**
+   */
+  "web/serve.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
   // 「HTTP 进、JSON 出」的界面层，读的最高一层是 store（0）和 graph（0/2）。
@@ -573,6 +579,12 @@ const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
    */
   "plugin/server.ts": 0.96,
   "plugin/api.ts": 0.67,
+  /*
+   * 它是**另一个入口的路由器**，够得着 api + actions 的并集 —— 和 `plugin/server`
+   * 一样是同义反复，不是坏味道。真正管着「有没有长成第二个 panel-server」的是另外
+   * 两条（配料单不许过三成、单个函数不许长成一层），这个文件 70 行、一个分支。
+   */
+  "web/serve.ts": 0.90,
   "plugin/actions.ts": 0.78,
 };
 
