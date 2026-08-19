@@ -24,10 +24,10 @@
  * MCP server 是**按会话起**的。覆盖 `server.mjs` 之后，已经开着的那条 Codex 会话
  * 继续跑老进程 —— 卡还活着、还回传，但连的是老代码，看起来就像「改了没生效」。
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -130,7 +130,12 @@ async function main(): Promise<void> {
    * 依赖出来 external（external 还要把它的 node_modules 一起搬进插件目录）。
    */
   await build({
-    entryPoints: [join(ROOT, "src", "plugin", "server.ts")],
+    /*
+     * 产物叫 `impl.mjs`，而进程入口是**原样拷过去的** `hot-loader.mjs`（见下）。
+     * 分开是为了热重载：加载器要按一个**稳定的路径**去 stat 实现文件，而打包器会把
+     * 动态 import 变成名字带哈希的 chunk。
+     */
+    entryPoints: { impl: join(ROOT, "src", "plugin", "server.ts") },
     outdir: OUT,
     outExtension: { ".js": ".mjs" },
     splitting: true,
@@ -194,13 +199,24 @@ async function main(): Promise<void> {
     cpSync(icon, join(OUT, "assets", "app-icon.png"));
   } catch { /* 图标可选 —— 缺了不该让构建失败 */ }
 
+  /*
+   * 进程入口：**不打包，原样拷。** 它必须动态 import `impl.mjs`，而打包会把那条
+   * 动态 import 变成一个名字带哈希的 chunk —— 那就没有稳定路径可以 stat 了。
+   */
+  cpSync(join(ROOT, "src", "plugin", "hot-loader.mjs"), join(OUT, "server.mjs"));
+
   await smokeStart();
 
   const kb = (text: string): string => `${Math.round(text.length / 1024)} KB`;
   console.log(`widget   ${kb(widget)}`);
   console.log(`server   ${kb(readFileSync(join(OUT, "server.mjs"), "utf-8"))}`);
   console.log(`装到     ${OUT.replace(homedir(), "~")}`);
-  console.log("\n**装完要开一条新的 Codex 会话** —— MCP server 按会话起，旧会话还跑着老代码。");
+  /*
+   * 这里原来印的是「装完要开一条新的 Codex 会话」。2026-08-18 起入口会热重载了，
+   * 那句话不再成立 —— 而**一句过期的纪律比没有纪律更坏**：人会照着它多开一个窗口，
+   * 然后在那个新窗口里继续踩别的坑。
+   */
+  console.log("\n开着的会话下一条消息就会换到这份代码 —— 不用再开新窗口。");
 }
 
 /**
@@ -236,6 +252,7 @@ async function smokeStart(): Promise<void> {
   child.stderr.on("data", (chunk: Buffer) => complained.push(chunk.toString()));
 
   const wanted = ["serverInfo", "\"prompts\":["];
+  const log = join(tmpdir(), "stagepass-smoke.log");
   const answered = new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), 10_000);
     child.stdout.on("data", () => {
@@ -251,6 +268,7 @@ async function smokeStart(): Promise<void> {
   }
 
   const ok = await answered;
+  if (ok) await smokeHotReload(child, log);
   child.kill();
   if (ok) return;
   throw new Error(
@@ -258,6 +276,38 @@ async function smokeStart(): Promise<void> {
     + `收到：${said.join("").slice(0, 600) || "（什么都没有）"}\n`
     + `stderr：${complained.join("").slice(0, 1200) || "（一个字都没说，多半是启动就退了）"}`,
   );
+}
+
+/**
+ * **热重载真的会换吗。**
+ *
+ * 判据放在产物上：碰一下 `impl.mjs` 的 mtime，再送一条消息，看加载器有没有在日志里
+ * 记下 `hotReload`。光「它启动了」证不了这件事 —— 而热重载正是那种「以为在生效、
+ * 其实一直跑旧代码」的东西，那个错误 2026-08-18 已经误导过一次真机排查。
+ */
+async function smokeHotReload(
+  child: ChildProcessWithoutNullStreams,
+  logPath: string,
+): Promise<void> {
+  /*
+   * **数条数，不看有没有。** 第一次加载本身也记一条 `hotReload` —— 只判「日志里有」
+   * 的话这道闸永远成立，也就永远抓不到「热重载死了」。要的是**碰完之后又多一条**。
+   */
+  const count = (): number => {
+    try { return (readFileSync(logPath, "utf-8").match(/hotReload"/g) ?? []).length; }
+    catch { return 0; }
+  };
+  const had = count();
+  const before = statSync(join(OUT, "impl.mjs")).mtimeMs;
+  utimesSync(join(OUT, "impl.mjs"), new Date(before + 2000), new Date(before + 2000));
+  child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0", id: 99, method: "tools/list", params: {},
+  })}\n`);
+  for (let waited = 0; waited < 5_000; waited += 100) {
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+    if (count() > had) return;
+  }
+  throw new Error("`impl.mjs` 变了，加载器却没换 —— 热重载是死的，而它看起来是活的");
 }
 
 /*

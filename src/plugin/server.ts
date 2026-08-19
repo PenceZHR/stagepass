@@ -283,7 +283,11 @@ function promptMessages(args: Record<string, unknown>): unknown[] {
   }];
 }
 
-function handle(message: Record<string, unknown>): void {
+/**
+ * 一条消息进来该怎么答。**导出给 `hot-loader.mjs`** —— 进程入口在那儿，
+ * 它每条消息前比一次这份实现的 mtime，变了就换（装完不用再开新会话）。
+ */
+export function handle(message: Record<string, unknown>): void {
   log(">>", message);
   const id = message["id"];
   const ok = (result: unknown): void => { send({ jsonrpc: "2.0", id, result }); };
@@ -381,20 +385,8 @@ function handle(message: Record<string, unknown>): void {
   }
 }
 
-let buffer = "";
-process.stdin.on("data", (chunk: Buffer) => {
-  buffer += chunk.toString("utf-8");
-  let index = buffer.indexOf("\n");
-  while (index >= 0) {
-    const line = buffer.slice(0, index).trim();
-    buffer = buffer.slice(index + 1);
-    if (line !== "") {
-      try {
-        handle(JSON.parse(line) as Record<string, unknown>);
-      } catch (error) {
-        log("!!", { parse: error instanceof Error ? error.message : String(error) });
-      }
-    }
-    index = buffer.indexOf("\n");
-  }
-});
+/*
+ * 读 stdin 的那段循环搬去 `hot-loader.mjs` 了 —— 那个文件不打包，因为它必须
+ * **动态** import 这份实现（打包器会把动态 import 变成名字带哈希的 chunk，那样就
+ * 没有一个稳定路径可以去 stat）。这里只剩「怎么答」，不管「谁在读」。
+ */
