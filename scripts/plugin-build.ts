@@ -28,7 +28,7 @@ import { spawn } from "node:child_process";
 
 import { build } from "esbuild";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = process.cwd();
@@ -222,7 +222,13 @@ async function smokeStart(): Promise<void> {
    * 判据必须钉在产物上 —— 声明了能力却不实现方法，Codex 那边是静默不显示。
    */
   const child = spawn(process.execPath, [join(OUT, "server.mjs")], {
-    cwd: OUT, stdio: ["pipe", "pipe", "pipe"],
+    cwd: OUT,
+    stdio: ["pipe", "pipe", "pipe"],
+    /*
+     * 冒烟的日志改道到临时文件。写进插件目录那份的话，「Codex 问过 prompts/list
+     * 没有」就再也分不清是它问的还是构建自己问的 —— 而那是那条实验唯一的判据。
+     */
+    env: { ...process.env, STAGEPASS_LOG: join(tmpdir(), "stagepass-smoke.log") },
   });
   const said: string[] = [];
   const complained: string[] = [];

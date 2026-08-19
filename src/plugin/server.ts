@@ -36,7 +36,11 @@ import { projectForWorkspace, workspacePaths } from "./workspace";
  */
 
 const HERE = new URL(".", import.meta.url).pathname;
-const LOG = join(HERE, "plugin.log");
+/*
+ * 排障日志。**可以改道** —— 构建的启动冒烟也会跑一个真 server，它写进同一个文件的话
+ * 会把「Codex 到底问过什么」这个判据弄脏（`prompts/list` 那条实验就是靠它判的）。
+ */
+const LOG = process.env["STAGEPASS_LOG"] ?? join(HERE, "plugin.log");
 const PANEL_URI = "ui://stagepass/panel";
 const DB_PATH = process.env["STAGEPASS_DB"] ?? join(homedir(), ".stagepass", "panel.db");
 /**
