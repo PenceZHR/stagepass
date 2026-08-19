@@ -364,6 +364,18 @@ export function handle(message: Record<string, unknown>): void {
       return;
     }
 
+    /*
+     * **不认识的名字要拒，不许当成面板渲染。** 2026-08-18 实测：widget 调了一个
+     * 别的 server 的工具名（跨 server 探针），落到这里被当成 stagepass_panel 答了
+     * 回去 —— 调用方拿到一份「成功」的面板载荷，把「调不到」误判成「调到了」。
+     */
+    if (name !== "stagepass_panel") {
+      if (id !== undefined) {
+        send({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown tool: ${String(name)}` } });
+      }
+      return;
+    }
+
     void (async () => {
       const picked = await resolve(args["change"], params["_meta"]);
       log("!!", { picked });

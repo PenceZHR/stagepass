@@ -177,31 +177,6 @@
     }, 1200);
   });
 
-  /*
-   * ## 实验（2026-08-18 深夜）：widget 的 callTool 能不能跨 server
-   *
-   * `codex_app__*`（create_thread / wait_threads…）的真身在 Desktop App 里，插件
-   * 进程隔着私有管道够不着。但 widget 跑在**会话的上下文**里，而那批工具正是这个
-   * 会话的工具 —— callTool 能不能调到它们，没人验过。
-   *
-   * 能 → 「跑这个阶段」可以直接把轮开成 Desktop 的一等任务：可见、审批在 UI 弹、
-   *      Desktop 自己驱动（插件死了轮照跑），而且不经过模型。
-   * 不能 → 这条路排除，别再猜。
-   *
-   * 探针只调**只读**的 list_projects —— 零副作用。答案落在 report.log 的
-   * `xserver` 字段里，看完就可以把这一段删了。
-   */
-  step("xserver-probe", function () {
-    if (!bridge || typeof bridge.callTool !== "function") return;
-    Promise.resolve(bridge.callTool("codex_app__list_projects", {}))
-      .then(function (r) {
-        R.xserver = { ok: true, sample: String(JSON.stringify(r)).slice(0, 300) };
-        post("xserver");
-      })
-      .catch(function (e) {
-        R.xserver = { ok: false, err: String((e && e.message) || e).slice(0, 200) };
-        post("xserver");
-      });
   });
 
   R.stage = "ready";
