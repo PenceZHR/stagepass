@@ -360,10 +360,36 @@ function roundEnvelope(
   ].join("\n");
 }
 
-export async function runRound(
+
+/** 准备好的一轮：题面已经落成文件，名单已经开好，就差谁去跑。 */
+interface PreparedRound {
+  /** 送进会话的那个信封 —— 内容一个字不带，只有身份、路径和「先读它」。 */
+  readonly envelope: string;
+  /** 题面文件的绝对路径。 */
+  readonly scriptPath: string;
+  /** 红蓝两方的格子文件。没有格子的阶段是 null。 */
+  readonly slots: ReturnType<typeof laySlots>;
+  /** 这一轮开给裁判的名单 —— 结算时要照它逐条对答案。 */
+  readonly items: readonly WorkItemDraft[];
+}
+
+/**
+ * 备一轮，**但不派**。
+ *
+ * ## 为什么它单独存在（2026-08-19 定案）
+ *
+ * StagePass 不再自己跑轮 —— 谁执行 turn，谁就占着那条 Codex 线程，于是人在 App 里
+ * 打不开它（真机反复撞到的 "This is open in another app"）。**改成把题面交给人，
+ * 他在自己的会话里跑**：那一轮从第一秒起就是他的，看得见、点得开、审批弹给他。
+ *
+ * 备的这些一样都不能少，而且**必须和真跑那条走同一份代码**：名单要在人开跑之前开好
+ * （裁判一起来就可能问「下一项」）、gap 名单要落文件、格子文件要铺好、契约说明要写。
+ * 抄一份出来迟早分叉，而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」。
+ */
+function prepareRound(
   request: RoundRequest,
   dependencies: RoundDependencies,
-): Promise<RoundSettled> {
+): PreparedRound {
   // Only open gaps are put to the judge. A closed one is not a question, and
   // listing it would invite a verdict that reopens something already settled.
   // 编辑过门那条也不进（批 6）：它是人和机器之间的门 —— 红方修不了它，裁判
@@ -453,33 +479,6 @@ export async function runRound(
     ].join("\n"),
   );
 
-  /*
-   * **这一轮之前它已经有哪些孩子** —— 必须在 turn 之前问。
-   *
-   * 成功的轮复用裁判线程，所以一条裁判线程会累积多轮的子 Agent（实测见过一条挂着
-   * 7 个）。差集给出的正是「这一次派生的」，而且它不依赖任何时钟 —— 拿时间戳去比
-   * 要假设 StagePass 和 Codex 的钟对得上，差集不用。
-   *
-   * 新线程时 `judgeThreadId` 是 null，此时它还不存在，孩子当然也没有。
-   */
-   /*
-    * **裁判线程读不到 = 没有孩子可数**，不是这一轮的错。
-    *
-    * 真机链（2026-08-18 深夜）：绑定指着一条 Codex 里已不存在的线程（第一轮失败留下
-    * 的零轮次幽灵），这一步如实抛 `no App Server thread …` —— 于是每次派轮都死在
-    * turn 之前的同一句上，座位层「resume 不成就开新线程」的恢复根本没机会跑。
-    *
-    * 只接 `SubAgentNotFoundError`（明确的「没有这条线程」）；断线、超时那些照旧抛
-    * —— 那时装作基线为空会把别人的孩子当成这一轮新生的。
-    */
-  let before: readonly string[] = [];
-  if (request.judgeThreadId !== null) {
-    try {
-      before = await dependencies.childThreads(request.judgeThreadId);
-    } catch (error) {
-      if (!(error instanceof SubAgentNotFoundError)) throw error;
-    }
-  }
 
   /*
    * **名单要在 turn 之前开好** —— 裁判一起来就可能调 `stagepass_next`。
@@ -535,6 +534,33 @@ export async function runRound(
     openGaps, openGapsPath, slots, settledPath, contractNotesPath,
   });
   const envelope = roundEnvelope(request, scriptPath);
+
+  return { envelope, scriptPath, slots, items };
+}
+
+export async function runRound(
+  request: RoundRequest,
+  dependencies: RoundDependencies,
+): Promise<RoundSettled> {
+  const { envelope, slots, items } = prepareRound(request, dependencies);
+  /*
+    * **裁判线程读不到 = 没有孩子可数**，不是这一轮的错。
+    *
+    * 真机链（2026-08-18 深夜）：绑定指着一条 Codex 里已不存在的线程（第一轮失败留下
+    * 的零轮次幽灵），这一步如实抛 `no App Server thread …` —— 于是每次派轮都死在
+    * turn 之前的同一句上，座位层「resume 不成就开新线程」的恢复根本没机会跑。
+    *
+    * 只接 `SubAgentNotFoundError`（明确的「没有这条线程」）；断线、超时那些照旧抛
+    * —— 那时装作基线为空会把别人的孩子当成这一轮新生的。
+    */
+  let before: readonly string[] = [];
+  if (request.judgeThreadId !== null) {
+    try {
+      before = await dependencies.childThreads(request.judgeThreadId);
+    } catch (error) {
+      if (!(error instanceof SubAgentNotFoundError)) throw error;
+    }
+  }
 
   let delivery;
   try {
