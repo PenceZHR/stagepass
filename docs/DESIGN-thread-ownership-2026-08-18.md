@@ -4,7 +4,8 @@
 > 线程显示 **"This is open in another app. Close it there to continue here."**，
 > 而且看到的内容有延时。
 >
-> 这份是**动手之前的代价清单**（用户选了「先盘清楚」）。不是方案书，是账。
+> 这份原本是**动手之前的代价清单**（用户选了「先盘清楚」）。
+> **2026-08-18 用户定案，见第八节 —— 账已经不用算了，方向定了。**
 
 ## 一、症状不是 bug，是一个设计选择的必然结果
 
@@ -115,3 +116,58 @@ StagePass 今天用 `thread/start` 开线程（`seats.ts` → `AppServerSessionH
 
 **但先做第六节那三条实验。** 第 1 条不成立的话，整条路走不通；第 2 条的答案决定
 「无人值守」这件事的形状。两条都不写产品代码就能答。
+
+
+## 八、定案（2026-08-18 用户原话）
+
+> 「stagepass 不需要拿到流啊，我只要在相应的 session 看到就行了，stagepass 需要回到
+> 最精简的状态，但是需要完整的 session 监控。」
+
+三句话，各定一件事：
+
+### 「不需要拿到流」—— 订阅权让出去
+
+StagePass 不再 attach 那条线程。第五节里唯一真正的损失（`quietForMs` 的分辨率）
+就此接受；`delivery.text` 改从 `ThreadHistory.lastCompletedText` 取。
+
+### 「在相应的 session 看到就行」—— 线程归人
+
+那条线程在 Codex App 里能点开、能接着打字、能看到流。这正是老规矩
+（`stagepass-no-exec-only-tui`）那句「人要看得见它跑」的**原义**，而 08-18 换通道时
+以为 `threadSource:"user"` 能保住它 —— 现在承认只兑现了一半，用这条补上。
+
+### 「最精简」+「完整的 session 监控」—— 这两句不矛盾，它们划出同一条线
+
+**精简**说的是**持有**：不 attach 线程、不占订阅位、不当中间人、不替人收审批。
+**完整监控**说的是**读**：一轮跑完没有、裁判说了什么、派生了哪两条子线程、
+两方各自说了什么、上下文离墙多远 —— 一样都不能少。
+
+这条线是可以划的，因为**监控要的全部来自 `thread/read`，不是流**：
+
+| 要监控的 | 来源 | 今天就有吗 |
+|---|---|---|
+| 这一轮完了没 | `turnCount` / `status` | 字段有，**轮询那段要新写** |
+| 裁判说了什么 | `lastCompletedText` | ✅ |
+| 派生了哪两条 | `childThreadIds` | ✅ |
+| 两方说了什么 | `readThreadTranscript` | ✅ |
+| 上下文用量 | `contextUsage` | ✅ |
+| 线程还在不在 | `thread/loaded/list` + `thread/list` | ✅ |
+
+**只有第一行要新写。** 其余全是现成的，而且本来就没走流。
+
+### 审批：走钩子，不走订阅（用户同日提出）
+
+Codex 有 `permission_request` 钩子。审批交给一个钩子程序：写进 StagePass 的库 →
+面板上画出来 → 人按 → 钩子返回 `permissionDecision`。
+
+这样审批**既不归 StagePass 的连接、也不要求人正好 attach 着**——它和订阅权彻底解耦。
+于是第六节那条「没人 attach 时要审批的 turn 会怎样」不再是拦路的未知。
+
+## 九、按这个定案，还剩几条未知
+
+1. **开完线程能不能放手让 App attach**（第六节第 1 条，仍然是拦路的那条）
+2. **`permission_request` 会不会为 daemon 里跑的 turn 触发** —— 钩子那条路的生死判据
+3. 零轮次线程在 App 里找不找得到（第六节第 3 条）
+
+三条都不写产品代码就能答。第 2 条要往 `~/.codex/hooks/hooks.json` 装一个只记日志的
+探针 —— **那是改用户的 Codex 配置，动手前要问。**
