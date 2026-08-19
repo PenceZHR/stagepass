@@ -14,13 +14,11 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
-    "three": "^0.185.1",
-    "ws": "^8.21.3"
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
-    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"

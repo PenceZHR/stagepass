@@ -1,5 +1,5 @@
-import { handleAction, type ActionDeps } from "../plugin/actions";
-import { handleApi, type ApiDeps } from "../plugin/api";
+import { handleAction, type ActionDeps } from "./actions";
+import { handleApi, type ApiDeps } from "./api";
 
 /**
  * 浏览器那一面的请求边界。

@@ -30,9 +30,9 @@ import { join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 import { prepareSchema } from "../src/db/schema";
-import type { ActionDeps } from "../src/plugin/actions";
-import { PluginRuntime } from "../src/plugin/runtime";
-import { openDatabase } from "../src/plugin/sqlite-handle";
+import type { ActionDeps } from "../src/web/actions";
+import { PluginRuntime } from "../src/web/runtime";
+import { openDatabase } from "../src/web/sqlite-handle";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { createRepoOps } from "../src/work/repo";

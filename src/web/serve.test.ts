@@ -4,9 +4,9 @@ import { describe, it } from "node:test";
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
-import type { ActionDeps } from "../plugin/actions";
-import type { ApiDeps } from "../plugin/api";
-import { openDatabase } from "../plugin/sqlite-handle";
+import type { ActionDeps } from "./actions";
+import type { ApiDeps } from "./api";
+import { openDatabase } from "./sqlite-handle";
 import { serveRequest } from "./serve";
 
 const AT = "2026-07-28T00:00:00.000Z";

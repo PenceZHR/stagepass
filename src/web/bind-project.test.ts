@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { SCHEMA_SQL } from "../db/schema";
-import { openDatabase } from "../plugin/sqlite-handle";
+import { openDatabase } from "./sqlite-handle";
 import { ProjectStore } from "../store/project-store";
 import { bindProject } from "./bind-project";
 

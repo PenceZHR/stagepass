@@ -91,7 +91,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 我们自己的东西一个都不碰**（better-sqlite3 只进 `import type`，编译后就没了）。
    * 谁都够得着，而它够不着任何人 —— 一个换驱动的垫片不该有话语权。
    */
-  "plugin/sqlite-handle.ts": 0,
+  "web/sqlite-handle.ts": 0,
 
 
   "domain/gate.ts": 1,
@@ -109,12 +109,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 插件跟着 Codex 的工作目录认项目。只读 `store/project-store`（0），别的什么都不碰
    * —— 和这一层其他「薄薄一层规则盖在 store 上」的模块同族。
    */
-  "plugin/workspace.ts": 1,
   /*
    * 座位 = 一个 (Change, 阶段) 绑着的 Codex 会话。它够得着的最高一层是
    * `codex/app-server-transport`（2），所以住这儿 —— 层数是依赖顶出来的，不是挑的。
    */
-  "plugin/seats.ts": 2,
+  "web/seats.ts": 2,
   /*
    * 「这一轮跑完了没」的轮询判定（2026-08-18 让出订阅权之后唯一新写的那段）。
    *
@@ -122,14 +121,14 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 只进 `import type`。但那条边在图上仍然算数，而**层数是依赖顶出来的、不是挑的**，
    * 所以它跟着 `app-server-history` 住在 2。
    */
-  "plugin/await-turn.ts": 2,
+  "web/await-turn.ts": 2,
   /*
    * 一轮跑完叫一声人（系统通知）。读 store（0）和 `system/process`（2），
    * 不认识用例、不认识界面 —— 层数照旧是依赖顶出来的。
    *
    * 它**只读状态、只发一条通知**：不推闸门、不派轮、不替人做任何决定。
    */
-  "plugin/nudge.ts": 2,
+  "web/nudge.ts": 2,
   "store/command-store.ts": 1,
   "work/job-store.ts": 1,
   "work/turn-loop.ts": 1,
@@ -142,8 +141,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 整棵树唯一会直接持有 Codex 子进程 stdin/stdout 的地方。
   "codex/app-server-protocol.ts": 2,
   "codex/app-server-client.ts": 2,
-  "codex/app-server-daemon.ts": 2,
-  "codex/app-server-websocket.ts": 2,
   // 外部进程只从这一个缝里出去：codex app-server 与 osascript。
   "system/process.ts": 2,
   /*
@@ -160,7 +157,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "codex/app-server-history.ts": 2,
   "codex/archive.ts": 2,
   // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。
-  "codex/trust.ts": 2,
   "codex/phase-instructions.ts": 2,
 
   "domain/round.ts": 4,
@@ -220,7 +216,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
   // 在接口写进去的那一刻就会红。
   // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
-  "web/session-recovery.ts": 5,
   // 原生终端的 HTTP 边界只回归一化状态，不回 ANSI、输入或 JSON-RPC。
   /*
    * 插件那一面的数据装配（2026-08-18 定案：只做插件、网页端退休）。
@@ -229,18 +224,18 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 一边吐 widget 要的形状。它调 `panel-view` 而不是自己再算一遍，所以不能比
    * `panel-view` 低。
    */
-  "plugin/panel-data.ts": 5,
+  "web/panel-data.ts": 5,
   /*
    * 插件的数据口和进程边界，和 `panel-server` 同层同理由 —— 它俩是同一种东西的
    * 两个版本：一个把库变成 HTTP 上的 JSON，一个把库变成 MCP 上的 JSON。
    * 网页端退休后只剩后者。
    */
-  "plugin/api.ts": 5,
+  "web/api.ts": 5,
   /*
    * 产物和图谱那四条路。和 `api.ts` 同层 —— 它是 `api.ts` 的一块，只因为要拖
    * TypeScript 编译器才单独成文件（唯一的动态 import 边界，理由在文件开头）。
    */
-  "plugin/repo-routes.ts": 5,
+  "web/repo-routes.ts": 5,
   /*
    * 会改库的那些路，和执行通道。
    *
@@ -248,9 +243,8 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * （`work/round-turn-runner` → rubric → …），所以都在这一层。`seats` 低一格：
    * 它只认 App Server 和绑定表，不认识用例。
    */
-  "plugin/actions.ts": 5,
-  "plugin/runtime.ts": 5,
-  "plugin/server.ts": 5,
+  "web/actions.ts": 5,
+  "web/runtime.ts": 5,
   /*
    * 浏览器那一面的请求边界（2026-08-19 定案：状态流转回 WebUI）。和 `plugin/server`
    * 同层同理由 —— 它俩是同一种东西的两个版本：一个把库变成 MCP 上的 JSON，一个变成
@@ -286,7 +280,6 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * C 方案：模型把问题填进格子文件，落进账本等人在浏览器里答。和 ask-human 同族、
    * 同层，但**不认识会话** —— 没有人需要挂着一轮，所以也没有「会话死了」这种下场。
    */
-  "app/draft-questions.ts": 3,
   // 「逐条问、只收内容」那套。和 question 同层 —— 2026-08-17 拆掉 MCP 之后念它给
   // 人听的是浏览器，但类型的位置没变。
   // 名单里装的是 gap（L1）和 criterion（L5），但装的是什么不决定它住哪层，
@@ -333,9 +326,11 @@ const GRAPH = parseModuleGraph(production);
  * reached, and one reachable from nowhere still does not.
  */
 const ENTRY_POINTS = [
-  // 插件的构建入口。面板进程（`scripts/panel.ts`）2026-08-18 随网页端一起删了 ——
-  // 现在这棵树只有一个产品出口：Codex 插件。
-  "scripts/plugin-build.ts",
+  /*
+   * 工作台。2026-08-19 定案之后这棵树只有一个产品出口：浏览器里的 StagePass。
+   * MCP 插件那一层（widget / 构建 / 热重载）当天全部删除 —— 一夜六种事故的根子。
+   */
+  "scripts/stagepass.ts",
 ].map((path) => ({
   path,
   text: readFileSync(join(process.cwd(), path), "utf-8"),
@@ -575,15 +570,14 @@ const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
    * 而真正在管「它有没有在变成第二个 panel-server」的是另外两条，**这次都没红**：
    * 配料单不许过三成、单个函数不许长成一层。
    */
-  "plugin/server.ts": 0.96,
-  "plugin/api.ts": 0.67,
+    "web/api.ts": 0.72,
   /*
    * 它是**另一个入口的路由器**，够得着 api + actions 的并集 —— 和 `plugin/server`
    * 一样是同义反复，不是坏味道。真正管着「有没有长成第二个 panel-server」的是另外
    * 两条（配料单不许过三成、单个函数不许长成一层），这个文件 70 行、一个分支。
    */
-  "web/serve.ts": 0.90,
-  "plugin/actions.ts": 0.78,
+  "web/serve.ts": 0.96,
+  "web/actions.ts": 0.80,
 };
 
 /*
