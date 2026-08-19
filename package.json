@@ -9,9 +9,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.panel.json",
     "check": "pnpm typecheck && pnpm test",
     "schema:app-server": "codex app-server generate-json-schema --experimental --out docs/app-server-schema",
-    "stagepass": "tsx scripts/stagepass.ts",
-    "plugin": "tsx scripts/plugin-build.ts",
-    "preview": "tsx scripts/plugin-preview.ts"
+    "stagepass": "tsx scripts/stagepass.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
