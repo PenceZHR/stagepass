@@ -54,3 +54,39 @@ describe("standing · 界面说得出名字的按钮都真的存在", () => {
     assert.deepEqual(missing, [], "界面在叫人按一个不存在的东西");
   });
 });
+
+/**
+ * 界面不许自己编一个 Change id 出来。
+ *
+ * ## 这条也是被真机打出来的
+ *
+ * 2026-08-18 用户截图：面板右上角写着 `CHG-1`，而 `CHG-1` 在库的 `changes` 表里
+ * **根本不存在** —— 底下显示的是另一个 Change（CHG-002）的状态。
+ *
+ * 成因是一句写死的兜底：`params.get("change") || __SP_CHANGE__ || "CHG-1"`。
+ * 那是老树时代那条演示 Change 的遗物；插件里认不出项目时就掉进它。
+ *
+ * **认不出来要说认不出来。** 编一个 id 的代价不是「显示错了」，是**人以为自己在看
+ * 这个 Change，实际在看另一个** —— 而他接下来按的每一个按钮都落在他没在看的那个上。
+ */
+describe("standing · 界面不编 Change id", () => {
+  /*
+   * **只看代码，不看散文。** 注释里当然会提到 `CHG-1`（这条护栏为什么存在，讲的
+   * 就是它）—— 把注释也算进去，这条会永远红着，然后被人删掉。
+   *
+   * 整行的 `//` 和整段的块注释都刨掉；行尾注释不刨，那需要真解析器，而写死一个
+   * Change id 不会藏在行尾注释里。
+   */
+  const code = script
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("//"))
+    .join("\n");
+
+  it("**没有写死的 Change id 兜底**", () => {
+    const hardcoded = [...code.matchAll(/["'`](CHG-[A-Za-z0-9_-]+)["'`]/g)]
+      .map((match) => match[1]!);
+
+    assert.deepEqual(hardcoded, [], "认不出是哪个 Change 时要说出来，不许编一个");
+  });
+});

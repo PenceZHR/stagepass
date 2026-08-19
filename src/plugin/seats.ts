@@ -155,16 +155,43 @@ export class PluginSeats {
           throw new SeatError("project_path_missing", `${changeId} 的项目没有路径，跑不了`);
         }
         const bound = found();
-        const session = await this.options.host.open(
-          bound?.status === "bound" ? bound.threadId : null,
-          {
-            cwd,
-            sandbox: this.options.sandbox,
-            approvalPolicy: this.options.approvalPolicy,
-            effort: this.options.effort,
-            ...(this.options.model === undefined ? {} : { model: this.options.model }),
-          },
-        );
+        const open = {
+          cwd,
+          sandbox: this.options.sandbox,
+          approvalPolicy: this.options.approvalPolicy,
+          effort: this.options.effort,
+          ...(this.options.model === undefined ? {} : { model: this.options.model }),
+        };
+        /*
+         * **绑着的那条线程可能在 Codex 里已经不存在了。**
+         *
+         * 绑定是在 `thread/start` 那一刻写下的（中途死掉时「线程建了但 StagePass 不
+         * 知道」是最难查的状态，所以必须早写）。代价是：第一轮没跑成的话，账本上会
+         * 留下一条指向**零轮次线程**的绑定 —— 而零轮次线程连 `threads` 表都不进，
+         * `thread/resume` 必拒（2026-08-18 实测：`no rollout found for thread id …`）。
+         *
+         * 不接这一下的话，这个座位会被自己的绑定毒死：每次派轮都在同一句话上失败，
+         * 而那句话说的是 Codex 的内部状态，不是人做错了什么。
+         *
+         * 所以 resume 不成就**开一条新的**，绑定跟着换过去。丢掉的是那条线程的历史
+         * —— 而一条零轮次线程本来就没有历史可丢。
+         */
+        let session;
+        try {
+          session = await this.options.host.open(
+            bound?.status === "bound" ? bound.threadId : null, open,
+          );
+        } catch (error) {
+          if (bound?.status !== "bound") throw error;
+          /*
+           * **明着解绑，再开新的。** 绑定层故意不许直接换绑（它的注释：换绑会把人
+           * 正看着的那段对话丢掉）—— 那条规矩是对的，而这里正是它说的「先 detach，
+           * 有意为之」的那种情况：resume 都被拒了，那条线程在 Codex 里已经没有
+           * 可看的东西。
+           */
+          if (seat !== ASIDE) new BindingStore(this.options.database).detach(changeId, seat);
+          session = await this.options.host.open(null, open);
+        }
         if (bound?.threadId !== session.threadId) remember(session.threadId);
         this.watch(session.threadId, session);
         dispatch.onThread?.(session.threadId);

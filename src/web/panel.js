@@ -34,7 +34,15 @@ const params = new URLSearchParams(location.search);
  * 这三样**可变** —— 换 Change / 换项目走 `goTo()` 原地重画，不再整页重载（见下）。
  * 它们只被读，改只发生在 `goTo()` 一处。
  */
-let changeId = params.get("change") || window.__SP_CHANGE__ || "CHG-1";
+/*
+ * **认不出是哪个 Change 就是认不出，不许编一个。**
+ *
+ * 这里原来兜底成 `"CHG-1"`（老树那条演示 Change 的遗物）。2026-08-18 真机：插件在一个
+ * 没登记成项目的目录里打开，`__SP_CHANGE__` 是 null，于是面包屑写着一个库里根本不
+ * 存在的 `CHG-1`，而人正在看的是另一个 Change 的状态。**他以为自己在看这个，
+ * 按下去的每一个按钮却落在那个上。**
+ */
+let changeId = params.get("change") || window.__SP_CHANGE__ || "";
 let projectParam = params.get("project") || window.__SP_PROJECT__ || null;
 // widget 里没有地址栏，起始状态由宿主给（插件默认收起，让大环独占那 ~700px）。
 const startCollapsed = params.get("collapsed") === "1" || window.__SP_COLLAPSED__ === true;
@@ -117,7 +125,18 @@ const runButton = button("run");
 const askButton = button("ask");
 const closeButton = button("close");
 
-pick("crumb-change").textContent = changeId;
+/**
+ * 面包屑说的是**现在在看哪个 Change**。
+ *
+ * 这里原来是模块加载时画一次就不管了 —— 于是 `goTo()` 换掉 Change 之后它还留着
+ * 加载时那个值，屏幕上从此说的是上一个（2026-08-18 真机截到的就是这一幕）。
+ * 每次换都要重画，所以它是个函数。
+ */
+function paintCrumb() {
+  // 认不出来就说认不出来。一个破折号比一个假 id 诚实得多。
+  pick("crumb-change").textContent = changeId === "" ? "认不出是哪个 Change" : changeId;
+}
+paintCrumb();
 
 /**
  * 阶段的 pass / fail，用**词**说一遍。
@@ -1729,7 +1748,8 @@ async function removeThing(kind, id, what) {
  */
 function goTo(query) {
   const next = new URLSearchParams(query.startsWith("?") ? query.slice(1) : query);
-  changeId = next.get("change") || "CHG-1";
+  changeId = next.get("change") || "";
+  paintCrumb();
   projectParam = next.get("project");
   try {
     history.replaceState(null, "", `${location.pathname}${query === "" ? "" : query}`);

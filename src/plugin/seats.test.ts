@@ -23,12 +23,18 @@ class FakeConnection implements AppServerConnection {
   readonly methods: string[] = [];
   /** 轮询完成判定读到的轮次。`turn/start` 之后多一轮 —— 那就是「这一轮跑完了」。 */
   readonly turns: string[] = [];
+  /** 这些线程 resume 会被拒（没有 rollout）。 */
+  readonly noRollout = new Set<string>();
   private readonly listeners = new Set<(message: AppServerNotification) => void>();
 
   request(method: string, params: Readonly<Record<string, unknown>> = {}): Promise<unknown> {
     this.methods.push(method);
     if (method === "thread/start") return Promise.resolve({ thread: { id: "THREAD-A", turns: [] } });
     if (method === "thread/resume") {
+      // 零轮次线程没有 rollout —— Codex 就是这么拒的（2026-08-18 实测原话）。
+      if (this.noRollout.has(String(params.threadId))) {
+        throw new Error(`no rollout found for thread id ${String(params.threadId)}`);
+      }
       return Promise.resolve({ thread: { id: params.threadId, turns: [] } });
     }
     if (method === "thread/unsubscribe") return Promise.resolve({ status: "unsubscribed" });
@@ -201,6 +207,53 @@ describe("plugin · 发完一轮就把线程还给人", () => {
       const dropped = connection.methods.indexOf("thread/unsubscribe");
       assert.notEqual(dropped, -1, "一次都没退订 —— 人点开会看到「被别的 app 占着」");
       assert.equal(dropped > started, true, "退订要在发完 turn 之后");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("plugin · 绑着的线程在 Codex 里没了", () => {
+  /*
+   * 打的是真实症状：**这个阶段从此永远派不动，而错误信息说的是「no rollout found」。**
+   *
+   * 绑定是在 `thread/start` 那一刻就写下的（中途死掉时「线程建了但 StagePass 不知道」
+   * 是最难查的状态，所以必须早写）。代价是：第一轮没跑成的话，账本上留下一条指向
+   * **零轮次线程**的绑定 —— 而零轮次线程连 `threads` 表都不进，`thread/resume` 必拒
+   * （2026-08-18 实测）。
+   *
+   * 于是这个座位被自己的绑定毒死：每一次派轮都在同一句话上失败，而那句话说的是
+   * Codex 的内部状态，不是人做错了什么。
+   */
+  it("resume 被拒就开一条新的，而不是让这个座位永远派不动", async () => {
+    const database = open();
+    try {
+      const connection = new FakeConnection();
+      connection.noRollout.add("THREAD-DEAD");
+      new BindingStore(database).bind("CHG-1", "PRD", "THREAD-DEAD");
+      const seats = new PluginSeats({
+        database,
+        host: new AppServerSessionHost(connection),
+        history: {
+          readThread: async () => ({
+            turnCount: connection.turns.length,
+            turns: connection.turns.map((text) => ({ status: "completed", agentText: text })),
+            lastCompletedText: connection.turns[connection.turns.length - 1] ?? null,
+          }),
+        } as never,
+        pollEveryMs: 1,
+        turnTimeoutMs: 2_000,
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        effort: "xhigh",
+      });
+
+      const done = await seats.transportFor("CHG-1", "PRD")
+        .runTurn({ threadId: null, prompt: "跑一轮" });
+
+      assert.equal(done.threadId, "THREAD-A", "该开一条新线程");
+      // 绑定要跟着换过去 —— 不换的话下一轮又撞同一条死线程。
+      assert.equal(new BindingStore(database).find("CHG-1", "PRD")?.threadId, "THREAD-A");
     } finally {
       database.close();
     }
