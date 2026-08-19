@@ -115,6 +115,7 @@ const openQuestionNote = pick("open-question-note");
 const roundProgress = pick("round-progress");
 const runButton = button("run");
 const askButton = button("ask");
+const closeButton = button("close");
 
 pick("crumb-change").textContent = changeId;
 
@@ -602,6 +603,33 @@ async function dispatchThenShow(request) {
     /* 终端状态读不到不该把这次派发也算失败 —— 下面那句结论照常说。 */
   }
   return answered;
+}
+
+/**
+ * 把这一轮当场收掉。
+ *
+ * **不推闸门、不对产物下判断** —— 只陈述「人把这一轮停了」：账本上记成人中止的，
+ * Change 从 running 里出来，于是 retry 亮起来。和收尸人对过期租约做的是同一件事，
+ * 只是由人当场触发。
+ */
+async function abortRound() {
+  closeButton.disabled = true;
+  closeButton.textContent = "正在收…";
+  try {
+    const phase = current ?? panelState?.currentPhase;
+    const result = await (await fetch(
+      `/api/close?change=${encodeURIComponent(changeId)}&phase=${encodeURIComponent(phase)}`,
+      { method: "POST" },
+    )).json();
+    say(result.aborted
+      ? "这一轮记成你中止的了 —— 现在可以再跑一次。"
+      : "这个阶段账本上没有在飞的活儿；座位已经收掉了。");
+    await loadOrReconnect();
+    if (current !== null) drawStage(current);
+  } finally {
+    closeButton.disabled = false;
+    closeButton.textContent = "中止这一轮";
+  }
 }
 
 async function recordBrief() {
@@ -2205,6 +2233,11 @@ function drawStage(phase) {
   const barred = entry.current && Boolean(panelState?.blocked);
   runButton.disabled = entry.live || needsBrief || barred
     || (status !== "pending" && status !== "running");
+  /*
+   * **只在真有一轮在飞的时候出现。** 没有活儿可中止的时候摆着它，人按下去只会得到
+   * 一句「没什么可中止的」—— 那是另一种「亮着的按钮按下去什么也没有」。
+   */
+  closeButton.hidden = !roundInFlight(entry);
   askButton.hidden = !entry.current;
   /*
    * **预检会拒的时候，连问都别问**（2026-08-07 真机）。
@@ -2774,6 +2807,7 @@ async function confirmBriefEdit() {
   }
 }
 
+closeButton.addEventListener("click", () => { void abortRound(); });
 button("back").addEventListener("click", () => { void leave(); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });

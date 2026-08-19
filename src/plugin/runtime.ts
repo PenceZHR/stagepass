@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 
 import { AppServerHistory } from "../codex/app-server-history";
-import { startManagedAppServer, type ManagedAppServer } from "../codex/app-server-daemon";
+import { AppServerClient } from "../codex/app-server-client";
 import { AppServerSessionHost } from "../codex/app-server-transport";
 import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/phase-instructions";
 import { childThreadsOf, readThreadTranscript, readThreadUserMessages } from "../codex/subagent";
@@ -79,7 +79,7 @@ export type RunOutcome =
   | { readonly ran: false; readonly phase: Phase; readonly reason: string; readonly busy?: string };
 
 export class PluginRuntime {
-  private managed: ManagedAppServer | null = null;
+  private client: AppServerClient | null = null;
   private seats: PluginSeats | null = null;
   private history: AppServerHistory | null = null;
 
@@ -90,20 +90,39 @@ export class PluginRuntime {
     if (this.seats !== null && this.history !== null) {
       return { seats: this.seats, history: this.history };
     }
-    const managed = await startManagedAppServer({
+    /*
+     * **自己的 app-server 子进程，不是那个常驻 daemon。**
+     *
+     * daemon（`codex app-server daemon start`）是 Codex 给 SSH / 远程控制用的常驻服务。
+     * StagePass 用不到它：2026-08-18 实测，占用问题的成因是**订阅**不是 daemon
+     * （见 `docs/DESIGN-thread-ownership-2026-08-18.md` §11），退订之后线程就归人了。
+     *
+     * 那 daemon 就只剩坏处：它是全机器共享的（别人的会话也在里面）、它把线程一直
+     * loaded 着、而且连它要走 WebSocket —— `ws` 是 CJS，打进 ESM 会让插件产物起不来
+     * （2026-08-18 那个 `Dynamic require of "events"`）。子进程这条路一样都没有。
+     *
+     * 代价说清楚：**turn 跑在这个子进程里，插件退出它就没了。** daemon 那种「关掉
+     * 会话轮还活着」的 durability 就此失去 —— 而收这一轮的记账本来也要插件活着。
+     */
+    const client = AppServerClient.spawn({
       command: "codex",
+      args: ["app-server"],
       cwd: process.cwd(),
       onNotification: () => {},
       /*
        * 审批 / elicitation 交给 host 按 threadId 路由。**绝不在这里代答** ——
        * 代答等于替人做了他本该看见的决定，那正是这套东西存在的反面。
+       *
+       * 注意：派完一轮我们就退订了（`seats.ts`），所以正常情况下审批根本不会走到
+       * 这里 —— 它归那条线程此刻的订阅者，也就是在 App 里看着的人。
        */
       onServerRequest: (request) => host.handleServerRequest(request),
       onStderr: () => {},
     });
-    const host = new AppServerSessionHost(managed.client);
-    this.managed = managed;
-    this.history = new AppServerHistory(managed.client);
+    await client.initialize();
+    const host = new AppServerSessionHost(client);
+    this.client = client;
+    this.history = new AppServerHistory(client);
     this.seats = new PluginSeats({
       database: this.options.database,
       host,
@@ -117,10 +136,10 @@ export class PluginRuntime {
     return { seats: this.seats, history: this.history };
   }
 
-  /** 关掉那条控制连接。插件进程退出前叫一次，别把 daemon 的连接晾着。 */
+  /** 收掉那个 app-server 子进程。插件退出前叫一次，别留一个孤儿进程。 */
   close(): void {
-    this.managed?.close?.();
-    this.managed = null;
+    void this.client?.close();
+    this.client = null;
     this.seats = null;
     this.history = null;
   }
