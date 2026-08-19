@@ -199,9 +199,20 @@ export class PluginSeats {
         /*
          * **基线要在派轮之前数。** 判据是「轮次数超过基线」，而不是「最后一轮完成了」
          * —— 后者在派轮之前就成立（上一轮早完成了），会当场返回上一轮的结论。
+         *
+         * ## 读不出来 = 0，不是失败
+         *
+         * 一条刚 `thread/start` 出来、还没收到第一条用户消息的线程**读不了**
+         * （2026-08-18 真机原话：`is not materialized yet; includeTurns is unavailable
+         * before first user message`）—— 而数基线恰好就发生在那个窗口里。
+         *
+         * 那不是故障，是新线程的正常状态：它确实还没有轮次。把它当失败会让**每个座位
+         * 的第一轮**都跑不起来。
          */
-        const before = await this.options.history.readThread(session.threadId);
-        const baselineTurns = before?.turnCount ?? 0;
+        let baselineTurns = 0;
+        try {
+          baselineTurns = (await this.options.history.readThread(session.threadId))?.turnCount ?? 0;
+        } catch { /* 还没落地的线程读不出来 —— 它就是 0 轮 */ }
 
         this.inFlight.add(session.threadId);
         await session.startTurn(dispatch.prompt);

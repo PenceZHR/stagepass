@@ -259,3 +259,53 @@ describe("plugin · 绑着的线程在 Codex 里没了", () => {
     }
   });
 });
+
+describe("plugin · 全新线程还读不出来", () => {
+  /*
+   * 打的是真机症状（2026-08-18 用户截图）：
+   *
+   *   thread 01a017e9… is not materialized yet;
+   *   includeTurns is unavailable before first user message
+   *
+   * 一条刚 `thread/start` 出来、还没收到第一条用户消息的线程**读不了** —— 而数基线
+   * 恰恰发生在 `turn/start` 之前，正是那个读不了的窗口。
+   *
+   * **这不是故障，是新线程的正常状态。** 读不出来就是「它还没有轮次」，基线记 0；
+   * 把它当成失败会让每一条新线程的第一轮都跑不起来 —— 也就是每个座位的第一轮。
+   */
+  it("第一轮：基线读不出来当作 0，不是当作失败", async () => {
+    const database = open();
+    try {
+      const connection = new FakeConnection();
+      const seats = new PluginSeats({
+        database,
+        host: new AppServerSessionHost(connection),
+        history: {
+          readThread: async () => {
+            if (connection.turns.length === 0) {
+              throw new Error("thread THREAD-A is not materialized yet; "
+                + "includeTurns is unavailable before first user message");
+            }
+            return {
+              turnCount: connection.turns.length,
+              turns: connection.turns.map((text) => ({ status: "completed", agentText: text })),
+              lastCompletedText: connection.turns[connection.turns.length - 1] ?? null,
+            };
+          },
+        } as never,
+        pollEveryMs: 1,
+        turnTimeoutMs: 2_000,
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        effort: "xhigh",
+      });
+
+      const done = await seats.transportFor("CHG-1", "PRD")
+        .runTurn({ threadId: null, prompt: "第一轮" });
+
+      assert.equal(done.text, "收到。");
+    } finally {
+      database.close();
+    }
+  });
+});
