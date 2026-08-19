@@ -1763,6 +1763,18 @@ async function load() {
   const panel = await (await fetch(
     `/api/panel?change=${encodeURIComponent(changeId)}`
     + (projectParam ? `&project=${encodeURIComponent(projectParam)}` : ""))).json();
+  /*
+   * **服务端才是「在看哪条」的权威。**
+   *
+   * 工作台绑定一个项目之后，没指定 Change 时它会替人挑第一条（`bind-project.ts`
+   * 的 `defaultChange`）。前端这边如果只认地址栏，就会出现 2026-08-19 那一幕：
+   * 内容全画出来了，而面包屑还写着「认不出是哪个 Change」—— 同一屏上两句话打架，
+   * 人信的是那句否定的。
+   */
+  if (panel.changeId && panel.changeId !== changeId) {
+    changeId = panel.changeId;
+    paintCrumb();
+  }
   phases = panel.phases;
   panelState = panel;
   // 一轮跑完文件就是新的了 —— 缓存活过 load() 会让人读到上一轮的产出。

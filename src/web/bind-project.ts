@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import type Database from "better-sqlite3";
 
 import { createProject } from "../app/workspace";
+import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
 
 /**
@@ -60,4 +61,21 @@ export function bindProject(database: Database.Database, cwd: string): BindOutco
     return { kind: "not_a_repository", path };
   }
   return { kind: "bound", id: created.id, name: created.name, path };
+}
+
+/**
+ * 这个项目默认看哪条 Change。**一条都没有就是 `null`。**
+ *
+ * 绑定之后「看哪个项目」不再问人，「看哪条 Change」也不该 —— 一个项目通常只有一条
+ * 在办的，让人为此再点一下没有意义。
+ *
+ * 2026-08-19 真机：用户起在海战小游戏上，库里明明有 CHG-002，而面板说「认不出是
+ * 哪个 Change」、环是空的 —— 他的结论是「里面什么都没有」。**数据在，只是没被选中。**
+ * 插件那一层原来替人挑了第一条，删插件时那段跟着没了。
+ *
+ * 按建立顺序取（`ChangeStore.list` 就是这么排的）—— 稳定、可预期，而且第一条通常
+ * 就是还在办的那条。
+ */
+export function defaultChange(database: Database.Database, projectId: string): string | null {
+  return new ChangeStore(database).list(projectId)[0]?.id ?? null;
 }

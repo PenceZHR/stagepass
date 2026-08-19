@@ -6,8 +6,9 @@ import { join } from "node:path";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { openDatabase } from "./sqlite-handle";
+import { ChangeStore } from "../store/change-store";
 import { ProjectStore } from "../store/project-store";
-import { bindProject } from "./bind-project";
+import { bindProject, defaultChange } from "./bind-project";
 
 function withRepo(body: (dir: string) => void, asRepo = true): void {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "stagepass-bind-")));
@@ -91,6 +92,49 @@ describe("web · 工作台绑在它所在的仓库上", () => {
 
       assert.equal(new ProjectStore(database).list().length, 1);
     });
+    database.close();
+  });
+});
+
+/**
+ * 工作台绑定一个项目之后，「看哪条 Change」也不该再问人。
+ *
+ * 2026-08-19 真机：用户起在海战小游戏上，库里明明有 CHG-002，而面板说「认不出是
+ * 哪个 Change」、环是空的 —— 他的结论是「里面什么都没有」。**数据在，只是没被选中。**
+ *
+ * 插件那一层原来就替人挑了第一条（「一个项目通常只有一条在办的 Change，让人为此
+ * 再点一下没有意义」）；删插件时那段跟着没了，这里补回来。
+ */
+describe("web · 没指定就看这个项目的第一条", () => {
+  it("按建立顺序取第一条", () => {
+    const database = freshDatabase();
+    new ProjectStore(database).ensure("PRJ-1", "小游戏", "/tmp/x");
+    const changes = new ChangeStore(database);
+    changes.create("CHG-002", { projectId: "PRJ-1" });
+    changes.create("CHG-003", { projectId: "PRJ-1" });
+
+    assert.equal(defaultChange(database, "PRJ-1"), "CHG-002");
+    database.close();
+  });
+
+  /** 一条都没有就是 null —— **不编一个**，面板照实说「这个项目还没有 Change」。 */
+  it("一条都没有就说没有", () => {
+    const database = freshDatabase();
+    new ProjectStore(database).ensure("PRJ-1", "小游戏", "/tmp/x");
+
+    assert.equal(defaultChange(database, "PRJ-1"), null);
+    database.close();
+  });
+
+  /** 别的项目的 Change 不算数 —— 绑定的意义就是隔离。 */
+  it("只看绑定的那个项目", () => {
+    const database = freshDatabase();
+    const projects = new ProjectStore(database);
+    projects.ensure("PRJ-1", "小游戏", "/tmp/x");
+    projects.ensure("PRJ-2", "别的", "/tmp/y");
+    new ChangeStore(database).create("CHG-009", { projectId: "PRJ-2" });
+
+    assert.equal(defaultChange(database, "PRJ-1"), null);
     database.close();
   });
 });

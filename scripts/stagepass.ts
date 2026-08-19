@@ -36,7 +36,7 @@ import { openDatabase } from "../src/web/sqlite-handle";
 import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { createRepoOps } from "../src/work/repo";
-import { bindProject } from "../src/web/bind-project";
+import { bindProject, defaultChange } from "../src/web/bind-project";
 import { serveRequest } from "../src/web/serve";
 
 const PORT = Number(process.env["STAGEPASS_PORT"] ?? 4399);
@@ -178,6 +178,15 @@ const server = createServer((request, response) => { void (async () => {
      * 一个要人回答的问题 —— 界面传来的 `?project=` 一律以绑定的为准。
      */
     url.searchParams.set("project", bound.id);
+    /*
+     * **没指定就看这个项目的第一条。** 不填的话面板会说「认不出是哪个 Change」、
+     * 环是空的 —— 而库里明明有（2026-08-19 用户看到的就是这一幕，他的结论是
+     * 「里面什么都没有」）。一条都没有时留空，面板照实说，不编。
+     */
+    if ((url.searchParams.get("change") ?? "") === "") {
+      const first = defaultChange(readable, bound.id);
+      if (first !== null) url.searchParams.set("change", first);
+    }
     const answer = await serveRequest(
       request.method ?? "GET",
       `${url.pathname}?${url.searchParams.toString()}`,
