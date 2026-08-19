@@ -147,11 +147,15 @@ describe("App Server history", () => {
   });
 
   it("只把明确的 thread not loaded 当 missing，断线和别的协议错误继续抛", async () => {
-    const missing = new FakeConnection().reply(new AppServerError(
-      "app_server_request_failed",
-      "thread not loaded: T-MISSING",
-      -32600,
-    ));
+    /*
+     * 2026-08-18 起 `thread not loaded` 会先**借回来**读一次（让出订阅权之后，
+     * 线程被卸载是常态，见下面那组）。所以这里让借也借不到 —— resume 就拒 ——
+     * 那才是真的没有这条线程，仍然是 null。
+     */
+    const missing = new FakeConnection().reply(
+      new AppServerError("app_server_request_failed", "thread not loaded: T-MISSING", -32600),
+      new AppServerError("app_server_request_failed", "thread not loaded: T-MISSING", -32600),
+    );
     assert.equal(await new AppServerHistory(missing).readThread("T-MISSING"), null);
 
     const disconnected = new AppServerError(
@@ -383,5 +387,62 @@ describe("App Server history", () => {
       new AppServerHistory(new FakeConnection().reply(other)).readRecentTurns("T-X", 5),
       (error) => error === other,
     );
+  });
+});
+
+/**
+ * 退订之后，线程会被 app-server **卸载**，而卸载和「不存在」在错误里长得一样。
+ *
+ * 2026-08-18 真机：StagePass 让出订阅权（线程还给人）之后，一轮跑完紧接着去读红蓝
+ * 两方，扑了个空 —— `thread not loaded` → `readThread` 返回 null →
+ * `no App Server thread …`，整轮判失败。而那一轮其实跑完了。
+ *
+ * turn 在跑的时候线程是加载着的（所以轮询读得到），turn 一结束、没人订阅，它就被
+ * 卸载了。**「没加载」是可以自己解决的**：借回来、读、放掉。
+ */
+class UnloadedThenLoaded implements AppServerConnection {
+  readonly methods: string[] = [];
+  private served = false;
+
+  async request(
+    method: string,
+    params: Readonly<Record<string, unknown>> = {},
+  ): Promise<unknown> {
+    this.methods.push(method);
+    if (method === "thread/read") {
+      if (!this.served) {
+        this.served = true;
+        throw new AppServerError(
+          "app_server_request_failed",
+          `thread not loaded: ${String(params.threadId)}`,
+          -32600,
+        );
+      }
+      return {
+        thread: {
+          id: params.threadId,
+          turns: [{ id: "T-1", status: "completed", items: [] }],
+        },
+      };
+    }
+    if (method === "thread/resume") return { thread: { id: params.threadId, turns: [] } };
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    throw new Error(`unexpected: ${method}`);
+  }
+
+  subscribeNotifications(): () => void { return () => {}; }
+}
+
+describe("AppServerHistory · 线程被卸载了就借回来读", () => {
+  it("`thread not loaded` 不是「不存在」—— resume 一下再读，读完放掉", async () => {
+    const connection = new UnloadedThenLoaded();
+    const history = new AppServerHistory(connection);
+
+    const thread = await history.readThread("T-1");
+
+    assert.notEqual(thread, null, "被卸载不等于不存在，不该返回 null");
+    assert.deepEqual(connection.methods, [
+      "thread/read", "thread/resume", "thread/read", "thread/unsubscribe",
+    ], "借回来读完要放掉 —— 不放就等于把线程从人手里抢回来了");
   });
 });

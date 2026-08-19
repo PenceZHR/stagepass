@@ -198,8 +198,19 @@ export class AppServerHistory {
         includeTurns: true,
       }, this.requestTimeoutMs);
     } catch (error) {
-      if (explicitMissing(error, threadId)) return null;
-      throw error;
+      if (!explicitMissing(error, threadId)) throw error;
+      /*
+       * **「没加载」不是「不存在」。**
+       *
+       * 2026-08-18：StagePass 让出订阅权之后（线程还给人），一轮跑完紧接着去读红蓝
+       * 两方就扑空 —— turn 在跑时线程是加载着的，一结束、没人订阅，app-server 就把
+       * 它卸载了，而卸载和不存在在错误里长得一模一样。那一轮其实跑完了，却被判失败。
+       *
+       * 所以借回来读：resume 一下、读、**再放掉**。放掉这一步不能省 —— 不放就等于
+       * 把人正看着的那条线程又抢了回来，而让出订阅权的全部意义就在于不抢。
+       */
+      result = await this.borrow(threadId);
+      if (result === null) return null;
     }
     const response = asRecord(result);
     const raw = asRecord(response.thread);
@@ -239,6 +250,34 @@ export class AppServerHistory {
       childThreadIds: childThreadIds(rawTurns),
       contextUsage: this.tokenUsage.get(threadId) ?? null,
     };
+  }
+
+  /**
+   * 把一条被卸载的线程借回来读一次。读不到（真的不存在）就是 `null`。
+   *
+   * 借用窗口只有这一次 `thread/read` 那么长 —— 放掉写在 `finally` 里，读崩了也放。
+   */
+  private async borrow(threadId: string): Promise<unknown | null> {
+    try {
+      await this.connection.request("thread/resume", { threadId }, this.requestTimeoutMs);
+    } catch {
+      return null;   // 连借都借不到 —— 那才是真的没有这条线程
+    }
+    try {
+      return await this.connection.request("thread/read", {
+        threadId,
+        includeTurns: true,
+      }, this.requestTimeoutMs);
+    } catch (error) {
+      if (explicitMissing(error, threadId)) return null;
+      throw error;
+    } finally {
+      // 借完必还。抛异常也要还 —— 不还就把线程从人手里抢走了。
+      // 用已有的那条（面板时代「交给原生 TUI 前解除订阅」写的，同一件事，不另写一份）。
+      try {
+        await this.unsubscribeThread(threadId);
+      } catch { /* 还不回去也不该盖住上面那个真错 */ }
+    }
   }
 
   async readThreadStatus(threadId: string): Promise<string | null> {
