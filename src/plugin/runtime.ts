@@ -17,11 +17,13 @@ import { ParallelStore } from "../store/parallel-store";
 import { RoundNoteStore } from "../store/round-note-store";
 import { RubricStore } from "../store/rubric-store";
 import { WorklistStore } from "../store/worklist-store";
+import { createProcessOps, type ProcessOps } from "../system/process";
 import { createSlotFiles } from "../system/slot-files";
 import { JobStore } from "../work/job-store";
 import type { RepoOps } from "../work/repo";
 import { RoundTurnRunner } from "../work/round-turn-runner";
 import { TurnLoop } from "../work/turn-loop";
+import { nudgeAfterRound } from "./nudge";
 import { ASIDE, PluginSeats } from "./seats";
 
 /**
@@ -60,6 +62,8 @@ export interface RuntimeOptions {
   readonly roundBudget?: number;
   readonly model?: string;
   readonly effort?: string;
+  /** 外部进程的出口。一轮跑完发系统通知要它；不给就是真的那个。 */
+  readonly process?: ProcessOps;
 }
 
 const DEFAULT_TURN_TIMEOUT_MS = 180 * 60_000;
@@ -217,7 +221,19 @@ export class PluginRuntime {
      */
     void loop.runOnce({
       owner: "plugin", token: jobId, now: Date.now(), ttlMs: LEASE_TTL_MS,
-    }).catch(() => { /* 结局落库；这里不吞进沉默，也不抛进一个没人接的 Promise */ });
+    })
+      /*
+       * **跑完叫一声人。** 一轮 60~343 分钟，跑完之后闸门停在那里等裁决 —— 而插件
+       * 是个 MCP server，它不能把面板推到人眼前。系统通知是唯一能主动出去的一条缝。
+       *
+       * 该不该响、问主线还是问座位，全在 `nudge.ts` 里（那些能离线证）；这里只是
+       * 那一轮真的结束的时刻。
+       */
+      .then((result) => nudgeAfterRound({
+        database, changeId, phase, onSeat: seat !== null, result,
+        process: this.options.process ?? createProcessOps(),
+      }))
+      .catch(() => { /* 结局落库；这里不吞进沉默，也不抛进一个没人接的 Promise */ });
     return { ran: true, phase, jobId };
   }
 

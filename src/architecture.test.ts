@@ -114,6 +114,13 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * `codex/app-server-transport`（2），所以住这儿 —— 层数是依赖顶出来的，不是挑的。
    */
   "plugin/seats.ts": 2,
+  /*
+   * 一轮跑完叫一声人（系统通知）。读 store（0）和 `system/process`（2），
+   * 不认识用例、不认识界面 —— 层数照旧是依赖顶出来的。
+   *
+   * 它**只读状态、只发一条通知**：不推闸门、不派轮、不替人做任何决定。
+   */
+  "plugin/nudge.ts": 2,
   "store/command-store.ts": 1,
   "work/job-store.ts": 1,
   "work/turn-loop.ts": 1,
