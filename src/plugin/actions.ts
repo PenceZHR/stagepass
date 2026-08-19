@@ -384,7 +384,23 @@ function newProject(database: Database.Database, params: URLSearchParams): Actio
   if (outcome.kind === "created") {
     return { status: 200, body: { created: true, id: outcome.id } };
   }
-  return fail(400, outcome.kind);
+  /*
+   * **拒绝要说得出为什么和怎么办。** 一个光秃秃的 `path_is_not_a_repository`
+   * 在屏幕上和「坏了」没区别 —— 而这一条的解法只有一行命令，不说等于让人去猜。
+   */
+  return {
+    status: 400,
+    body: {
+      error: outcome.kind,
+      ...(outcome.kind === "path_is_not_a_repository"
+        ? {
+          reason: "这个目录不是 git 仓库。Codex 按仓库认项目 —— 不是仓库的目录在它"
+            + "那儿根本不是一个项目，StagePass 开出来的会话你在 Codex 里看不到。"
+            + "先在那个目录里跑一次 git init，再回来建。",
+        }
+        : {}),
+    },
+  };
 }
 
 /**
