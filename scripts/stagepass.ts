@@ -37,7 +37,7 @@ import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { createRepoOps } from "../src/work/repo";
 import { bindProject, defaultChange } from "../src/web/bind-project";
-import { serveRequest } from "../src/web/serve";
+import { reapStaleRounds, serveRequest } from "../src/web/serve";
 
 const PORT = Number(process.env["STAGEPASS_PORT"] ?? 4399);
 const DB = process.env["STAGEPASS_DB"] ?? join(homedir(), ".stagepass", "panel.db");
@@ -113,6 +113,13 @@ function writeDeps(): ActionDeps {
  */
 const TARGET = process.argv[2] ?? process.cwd();
 const bound = bindProject(writeDeps().database, TARGET);
+
+/*
+ * **起来先收尸。** 上一个工作台被杀掉时，它手上那一轮会留在账本里当 `running` ——
+ * 而那会让这个阶段永远派不动（`phase_already_running`），人看到的是「按钮坏了」。
+ * 判据是租约：活着的轮一根汗毛都不碰。
+ */
+reapStaleRounds(writeDeps().database);
 if (bound.kind !== "bound") {
   console.error(`起不来：${bound.path} 不是 git 仓库。`);
   console.error("Codex 按仓库认项目 —— 不是仓库的目录在它那儿根本不是一个项目，");

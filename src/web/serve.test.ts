@@ -3,11 +3,12 @@ import { describe, it } from "node:test";
 
 import { SCHEMA_SQL } from "../db/schema";
 import { ChangeStore } from "../store/change-store";
+import { JobStore } from "../work/job-store";
 import { ProjectStore } from "../store/project-store";
 import type { ActionDeps } from "./actions";
 import type { ApiDeps } from "./api";
 import { openDatabase } from "./sqlite-handle";
-import { serveRequest } from "./serve";
+import { reapStaleRounds, serveRequest } from "./serve";
 
 const AT = "2026-07-28T00:00:00.000Z";
 const repo = { trackedFiles: () => null, head: () => "sha-1" } as unknown as ApiDeps["repo"];
@@ -107,6 +108,58 @@ describe("web · 浏览器那一面的请求边界", () => {
 
       assert.equal(answer.status, 405);
       assert.equal(typeof (answer.body as { reason?: string }).reason, "string");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+describe("web · 起来时先收尸", () => {
+  /*
+   * 打的是真机症状（2026-08-19 05:48）：一轮的进程被杀了，账本上它还是 `running`,
+   * 而租约 9 分钟没续。于是**这个阶段永远派不动** —— 点「跑这个阶段」只会得到
+   * `phase_already_running`，而那一轮早就没人在跑了。
+   *
+   * `recoverStuckTurns` 早就写好了（超时的判失败、Change 从 running 里出来），
+   * 只是删掉面板进程之后**没人叫它**。工作台起来时该跑一次：它是这台机器上唯一
+   * 长活的那个进程。
+   */
+  it("租约过期的轮被收掉，这个阶段重新派得动", () => {
+    const database = open();
+    try {
+      new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      const jobs = new JobStore(database);
+      jobs.enqueue({
+        id: "JOB-1", changeId: "CHG-1", kind: "turn",
+        deadlineAt: Date.now() - 1, maxAttempts: 1, phase: "PRD",
+      });
+      jobs.claimNext({ owner: "死掉的进程", token: "T-1", now: Date.now() - 3_600_000, ttlMs: 60_000 });
+      assert.notEqual(jobs.busyFor("CHG-1", "PRD"), null, "收尸之前它挡着");
+
+      reapStaleRounds(database);
+
+      assert.equal(jobs.busyFor("CHG-1", "PRD"), null, "收完就不挡了");
+      assert.notEqual(new ChangeStore(database).read("CHG-1").state.status, "running");
+    } finally {
+      database.close();
+    }
+  });
+
+  /** 活着的轮**不许**被收 —— 收尸人收错一次，人正跑着的活儿就没了。 */
+  it("租约还在续的轮一根汗毛都不碰", () => {
+    const database = open();
+    try {
+      new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      const jobs = new JobStore(database);
+      jobs.enqueue({
+        id: "JOB-1", changeId: "CHG-1", kind: "turn",
+        deadlineAt: Date.now() + 3_600_000, maxAttempts: 1, phase: "PRD",
+      });
+      jobs.claimNext({ owner: "活着的进程", token: "T-1", now: Date.now(), ttlMs: 60_000 });
+
+      reapStaleRounds(database);
+
+      assert.notEqual(jobs.busyFor("CHG-1", "PRD"), null, "它还活着，不该被收");
     } finally {
       database.close();
     }

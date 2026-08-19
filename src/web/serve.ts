@@ -1,3 +1,6 @@
+import type Database from "better-sqlite3";
+
+import { recoverStuckTurns } from "../work/turn-loop";
 import { handleAction, type ActionDeps } from "./actions";
 import { handleApi, type ApiDeps } from "./api";
 
@@ -71,4 +74,24 @@ export async function serveRequest(
       reason: "这条路只认 GET（读）和 POST（写）。写操作要显式带 method: \"POST\"。",
     },
   };
+}
+
+/**
+ * 把死掉的轮收掉。**工作台起来时叫一次。**
+ *
+ * ## 它治的是什么
+ *
+ * 2026-08-19 真机：一轮的进程被杀了，账本上它还是 `running`、租约 9 分钟没续 ——
+ * 于是**这个阶段永远派不动**：点「跑这个阶段」只会得到 `phase_already_running`，
+ * 而那一轮早就没人在跑了。人看到的是「按钮坏了」。
+ *
+ * 判据全在 `recoverStuckTurns` 里（超时的判失败、Change 从 running 里出来、并行
+ * 座位收座位不动主线），它早就写好了 —— **只是删掉面板进程之后没人叫它**。
+ * 工作台是这台机器上唯一长活的那个进程，这件事归它。
+ *
+ * **活着的轮一根汗毛都不碰**：判据是租约，谁在续谁就活着。收错一次，人正跑着的
+ * 活儿就没了 —— 那比多挡一次严重得多。
+ */
+export function reapStaleRounds(database: Database.Database): void {
+  recoverStuckTurns(database, Date.now());
 }

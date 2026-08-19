@@ -95,7 +95,7 @@ export async function handleAction(
   const database = deps.database;
   const changeId = params.get("change") ?? "";
 
-  if (pathname === "/api/answer") return answer(database, params, changeId);
+  if (pathname === "/api/answer") return answer(deps, params, changeId);
   if (pathname === "/api/waive") return waiveGap(database, changeId);
   if (pathname === "/api/change") return newChange(database, params);
   if (pathname === "/api/project") return newProject(database, params);
@@ -132,14 +132,16 @@ export async function handleAction(
  * 两道闸都是「界面停在旧状态上」的防线：现在有没有在等的题、等的是不是人看到的那道。
  * 少任何一道，一次迟到的点击会落到**另一道题**上。
  */
-function answer(
-  database: Database.Database,
+async function answer(
+  deps: ActionDeps,
   params: URLSearchParams,
   changeId: string,
-): ActionResponse {
+): Promise<ActionResponse> {
+  const database = deps.database;
   const questions = new QuestionStore(database);
   const pending = questions.open(changeId);
-  const open = pending === null ? null : openQuestionOf(questions, changeId, pending.phase);
+  if (pending === null) return fail(409, "nothing_to_answer");
+  const open = openQuestionOf(questions, changeId, pending.phase);
   if (open === null) return fail(409, "nothing_to_answer");
   if (params.get("question") !== open.id) return fail(409, "question_moved_on");
 
@@ -156,7 +158,25 @@ function answer(
    * 换的是人在哪儿答，**不是账本的语义** —— 落进库里的形状必须和以前一字不差。
    */
   questions.answer(open.id, { action: "accept", content: chosen });
-  return { status: 200, body: { answered: true, question: open.id } };
+
+  /*
+   * **答完就把用例喊回来。**
+   *
+   * 界面是照「答完自动落地，不用再按别的」写的，它等的是回包里这个 `driven`
+   * （`panel.js` 的 `submitAnswer`）。而服务端原来只落答案就返回 —— 于是人答完一道
+   * 裁决题，屏幕上只有「已记下」，闸门一动不动（2026-08-19 真机）。
+   *
+   * 把「答」和「消费答案」拆成两次点击，是这套东西最不该有的形状：**人答完一道
+   * 裁决题，他做的就是那个决定本身**，不该还要再找一个按钮把它提交一次。
+   *
+   * 用例从**题的种类**认，不是从界面传来的什么字段 —— 题是谁问的，就该由谁消费。
+   * 三种题、三个用例，一一对得上（`domain/question.ts` 的 `QUESTION_KINDS`）。
+   */
+  const kind = pending.kind;
+  const driven = kind === "gate_decision" ? (await ask(deps, changeId)).body
+    : kind === "waive" ? (await waiveGap(database, changeId)).body
+      : (await brief(deps, changeId)).body;
+  return { status: 200, body: { answered: true, question: open.id, kind, driven } };
 }
 
 async function waiveGap(database: Database.Database, changeId: string): Promise<ActionResponse> {

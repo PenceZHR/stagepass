@@ -389,3 +389,53 @@ describe("plugin · 收掉一个座位", () => {
     }
   });
 });
+
+describe("plugin · 答完就把用例喊回来", () => {
+  /*
+   * 打的是真机症状（2026-08-19）：裁决题答完了，`/api/answer` 回 `{answered:true}`，
+   * 然后**什么都没发生** —— 没派轮、闸门没动、屏幕上只有「已记下」。
+   *
+   * 界面本来就是照「答完自动落地，不用再按别的」写的（`panel.js` 的 `pendingWords`），
+   * 它等的是回包里那个 `driven`。而**服务端从来没实现过那半边** —— 前端照着一个
+   * 不存在的契约写的（08-18 那次迁移留下的）。
+   *
+   * 「答」和「消费答案」拆成两次点击，是这套东西最不该有的形状：人答完一道裁决题，
+   * 他做的就是那个决定本身，不该还要再找一个按钮把它「提交」一次。
+   */
+  it("裁决题答完，用例当场跑一遍，下场原样回给界面", async () => {
+    const deps = open();
+    try {
+      new ChangeStore(deps.database, { now: () => new Date(AT) }).apply("CHG-1", "start");
+      new ChangeStore(deps.database, { now: () => new Date(AT) }).apply("CHG-1", "fail");
+      // 先问出一道真的裁决题（走的就是界面那条路）。
+      const asked = await call("/api/ask?change=CHG-1", deps);
+      const questionId = (asked.body as { questionId?: string }).questionId;
+      assert.notEqual(questionId, undefined, "先得有一道题可答");
+
+      /* 这道题的裁决就是「重跑一次」—— 它必然要派轮，给一个记账的桩。 */
+      const dispatched: string[] = [];
+      const answered = await call(
+        `/api/answer?change=CHG-1&question=${questionId}&decision=0`,
+        {
+          ...deps,
+          runtime: {
+            ...deps.runtime,
+            runRound: async (_id: string, phase: string) => {
+              dispatched.push(phase);
+              return { ran: true, phase, jobId: "JOB-X" };
+            },
+          } as unknown as ActionDeps["runtime"],
+        },
+      );
+
+      assert.deepEqual(dispatched, ["PRD"], "答完就该把这一轮派出去");
+
+      const body = answered.body as { answered: boolean; kind?: string; driven?: unknown };
+      assert.equal(body.answered, true);
+      assert.equal(body.kind, "gate_decision", "界面靠它分辨这是哪种题");
+      assert.notEqual(body.driven, undefined, "下场要回去 —— 界面等的就是它");
+    } finally {
+      deps.database.close();
+    }
+  });
+});
