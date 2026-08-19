@@ -362,7 +362,7 @@ function roundEnvelope(
 
 
 /** 准备好的一轮：题面已经落成文件，名单已经开好，就差谁去跑。 */
-interface PreparedRound {
+export interface PreparedRound {
   /** 送进会话的那个信封 —— 内容一个字不带，只有身份、路径和「先读它」。 */
   readonly envelope: string;
   /** 题面文件的绝对路径。 */
@@ -386,7 +386,7 @@ interface PreparedRound {
  * （裁判一起来就可能问「下一项」）、gap 名单要落文件、格子文件要铺好、契约说明要写。
  * 抄一份出来迟早分叉，而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」。
  */
-function prepareRound(
+export function prepareRound(
   request: RoundRequest,
   dependencies: RoundDependencies,
 ): PreparedRound {

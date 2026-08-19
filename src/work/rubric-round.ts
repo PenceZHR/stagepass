@@ -4,7 +4,10 @@ import { applyAssessments } from "../domain/rubric-gaps";
 import type { BlueRubricAnswers } from "../domain/round";
 import { BLUE, RED, readBlueRubricAnswers } from "../domain/round";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
-import { runRound, type RoundDependencies, type RoundRequest, type RoundSettled } from "./round-runner";
+import {
+  prepareRound, runRound,
+  type PreparedRound, type RoundDependencies, type RoundRequest, type RoundSettled,
+} from "./round-runner";
 import type { WorkItemDraft } from "../domain/worklist";
 import type { WorkItem } from "../store/worklist-store";
 
@@ -301,6 +304,39 @@ function byOrdinal(
   });
 }
 
+/** 组装交给 `round-runner` 的那份请求。**备和跑共用** —— 两份必然分叉。 */
+function roundRequestOf(
+  request: RubricRoundRequest,
+  judgeItems: readonly WorkItemDraft[],
+  blueFiles: ReturnType<typeof blueRubricFiles> | undefined,
+): Parameters<typeof runRound>[0] {
+  return {
+    ...request,
+    extraWorkItems: judgeItems,
+    ...(blueFiles === undefined ? {} : { blueRubric: blueFiles }),
+  };
+}
+
+/**
+ * **备一轮，但不派**（2026-08-19 定案「甲」）。
+ *
+ * StagePass 不再自己跑轮：谁执行 turn，谁就占着那条 Codex 线程，人在 App 里就打不开
+ * 它。改成把题面交给人，他在自己的会话里跑 —— 那一轮从第一秒起就是他的：看得见、
+ * 点得开、审批弹给他。
+ *
+ * 走的是**和真跑完全相同的准备代码**（同一个 `prepareRound`）。抄一份出来迟早分叉，
+ * 而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」——那种错要到结算才发作。
+ *
+ * 注意它**只备 rubric 之外的部分**：反方那份 rubric 文件要真跑时才铺（`blueRubric`
+ * 走的是同一条组装），所以这里给的是同一份请求、同一份题面。
+ */
+export function prepareRubricRound(
+  request: RubricRoundRequest,
+  dependencies: RubricRoundDependencies,
+): PreparedRound {
+  return prepareRound(roundRequestOf(request, [], undefined), dependencies);
+}
+
 export async function runRubricRound(
   request: RubricRoundRequest,
   dependencies: RubricRoundDependencies,
@@ -362,11 +398,9 @@ export async function runRubricRound(
     subject: ASSESSED_BY[blueEntry[0]]!.subject,
   });
 
-  const settled = await runRound({
-    ...request,
-    extraWorkItems: judgeItems,
-    ...(blueFiles === undefined ? {} : { blueRubric: blueFiles }),
-  }, dependencies);
+  const settled = await runRound(
+    roundRequestOf(request, judgeItems, blueFiles), dependencies,
+  );
 
   /*
    * 反方写回来的那份，读一次就够 —— 两个角色不会同时要它判（上面那条守卫）。
