@@ -205,7 +205,12 @@ async function main(): Promise<void> {
    * 放在上一级是当下的事实，不是设计。等 `phase-template` 能被注入基准路径时，
    * 这段就该改成装进版本目录里。
    */
-  cpSync(join(ROOT, "src", "prompts"), join(OUT, "..", "..", "prompts"), { recursive: true });
+  /*
+   * **装进插件目录本身**，不再装在版本目录旁边 —— 缓存刷新只物化插件包自己，
+   * 旁边的东西会被抹掉（2026-08-18 真机：握手超时，日志说缺 PRD.md）。
+   * `phase-template` 先找 `HERE/prompts`，正是这份。
+   */
+  cpSync(join(ROOT, "src", "prompts"), join(OUT, "prompts"), { recursive: true });
 
   const icon = join(ROOT, "src", "plugin", "widget", "app-icon.png");
   try {
@@ -241,7 +246,6 @@ async function main(): Promise<void> {
     if (entry.endsWith(".log")) continue;
     cpSync(join(OUT, entry), join(CACHE, entry), { recursive: true });
   }
-  cpSync(join(OUT, "..", "..", "prompts"), join(CACHE, "..", "prompts"), { recursive: true });
 
   await smokeStart();
 

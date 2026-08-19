@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -107,9 +107,28 @@ export function parseTemplateSections(text: string): TemplateSection[] {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * 模板目录在哪。两个候选，按序取第一个存在的：
+ *
+ * - `HERE/prompts` —— **打包后**：构建把模板装进插件目录本身。装在版本目录**旁边**
+ *   的那版被真机咬过（2026-08-18 晚）：`~/.codex/plugins/cache/…` 是 Codex 的缓存，
+ *   刷新时只物化插件包自己，兄弟目录被抹掉 —— 于是 server 在第一条消息之前就抛
+ *   ENOENT，Codex 那边只看到「握手超时」。
+ * - `HERE/../prompts` —— **源码树**：`src/domain/` 旁边就是 `src/prompts/`。
+ *
+ * 都不在就抛，路径全列出来 —— 「模板不见了」必须说得出它去哪儿找过。
+ */
+function promptsRoot(): string {
+  const candidates = [join(HERE, "prompts"), join(HERE, "..", "prompts")];
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "templates"))) return candidate;
+  }
+  throw new Error(`找不到提示词模板目录，找过：${candidates.join("、")}`);
+}
+
 /** 读一份模板源文件。文件名就是阶段名 —— 一处约定，别在别处再写一遍。 */
 function load(phase: string): readonly TemplateSection[] {
-  const path = join(HERE, "..", "prompts", "templates", `${phase}.md`);
+  const path = join(promptsRoot(), "templates", `${phase}.md`);
   try {
     return parseTemplateSections(readFileSync(path, "utf-8"));
   } catch (error: unknown) {
