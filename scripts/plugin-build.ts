@@ -27,14 +27,28 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = process.cwd();
 const WEB = join(ROOT, "src", "web");
 const WIDGET = join(ROOT, "src", "plugin", "widget");
-const OUT = join(homedir(), ".codex", "plugins", "cache", "stagepass-local", "stagepass", "0.0.1");
+/*
+ * ## 装到哪（2026-08-18 晚改，被真机咬过）
+ *
+ * 原来直接写 `~/.codex/plugins/cache/...`。**那个目录是 Codex 的缓存** —— 它会从
+ * 注册的 marketplace 源重新物化。真机现场：marketplace `stagepass-local` 的根指着
+ * 一条早已结束的会话的 /tmp scratchpad，里面躺着当天早上的实验探针（0.0.2）；
+ * 23:09 新窗口一开，Codex 刷新缓存，把当晚全部修复盖成了早上的探针，页面直接
+ * 加载不全。「怎么修都是同一个错」有一半是它。
+ *
+ * 所以：构建写进**稳定的 marketplace 源**（`~/.stagepass/market/`，我们说了算），
+ * 再同步进缓存（开着的会话靠热重载立刻跟上）。缓存从此怎么刷都刷回同一份。
+ */
+const MARKET = join(homedir(), ".stagepass", "market");
+const OUT = join(MARKET, "plugins", "stagepass");
+const CACHE = join(homedir(), ".codex", "plugins", "cache", "stagepass-local", "stagepass", "0.0.1");
 
 /** `</script>` 出现在 JS 或 CSS 里会提前关掉标签 —— 这是内联唯一的雷。 */
 function inlineSafe(text: string): string {
@@ -191,7 +205,7 @@ async function main(): Promise<void> {
    * 放在上一级是当下的事实，不是设计。等 `phase-template` 能被注入基准路径时，
    * 这段就该改成装进版本目录里。
    */
-  cpSync(join(ROOT, "src", "prompts"), join(OUT, "..", "prompts"), { recursive: true });
+  cpSync(join(ROOT, "src", "prompts"), join(OUT, "..", "..", "prompts"), { recursive: true });
 
   const icon = join(ROOT, "src", "plugin", "widget", "app-icon.png");
   try {
@@ -205,12 +219,37 @@ async function main(): Promise<void> {
    */
   cpSync(join(ROOT, "src", "plugin", "hot-loader.mjs"), join(OUT, "server.mjs"));
 
+  // marketplace 清单 —— Codex 按它认这个源（形状照实测过的那份）。
+  mkdirSync(join(MARKET, ".agents", "plugins"), { recursive: true });
+  writeFileSync(join(MARKET, ".agents", "plugins", "marketplace.json"), `${JSON.stringify({
+    name: "stagepass-local",
+    interface: { displayName: "StagePass 本地" },
+    plugins: [{
+      name: "stagepass",
+      source: { source: "local", path: "./plugins/stagepass" },
+      policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+      category: "Productivity",
+    }],
+  }, null, 2)}\n`);
+
+  /*
+   * 同步进缓存：开着的会话跑的是缓存里那份，热重载盯的也是它 —— 不同步的话要等
+   * Codex 自己刷新才生效。日志不算产物，留在原地。
+   */
+  mkdirSync(CACHE, { recursive: true });
+  for (const entry of readdirSync(OUT)) {
+    if (entry.endsWith(".log")) continue;
+    cpSync(join(OUT, entry), join(CACHE, entry), { recursive: true });
+  }
+  cpSync(join(OUT, "..", "..", "prompts"), join(CACHE, "..", "prompts"), { recursive: true });
+
   await smokeStart();
 
   const kb = (text: string): string => `${Math.round(text.length / 1024)} KB`;
   console.log(`widget   ${kb(widget)}`);
   console.log(`server   ${kb(readFileSync(join(OUT, "server.mjs"), "utf-8"))}`);
-  console.log(`装到     ${OUT.replace(homedir(), "~")}`);
+  console.log(`源       ${MARKET.replace(homedir(), "~")}（marketplace，缓存刷回来的就是它）`);
+  console.log(`缓存     ${CACHE.replace(homedir(), "~")}`);
   /*
    * 这里原来印的是「装完要开一条新的 Codex 会话」。2026-08-18 起入口会热重载了，
    * 那句话不再成立 —— 而**一句过期的纪律比没有纪律更坏**：人会照着它多开一个窗口，
@@ -237,8 +276,8 @@ async function smokeStart(): Promise<void> {
    * 命令还在**。第二条是 2026-08-18 加的实验（斜杠命令那条路走不走得通），
    * 判据必须钉在产物上 —— 声明了能力却不实现方法，Codex 那边是静默不显示。
    */
-  const child = spawn(process.execPath, [join(OUT, "server.mjs")], {
-    cwd: OUT,
+  const child = spawn(process.execPath, [join(CACHE, "server.mjs")], {
+    cwd: CACHE,
     stdio: ["pipe", "pipe", "pipe"],
     /*
      * 冒烟的日志改道到临时文件。写进插件目录那份的话，「Codex 问过 prompts/list
@@ -298,8 +337,8 @@ async function smokeHotReload(
     catch { return 0; }
   };
   const had = count();
-  const before = statSync(join(OUT, "impl.mjs")).mtimeMs;
-  utimesSync(join(OUT, "impl.mjs"), new Date(before + 2000), new Date(before + 2000));
+  const before = statSync(join(CACHE, "impl.mjs")).mtimeMs;
+  utimesSync(join(CACHE, "impl.mjs"), new Date(before + 2000), new Date(before + 2000));
   child.stdin.write(`${JSON.stringify({
     jsonrpc: "2.0", id: 99, method: "tools/list", params: {},
   })}\n`);
