@@ -30,13 +30,30 @@ function open() {
  */
 describe("work · 备一轮但不派", () => {
   const files = new Map<string, string>();
+  /** 铺过哪几份格子。备一轮该铺，结算不该。 */
+  const laid: string[] = [];
   const deps = () => ({
     writeRoundFile: (name: string, content: string) => {
       files.set(name, content);
       return `/tmp/rounds/${name}`;
     },
     readRoundFile: (path: string) => files.get(path.split("/").pop()!) ?? null,
-    slotFiles: { lay: () => null },
+    /*
+     * 格子文件的替身要**分得清「路径」和「铺一份」**（2026-08-19）。
+     *
+     * 备一轮时铺（覆盖写，重放要幂等），结算时只取路径去读 —— 结算时再铺一次就是
+     * 把人刚跑出来的产出抹掉，然后报「模型没填」。替身合成一个方法，那条判据就
+     * 测不到了。
+     */
+    slotFiles: {
+      pathOf: (header: { role: string }) => `/tmp/rounds/slot-${header.role}.json`,
+      lay: (header: { role: string }) => {
+        laid.push(header.role);
+        return `/tmp/rounds/slot-${header.role}.json`;
+      },
+      collect: () => ({ ok: false as const, reason: "not_here" }),
+      discard: () => {},
+    },
   });
 
   it("交出信封和题面路径，而且一个 turn 都没派", () => {

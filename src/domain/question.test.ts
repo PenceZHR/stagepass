@@ -55,6 +55,59 @@ function ask(state: ChangeState, evidence: Evidence): Question | null {
   });
 }
 
+/*
+ * **判据单挡着的时候，裁决卡不许说「没有问题挡着闸门」。**
+ *
+ * gap 清完而判据单没填完，`blocking` 是 0 —— 原来这里会说那句话然后返回，
+ * 字面为真，却让人以为 approve 该在而没在。而 approve 是**悄悄**不见的：
+ * `tsc` 不红（对象 !== 字符串是合法比较），别的测试也不红。
+ *
+ * 覆盖判据在 `system/refusal-words.test.ts`；这一条打的是真实症状。
+ */
+describe("L3 · 判据单挡着时，裁决卡说得出挡在哪", () => {
+  /*
+   * `sheetTexts` **按序号下标索引**（`texts[ordinal - 1]`），不是和 `missing` 并列的。
+   * 写成并列的会静默拿到别人的正文 —— 而那种错在屏幕上看着完全正常。
+   */
+  const SHEET_BLOCKED: Evidence = {
+    ...CLEAN,
+    sheetMissing: [2, 4],
+    sheetTexts: ["第一条的正文", "每条需求都写明了不做什么", "第三条的正文", ""],
+  };
+
+  it("不说「没有问题挡着闸门」", () => {
+    const question = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, SHEET_BLOCKED),
+      openGaps: [],
+      summary: "第 2 轮已结算",
+    })!;
+    assert.doesNotMatch(question.message, /没有问题挡着闸门/);
+  });
+
+  it("说得出缺的是第几条，有正文的连正文一起给", () => {
+    const question = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, SHEET_BLOCKED),
+      openGaps: [],
+      summary: "第 2 轮已结算",
+    })!;
+    assert.match(question.message, /第 2 条（每条需求都写明了不做什么）/);
+    // 拿不到正文的那条只给序号 —— 不许错位，也不许跳过
+    assert.match(question.message, /第 4 条/);
+  });
+
+  it("判据单齐了就恢复原话", () => {
+    const question = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, CLEAN),
+      openGaps: [],
+      summary: "第 2 轮已结算",
+    })!;
+    assert.match(question.message, /没有问题挡着闸门/);
+  });
+});
+
 describe("L3 · the question offers exactly what the gate permits", () => {
   it("offers approve and reject on a clean settled phase", () => {
     const question = ask(SETTLED, CLEAN)!;

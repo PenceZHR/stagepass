@@ -446,3 +446,108 @@ describe("AppServerHistory · 线程被卸载了就借回来读", () => {
     ], "借回来读完要放掉 —— 不放就等于把线程从人手里抢回来了");
   });
 });
+
+/**
+ * 认回人自己跑的那条线程（2026-08-19 甲）。
+ *
+ * 判据是真机实测的（见 `findThreads` 的注释）：`thread/list` 每条**没有 `title`**，
+ * 第一条用户消息在 `preview` 里，而且不截断。
+ */
+describe("AppServerHistory · 按 (工作目录, 标记) 认回线程", () => {
+  const listing = (...threads: unknown[]) => ({ data: threads, nextCursor: null });
+  const thread = (input: {
+    id: string; cwd: string; preview: string; updatedAt?: number; parent?: string;
+  }) => ({
+    id: input.id, cwd: input.cwd, preview: input.preview,
+    updatedAt: input.updatedAt ?? 1, name: null, turns: [],
+    parentThreadId: input.parent ?? null,
+  });
+
+  const SCRIPT = "/var/folders/T/stagepass-round-9OSOMq/round-script-Spec-r10.md";
+  const envelope = (path: string) =>
+    `你是本轮的裁判。阶段：Spec，第 10 轮。\n这一轮的完整题面在这个文件里：${path}\n读完照它执行。`;
+
+  it("**认的是 preview，不是 name** —— StagePass 开的线程上 name 是 null", async () => {
+    const connection = new FakeConnection().reply(listing(
+      thread({ id: "T-1", cwd: "/repo", preview: envelope(SCRIPT) }),
+    ));
+
+    const found = await new AppServerHistory(connection)
+      .findThreads({ cwd: "/repo", marker: SCRIPT });
+
+    assert.deepEqual(found.map((each) => each.id), ["T-1"]);
+  });
+
+  it("**同一份题面在别的仓库里不算** —— 工作目录是判据的一半", async () => {
+    const connection = new FakeConnection().reply(listing(
+      thread({ id: "T-1", cwd: "/别人的仓库", preview: envelope(SCRIPT) }),
+    ));
+
+    const found = await new AppServerHistory(connection)
+      .findThreads({ cwd: "/repo", marker: SCRIPT });
+
+    assert.deepEqual(found, []);
+  });
+
+  it("**别的轮次不会被认成这一轮** —— 题面路径每轮一个随机目录", async () => {
+    const other = "/var/folders/T/stagepass-round-3M4n70/round-script-Spec-r1.md";
+    const connection = new FakeConnection().reply(listing(
+      thread({ id: "T-旧", cwd: "/repo", preview: envelope(other) }),
+      thread({ id: "T-新", cwd: "/repo", preview: envelope(SCRIPT) }),
+    ));
+
+    const found = await new AppServerHistory(connection)
+      .findThreads({ cwd: "/repo", marker: SCRIPT });
+
+    assert.deepEqual(found.map((each) => each.id), ["T-新"]);
+  });
+
+  it("**贴了两次就给两条，按新到旧** —— 这一层不替人挑", async () => {
+    // 人第一次跑挂了、把同一个信封又贴进一条新线程。替他挑一条，挑错的那次
+    // 他永远看不见 —— 所以全给出去，怎么办归上面那层。
+    const connection = new FakeConnection().reply(listing(
+      thread({ id: "T-先", cwd: "/repo", preview: envelope(SCRIPT), updatedAt: 100 }),
+      thread({ id: "T-后", cwd: "/repo", preview: envelope(SCRIPT), updatedAt: 200 }),
+    ));
+
+    const found = await new AppServerHistory(connection)
+      .findThreads({ cwd: "/repo", marker: SCRIPT });
+
+    assert.deepEqual(found.map((each) => each.id), ["T-后", "T-先"]);
+  });
+
+  it("**子 Agent 认不进来** —— 它那句开场白和信封一字不差", async () => {
+    /*
+     * 2026-08-19 真机：一个 marker 认回 3 条。裁判把信封**原样转达**给正反两方
+     * （题面就是这么要求它的），于是两条子线程的 preview 和裁判那条逐字节相同 ——
+     * 按正文根本分不开。真机上第二个 marker 认回的第一条就是红方那条。
+     *
+     * 收错了：拿子 Agent 当裁判去数它的孩子，一个都没有 → 整轮报
+     * `round_agents_not_found`，而人看到的是「我明明跑完了」。
+     */
+    const connection = new FakeConnection().reply(listing(
+      thread({ id: "T-裁判", cwd: "/repo", preview: envelope(SCRIPT), updatedAt: 100 }),
+      // 红方：父亲是裁判，开场白一字不差，而且**更新得更晚**（它后出生）。
+      thread({ id: "T-红", cwd: "/repo", preview: envelope(SCRIPT), updatedAt: 200, parent: "T-裁判" }),
+      thread({ id: "T-蓝", cwd: "/repo", preview: envelope(SCRIPT), updatedAt: 300, parent: "T-裁判" }),
+    ));
+
+    const found = await new AppServerHistory(connection)
+      .findThreads({ cwd: "/repo", marker: SCRIPT });
+
+    assert.deepEqual(found.map((each) => each.id), ["T-裁判"],
+      "按新到旧排的话，两条子 Agent 会排在裁判前面");
+  });
+
+  it("翻完所有分页 —— 人那条线程可能压在第三页", async () => {
+    const connection = new FakeConnection().reply(
+      { data: [thread({ id: "T-别的", cwd: "/repo", preview: "无关" })], nextCursor: "c2" },
+      { data: [thread({ id: "T-要的", cwd: "/repo", preview: envelope(SCRIPT) })], nextCursor: null },
+    );
+
+    const found = await new AppServerHistory(connection)
+      .findThreads({ cwd: "/repo", marker: SCRIPT });
+
+    assert.deepEqual(found.map((each) => each.id), ["T-要的"]);
+  });
+});

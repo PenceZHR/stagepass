@@ -1,0 +1,4 @@
+{"id":"ASK-0001","changeId":"CHG-004","phase":"PRD","round":0,"rubricId":null,"ordinal":null,"question":"实时同步验证：这条应该自己冒出来","why":null,"options":["看见了","没看见"],"askedAt":"2026-08-19T14:54:51.693Z"}
+{"id":"ASK-0002","changeId":"CHG-004","phase":"PRD","round":0,"rubricId":null,"ordinal":null,"question":"实时同步验证：不刷新应该自己出现","why":null,"options":["出现了","没出现"],"askedAt":"2026-08-19T14:57:24.982Z"}
+{"id":"ASK-0002","chosen":"出现了","note":null,"answeredAt":"2026-08-19T14:57:24.985Z"}
+{"id":"ASK-0003","changeId":"CHG-004","phase":"PRD","round":0,"rubricId":null,"ordinal":null,"question":"打字期间冒出来的提问","why":null,"options":["A","B"],"askedAt":"2026-08-19T14:57:50.453Z"}

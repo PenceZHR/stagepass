@@ -18,6 +18,10 @@ import { ChangeStore } from "../store/change-store";
 import { JobStore } from "../work/job-store";
 import { QuestionStore } from "../store/question-store";
 import { answerFromChoices, openQuestionOf } from "../web/panel-view";
+import { answerAsk as recordAskAnswer, askFromModel as recordAsk } from "./ask-route";
+import { NoteStore } from "../store/note-store";
+import { noteByOrdinal } from "./brief-route";
+import { projectRootOf, sameProject, wrongProjectReason } from "./same-project";
 import type { PluginRuntime } from "./runtime";
 import { ASIDE } from "./seats";
 
@@ -40,6 +44,11 @@ import { ASIDE } from "./seats";
 export interface ActionDeps {
   /** **可写**的库句柄。和 `api.ts` 那个只读的不是同一个。 */
   readonly database: Database.Database;
+  /**
+   * 工作台绑着的项目。起在哪就绑哪（`bind-project.ts`），**没有项目选择器**。
+   * 提问那条路要它把别的项目的旧轮挡在外面。
+   */
+  readonly boundProjectId: string;
   /** 进旁路要记下当时的 HEAD —— 出来时比一次，才知道这一趟有没有动过手。 */
   readonly repo: RepoOps;
   /** 这个 Change 的代码在哪。没有路径就记不了 HEAD，旁路照开。 */
@@ -102,7 +111,13 @@ export async function handleAction(
   if (pathname === "/api/rubric") return saveRubric(database, params, body);
   if (pathname === "/api/aside") return aside(deps, params, changeId, body);
   if (pathname === "/api/run") return run(deps, params, changeId);
+  if (pathname === "/api/handoff") return handoff(deps, params, changeId);
+  if (pathname === "/api/settle") return settle(deps, params, changeId);
   if (pathname === "/api/ask") return ask(deps, changeId);
+  if (pathname === "/api/ask-from-model") return askFromModel(deps, body);
+  if (pathname === "/api/answer-ask") return answerAsk(deps, body);
+  if (pathname === "/api/note") return addNote(deps, body);
+  if (pathname === "/api/respond") return respondNote(deps, body);
   if (pathname === "/api/brief") return brief(deps, changeId);
   if (pathname === "/api/brief-draft") return briefDraft(deps, changeId);
   if (pathname === "/api/brief-confirm") return briefConfirm(deps, changeId);
@@ -512,6 +527,142 @@ async function run(
     : new ChangeStore(deps.database).read(changeId).state.phase;
   const outcome = await deps.runtime.runRound(changeId, phase);
   return { status: 200, body: outcome };
+}
+
+/**
+ * **取题面**：备这个阶段的一轮，把信封交给人，一个 turn 都不派。
+ *
+ * 判据全在 `runtime.handOff` 里（能不能开一轮、项目有没有路径、题面怎么组装）。
+ * **这里只做翻译** —— 和 `run` 逐字同一个分工。
+ */
+function handoff(
+  deps: ActionDeps,
+  params: URLSearchParams,
+  changeId: string,
+): ActionResponse {
+  const asked = params.get("phase") ?? "";
+  const phase = isPhase(asked)
+    ? asked
+    : new ChangeStore(deps.database).read(changeId).state.phase;
+  return { status: 200, body: deps.runtime.handOff(changeId, phase) };
+}
+
+/**
+ * **结算**：人在自己的会话里跑完了，认回那条线程、把这一轮收进账本。
+ *
+ * 同上，一条判据都不在这儿 —— 认线程要问 Codex，落账要走 `TurnLoop`，两样都在
+ * `runtime.settleHandoff` 里。
+ */
+async function settle(
+  deps: ActionDeps,
+  params: URLSearchParams,
+  changeId: string,
+): Promise<ActionResponse> {
+  const asked = params.get("phase") ?? "";
+  const phase = isPhase(asked)
+    ? asked
+    : new ChangeStore(deps.database).read(changeId).state.phase;
+  return { status: 200, body: await deps.runtime.settleHandoff(changeId, phase) };
+}
+
+/**
+ * **模型问了人一句**（MCP 那一侧转过来的）。判据全在 `ask-route.ts` 里，这里只做翻译。
+ *
+ * ## 为什么一律 200
+ *
+ * 校验没过不是 HTTP 出了错，是这次提问本身的下场 —— 而模型要的是 `error` /
+ * `reason` 那两个字段（它照着改就能再问一次）。回 4xx，MCP 那一侧只会把它当成
+ * 「工具坏了」，那两句话连传都传不到模型跟前。**和 `/api/ask` 逐字同一个分工。**
+ *
+ * `changeId` 不从查询串来：模型说不出自己在哪个 Change，那正是「精确标识符不许手抄」
+ * 挡着不让它写的东西 —— 认哪一轮是 StagePass 自己的事。
+ */
+function askFromModel(deps: ActionDeps, body: string): ActionResponse {
+  return { status: 200, body: recordAsk(deps, body) };
+}
+
+/**
+ * 人在某一节上留一条意见。**正文不动** —— 2026-08-19 定案：正文归模型，人只判。
+ *
+ * 于是审计链是「意见 → 模型怎么改的」，而不是一份看不出所以然的 diff。
+ */
+function addNote(deps: ActionDeps, body: string): ActionResponse {
+  let parsed: { changeId?: unknown; phase?: unknown; sectionKey?: unknown; text?: unknown };
+  try { parsed = JSON.parse(body) as typeof parsed; } catch {
+    return { status: 200, body: { ok: false, error: "unreadable_request" } };
+  }
+  const { changeId, phase, sectionKey, text } = parsed;
+  if (typeof changeId !== "string" || typeof sectionKey !== "string"
+    || typeof text !== "string" || text.trim() === ""
+    || typeof phase !== "string" || !isPhase(phase)) {
+    return {
+      status: 200,
+      body: {
+        ok: false, error: "bad_note",
+        reason: "要有 changeId、phase、sectionKey，和一句非空的 text。",
+      },
+    };
+  }
+  const note = new NoteStore(deps.database)
+    .add({ changeId, phase: phase as Phase, sectionKey, text: text.trim() });
+  return { status: 200, body: { ok: true, note } };
+}
+
+/**
+ * 模型对一条意见的下文。
+ *
+ * **明说不改也算下文** —— 闸门要的是有交代，不是必须听话。空着才算没下文。
+ */
+function respondNote(deps: ActionDeps, body: string): ActionResponse {
+  let parsed: { cwd?: unknown; changeId?: unknown; phase?: unknown; ordinal?: unknown; how?: unknown };
+  try { parsed = JSON.parse(body) as typeof parsed; } catch {
+    return { status: 200, body: { ok: false, error: "unreadable_request" } };
+  }
+  const { changeId, phase, ordinal, how } = parsed;
+  if (typeof changeId !== "string" || typeof phase !== "string" || !isPhase(phase)
+    || typeof ordinal !== "number" || !Number.isInteger(ordinal)
+    || typeof how !== "string" || how.trim() === "") {
+    return {
+      status: 200,
+      body: {
+        ok: false, error: "bad_response",
+        reason: "要有 changeId、phase、一个整数 ordinal（题面里那条意见的序号），"
+          + "和一句非空的 how（改了什么，或者为什么不改）。",
+      },
+    };
+  }
+  const root = projectRootOf(deps.database, deps.boundProjectId);
+  if (!sameProject(root, parsed.cwd)) {
+    return {
+      status: 200,
+      body: { ok: false, error: "wrong_project", reason: wrongProjectReason(root, parsed.cwd) },
+    };
+  }
+  const note = noteByOrdinal(deps.database, changeId, phase, ordinal);
+  if (note === null) {
+    return {
+      status: 200,
+      body: {
+        ok: false, error: "no_such_note",
+        reason: `第 ${ordinal} 条意见不存在。序号取自题面里那份清单，别自己编。`,
+      },
+    };
+  }
+  const outcome = new NoteStore(deps.database).respond(note.id, how.trim());
+  return {
+    status: 200,
+    body: outcome.ok ? { ok: true } : { ok: false, error: "cannot_respond", reason: outcome.reason },
+  };
+}
+
+/**
+ * 人答完，把选择回填到那条提问上。
+ *
+ * 一律 200：调用方是 MCP 那条薄客户端，它要把失败原样念给模型听，而 4xx 在那一层
+ * 会变成一句「工具调用失败」—— 模型据此改不了任何东西。
+ */
+function answerAsk(deps: ActionDeps, body: string): ActionResponse {
+  return { status: 200, body: recordAskAnswer(deps, body) };
 }
 
 /**

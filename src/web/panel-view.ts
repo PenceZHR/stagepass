@@ -14,6 +14,7 @@ import { ParallelStore } from "../store/parallel-store";
 import { CommandStore } from "../store/command-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
+import { HandoffStore } from "../store/handoff-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
 import { RubricStore } from "../store/rubric-store";
@@ -138,6 +139,7 @@ function phasesFor(input: {
   const gapStore = new GapStore(database);
   const evidence = new EvidenceStore(database);
   const rubricRounds = new RubricStore(database);
+  const handoffs = new HandoffStore(database);
   const questions = new QuestionStore(database);
   // 开着的并行座位（批 3）。一次读全，十一个格子各认各的。
   const seats = new Map(
@@ -183,6 +185,22 @@ function phasesFor(input: {
        * 界面靠它：座位开着的格子亮「跑这个阶段」（带 &phase=）、显示「并行」。
        */
       seat: seats.get(phase) ?? null,
+      /**
+       * 这个阶段有没有一轮**备着等人跑完**（2026-08-19 定案「甲」）。null = 没有。
+       *
+       * 它必须在这儿，因为工作台这时候**什么都没在跑** —— 没有 job、没有租约、
+       * `live` 是 false。少了这一格，人取完题面刷新一下页面，界面会重新长出
+       * 「取题面」这个按钮，而他手上那一轮还开着：再点一次就把名单和答案文件
+       * 全覆盖掉了。
+       */
+      handed: (() => {
+        const waiting = handoffs.waiting(changeId, phase);
+        return waiting === null ? null : {
+          round: waiting.round,
+          envelope: waiting.envelope,
+          preparedAt: waiting.preparedAt,
+        };
+      })(),
       mark: markOf(phase, ledger, state, gaps),
       gaps,
       /**

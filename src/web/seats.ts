@@ -72,6 +72,29 @@ class SeatError extends Error {
   }
 }
 
+/**
+ * 这个 Change 的代码在哪。**只读库，不碰 Codex。**
+ *
+ * 独立于 `PluginSeats` 存在，是因为「取题面」那条路要问同一个问题，而它**一个
+ * 子进程都不该起**（备一轮不跟 Codex 说话）。挂在座位上就只能先 `ready()`，
+ * 那等于为了拿一份题面去拉起一个 app-server。
+ *
+ * 路径是空串当成没有：一个空路径拿去当 cwd，Codex 会在**当前进程的目录**里跑起来
+ * —— 那是工作台自己的仓库，不是人的项目。
+ */
+export function workspaceOf(
+  database: SeatOptions["database"], changeId: string,
+): string | null {
+  try {
+    const change = new ChangeStore(database).read(changeId);
+    if (change.projectId === null) return null;
+    const path = new ProjectStore(database).read(change.projectId).path;
+    return path === "" ? null : path;
+  } catch {
+    return null;
+  }
+}
+
 export class PluginSeats {
   /**
    * 每条线程最后一次收到 App Server 事件的时刻。
@@ -98,14 +121,7 @@ export class PluginSeats {
 
   /** 这个 Change 的代码在哪 —— Codex 会在这个目录里跑。 */
   workspaceFor(changeId: string): string | null {
-    try {
-      const change = new ChangeStore(this.options.database).read(changeId);
-      if (change.projectId === null) return null;
-      const path = new ProjectStore(this.options.database).read(change.projectId).path;
-      return path === "" ? null : path;
-    } catch {
-      return null;
-    }
+    return workspaceOf(this.options.database, changeId);
   }
 
   /**

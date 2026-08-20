@@ -592,12 +592,14 @@ describe("L4 · 人提的要求单独一区", () => {
 
   it("**仍然可以被判 closed** —— 这里管的是措辞，不是给它免疫", () => {
     // 人的要求真被满足了就该关掉。加一层「人提的不可关闭」等于让人给自己设一道
-    // 自己也打不开的闸门。它和模型报的问题走的是同一条路（stagepass_next），
-    // 而那条路只认顺序，不认这一条是谁提的。
+    // 自己也打不开的闸门。它和模型报的问题走的是同一条路（那份名单文件），
+    // 而那条路只认序号，不认这一条是谁提的。
     const prompt = judgePrompt({
       phase: "PRD", round: 2, task: "t", openGaps: [human("HUMAN-1", "我要的")],
+      worklist: { listPath: "/tmp/l.md", answersPath: "/tmp/a.md", count: 1 },
     });
-    assert.match(prompt, /stagepass_next/);
+    // 只有一条答题路径，而人提的那条也在这 1 条里 —— 没有第二套办法绕开它。
+    assert.match(prompt, /逐条表态/);
     assert.doesNotMatch(prompt, /不许关闭|不可关闭/);
   });
 });
@@ -808,11 +810,15 @@ describe("L4 · 契约转达给谁、结论谁来下", () => {
     assert.match(prompt, new RegExp(`原样转达给${RED}`));
   });
 
-  it("**裁判那一份不再走提示词** —— 它调工具逐条答", () => {
-    // 2026-08-02：裁判是 user 线程，手上有 StagePass 的工具，所以它那份标准进名单。
-    // 反方是子 Agent，拿不到工具（真机验过），所以只剩它还走转达这条路。
-    const prompt = judgePrompt({ phase: "Build", round: 1, task: "t", openGaps: [] });
-    assert.match(prompt, /stagepass_next/);
+  it("**裁判那一份不走转达，它自己按序号答**", () => {
+    // 2026-08-02：裁判那份标准进名单，不进提示词正文 —— 它只被问「这一条满足了吗」，
+    // criterion key 一个字都不出现。2026-08-19 载体从 MCP 工具换成名单文件，
+    // 判据没变：名单里只有序号和正文，而**这里一条标准原文都不印**。
+    const prompt = judgePrompt({
+      phase: "Build", round: 1, task: "t", openGaps: [],
+      worklist: { listPath: "/tmp/l.md", answersPath: "/tmp/a.md", count: 3 },
+    });
+    assert.match(prompt, /表态写进这个文件：\/tmp\/a\.md/);
     assert.doesNotMatch(prompt, /只答这一份/);
   });
 

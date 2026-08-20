@@ -29,7 +29,7 @@ describe("plugin · 数据口", () => {
   it("面板那一屏从库里读出来，不需要任何进程在后面跑", async () => {
     const database = open();
     try {
-      const answer = await handleApi("/api/panel?change=CHG-1", { database, repo });
+      const answer = await handleApi("/api/panel?change=CHG-1", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 200);
       assert.equal((answer.body as { changeId: string }).changeId, "CHG-1");
@@ -41,7 +41,7 @@ describe("plugin · 数据口", () => {
   it("query 里带项目时按项目过滤", async () => {
     const database = open();
     try {
-      const answer = await handleApi("/api/panel?change=CHG-1&project=PRJ-1", { database, repo });
+      const answer = await handleApi("/api/panel?change=CHG-1&project=PRJ-1", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal((answer.body as { selectedProject: string }).selectedProject, "PRJ-1");
     } finally {
@@ -56,7 +56,7 @@ describe("plugin · 数据口", () => {
   it("还没接上的路径明着说，不静默", async () => {
     const database = open();
     try {
-      const answer = await handleApi("/api/run?change=CHG-1", { database, repo });
+      const answer = await handleApi("/api/run?change=CHG-1", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 501);
       assert.equal((answer.body as { error: string }).error, "not_wired_yet");
@@ -68,7 +68,7 @@ describe("plugin · 数据口", () => {
   it("并行座位在没有执行通道时是空的，不是报错", async () => {
     const database = open();
     try {
-      const answer = await handleApi("/api/parallel?change=CHG-1", { database, repo });
+      const answer = await handleApi("/api/parallel?change=CHG-1", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 200);
       assert.deepEqual(answer.body, { seats: [] });
@@ -88,7 +88,7 @@ describe("plugin · 产物那条路", () => {
     const database = open();
     try {
       const answer = await handleApi(
-        "/api/artifact?change=CHG-1&phase=PRD&id=docs/随便一个.md", { database, repo });
+        "/api/artifact?change=CHG-1&phase=PRD&id=docs/随便一个.md", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 200);
       assert.deepEqual(answer.body, {
@@ -102,7 +102,7 @@ describe("plugin · 产物那条路", () => {
   it("阶段名不合法时说清楚，不当成「没有产物」", async () => {
     const database = open();
     try {
-      const answer = await handleApi("/api/artifact?change=CHG-1&phase=不存在", { database, repo });
+      const answer = await handleApi("/api/artifact?change=CHG-1&phase=不存在", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 404);
       assert.deepEqual(answer.body, { error: "no_such_phase" });
@@ -114,8 +114,8 @@ describe("plugin · 产物那条路", () => {
   it("rubric 认阶段名", async () => {
     const database = open();
     try {
-      assert.equal((await handleApi("/api/rubric?change=CHG-1&phase=乱写", { database, repo })).status, 400);
-      assert.equal((await handleApi("/api/rubric?change=CHG-1&phase=PRD", { database, repo })).status, 200);
+      assert.equal((await handleApi("/api/rubric?change=CHG-1&phase=乱写", { database, repo, boundProjectId: "PRJ-1" })).status, 400);
+      assert.equal((await handleApi("/api/rubric?change=CHG-1&phase=PRD", { database, repo, boundProjectId: "PRJ-1" })).status, 200);
     } finally {
       database.close();
     }
@@ -136,7 +136,7 @@ describe("plugin · 没接上的路要说人话", () => {
     const database = open();
     try {
       for (const path of ["/api/ask", "/api/run", "/api/waive", "/api/answer", "/api/brief"]) {
-        const answer = await handleApi(`${path}?change=CHG-1`, { database, repo });
+        const answer = await handleApi(`${path}?change=CHG-1`, { database, repo, boundProjectId: "PRJ-1" });
         const body = answer.body as { reason?: string };
 
         assert.equal(answer.status, 501, path);
@@ -163,7 +163,7 @@ describe("plugin · 进度", () => {
     try {
       new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
 
-      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo });
+      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 200);
       const view = answer.body as { status: string; live: boolean; processGone: boolean };
@@ -181,7 +181,7 @@ describe("plugin · 进度", () => {
       new ChangeStore(database, { now: () => new Date(AT) }).apply("CHG-1", "start");
 
       const answer = await handleApi("/api/progress?change=CHG-1", {
-        database,
+        database, boundProjectId: "PRJ-1",
         repo,
         live: () => ({
           sessions: { has: () => true, quietForMs: () => 42_000 },
@@ -201,7 +201,7 @@ describe("plugin · 进度", () => {
   it("没有这个 Change 就是 404 —— 不是一份空进度", async () => {
     const database = open();
     try {
-      const answer = await handleApi("/api/progress?change=CHG-404", { database, repo });
+      const answer = await handleApi("/api/progress?change=CHG-404", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal(answer.status, 404);
     } finally {
@@ -233,7 +233,7 @@ describe("plugin · 「进程没了」要跨进程说得准", () => {
       // 别的进程领走并且正在续租。
       jobs.claimNext({ owner: "别的进程", token: "T-1", now: Date.now(), ttlMs: 60_000 });
 
-      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo });
+      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo, boundProjectId: "PRJ-1" });
 
       const view = answer.body as { processGone: boolean; live: boolean };
       assert.equal(view.processGone, false, "租约在续，它没死");
@@ -255,7 +255,7 @@ describe("plugin · 「进程没了」要跨进程说得准", () => {
       // 领走了，但租约是很久以前到期的 —— 收尸人还没来得及收。
       jobs.claimNext({ owner: "死掉的进程", token: "T-1", now: Date.now() - 600_000, ttlMs: 60_000 });
 
-      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo });
+      const answer = await handleApi("/api/progress?change=CHG-1", { database, repo, boundProjectId: "PRJ-1" });
 
       assert.equal((answer.body as { processGone: boolean }).processGone, true);
     } finally {

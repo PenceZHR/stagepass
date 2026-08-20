@@ -5,7 +5,7 @@ import type { BlueRubricAnswers } from "../domain/round";
 import { BLUE, RED, readBlueRubricAnswers } from "../domain/round";
 import type { RubricStore, RubricVersion } from "../store/rubric-store";
 import {
-  prepareRound, runRound,
+  dispatchRound, prepareRound, resumePrepared, settleRound,
   type PreparedRound, type RoundDependencies, type RoundRequest, type RoundSettled,
 } from "./round-runner";
 import type { WorkItemDraft } from "../domain/worklist";
@@ -95,6 +95,24 @@ const ASSESSED_BY: Readonly<
 export const assessorOf = (
   role: RubricRole,
 ): keyof RoundSettled["transcripts"] | null => ASSESSED_BY[role]?.by ?? null;
+
+/**
+ * 备好的一轮，**外加 rubric 那一层要记住的两样**。
+ *
+ * 结算时它们一个都推不出来：`active` 是备的那一刻生效的那几份标准（人中途改了
+ * rubric，这一轮判的仍然是当时那一份 —— 判定是当时的快照），`blueRubric` 里那两个
+ * 路径在每轮一个随机临时目录里。
+ */
+export interface PreparedRubricRound extends PreparedRound {
+  /** 这一轮进对抗的那几份标准，**备的那一刻的版本**。 */
+  readonly active: ReadonlyMap<RubricRole, RubricVersion>;
+  /** 反方那份的两个文件。这一轮没有要它判的就是 `undefined`。 */
+  readonly blueRubric: {
+    readonly criteriaPath: string;
+    readonly answersPath: string;
+    readonly count: number;
+  } | undefined;
+}
 
 export interface RubricRoundRequest extends RoundRequest {
   /** rubric 有项目级默认，所以要知道这个 Change 属于哪个项目。 */
@@ -304,12 +322,12 @@ function byOrdinal(
   });
 }
 
-/** 组装交给 `round-runner` 的那份请求。**备和跑共用** —— 两份必然分叉。 */
+/** 组装交给 `round-runner` 的那份请求。**备、派、收三处共用** —— 抄开必然分叉。 */
 function roundRequestOf(
   request: RubricRoundRequest,
   judgeItems: readonly WorkItemDraft[],
   blueFiles: ReturnType<typeof blueRubricFiles> | undefined,
-): Parameters<typeof runRound>[0] {
+): RoundRequest {
   return {
     ...request,
     extraWorkItems: judgeItems,
@@ -333,35 +351,48 @@ function roundRequestOf(
 export function prepareRubricRound(
   request: RubricRoundRequest,
   dependencies: RubricRoundDependencies,
-): PreparedRound {
-  return prepareRound(roundRequestOf(request, [], undefined), dependencies);
+): PreparedRubricRound {
+  const active = activeRubrics(request, dependencies);
+  const judgeItems = judgeItemsOf(active);
+  const blueFiles = blueFilesOf(request, dependencies, active);
+  return {
+    ...prepareRound(roundRequestOf(request, judgeItems, blueFiles), dependencies),
+    active,
+    blueRubric: blueFiles,
+  };
 }
 
-export async function runRubricRound(
+/**
+ * 这一轮哪几份标准要进对抗。
+ *
+ * 没有就是没有 —— 空 rubric 合法，等于这个角色不做判定，行为退回没有 rubric 之前的
+ * 样子（RUBRIC-DESIGN §4.5）。
+ */
+function activeRubrics(
   request: RubricRoundRequest,
   dependencies: RubricRoundDependencies,
-): Promise<RubricRoundSettled> {
-  const { rubrics } = dependencies;
-
-  // 先取三份 rubric。没有就是没有 —— 空 rubric 合法，等于这个角色不做判定，
-  // 行为退回没有 rubric 之前的样子（RUBRIC-DESIGN §4.5）。
+): Map<RubricRole, RubricVersion> {
   const active = new Map<RubricRole, RubricVersion>();
   for (const role of Object.keys(ASSESSED_BY) as RubricRole[]) {
     // 不进对抗的角色（verdict）连读都不读 —— 它的标准是给人看的，不是给模型答的。
     if (ASSESSED_BY[role] === null) continue;
-    const rubric = rubrics.effective(
+    const rubric = dependencies.rubrics.effective(
       request.projectId, request.changeId, request.phase, role,
     );
     if (rubric && rubric.criteria.length > 0) active.set(role, rubric);
   }
+  return active;
+}
 
-
-  /**
-   * 裁判要判的那几条标准，**进名单，不进提示词**。
-   *
-   * `target` 是 criterion key（40 字符的 UUID），模型从头到尾看不到它 —— 它只被问
-   * 「第 N 条：<正文>，答 yes 还是 no」。这就是 #3 里裁判那一半的归零。
-   */
+/**
+ * 裁判要判的那几条标准，**进名单，不进提示词**。
+ *
+ * `target` 是 criterion key（40 字符的 UUID），模型从头到尾看不到它 —— 它只被问
+ * 「第 N 条：<正文>，答 yes 还是 no」。
+ */
+function judgeItemsOf(
+  active: ReadonlyMap<RubricRole, RubricVersion>,
+): WorkItemDraft[] {
   const judgeItems: WorkItemDraft[] = [];
   for (const [role, rubric] of active) {
     const assessed = ASSESSED_BY[role];
@@ -375,13 +406,20 @@ export async function runRubricRound(
       });
     }
   }
+  return judgeItems;
+}
 
-  /*
-   * **反方那份在 turn 之前就要写出来** —— 它的路径要进裁判的提示词。
-   *
-   * 至多一份：`ASSESSED_BY` 里 `by: "blue"` 的只有 producer 那一个角色。真多出
-   * 第二份的那天这里会安静地只带上第一份，所以宁可在这儿就报出来。
-   */
+/**
+ * **反方那份在 turn 之前就要写出来** —— 它的路径要进裁判的提示词。
+ *
+ * 至多一份：`ASSESSED_BY` 里 `by: "blue"` 的只有 producer 那一个角色。真多出
+ * 第二份的那天这里会安静地只带上第一份，所以宁可在这儿就报出来。
+ */
+function blueFilesOf(
+  request: RubricRoundRequest,
+  dependencies: RubricRoundDependencies,
+  active: ReadonlyMap<RubricRole, RubricVersion>,
+): ReturnType<typeof blueRubricFiles> | undefined {
   const blueRoles = [...active].filter(([role]) => ASSESSED_BY[role]?.by === "blue");
   if (blueRoles.length > 1) {
     throw new Error(
@@ -389,7 +427,7 @@ export async function runRubricRound(
     );
   }
   const blueEntry = blueRoles[0];
-  const blueFiles = blueEntry === undefined ? undefined : blueRubricFiles({
+  return blueEntry === undefined ? undefined : blueRubricFiles({
     writeRoundFile: dependencies.writeRoundFile,
     changeId: request.changeId,
     phase: request.phase,
@@ -397,10 +435,82 @@ export async function runRubricRound(
     rubric: blueEntry[1],
     subject: ASSESSED_BY[blueEntry[0]]!.subject,
   });
+}
 
-  const settled = await runRound(
-    roundRequestOf(request, judgeItems, blueFiles), dependencies,
+/**
+ * 从库里存着的那几样**重建**备好的一轮 —— 人跑完回来结算时用。
+ *
+ * ## rubric 按 id 取回来，不重新问一次「现在生效的是哪份」
+ *
+ * 人可能在这一轮跑着的时候改了标准。而反方那份判定是**按序号映射**回 criteria 的
+ * —— 换一份 criteria，一条判定就挂到别的标准上了，那正是 `readBlueRubricAnswers`
+ * 宁可整份作废也要躲开的错。所以判的仍然是**备那一刻**的那个版本。
+ *
+ * 那个版本被删了就当这个角色这一轮没有标准（`byId` 返回 null）—— 判定退回
+ * 「没有 rubric」那种行为，而不是拿一份新的顶上去。
+ */
+export function resumePreparedRubricRound(
+  request: RubricRoundRequest,
+  dependencies: RubricRoundDependencies,
+  stored: {
+    readonly envelope: string;
+    readonly scriptPath: string;
+    readonly worklist: PreparedRound["worklist"];
+    readonly blueRubric: PreparedRubricRound["blueRubric"];
+    readonly rubricIds: Readonly<Record<string, string>>;
+  },
+): PreparedRubricRound {
+  const active = new Map<RubricRole, RubricVersion>();
+  for (const [role, rubricId] of Object.entries(stored.rubricIds)) {
+    const rubric = dependencies.rubrics.byId(rubricId);
+    if (rubric !== null) active.set(role as RubricRole, rubric);
+  }
+  return {
+    ...resumePrepared(request, dependencies, stored),
+    active,
+    blueRubric: stored.blueRubric,
+  };
+}
+
+/** 备那一刻生效的是哪几个 rubric 版本 —— 存进 `handed_rounds`，结算时按 id 取回。 */
+export const rubricIdsOf = (
+  prepared: PreparedRubricRound,
+): Record<string, string> => Object.fromEntries(
+  [...prepared.active].map(([role, rubric]) => [role, rubric.id]),
+);
+
+export async function runRubricRound(
+  request: RubricRoundRequest,
+  dependencies: RubricRoundDependencies,
+): Promise<RubricRoundSettled> {
+  const prepared = prepareRubricRound(request, dependencies);
+  const { delivery, before } = await dispatchRound(
+    roundRequestOf(request, [], prepared.blueRubric), dependencies, prepared,
   );
+  return settleRubricRound(request, dependencies, delivery, prepared, before);
+}
+
+/**
+ * 一轮跑完之后 rubric 那一层要做的事：**逐条判定 → 记版本 → 派生 standard gap。**
+ *
+ * 和 `settleRound` 同一个理由分出来（2026-08-19 甲）：这一轮可能是人在自己的会话里
+ * 跑的，StagePass 从外面回来收。**同一份代码**，否则「人手跑的那一轮」和账本对不上。
+ */
+export async function settleRubricRound(
+  request: RubricRoundRequest,
+  dependencies: RubricRoundDependencies,
+  delivery: { readonly threadId: string; readonly text: string },
+  prepared: PreparedRubricRound,
+  before: readonly string[] = [],
+): Promise<RubricRoundSettled> {
+  const { rubrics } = dependencies;
+  const active = prepared.active;
+  const blueFiles = prepared.blueRubric;
+
+  const settled = await settleRound(
+    roundRequestOf(request, [], blueFiles), dependencies, delivery, prepared, before,
+  );
+
 
   /*
    * 反方写回来的那份，读一次就够 —— 两个角色不会同时要它判（上面那条守卫）。
@@ -424,7 +534,7 @@ export async function runRubricRound(
     /*
      * **两条路都不经模型的嘴传任何标识符**，只是形状不同了。
      *
-     * 裁判在它自己那一轮里逐条走工具（名单在 turn 之前就开好，游标在库里）；
+     * 裁判在它自己那一轮里把答案写进名单的答案文件（名单在 turn 之前就开好，身份留在库里）；
      * 反方读一份按 `1..N` 编号的文件、把答案写回另一份文件，**key 由 StagePass
      * 按序号映射回去**。见 `blueRubricFiles` 那段：直接去问它那条路被 Codex 封了。
      */

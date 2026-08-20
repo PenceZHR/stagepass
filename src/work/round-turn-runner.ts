@@ -1,6 +1,11 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
-import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
+import {
+  prepareRubricRound, resumePreparedRubricRound, rubricIdsOf, settleRubricRound,
+  type RubricRoundDependencies,
+  type RubricRoundRequest, type RubricRoundSettled,
+} from "./rubric-round";
+import { dispatchRound } from "./round-runner";
 import { join } from "node:path";
 
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
@@ -23,7 +28,20 @@ import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
 import type { RoundNoteStore } from "../store/round-note-store";
+import type { HandedRoundFiles } from "../store/handoff-store";
 import { looksLikeSha, type RepoOps } from "./repo";
+
+/**
+ * 备那一刻记下来的东西 —— 结算时原样交回来。
+ *
+ * **形状从 store 那边借**（`HandedRoundFiles`），不在这儿再定义一份：两份同形状的
+ * 类型必然漂移，而漂移的表现是「存进去的和读出来的对不上」——那正好是这条路唯一
+ * 承重的东西。
+ */
+export type HandedRound = HandedRoundFiles & {
+  readonly envelope: string;
+  readonly scriptPath: string;
+};
 
 /**
  * 把一个阶段「跑一次」变成**跑一轮对抗**。
@@ -152,7 +170,106 @@ function roundFiles(input: {
 export class RoundTurnRunner implements TurnRunner {
   constructor(private readonly options: RoundTurnRunnerOptions) {}
 
+  /**
+   * 排一轮活儿：**备 → 派 → 收**，一条龙。
+   *
+   * 三步各自还有单独的入口（`prepare` / `settle`）—— 2026-08-19 定案「甲」之后，
+   * 人可以把中间那一步拿去自己跑。**三条路共用同一份 `plan`**：抄开必然分叉，
+   * 而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」。
+   */
   async run(job: Job): Promise<TurnOutcome> {
+    const plan = this.plan(job);
+    const prepared = prepareRubricRound(plan.request, plan.dependencies);
+    const { delivery, before } = await dispatchRound(
+      plan.request, plan.dependencies, prepared,
+    );
+    const settled = await settleRubricRound(
+      plan.request, plan.dependencies, delivery, prepared, before,
+    );
+    return this.afterRound(job, plan, settled);
+  }
+
+  /**
+   * **备一轮，但不派**（2026-08-19 定案「甲」）。
+   *
+   * 交出信封和这一轮写出去的那几个路径 —— 上层把它们记进 `handed_rounds`，人拿着
+   * 信封去自己的会话里跑。这里**一个 turn 都不派、一个字都不写进账本**：StagePass
+   * 这时候确实什么都没在跑，装作在跑会让「这个阶段有活儿」这句话变成假的。
+   */
+  prepare(job: Job): { readonly round: number } & HandedRound {
+    /*
+     * **这一轮是「下一轮」。** `plan` 数出来的是账本上已经开过的轮数，而这条路
+     * 不建 job —— 那个 start 要到结算时才写。不加一，信封上就写着「第 0 轮」，
+     * 名单和题面文件也全落在 0 上（2026-08-19 真机第一次点就是这样）。
+     */
+    const counted = this.plan(job).round;
+    const plan = this.plan(job, counted + 1);
+    const prepared = prepareRubricRound(plan.request, plan.dependencies);
+    return {
+      round: plan.round,
+      envelope: prepared.envelope,
+      scriptPath: prepared.scriptPath,
+      worklist: prepared.worklist ?? null,
+      blueRubric: prepared.blueRubric ?? null,
+      rubricIds: rubricIdsOf(prepared),
+    };
+  }
+
+  /**
+   * 人跑完了，**收这一轮**。
+   *
+   * `delivery` 是从他那条线程上读回来的（裁判最后说的那段话 + 线程 id），`prepared`
+   * 是备那一刻记下来的路径 —— 两样都由上层从 `handed_rounds` 取出来交进来。
+   * 这一层不去认线程：认线程要问 Codex，而这个类连接都没有。
+   *
+   * **`before` 是空的**：人开的是一条新线程，这一轮是它的第一轮，所以它现在挂着的
+   * 子 Agent 全是这一轮生的。
+   */
+  async settle(
+    job: Job,
+    delivery: { readonly threadId: string; readonly text: string },
+    stored: HandedRound & { readonly round: number },
+  ): Promise<TurnOutcome> {
+    // **用备的时候记下的那个号，不重数。** 名单、题面、格子文件全落在它上面。
+    const plan = this.plan(job, stored.round);
+    const prepared = resumePreparedRubricRound(plan.request, plan.dependencies, {
+      envelope: stored.envelope,
+      scriptPath: stored.scriptPath,
+      worklist: stored.worklist ?? undefined,
+      blueRubric: stored.blueRubric ?? undefined,
+      rubricIds: stored.rubricIds,
+    });
+    const settled = await settleRubricRound(
+      plan.request, plan.dependencies, delivery, prepared,
+    );
+    /*
+     * **人手跑的那一轮不报越界文件。**
+     *
+     * 那份报告靠「轮前的脏文件快照」把模型写的和人本来就没提交的分开。而这一轮
+     * 从备到收之间隔着人的几小时，那段时间里他自己也在这个仓库上动手 —— 拿一个
+     * 几小时前的快照去做差集，只会把他自己写的东西指认成模型的违规。
+     *
+     * 报不出来就不报。真有文件留在家外面，Build 的干净树预检还会兜底列给他
+     * （`workspace_dirty`）。
+     */
+    return this.afterRound(job, { ...plan, dirtyBefore: null }, settled);
+  }
+
+  /**
+   * 这一轮的上下文和那份请求。**备、派、收三处共用。**
+   *
+   * 它是纯读的：算轮次、查上游、拼任务书，一个字都不写。所以「只备不派」那条路
+   * 走它一遍不会在库里留下任何痕迹。
+   */
+  private plan(job: Job, roundIs?: number): {
+    readonly phase: Phase;
+    readonly round: number;
+    readonly cwd: string | null;
+    readonly dirtyBefore: ReadonlySet<string> | null;
+    readonly upstream: StageArtifactUpstream[];
+    readonly request: RubricRoundRequest;
+    readonly dependencies: RubricRoundDependencies;
+  } {
     const change = this.options.changes.read(job.changeId);
     // 这条活儿自己说它跑在哪个阶段（批 3：并行座位）。老行没有这一格，走主线。
     const phase = (job.phase ?? change.state.phase) as Phase;
@@ -190,10 +307,23 @@ export class RoundTurnRunner implements TurnRunner {
      * `roundFromLedger` 数不到它。当前这条活儿在 `queueTurn` 里已经排进去了，
      * 所以数出来的正是当前这一轮 —— 和账本那条路同一个性质。
      */
-    const round = job.phase !== null && job.phase !== change.state.phase
+    /*
+     * **人手跑的那一轮不能自己数**（2026-08-19 真机抓到的）。
+     *
+     * 上面那段成立的前提是「`queueTurn` 已经把这一轮的 start 写进账本了」。取题面
+     * 那条路**不建 job**（StagePass 那时确实什么都没在跑），于是数出来的是
+     * **上一轮的号**：真机上第一次取题面，信封写着「第 0 轮」，名单和题面文件也都
+     * 落在 0 上。而结算时 `queueTurn` 会补上那个 start，同一段代码数出 1 ——
+     * 名单读回来是空的，题面文件对不上号，**而账本上看不出哪里错了**。
+     *
+     * 所以这两条路各自说清楚自己是第几轮：备那一次数「下一轮」（+1），结算那一次
+     * **用备的时候记下的那个号**，不重数。重数就是把同一个问题换个地方再犯一遍。
+     */
+    const counted = job.phase !== null && job.phase !== change.state.phase
       ? this.options.parallelRound?.(job.changeId, phase)
         ?? roundFromLedger(this.options.changes.ledger(job.changeId), phase)
       : roundFromLedger(this.options.changes.ledger(job.changeId), phase);
+    const round = roundIs ?? counted;
 
     /*
      * **轮前把脏文件拍个快照** —— 轮末的越界报告靠差集把「模型这一轮写的」和
@@ -240,7 +370,7 @@ export class RoundTurnRunner implements TurnRunner {
       artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
     })).filter((entry) => entry.artifactIds.length > 0);
 
-    const settled = await runRubricRound({
+    const request: RubricRoundRequest = {
       projectId: change.projectId,
       changeId: job.changeId,
       phase,
@@ -344,7 +474,26 @@ export class RoundTurnRunner implements TurnRunner {
         const bound = this.options.bindings.find(job.changeId, phase);
         return bound?.status === "bound" ? bound.threadId : null;
       })(),
-    }, { ...this.options, transport });
+    };
+
+    return {
+      phase, round, cwd, dirtyBefore, upstream, request,
+      dependencies: { ...this.options, transport },
+    };
+  }
+
+  /**
+   * 一轮收完之后要记的东西：**绑线程、记产物、开编辑门、报越界。**
+   *
+   * 派出去的那条路和人手跑的那条路走到这里就合流了 —— 它们记的账必须逐字相同，
+   * 否则「这一轮怎么来的」会变成账本上一个看不见的分叉。
+   */
+  private afterRound(
+    job: Job,
+    plan: Omit<ReturnType<RoundTurnRunner["plan"]>, "request" | "dependencies">,
+    settled: RubricRoundSettled,
+  ): TurnOutcome {
+    const { phase, round, cwd, dirtyBefore, upstream } = plan;
 
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
     this.recordNotes(job.changeId, phase, round, settled);

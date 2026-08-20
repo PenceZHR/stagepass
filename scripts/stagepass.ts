@@ -37,17 +37,56 @@ import { ChangeStore } from "../src/store/change-store";
 import { ProjectStore } from "../src/store/project-store";
 import { createRepoOps } from "../src/work/repo";
 import { bindProject, defaultChange } from "../src/web/bind-project";
+import { ensureProjectHome } from "../src/system/project-home";
 import { reapStaleRounds, serveRequest } from "../src/web/serve";
 
-const PORT = Number(process.env["STAGEPASS_PORT"] ?? 4399);
-const DB = process.env["STAGEPASS_DB"] ?? join(homedir(), ".stagepass", "panel.db");
-const BRIEFS = process.env["STAGEPASS_BRIEFS"] ?? join(homedir(), ".stagepass", "briefs");
+/*
+ * 工作台服务哪个项目：**命令行给的那个，不给就是当前目录**。
+ *
+ *     pnpm stagepass                      # 当前仓库
+ *     pnpm stagepass ~/Desktop/某项目      # 另一个仓库
+ */
+const TARGET = process.argv[2] ?? process.cwd();
+
+/*
+ * ## 库、端口、配置，**全在项目文件夹里**（2026-08-19 定案）
+ *
+ * 在这之前是一个全局库（`~/.stagepass/panel.db`）装四个项目、端口写死 4399、
+ * 于是一台机器只能开一个工作台，而 MCP 打死那个地址、不管自己在哪个项目里。
+ * 用户的原话：「chg 和 MCP 全都是乱的，这些必须统一管理」。
+ *
+ * 现在：`<项目>/.stagepass/{config.json, stagepass.db}`。「哪个工作台 / 哪个库 /
+ * 哪个 CHG」三个问题一起消失 —— 不是被修好，是在结构上不存在。
+ *
+ * 环境变量仍然认，那是给测试和临时排查用的；**人正常用的时候一个都不用设**。
+ */
+const HOME = ensureProjectHome(TARGET, process.env["STAGEPASS_PORT"] === undefined
+  ? undefined
+  : Number(process.env["STAGEPASS_PORT"]));
+if (HOME === null) {
+  console.error(`起不来：${TARGET} 不是 git 仓库。`);
+  console.error("StagePass 按仓库认项目（和 Codex 一致）—— 先 `git init`，再起。");
+  process.exit(1);
+}
+const PORT = HOME.port;
+const DB = process.env["STAGEPASS_DB"] ?? HOME.db;
+const BRIEFS = process.env["STAGEPASS_BRIEFS"] ?? join(HOME.dir, "briefs");
 const WEB = join(new URL(".", import.meta.url).pathname, "..", "src", "web");
 
 const repo = createRepoOps();
 
-/** 只读句柄。**看一眼在物理上就不可能写坏什么。** */
-const readable = openDatabase(DB, { readOnly: true });
+/*
+ * **先把库建出来，再开只读句柄。**
+ *
+ * 只读地打开一个不存在的文件，SQLite 直接 `unable to open database file`（errcode 14）
+ * —— 工作台连启动都启动不了。以前碰不到这条：全局库 `~/.stagepass/panel.db` 永远
+ * 已经在了。**库搬进项目文件夹之后，「第一次在这个项目里起工作台」就是新项目的
+ * 第一步**，那时它必然还不存在。
+ *
+ * 建库和跑迁移都在 `writeDeps()` 里（它是唯一会写的那条路），所以这里叫它一次就够
+ * —— 不在这儿另写一份建表逻辑，那会变成第二份 schema。
+ */
+
 
 
 /**
@@ -58,6 +97,34 @@ const readable = openDatabase(DB, { readOnly: true });
  */
 let writable: ReturnType<typeof openDatabase> | null = null;
 let runtime: PluginRuntime | null = null;
+/**
+ * 绑定的项目 id。**在 `bindProject` 之后才有值**，而 `writeDeps()` 在那之前就被叫过
+ * 两次（开库、收尸），那两次只用 `.database`。
+ *
+ * 空串是安全的失败方向：`allWaiting("")` 一条都不返回，于是提问那条路回
+ * `no_open_round` —— 挡住，而不是挂到别的项目的轮上。
+ */
+let boundProjectId = "";
+
+/*
+ * **先把库建出来，再开只读句柄。**
+ *
+ * 只读地打开一个不存在的文件，SQLite 直接 `unable to open database file`（errcode 14）
+ * —— 工作台连启动都起不来。以前碰不到这条：全局库 `~/.stagepass/panel.db` 永远已经
+ * 在了。**库搬进项目文件夹之后，「第一次在这个项目里起工作台」就是新项目的第一步**，
+ * 那时它必然还不存在。
+ *
+ * 建库和跑迁移都在 `writeDeps()` 里（唯一会写的那条路），所以这里叫它一次就够 ——
+ * 不在这儿另写一份建表逻辑，那会变成第二份 schema。
+ *
+ * **调用点必须在上面那几个 `let` 之后**：`writeDeps` 是函数声明会提升，但它闭包里的
+ * `writable` / `runtime` 不会，早叫一步就是 TDZ。
+ */
+writeDeps();
+
+/** 只读句柄。**看一眼在物理上就不可能写坏什么。** */
+const readable = openDatabase(DB, { readOnly: true });
+
 function writeDeps(): ActionDeps {
   if (writable === null) {
     writable = openDatabase(DB);
@@ -66,6 +133,7 @@ function writeDeps(): ActionDeps {
   runtime ??= new PluginRuntime({ database: writable, repo });
   return {
     database: writable,
+    boundProjectId,
     repo,
     runtime,
     briefFiles: {
@@ -103,15 +171,9 @@ function writeDeps(): ActionDeps {
  * （今晚那个「面包屑写着库里不存在的 CHG-1」就是这么来的）。
  */
 /*
- * 工作台服务哪个项目：**命令行给的那个，不给就是当前目录**。
- *
- *     pnpm stagepass                      # 当前仓库
- *     pnpm stagepass ~/Desktop/某项目      # 另一个仓库
- *
- * 参数这条是必需的，不是方便：工作台的代码住在 StagePass 自己的仓库里，而人要看的
+ * 参数那条是必需的，不是方便：工作台的代码住在 StagePass 自己的仓库里，而人要看的
  * 往往是**别的**仓库 —— 只认 cwd 的话，他得先 cd 过去再用绝对路径调起这个脚本。
  */
-const TARGET = process.argv[2] ?? process.cwd();
 const bound = bindProject(writeDeps().database, TARGET);
 
 /*
@@ -120,6 +182,7 @@ const bound = bindProject(writeDeps().database, TARGET);
  * 判据是租约：活着的轮一根汗毛都不碰。
  */
 reapStaleRounds(writeDeps().database);
+if (bound.kind === "bound") boundProjectId = bound.id;
 if (bound.kind !== "bound") {
   console.error(`起不来：${bound.path} 不是 git 仓库。`);
   console.error("Codex 按仓库认项目 —— 不是仓库的目录在它那儿根本不是一个项目，");
@@ -198,7 +261,7 @@ const server = createServer((request, response) => { void (async () => {
       request.method ?? "GET",
       `${url.pathname}?${url.searchParams.toString()}`,
       request.method === "POST" ? await readBody(request) : "",
-      { read: { database: readable, repo }, write: writeDeps },
+      { read: { database: readable, boundProjectId, repo }, write: writeDeps },
     );
     response.writeHead(answer.status, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(answer.body));

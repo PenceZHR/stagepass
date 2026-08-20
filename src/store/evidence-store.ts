@@ -48,6 +48,15 @@ export class EvidenceStore {
     const legacy = JSON.parse(row.blockers) as Blocker[];
     const seen = new Set(fromGaps.map((blocker) => blocker.id));
     return {
+      /*
+       * **判据单那两格从 `EMPTY_EVIDENCE` 来，也就是空的**，而空在这里的意思是
+       * 「这一层没查过」，不是「查过了，齐」。这张表里没有它们，也不该有：判据单
+       * 是一份文件，齐不齐每次都要重新数一遍（`domain/rubric-sheet.ts`）——
+       * 存一份下来，就等于把一个会过期的答案冻起来当事实。
+       *
+       * 所以谁要拿它去挡门，谁负责在这之上把那两格填上（面板那一批）。
+       */
+      ...EMPTY_EVIDENCE,
       artifactIds: JSON.parse(row.artifact_ids) as string[],
       blockers: [...fromGaps, ...legacy.filter((each) => !seen.has(each.id))],
       waivedBlockerIds: JSON.parse(row.waived_ids) as string[],

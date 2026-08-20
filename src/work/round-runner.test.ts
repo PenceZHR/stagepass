@@ -18,7 +18,7 @@ import { ChangeStore } from "../store/change-store";
 import { SubAgentNotFoundError } from "../codex/subagent";
 import { GapStore } from "../store/gap-store";
 import { WorklistStore } from "../store/worklist-store";
-import { RoundAgentsNotFoundError, runRound } from "./round-runner";
+import { RoundAgentsNotFoundError, prepareRound, runRound } from "./round-runner";
 
 /**
  * L4 offline: a whole adversarial round, minus the one thing only a real Codex
@@ -38,22 +38,38 @@ function worklistOf(db: Database.Database): WorklistStore {
 }
 
 /**
- * 一个**会调工具**的裁判：turn 一跑就把名单按顺序答掉。
+ * 一个**会写答案文件**的裁判：turn 一跑就往名单的答案文件里逐条写。
  *
- * 真裁判是在自己的 turn 里调 `stagepass_next` / `stagepass_answer` 的，所以替身也得
- * 在同一个位置动手 —— 在 turn 之后才答，`runRound` 早就把名单读完了。
+ * ## 这个替身以前是假的，而那正是那个 bug 藏身的地方
  *
- * 答案按顺序给，给多少答多少：**没答的那几条是沉默，按规矩保持 open**。
+ * 它原来直接调 `store.answer(...)` —— 模拟裁判调 `stagepass_next` /
+ * `stagepass_answer`。那两个工具 2026-08-19 随 `src/plugin/` 一起没了，于是生产上
+ * **没有任何东西**在往名单里写答案；而这个替身照写不误，测试全绿。
+ * 一个模拟着已经不存在的通道的替身，比没有测试更坏。
+ *
+ * 现在它做的和真裁判**一模一样**：往题面给它的那个路径写 `序号: 答案 —— 理由`。
+ *
+ * 路径**从写过的文件里认**，不在这儿拼第二份命名规则 —— 那种拷贝一漂移，测试就
+ * 在验一个生产上不存在的文件名。
+ *
+ * 答案按序号给：**没给的那几条是沉默，按规矩保持 open**。
  */
 function judgeAnswering(
   transport: ScriptedCodexTransport,
-  store: WorklistStore,
-  answers: readonly (readonly [string, string])[],
+  files: ReturnType<typeof inMemoryFiles>,
+  answers: readonly (readonly [number, string, string])[],
 ): CodexTransport {
   return {
     async runTurn(dispatch) {
       const delivery = await transport.runTurn(dispatch);
-      for (const [answer, reason] of answers) store.answer(CHANGE, answer, reason);
+      const path = [...files.written.keys()]
+        .find((each) => each.includes("worklist-answers-"));
+      assert.ok(path, "题面没给出答案文件 —— 裁判无处表态");
+      files.written.set(
+        path,
+        answers.map(([ordinal, answer, reason]) =>
+          `${ordinal}: ${answer} —— ${reason}`).join("\n"),
+      );
       return delivery;
     },
   };
@@ -118,6 +134,20 @@ function inMemoryFiles() {
 function inMemoryDeps() {
   const files = inMemoryFiles();
   return { writeRoundFile: files.write, readRoundFile: files.read };
+}
+
+/**
+ * 同上，外加把 `files` 本身交出来 —— **裁判要往里面写答案**。
+ *
+ * 分成两个函数是为了让绝大多数用例照旧只写 `...inMemoryDeps()`：它们不关心名单，
+ * 多接一个返回值只是噪音。
+ */
+function inMemoryDepsWithFiles() {
+  const files = inMemoryFiles();
+  return {
+    files,
+    deps: { writeRoundFile: files.write, readRoundFile: files.read },
+  };
 }
 
 const RED_THREAD = "T-RED";
@@ -267,11 +297,12 @@ describe("L4 · a round turns blue's attack into gaps the gate can read", () => 
     const childThreads = spawnedBy(transport);
     // Blue stops reporting it in round 2. Silence must NOT close it -- only the
     // judge's verdict does. 第 2 轮它调工具把那一条关掉。
+    const second = inMemoryDepsWithFiles();
     const dependencies = {
-      transport: judgeAnswering(transport, worklist, [["closed", "已补可测的验收标准"]]),
+      transport: judgeAnswering(transport, second.files, [[1, "closed", "已补可测的验收标准"]]),
       gaps,
       childThreads,
-      ...inMemoryDeps(),
+      ...second.deps,
       worklist,
       readThread: (threadId: string) => threadId.startsWith(RED_THREAD)
         ? answer({ artifactIds: ["spec.md"] })
@@ -619,16 +650,127 @@ describe("L4 · 表态走名单，裁判手上没有任何 id 可抄", () => {
     const worklist = worklistOf(db);
     const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
 
+    const memory = inMemoryDepsWithFiles();
     const settled = await runRound(request, {
-      transport: judgeAnswering(transport, worklist, [["closed", "第一个修了"]]),
+      transport: judgeAnswering(transport, memory.files, [[1, "closed", "第一个修了"]]),
       gaps, worklist,
       childThreads: spawnedBy(transport),
-      ...inMemoryDeps(),
+      ...memory.deps,
       readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
     });
 
     assert.deepEqual(settled.malformed, [], "答了一部分不是格式坏了");
     assert.deepEqual(settled.blockers.map((b) => b.id), ["SPEC-2"]);
+  });
+
+  /**
+   * 名单走文件那条路，从头到尾（2026-08-19）。
+   *
+   * ## 它拦的是什么
+   *
+   * 这条链断过一次，而且**断了之后 1177 条测试全绿**：`stagepass_next` /
+   * `stagepass_answer` 随 `src/plugin/` 一起删掉，题面还在叫裁判去调它们，
+   * 生产上没有任何东西再往名单里写答案 —— 而所有测试的裁判替身都在直接调
+   * `store.answer`，于是没有一条测试落在真实通道上。
+   *
+   * 所以这一组的判据是**端到端**：题面给出路径 → 有人往那个路径写 → gap 真的关掉。
+   * 中间任何一环断了它都红。
+   */
+  describe("L4 · 名单走文件：题面给路径，答案从文件回来", () => {
+    it("**题面里印的那两个路径，就是 StagePass 回头去读的那两个**", async () => {
+      const db = database();
+      const gaps = new GapStore(db, () => new Date(AT));
+      withGap(db, gaps);
+      const worklist = worklistOf(db);
+      const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+      const memory = inMemoryDepsWithFiles();
+
+      const prepared = prepareRound(request, {
+        transport, gaps, worklist,
+        childThreads: spawnedBy(transport),
+        ...memory.deps,
+        readThread: roles(answer({}), answer({})),
+      });
+
+      assert.ok(prepared.worklist, "有东西要表态，就必须有那两个文件");
+      const script = memory.files.written.get(prepared.scriptPath)!;
+      assert.ok(
+        script.includes(prepared.worklist.listPath),
+        "题面里没有清单路径 —— 裁判不知道要表态什么",
+      );
+      assert.ok(
+        script.includes(prepared.worklist.answersPath),
+        "题面里没有答案路径 —— 它表完态无处可写",
+      );
+      // 清单里有正文没有 id：这一条和「模型手上没有 id 可抄」是同一条规矩，
+      // 只是换到了文件这一侧。
+      const list = memory.files.written.get(prepared.worklist.listPath)!;
+      assert.match(list, /验收不可测/);
+      assert.equal(list.includes("SPEC-1"), false, "清单里出现 id，模型就会去抄它");
+    });
+
+    it("**裁判往答案文件里写，gap 就真的关掉** —— 整条链", async () => {
+      const db = database();
+      const gaps = new GapStore(db, () => new Date(AT));
+      withGap(db, gaps);
+      const worklist = worklistOf(db);
+      const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+      const memory = inMemoryDepsWithFiles();
+
+      const settled = await runRound(request, {
+        transport: judgeAnswering(transport, memory.files, [[1, "closed", "验收标准已经逐条可测"]]),
+        gaps, worklist,
+        childThreads: spawnedBy(transport),
+        ...memory.deps,
+        readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+      });
+
+      assert.deepEqual(settled.malformed, []);
+      assert.deepEqual(settled.blockers, []);
+      assert.equal(gaps.all(CHANGE, "Fix")[0]!.resolution, "验收标准已经逐条可测");
+    });
+
+    it("**它一个字都没写 = 机制被绕过**，报出来，不当成「它说都还在」", async () => {
+      // 这正是 2026-08-19 之前生产上每一轮的样子：没有通道，名单全空。
+      // 那时它安静地表现为「所有问题都还开着」，而真相是没有人问过。
+      const db = database();
+      const gaps = new GapStore(db, () => new Date(AT));
+      withGap(db, gaps);
+      const worklist = worklistOf(db);
+      const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+
+      const settled = await runRound(request, {
+        transport, gaps, worklist,
+        childThreads: spawnedBy(transport),
+        ...inMemoryDeps(),
+        readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+      });
+
+      assert.deepEqual(settled.malformed, ["worklist_unanswered"]);
+      assert.deepEqual(settled.blockers.map((b) => b.id), ["SPEC-1"]);
+    });
+
+    it("**答了个不在选项里的值不算数**，而且要说出是哪一条", async () => {
+      const db = database();
+      const gaps = new GapStore(db, () => new Date(AT));
+      withGap(db, gaps);
+      const worklist = worklistOf(db);
+      const transport = new ScriptedCodexTransport([verdicts({})], "JUDGE-1");
+      const memory = inMemoryDepsWithFiles();
+
+      const settled = await runRound(request, {
+        transport: judgeAnswering(transport, memory.files, [[1, "大概修了吧", "含糊其辞"]]),
+        gaps, worklist,
+        childThreads: spawnedBy(transport),
+        ...memory.deps,
+        readThread: roles(answer({ artifactIds: ["spec.md"] }), answer({ blockers: [] })),
+      });
+
+      assert.deepEqual(settled.malformed, [
+        "worklist_answer_not_a_choice:1", "worklist_unanswered",
+      ]);
+      assert.deepEqual(settled.blockers.map((b) => b.id), ["SPEC-1"], "没答上就保持 open");
+    });
   });
 
   it("名单是空的时候不报 malformed —— 没什么可表态是正常的一轮", async () => {

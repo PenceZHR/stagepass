@@ -1,187 +1,266 @@
-# StagePass
+# StagePass · Discontinued
 
 **English** · [简体中文](README.zh-CN.md)
 
-> **A model does not get to pass its own work.**
+> Started 2026-07-19. Stopped 2026-08-19. 653 commits, four pivots.
+>
+> **What stopped is the software, not the method.** The method lives in
+> [`docs/ARCH-method-2026-08-19.md`](docs/ARCH-method-2026-08-19.md) (Chinese).
+> It costs nothing, needs no repository, and works today.
+>
+> The original product README — the eight-phase gated-ring version — is preserved at
+> [`docs/README-v1-product-2026-08-17.md`](docs/README-v1-product-2026-08-17.md).
+> Most of what it claims **was disproven by this project itself**. Don't read it as current.
 
-StagePass is a **macOS-native local delivery control plane for Codex**. It gives
-one software change a durable workflow, independent adversarial review, visible
-artifacts, and a human-owned gate at every phase. The browser controls structure
-and shows facts; Terminal.app runs the official Codex TUI and owns every
-interactive turn, MCP prompt, approval, and interrupt.
+**If you only read one section, read [§4 — Field notes](#4--field-notes-codex-and-claude-code-internals).**
+That is the part with value to anyone who isn't me: two months of reverse-engineering
+two agent harnesses, most of which is not documented anywhere public.
 
-StagePass is intentionally macOS-only. It does not ship a browser terminal, PTY
-compatibility layer, tmux session manager, or Windows/Linux fallback.
+---
 
-## Why it exists
+## 1 · What this was, and why it stopped
 
-Letting a model decide whether its own phase is complete is letting it grade its
-own exam. In ordinary agent workflows, an earlier problem can disappear because
-the next response forgot to mention it, a confident “no blockers” can open a
-gate, and the same reasoning error can be copied into both implementation and
-tests.
+StagePass tried to be a **process instrument for a solo developer working with AI**:
+one change walks eight phases, each phase has a rubric, the model fills in evidence,
+the human renders the verdict, build and test tracks stay mutually blind, and gates
+stop what shouldn't pass.
 
-StagePass makes those failures structurally harder:
+**It didn't hit a wall. It was evaluated and declined.** Four pieces of evidence:
 
-1. **Silence cannot close a problem.** Gaps survive rounds until a reasoned
-   verdict or explicit human decision changes them.
-2. **Gates read durable evidence.** A phase advances only through the state
-   machine and its ledger, never because UI text looks successful.
-3. **The model does not own the final decision.** Business choices are put to a
-   person through Codex MCP elicitation and recorded through one StagePass use
-   case.
-4. **Build and Test are mutually blind.** They share the Arch contract, not each
-   other’s implementation, and collide at QA.
-5. **Identifiers are never hand-transcribed by the model.** Exact IDs come from
-   protocol and database facts; model output is limited to choices and prose.
+1. **The core mechanisms are already commodities.** "Separate model-produced evidence
+   from human judgment", "local-first", "append-only" are a published paper
+   ([ProjectMem](https://arxiv.org/pdf/2606.12329), 2026-06). "Auto-summarize each session
+   into local markdown" ships as clerk and several others. The upstream-constraint half of
+   the space is occupied by Kiro (international launch 2026-05) and GitHub Spec Kit (93k stars).
+2. **What was left was an opinion, not a technology** — that the archive should be written
+   for humans, and that sparsity *is* the weighting.
+3. **The value does not need software.** What actually works is human judgment, and human
+   judgment does not need a plugin. Two text files are enough.
+4. **The step it tried to automate is the one step that cannot be automated** (see §3.4).
 
-## The eight-phase diamond
+---
 
-```text
-PRD → Spec → Arch → BuildPlan ─→ Build ─┐
-                  └→ TestPlan  ─→ Test ─┴→ QA
-```
+## 2 · Timeline: four pivots
 
-Arch is the fork. BuildPlan/Build and TestPlan/Test form two controlled tracks.
-QA runs the real tests, attacks the tests with mutations, and attributes a
-failure to Build, Test, or Arch. A send-back is a re-walk: downstream approvals
-that depended on the rejected fact are not silently preserved.
-
-Every active phase runs an adversarial round:
-
-```text
-red produces → blue attacks → judge rules → rubric roles score → human gate
-```
-
-## Stage artifact cockpit
-
-Opening a phase now leads to a read-only artifact cockpit instead of an empty
-Terminal portal. It shows:
-
-- the exact upstream Stage evidence consumed by the selected round;
-- real folders and every produced, modified, carried, deleted, or replaced file;
-- production lineage as the macro structure;
-- direct dependencies, dependents, and blast radius only after a code file is
-  selected;
-- fixed historical content and Git diff for older rounds;
-- file-specific gaps, Stage-level gaps, and the explicit next controlled move;
-- an always-available **Open / Focus Codex** control that stays separate from
-  artifact browsing.
-
-The cockpit reads an append-only per-round artifact ledger. Legacy rounds are
-reconstructed only from exact Stage paths or a proven evidence commit; missing
-history is labelled incomplete instead of being filled from the current working
-tree. File reads are fenced by Change → Project ownership, manifest path,
-realpath, size, and recorded commit. The browser cannot submit an arbitrary Git
-ref.
-
-Every file remains reachable through a keyboard-focusable list. If WebGL is not
-available, the spatial scene falls back to a two-dimensional folder projection
-without losing files or detail controls.
-
-## Project black hole
-
-The sun at the center of the Stage ring opens the whole project’s dependency
-graph, parsed with the TypeScript compiler rather than regex.
-
-- The black hole represents dependency pressure. Highly depended-on layers
-  orbit closer to the center; higher blast-radius modules sink inward.
-- Healthy dependencies point inward. Outward arcs expose a layer violation.
-- Arch produces `arch.graph.json`; StagePass reconciles its concepts and
-  relations against real code and overlays the plan on the project graph.
-- Assets and generated directories are kept outside the code scene according to
-  the project’s persisted inclusion rules.
-
-The project graph answers “what is this repository?” The Stage cockpit answers
-“what did this round produce?” They share visual language, not business state.
-
-## Native Codex ownership
-
-StagePass keeps durable Codex App Server threads and normalized lifecycle facts.
-The official Codex TUI in Terminal.app remains the only interactive client:
-
-- Terminal receives keyboard input, ANSI color, MCP forms, approvals, and
-  `Ctrl+C` directly;
-- the browser never receives or redraws terminal bytes;
-- closing a Terminal window discards only that client; reopening resumes the
-  same bound Codex thread;
-- entering a Stage only refreshes terminal status. Terminal opens or focuses
-  only when the person presses the explicit button.
-
-Before first use, macOS may ask permission for the process running StagePass to
-control Terminal. Allow it in **System Settings → Privacy & Security →
-Automation**. StagePass fails closed if it cannot identify exactly one managed
-Terminal window.
-
-## Honest status
-
-| Capability | Status |
-|---|---|
-| SQLite state machine, gates, leases, crash recovery | Implemented and covered by the offline suite |
-| Eight-phase diamond, blind tracks, QA attribution and re-walk | Implemented; real Changes have traversed the ring |
-| Managed App Server threads + official native Codex TUI | Implemented and previously accepted on macOS |
-| Project black-hole graph + Arch reconciliation | Implemented and previously accepted on macOS |
-| Append-only round artifacts + Stage cockpit | Implemented on this experimental worktree; final 4173 browser evidence is recorded in the current handoff |
-| StagePass producing and shipping its own next Change end to end | Not yet earned; this remains the bootstrap criterion |
-
-Nothing above claims a cross-platform runtime. A rendering surface is a
-projection, not a decision authority: looking at a Stage, file, round, or graph
-must not start a turn or write business state.
-
-## Run on port 4173
-
-Requirements:
-
-- macOS with Terminal.app;
-- Node.js 20+ and pnpm;
-- Codex CLI with `codex app-server`;
-- macOS Automation permission for Terminal control.
-
-Install and verify:
-
-```bash
-pnpm install
-pnpm check
-```
-
-Start the real local control plane from this worktree:
-
-```bash
-pnpm panel -- --db /Users/zhanghr/.stagepass/panel.db --port 4173
-```
-
-Then open [http://127.0.0.1:4173](http://127.0.0.1:4173). Port **4173 is the
-only supported product port**: if it is occupied, stop the existing StagePass
-instance and restart it on 4173; do not start a second copy on another port.
-
-Without `--db`, the panel creates a throwaway database for isolated inspection.
-It does not migrate or replace the real database unless that path is explicitly
-provided.
-
-## Architecture boundaries
-
-| Area | Owns | Must not own |
+| When | Shape | Why it turned |
 |---|---|---|
-| `src/domain`, `src/store`, `src/app` | State, gates, evidence, questions, decisions | Rendering |
-| `src/work`, `src/codex`, `src/system` | Jobs, Git facts, App Server protocol, native Terminal lifecycle | Browser UI decisions |
-| `src/graph` | Compiler graph, deterministic layouts, safe artifact reads | Workflow transitions |
-| `src/web` | Read-only projections, HTTP boundaries, native-client controls | Terminal bytes or a second gate path |
-| `src/plugin` | MCP elicitation bridge | Deciding what is legal |
+| 07-19 | Start: dual Codex + Claude, live QA, seven phases | — |
+| **07-28** | **Rebuild: drop Claude, Codex only** | Paying the cost of a dual-backend abstraction before either backend worked |
+| **08-09** | **Ring v3: eight-phase diamond, mutually blind tracks, Fix/rerun removed** | The seven-phase `Fix` stage and rerun semantics contradicted each other |
+| **08-18** | **Retire the web app → ship as a Codex plugin** | Panel process at 2177 lines; terminal-seat complexity out of control |
+| **08-19 (night)** | **Plugin route fails — six distinct incidents in one night → back to a workbench, execution channel deleted** | Subscription entitlement, ghost bindings poisoning seats, polling-based completion detection, a daemon holding threads `loaded` |
+| **08-19** | **Stop** | See §1 |
 
-SQLite is the sole business authority. State updates require matching ledger
-facts at write time. `src/architecture.test.ts` enforces downward-only layers,
-callers for production exports, one phase vocabulary, no PTY/private-state
-runtime, and size/closure ratchets.
+**Every pivot removed machinery.** Panel → plugin → plugin+web → files+skill.
+The trend line pointed at zero, and that itself was a signal worth reading earlier.
 
-Key documents:
+---
 
-- [`docs/PRD-stagepass-rebuild-2026-07-28.md`](docs/PRD-stagepass-rebuild-2026-07-28.md) — product authority
-- [`docs/BACKLOG.md`](docs/BACKLOG.md) — single list of unfinished work
-- [`docs/HANDOFF-2026-08-16-native-tui.md`](docs/HANDOFF-2026-08-16-native-tui.md) — current worktree and verification handoff
-- [`docs/CODEX-CONTRACT.md`](docs/CODEX-CONTRACT.md) — measured App Server behavior
-- [`docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md`](docs/superpowers/specs/2026-08-16-native-tui-without-tmux-design.md) — native TUI ownership contract
-- [`docs/superpowers/specs/2026-08-16-stage-artifact-cockpit-design.md`](docs/superpowers/specs/2026-08-16-stage-artifact-cockpit-design.md) — cockpit design and acceptance criteria
+## 3 · Assumptions that were disproven
 
-## License
+### 3.1 That "unattended operation" was achievable
 
-[MIT](LICENSE)
+**It is the logical negation of "I want to know about every round"** — which was this
+project's own stated requirement. The 2298 lines of execution channel
+(`plugin/runtime` + `seats` + `await-turn` + `codex/app-server-*` + `stream-state`)
+were the price of trying to satisfy two mutually exclusive goals.
+
+Deleting it made approval, visibility, interruptibility and durability **hold by default** —
+not "fixed", but *dissolved*: when a contradiction goes away, the machinery built for it
+becomes void wholesale rather than being repaired piece by piece.
+
+> **Reusable check: before building, list your goals and check whether two of them negate
+> each other.** Five minutes. It would have saved two thousand lines.
+
+### 3.2 That phase gates could hold a human back
+
+It contradicts the project's own three-authors model — a gate lets code's judgment
+override the person's. And once the execution channel was gone, it couldn't stop anything
+anyway: the only thing it could "block" was a state field in a panel that belongs to the
+same person.
+
+**A gate should be demoted to a checkup — a linter, not a bouncer. It emits a report,
+never a verdict.**
+
+### 3.3 That "mutual blindness" is a TDD principle
+
+It isn't. **TDD is single-author by construction** — it separates *time*, not *perspective*.
+Mutual blindness existed in the original methodology one layer up, in **customer-written
+acceptance tests** (XP, FIT). The industry kept TDD and dropped that layer.
+
+And blindness would not have caught this project's two most expensive failures (see §5.3):
+those were **reality-contact** failures, not interpretation-divergence failures.
+
+### 3.4 That full automation was just "models aren't strong enough yet"
+
+**It's structural.** Requirements do not exist first and then get communicated.
+**Requirements take shape the moment you see output.** So a human must be inside the loop —
+in the middle of it, not at the two ends.
+
+Scope: work whose requirements *are* fully known before starting (compilers, transpilers,
+rule-driven migrations, implementing a fixed protocol) can be fully automated.
+Product work is not that kind of work.
+
+### 3.5 That "nobody is doing this" meant "nobody thought of it"
+
+**An absence is not readable.** It is equally consistent with "nobody thought of it",
+"people tried and it failed", and "it just hasn't come up yet". Nothing about the absence
+itself distinguishes these.
+
+> **Reusable check: don't search "is anyone doing X" (returns an absence).
+> Search "who is doing the adjacent thing, and how" (returns a presence).**
+> A presence is readable — other people's limitations sections tell you exactly what they hit.
+
+---
+
+## 4 · Field notes: Codex and Claude Code internals
+
+**This is the section with value to anyone else.** All of it was hit on real machines.
+Versions are noted where measured; behavior may have changed since.
+
+### Codex — threads and subagents
+
+- **A subagent forks the parent thread's entire history.** It does not start clean.
+  So "a fresh adversary doubting from zero each round" only holds across phases,
+  never within one thread.
+- **Subagent threads reject external input** (0.146.0 stable): they cannot be driven by a
+  direct `resume`, regardless of whether the parent thread is alive.
+- **Two spawn surfaces, only one sets `agent_path`.** Native `spawn_agent({task_name})` sets it;
+  **that surface is not present in every session** — when it's absent the whole round is void.
+- **Spawn failure is silent.** The main agent will fabricate an answer on the subagent's behalf
+  and the turn still reports success.
+- **`thread/list` carries no title**, and does not show zero-turn threads. Thread identification
+  has to go through `preview` plus `parent_thread_id` (present in 76/76 rollouts).
+- **Never prefix-match a UUIDv7.** Threads created in the same millisecond share a prefix.
+- **Subagents inherit MCP servers only from the global `config.toml`**, not from command-line `-c`.
+
+### Codex — sessions and approvals
+
+- **An MCP approval must be granted once per round, and it is scoped per session, not per thread.**
+  With nobody there to press it, a run burns silently to the 30-minute timeout.
+  This single fact is what makes unattended operation impossible.
+- **An untrusted directory blocks a whole turn silently until timeout.** The unit of trust is
+  the **git root** — not the cwd, not any ancestor.
+- **Codex archives bound threads.** `codex resume` then exits immediately; from the outside it
+  looks like "I clicked it and got an error". Cure: `codex unarchive`.
+  Note: **a pty that dies on startup takes its last line with it** — you cannot read the error
+  from scrollback.
+- **A non-subscribed connection can still drive `turn/start`.**
+
+### Codex — MCP and UI
+
+- **Three silent traps in elicitation forms:** fields are **sorted by name** (not by declaration
+  order); **`required` is a hard gate** (useful — it's the one truly deterministic block);
+  an **empty text field swallows Enter**, and only the last field can submit.
+- **The Codex desktop app renders HTML served from an MCP resource** — declare
+  `openai/outputTemplate` in `_meta`, implement `resources/list` + `resources/read`
+  (`mimeType: "text/html+skybridge"`), and enable the `enable_mcp_apps` feature flag in
+  `~/.codex/config.toml`. Measured on codex-cli 0.147.0 / App 0.148.0-alpha.15.
+- **But widget width caps at roughly 700px**, and iframes to external origins are blocked by
+  the sandbox — a panel has to be packaged as the resource itself. "Fullscreen" is in fact a
+  right-side panel tab at 687px, *narrower* than inline.
+- **The app-server's public JSON-RPC can open a real session from outside** — 9.3s for a full
+  round, and it reports `source=vscode`, same as sessions the app opens itself.
+- **The native Terminal Codex TUI can be driven externally**: sending a prompt, closing the
+  window and reconnecting all work. It binds to a directory, not a thread id.
+  **Enter must be sent as a separate write**, and the handle must be a tty.
+
+### Claude Code
+
+- **Hooks genuinely block**: both `deny` and `Stop` were verified to stop execution.
+  But they **only guard state transitions — guarding write operations is bypassed by Bash.**
+- **A `claude` CLI subprocess cannot authenticate** (inside or outside a sandbox).
+- Session ids can be specified; subagents live in the project directory; elicitation is supported.
+
+### Host environment (may be specific to this machine)
+
+- **`preview_start` cannot launch a dev server**: the spawned process gets cwd `/` and `getcwd`
+  is denied (`EPERM: uv_cwd`). All three `runtimeExecutable` forms fail at the same point.
+  Workarounds: start the process from a background shell and open by `url`, or write
+  `launch.json` as **attach-only** (a `url` entry with no command).
+- **A panel must be started from a real terminal** — one launched from an IDE Run button
+  dies instantly with EPERM when it spawns `codex`.
+- **`curl` cannot reach localhost from inside the sandbox and returns empty silently.**
+  Never use it to decide whether a server came up.
+
+---
+
+## 5 · Where the judgment went wrong (mechanism, not character)
+
+### 5.1 Requirements were treated as conclusions, not as bets
+
+There were PRDs, specs, architecture docs, rubrics. **The thinking was not skipped.**
+But all of it was written as assertions ("the system shall…"). Not one line said
+*"I currently believe X, and here is how I would find out it's wrong."*
+
+**So the requirement could be wrong for two months with no moment that would surface it.**
+
+The failure was not "didn't think". It was closing the channel through which being wrong
+could arrive.
+
+### 5.2 The exploration phase was run as if it were the convergence phase
+
+**Writing specs is not exploration. It is formatting your guesses.** It produces no new
+information, but it *feels* like progress because it produces artifacts.
+
+The real cause is a feedback asymmetry: a green test gives instant confirmation, a growing
+document gives instant confirmation, and "is this requirement right?" gives no signal at all.
+People move toward whatever gives signal.
+
+> Which is why "I'll take exploration more seriously next time" fails — that is willpower
+> against a gradient. **The fix is to manufacture feedback for the exploration phase**,
+> not to resolve harder.
+
+### 5.3 A green suite proves self-consistency, not correctness
+
+The two most expensive incidents:
+
+- **1177 tests green while the MCP channel had been dead all night** — every stub was
+  faithfully simulating a tool that no longer existed.
+- **1137 tests green while the entire star map had never once rendered** — the frontend
+  "tests" were regex greps over source files.
+
+**Mutual blindness would not have caught either.** A blind test author writing from the same
+spec stubs the same nonexistent tool, and writes the same greps if they have no browser.
+These were failures of *contact with reality*, not of interpretation.
+
+### 5.4 The process architecture was fixed before the exploration
+
+A tool was built for a way of working that had not yet been lived. Which contradicts the
+principle this project itself later wrote down: **the information needed to design an
+architecture can only be produced by building. Fixing architecture at kickoff is not
+difficult — it is information-theoretically unavailable.**
+
+<!-- TODO (author): this section still needs the part only you can write —
+     not the mechanism, but why you kept doing it. -->
+
+---
+
+## 6 · What survives
+
+- **The method** — [`docs/ARCH-method-2026-08-19.md`](docs/ARCH-method-2026-08-19.md) (Chinese).
+  Zero cost, no repository required.
+- **Four reusable checks** — worth more than aphorisms, because you can *run* them:
+  1. Point at any field and ask "who is the author of this value?" If you can't answer,
+     the design isn't finished.
+  2. List your goals and check whether two of them negate each other.
+  3. Is the cost of bypassing symmetric with the cost of complying?
+     (Asymmetry means people flee toward cheap, not toward correct.)
+  4. What is the mechanically checkable shadow of this judgment?
+     (Turn semantic judgments into reference-integrity checks.)
+- **§4** — the only part that does not depreciate as models improve.
+- **`src/domain/`** — dependency propagation and reference validation. The lowest-deletion-rate
+  code in the repo; untouched across all four pivots.
+
+<!-- TODO (author): anything else worth keeping — a module, a doc, a specific approach. -->
+
+---
+
+## Repository status
+
+- Default branch `main`; development stopped on `build-the-base-2026-08-05`
+- 653 commits, 2026-07-19 → 2026-08-19
+- **Not maintained. Issues and pull requests are not accepted.**
+
+<!-- TODO (author): license. §4 is the part others will actually use —
+     decide whether you want it freely reusable. -->

@@ -45,7 +45,10 @@ function open(): ActionDeps {
   database.exec(SCHEMA_SQL);
   new ProjectStore(database, () => new Date(AT)).ensure("PRJ-1", "小游戏", "/tmp/repo");
   new ChangeStore(database, { now: () => new Date(AT) }).create("CHG-1", { projectId: "PRJ-1" });
-  return { database, repo, runtime, briefFiles, workspaceFor: () => "/tmp/repo" };
+  return {
+    database, boundProjectId: "PRJ-1", repo, runtime, briefFiles,
+    workspaceFor: () => "/tmp/repo",
+  };
 }
 
 const call = (path: string, deps: ActionDeps, body = ""): ReturnType<typeof handleAction> => {
@@ -193,6 +196,74 @@ describe("plugin · 会改库的那些路", () => {
 
       assert.deepEqual(seen, [{ changeId: "CHG-1", phase: "PRD" }]);
       assert.deepEqual(answer.body, { ran: true, phase: "PRD", jobId: "JOB-1" });
+    } finally {
+      database.close();
+    }
+  });
+
+  /*
+   * 「甲」那条路的两个口子（2026-08-19）。判据同样全在 `runtime` 里 ——
+   * 这里只守**路由到没到、阶段带没带过去**。
+   */
+  it("取题面走执行通道，带着这个阶段过去", async () => {
+    const database = openDatabase(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    new ProjectStore(database, () => new Date(AT)).ensure("PRJ-1", "小游戏", "/tmp/repo");
+    new ChangeStore(database, { now: () => new Date(AT) }).create("CHG-1", { projectId: "PRJ-1" });
+    const seen: { changeId: string; phase: string }[] = [];
+    const deps = {
+      database, repo, workspaceFor: () => "/tmp/repo",
+      runtime: {
+        // **派轮那条不许被碰到** —— 取题面的全部意义就是不派。
+        runRound: () => { throw new Error("取题面不许派轮"); },
+        handOff: (changeId: string, phase: string) => {
+          seen.push({ changeId, phase });
+          return { handed: true, phase, round: 3, envelope: "你是本轮的裁判。", scriptPath: "/tmp/s.md" };
+        },
+        roundBudget: 5,
+        archiveOps: () => null,
+      },
+    } as unknown as ActionDeps;
+    try {
+      const answer = await call("/api/handoff?change=CHG-1&phase=Spec", deps);
+
+      assert.deepEqual(seen, [{ changeId: "CHG-1", phase: "Spec" }]);
+      assert.deepEqual(answer.body, {
+        handed: true, phase: "Spec", round: 3,
+        envelope: "你是本轮的裁判。", scriptPath: "/tmp/s.md",
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("结算走执行通道；没带阶段就用这个 Change 现在停在的那个", async () => {
+    const database = openDatabase(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    new ProjectStore(database, () => new Date(AT)).ensure("PRJ-1", "小游戏", "/tmp/repo");
+    new ChangeStore(database, { now: () => new Date(AT) }).create("CHG-1", { projectId: "PRJ-1" });
+    const seen: { changeId: string; phase: string }[] = [];
+    const deps = {
+      database, repo, workspaceFor: () => "/tmp/repo",
+      runtime: {
+        runRound: () => { throw new Error("结算不许派轮"); },
+        settleHandoff: (changeId: string, phase: string) => {
+          seen.push({ changeId, phase });
+          return Promise.resolve({ settled: false, phase, reason: "no_round_waiting" });
+        },
+        roundBudget: 5,
+        archiveOps: () => null,
+      },
+    } as unknown as ActionDeps;
+    try {
+      const answer = await call("/api/settle?change=CHG-1", deps);
+
+      assert.deepEqual(seen, [{ changeId: "CHG-1", phase: "PRD" }]);
+      assert.deepEqual(answer.body, {
+        settled: false, phase: "PRD", reason: "no_round_waiting",
+      });
     } finally {
       database.close();
     }

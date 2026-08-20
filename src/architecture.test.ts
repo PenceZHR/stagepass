@@ -51,7 +51,32 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
    * 一轮的格子文件（C 方案的地基）。纯函数：铺结构、读回来、判合不合规，
    * 除了 `domain/phase` 什么都不碰，所以和它同层。
    */
+  /*
+   * 4，不是 0 —— 它 `import type { TemplateSection }` 够到 `domain/phase-template`（4）。
+   * **只进 `import type` 的边在图上仍然算数**，而层数是依赖顶出来的，不是挑的。
+   */
+  "system/project-home.ts": 0,
+  "domain/opening.ts": 4,
+  "domain/prd-doc.ts": 4,
+  "store/note-store.ts": 1,
   "domain/round-slots.ts": 0,
+  /*
+   * MCP 那根电话线。**放最低层，因为它不许 import 我们自己的任何东西** ——
+   * 它一旦碰业务，「MCP server 按会话起、一台机器上三个进程各锁一份代码」那个坑
+   * 当场回来（TechSpec §四）。层数在这儿不是被依赖顶出来的，是被**禁令**压下去的：
+   * 0 意味着它没有任何东西可以依赖。有下面那条测试钉着。
+   */
+  "mcp/server.ts": 0,
+  /*
+   * 提问的形状和参数校验（BuildPlan T1）。纯函数，只 import `domain/phase` 的类型
+   * —— 和 `round-slots` 同族：一个形状加一套判据，不碰任何 IO。
+   */
+  "domain/ask.ts": 0,
+  /*
+   * 判据单答案文件的读回（BuildPlan T6）。和 `domain/worklist.ts` 的 reader 逐字
+   * 同构，但它一个 import 都没有 —— 所以比 worklist（3）低，落在最底层。
+   */
+  "domain/rubric-sheet.ts": 0,
   /*
    * 真依赖图的解析器（H 档第一块）。它**只 import `typescript`**，我们自己的
    * 东西一个都不碰 —— 所以放最低层，谁都够得着。
@@ -105,6 +130,11 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 旁路账本（彗星，2026-08-11）。它只依赖 better-sqlite3 的类型，我们自己的
   // 东西一个都不 import —— 和 gap-store 同一层，理由也一样：纯存储。
   "store/aside-store.ts": 1,
+  /*
+   * 提问留档（BuildPlan T2）：JSONL 追加 + 库索引 + `rebuildFrom`。它 import
+   * `domain/ask.ts`（0）的类型，别的什么都不碰 —— 和这一层其他纯存储同族。
+   */
+  "store/ask-store.ts": 1,
   /*
    * 插件跟着 Codex 的工作目录认项目。只读 `store/project-store`（0），别的什么都不碰
    * —— 和这一层其他「薄薄一层规则盖在 store 上」的模块同族。
@@ -177,6 +207,23 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // `domain/round.ts` 的来源名单，所以和它同层 —— 它不是 rubric 的东西，
   // 判定归 `rubric_assessments`，这两句谁都不判。
   "store/round-note-store.ts": 4,
+  /*
+   * 提问的组装（BuildPlan T3）：认当前备着的那一轮、序号换回备那一刻的判据、落档。
+   * 它够得着的最高一层是 `store/handoff-store` / `store/rubric-store` 那一族的
+   * 消费者，而它自己不进 `web/actions.ts`（5）—— 层数是它的依赖顶出来的。
+   */
+  /*
+   * 4 → 5（2026-08-19 晚）。**层数是依赖顶出来的，不是挑的。**
+   *
+   * 「提问挂在哪一轮」的判据降级成「挂在哪个 Change」之后，它要 `defaultChange`
+   * —— 那是面板挑默认 Change 用的同一个函数（`web/bind-project`，L5）。
+   * **共用它而不是抄一份**：抄出来的第二份会和面板慢慢分岔，而分岔的表现是
+   * 「模型问的那一条，和我在浏览器上看着的那一条，不是同一条」。
+   */
+  "web/brief-route.ts": 5,
+  "web/same-project.ts": 1,
+  "web/brief-routes.ts": 5,
+  "web/ask-route.ts": 5,
 
   "domain/rubric.ts": 5,
   "domain/rubric-gaps.ts": 5,
@@ -285,6 +332,7 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 名单里装的是 gap（L1）和 criterion（L5），但装的是什么不决定它住哪层，
   // **谁必须够得着它**才决定。
   "domain/worklist.ts": 3,
+  "store/handoff-store.ts": 3,
   "store/worklist-store.ts": 3,
 
   // The schema is the union of every layer's storage, so it imports each
@@ -570,7 +618,27 @@ const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
    * 而真正在管「它有没有在变成第二个 panel-server」的是另外两条，**这次都没红**：
    * 配料单不许过三成、单个函数不许长成一层。
    */
-    "web/api.ts": 0.72,
+    /*
+     * ## 2026-08-19 晚：72 → 73
+     *
+     * 接了题面和产物两条路（`/api/brief`、`/api/prd`，DESIGN-prd-phase-2026-08-19）。
+     * 它们**已经走了动态 import**（和图谱那条同一个办法），但闭包算的是图上的边，
+     * 动态与否不影响 —— 涨的这一格是真的：题面要 RubricStore、产物要 NoteStore。
+     *
+     * 要让它降下来只有一条路：**让 brief 不再自己去凑那四样**，改成由更上面一层
+     * 把它们喂进来。那是一次真重构，不是搬文件，所以先抬手记账。
+     *
+     * ## 同夜 73 → 74，而这一格**不是又喂了一口**
+     *
+     * 「项目对不对得上」那三个函数一度塞在 `ask-route` 里，`brief-route` 为了用它们
+     * 把整条 handoff 链拖进了闭包 —— 那次是真涨，护栏抓得对，已经抽成
+     * `web/same-project.ts`（只 import ProjectStore，谁都够得着而它谁都不拖）。
+     *
+     * 抽完还差一格，是**分母变了**：多一个产品模块，`total` 加一，于是每个人的占比
+     * 都动一点点。这个数会随着树长大自己漂 —— 它拦的是「谁又多够着了一大片」，
+     * 不是小数点后两位。
+     */
+    "web/api.ts": 0.74,
   /*
    * 它是**另一个入口的路由器**，够得着 api + actions 的并集 —— 和 `plugin/server`
    * 一样是同义反复，不是坏味道。真正管着「有没有长成第二个 panel-server」的是另外
@@ -578,6 +646,14 @@ const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
    */
   "web/serve.ts": 0.96,
   "web/actions.ts": 0.80,
+  /*
+   * 题面／产物的组装点。73% —— 和 `api.ts` 同一批边，理由也同一条：它要同时够着
+   * 模板、rubric、意见、项目路径，才拼得出「模型现在该干什么」。
+   *
+   * **它是组装点，不是业务层**：判据全在 `domain/`（模板七节、缺哪节）和 `store/`
+   * （意见有没有下文）里，各自有测试。这里只负责把它们摆在一起。
+   */
+  "web/brief-routes.ts": 0.74,
 };
 
 /*

@@ -700,6 +700,94 @@ CREATE TABLE IF NOT EXISTS round_worklist (
 );
 CREATE INDEX IF NOT EXISTS ix_worklist_open
   ON round_worklist (status, change_id, phase, round, ordinal);
+
+-- 备好交给人、还没结算的一轮（2026-08-19 定案「甲」）。
+--
+-- StagePass 不再自己跑轮：谁执行 turn，谁就占着那条 Codex 线程，人在 App 里就
+-- 打不开它。改成把题面交给他，他在自己的会话里跑，跑完回来结算 —— 而结算要认回
+-- 那条线程、要读回这一轮写出去的几个文件，**这两样都推不出来**：
+--
+--   script_path    认回线程的判据。它在人原样粘贴的那段信封里，而 thread/list
+--                  的 preview 就是第一条用户消息（2026-08-19 实测：没有 title
+--                  这个字段，preview 不截断）。每轮一个随机临时目录 = 全局唯一。
+--   prepared_json  这一轮写出去的那几个文件在哪（名单、反方那份标准），外加当时
+--                  生效的 rubric 版本 id。随机临时目录，重算不出来；而**重新备
+--                  一次会把人刚跑出来的答案覆盖掉**。
+--
+-- 一个 (Change, 阶段, 轮) 只有一条：再备一次就是同一轮重备，覆盖它。
+CREATE TABLE IF NOT EXISTS handed_rounds (
+  change_id     TEXT    NOT NULL REFERENCES changes(id),
+  phase         TEXT    NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  round         INTEGER NOT NULL,
+  -- 交给人的那段话，原样存着 —— 他关掉页面回来还得再拿一次。
+  envelope      TEXT    NOT NULL,
+  script_path   TEXT    NOT NULL,
+  prepared_json TEXT    NOT NULL,
+  -- 结算时认回的那条线程。还没结算就是 NULL。
+  thread_id     TEXT        NULL,
+  status        TEXT    NOT NULL CHECK (status IN ('waiting', 'settled')),
+  prepared_at   TEXT    NOT NULL,
+  settled_at    TEXT        NULL,
+  PRIMARY KEY (change_id, phase, round)
+);
+CREATE INDEX IF NOT EXISTS ix_handed_waiting
+  ON handed_rounds (change_id, phase, status);
+
+-- 模型在自己的会话里问过人的每一句话（TechSpec §五）。
+--
+-- ## 这张表是索引，不是原件
+--
+-- 原件是项目仓库里的 .stagepass/asks.jsonl，只追加、一行一条 JSON。**库丢了能从
+-- 文件重建，反过来不行**（AskStore.rebuildFrom）—— 半年后要回答「当初为什么否掉
+-- 方案 A」的那份东西不该只活在一个 sqlite 里，它得能 commit、能 diff、能用眼睛读。
+-- 所以这里只存查询投影：面板按 change 取一次，就是这个索引的全部用途。
+--
+-- ## 为什么两个都可空
+--
+-- rubric_id / ordinal：判据单为空的阶段照样问得成（P0b 独立可用），那时这一问
+-- 不挂在任何一条判据上。chosen / note / answered_at：人没答不是错误，是「这条
+-- 没答上」，和名单里没答上的那几条一个待遇 —— 留档照落。
+--
+-- 建表顺序陷阱不适用于这一张：ix_asks_change 引用的两列都在这张**新表**里，
+-- 而不是给一张已存在的表补列。所以它不需要 migrate 那边有对应的一条。
+CREATE TABLE IF NOT EXISTS asks (
+  id          TEXT    PRIMARY KEY,
+  change_id   TEXT    NOT NULL REFERENCES changes(id),
+  phase       TEXT    NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  round       INTEGER NOT NULL,
+  -- 序号映射回来的那一份 rubric，**备那一轮那一刻的版本**。
+  rubric_id   TEXT        NULL,
+  ordinal     INTEGER     NULL,
+  question    TEXT    NOT NULL,
+  why         TEXT        NULL,
+  -- 选项，JSON 数组。人选的是其中一条的原文。
+  options_json TEXT   NOT NULL,
+  asked_at    TEXT    NOT NULL,
+  chosen      TEXT        NULL,
+  note        TEXT        NULL,
+  answered_at TEXT        NULL
+);
+CREATE INDEX IF NOT EXISTS ix_asks_change ON asks (change_id, asked_at);
+
+-- 人在浏览器上逐节留的意见，和模型对它的下文（DESIGN-prd-phase-2026-08-19 §3.2）。
+-- response 空 = 还没下文，闸门读的正是这一格。
+CREATE TABLE IF NOT EXISTS prd_notes (
+  id           TEXT    PRIMARY KEY,
+  change_id    TEXT    NOT NULL REFERENCES changes(id),
+  phase        TEXT    NOT NULL CHECK (phase IN (${quoted(PHASES)})),
+  -- 挂在模板那一节的 key 上（domain/phase-template.ts）。**不存标题** —— 标题会改，
+  -- key 跨版本稳定，rubric 的 criterion 也挂在它上面。
+  section_key  TEXT    NOT NULL,
+  text         TEXT    NOT NULL,
+  created_at   TEXT    NOT NULL,
+  -- 模型怎么处理这条意见。**空 = 还没下文**，而闸门读的正是这一格：
+  -- 「每条意见都有下文」是代码判得出来的那一半。
+  response     TEXT        NULL,
+  responded_at TEXT        NULL
+);
+CREATE INDEX IF NOT EXISTS ix_notes_open
+  ON prd_notes (change_id, phase, responded_at);
+
 `;
 
 /**

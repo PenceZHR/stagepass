@@ -34,7 +34,7 @@ describe("web · 浏览器那一面的请求边界", () => {
     const database = open();
     try {
       const answer = await serveRequest("GET", "/api/panel?change=CHG-1", "", {
-        read: { database, repo },
+        read: { database, boundProjectId: "PRJ-1", repo },
         write: () => { throw new Error("只看不该开可写句柄"); },
       });
 
@@ -57,7 +57,7 @@ describe("web · 浏览器那一面的请求边界", () => {
     try {
       for (const path of ["/api/panel?change=CHG-1", "/api/parallel?change=CHG-1"]) {
         await serveRequest("GET", path, "", {
-          read: { database, repo },
+          read: { database, boundProjectId: "PRJ-1", repo },
           write: () => { opened += 1; throw new Error("不该走到这儿"); },
         });
       }
@@ -75,9 +75,10 @@ describe("web · 浏览器那一面的请求边界", () => {
       const answer = await serveRequest(
         "POST", "/api/change?project=PRJ-1&title=新的一件事", "",
         {
-          read: { database, repo },
+          read: { database, boundProjectId: "PRJ-1", repo },
           write: () => ({
-            database: writable, repo, runtime: {} as ActionDeps["runtime"],
+            database: writable,
+            boundProjectId: "PRJ-1", repo, runtime: {} as ActionDeps["runtime"],
             workspaceFor: () => "/tmp/repo",
             briefFiles: { write: () => "/x", read: () => null },
           }),
@@ -102,7 +103,7 @@ describe("web · 浏览器那一面的请求边界", () => {
     const database = open();
     try {
       const answer = await serveRequest("PUT", "/api/panel", "", {
-        read: { database, repo },
+        read: { database, boundProjectId: "PRJ-1", repo },
         write: () => { throw new Error("不该开"); },
       });
 

@@ -234,6 +234,50 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
   });
 });
 
+/**
+ * 取题面那条路的轮次（2026-08-19 真机抓到的）。
+ *
+ * ## 它是什么样的错
+ *
+ * 「轮次从账本数」成立的前提是 **`queueTurn` 已经把这一轮的 start 写进去了** ——
+ * 派轮那条路正是这个顺序。取题面**不建 job**（StagePass 那时确实什么都没在跑），
+ * 于是同一段代码数出来的是上一轮的号：真机上第一次点，信封写着「第 0 轮」，
+ * 名单和题面文件也全落在 0 上。
+ *
+ * 而结算时 `queueTurn` 会补上那个 start，同一段代码这次数出 1 —— **名单读回来
+ * 是空的，题面文件对不上号，账本上看不出哪里错了。** 这正是这条路唯一承重的那个
+ * 号，所以它有自己的护栏。
+ */
+describe("RoundTurnRunner · 备的那一轮和收的那一轮必须是同一个号", () => {
+  it("**第一次取题面是第 1 轮，不是第 0 轮**", () => {
+    const context = open();
+    toQA(context);
+    const prepared = runner(context, new ScriptedCodexTransport([]), () => answer())
+      .prepare({ id: "H-1", changeId: CHANGE, phase: "QA" } as never);
+
+    assert.equal(prepared.round, 1);
+    assert.match(prepared.envelope, /第 1 轮/);
+  });
+
+  it("**结算用备的时候那个号，不重数** —— 中间账本长了也不许漂", () => {
+    const context = open();
+    toQA(context);
+    const only = runner(context, new ScriptedCodexTransport([]), () => answer());
+    const prepared = only.prepare({ id: "H-1", changeId: CHANGE, phase: "QA" } as never);
+
+    // 结算时 `queueTurn` 会补一条 start，账本从此数得出 1；再多跑一轮就是 2。
+    // 无论账本涨到几，收的都必须是备的那一轮 —— 名单和文件都落在它上面。
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    context.changes.apply(CHANGE, "reject");
+    context.changes.apply(CHANGE, "start");
+
+    const again = only.prepare({ id: "H-2", changeId: CHANGE, phase: "QA" } as never);
+    assert.notEqual(again.round, prepared.round, "账本长了，下一次备的该是新的号");
+    assert.match(again.envelope, new RegExp(`第 ${again.round} 轮`));
+  });
+});
+
 describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
   /**
    * 每个阶段一条新线程（§6.5 规则 2），线程之间只能靠文档传信息 ——

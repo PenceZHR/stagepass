@@ -143,12 +143,49 @@ export interface Evidence {
    * the waiver, not here; this is only the gate's view of what is outstanding.
    */
   readonly waivedBlockerIds: readonly string[];
+  /**
+   * 判据单还缺哪几条（序号）。**代码算的**，不是模型报的。空数组 = 查过了，齐了。
+   *
+   * ## 它为什么是第三条闸门，而不是第三种 blocker
+   *
+   * 前两条问的是「模型报了什么」，而 `severity` 是模型自己填的一格 —— P2 一条都不挡
+   * （见 `unresolved`），于是今天模型写一个词，一条问题就从闸门上彻底消失，不需要
+   * 任何人点头（PRD §3.1 点名的病）。判据单把地基换成**齐不齐**，而齐不齐由
+   * `domain/rubric-sheet.ts` 数出来：每条判据有没有 claim、claim=pass 的有没有写
+   * 证据。模型改不动它。
+   *
+   * 编成 blocker 塞进 `unresolved()` 是最省事的做法，而那会把两件事混成一句话：
+   * 人看到「有未解决的问题」，去翻 gap 列表，一条都没有。
+   *
+   * ## 为什么它是可选的（**这是一处妥协，别把它读成设计**）
+   *
+   * 它该是必填的：一格没有作者说过话的证据，不该被当成「查过了，齐」。而闸门长出
+   * 这第三条时，树上已经有三十来处在它之前写好的调用方，各自拿三格字面量拼一份
+   * 证据 —— 让它们全部当场编译不过，这一批就变成了一次全树改名。
+   *
+   * 所以缺席按空数组处理，而**唯一的生产构造点 `store/evidence-store.ts` 两格都
+   * 明写**：缺席今天只出现在测试里。判据单接进面板那一批要把这里改回必填，
+   * 连同那三十来处一次改掉。
+   */
+  readonly sheetMissing?: readonly number[];
+  /**
+   * 判据单每一条的正文，**按序号**（第 1 条在下标 0）。空数组 = 这一层还没拿到正文。
+   *
+   * 只为了让拒绝的那句话说得出「缺的是哪一条」（`refusals.approve` 的 payload）。
+   * **它不参与任何判断**，所以也不进 `canonical`：换一个措辞不该让人重新裁决一次，
+   * 而少一条 claim 该。
+   *
+   * 可选，理由同 `sheetMissing`。缺席时拒绝的那句话里只有序号，没有正文。
+   */
+  readonly sheetTexts?: readonly string[];
 }
 
 export const EMPTY_EVIDENCE: Evidence = {
   artifactIds: [],
   blockers: [],
   waivedBlockerIds: [],
+  sheetMissing: [],
+  sheetTexts: [],
 };
 
 const REFUSAL_REASONS = [
@@ -157,7 +194,51 @@ const REFUSAL_REASONS = [
   "blocking_problem_outstanding",
 ] as const;
 
-export type RefusalReason = (typeof REFUSAL_REASONS)[number];
+/**
+ * **每一种拒绝的名字，包括带 payload 的那些。**
+ *
+ * 它存在的唯一理由是给显示层当覆盖判据（`system/refusal-words.test.ts`）：
+ * 界面对 reason 做的是精确相等匹配，而 `rubric_sheet_incomplete` 是个对象 ——
+ * 它一条都匹配不上，于是闸门真挡住时，裁决卡说的是「没有问题挡着闸门」而
+ * approve 悄悄不见，面板上显示 `[object Object]`。
+ *
+ * **TypeScript 不会红**（对象 !== 字符串是合法比较），**测试也不会红**。
+ * 这和 `stagepass_next` 那次逐字同型：1276 条全绿，而链子断在层与层之间。
+ * 新增任何一支拒绝，这里必须跟着加，否则那条测试红。
+ */
+export const REFUSAL_KINDS = [
+  ...REFUSAL_REASONS,
+  "rubric_sheet_incomplete",
+] as const;
+
+/**
+ * 为什么这个动作不许做。
+ *
+ * ## 为什么它不再只是一个字符串枚举
+ *
+ * 判据单那条拒绝**必须说得出缺的是第几条**（TechSpec §六）。少了 payload，面板上是
+ * 一个灰按钮和一句「判据单不全」，人不知道去补哪一条 —— 挡住而不指路的闸门，最后
+ * 都会被绕开。
+ *
+ * 剩下三条仍然是字符串：它们没有第二句话要说（「什么都没产出」就是全部信息），
+ * 而给每一条都套一层对象，只会让每一个读它的地方多一次解包。
+ */
+export type RefusalReason =
+  | (typeof REFUSAL_REASONS)[number]
+  | {
+    readonly kind: "rubric_sheet_incomplete";
+    /** 缺的序号，升序。 */
+    readonly missing: readonly number[];
+    /** 和 `missing` 一一对应的判据原文。拿不到正文时是空串 —— **不错位**。 */
+    readonly texts: readonly string[];
+  };
+
+/** 拒绝的理由摊成一句话（异常消息、日志）。对象那一支要摊得出序号。 */
+function refusalText(reason: RefusalReason): string {
+  return typeof reason === "string"
+    ? reason
+    : `${reason.kind}:${reason.missing.join(",")}`;
+}
 
 export interface Gate {
   /** Actions that may be applied right now. */
@@ -189,6 +270,15 @@ export function unresolved(evidence: Evidence): readonly Blocker[] {
     || (blocker.severity === "P1" && !waived.has(blocker.id)));
 }
 
+/**
+ * 判据单缺的那几条，**升序**。
+ *
+ * 排序在这里做一次，围栏和拒绝理由读的是同一份 —— 两处各排一遍，迟早有一处忘了，
+ * 而那时哈希和摆给人看的那张单子会对不上号。
+ */
+const sheetMissingOf = (evidence: Evidence): readonly number[] =>
+  [...(evidence.sheetMissing ?? [])].sort((a, b) => a - b);
+
 function canonical(state: ChangeState, evidence: Evidence): string {
   // Sorted so that a reordering -- which changes nothing about the decision --
   // does not invalidate a fence and force a human to decide twice.
@@ -204,6 +294,9 @@ function canonical(state: ChangeState, evidence: Evidence): string {
       .map((blocker) => `${blocker.kind}:${blocker.severity ?? "-"}:${blocker.id}`)
       .sort(),
     waived: [...evidence.waivedBlockerIds].sort(),
+    // 排序：库里换个顺序返回就让人重新裁决一次，是被什么都没发生的事推翻了一个决定。
+    // 但**补完一条要动**：人是对着「缺 2 和 4」那张单子做的判断。
+    sheetMissing: sheetMissingOf(evidence),
   });
 }
 
@@ -243,6 +336,23 @@ export function computeGate(
         refusals[action] = "blocking_problem_outstanding";
         continue;
       }
+      /*
+       * 第三条：判据单齐不齐（TechSpec §六）。**只挡 approve** —— 和上面两条同一个
+       * 理由：出口不能被证据不好挡住，否则判据单填不完的那一天，人连「打回去重做」
+       * 都点不了，Change 会卡到没有一个合法动作。
+       */
+      const missing = sheetMissingOf(evidence);
+      if (missing.length > 0) {
+        const texts = evidence.sheetTexts ?? [];
+        refusals[action] = {
+          kind: "rubric_sheet_incomplete",
+          missing,
+          // 拿不到正文时给空串，**不跳过** —— 跳过会让 texts[i] 对不上 missing[i]，
+          // 而面板正是按位置把两者摆在一起的。
+          texts: missing.map((ordinal) => texts[ordinal - 1] ?? ""),
+        };
+        continue;
+      }
     }
     permitted.push(action);
   }
@@ -259,7 +369,9 @@ export class GateRefusedError extends Error {
     readonly action: ChangeAction,
     readonly reason: RefusalReason,
   ) {
-    super(`${action} refused: ${reason}`);
+    // 摊平那一支：`${reason}` 对一个对象是 "[object Object]"，而这句话常常是
+    // 人唯一看得到的东西。
+    super(`${action} refused: ${refusalText(reason)}`);
     this.name = "GateRefusedError";
   }
 }

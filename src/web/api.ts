@@ -6,7 +6,9 @@ import { rubricFor } from "../app/edit-rubric";
 import { isPhase } from "../domain/phase";
 import type { AppServerHistory } from "../codex/app-server-history";
 import { progressView, type LiveSessions } from "../web/panel-view";
+import { listAsks } from "../store/ask-store";
 import { EvidenceStore } from "../store/evidence-store";
+
 import { ParallelStore } from "../store/parallel-store";
 import { ProjectStore } from "../store/project-store";
 import { ChangeStore } from "../store/change-store";
@@ -46,6 +48,11 @@ export interface ProgressSources {
 
 export interface ApiDeps {
   readonly database: Database.Database;
+  /**
+   * 工作台绑着的项目。起在哪就绑哪，**没有项目选择器** —— 于是「认不出来就编一个」
+   * 那条路在结构上不存在。题面和产物那两条路要它。
+   */
+  readonly boundProjectId: string;
   /** 图谱那两条路要问 git 「这个仓库跟踪了哪些文件」。 */
   readonly repo: RepoOps;
   /**
@@ -64,6 +71,12 @@ export interface ApiResponse {
 }
 
 /** 要读仓库（因而要 TypeScript 编译器）的那四条。见 `repo-routes.ts` 的开头。 */
+/*
+ * **`/api/phase-brief`，不是 `/api/brief`** —— 后者早就存在，是「Change 的简报」
+ * （`actions.ts` 的 brief / brief-draft / brief-confirm）。这里的 brief 是**阶段题面**，
+ * 两个词在这棵树上都占着，撞了一次才发现（那条「未接的路要说人话」的护栏抓到的）。
+ */
+const BRIEF_ROUTES = new Set(["/api/phase-brief", "/api/prd"]);
 const REPO_ROUTES = new Set(["/api/stage-artifacts", "/api/stage-file", "/api/graph", "/api/file"]);
 
 /** 只读的路径 —— 看状态不该有副作用，所以这一层只认 GET。 */
@@ -81,6 +94,27 @@ export async function handleApi(path: string, deps: ApiDeps): Promise<ApiRespons
         askedProject: params.get("project"),
       }),
     };
+  }
+
+  /*
+   * 模型问过人什么、人答了什么 —— **只读那一半**（写在 `actions.ts` 的
+   * `/api/ask-from-model`）。面板 2 秒轮询它，所以这里只查索引、不碰正本文件：
+   * 一次「看一眼」不该去读人项目目录里的东西。
+   */
+  if (pathname === "/api/asks") {
+    return { status: 200, body: { asks: listAsks(deps.database, changeId) } };
+  }
+
+  /*
+   * 题面和产物那两条 —— **和图谱一样走动态 import**。
+   *
+   * 它们要拖进 RubricStore / NoteStore / ProjectStore 一整串，急加载会把这个模块的
+   * 依赖闭包顶到全树的七成，而那条护栏说得很清楚：**它正在变成第二个 panel-server，
+   * 拆，别喂**。绝大多数请求（面板轮询）根本不走这两条。
+   */
+  if (BRIEF_ROUTES.has(pathname)) {
+    const { handleBriefRoute } = await import("./brief-routes");
+    return handleBriefRoute(pathname, params, deps);
   }
 
   if (pathname === "/api/parallel") {

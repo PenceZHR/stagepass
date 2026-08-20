@@ -221,6 +221,72 @@ export class WorklistStore {
     return { kind: "recorded", remaining: item.total - item.ordinal };
   }
 
+  /**
+   * 按**序号**把一批答案记上。名单走文件之后，这是唯一的落答路径。
+   *
+   * ## 为什么不能复用 `answer()`
+   *
+   * 那条答的是「游标当前那一项」，一次推进一格 —— 它配的是 `stagepass_next` 那种
+   * 一问一答。文件那条路上裁判是**跳着答**的：第 2 条答了、第 1 条它觉得还成立
+   * 所以没写。拿游标去落，第 2 条的答案就记到第 1 条头上了 —— 静默的、事后查不出
+   * 来的那一种错，而它正好发生在「人和机器对同一个 gap 的判断」上。
+   *
+   * ## 拒掉的要说出来，而且带序号
+   *
+   * 返回的每一条都长成 `worklist_answer_*:<序号>`，和 `readWorklistAnswers` 吐的
+   * 是同一套词 —— 两处用两套词，人就得在脑子里做一次翻译。它们最终一起进
+   * `malformed`，跟着走到下一轮。
+   *
+   * 选项和理由这里**再验一遍**（domain 那层已经验过）。不是不信它：`choices` 的
+   * 权威副本在这张表里，而一条不在 choices 里的答案落进去，就把这套机制唯一的
+   * 不变量破了 —— 模型只在一个极小的枚举里做选择。
+   */
+  recordAnswers(
+    changeId: string,
+    phase: Phase,
+    round: number,
+    answers: readonly { readonly ordinal: number; readonly answer: string; readonly reason: string }[],
+  ): string[] {
+    const problems: string[] = [];
+    const write = this.database.transaction(() => {
+      const find = this.database.prepare(
+        `SELECT * FROM round_worklist
+          WHERE change_id = ? AND phase = ? AND round = ? AND ordinal = ?`,
+      );
+      const update = this.database.prepare(
+        `UPDATE round_worklist SET answer = ?, reason = ?, answered_at = ?
+          WHERE change_id = ? AND phase = ? AND round = ? AND ordinal = ?`,
+      );
+      for (const each of answers) {
+        const row = find.get(changeId, phase, round, each.ordinal) as Row | undefined;
+        if (!row) {
+          problems.push(`worklist_answer_out_of_range:${each.ordinal}`);
+          continue;
+        }
+        // 一轮里一条只答一次。改写会让「它当时怎么判的」变成一个可变的事实，
+        // 而人裁决时读的正是那个事实。
+        if (row.answer !== null) {
+          problems.push(`worklist_answer_already_recorded:${each.ordinal}`);
+          continue;
+        }
+        if (!(JSON.parse(row.choices) as string[]).includes(each.answer)) {
+          problems.push(`worklist_answer_not_a_choice:${each.ordinal}`);
+          continue;
+        }
+        if (each.reason.trim() === "") {
+          problems.push(`worklist_answer_has_no_reason:${each.ordinal}`);
+          continue;
+        }
+        update.run(
+          each.answer, each.reason.trim(), this.now().toISOString(),
+          changeId, phase, round, each.ordinal,
+        );
+      }
+    });
+    write();
+    return problems;
+  }
+
   /** 这一轮的名单和它答成什么样，按顺序。 */
   read(changeId: string, phase: Phase, round: number): WorkItem[] {
     const rows = this.database.prepare(

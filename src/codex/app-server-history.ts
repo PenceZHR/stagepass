@@ -403,6 +403,81 @@ export class AppServerHistory {
     );
   }
 
+  /**
+   * 按 (工作目录, 第一条用户消息里的一段标记) 认回线程 —— **不让人手抄 id。**
+   *
+   * ## 为什么它必须存在
+   *
+   * 2026-08-19 定案「甲」：StagePass 不再自己跑轮，题面交给人，他在自己的会话里跑。
+   * 那一轮跑完之后 StagePass 要认回那条线程才结算得了，而唯一不违反
+   * 「精确标识符绝不许手抄」的办法就是**由它自己去找**。
+   *
+   * ## 判据是 `preview`，不是 `title`
+   *
+   * `thread/list` 每条记录**没有 `title` 这个字段**（2026-08-19 实测，一条记录的键
+   * 是 id/preview/cwd/name/turns 那一串）。第一条用户消息在 `preview` 里，而且
+   * **不截断** —— 实测最长的一条 360656 字符。`name` 是模型生成的摘要标题，
+   * StagePass 开的线程上它是 `null`，指望不上。
+   *
+   * ## marker 该传什么：题面路径，不是「阶段 + 轮次」
+   *
+   * 信封第一句是「你是本轮的裁判。阶段：Spec，第 7 轮。」，同一个阶段同一轮在两个
+   * 项目里会撞。第二句里的题面路径是**每轮一个随机临时目录**，全局唯一 —— 而它
+   * 一样在人原样粘贴的那段文字里。用它，认回就是精确的。
+   *
+   * ## 只认根线程 —— **子 Agent 的第一句话和信封一字不差**
+   *
+   * 2026-08-19 真机抓到的：一个 marker 认回 3 条。裁判会把信封**原样转达**给它派生
+   * 的正反两方（题面就是这么要求它的），于是那两条子线程的 `preview` 和裁判那条
+   * 逐字节相同 —— 按正文根本分不开，`startsWith("你是本轮的裁判")` 在它们身上
+   * 一样为真。真机上第二个 marker 认回的第一条就是红方那条子线程，不是裁判。
+   *
+   * 收错了会怎样：拿子 Agent 当裁判去数它的孩子，一个都没有 → 整轮报
+   * `round_agents_not_found`；而人看到的是「我明明跑完了」。
+   *
+   * 判据是**血缘**：人自己开的那条没有父亲（`parentThreadId` 为 null），子 Agent
+   * 一定有。不拿 `sourceKinds` 过滤 —— 那是一张会变的枚举表，而「有没有父亲」是
+   * 这件事本身。
+   *
+   * ## 撞上多条不替人挑
+   *
+   * 人可能把同一个信封贴进两条线程（第一次跑挂了，再来一次）。**按新到旧全给出去**，
+   * 挑哪条、要不要告诉人，归上面那层 —— 这一层替他挑一条，挑错的那次他永远看不见。
+   */
+  async findThreads(input: {
+    readonly cwd: string;
+    readonly marker: string;
+  }): Promise<readonly { readonly id: string; readonly updatedAt: number }[]> {
+    const found: { id: string; updatedAt: number }[] = [];
+    let cursor: string | null = null;
+    const seenCursors = new Set<string>();
+    do {
+      const result = asRecord(await this.connection.request("thread/list", {
+        archived: false,
+        cursor,
+        limit: THREAD_LIST_PAGE_SIZE,
+        sourceKinds: [...THREAD_SOURCE_KINDS],
+      }, this.requestTimeoutMs));
+      for (const thread of records(result.data)) {
+        if (typeof thread.id !== "string") continue;
+        if (thread.cwd !== input.cwd) continue;
+        // 有父亲的是子 Agent —— 它那句开场白和裁判的信封一字不差，见上面那段。
+        if (thread.parentThreadId != null) continue;
+        if (typeof thread.preview !== "string") continue;
+        if (!thread.preview.includes(input.marker)) continue;
+        found.push({
+          id: thread.id,
+          updatedAt: typeof thread.updatedAt === "number" ? thread.updatedAt : 0,
+        });
+      }
+      const next = typeof result.nextCursor === "string" ? result.nextCursor : null;
+      if (next === null || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    } while (true);
+    return found.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
   private accept(message: AppServerNotification): void {
     if (message.method !== "thread/tokenUsage/updated") return;
     const threadId = message.params.threadId;

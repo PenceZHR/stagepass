@@ -499,10 +499,33 @@ function stakesOf(gate: Gate, openGaps: readonly Gap[]): string {
   const blocking = standards.length + p0.length + p1.length;
 
   const lines: string[] = [];
-  if (gate.refusals["approve"] === "nothing_was_produced") {
+  const refusal = gate.refusals["approve"];
+  if (refusal === "nothing_was_produced") {
     lines.push("这个阶段还没有产出，所以没有「批准」可选 —— 驳回问题变不出产物来。");
   }
+
+  /*
+   * **挡门的东西有两类，而这张卡只数得到一类。**
+   *
+   * `blocking` 数的是 gap；判据单是另一条闸门（`gate.ts` 的第三条）。gap 清完而
+   * 判据单没填完时，原来这里会说「没有问题挡着闸门」然后返回 —— 那句话字面为真，
+   * 却让人以为 approve 该在而没在，而 approve 是**悄悄**不见的。
+   *
+   * 同一句谎话在面板上也说过一遍（`GATE_REFUSAL_WORDS` 漏了这一支，显示
+   * `[object Object]`）。两处都是精确字符串相等匹配撞上一个对象 —— TypeScript 不红、
+   * 测试不红。护栏在 `system/refusal-words.test.ts`。
+   */
+  const sheetLine = typeof refusal === "object" && refusal.kind === "rubric_sheet_incomplete"
+    ? `判据单还没填完 —— 还缺${refusal.missing
+      .map((n, i) => (refusal.texts[i] ? `第 ${n} 条（${refusal.texts[i]}）` : `第 ${n} 条`))
+      .join("、")}。这张表上处理不了：出口是回到判据单，把那几条交代上。`
+    : null;
+
   if (blocking === 0) {
+    if (sheetLine !== null) {
+      lines.push(sheetLine);
+      return lines.join("\n");
+    }
     lines.push(p2.length === 0
       ? "没有问题挡着闸门。"
       : `没有问题挡着闸门（另有 ${p2.length} 条 P2，不挡门）。`);
@@ -524,10 +547,12 @@ function stakesOf(gate: Gate, openGaps: readonly Gap[]): string {
       + "出口是网页「标准」页签里撤下那条标准。");
   }
   if (p2.length > 0) lines.push(`（另有 ${p2.length} 条 P2，不挡闸门。）`);
-  if (gate.refusals["approve"] === "blocking_problem_outstanding") {
+  if (refusal === "blocking_problem_outstanding") {
     lines.push("挡着的没清完就选「就这样批准」，会被拒；"
       + "你在上面各格的表态先落地再裁决，全清掉了这一次就放行。");
   }
+  // gap 和判据单可能同时挡着。清完 gap 还是批不了，那句解释必须在同一张卡上。
+  if (sheetLine !== null) lines.push(sheetLine);
   return lines.join("\n");
 }
 

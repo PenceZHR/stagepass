@@ -69,6 +69,16 @@ export function everyPhasePrompt(): string {
         // 同上：真实运行时每一轮都写这份文件并只给路径（BACKLOG §3.4）。
         // 夹具不传它，golden 钉的就是那条内联兜底 —— 而那条路生产上不走。
         contractNotesPath: "/tmp/stagepass-round/result-contract-notes.md",
+        /*
+         * 名单那两个文件同理（2026-08-19）：生产上只要这一轮有东西要表态就一定带着
+         * 它们，而夹具里两条 gap 摆着。不传的话 golden 钉的是「名单为空」那条兜底 ——
+         * 而那正是这次改动要治的东西：题面叫裁判去用一个不存在的通道。
+         */
+        worklist: {
+          listPath: "/tmp/stagepass-round/worklist.md",
+          answersPath: "/tmp/stagepass-round/worklist-answers.md",
+          count: FIXTURE_GAPS.length,
+        },
       }),
     ].join("\n"))
     .join("\n\n");

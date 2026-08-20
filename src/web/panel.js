@@ -105,12 +105,18 @@ const stageKicker = pick("stage-kicker");
 const stageMark = pick("stage-mark");
 const stageLine = pick("stage-line");
 const stageGaps = pick("stage-gaps");
+const stageAsks = pick("stage-asks");
+const stageDoc = pick("stage-doc");
+const openingText = pick("opening-text");
+const copySaid = pick("copy-said");
 const stageRubric = pick("stage-rubric");
 const stageSecondary = pick("stage-secondary");
 const stageGatesRow = pick("stage-gates-row");
 const graphToggle = button("stage-graph-toggle");
 const rubricToggle = button("stage-rubric-toggle");
 const waiveButton = button("waive");
+button("copy-opening").addEventListener("click", () => copyOpening("producer"));
+button("copy-opening-blue").addEventListener("click", () => copyOpening("blue"));
 const briefButton = button("brief");
 const briefDraftButton = button("brief-draft");
 const briefConfirmButton = button("brief-confirm");
@@ -122,6 +128,10 @@ const openQuestionFields = pick("open-question-fields");
 const openQuestionNote = pick("open-question-note");
 const roundProgress = pick("round-progress");
 const runButton = button("run");
+const envelopeWrap = pick("envelope-wrap");
+const envelopeBox = /** @type {HTMLTextAreaElement} */ (pick("envelope-box"));
+const handoffButton = button("handoff");
+const settleButton = button("settle");
 const askButton = button("ask");
 const closeButton = button("close");
 
@@ -458,9 +468,7 @@ async function run() {
    * 跑的是哪个座位（批 3）：主线的格子不带 phase（老语义）；开着并行座位的
    * 格子把自己的阶段带上 —— 服务端按它路由到座位。
    */
-  const at = phases.find((each) => each.phase === current);
-  const seatParam = at && !at.current && at.seat !== null
-    ? `&phase=${encodeURIComponent(at.phase)}` : "";
+  const seatParam = seatParamNow();
   runButton.disabled = true;
   runButton.textContent = "派发中…";
   /*
@@ -487,6 +495,114 @@ async function run() {
   } finally {
     stopProgress();
     runButton.textContent = "跑这个阶段";
+    await loadOrReconnect();
+  }
+}
+
+/**
+ * 这一步该发给哪个座位。主线的格子不带 phase（老语义）；开着并行座位的格子把
+ * 自己的阶段带上 —— 服务端按它路由。派轮、取题面、结算三处共用。
+ */
+function seatParamNow() {
+  const at = phases.find((each) => each.phase === current);
+  return at && !at.current && at.seat !== null
+    ? `&phase=${encodeURIComponent(at.phase)}` : "";
+}
+
+/**
+ * **取题面**：让 StagePass 备一轮，把信封交给我，它自己什么都不跑。
+ *
+ * 拿到手之后信封留在屏幕上、并且**同时进剪贴板** —— 人接下来要做的事是把它粘进
+ * 自己的 Codex 会话，中间隔一次手抄就是一次抄错的机会（而题面路径 60 多个字符）。
+ * 剪贴板不让写（没有 https、或者他没给权限）就照实说，别假装成功。
+ */
+async function handoff() {
+  handoffButton.disabled = true;
+  handoffButton.textContent = "备一轮…";
+  try {
+    const result = await (await fetch(
+      `/api/handoff?change=${encodeURIComponent(changeId)}${seatParamNow()}`,
+      { method: "POST" },
+    )).json();
+    const broke = crashed(result);
+    if (broke !== null) { say(broke); return; }
+    if (result.handed === false) { say(runRefusal(result)); return; }
+    showEnvelope(result.envelope, result.phase, result.round);
+  } finally {
+    handoffButton.disabled = false;
+    handoffButton.textContent = "取题面（我自己跑）";
+    await loadOrReconnect();
+  }
+}
+
+/**
+ * 把信封摆出来，并且试着放进剪贴板。
+ *
+ * **原文照摆**，不做任何截断或美化：人要粘进 Codex 的就是这一段，而 StagePass
+ * 回头认那条线程靠的正是它里面那个题面路径（`thread/list` 的 preview 就是第一条
+ * 用户消息）。少一个字符就认不回来了。
+ */
+function showEnvelope(envelope, phase, round) {
+  envelopeBox.value = envelope;
+  envelopeWrap.hidden = false;
+  const where = `${phase} 第 ${round} 轮`;
+  if (!navigator.clipboard) {
+    say(`${where}的题面备好了（在下面，自己复制）。粘进你自己的 Codex 会话里跑，`
+      + "跑完回来按「结算这一轮」。");
+    return;
+  }
+  navigator.clipboard.writeText(envelope).then(
+    () => say(`${where}的题面备好了，**已经复制到剪贴板**。粘进你自己的 Codex 会话`
+      + "里跑（要在这个项目的目录下），跑完回来按「结算这一轮」。"),
+    () => say(`${where}的题面备好了（在下面，自己复制 —— 浏览器没让我写剪贴板）。`
+      + "粘进你自己的 Codex 会话里跑，跑完回来按「结算这一轮」。"),
+  );
+}
+
+/** 结算没成的原因，翻成人话。**每一句都要说得出下一步该干什么。** */
+const SETTLE_WORDS = {
+  no_round_waiting: "这个阶段没有备着的轮 —— 先按「取题面」。",
+  project_has_no_path: "这个项目没有路径，认不出你在哪个仓库里跑的。",
+  round_not_found: "在这个仓库里没找到你跑那一轮的会话。"
+    + "两种可能：信封没原样粘（题面路径就是认回的依据，改一个字符就认不出），"
+    + "或者那条会话还一轮都没跑完 —— 零轮次的线程 Codex 自己也列不出来。",
+  round_still_running: "那一轮还在跑。等它停下来再点 —— 现在收会把红蓝两方的话收缺一截，"
+    + "而账本上看不出缺过。",
+  judge_said_nothing: "认回那条会话了，但裁判一句话都没说完过。",
+  thread_unreadable: "认回那条会话了，但读不出来。",
+};
+
+/**
+ * **结算**：我跑完了，让 StagePass 认回那条线程、把这一轮收进账本。
+ *
+ * 它是**等得起的**（和派轮那条相反）：这时候那一轮已经跑完了，剩下的只是读几段
+ * 文字、落一次库。所以这里等它回来，然后照实说收成了什么样。
+ */
+async function settle() {
+  settleButton.disabled = true;
+  settleButton.textContent = "结算中…";
+  try {
+    const result = await (await fetch(
+      `/api/settle?change=${encodeURIComponent(changeId)}${seatParamNow()}`,
+      { method: "POST" },
+    )).json();
+    const broke = crashed(result);
+    if (broke !== null) { say(broke); return; }
+    if (result.settled === false) {
+      say(SETTLE_WORDS[result.reason] ?? `没结算成：${result.reason}`);
+      return;
+    }
+    envelopeWrap.hidden = true;
+    /*
+     * **认回不止一条要说出来。** 人可能把同一个信封贴进过两条线程（第一次跑挂了、
+     * 又来一次）。StagePass 取的是最新那条 —— 替他挑而不说，挑错的那次他永远看不见。
+     */
+    const which = result.found > 1
+      ? `（这个信封在 ${result.found} 条会话里出现过，收的是最新那条）` : "";
+    say(`${result.phase} 第 ${result.round} 轮收下了${which}。往下看这一轮判出什么。`);
+  } finally {
+    settleButton.disabled = false;
+    settleButton.textContent = "结算这一轮";
     await loadOrReconnect();
   }
 }
@@ -527,7 +643,7 @@ function saidWhat(result) {
   if (result.outcome?.kind === "refused") {
     // 他自己刚提的要求挡住了他自己的批准，这种最要说清楚。
     parts.push(`⚠ 闸门拒了这次「${result.outcome.action}」：`
-      + `${GATE_REFUSAL_WORDS[result.outcome.reason] ?? result.outcome.reason}`);
+      + `${refusalWords(result.outcome.reason)}`);
   } else {
     parts.push(`裁决 → ${JSON.stringify(result.outcome)}`);
   }
@@ -1777,6 +1893,18 @@ async function load() {
   }
   phases = panel.phases;
   panelState = panel;
+  /*
+   * 提问单独取一次 —— 它不在 `/api/panel` 里，因为那一份是「阶段的状态」，而提问
+   * 是**会话里发生的事**，两者的更新时机不一样（模型随时会问，阶段半天不动一次）。
+   * 取失败不许连累整屏：这一栏空着比整个面板白屏好。
+   */
+  try {
+    const answered = await fetch(`/api/asks?change=${encodeURIComponent(changeId)}`);
+    drawAsks(answered.ok ? (await answered.json()).asks : []);
+  } catch {
+    drawAsks([]);
+  }
+  await loadDoc(current ?? undefined);
   // 一轮跑完文件就是新的了 —— 缓存活过 load() 会让人读到上一轮的产出。
   artifactCache.clear();
   drawWorkspace(panel);
@@ -1852,16 +1980,39 @@ function gateSentence() {
   }
   const refusal = panelState?.gate?.refusals?.approve;
   return `可裁决：${decidable.join(" / ")}`
-    + (refusal ? `（approve 被拒：${refusal}）` : "");
+    + (refusal ? `（approve 被拒：${refusalWords(refusal)}）` : "");
 }
 
 const openGaps = (entry) => entry.gaps.filter((gap) => gap.status === "open");
 
-/** 闸门拒人的理由，翻成人话。前三条对应 `domain/gate.ts` 的 RefusalReason。 */
+/**
+ * 闸门拒人的理由，翻成人话。**键必须盖住 `domain/gate.ts` 的 `REFUSAL_KINDS`**，
+ * 有测试钉着（`system/refusal-words.test.ts`）—— 漏一支的表现是屏幕上一句
+ * `[object Object]` 或者干脆一个没解释的灰按钮。
+ */
+/**
+ * 一条拒绝理由摊成人话。
+ *
+ * **不能直接插模板字符串** —— `rubric_sheet_incomplete` 是个对象，插进去是
+ * `[object Object]`。而挡住却说不出挡在哪，正是这套闸门最不该有的样子：
+ * 所以带 payload 的那一支要把缺的序号和判据原文一起摊出来。
+ */
+const refusalWords = (reason) => {
+  if (!reason) return "";
+  if (typeof reason === "string") return GATE_REFUSAL_WORDS[reason] ?? reason;
+  const head = GATE_REFUSAL_WORDS[reason.kind] ?? reason.kind;
+  const missing = reason.missing ?? [];
+  if (missing.length === 0) return head;
+  const texts = reason.texts ?? [];
+  const items = missing.map((n, i) => (texts[i] ? `第 ${n} 条（${texts[i]}）` : `第 ${n} 条`));
+  return `${head} —— 还缺 ${items.join("、")}`;
+};
+
 const GATE_REFUSAL_WORDS = {
   blocking_problem_outstanding: "还有问题挡着闸门",
   nothing_was_produced: "这个阶段什么都没产出",
   not_legal_in_this_status: "现在这个状态不接受这个动作",
+  rubric_sheet_incomplete: "判据单还没填完",
   // question-store 的那半个决定：裁决选了打回上游，目标那格却是「不打回」。
   no_target_chosen: "选了「打回上游」，但没选打回哪一份 —— 再裁一次，把那格也选上",
 };
@@ -2011,7 +2162,7 @@ function lastOutcomeWords(outcome) {
     return `⚠ 上次那道题没答上${at}：${why}。再点一次就重新问。`;
   }
   if (outcome.kind !== "refused") return null;
-  const reason = GATE_REFUSAL_WORDS[outcome.reason] ?? outcome.reason;
+  const reason = refusalWords(outcome.reason);
   const at = typeof outcome.at === "string"
     ? `（${new Date(outcome.at).toLocaleString()}）` : "";
   return `⚠ 上次裁决被闸门拒了${at}：「${outcome.action}」没落地 —— ${reason}。`
@@ -2083,7 +2234,7 @@ function renderStatus(entry) {
     ["当前阶段", entry.current ? "是" : "否"],
     // 悬停这一层也要看得见「上次为什么没推动」—— 明细在弹窗那条横幅里。
     ...(entry.lastOutcome?.kind === "refused"
-      ? [["上次裁决", `被闸门拒了：${GATE_REFUSAL_WORDS[entry.lastOutcome.reason] ?? entry.lastOutcome.reason}`]]
+      ? [["上次裁决", `被闸门拒了：${refusalWords(entry.lastOutcome.reason)}`]]
       : []),
   ]);
   statusFoot.textContent = "点这个阶段的小圈，看它的问题明细。";
@@ -2183,7 +2334,7 @@ const GAP_STATUS = { open: "未解决", closed: "已关闭", waived: "已接受�
 
 /** 动作带底上那一排。列在一处，免得加了第六个按钮而收整排的判据还只数五个。 */
 const GATE_BUTTONS = [briefButton, briefDraftButton, briefConfirmButton,
-  runButton, waiveButton, askButton];
+  runButton, handoffButton, settleButton, waiveButton, askButton];
 
 /**
  * 阶段页上归 panel.js 的那几块：顶带的身份、动作带、闸门在看什么。
@@ -2200,10 +2351,17 @@ function drawStage(phase) {
   stageLine.textContent = notice
     // 没录需求是**最要紧的那件事**，盖过闸门那句 —— 不然人看到的是"跑它会派发一次
     // 真的 turn"，而按钮偏偏是灰的，两句话互相打脸。
+    /*
+     * **不再叫人去按「说清楚我要什么」** —— 那个按钮 2026-08-19 退休了
+     * （DESIGN-prd-phase §3.1），页面还照旧念它的名字，就是「界面叫人按一个
+     * 不存在的按钮」那条护栏防的事，只不过这次是按钮还在、只是不该再露脸。
+     *
+     * 新流程里「说清楚要什么」发生在会话里：人和模型聊，模型调 `stagepass_ask`
+     * 一次一条地问。所以这里说的是**去哪儿做**，不是去按哪个按钮。
+     */
     ?? (entry.current && panelState?.brief === null
-      ? panelState?.briefAnswerPending
-        ? "上次回答已经完整收到，但面板在写入 brief 前重启了。按「恢复上次回答」续上，不会重新提问。"
-        : "还没说清楚这次改动要什么。先按「说清楚我要什么」—— 没有它，红方只能自己猜。"
+      ? "还没说清楚这次改动要什么。去你的 Codex / Claude Code 会话里聊 ——"
+        + "让它调 stagepass_ask 一条一条问你，聊够了再叫它调 stagepass_brief 写产物。"
       : entry.current ? `${lineFor(entry)}　闸门：${gateSentence()}` : lineFor(entry))
 
   /*
@@ -2266,6 +2424,39 @@ function drawStage(phase) {
   runButton.disabled = entry.live || needsBrief || barred
     || (status !== "pending" && status !== "running");
   /*
+   * **取题面 / 结算是互斥的一对**（2026-08-19「甲」）。
+   *
+   * 没备着轮 = 只有「取题面」；备着 = 只有「结算这一轮」。同时摆两个，人得去猜
+   * 这一步该按哪个；而更糟的是他会去按「取题面」——那会把手上那一轮的名单和答案
+   * 文件全覆盖掉，而他跑了一小时的东西就这么没了。
+   *
+   * 可见性判据和「跑这个阶段」同一条（`runnable`）：对 StagePass 来说这仍然是
+   * 这个阶段的一轮，能不能开由同一份规则说了算 —— 服务端也是这么判的（`admit`）。
+   */
+  const handed = entry.handed ?? null;
+  handoffButton.hidden = runButton.hidden || handed !== null;
+  handoffButton.disabled = runButton.disabled;
+  settleButton.hidden = !(entry.current || entry.seat !== null) || handed === null;
+  /*
+   * 结算**不看 `runButton.disabled`**：那一轮是人跑的，跑完了就该能收 —— 哪怕
+   * 这个阶段此刻的状态已经不允许再开一轮。拦住它等于让他跑完的东西无处可落。
+   */
+  settleButton.disabled = entry.live;
+
+  /*
+   * 备着的那一轮，信封要**一直看得见**。
+   *
+   * 少了这一条，人取完题面刷新一下页面，那段信封就没了 —— 而它是他接下来唯一
+   * 要用的东西，库里存着却不给他看，等于让他重取一次（那会覆盖掉这一轮）。
+   */
+  if (handed !== null) {
+    envelopeBox.value = handed.envelope;
+    envelopeWrap.hidden = false;
+  } else if (!notice) {
+    envelopeWrap.hidden = true;
+  }
+
+  /*
    * **只在真有一轮在飞的时候出现。** 没有活儿可中止的时候摆着它，人按下去只会得到
    * 一句「没什么可中止的」—— 那是另一种「亮着的按钮按下去什么也没有」。
    */
@@ -2286,6 +2477,17 @@ function drawStage(phase) {
 
   syncGatesRow();
   drawNextStep(entry);
+  /*
+   * **最后压一次。** 这里会按闸门把那几个退休的动作重新显示出来，而它跑在
+   * `loadDoc()` 之后 —— 只在 `drawDoc` 里藏，进场时会被原样翻回来。
+   * 退休的动作要在**每一条会重画动作带的路径末尾**都压掉。
+   */
+  hideRetired();
+  // 换了阶段就重取开场白 —— 它跟着点的那一格走
+  void loadDoc(phase);
+  // 人在这一屏上，外面（会话里）发生的事就得立刻照进来
+  liveMark = "";
+  startLive();
 }
 
 /** 闸门那一排：一个按钮都不露脸时整排收掉，别在动作带底上钉一条空黑带。 */
@@ -2312,6 +2514,8 @@ function clearStageActions() {
   drawOpenQuestion(null);
   stageGaps.replaceChildren();
   for (const each of GATE_BUTTONS) each.hidden = true;
+  // 旁路不是阶段，那里没有备着的轮 —— 信封跟着动作带一起收。
+  envelopeWrap.hidden = true;
   syncGatesRow();
 }
 
@@ -2364,13 +2568,24 @@ function nextStep(entry) {
    * 「先清掉这个路障」，人仍然不知道该按哪个。
    */
   if (entry.current && panelState?.brief === null) {
+    /*
+     * **「下一步」说的是去哪儿做，不是去按哪个按钮。**
+     *
+     * 「说清楚我要什么」那个按钮 2026-08-19 退休了（DESIGN-prd-phase §3.1）：
+     * 说清楚要什么现在发生在人自己的会话里 —— 他和模型聊，模型调 `stagepass_ask`
+     * 一次一条地问他。页面还照旧念那个按钮的名字，人就会在这一屏上找一个找不到的
+     * 东西，而那正是「界面叫人按一个不存在的按钮」那条护栏防的事。
+     */
     return {
-      what: panelState?.briefAnswerPending ? "恢复上次回答" : "说清楚我要什么",
-      why: panelState?.briefAnswerPending
-        ? "上次回答已经完整写进 StagePass，但面板在生成 brief 之前重启了。"
-          + "恢复会使用你当时真正看见并提交的那份题，不会重新让模型猜。"
-        : "还没人问过你这次要什么。没有它，红方只能自己编一份需求，"
-          + "而后面每个阶段都建在那份编出来的东西上。",
+      what: "去会话里聊",
+      /*
+       * **这里不许写 markdown 星号** —— 这两句走的是 `textContent`，`**…**` 会原样
+       * 显示成星号（2026-08-19 在 520px 侧边栏上抓到的）。要强调就换措辞。
+       */
+      why: "还没说清楚这次改动要什么。在你的 Codex / Claude Code 会话里聊 —— "
+        + "让它调 stagepass_ask 问你（一次可以攒几条，弹表单给你选）。"
+        + "聊够了再叫它调 stagepass_brief 拿题面、把产物写出来。"
+        + "这一步不在这个页面上做。",
     };
   }
   /*
@@ -2559,6 +2774,409 @@ async function fillArtifact(phase, artifact, into) {
     ?? `读不到这份产出：${read.reason}`;
 }
 
+/**
+ * 模型在会话里问过我什么、我答了什么。
+ *
+ * **未答的排最前**：一条问了没答的，要么是我当时关掉了表单，要么是这条路根本没接上
+ * —— 两种都得看得见。答过的按时间倒序，最近的在上面。
+ *
+ * 数据是 `GET /api/asks` 的原样，不做二次判断：这一栏是账本的窗口，不是第二个裁判。
+ */
+function drawAsks(asks) {
+  if (!Array.isArray(asks) || asks.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "sheet-empty";
+    empty.textContent = "这个 Change 还没有被问过。";
+    stageAsks.replaceChildren(empty);
+    return;
+  }
+
+  const unanswered = asks.filter((ask) => !ask.answeredAt);
+  const sorted = [...asks].sort((left, right) =>
+    (left.answeredAt ? 1 : 0) - (right.answeredAt ? 1 : 0)
+    || String(right.askedAt).localeCompare(String(left.askedAt)));
+
+  const heading = document.createElement("p");
+  heading.className = "sheet-section";
+  heading.textContent = unanswered.length > 0
+    ? `${unanswered.length} 条还没答 · 共 ${asks.length} 条`
+    : `${asks.length} 条，都答过了`;
+
+  stageAsks.replaceChildren(heading, ...sorted.map((ask) => {
+    const row = document.createElement("div");
+    row.className = `gap ${ask.answeredAt ? "resolved" : "open"}`;
+
+    const mark = document.createElement("b");
+    mark.className = "gap-sev";
+    mark.textContent = ask.answeredAt ? "已答" : "待答";
+
+    const text = document.createElement("div");
+    text.className = "gap-text";
+    const title = document.createElement("strong");
+    title.textContent = ask.question;
+    const meta = document.createElement("span");
+    meta.textContent = `${ask.id} · ${ask.phase} 第 ${ask.round} 轮`
+      + (ask.ordinal ? ` · 判据第 ${ask.ordinal} 条` : "");
+    text.append(title, meta);
+    if (ask.why) {
+      const why = document.createElement("span");
+      why.textContent = `为什么问：${ask.why}`;
+      text.append(why);
+    }
+    // 选项原样留着 —— 半年后「当初有哪几个选项」和「选了哪个」一样重要。
+    const options = document.createElement("span");
+    options.textContent = (ask.options || [])
+      .map((option) => (option === ask.chosen ? `【${option}】` : option)).join(" / ");
+    text.append(options);
+    if (ask.note) {
+      const note = document.createElement("span");
+      note.textContent = `补充：${ask.note}`;
+      text.append(note);
+    }
+
+    row.append(mark, text);
+    return row;
+  }));
+}
+
+/**
+ * 产物逐节 + 每节下面的意见。
+ *
+ * **正文只读** —— 2026-08-19 定案：正文归模型，人只提意见。于是审计链是
+ * 「意见 → 模型怎么改的」，而不是一份看不出所以然的 diff。
+ *
+ * 顶上那一行是**第一道闸**（代码判得出来的那两条：七节缺哪节、哪几条意见还没下文）。
+ * 第二道是人点头，不在这一屏上判。
+ */
+/**
+ * 退休的那几个动作 —— 执行通道时代的按钮。
+ *
+ * `run` / `handoff` / `settle` 是「StagePass 替你派轮、你点取题面、再点结算」那条路，
+ * 2026-08-19 整套退休（DESIGN-prd-phase §3.1）：模型自己调 `stagepass_brief` 拿题面，
+ * 自己写文件。`brief*` 那三个是旧的「说清楚我要什么」表单，被「聊 + stagepass_ask」
+ * 取代了。
+ *
+ * **藏起来而不是删掉**：Spec 之后的阶段还没重做，那些路仍然在服务端接着。
+ * 等那几个阶段也搬过来，再照依赖闭包取证一起删。
+ */
+const RETIRED_ACTIONS = ["run", "handoff", "settle", "ask", "brief", "brief-draft", "brief-confirm"];
+
+function hideRetired() {
+  for (const id of RETIRED_ACTIONS) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = true;
+  }
+  // 旧的「先把这次改动要什么说清楚」四列大表单 —— 它占满第一屏，把产物挤到看不见的地方
+  const form = document.getElementById("open-question");
+  if (form) form.hidden = true;
+}
+
+/**
+ * 开场白 —— 一点就复制。
+ *
+ * **手动选中一段多行文本，正是这套东西最不该有的那种手续**（用户 2026-08-19）。
+ * 正文摆出来只为让人确认复制的是什么，不是让他去选。
+ *
+ * `navigator.clipboard` 在非安全上下文里不存在（http://127.0.0.1 算安全上下文，
+ * 所以正常情况下有）—— 没有时**照直说，并把正文留在那儿让他自己选**，
+ * 而不是假装复制成功了。
+ */
+let openings = { producer: "", blue: "" };
+
+function drawOpening(payload) {
+  openings = (payload && payload.opening) || { producer: "", blue: "" };
+  if (openings.producer) { openingText.textContent = openings.producer; return; }
+  /*
+   * 空的时候要说清**为什么空**。「这个阶段还没有开场白」是一句什么都没说的话 ——
+   * 人看不出该等它、该配它、还是自己写错了什么（2026-08-19 用户截图上就是这句）。
+   */
+  openingText.textContent = payload && payload.error === "no_change"
+    ? "（这个项目还没有 Change —— 先在左边新建一条）"
+    : "（这一阶段 StagePass 还没做到。现在只有 PRD 那一整套是通的）";
+}
+
+/**
+ * 同步复制 —— **这条要先试。**
+ *
+ * `navigator.clipboard.writeText` 是异步的，而且要一个权限；嵌入式浏览器
+ * （Codex 的 in-app browser、Claude 的面板）常常不给，报 `Write permission denied`。
+ * 更糟的是它一 `await`，那次点击带来的「用户手势」就可能已经过期 —— 于是连退路
+ * 都没了。
+ *
+ * `execCommand("copy")` 老、被标了废弃，但它**同步执行在点击那一刻**，在给不了
+ * 权限的容器里照样管用。所以顺序是：先同步的，再异步的，最后才是「替你选中」。
+ *
+ * 用一个屏幕外的 textarea 而不是直接选正文：复制不该在人眼前把一大段文字刷成蓝色，
+ * 而且选完还要把他原来的选区还回去。
+ */
+function copyNow(text) {
+  const box = document.createElement("textarea");
+  box.value = text;
+  box.setAttribute("readonly", "");
+  box.style.cssText = "position:fixed;top:0;left:-9999px;opacity:0";
+  document.body.appendChild(box);
+  const selection = window.getSelection();
+  const before = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  box.select();
+  box.setSelectionRange(0, box.value.length);
+  let done = false;
+  try { done = document.execCommand("copy"); } catch { done = false; }
+  box.remove();
+  if (before && selection) { selection.removeAllRanges(); selection.addRange(before); }
+  return done;
+}
+
+function copyOpening(which) {
+  const text = openings[which] || "";
+  const said = (line) => { copySaid.textContent = line; };
+  const ok = () => said(which === "blue"
+    ? "反方开场白已复制 —— 粘进另开的那条会话。"
+    : "已复制 —— 粘进新开的 Codex / Claude Code 会话。");
+
+  if (text === "") { said("这个阶段还没有开场白。"); return; }
+  openingText.textContent = text;
+
+  // ① 同步那条，成了就完事 —— 真人点一下有「用户手势」，这条在绝大多数容器里都通
+  if (copyNow(text)) { ok(); return; }
+
+  /*
+   * ② 异步那条兜底。
+   *
+   * 失败时**要说清两条都试过了** —— 只报异步那条的错（常见的是
+   * `Document is not focused`）会把人引到焦点上去查，而真正的原因多半是这个容器
+   * 两条复制的路都不给权限。
+   */
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(ok).catch((error) => selectIt(
+      `两条复制的路都不通（execCommand 被拒；writeText：`
+      + `${error && error.message ? error.message : error}）`));
+    return;
+  }
+  selectIt("这个浏览器两条复制的路都不给");
+}
+
+/**
+ * 两条都不通时**替他选中**，让 Cmd+C 立刻能用。
+ *
+ * 只说一句「自己选」是把活推回给人 —— 而「手动选中一段多行文本」正是这个按钮
+ * 要消灭的那件事。
+ */
+function selectIt(why) {
+  const range = document.createRange();
+  range.selectNodeContents(openingText);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  copySaid.textContent = `${why} —— 已经替你选中，按 Cmd+C。`;
+}
+
+function drawDoc(payload) {
+  if (!payload || payload.ok === false) {
+    const empty = document.createElement("p");
+    empty.className = "sheet-empty";
+    empty.textContent = payload && payload.reason
+      ? payload.reason
+      : "还没有这一阶段的产物。";
+    stageDoc.replaceChildren(empty);
+    return;
+  }
+
+  const gate = payload.formGate || { missing: [], unanswered: [], green: false };
+  const head = document.createElement("p");
+  head.className = "sheet-section";
+  head.textContent = gate.green
+    ? `形式齐了（${payload.artifactPath}）· 就等你点头`
+    : `还差：${gate.missing.length} 节没写`
+      + `${gate.unanswered.length > 0 ? ` · ${gate.unanswered.length} 条意见没下文` : ""}`
+      + ` · ${payload.artifactPath}`;
+
+  const notesOf = (key) => (payload.notes || []).filter((note) => note.sectionKey === key);
+
+  const blocks = (payload.sections || []).map((section) => {
+    const box = document.createElement("div");
+    box.className = `gap ${section.body ? "resolved" : "open"}`;
+
+    const text = document.createElement("div");
+    text.className = "gap-text";
+    const title = document.createElement("strong");
+    title.textContent = section.title;
+    const body = document.createElement("span");
+    // 空节要说得出它该回答什么 —— 「缺一节」而不告诉人缺的是什么，等于没说。
+    body.textContent = section.body || `（还没写）${section.asks}`;
+    text.append(title, body);
+
+    for (const note of notesOf(section.key)) {
+      const line = document.createElement("span");
+      line.textContent = note.response
+        ? `· ${note.text} → ${note.response}`
+        : `· ${note.text} → 还没下文`;
+      text.append(line);
+    }
+
+    // 留意见：一行输入 + 回车。**不改正文**，只留话。
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "对这一节留一句意见，回车";
+    input.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter" || input.value.trim() === "") return;
+      await fetch("/api/note", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          changeId: payload.changeId, phase: payload.phase,
+          sectionKey: section.key, text: input.value.trim(),
+        }),
+      });
+      input.value = "";
+      await loadDoc(current ?? undefined);
+    });
+    text.append(input);
+
+    box.append(text);
+    return box;
+  });
+
+  stageDoc.replaceChildren(head, ...blocks);
+  // 每次重画都压一次：别的代码路径会把它们再显示出来（它们还没被删）
+  hideRetired();
+}
+
+/** 产物那一屏单独取一次 —— 它和阶段状态的更新时机不一样（模型随时在改）。 */
+/**
+ * ## 实时同步（2026-08-19）
+ *
+ * 用户的原话：「我不能等我自己刷新，或者等好长时间才更新到我刚刚选择的东西」。
+ *
+ * 在这之前面板**一次都不轮询**：唯一那个 3 秒轮询挂在 `panel.status === "running"`
+ * 上，而新流程里 StagePass 不派轮，那个状态永远不出现。于是模型在会话里问了、
+ * 人答了，屏幕上一动不动，直到他自己按 F5。
+ *
+ * ## 为什么是轮询，不是 SSE / WebSocket
+ *
+ * 和文件开头那句同一个理由：一个只读的 GET 骗不了人，断了也自己会好。而 `ws`
+ * 那个依赖 2026-08-18 烧掉了一整夜（CJS 打进 ESM，三次构建从来没启动成功过）。
+ *
+ * ## 两条硬约束
+ *
+ * 1. **不变就不重画。** 产物栏里有输入框 —— 每 1.5 秒无条件重建，人正在打的那句
+ *    意见每 1.5 秒被冲掉一次。所以拿一份指纹比一比，一样就什么都不做。
+ * 2. **真要重画也得把焦点和半句话还回去。** 变化可能正好发生在他打字的时候
+ *    （模型在会话里答了另一条），那时不能让他重打。
+ */
+/*
+ * ## 看得见 1.5 秒一拍，看不见 5 秒一拍 —— **但绝不停**
+ *
+ * 原来写的是 `document.hidden` 就直接不轮询。2026-08-19 实测：**嵌入式浏览器面板
+ * 里 `document.hidden` 恒为 `true`**，即使它就在人眼前渲染着。而人正是在
+ * Codex 的 in-app browser / Claude 的面板里看这一屏的 —— 那条守卫会让他的界面
+ * 永远不更新，也就是把他抱怨的那个 bug 原样装回去。
+ *
+ * 所以不停，只降速。代价是一个后台标签页每 5 秒发两个本地 GET —— 那点开销远小于
+ * 「人盯着一屏永远不动的界面」。
+ */
+const LIVE_EVERY_MS = 1_500;
+const LIVE_HIDDEN_MS = 5_000;
+let liveTimer = null;
+let liveMark = "";
+
+/** 正在打字的那一格：是哪一节、打到哪、光标在哪。 */
+function typingNow() {
+  const active = document.activeElement;
+  if (!active || active.tagName !== "INPUT" || !stageDoc.contains(active)) return null;
+  const el = /** @type {HTMLInputElement} */ (active);
+  const box = el.closest(".gap");
+  const title = box ? box.querySelector("strong") : null;
+  return {
+    section: title ? title.textContent : "",
+    value: el.value,
+    at: el.selectionStart,
+  };
+}
+
+function restoreTyping(was) {
+  if (was === null) return;
+  for (const box of stageDoc.querySelectorAll(".gap")) {
+    const title = box.querySelector("strong");
+    if (!title || title.textContent !== was.section) continue;
+    const input = /** @type {HTMLInputElement | null} */ (box.querySelector("input"));
+    if (!input) return;
+    input.value = was.value;
+    input.focus();
+    try { input.setSelectionRange(was.at, was.at); } catch { /* 不支持就算了 */ }
+    return;
+  }
+}
+
+async function livePoll() {
+  if (current === null) return;
+  try {
+    const [docAnswer, askAnswer] = await Promise.all([
+      fetch(`/api/prd?phase=${encodeURIComponent(current)}`),
+      fetch(`/api/asks?change=${encodeURIComponent(changeId)}`),
+    ]);
+    if (!docAnswer.ok || !askAnswer.ok) return;
+    const payload = await docAnswer.json();
+    const asks = (await askAnswer.json()).asks;
+
+    /*
+     * 指纹只取**会变的那些**，不取整份 JSON：`artifactPath` 之类每次都一样的东西
+     * 进来只会让比较变慢，不会让它更准。
+     */
+    const mark = JSON.stringify([
+      (payload.sections || []).map((one) => one.body),
+      (payload.notes || []).map((one) => [one.id, one.response]),
+      (payload.formGate || {}).green,
+      (asks || []).map((one) => [one.id, one.chosen]),
+    ]);
+    if (mark === liveMark) return;
+    liveMark = mark;
+
+    const was = typingNow();
+    drawOpening(payload);
+    drawDoc(payload);
+    drawAsks(asks);
+    restoreTyping(was);
+  } catch {
+    // 网络抖一下不该在屏幕上留下任何痕迹 —— 下一拍自己就好了
+  }
+}
+
+function startLive(every) {
+  const gap = every ?? (document.hidden ? LIVE_HIDDEN_MS : LIVE_EVERY_MS);
+  if (liveTimer !== null) { if (liveTimer.every === gap) return; stopLive(); }
+  const id = setInterval(() => { void livePoll(); }, gap);
+  liveTimer = { id, every: gap };
+}
+
+function stopLive() {
+  if (liveTimer === null) return;
+  clearInterval(liveTimer.id);
+  liveTimer = null;
+}
+
+/*
+ * 切走降速、切回来**立刻**追一拍再提速 —— 人回到这一屏的那一瞬间就该是最新的，
+ * 而不是再等一整拍。
+ */
+document.addEventListener("visibilitychange", () => {
+  if (current === null) return;
+  if (!document.hidden) void livePoll();
+  startLive();
+});
+
+async function loadDoc(phase) {
+  try {
+    // **带上人点的那个阶段** —— 开场白跟着它走，产物和意见仍然是当前阶段的。
+    const answer = await fetch(`/api/prd${phase ? `?phase=${encodeURIComponent(phase)}` : ""}`);
+    const payload = answer.ok ? await answer.json() : null;
+    drawOpening(payload);
+    drawDoc(payload);
+  } catch {
+    drawOpening(null);
+    drawDoc(null);
+  }
+}
+
 function drawGaps(entry) {
   if (entry.gaps.length === 0) {
     const empty = document.createElement("p");
@@ -2644,6 +3262,20 @@ function rememberStage(phase) {
   history.replaceState(null, "", `${location.pathname}?${next.toString()}`);
 }
 
+/**
+ * 换屏之后回到顶部。
+ *
+ * **不回顶部时，「跳转」在窄屏上是看不见的**：人在环那一屏往下滚了两百像素才够得着
+ * 阶段圆点，点下去之后滚动位置不动，新那一屏的顶就在视口上面——屏幕上像是什么都
+ * 没发生。用户 2026-08-19 的原话是「UI 跳转被挡住看不到」。
+ *
+ * 宽屏上看不出来（整页装得下），所以这条只在侧边栏那种窄高比例里发作 ——
+ * 而那正是他实际用的那个形状。
+ */
+function toTop() {
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
 async function enter(phase) {
   if (moving) return;
   moving = true;
@@ -2684,6 +3316,7 @@ async function enter(phase) {
   stageView.hidden = false;
   void stageView.offsetWidth;
   stageView.classList.add("active");
+  toTop();
   await wait(120);
   moving = false;
   /*
@@ -2739,6 +3372,8 @@ function openGraphView(project) {
   rememberStage(null);
   stageView.classList.remove("active");
   stageView.hidden = true;
+  stopLive();
+  toTop();
   orbitView.hidden = true;
   graphView.hidden = false;
   window.stagepassGraph?.open({
@@ -2844,6 +3479,8 @@ button("back").addEventListener("click", () => { void leave(); });
 briefDraftButton.addEventListener("click", () => { void draftBriefFromAside(); });
 briefConfirmButton.addEventListener("click", () => { void confirmBriefEdit(); });
 runButton.addEventListener("click", () => { void run(); });
+handoffButton.addEventListener("click", () => { void handoff(); });
+settleButton.addEventListener("click", () => { void settle(); });
 askButton.addEventListener("click", () => { void ask(); });
 briefButton.addEventListener("click", () => { void recordBrief(); });
 waiveButton.addEventListener("click", () => { void waive(); });
