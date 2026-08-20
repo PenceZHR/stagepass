@@ -21,9 +21,7 @@ import { RoundNoteStore } from "../store/round-note-store";
 import { WorklistStore } from "../store/worklist-store";
 import { RubricStore } from "../store/rubric-store";
 import { TurnStore } from "../store/turn-store";
-import {
-  askFollowUp, launchAskPrompt, waitForAnswer, type AskSessions, type Unanswered,
-} from "./ask-human";
+import { draftOrRead, type AskSessions } from "./ask-human";
 
 /**
  * **把这一轮的裁决交给人**这个用例 —— 从 `handle()` 的 HTTP 分支里搬出来
@@ -52,13 +50,14 @@ export type DecideOutcome =
    * （`domain/question.ts`）。
    */
   | { readonly kind: "no_decision"; readonly phase: Phase }
-  /** 问出去了，但没答上来。 */
+  /**
+   * 题摆在页面上了（这次新起草的，或上次就挂着的）。**这不是失败** —— 人什么
+   * 时候答都行；答落库时 `/api/answer` 会再走一遍这个用例，从这儿接着往下。
+   */
   | {
-    readonly kind: "unanswered";
+    readonly kind: "asked";
     readonly phase: Phase;
     readonly questionId: string;
-    readonly reason: Unanswered | "session_died_before_asking";
-    readonly threadId: string | null;
   }
   /** 他看见的那份证据在他想的时候被人动过了 —— 决定不落地。 */
   | {
@@ -220,23 +219,86 @@ function staleAssessmentsNote(input: {
  * 卷走；Plan 那次 2 秒误判，真裁判照常派了子 Agent。两次人都是在**不知道磁盘上
  * 已经有成果**的情况下选的重跑。
  *
- * 只做知情，不做自动收编 —— 要不要认那份产出、怎么认，归人管。判据走 rollout
+ * 只做知情，不做自动收编 —— 要不要认那份产出、怎么认，归人管。判据走 App Server history
  * （认那条 turn 自己的提示词），和 transport 认轮同一份纪律。
  */
-function revivedTurnNote(input: {
+async function revivedTurnNote(input: {
   readonly turns: TurnStore;
   readonly sessions: AskSessions;
   readonly changeId: string;
   readonly phase: Phase;
-}): string {
+}): Promise<string> {
   const last = input.turns.latest(input.changeId, input.phase);
   if (!last || last.status !== "failed" || last.threadId === null) return "";
-  if (input.sessions.threadTurnEnded?.(last.threadId, 0, last.prompt) !== true) {
+  if (await input.sessions.threadTurnEnded?.(last.threadId, 0, last.prompt) !== true) {
     return "";
   }
   const why = (last.error ?? "原因不明").slice(0, 80);
   return `\n\n⚠ 上一轮虽被判失败（${why}），但那条线程后来把整轮跑完了 ——`
     + `产出可能已经落在工作区。重跑会另起一轮、不会用它；先看一眼再选。`;
+}
+
+/** 新问一题，或从持久账本续上重启前已经答完的那题。 */
+function obtainGateAnswer(input: {
+  questions: QuestionStore;
+  changeId: string;
+  phase: Phase;
+  freshQuestion: Question | null;
+  expectedSnapshot: string;
+}):
+  | { readonly kind: "no_decision" }
+  | { readonly kind: "asked"; readonly questionId: string }
+  | {
+    readonly kind: "answered";
+    readonly question: Question;
+    readonly questionId: string;
+    readonly answer: Answer;
+  } {
+  /*
+   * 先找答过还没消费的 —— 答案是持久事实，等待它的 HTTP 协程不是。
+   * 进程重启、或者人在 `/api/answer` 落完答案再把这个用例喊回来，都从这儿续上。
+   */
+  const interrupted = input.questions
+    .answered(input.changeId, "gate_decision")
+    .find((record) => record.phase === input.phase && !record.id.endsWith("-x"));
+  if (interrupted !== undefined) {
+    const stored = input.questions.readAnswerFor(interrupted.id);
+    if (stored !== null) {
+      return {
+        kind: "answered", question: interrupted.question,
+        questionId: interrupted.id, answer: stored,
+      };
+    }
+  }
+  /*
+   * 已经有一道 open 的裁决题挂在这个阶段上，就不再另起 —— `questions.ask` 会把
+   * 它 supersede 掉，人正对着的那张表就作废了。想换一张新的（证据变了）由
+   * 明确的再问一次来做，不由「答案还没来」来做。
+   */
+  const open = input.questions.open(input.changeId);
+  if (
+    open !== null && open.kind === "gate_decision"
+    && open.phase === input.phase && !open.id.endsWith("-x")
+  ) {
+    return { kind: "asked", questionId: open.id };
+  }
+  if (!input.freshQuestion) return { kind: "no_decision" };
+
+  const questionId = `Q-${input.changeId}-${input.phase}-${Date.now()}`;
+  input.questions.ask({
+    id: questionId, changeId: input.changeId, phase: input.phase,
+    kind: "gate_decision", question: input.freshQuestion,
+    expectedSnapshot: input.expectedSnapshot,
+  });
+  /*
+   * 起草完就返回 —— **没有等待**。
+   *
+   * 闸门这道题的措辞、选项、合法目标全是 StagePass 自己算出来的
+   * （`gateDecisionQuestion`），题落进库、面板画到浏览器上（`openQuestionOf`），
+   * 人什么时候答都行。答落库时 `/api/answer` 再把这个用例喊回来，
+   * 上面 `interrupted` 那条路会捡起答案接着走。
+   */
+  return { kind: "asked", questionId };
 }
 
 export async function decideGate(input: {
@@ -246,7 +308,6 @@ export async function decideGate(input: {
   /** 现在能不能问人。判据在 `web/` 那层（它要看活进程和账本），这里只消费结论。 */
   cannotAskNow: (phase: Phase) =>
     { reason: string; busy: string; jobId?: string } | null;
-  launch: (input: { phase: Phase; prompt: string }) => void;
   /**
    * 「再来一轮」时续跑那一轮。**先关会话再跑** —— 那个阶段的终端这时还活着
    * （题就是送进去的），不关 `runRound` 会撞上 §6.5 规则 5 直接拒。这不是绕过
@@ -259,10 +320,11 @@ export async function decideGate(input: {
    * **只由批准触发**，别的地方一概不许调 —— 一个还没批准的阶段的线程被归档，
    * 下一次 resume 就会一起来就死，那正是这条路要收拾的事。
    */
-  onApproved: (input: { phase: Phase; threadId: string }) => void;
+  onApproved: (
+    input: { phase: Phase; threadId: string },
+  ) => void | Promise<void>;
   /** 一个阶段最多跑几轮。跑满之后把收敛数据摊出来，**不拦人** —— 阻断归人管。 */
   roundBudget: number;
-  timeoutMs: number;
 }): Promise<DecideResult> {
   const { database, sessions, changeId } = input;
   const changes = new ChangeStore(database);
@@ -320,7 +382,7 @@ export async function decideGate(input: {
   const notes = new RoundNoteStore(database).latest(changeId, phase);
   // 轮次和派发同一份算法 —— 各算一套迟早说出两个「第几轮」，而人正拿它做决定。
   const round = roundFromLedger(changes.ledger(changeId), phase);
-  const question = gateDecisionQuestion({
+  const freshQuestion = gateDecisionQuestion({
     phase,
     gate,
     // 「什么挡着、出口、批准会怎样」由 gateDecisionQuestion 从 gate+openGaps 算
@@ -333,7 +395,7 @@ export async function decideGate(input: {
         ledger: changes.ledger(changeId), upstream: upstreamOf(phase, graph),
       })
       // 上一轮可能死而复生（判了失败、线程后来跑完了）—— 人选重跑之前要知道。
-      + revivedTurnNote({
+      + await revivedTurnNote({
         turns: new TurnStore(database), sessions, changeId, phase,
       })
       + summariseConvergence({
@@ -368,40 +430,20 @@ export async function decideGate(input: {
     approveAlternatives: approvalTargets(state, graph)
       .filter((target) => target !== recommendedApproval(state, graph)),
   });
-  // No question rather than an empty one: putting a decision to someone that
-  // they cannot make is worse than not asking (domain/question.ts).
-  if (!question) {
+  const questions = new QuestionStore(database);
+  const obtained = obtainGateAnswer({
+    questions, changeId, phase, freshQuestion, expectedSnapshot: gate.snapshot,
+  });
+  if (obtained.kind === "no_decision") {
     return { outcome: { kind: "no_decision", phase }, closeSession: false };
   }
-
-  const questionId = `Q-${changeId}-${phase}-${Date.now()}`;
-  const questions = new QuestionStore(database);
-  questions.ask({
-    id: questionId, changeId, phase, kind: "gate_decision",
-    question, expectedSnapshot: gate.snapshot,
-  });
-
-  const askPrompt = launchAskPrompt("它会把 StagePass 的问题交给我来选。",
-    "不要替我做决定，不要解释我该选什么，调用完就停下。");
-  input.launch({ phase, prompt: askPrompt });
-
-  const waited = await waitForAnswer({
-    database, questions, sessions, changeId, phase, questionId,
-    timeoutMs: input.timeoutMs,
-    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
-    prompt: askPrompt,
-  });
-  if (!waited.answered) {
-    // 题已经被 waitForAnswer 收掉了（那条规则只此一份）。
+  if (obtained.kind === "asked") {
     return {
-      outcome: {
-        kind: "unanswered", phase, questionId,
-        reason: waited.reason, threadId: waited.threadId,
-      },
-      closeSession: true,
+      outcome: { kind: "asked", phase, questionId: obtained.questionId },
+      closeSession: false,
     };
   }
-  const first = waited.answer;
+  const { question, questionId, answer: first } = obtained;
 
   /*
    * **第二趟：只问那几条真的需要理由的。**
@@ -417,21 +459,24 @@ export async function decideGate(input: {
   let answer = first;
   const more = responseFollowUpQuestion(openGaps, first);
   if (more) {
-    const second = await askFollowUp({
-      database, questions, sessions, changeId, phase, question: more,
+    const second = draftOrRead({
+      questions, changeId, phase, question: more,
       kind: "gate_decision",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs,
+      settleOnAnswer: true,
     });
-    if (typeof second === "string") {
+    if (second.kind === "pending") {
+      // 第二趟摆出去了。第一趟的答案还躺在账本里（status = answered），
+      // 下一次被喊回来时从 interrupted 那条路把两趟合起来。
       return {
-        outcome: {
-          kind: "unanswered", phase, questionId, reason: second, threadId: null,
-        },
-        closeSession: true,
+        outcome: { kind: "asked", phase, questionId: `${questionId}-x` },
+        closeSession: false,
       };
     }
-    answer = { action: first.action, content: { ...first.content, ...second.content } };
+    answer = {
+      action: first.action,
+      content: { ...first.content, ...second.answer.content },
+    };
   }
 
   /*
@@ -495,7 +540,7 @@ export async function decideGate(input: {
     && (outcome as { action?: unknown }).action === "approve"
   ) {
     const bound = new BindingStore(database).find(changeId, phase);
-    if (bound?.status === "bound") input.onApproved({ phase, threadId: bound.threadId });
+    if (bound?.status === "bound") await input.onApproved({ phase, threadId: bound.threadId });
   }
 
   /*

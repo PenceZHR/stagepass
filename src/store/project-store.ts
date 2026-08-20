@@ -14,7 +14,7 @@ import type Database from "better-sqlite3";
  *
  * ## `path` 不是可选的装饰
  *
- * **Codex 就跑在这个目录里。** 在它存在之前，pty 的 cwd 是服务启动时定死的一个值，
+ * **Codex 就跑在这个目录里。** 在它存在之前，Codex 的 cwd 是服务启动时定死的一个值，
  * 于是任何项目下的任何 Change 都跑在同一个仓库里 —— 你新建一个项目，Codex 却在
  * 改 stagepass 本身，而且没有任何提示（用户发现的洞）。
  *

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -125,6 +125,48 @@ describe("repo · 一个 commit 长什么样", () => {
 
   it("没有这个 commit —— 返回 null，不回落到别的东西", () => {
     assert.equal(createRepoOps().show(repo(), "0000000"), null);
+  });
+});
+
+describe("repo · 一个 commit 改了哪些文件", () => {
+  it("精确区分新增、修改、删除、改名，并能读删除前正文", () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, "kept.ts"), "before\n");
+    writeFileSync(join(cwd, "gone.ts"), "before deletion\n");
+    writeFileSync(join(cwd, "old-name.ts"), "rename me\n");
+    const ops = createRepoOps();
+    ops.commitAll(cwd, "shape base");
+
+    writeFileSync(join(cwd, "added.ts"), "added\n");
+    writeFileSync(join(cwd, "kept.ts"), "changed\n");
+    unlinkSync(join(cwd, "gone.ts"));
+    renameSync(join(cwd, "old-name.ts"), join(cwd, "new-name.ts"));
+    const sha = ops.commitAll(cwd, "shape delta")!;
+
+    assert.deepEqual(ops.changedFiles(cwd, sha), [
+      { path: "added.ts", change: "added" },
+      { path: "gone.ts", change: "deleted" },
+      { path: "kept.ts", change: "modified" },
+      { path: "new-name.ts", previousPath: "old-name.ts", change: "renamed" },
+    ]);
+    assert.match(ops.fileAt(cwd, sha, "added.ts") ?? "", /added/);
+    assert.match(ops.fileBefore(cwd, sha, "gone.ts") ?? "", /before deletion/);
+    assert.match(ops.diffAt(cwd, sha, "kept.ts") ?? "", /^\+changed/m);
+  });
+
+  it("中文和空格路径原样保留，未知提交与路径不回落 HEAD", () => {
+    const cwd = repo();
+    const ops = createRepoOps();
+    writeFileSync(join(cwd, "中文 文件.ts"), "内容\n");
+    const sha = ops.commitAll(cwd, "unicode")!;
+
+    assert.deepEqual(ops.changedFiles(cwd, sha), [
+      { path: "中文 文件.ts", change: "added" },
+    ]);
+    assert.equal(ops.changedFiles(cwd, "not-a-sha"), null);
+    assert.equal(ops.fileAt(cwd, sha, "missing.ts"), null);
+    assert.equal(ops.fileAt(cwd, "0000000", "seed.txt"), null);
+    assert.equal(ops.diffAt(cwd, "0000000", "seed.txt"), null);
   });
 });
 

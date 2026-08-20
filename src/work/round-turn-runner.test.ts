@@ -8,6 +8,7 @@ import { BindingStore } from "../store/binding-store";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { RoundNoteStore } from "../store/round-note-store";
+import { StageArtifactStore } from "../store/stage-artifact-store";
 import { WorklistStore } from "../store/worklist-store";
 import { GapStore } from "../store/gap-store";
 import type { Gap } from "../domain/gap";
@@ -94,6 +95,29 @@ function growingChildren(): () => string[] {
 const answer = (blockers: { id: string; severity: string; title: string }[] = []) =>
   "```json\n" + JSON.stringify({ artifactIds: ["prd.md"], blockers }) + "\n```";
 
+/**
+ * runner 写给模型读的文件，按路径记在内存里（测试绝不碰真文件系统）。
+ *
+ * 题面走文件之后（2026-08-13），会话里只送一个信封 —— 任务书内容的断言全要
+ * 来这里找，盯着 `dispatches[].prompt` 只能看到信封。每次 `runner()` 换新的一张。
+ */
+let written = new Map<string, string>();
+
+/**
+ * 第 `round` 轮的题面正文。没落成文件就当场喊出来，别让断言去匹配 undefined。
+ * 不给轮次 = 这个 runner 只派过一轮，取那唯一的一份 —— 轮次号从账本数
+ * （sendBack 重开的阶段第一派就是第 2 轮），只派一轮的测试犯不着自己算它。
+ */
+function roundScript(round?: number): string {
+  const paths = [...written.keys()].filter((each) => each.includes("round-script-"));
+  const path = round === undefined
+    ? (paths.length === 1 ? paths[0] : undefined)
+    : paths.find((each) => each.endsWith(`-r${round}.md`));
+  assert.ok(path !== undefined,
+    `题面没对上（现有 ${paths.length} 份，要的是${round === undefined ? "唯一一份" : `第 ${round} 轮`}）`);
+  return written.get(path!)!;
+}
+
 function runner(
   context: ReturnType<typeof open>,
   transport: CodexTransport,
@@ -101,6 +125,7 @@ function runner(
   repo?: RepoOps,
   log?: (line: string) => void,
 ): RoundTurnRunner {
+  written = new Map();
   return new RoundTurnRunner({
     transport,
     gaps: context.gaps,
@@ -110,10 +135,22 @@ function runner(
     evidence: new EvidenceStore(context.db),
     notes: new RoundNoteStore(context.db),
     // 测试**绝不碰真 git**：默认给一个什么都不做的。
-    repo: repo ?? { dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null, show: () => null, head: () => null, trackedFiles: () => null },
+    repo: repo ?? {
+      dirtyPaths: () => [], commitAll: () => null, commitPaths: () => null,
+      show: () => null, head: () => null, trackedFiles: () => null,
+      changedFiles: () => null, fileAt: () => null, fileBefore: () => null,
+      diffAt: () => null,
+    },
     workspaceFor: () => "/tmp/stagepass-not-a-real-repo",
     childThreads: growingChildren(),
-    writeRoundFile: (name: string) => `/tmp/stagepass-test/${name}`,
+    writeRoundFile: (name: string, content: string) => {
+      const path = `/tmp/stagepass-test/${name}`;
+      written.set(path, content);
+      return path;
+    },
+    // 读回永远是「没写」：答卷是模型往真文件系统里填的，替身这侧没有那只手。
+    // （不回 written 的内容 —— rubric 那条路会预写一份空答卷，读回它就把
+    // 「反方没写」偷换成「读到空模板」。）
     readRoundFile: () => null,
     worklist: new WorklistStore(context.db),
     readThread,
@@ -197,6 +234,50 @@ describe("RoundTurnRunner · 轮次从账本数，不用 job.attempt", () => {
   });
 });
 
+/**
+ * 取题面那条路的轮次（2026-08-19 真机抓到的）。
+ *
+ * ## 它是什么样的错
+ *
+ * 「轮次从账本数」成立的前提是 **`queueTurn` 已经把这一轮的 start 写进去了** ——
+ * 派轮那条路正是这个顺序。取题面**不建 job**（StagePass 那时确实什么都没在跑），
+ * 于是同一段代码数出来的是上一轮的号：真机上第一次点，信封写着「第 0 轮」，
+ * 名单和题面文件也全落在 0 上。
+ *
+ * 而结算时 `queueTurn` 会补上那个 start，同一段代码这次数出 1 —— **名单读回来
+ * 是空的，题面文件对不上号，账本上看不出哪里错了。** 这正是这条路唯一承重的那个
+ * 号，所以它有自己的护栏。
+ */
+describe("RoundTurnRunner · 备的那一轮和收的那一轮必须是同一个号", () => {
+  it("**第一次取题面是第 1 轮，不是第 0 轮**", () => {
+    const context = open();
+    toQA(context);
+    const prepared = runner(context, new ScriptedCodexTransport([]), () => answer())
+      .prepare({ id: "H-1", changeId: CHANGE, phase: "QA" } as never);
+
+    assert.equal(prepared.round, 1);
+    assert.match(prepared.envelope, /第 1 轮/);
+  });
+
+  it("**结算用备的时候那个号，不重数** —— 中间账本长了也不许漂", () => {
+    const context = open();
+    toQA(context);
+    const only = runner(context, new ScriptedCodexTransport([]), () => answer());
+    const prepared = only.prepare({ id: "H-1", changeId: CHANGE, phase: "QA" } as never);
+
+    // 结算时 `queueTurn` 会补一条 start，账本从此数得出 1；再多跑一轮就是 2。
+    // 无论账本涨到几，收的都必须是备的那一轮 —— 名单和文件都落在它上面。
+    context.changes.apply(CHANGE, "start");
+    context.changes.apply(CHANGE, "settle");
+    context.changes.apply(CHANGE, "reject");
+    context.changes.apply(CHANGE, "start");
+
+    const again = only.prepare({ id: "H-2", changeId: CHANGE, phase: "QA" } as never);
+    assert.notEqual(again.round, prepared.round, "账本长了，下一次备的该是新的号");
+    assert.match(again.envelope, new RegExp(`第 ${again.round} 轮`));
+  });
+});
+
 describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
   /**
    * 每个阶段一条新线程（§6.5 规则 2），线程之间只能靠文档传信息 ——
@@ -223,7 +304,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     });
     await dispatchRound(loop, "J1");
 
-    const prompt = transport.dispatches[0]?.prompt ?? "";
+    const prompt = roundScript(1);   // 会话里只送信封，任务书在题面文件里
     assert.match(prompt, /docs\/prd\/countdown\.md/, "上游产物的路径没进任务书");
     assert.match(prompt, /PRD/, "没说这份产物是哪个阶段的");
   });
@@ -260,7 +341,9 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     });
     await dispatchRound(loop, "J1");
 
-    const prompt = transport.dispatches[0]?.prompt ?? "";
+    // 会话里只送信封，任务书在题面文件里。sendBack 重开的 Spec 是第 2 轮，
+    // 轮次号在文件名里 —— 不指定，取这一派唯一的那份。
+    const prompt = roundScript();
     assert.match(prompt, /被 Build 打回来的/, "红方不知道是谁退的它");
     // **原话，不是转述** —— 而且要出现两遍（裁判自己读一次、转达原文一次）。
     assert.equal(prompt.split("接口边界在 Spec 里就画错了，别再往下修补").length - 1, 2);
@@ -298,7 +381,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     });
     await dispatchRound(loop, "J1");
 
-    const prompt = transport.dispatches[0]?.prompt ?? "";
+    const prompt = roundScript(1);   // 会话里只送信封，任务书在题面文件里
     const real = line.filter(([phase]) => phase !== "BuildPlan");
     const positions = real.map(([, artifact]) => prompt.indexOf(artifact));
     assert.ok(positions.every((at) => at >= 0),
@@ -342,7 +425,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     });
     await dispatchRound(loop, "J1");
 
-    const prompt = transport.dispatches[0]?.prompt ?? "";
+    const prompt = roundScript(1);   // 会话里只送信封，任务书在题面文件里
     assert.match(prompt, /commit 349c17d7/, "sha 没被标成 commit");
     assert.match(prompt, /git show/, "没告诉红方怎么看这个 commit");
     // 而路径那些照旧原样列出来。
@@ -359,7 +442,7 @@ describe("RoundTurnRunner · 上游已批准的产物要进任务书", () => {
     await dispatchRound(loop, "J1");
 
     assert.doesNotMatch(
-      transport.dispatches[0]?.prompt ?? "", /上游/,
+      roundScript(1), /上游/,
       "没有上游却画了一节空的，模型会去找不存在的东西",
     );
   });
@@ -403,6 +486,10 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
         return sha;
       },
       show: () => null, head: () => null, trackedFiles: () => null,
+      changedFiles: () => sha === null ? null : [
+        { path: "src/feature.ts", change: "added" as const },
+      ],
+      fileAt: () => null, fileBefore: () => null, diffAt: () => null,
     };
   };
 
@@ -424,6 +511,17 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     );
     // 提交信息要说得出是哪个 Change 的第几轮 —— 人在 git log 里看得懂。
     assert.match(repo.calls[0] ?? "", new RegExp(CHANGE));
+    const manifest = new StageArtifactStore(context.db).read(CHANGE, "Build", 1);
+    assert.ok(manifest);
+    assert.equal(manifest.jobId, "J1");
+    assert.equal(manifest.commit, "a1b2c3d4e5f6");
+    assert.deepEqual(manifest.upstream.map((entry) => entry.phase),
+      ["PRD", "Spec", "Arch", "BuildPlan"]);
+    assert.deepEqual(manifest.files.map((file) => [file.path, file.role]), [
+      [`docs/stagepass/${CHANGE}/Build-r1-opposition.md`, "critic"],
+      [`docs/stagepass/${CHANGE}/Build-r1.md`, "producer"],
+      ["src/feature.ts", "delivery"],
+    ]);
   });
 
   it("**红方什么都没改 —— 不许伪装成有产出**", async () => {
@@ -459,7 +557,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     }
     assert.equal(context.changes.read(CHANGE).state.phase, "Test");
 
-    const repo = fakeRepo("7e57c0dec0mm17");
+    const repo = fakeRepo("7e57c0dec0ff17");
     const loop = new TurnLoop({
       database: context.db,
       runner: runner(context, new ScriptedCodexTransport([judgeSays]),
@@ -469,7 +567,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
 
     assert.deepEqual(
       new EvidenceStore(context.db).read(CHANGE, "Test").artifactIds,
-      ["7e57c0dec0mm17"], "Test 的产出还是红方报的路径");
+      ["7e57c0dec0ff17"], "Test 的产出还是红方报的路径");
     /*
      * **而且走的是窄提交**（批 4 · 案 B）：产物目录 + 红方声明的落点，逐个点名 ——
      * 结构上卷不走别人的半成品，这正是它不要求干净树、能和 Build 并行的机械前提。
@@ -493,7 +591,7 @@ describe("RoundTurnRunner · Build 的产出是 commit", () => {
     }
     assert.equal(context.changes.read(CHANGE).state.phase, "Build");
 
-    const repo = fakeRepo("bu1lds4a");
+    const repo = fakeRepo("b011d54a");
     const base = runner(context, new ScriptedCodexTransport([judgeSays]),
       () => answer(), repo);
     // 对轨（Test 座）正在跑一轮 —— 树上有它写了一半的文件。
@@ -671,6 +769,8 @@ describe("L4 · E：产物有家，轮末自己入档，越界要报出来", () 
         return "beefdeadcafe";
       },
       show: () => null, head: () => null, trackedFiles: () => null,
+      changedFiles: () => [], fileAt: () => null, fileBefore: () => null,
+      diffAt: () => null,
     };
   };
 
@@ -685,9 +785,9 @@ describe("L4 · E：产物有家，轮末自己入档，越界要报出来", () 
   };
 
   it("**设计阶段：任务书里有确切的输出路径** —— 不让红方自己起名", async () => {
-    const { transport, loop } = openLoop(trackingRepo([[]]) as unknown as RepoOps);
+    const { loop } = openLoop(trackingRepo([[]]) as unknown as RepoOps);
     await dispatchRound(loop, "J1");
-    const prompt = transport.dispatches[0]?.prompt ?? "";
+    const prompt = roundScript(1);   // 会话里只送信封，任务书在题面文件里
     assert.match(prompt, /docs\/stagepass\/CHG-RT\/PRD-r1\.md/,
       "红方的输出路径没进任务书 —— 它又要自己起名了");
     assert.match(prompt, /docs\/stagepass\/CHG-RT\/PRD-r1-opposition\.md/,

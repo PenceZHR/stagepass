@@ -4,13 +4,16 @@ import Database from "better-sqlite3";
 
 import { SCHEMA_SQL } from "../db/schema";
 import type { Finding } from "../domain/gate";
+import type { StageRoundArtifact } from "../domain/stage-artifact";
 import { ChangeStore } from "../store/change-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
 import { CommandStore } from "../store/command-store";
 import { JobStore } from "./job-store";
+import { StageArtifactStore } from "../store/stage-artifact-store";
 import {
-  recoverStuckTurns, ScriptedTurnRunner, STRANDED_GRACE_MS, TurnLoop, type TurnOutcome,
+  LEASE_TTL_MS, recoverStuckTurns, ScriptedTurnRunner, STRANDED_GRACE_MS, TurnLoop,
+  type TurnOutcome, type TurnRunner,
 } from "./turn-loop";
 
 const AT = "2026-07-28T00:00:00.000Z";
@@ -82,15 +85,18 @@ describe("L1 · 进程死了之后，那个 Change 还能动", () => {
 
   it("**租约还没过期的不许碰** —— 判据是租约，不是「跑了很久」", () => {
     const { database, changes } = stranded();
-    assert.deepEqual(recoverStuckTurns(database, T0 + 1),
-      { resumed: [], failed: [], stranded: [] });
+    const summary = recoverStuckTurns(database, T0 + 1);
+    // 超长的租约会被按现行 TTL 重新计时（clamp），但没到期就是没到期 —— 不收。
+    assert.deepEqual(summary.resumed, []);
+    assert.deepEqual(summary.failed, []);
+    assert.deepEqual(summary.stranded, []);
     assert.equal(changes.read("CHG-1").state.status, "running");
   });
 
   it("没有死掉的活时什么都不做", () => {
     const { database } = open([]);
     assert.deepEqual(recoverStuckTurns(database, T0 + LEASE + 1),
-      { resumed: [], failed: [], stranded: [] });
+      { resumed: [], failed: [], stranded: [], clamped: [] });
   });
 
   it("再收拾一次是幂等的", () => {
@@ -99,6 +105,122 @@ describe("L1 · 进程死了之后，那个 Change 还能动", () => {
     const status = changes.read("CHG-1").state.status;
     recoverStuckTurns(database, T0 + LEASE + 2);
     assert.equal(changes.read("CHG-1").state.status, status);
+  });
+});
+
+/*
+ * 收尸的速度不能被「合法的活最长能跑多久」绑架（2026-08-13）。
+ *
+ * 2026-08-04 那课（panel-server「三个截止时间」的注释）把租约 TTL 批成整轮时长，
+ * 因为当时没有人心跳 —— 短租约会让收尸人在**还在跑**的轮身上收尸（第三张脸）。
+ * 副作用是检测死亡的延迟 = 单轮时限；出厂时限 30 → 180 分钟之后，一个死轮要挂满
+ * 3 小时界面才不再说「在跑」。
+ *
+ * 这组测试钉的是新形状：**租约短批，跑轮期间心跳续租**。硬顶（deadlineAt）还是
+ * 唯一的「最长能跑多久」，租约只回答「工人还活着吗」—— 两个问题从此各有各的数。
+ */
+describe("L1 · 心跳：租约短批、边跑边续", () => {
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+
+  /** 真时钟的一套：心跳靠真实时间前进才续得动。间隔取毫秒级，一条测试百来毫秒。 */
+  const openLive = () => {
+    const database = new Database(":memory:");
+    database.pragma("foreign_keys = ON");
+    database.exec(SCHEMA_SQL);
+    const changes = new ChangeStore(database);
+    changes.create("CHG-1");
+    return { database, changes, jobs: new JobStore(database) };
+  };
+
+  it("**跑轮期间心跳在续租** —— 租约不再一次批满整轮", async () => {
+    const { database, jobs } = openLive();
+    let first = 0;
+    let renewed = 0;
+    const runner: TurnRunner = {
+      async run() {
+        first = jobs.read("JOB-1").lease!.expiresAt;
+        await sleep(120);
+        renewed = jobs.read("JOB-1").lease!.expiresAt;
+        return { artifactIds: ["prd.md"], blockers: [] };
+      },
+    };
+    const loop = new TurnLoop({ database, runner, heartbeatEveryMs: 10 });
+    loop.queueTurn({
+      changeId: "CHG-1", jobId: "JOB-1",
+      deadlineAt: Date.now() + 60_000, maxAttempts: 1,
+    });
+    const result = await loop.runOnce({
+      owner: "panel", token: "JOB-1", now: Date.now(), ttlMs: 50,
+    });
+    assert.equal(result.kind, "settled");
+    // 不续的话租约在 claim+50ms 就断气，而轮要跑 120ms —— 那就回到了
+    // 「收尸人在活轮身上收尸」。续着，租约的到期时间必须在往前走。
+    assert.ok(renewed > first, `租约要被续过：${renewed} > ${first}`);
+  });
+
+  it("**心跳只续到硬顶为止** —— 贴近 deadline 不把活着的轮判死", async () => {
+    const { database, jobs } = openLive();
+    const runner: TurnRunner = {
+      async run() {
+        await sleep(120);
+        const current = jobs.read("JOB-1");
+        // 续到 expiresAt == deadlineAt 就停手，最后一段留给 transport 的超时。
+        // 在这儿多跳一拍就是 deadline_reached → markFailed —— 把一个还活着的轮
+        // 判死在库里，正是短租约当年不敢上的那个原因。
+        assert.equal(current.status, "running");
+        assert.equal(current.lease!.expiresAt, current.lease!.deadlineAt);
+        await sleep(80);   // 跑过硬顶再收尾
+        return { artifactIds: ["prd.md"], blockers: [] };
+      },
+    };
+    const loop = new TurnLoop({ database, runner, heartbeatEveryMs: 10 });
+    loop.queueTurn({
+      changeId: "CHG-1", jobId: "JOB-1",
+      deadlineAt: Date.now() + 150, maxAttempts: 1,
+    });
+    const result = await loop.runOnce({
+      owner: "panel", token: "JOB-1", now: Date.now(), ttlMs: 100,
+    });
+    // 活到最后的轮自己收尾 —— 谁先收尾谁说了算，硬顶只是不再给它续租。
+    if (result.kind === "failed") assert.fail(result.reason);
+    assert.equal(jobs.read("JOB-1").status, "done");
+  });
+
+  it("**收尸人把超长租约按现行 TTL 重新计时** —— 判据是「现在自不自洽」，不是「刚才发生了什么」", () => {
+    const context = open([]);
+    // 升级前的批法：租约 TTL = 整轮 180 分钟。这样的行真实存在于活库里，
+    // 事件驱动的修法一辈子碰不到它们（a187f06 → 985e48c 那一课）。
+    context.jobs.enqueue({
+      id: "JOB-LONG", changeId: "CHG-1", kind: "phase_turn",
+      deadlineAt: T0 + 180 * 60_000, maxAttempts: 1,
+    });
+    context.jobs.claimNext({
+      owner: "panel", token: "tok", now: T0, ttlMs: 180 * 60_000,
+    });
+    context.changes.apply("CHG-1", "start");
+
+    const summary = recoverStuckTurns(context.database, T0 + 1);
+    assert.deepEqual(summary.clamped, ["JOB-LONG"]);
+    assert.equal(
+      context.jobs.read("JOB-LONG").lease!.expiresAt, T0 + 1 + LEASE_TTL_MS,
+    );
+    // 从此一个死进程最多 TTL + 一趟收尸就被发现，而不是等满 3 小时。
+    const later = recoverStuckTurns(context.database, T0 + 1 + LEASE_TTL_MS);
+    assert.deepEqual(later.failed.map((each) => each.id), ["JOB-LONG"]);
+  });
+
+  it("心跳续着的租约不会被重新计时 —— clamp 只碰超过现行 TTL 的", () => {
+    const context = open([]);
+    context.jobs.enqueue({
+      id: "JOB-OK", changeId: "CHG-1", kind: "phase_turn",
+      deadlineAt: T0 + 60 * 60_000, maxAttempts: 1,
+    });
+    context.jobs.claimNext({
+      owner: "panel", token: "tok", now: T0, ttlMs: LEASE_TTL_MS,
+    });
+    context.changes.apply("CHG-1", "start");
+    assert.deepEqual(recoverStuckTurns(context.database, T0 + 1).clamped, []);
   });
 });
 
@@ -216,6 +338,75 @@ describe("L1 · a phase runs, produces evidence, and the gate reads it", () => {
     } finally {
       database.close();
     }
+  });
+});
+
+describe("L1 · 轮次产物和结算是同一个事务", () => {
+  const manifest: Omit<StageRoundArtifact, "settledAt"> = {
+    changeId: "CHG-1",
+    phase: "PRD",
+    round: 1,
+    jobId: "JOB-MANIFEST",
+    artifactIds: ["docs/stagepass/CHG-1/PRD-r1.md"],
+    commit: "a1b2c3d",
+    source: "recorded",
+    files: [{
+      path: "docs/stagepass/CHG-1/PRD-r1.md",
+      role: "producer",
+      change: "added",
+    }],
+    upstream: [],
+  };
+
+  it("manifest、evidence 和 settled 一起落地", async () => {
+    const context = open([{
+      artifactIds: manifest.artifactIds,
+      blockers: [],
+      artifactManifest: manifest,
+    }]);
+    context.loop.queueTurn({
+      changeId: "CHG-1", jobId: manifest.jobId,
+      deadlineAt: DEADLINE, maxAttempts: 1,
+    });
+
+    assert.deepEqual(await context.loop.runOnce(WORKER), {
+      kind: "settled", jobId: manifest.jobId,
+    });
+    assert.equal(context.changes.read("CHG-1").state.status, "settled");
+    assert.deepEqual(
+      new EvidenceStore(context.database).read("CHG-1", "PRD").artifactIds,
+      manifest.artifactIds,
+    );
+    assert.equal(
+      new StageArtifactStore(context.database).read("CHG-1", "PRD", 1)?.settledAt,
+      AT,
+    );
+  });
+
+  it("manifest 插入失败时 evidence 和 settle 全部回滚", async () => {
+    const context = open([{
+      artifactIds: manifest.artifactIds,
+      blockers: [],
+      artifactManifest: manifest,
+    }]);
+    context.database.exec(`
+      CREATE TRIGGER fail_manifest BEFORE INSERT ON stage_round_artifacts
+      BEGIN SELECT RAISE(ABORT, 'manifest failed'); END;
+    `);
+    context.loop.queueTurn({
+      changeId: "CHG-1", jobId: manifest.jobId,
+      deadlineAt: DEADLINE, maxAttempts: 1,
+    });
+
+    assert.deepEqual(await context.loop.runOnce(WORKER), {
+      kind: "failed", jobId: manifest.jobId, reason: "manifest failed",
+    });
+    assert.equal(context.changes.read("CHG-1").state.status, "blocked");
+    assert.deepEqual(
+      new EvidenceStore(context.database).read("CHG-1", "PRD").artifactIds,
+      [],
+    );
+    assert.equal(new StageArtifactStore(context.database).list("CHG-1", "PRD").length, 0);
   });
 });
 

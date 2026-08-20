@@ -23,6 +23,27 @@ function open() {
 }
 
 describe("store · 旁路会话的绑定（kind = aside）", () => {
+  it("列出所有还 bound 的座位 —— round 在前、aside 在后，detached 不混进来", () => {
+    const { database, bindings } = open();
+    try {
+      bindings.bindAside("CHG-1", "T-ASIDE");
+      bindings.bind("CHG-1", "Build", "T-BUILD");
+      bindings.bind("CHG-1", "Spec", "T-DETACHED");
+      bindings.detach("CHG-1", "Spec");
+
+      assert.deepEqual(bindings.listBound(), [
+        {
+          changeId: "CHG-1", kind: "round", phase: "Build", threadId: "T-BUILD",
+        },
+        {
+          changeId: "CHG-1", kind: "aside", phase: null, threadId: "T-ASIDE",
+        },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
   it("绑得上、找得到、解得开 —— 而且不占任何阶段的座", () => {
     const { database, bindings } = open();
     try {

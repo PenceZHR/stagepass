@@ -2,7 +2,6 @@ import {
   advancesTo,
   DEFAULT_GRAPH,
   upstreamOf,
-  FIRST_PHASE,
   TERMINAL_PHASE,
   type Phase,
   type PhaseGraph,
@@ -138,12 +137,6 @@ export class InvalidStateError extends Error {
     this.name = "InvalidStateError";
   }
 }
-
-export const INITIAL_STATE: ChangeState = {
-  phase: FIRST_PHASE,
-  status: "pending",
-  returnStack: [],
-};
 
 export function accepts(status: PhaseStatus): readonly ChangeAction[] {
   return ACCEPTS[status];

@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>stagepass · 终端面板</title>
-<link rel="stylesheet" href="/xterm.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23231f31'/%3E%3Ccircle cx='32' cy='32' r='18' fill='none' stroke='%23e1c9a8' stroke-width='4'/%3E%3Ccircle cx='32' cy='14' r='4' fill='%23e1c9a8'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/stage-artifact.css">
+<title>stagepass · 工作台</title>
 <style>
 /*
  * Abstract Cloud & Sea Motion + 三列 2:2:6 + Circular Stage Orbit。
@@ -116,10 +117,10 @@ body::after {
 .columns {
   position: relative; /* the expand pill is positioned against this */
   flex: 1; min-height: 0; display: grid;
-  grid-template-columns: 2fr 2fr 6fr;
+  grid-template-columns: 2fr 8fr;
   transition: grid-template-columns .52s cubic-bezier(.22,.8,.28,1);
 }
-.columns.collapsed { grid-template-columns: 0fr 0fr 10fr; }
+.columns.collapsed { grid-template-columns: 0fr 10fr; }
 .columns.collapsed .col.workspace { border-left-color: transparent; }
 .col { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .col + .col { border-left: 1px solid oklch(0.89 0.025 75 / 11%); }
@@ -748,32 +749,20 @@ body::after {
 }
 
 /*
- * ── 阶段弹窗 ──────────────────────────────────────────────
+ * ── 弹窗 ──────────────────────────────────────────────────
  *
- * 点环上的小圈打开，显示这个阶段现在的问题（用户 2026-07-29 第 3 条）。它和左侧
- * 常驻面板是两层：**悬停看概要，点击看明细**。
+ * 2026-08-17 之后这里**只剩新建 Project / 新建 Change 两个表单**。阶段那个弹层
+ * 已经并进 `#stage-view` 那一页（用户：「统一成一个页面」），不要再往回搭。
  *
- * 用原生 <dialog showModal> 而不是自己拿 div 搭：Esc 关闭、焦点收拢、以及 top
- * layer —— 最后一条要紧，因为 .columns 上有 transition 和 overflow:hidden，自搭
- * 的浮层会被裁掉或者压在环下面。交接 §5.0.2 明确写着"弹窗会盖住环，所以它必须能
- * 干脆地关掉"，Esc 是最干脆的那条，白拿。
- *
- * **这里没有 approve / reject 按钮，而且不许有。** 裁决只发生在 Codex 自己的
- * elicitation 选择器里（PRD §1、§5.2b）。弹窗的主动作是"把这个裁决交给 Codex
- * 问我"—— 它组题、把问题送进那个阶段的终端，然后等你在 Codex 里选。面板显示闸门
- * 说了什么，永远不提供改变它的控件。
+ * 留下来的这两个是真弹窗：它们打断你去填一件事，填完就走。用原生
+ * <dialog showModal> 而不是自己拿 div 搭：Esc 关闭、焦点收拢、以及 top layer ——
+ * 最后一条要紧，因为 .columns 上有 transition 和 overflow:hidden，自搭的浮层会被
+ * 裁掉或者压在环下面。
  */
 /*
  * flex 列是**必须的**，不是排版偏好：`.sheet-body` 的 `overflow-y: auto` 只有在
  * 高度被约束住时才会滚。不给它约束，内容长了就整体撑破 max-height，然后被
  * `overflow: hidden` 从底下裁掉 —— 先没的正是底部那排动作按钮。
- */
-/*
- * 尺寸 2026-07-30 放大过一次，理由是内容变了而不是想大一点：产出的**正文**从这天起
- * 显示在这里，而一份 PRD 有三千多字。放大之前 `.sheet-body` 只有 273px 高，比正文框
- * 本身还矮 —— 于是外层滚一层、里层再滚一层，一次看得见十行。
- *
- * 弹窗仍然是弹窗：Esc / ✕ / 点遮罩三条关闭路径一条没动，它也仍然不常驻（交接 §5.0.2）。
  */
 .sheet {
   display: flex; flex-direction: column;
@@ -807,19 +796,6 @@ body::after {
   font: 500 14px/1 ui-sans-serif, sans-serif; transition: background .2s, color .2s;
 }
 .sheet-close:hover { background: rgba(255,255,255,.1); color: #fff; }
-
-.sheet-tabs {
-  flex: 0 0 auto;
-  display: flex; gap: 4px; padding: 0 22px; border-bottom: 1px solid rgba(255,255,255,.1);
-}
-.sheet-tab {
-  padding: 11px 14px 10px; border: 0; border-bottom: 2px solid transparent;
-  background: transparent; color: rgba(255,255,255,.46); cursor: pointer;
-  font: 750 10px/1 ui-sans-serif, sans-serif; letter-spacing: .14em; text-transform: uppercase;
-  transition: color .2s, border-color .2s;
-}
-.sheet-tab:hover { color: rgba(255,255,255,.78); }
-.sheet-tab[aria-selected="true"] { color: var(--sand-strong); border-bottom-color: var(--sand-deep); }
 
 .sheet-body { flex: 1 1 auto; min-height: 0; padding: 6px 26px 18px; overflow-y: auto; }
 
@@ -1058,6 +1034,24 @@ body::after {
 .enter[disabled], .run[disabled], .ask[disabled] { opacity: .38; cursor: default; filter: none; }
 .enter[hidden], .run[hidden], .ask[hidden] { display: none; }
 
+/*
+ * 取题面之后交给人的那段信封（2026-08-19「甲」）。
+ *
+ * **等宽字、可选、能滚**：人要整段粘进自己的 Codex 会话，而里面那个题面路径正是
+ * StagePass 回头认那条线程的依据 —— 断行断错、少一个字符就认不回来了。
+ */
+.envelope { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.envelope[hidden] { display: none; }
+.envelope-head { margin: 0; font-size: 11.5px; line-height: 1.5; opacity: .72; }
+.envelope-box {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.2); background: rgba(0,0,0,.24); color: #f5eee6;
+  font: 400 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre; overflow-x: auto;
+}
+.envelope-box:focus { outline: 1px solid rgba(221,200,167,.7); }
+
 .portal {
   position: absolute; left: 50%; top: 50%; width: 110px; height: 110px; border-radius: 50%;
   transform: translate(-50%,-50%) scale(.1); opacity: 0; z-index: 15; pointer-events: none;
@@ -1070,8 +1064,7 @@ body::after {
   100% { opacity: 0; transform: translate(-50%,-50%) scale(14); }
 }
 
-/* ── 阶段视图（在第三列里原地替换） ───────────────────── */
-/* 补问那格的标签页。只有真开着补问时才出现。 */
+/* ── 原生会话视图（在第三列里原地替换） ───────────────── */
 
 #stage-view {
   display: flex; flex-direction: column; gap: 12px; padding: 22px 26px 20px;
@@ -1095,14 +1088,195 @@ body::after {
 }
 .back:hover { color: var(--sand-strong); }
 .surface {
-  flex: 1; min-height: 0;
-  border: 1px solid rgba(255,255,255,.18); border-radius: 18px;
-  background: oklch(0.132 0.028 295);
-  box-shadow: 0 22px 80px rgba(31,24,37,.38); padding: 15px 17px;
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  border: 1px solid rgba(225,201,168,.16); border-radius: 18px;
+  background: oklch(0.16 0.03 295 / 46%); backdrop-filter: blur(18px);
+  box-shadow: inset 0 1px rgba(255,255,255,.025); overflow: hidden;
 }
-#term { width: 100%; height: 100%; }
-.xterm .xterm-viewport { background: transparent !important; }
 .note { font: 400 11px/1.6 var(--serif); color: rgba(255,255,255,.5); }
+
+
+/*
+ * 窄屏不把桌面四栏缩成四条缝。工作区仍在原层级，只把每列里的卡片改成横向浏览；
+ * 当前 Change 与阶段环随后完整落到纵向内容里。这样人仍控制“看哪个项目 / Change”
+ * 的结构，而不会因为手机宽度丢掉阶段环或把名称拆成单字。
+ */
+@media (max-width: 1180px) {
+  .status-facts > div { align-items: flex-start; }
+  .status-facts dd {
+    max-width: 68%; white-space: normal; overflow: visible;
+    text-overflow: clip; overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 820px) {
+  html, body { height: auto; min-height: 100%; }
+  body { overflow-x: hidden; overflow-y: auto; }
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    grid-template-columns: 1fr auto; min-height: 58px; padding: 0 17px;
+  }
+  .wordmark { font-size: 21px; }
+  .crumb { text-align: right; }
+  .live-flag { display: none; }
+
+  .columns, .columns.collapsed {
+    display: block; min-height: 0; transition: none;
+  }
+  .columns.collapsed .col.workspace { display: flex; }
+  .columns.collapsed .col.workspace > * { opacity: 1; }
+  .expand, .columns.collapsed .expand { display: none; }
+  .col + .col { border-left: 0; border-top: 1px solid oklch(0.89 0.025 75 / 11%); }
+  .col.workspace { overflow: hidden; }
+  .col-head { padding: 18px 18px 11px; }
+  .col-head small { margin-bottom: 4px; }
+  .rows {
+    flex-direction: row; gap: 7px; padding: 0 12px 15px;
+    overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity;
+    scrollbar-width: thin;
+  }
+  .row { flex: 0 0 min(76vw, 290px); scroll-snap-align: start; }
+
+  .col.stage { min-height: max(760px, 100svh); }
+  #orbit-view {
+    grid-template-columns: 1fr; grid-template-rows: auto minmax(350px, 1fr);
+  }
+  .status-panel {
+    padding: 25px 22px 18px; overflow: visible;
+    border-right: 0; border-bottom: 1px solid oklch(0.89 0.025 75 / 9%);
+  }
+  .columns.collapsed .status-panel { padding-top: 25px; }
+  .status-title { min-height: 0; font-size: clamp(23px, 8vw, 29px); }
+  .status-line { margin-top: 9px; }
+  .status-facts { margin-top: 15px; }
+  .status-facts > div { padding: 7px 0; }
+  .status-foot { margin-top: 10px; padding-top: 0; }
+  .orbit-stage { padding: 20px 22px 42px; }
+  .sheet { width: calc(100vw - 24px); max-height: calc(100svh - 24px); }
+}
+
+/*
+ * ## 侧边栏形态（≤ 760px）—— 2026-08-19
+ *
+ * 用户实际在 Codex / Claude Code 的**侧边面板**里开这个界面，那是 400~700px 宽、
+ * 很高的一条。原话：「侧边栏的 UI 很难用」。在这个比例下，为宽屏调的那几条反而
+ * 是伤害：
+ *
+ *   · Changes 横着排 + 横向滚动 —— 一条侧边栏里横滚是找不到东西的手势，
+ *     而且第二张卡永远被右边裁掉一半（他截图里就是这样）。竖着排。
+ *   · 状态面板五行、每行 50px —— 一屏还没看到环就滚完了。压成两列。
+ *   · 环占满整宽 —— 上下留白吃掉一屏。给它一个上限。
+ *
+ * 断点取 760 而不是 820：820 那一档是给平板横屏的，那时横排 Changes 还成立。
+ */
+@media (max-width: 760px) {
+  /* Changes 竖着排。横滚在侧边栏里等于藏东西。 */
+  .rows {
+    flex-direction: column; gap: 8px; padding: 0 14px 14px;
+    overflow-x: visible; scroll-snap-type: none;
+  }
+  .row { flex: 0 0 auto; width: auto; }
+
+  /*
+   * 状态面板：**从 413px 压到一屏装得下**。
+   *
+   * 实测（520×820）：顶栏 58 + Changes 256 + 状态面板 413 = 727px 的壳挡在环前面，
+   * 而环从 742px 才开始 —— 第一屏基本看不见你来看的那个东西。
+   *
+   * 压的是三样，每样都有理由，不是单纯缩小：
+   *   · 标题：它和上面那张选中的 Change 卡说的是同一句话，窄屏上留一份就够
+   *   · 五条事实：改成两列铺，五行变三行
+   *   · 「把鼠标移到环上任一阶段」：侧边栏上没有 hover 这回事，那句话在这儿是错的
+   */
+  .status-title { font-size: 17px; margin-top: 2px; }
+  .status-panel { padding: 12px 14px 10px; }
+  .status-kicker { font-size: 10px; }
+  .status-facts {
+    margin-top: 9px; display: grid; gap: 0 14px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .status-facts > div {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px; padding: 4px 0; align-items: baseline;
+  }
+  .status-facts dt { font-size: 10px; }
+  .status-facts dd { max-width: 100%; text-align: right; font-size: 11px; }
+  /* 闸门那条话最长，让它自己占满一行，别被挤成两行半。 */
+  .status-facts > div:last-child { grid-column: 1 / -1; }
+  .status-line { margin-top: 5px; font-size: 12px; }
+  .status-foot { display: none; }
+
+  /* Changes：卡片收紧，两张卡从 256px 压到一屏的四分之一以内。 */
+  .col-head { padding: 10px 14px 6px; }
+  .col-head h2, .col-head .count { font-size: 16px; }
+  .rows { gap: 6px; padding: 0 14px 10px; }
+  .row { padding: 8px 11px; }
+  .row b { font-size: 13px; }
+  .row small { font-size: 10px; }
+
+  /*
+   * 环：给上限，别让它把一屏吃光。
+   *
+   * **同时要把状态面板的拉伸卸掉。** 820 那一档给 `.col.stage` 设了
+   * `min-height: max(760px, 100svh)`，于是这一列比内容高一大截，网格把余量摊给了
+   * 第一行 —— 面板内容只有 151px，盒子却撑到 343px（实测 520×820）。
+   * 光缩字号是没用的：吃掉高度的不是内容，是那 190px 空气。
+   */
+  .col.stage { min-height: 0; }
+  /*
+   * 环那一行要给够高，否则 `100cqh` 会把环压小 —— 半径一小，弧间距就装不下标签，
+   * 标签就压到隔壁的圆上（有测试口径：`标签压圆的次数` 必须是 0）。
+   * 340 是从实测的垂直预算倒推的：820 − 顶栏 58 − Changes 约 150 − 面板 168 ≈ 340。
+   */
+  #orbit-view {
+    grid-template-rows: min-content minmax(340px, auto);
+    align-content: start;
+  }
+  .status-panel { align-self: start; }
+  .orbit-stage { padding: 10px 10px 18px; }
+
+  /*
+   * ## 环上的标签在窄屏会互相压 —— 修的是几何，不是样式
+   *
+   * 标签固定挂在圆心下方约 59px（`<span>名字</span><em>状态</em>` 在按钮里）。
+   * 桌面上环半径两百多，八个圆的弧间距够宽，标签落在空处；侧边栏里半径只剩
+   * 104.8px，弧间距 82px —— **每个标签正好压到下一个圆上**（用户说的「阶段环渲染
+   * 出错」就是这个）。
+   *
+   * 两条一起才够：
+   *   · 环用满可用宽度（不再压到 380），半径尽量大
+   *   · **收掉 `<em>` 那行状态字**（「未开始」「有线程」）—— 环本身已经用亮度表示
+   *     状态了，那行在这个尺寸下是纯粹的碰撞源，而不是信息
+   */
+  .orbit-wrap { width: min(100cqw, 100cqh); }
+  .stage-node button em { display: none; }
+  .stage-node button span { font-size: 11px; }
+
+  /*
+   * **进了阶段页就把 Changes 收起来。**
+   *
+   * 侧边栏里它是竖排的，两张卡 214px + 顶栏 58 = 272px 挡在阶段内容前面 —— 而人
+   * 点进某个阶段的那一刻，他要看的是那个阶段，不是换一条 Change。回到环上它就回来。
+   *
+   * 用 `:has()` 而不是加一个 class：状态已经在 `#stage-view` 的 `hidden` 上了，
+   * 再挂一个 class 就是同一件事的第二份记法，两份迟早有一份忘了改。
+   */
+  .columns:has(#stage-view:not([hidden])) .col.workspace { display: none; }
+
+  /* 阶段页：留白收一收，产物那一栏本来就是自适应多列，会自己变一列。 */
+  #stage-view { padding: 14px 12px 12px; }
+  .stage-doc-block { padding: 0 12px 14px; }
+  .stage-open-block { padding: 0 12px 12px; }
+  .open-text { max-height: 150px; }
+  #stage-doc { grid-template-columns: 1fr; gap: 10px; }
+  .stage-cockpit-body { display: block; }
+}
+
+@media (max-width: 680px) {
+  #stage-view { padding: 15px 12px 12px; }
+  .stage-title { font-size: 24px; }
+  .stage-title .thread { display: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   body::before, .halo::before, .live-flag i, .orbit-wrap,
@@ -1194,6 +1368,37 @@ body::after {
 }
 .graph-finding b { font-weight: 500; color: var(--sand); font-size: 10.5px; letter-spacing: .06em; }
 #graph-view details summary { cursor: pointer; font-size: 12px; color: rgba(255,255,255,.55); }
+
+/* 产物栏：横跨整行，节自适应铺开 —— 挤在窄侧栏里人是不会用它的。 */
+.stage-doc-block { min-width: 0; padding: 0 22px 18px; }
+#stage-doc { display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+/* 顶上那行「还差什么」压满整行，它是这一屏唯一的判据显示。 */
+#stage-doc > .sheet-section { grid-column: 1 / -1; margin: 0 0 4px; }
+#stage-doc .gap { align-items: start; }
+#stage-doc .gap-text { min-width: 0; }
+#stage-doc input[type="text"] { width: 100%; margin-top: 8px; padding: 6px 8px;
+  border-radius: 6px; border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.04); color: inherit; font: inherit; }
+#stage-doc input[type="text"]:focus { outline: none;
+  border-color: rgba(255,255,255,.45); background: rgba(255,255,255,.07); }
+
+/* 开场白：一点就复制，正文只是让人确认复制的是什么。 */
+.stage-open-block { padding: 0 22px 14px; min-width: 0; }
+.open-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.open-copy {
+  padding: 7px 14px; border-radius: 7px; font: inherit; font-size: 12px; cursor: pointer;
+  border: 1px solid rgba(221,200,167,.45); background: rgba(221,200,167,.12); color: inherit;
+}
+.open-copy:hover { background: rgba(221,200,167,.2); }
+.open-copy.ghost { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.04); }
+.open-said { font-size: 11.5px; opacity: .75; }
+.open-text {
+  margin: 0; padding: 11px 13px; max-height: 190px; overflow: auto;
+  border-radius: 8px; border: 1px solid rgba(255,255,255,.1);
+  background: rgba(0,0,0,.22); font-size: 11.5px; line-height: 1.65;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 </style>
 </head>
 <body>
@@ -1205,13 +1410,6 @@ body::after {
 
 <div class="columns" id="columns">
   <button class="expand" id="expand">☰ 展开工作区</button>
-  <section class="col workspace">
-    <div class="col-head"><small>Workspace</small><h2>Projects</h2>
-      <button class="new" id="new-project" type="button" title="新建 Project">+</button>
-      <span class="count" id="project-count">01</span></div>
-    <div class="rows" id="projects"></div>
-  </section>
-
   <section class="col workspace">
     <div class="col-head"><small>Workspace</small><h2>Changes</h2>
       <button class="new" id="new-change" type="button" title="新建 Change">+</button>
@@ -1321,36 +1519,6 @@ body::after {
       仍然不进主屏 —— 它是个 <dialog>，和阶段弹窗同一个位置（§5.0 第 4 条管的是
       环那一屏，不是弹窗）。
     -->
-    <dialog class="sheet" id="project-sheet">
-      <div class="sheet-head">
-        <div>
-          <small>New Project</small>
-          <h2>一个 Project 就是一个仓库</h2>
-        </div>
-        <button class="sheet-close" id="project-cancel" type="button" aria-label="取消">✕</button>
-      </div>
-      <div class="sheet-body">
-        <p class="sheet-line">Codex 会在你给的这个目录里跑。给错了它就改错仓库。</p>
-        <label class="field">
-          <span>名字</span>
-          <input id="project-name" type="text" autocomplete="off" placeholder="例如 my-app">
-        </label>
-        <label class="field">
-          <span>代码在哪（绝对路径）</span>
-          <input id="project-path" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="/Users/you/code/my-app">
-        </label>
-        <p class="rubric-note bad" id="project-error" hidden></p>
-        <!-- HTML 里不认 markdown：要加粗就用 <strong>，写 ** 只会原样显示两个星号。 -->
-        <p class="sheet-empty">
-          提示：Codex 的目录信任<strong>不从父目录继承</strong>，也不能由 StagePass 代设。
-          没被信任过的目录，第一次跑会停在信任提示上等你按一下。
-        </p>
-      </div>
-      <div class="sheet-foot">
-        <button class="ask" id="project-create" type="button">建立</button>
-      </div>
-    </dialog>
 
     <!--
       新建 Change。和新建 Project 同一个形状 —— 两个入口长得一样，人不用记两套。
@@ -1384,26 +1552,53 @@ body::after {
       </div>
     </dialog>
 
-    <dialog class="sheet" id="sheet">
-      <div class="sheet-head">
-        <div>
-          <small id="sheet-kicker">Stage</small>
-          <h2 id="sheet-title">—</h2>
-          <span class="mark-pill" id="sheet-mark"></span>
+    <!--
+      ── 阶段这一页（用户 2026-08-17 拍板：三层合成一页）─────────────
+
+      在这之前点一个阶段要穿三层：环 → `#sheet` 弹层 → `#stage-view` 驾驶舱。
+      用户原话：「进去又有了一个界面，是不对的，交互太乱了，统一成一个页面。」
+
+      现在环是家，这一页就是一个阶段的全部。**每一块只回答一个问题**，块和它
+      回答的那个问题要对得上 —— 这是用户当天的第二句要求（「其余语义要明确」）：
+
+        顶带    我在哪
+        动作带  该我干什么
+        问题栏  什么挡着闸门
+        轮次条  我在看哪一轮
+        文件栏  这一轮碰了哪些文件
+        正文栏  这个文件是什么
+        副屏    这些文件之间什么关系（星图）／ 什么算过关（标准）
+
+      **只有副屏允许藏在按钮后面**（用户明说星图可以）。其余一律常驻 —— 往这里
+      加页签或折叠区之前先读这句：那种藏法正是这次要拆掉的东西。
+
+      合并顺手消掉了四份重复（原来弹层和驾驶舱各画一遍）：下一步、阶段名、
+      未决问题数、轮次标签。每一份现在只剩一个出处。
+
+      这里仍然**没有 approve / reject，而且不许有**：裁决只发生在人被正面问到的
+      那道题里（PRD §1、§5.2b）。动作带上的按钮全是「去问」和「去跑」，不是判。
+    -->
+    <section class="view" id="stage-view" hidden>
+      <header class="stage-cockpit-head">
+        <div class="stage-cockpit-identity">
+          <p id="stage-kicker">STAGE</p>
+          <div class="stage-title">
+            <span id="stage-name">—</span>
+            <span class="thread" id="stage-thread"></span>
+          </div>
+          <div class="stage-cockpit-state">
+            <span id="stage-state">正在读取阶段状态</span>
+          </div>
+          <span class="mark-pill" id="stage-mark"></span>
         </div>
-        <button class="sheet-close" id="sheet-close" type="button" aria-label="关闭">✕</button>
-      </div>
+        <button class="back stage-cockpit-back" id="back" type="button">← 阶段环</button>
+      </header>
+
       <!--
-        两个页签，不是把两块内容摞起来。改标准是一件要专门去做的事（它改变什么
-        能挡闸门），摞在问题下面会让人一边看问题一边顺手改标准 —— 那正是最不该
-        顺手的一件事。
+        动作带：该我干什么。原来这一整块住在弹层里，所以要「点进去」才看得见。
       -->
-      <div class="sheet-tabs" role="tablist">
-        <button class="sheet-tab" id="tab-gaps" type="button" role="tab" aria-selected="true">问题</button>
-        <button class="sheet-tab" id="tab-rubric" type="button" role="tab" aria-selected="false">标准</button>
-      </div>
-      <div class="sheet-body">
-        <p class="sheet-line" id="sheet-line"></p>
+      <section class="stage-act" aria-label="该我干什么">
+        <p class="sheet-line" id="stage-line"></p>
         <!--
           这一轮走到哪一步（§2.3）。三段是三个**看得见的里程碑**（裁判起来 /
           红方出现 / 蓝方出现），不是编出来的百分比 —— 说不出走到哪就一段都不亮：
@@ -1423,6 +1618,9 @@ body::after {
 
           需求文档 §1 说这个产品要「让缺少完整软件工程经验的用户也能按可靠流程完成
           开发」。**说出下一步就是这条本身**，不是装饰。
+
+          驾驶舱那份拷贝（`#stage-next` / `#stage-next-why`）已经删掉 —— 同一句话
+          两个出处，迟早有一天只有一个跟上。
         -->
         <p class="next-step" id="next-step" hidden></p>
         <!--
@@ -1431,56 +1629,211 @@ body::after {
           答完之后必然发生的事。这里每次重画都从库里的 lastOutcome 来，盖不掉。
         -->
         <p class="last-outcome" id="last-outcome" hidden></p>
-        <div id="sheet-gaps"></div>
-        <div id="sheet-rubric" hidden></div>
-      </div>
-      <div class="sheet-foot">
         <!--
-          看这个阶段的终端。**只看，绝不起进程** —— 起进程是下面那个按钮的事。
-          用户 2026-08-03：「我点进入终端只是想看看状态或者适时介入，而不是点了
-          就报废。」进程没了就给最后一屏，从没跑过就说还没有进程。
-        -->
-        <button class="enter" id="enter" type="button">看这个终端</button>
-        <!--
-          明确起一个 Codex 聊天窗口。有活进程时藏起来（一个阶段只许一个进程）。
-          名字里有「开」，人按下去就知道自己在起一个进程。
-        -->
-        <button class="enter" id="open-term" type="button" hidden>开一个终端</button>
-        <!--
-          结束这个终端 —— **界面上一直缺的那个出口**。每个动作在有活进程时都禁用
-          （一个阶段同时只许一个进程），而 TUI 不会自己退出：没有这个按钮，人一按
-          「开一个终端」，那个阶段就卡住，只剩这个出口。
-        -->
-        <button class="enter" id="close-term" type="button" hidden>结束这个终端</button>
-        <!--
-          旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
-          挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
-          而它恰恰是唯一不属于任何阶段的东西。彗星说对了这件事 —— 不在任何一条
-          轨道上、能到达环上任何地方、而且留下尾迹（动过手的那几趟进账本）。
-        -->
-        <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
-        <!--
-          批 2「模型起草，人改」：在旁路会话里谈好 → 起草落成文件 → 人在编辑器里
-          改 → 定稿。未经修改的草稿不算 brief（机械判据在服务端，不在这儿）。
-        -->
-        <button class="run" id="brief-draft" type="button" hidden>闲聊起草 brief</button>
-        <button class="run" id="brief-confirm" type="button" hidden>brief 定稿（我改完了）</button>
-        <button class="run" id="run" type="button" hidden>跑这个阶段</button>
-        <button class="run" id="waive" type="button" hidden>接受风险</button>
-        <button class="ask" id="ask" type="button" hidden>请 Codex 问我</button>
-      </div>
-    </dialog>
+          闸门按钮排在**题的前面**。
 
-    <section class="view" id="stage-view" hidden>
-      <div class="stage-head">
-        <div class="stage-title">
-          <span id="stage-name">—</span>
-          <span class="thread" id="stage-thread"></span>
+          2026-08-17 先试过把它钉在动作带底上（sticky）。真机命中测试当场打脸：
+          那条不透明的横杠压在题的尾巴上，七个单选和提交按钮一个都点不到 ——
+          人点下去什么也不发生，和「按钮坏了」完全同形。排在题前面就永远看得见，
+          而且什么都不挡。
+        -->
+        <div class="stage-gates" id="stage-gates-row">
+          <!--
+            旁路的入口 2026-08-11 搬到环上那颗**彗星**去了（用户拍板）：它原来
+            挤在这堆**跟着当前 stage 刷新**的按钮里，读起来像是某个阶段的一个动作，
+            而它恰恰是唯一不属于任何阶段的东西。
+          -->
+          <button class="run" id="brief" type="button" hidden>说清楚我要什么</button>
+          <!--
+            批 2「模型起草，人改」：在旁路会话里谈好 → 起草落成文件 → 人在编辑器里
+            改 → 定稿。未经修改的草稿不算 brief（机械判据在服务端，不在这儿）。
+          -->
+          <button class="run" id="brief-draft" type="button" hidden>闲聊起草 brief</button>
+          <button class="run" id="brief-confirm" type="button" hidden>brief 定稿（我改完了）</button>
+          <button class="run" id="run" type="button" hidden>跑这个阶段</button>
+          <!--
+            「甲」那条路（2026-08-19）：StagePass 只给题面，人在自己的会话里跑。
+
+            **谁执行 turn，谁就占着那条 Codex 线程** —— 工作台派的那一轮，人在 App
+            里打不开（"This is open in another app"）。取了题面自己跑，那一轮从第一秒
+            起就是他的：看得见、点得开、审批弹给他、进程死了也不关它事。
+
+            两个按钮成对出现，而且**互斥**：没备着轮的时候只有「取题面」，备着的时候
+            只有「结算这一轮」。同时摆两个，人会去猜哪个是这一步该按的。
+          -->
+          <button class="run" id="handoff" type="button" hidden>取题面（我自己跑）</button>
+          <button class="run" id="settle" type="button" hidden>结算这一轮</button>
+          <button class="run" id="waive" type="button" hidden>接受风险</button>
+          <button class="ask" id="ask" type="button" hidden>请 Codex 问我</button>
+          <!--
+            **中止这一轮。** 2026-08-18 用户截图：进程死掉之后面板在最显眼的位置写着
+            「下一步：按『中止这一轮』」，而这个按钮不存在（它跟着终端门户一起被删了，
+            说这句话的代码留了下来）。人当时唯一能做的是干等到超时。
+
+            它只收账、不推闸门：把这一轮记成人中止的，Change 从 running 里出来，
+            然后就能 retry。
+          -->
+          <button class="run" id="close" type="button" hidden>中止这一轮</button>
         </div>
-        <button class="back" id="back">← 返回阶段环</button>
+        <!--
+          取题面之后交给人的那段信封（2026-08-19「甲」）。
+
+          **原文照摆，可选、可复制。** 人要粘进自己的 Codex 会话的就是这一段，而
+          StagePass 回头认那条线程靠的正是它里面那个题面路径 —— 少一个字符就认不
+          回来。所以这里是个只读 textarea，不是渲染过的 markdown：能全选、能复制、
+          不会被任何美化改掉一个字。
+        -->
+        <div class="envelope" id="envelope-wrap" hidden>
+          <p class="envelope-head">把下面这段原样粘进你自己的 Codex 会话（要在这个项目的目录下），跑完回来按「结算这一轮」。</p>
+          <textarea class="envelope-box" id="envelope-box" readonly rows="5"></textarea>
+        </div>
+        <!--
+          在等你答的那道题（C 方案）。以前它只活在 Codex TUI 的 elicitation 表单里，
+          要模型挂着一轮把它端过去；挂不住就是 session_died_before_answering。
+          现在题在库里等着，你什么时候答都行。
+
+          格子横铺（`#open-question-fields` 是 auto-fit 网格）：一道裁决最多十格，
+          竖着排的话整道题会长得没边，而这一带是要和下半屏分高度的。
+        -->
+        <form class="open-question" id="open-question" hidden>
+          <p class="open-question-head" id="open-question-head"></p>
+          <div id="open-question-fields"></div>
+          <div class="open-question-foot">
+            <button type="submit" id="open-question-submit">提交</button>
+            <p class="open-question-note" id="open-question-note" hidden></p>
+          </div>
+        </form>
+      </section>
+
+      <!--
+        **这一阶段的产物，逐节 —— 这一屏的主角，所以它紧跟动作带。**
+
+        正文归模型，人只在每节下面留一句意见（DESIGN-prd-phase-2026-08-19 §3.2）。
+
+        2026-08-19 晚它先被挂在 327px 的窄侧栏、页面下面 1894px 处。用户的原话是
+        「我的 webUI 不还是啥也没动吗」—— **画出来了但人找不到，等于没画。**
+        位置本身就是设计的一部分，不是排版细节。
+      -->
+      <!--
+        **开场白** —— 人开新会话时原样粘进去的那段话，一点就复制。
+        用户 2026-08-19：「可以点击一个复制按键复制，而不是手动复制」。
+        文本源在 `src/prompts/opening.md`，由服务端装配（阶段名换进去）。
+      -->
+      <section class="stage-open-block" aria-labelledby="stage-open-heading">
+        <div class="stage-artifact-nav-head">
+          <p>PASTE THIS INTO A NEW SESSION</p>
+          <h2 id="stage-open-heading">开场白</h2>
+        </div>
+        <div class="open-row">
+          <button class="open-copy" id="copy-opening" type="button">复制开场白</button>
+          <button class="open-copy ghost" id="copy-opening-blue" type="button">复制反方开场白</button>
+          <span class="open-said" id="copy-said"></span>
+        </div>
+        <pre class="open-text" id="opening-text"></pre>
+      </section>
+
+      <section class="stage-doc-block" aria-labelledby="stage-doc-heading">
+        <div class="stage-artifact-nav-head">
+          <p>THE ARTIFACT · SECTION BY SECTION</p>
+          <h2 id="stage-doc-heading">产物（逐节留意见）</h2>
+        </div>
+        <div id="stage-doc"></div>
+      </section>
+
+      <div class="stage-cockpit-body">
+        <!--
+          闸门在看什么：这个阶段产出了什么（正文一起），以及什么挡着它。
+          整个阶段的，**不随轮次变** —— 所以它站在轮次条外面，不压在轮次条底下。
+
+          产出和问题必须同栏：**只看得见「有人挑了三条毛病」而看不见「他挑的是
+          什么东西」，那个列表是悬着的**（用户 2026-07-30）。Build 的产出是一个
+          commit，而 `/api/stage-artifacts` 明确拒收 commit —— 右边那两栏读不到它，
+          所以这一份不是右边的重复。
+        -->
+        <aside class="stage-problems" aria-labelledby="stage-problems-heading">
+          <div class="stage-artifact-nav-head">
+            <p>WHAT THE GATE LOOKS AT</p>
+            <h2 id="stage-problems-heading">闸门在看什么</h2>
+          </div>
+          <div id="stage-gaps"></div>
+
+          <!--
+            **模型问过我什么** —— 和「闸门在看什么」同栏，因为它答的是同一族问题：
+            这个阶段有什么东西需要我表态。常驻，不藏在按钮后面（见上面那段）。
+          -->
+          <div class="stage-artifact-nav-head">
+            <p>WHAT IT ASKED ME</p>
+            <h2 id="stage-asks-heading">问过我什么</h2>
+          </div>
+          <div id="stage-asks" aria-labelledby="stage-asks-heading"></div>
+
+        </aside>
+
+        <!--
+          产物区。三态由 `data-mode` 一处决定，**不用 [hidden]** —— display:grid /
+          flex 会盖掉 UA 给 [hidden] 的 display:none，这个坑这个仓库踩过两次
+          （`.round-progress` 和 `.graph-row` 各一次）。
+        -->
+        <section class="stage-secondary" id="stage-secondary" data-mode="files">
+          <div class="stage-round-bar">
+            <div class="stage-timeline-head">
+              <span>我在看哪一轮</span>
+              <strong id="stage-timeline-summary">读取中</strong>
+            </div>
+            <div id="stage-artifact-round" role="tablist" aria-label="选择结算轮次"></div>
+            <div class="stage-secondary-switch">
+              <button class="stage-switch" id="stage-graph-toggle" type="button"
+                      aria-pressed="false">看这一轮的关系图</button>
+              <button class="stage-switch" id="stage-rubric-toggle" type="button"
+                      aria-pressed="false">改判定标准</button>
+            </div>
+          </div>
+
+          <div class="stage-pane stage-pane-files">
+            <aside class="stage-artifact-navigator" aria-labelledby="stage-artifact-heading">
+              <div class="stage-artifact-nav-head">
+                <p>PRODUCTION LINEAGE</p>
+                <h2 id="stage-artifact-heading">这一轮碰了哪些文件</h2>
+              </div>
+              <label class="stage-artifact-search">
+                <span class="sr-only">搜索本轮文件</span>
+                <input id="stage-artifact-search" type="search" autocomplete="off"
+                       placeholder="搜索本轮文件…">
+              </label>
+              <div class="stage-artifact-legend" aria-hidden="true">
+                <span data-change="added">新增</span><span data-change="modified">修改</span>
+                <span data-change="unchanged">沿用</span><span data-change="deleted">删除</span>
+                <span data-change="replaced">替换</span>
+              </div>
+              <div id="stage-artifact-list" role="tree" aria-label="本轮文件"></div>
+              <p class="note" id="stage-note">浏览产物只读取已结算事实；不会启动 turn、推动闸门或改写项目文件。</p>
+            </aside>
+
+            <aside class="stage-artifact-inspector" aria-labelledby="stage-artifact-detail-title">
+              <div class="stage-inspector-kicker">
+                <span>READ-ONLY FILE</span><span id="stage-artifact-adapter">STAGE EVIDENCE</span>
+              </div>
+              <div id="stage-artifact-detail">
+                <h2 id="stage-artifact-detail-title">选择一个文件</h2>
+                <p>关系图与文件清单共用同一个选择。这里会显示正文、差异、来源、依赖和关联问题。</p>
+              </div>
+            </aside>
+          </div>
+
+          <div class="stage-pane stage-pane-graph" aria-label="本轮生产关系图">
+            <div class="stage-artifact-canvas" id="stage-artifact-canvas">
+              <div class="stage-artifact-map-label" aria-hidden="true">
+                <span>STRUCTURE MAP</span><strong>本轮生产关系</strong>
+              </div>
+              <div class="stage-artifact-empty" id="stage-artifact-empty" role="status">
+                正在从产物账本建立本轮投影…
+              </div>
+            </div>
+          </div>
+
+          <div class="stage-pane stage-pane-rubric" id="stage-rubric"></div>
+        </section>
       </div>
-      <div class="surface"><div id="term"></div></div>
-      <p class="note" id="stage-note">画面由 Codex 自己绘制。这里不做任何裁决：选择仍然发生在 Codex 的选择器里。</p>
     </section>
 
     <!-- 项目图谱（spec 2026-08-12）：第三个互斥 view。纯读：不起进程、不写库。 -->
@@ -1527,9 +1880,8 @@ body::after {
   }
 }
 </script>
-<script src="/xterm.js"></script>
-<script src="/addon-fit.js"></script>
-<script src="/panel.js"></script>
+<script type="module" src="/panel.js"></script>
+<script type="module" src="/stage-artifact-view.js"></script>
 <script type="module" src="/graph-view.js"></script>
 </body>
 </html>

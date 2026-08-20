@@ -1,0 +1,864 @@
+/*
+ * 阶段这一页。
+ *
+ * 它借项目黑洞图的雾紫、沙金、星体和细线语汇，但信息结构不同：没有传统 IDE 的
+ * 工具栏，也不把每件事装进圆角卡片。
+ *
+ * 2026-08-17 之前这里只是「产物驾驶舱」，是第三层；弹层那一层并进来之后，这一页
+ * 就是一个阶段的全部。纵向四段，每段只回答一个问题：
+ *
+ *   .stage-cockpit-head   我在哪
+ *   .stage-act            该我干什么          ← 从弹层搬进来的
+ *   .stage-problems       闸门在看什么        ← 从弹层搬进来的
+ *   .stage-secondary      产物区（三态）
+ *
+ * 产物区的三态由 `data-mode` 一处决定：files / graph / rubric。**不要改用
+ * [hidden] 切**：display:grid|flex 会盖掉 UA 给 [hidden] 的 display:none，
+ * 这个仓库为它流过两次血（`.round-progress` 和 `.graph-row`）。
+ */
+
+#stage-view {
+  --stage-ink: rgba(255, 255, 255, .88);
+  --stage-dim: rgba(255, 255, 255, .48);
+  --stage-faint: rgba(255, 255, 255, .28);
+  --stage-line: rgba(225, 201, 168, .15);
+  --stage-glow: rgba(225, 201, 168, .12);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  /*
+   * **整页只有这一个滚动容器。**
+   *
+   * 2026-08-17 真机（720px 高的真窗口，Build 那道题在等）：原来是动作带自己
+   * 嵌一个滚动条，于是「该我干什么」被压成 155px 的一条缝，里面装着 652px 的
+   * 内容 —— 连闸门按钮都在缝外面。人看到的是「点了没反应」。
+   *
+   * 一块高度不可预知的东西（一道裁决最多十格）塞进固定高度里，必然是这个下场。
+   * 有题在等的时候，答题就是这一屏的正事，它该有多高就多高；**不够就整页滚**，
+   * 一个滚动条，谁也不盖谁。下半屏用 min-height 保住自己那份。
+   */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background:
+    radial-gradient(80% 58% at 34% 44%, rgba(106, 82, 111, .15), transparent 66%),
+    linear-gradient(180deg, rgba(19, 17, 27, .30), rgba(17, 15, 23, .68));
+}
+
+#stage-view[hidden] { display: none !important; }
+.columns.stage-focus .expand { display: none !important; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.stage-cockpit-head {
+  position: relative;
+  z-index: 8;
+  flex: 0 0 auto;
+  min-height: 84px;
+  display: grid;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(250px, .9fr) auto;
+  align-items: center;
+  gap: 24px;
+  padding: 13px 20px 12px 24px;
+  border-bottom: 1px solid var(--stage-line);
+  background: rgba(27, 23, 35, .72);
+  backdrop-filter: blur(24px);
+}
+/*
+ * 「我在哪」压成两行：第一行是身份（阶段名 + 判定章 + kicker），第二行是状态。
+ * 原来是四层各自 margin-top 堆下来，光标题区就吃掉 112px —— 在看到正文之前
+ * 已经堆了八个块，人得从头读到尾才知道该干什么。
+ */
+.stage-cockpit-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 5px;
+}
+.stage-cockpit-identity .mark-pill { margin-top: 0; }
+
+.stage-cockpit-identity > p,
+.stage-inspector-kicker {
+  margin: 0;
+  color: var(--sand-deep);
+  font: 750 9px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+
+.stage-cockpit-identity .stage-title {
+  margin-top: 0;
+  font-size: clamp(22px, 2.1vw, 30px);
+}
+
+.stage-cockpit-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 13px;
+  margin-top: 0;
+  flex: 1 0 100%;
+  color: var(--stage-dim);
+  font: 600 10px/1.2 ui-monospace, Menlo, monospace;
+}
+
+.stage-cockpit-state span + span::before {
+  content: "·";
+  margin-right: 13px;
+  color: rgba(225, 201, 168, .35);
+}
+
+/* 终端状态是**异常时**才要紧的事，平时不该用一整条分隔线把它抬到和阶段名同级。 */
+.stage-terminal-control {
+  min-width: 0;
+  padding-left: 0;
+}
+
+.stage-terminal-control #terminal-summary {
+  min-height: 0;
+  max-width: none;
+  margin: 0;
+  color: var(--stage-dim);
+  font: 400 10.5px/1.45 ui-sans-serif, -apple-system, sans-serif;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.stage-terminal-control .terminal-portal__actions {
+  margin-top: 6px;
+  gap: 7px;
+}
+.stage-terminal-control .terminal-portal__actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 9px;
+}
+.stage-cockpit-back { align-self: start; white-space: nowrap; }
+
+/*
+ * ── 动作带：该我干什么 ─────────────────────────────────────
+ *
+ * 横贯全宽，紧挨着顶带 —— 这一屏上唯一真等着人的东西在这里。
+ *
+ * **封顶 + 自己滚**：一道裁决最多十格，格子多的时候不封顶它会把下面整个产物区
+ * 顶出视野。封顶之后滚的是它自己，产物区的位置不动。
+ */
+/*
+ * 动作带的高度**按剩余空间分，不按视口比例**。
+ *
+ * 2026-08-17 真机：原来写的是 `max-height: 52vh`。在 945px 高的窗口上它是 491px、
+ * 而内容 459px，正好看不出毛病；换到 720px 的真窗口，52vh = 374px 把下半屏压到
+ * 只剩 81px —— 「两块都常驻」当场作废。
+ *
+ * 视口比例根本不是这里的判据：这一带该占多少，取决于顶带用掉多少、下半屏至少
+ * 要留多少，而不是取决于屏幕有多高。所以让它 `flex: 0 1 auto` 收缩，下半屏用
+ * min-height 保底，剩下的才归它；不够就它自己滚。
+ */
+/*
+ * 动作带**不封顶、不自己滚**（滚的是整页，见 `#stage-view`）。
+ *
+ * 封顶那条试过两版都错：`max-height: 52vh` 在 945px 的窗口上看着正好、在 720px
+ * 上把下半屏压到 81px；改成按剩余空间收缩之后，轮到它自己被压成 155px 装 652px。
+ * 两次都是同一个错：**用一个和内容无关的数去限制一块高度由内容决定的东西。**
+ */
+.stage-act {
+  flex: 0 0 auto;
+  padding: 4px 24px 14px;
+  border-bottom: 1px solid var(--stage-line);
+  background: rgba(225, 198, 160, .045);
+}
+/* 里面那几块（sheet-line / next-step / last-outcome / round-progress / gap 等）
+   的样式仍在 panel.html 里，按类名生效，没有一条依赖当年那个 <dialog>。 */
+.stage-act .sheet-line { margin-top: 12px; }
+
+/*
+ * 闸门那一排排在**题的前面**，而且不钉不浮。
+ *
+ * 2026-08-17 先试过「钉在带底」（sticky + 不透明背景 + z-index）。真机命中测试
+ * 当场打脸：那条不透明的横杠正好压在题的尾巴上，**七个单选和提交按钮一个都点
+ * 不到** —— 人点下去什么也不发生，和「按钮坏了」完全同形。
+ *
+ * 教训是：**在一片会滚的内容上面浮一块不透明的东西，就是在制造点不到的控件。**
+ * 这一排本来就短（最多六个按钮、一行或两行），排在题前面就永远看得见，
+ * 不需要浮起来；题在它下面正常滚，滚到哪儿都点得到。
+ */
+.stage-gates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 4px;
+}
+/*
+ * 一个按钮都不显示时整排收掉，不留一条钉在底上的空黑带。
+ *
+ * 判据由 panel.js 写在 `hidden` 上（`:empty` 不行 —— 元素里有缩进文本节点，
+ * 那条选择器永远不匹配，是一条静默的死规则）。而 display:flex 会盖掉 UA 给
+ * `[hidden]` 的 display:none，所以这一行必须写出来。
+ */
+.stage-gates[hidden] { display: none; }
+
+/*
+ * 在等你答的那道题。格子**横铺**：竖着排会把闸门按钮顶出视野，而答题和按下
+ * 「跑这个阶段」是同一件事的两半。
+ */
+.open-question {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(225, 198, 160, .34);
+  border-radius: 12px;
+  background: rgba(225, 198, 160, .06);
+}
+.open-question[hidden] { display: none; }
+.open-question-head {
+  margin: 0 0 12px;
+  color: var(--stage-ink);
+  font: 500 13.5px/1.6 var(--serif);
+}
+#open-question-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+#open-question-fields fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 9px 12px 11px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .14);
+}
+#open-question-fields legend {
+  padding: 0 4px;
+  color: var(--sand-strong);
+  font: 600 10px/1.4 ui-sans-serif, -apple-system, sans-serif;
+  letter-spacing: .06em;
+}
+#open-question-fields label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  color: rgba(255, 255, 255, .78);
+  font: 400 12px/1.5 var(--serif);
+  cursor: pointer;
+}
+#open-question-fields input { margin-top: 3px; accent-color: var(--sand-deep); }
+.open-question-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+#open-question-submit {
+  min-height: 34px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 9px;
+  background: linear-gradient(115deg, #ddc8a7, #c49a81, #a97879);
+  color: #302d38;
+  cursor: pointer;
+  font: 820 10px/1 ui-sans-serif, sans-serif;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.open-question-note {
+  margin: 0;
+  color: var(--stage-dim);
+  font: 400 11.5px/1.5 var(--serif);
+}
+.open-question-note[hidden] { display: none; }
+
+/*
+ * 下半屏保底 300px。
+ *
+ * 「该我干什么」和「做出了什么」两块都常驻是用户定的，而常驻不是「DOM 里有」——
+ * 2026-08-17 真机上它一度只剩 81px：三个标题挤在一起，一行内容都读不到。那种
+ * 高度下它在屏幕上等于不存在，和被折起来没有区别。
+ *
+ * 所以保底写在这儿，动作带去抢剩下的（`.stage-act` 是 flex: 0 1 auto）。
+ */
+.stage-cockpit-body {
+  flex: 1 0 auto;
+  min-height: 300px;
+  display: grid;
+  grid-template-columns: minmax(260px, 27fr) minmax(0, 73fr);
+}
+
+/* ── 闸门在看什么：产出 + 挡着的问题。整阶段的，不随轮次变。 ── */
+.stage-problems {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--stage-line);
+  background: rgba(19, 16, 25, .72);
+}
+#stage-gaps {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 18px;
+}
+/* 弹层里这些块靠 .sheet-body 的内边距活着；这里自己给。 */
+#stage-gaps .sheet-section:first-child { margin-top: 4px; }
+
+/* ── 产物区：三态，data-mode 一处说了算 ── */
+.stage-secondary {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.stage-round-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 16px 11px;
+  border-bottom: 1px solid var(--stage-line);
+  background: rgba(20, 17, 26, .62);
+}
+.stage-round-bar .stage-timeline-head { margin-bottom: 0; }
+.stage-round-bar #stage-artifact-round { flex: 1 1 auto; }
+/* 标准不按轮次分 —— 切到标准时轮次条不该还在上面暗示它管着下面。 */
+.stage-secondary[data-mode="rubric"] #stage-artifact-round,
+.stage-secondary[data-mode="rubric"] .stage-timeline-head { display: none; }
+
+.stage-secondary-switch {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+.stage-switch {
+  padding: 6px 12px;
+  border: 1px solid rgba(225, 201, 168, .22);
+  border-radius: 999px;
+  background: rgba(30, 26, 38, .8);
+  color: var(--stage-dim);
+  cursor: pointer;
+  font: 600 10px/1 ui-sans-serif, -apple-system, sans-serif;
+  letter-spacing: .06em;
+  transition: border-color .16s, color .16s, background .16s;
+}
+.stage-switch:hover { border-color: rgba(225, 201, 168, .5); color: var(--stage-ink); }
+.stage-switch[aria-pressed="true"] {
+  border-color: var(--sand);
+  background: rgba(225, 201, 168, .14);
+  color: var(--stage-ink);
+}
+.stage-switch:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(225, 201, 168, .12); }
+
+.stage-pane { min-width: 0; min-height: 0; display: none; }
+.stage-secondary[data-mode="files"] .stage-pane-files {
+  display: grid;
+  grid-template-columns: minmax(220px, 38fr) minmax(0, 62fr);
+}
+.stage-secondary[data-mode="graph"] .stage-pane-graph { display: block; }
+.stage-secondary[data-mode="rubric"] .stage-pane-rubric {
+  display: block;
+  overflow-y: auto;
+  padding: 6px 22px 24px;
+}
+
+.stage-artifact-navigator {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--stage-line);
+  background: rgba(19, 16, 25, .72);
+}
+.stage-artifact-nav-head {
+  padding: 18px 18px 13px;
+  border-bottom: 1px solid var(--stage-line);
+}
+.stage-artifact-nav-head p,
+.stage-round-control > span {
+  margin: 0;
+  color: var(--sand-deep);
+  font: 750 8px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.stage-artifact-nav-head h2 {
+  margin: 5px 0 0;
+  color: var(--stage-ink);
+  font: 540 18px/1.1 var(--serif);
+  letter-spacing: -.025em;
+}
+.stage-artifact-search {
+  position: relative;
+  display: block;
+  margin: 14px 14px 9px;
+}
+.stage-artifact-search::before {
+  content: "⌕";
+  position: absolute;
+  left: 11px;
+  top: 7px;
+  color: var(--sand-deep);
+  font-size: 15px;
+}
+#stage-artifact-search {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px 0 32px;
+  border: 1px solid rgba(225, 201, 168, .18);
+  border-radius: 999px;
+  outline: none;
+  background: rgba(22, 19, 29, .68);
+  color: var(--stage-ink);
+  font: 500 11px/1 ui-sans-serif, -apple-system, sans-serif;
+}
+#stage-artifact-search:disabled { cursor: not-allowed; opacity: .45; }
+#stage-artifact-search:focus {
+  border-color: rgba(225, 201, 168, .58);
+  box-shadow: 0 0 0 3px rgba(225, 201, 168, .08);
+}
+
+/* 轮次时间轴。换行铺开，任何轮数下都不产生横向滚动条（22 轮那次的教训）。 */
+.stage-timeline-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.stage-timeline-head span {
+  color: var(--sand-deep);
+  font: 750 8px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.stage-timeline-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--stage-dim);
+  font: 400 11px/1.3 var(--serif);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#stage-artifact-round {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.stage-round-tick {
+  min-width: 27px;
+  height: 25px;
+  padding: 0 5px;
+  border: 1px solid rgba(225, 201, 168, .17);
+  border-radius: 3px;
+  background: rgba(30, 26, 38, .8);
+  color: var(--stage-faint);
+  font: 550 10px/1 ui-monospace, Menlo, monospace;
+  cursor: pointer;
+  transition: border-color .16s, color .16s, background .16s;
+}
+.stage-round-tick:hover { border-color: rgba(225, 201, 168, .42); color: var(--stage-ink); }
+.stage-round-tick[data-state="reconstructed"] { border-style: dashed; }
+.stage-round-tick[data-state="incomplete"] {
+  border-style: dotted;
+  color: rgba(169, 120, 121, .82);
+}
+.stage-round-tick[aria-selected="true"] {
+  border-color: var(--sand);
+  background: rgba(225, 201, 168, .13);
+  color: var(--stage-ink);
+}
+.stage-round-tick:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(225, 201, 168, .12);
+}
+
+.stage-artifact-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 56% 50%, rgba(225, 201, 168, .055), transparent 42%),
+    repeating-radial-gradient(circle at 52% 54%, transparent 0 69px,
+      rgba(225, 201, 168, .026) 70px, transparent 71px 112px);
+}
+.stage-artifact-map-label {
+  position: absolute;
+  z-index: 6;
+  top: 18px;
+  left: 20px;
+  pointer-events: none;
+}
+.stage-artifact-map-label span,
+.stage-artifact-map-label strong { display: block; }
+.stage-artifact-map-label span {
+  color: var(--sand-deep);
+  font: 750 8px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .16em;
+}
+.stage-artifact-map-label strong {
+  margin-top: 5px;
+  color: var(--stage-ink);
+  font: 520 15px/1 var(--serif);
+}
+.stage-artifact-canvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 48%, rgba(12, 10, 17, .42) 100%);
+}
+.stage-artifact-canvas canvas,
+.stage-artifact-scene-labels,
+.stage-artifact-fallback { position: absolute; inset: 0; }
+/* canvas 是替换元素：`width: auto` 解析成它的固有宽度（width 属性），不是包含块，
+   于是 `inset: 0` 对它无效 —— 定过 pixelRatio 之后它会撑成容器的两倍，而容器
+   overflow:hidden，人只看得见左上角四分之一。尺寸必须在这里写死，
+   不能指望 JS 在 ResizeObserver 里追。 */
+.stage-artifact-canvas canvas { width: 100%; height: 100%; }
+.stage-artifact-scene-labels { z-index: 2; pointer-events: none; }
+
+.stage-artifact-node-label {
+  padding: 3px 5px;
+  color: rgba(255, 255, 255, .62);
+  font: 500 9px/1.25 ui-monospace, Menlo, monospace;
+  text-shadow: 0 1px 5px #000, 0 0 12px rgba(22, 17, 28, .9);
+  white-space: nowrap;
+  transform: translateY(-6px);
+}
+.stage-artifact-node-label[data-kind="folder"] {
+  color: var(--sand);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.stage-artifact-node-label[data-kind="input"] { color: rgba(196, 162, 184, .68); }
+
+.stage-artifact-empty {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 14%;
+  text-align: center;
+  color: var(--stage-dim);
+  font: 450 13px/1.7 var(--serif);
+  background: rgba(18, 15, 24, .28);
+}
+.stage-artifact-empty[hidden] { display: none !important; }
+
+.stage-artifact-fallback {
+  z-index: 1;
+  overflow: auto;
+  display: grid;
+  align-content: center;
+  gap: 18px;
+  padding: 78px 24px 30px;
+}
+.stage-fallback-inputs,
+.stage-fallback-folders { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.stage-fallback-input,
+.stage-fallback-folder,
+.stage-fallback-file {
+  border: 1px solid var(--stage-line);
+  background: rgba(31, 27, 39, .68);
+  color: var(--stage-dim);
+  font: 500 10px/1.3 ui-monospace, Menlo, monospace;
+}
+.stage-fallback-input,
+.stage-fallback-folder { padding: 7px 10px; border-radius: 999px; }
+.stage-fallback-folder { color: var(--sand); }
+.stage-fallback-files { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
+.stage-fallback-file { padding: 5px 8px; cursor: pointer; border-radius: 3px; }
+.stage-fallback-file:hover,
+.stage-fallback-file[aria-selected="true"] {
+  color: #fff;
+  border-color: rgba(225, 201, 168, .56);
+  background: rgba(225, 201, 168, .12);
+}
+
+.stage-artifact-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  padding: 2px 14px 10px;
+  border-bottom: 1px solid var(--stage-line);
+  color: var(--stage-faint);
+  font: 600 8px/1 ui-monospace, Menlo, monospace;
+}
+.stage-artifact-legend span::before,
+.stage-file-change::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+[data-change="added"] { color: #9fae8e; }
+[data-change="modified"] { color: #d9b28e; }
+[data-change="unchanged"] { color: rgba(255, 255, 255, .35); }
+[data-change="deleted"] { color: #a97879; }
+[data-change="replaced"] { color: #c4a2b8; }
+[data-change="deleted"]::before { border-radius: 0; transform: rotate(45deg); }
+[data-change="replaced"]::before { border-radius: 0 50% 50% 0; }
+
+#stage-artifact-list {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 4px 0 10px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.stage-file-group[hidden] { display: none !important; }
+.stage-file-group + .stage-file-group { border-top: 1px solid rgba(225, 201, 168, .09); }
+.stage-file-group-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px 7px;
+  background: rgba(23, 19, 29, .95);
+  color: rgba(225, 201, 168, .62);
+  font: 650 8px/1.3 ui-monospace, Menlo, monospace;
+  letter-spacing: .06em;
+  overflow-wrap: anywhere;
+}
+.stage-file-group-heading small { color: var(--stage-faint); font: inherit; }
+.stage-file-row {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
+  gap: 2px 8px;
+  padding: 8px 14px;
+  border: 0;
+  border-left: 2px solid transparent;
+  outline: none;
+  background: transparent;
+  color: var(--stage-dim);
+  text-align: left;
+  cursor: pointer;
+}
+.stage-file-row[hidden] { display: none !important; }
+.stage-file-row:hover,
+.stage-file-row:focus-visible,
+.stage-file-row[aria-selected="true"] {
+  background: rgba(225, 201, 168, .07);
+  color: var(--stage-ink);
+}
+.stage-file-row:focus-visible { box-shadow: inset 0 0 0 1px rgba(225, 201, 168, .54); }
+.stage-file-row[aria-selected="true"] { border-left-color: var(--sand-deep); }
+.stage-file-change { grid-row: 1 / 3; align-self: center; font-size: 0; }
+.stage-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 550 10px/1.3 ui-monospace, Menlo, monospace;
+}
+.stage-file-meta {
+  color: var(--stage-faint);
+  font: 500 8px/1.25 ui-monospace, Menlo, monospace;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.stage-artifact-navigator .note {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--stage-line);
+  color: rgba(255, 255, 255, .33);
+  font: 400 8.5px/1.5 ui-sans-serif, -apple-system, sans-serif;
+}
+
+.stage-artifact-inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 18px clamp(18px, 2.2vw, 28px) 28px;
+  background:
+    linear-gradient(180deg, rgba(42, 36, 49, .44), rgba(21, 18, 27, .76)),
+    rgba(25, 21, 31, .72);
+}
+.stage-inspector-kicker {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--stage-line);
+}
+#stage-artifact-adapter { color: rgba(255, 255, 255, .31); }
+#stage-artifact-detail { padding-top: 17px; }
+#stage-artifact-detail h2 {
+  margin: 0;
+  color: var(--stage-ink);
+  font: 540 clamp(19px, 2vw, 27px)/1.12 var(--serif);
+  letter-spacing: -.035em;
+  overflow-wrap: anywhere;
+}
+#stage-artifact-detail > p,
+.stage-detail-hint {
+  color: var(--stage-dim);
+  font: 400 12px/1.65 var(--serif);
+}
+.stage-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 12px 0 0;
+  color: var(--stage-faint);
+  font: 550 9px/1.3 ui-monospace, Menlo, monospace;
+  text-transform: uppercase;
+}
+.stage-detail-meta span + span::before { content: "·"; margin-right: 12px; }
+.stage-detail-tabs {
+  display: flex;
+  gap: 0;
+  margin-top: 18px;
+  border-bottom: 1px solid var(--stage-line);
+}
+.stage-detail-tabs button {
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--stage-faint);
+  cursor: pointer;
+  font: 650 9px/1 ui-sans-serif, -apple-system, sans-serif;
+  letter-spacing: .09em;
+}
+.stage-detail-tabs button[aria-selected="true"] {
+  color: var(--sand);
+  border-color: var(--sand-deep);
+}
+.stage-detail-content { padding-top: 15px; }
+.stage-detail-content pre,
+.stage-markdown pre {
+  margin: 0;
+  padding: 13px 14px;
+  overflow: auto;
+  border: 1px solid rgba(225, 201, 168, .11);
+  border-radius: 5px;
+  background: rgba(7, 6, 10, .35);
+  color: rgba(255, 255, 255, .72);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 400 10.5px/1.62 ui-monospace, Menlo, monospace;
+}
+.stage-detail-content pre.stage-diff { color: #e0d2bd; }
+.stage-markdown h1,
+.stage-markdown h2,
+.stage-markdown h3 {
+  margin: 1.2em 0 .4em;
+  color: var(--stage-ink);
+  font-family: var(--serif);
+  line-height: 1.15;
+}
+.stage-markdown h1 { font-size: 22px; }
+.stage-markdown h2 { font-size: 18px; }
+.stage-markdown h3 { font-size: 15px; }
+/* 正文里常有 `assets/scripts/game/GameBootstrap.ts#GameBootstrap` 这种断不开的长
+   路径。不给它一个断点，它就会顶穿右栏。 */
+.stage-markdown p,
+.stage-markdown li {
+  color: rgba(255, 255, 255, .65);
+  font: 400 12px/1.72 var(--serif);
+  overflow-wrap: anywhere;
+}
+.stage-fact-section p,
+.stage-fact-section li,
+.stage-gap-fact { overflow-wrap: anywhere; }
+.stage-markdown ul { padding-left: 19px; }
+.stage-fact-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--stage-line);
+}
+.stage-fact-section h3 {
+  margin: 0 0 8px;
+  color: var(--sand-deep);
+  font: 700 9px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.stage-fact-section p,
+.stage-fact-section li {
+  color: var(--stage-dim);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.stage-fact-section ul { margin: 0; padding-left: 17px; }
+.stage-fact-section b { color: var(--stage-ink); font-weight: 600; }
+.stage-gap-fact {
+  padding-left: 9px;
+  border-left: 2px solid var(--rose);
+}
+
+/*
+ * 投影不可用 / 空 / 不完整时，右边那块只读检查台没有东西可读 —— 收起来，把
+ * 宽度还给文件清单，而不是重复一遍同一句「没有可读文件」。
+ */
+#stage-view[data-projection="unavailable"] .stage-pane-files,
+#stage-view[data-projection="empty"] .stage-pane-files,
+#stage-view[data-projection="incomplete"] .stage-pane-files {
+  grid-template-columns: minmax(0, 1fr);
+}
+#stage-view[data-projection="unavailable"] .stage-artifact-inspector,
+#stage-view[data-projection="empty"] .stage-artifact-inspector,
+#stage-view[data-projection="incomplete"] .stage-artifact-inspector {
+  display: none;
+}
+
+@media (max-width: 1050px) {
+  .stage-cockpit-head {
+    grid-template-columns: 1fr auto;
+    gap: 14px;
+  }
+  .stage-terminal-control { grid-column: 1 / 2; padding: 10px 0 0; border-left: 0; border-top: 1px solid var(--stage-line); }
+  .stage-cockpit-back { grid-column: 2; grid-row: 1; }
+  .stage-cockpit-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, auto) minmax(320px, 1fr);
+  }
+  .stage-problems { border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  .stage-secondary[data-mode="files"] .stage-pane-files {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  #stage-view { min-height: 100svh; }
+  .stage-cockpit-head { display: flex; flex-direction: column; align-items: stretch; }
+  .stage-terminal-control { padding: 10px 0 0; border-left: 0; border-top: 1px solid var(--stage-line); }
+  .stage-cockpit-back { position: absolute; right: 16px; top: 14px; }
+  /* 这么窄的时候整页一条纵队自己滚；动作带跟着不再单独封顶，否则页内套页内滚。 */
+  .stage-act { max-height: none; overflow-y: visible; }
+  .stage-cockpit-body { display: block; overflow-y: auto; }
+  .stage-problems { border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  #stage-gaps { overflow-y: visible; }
+  .stage-secondary { display: block; }
+  .stage-secondary[data-mode="files"] .stage-pane-files { grid-template-columns: minmax(0, 1fr); }
+  .stage-artifact-navigator { min-height: 360px; border-right: 0; border-bottom: 1px solid var(--stage-line); }
+  .stage-pane-graph { min-height: 600px; }
+  .stage-artifact-inspector { min-height: 520px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-artifact-canvas canvas { animation: none !important; }
+}

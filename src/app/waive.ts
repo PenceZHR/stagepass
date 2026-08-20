@@ -8,9 +8,7 @@ import { ChangeStore } from "../store/change-store";
 import { CommandStore } from "../store/command-store";
 import { GapStore } from "../store/gap-store";
 import { QuestionStore } from "../store/question-store";
-import {
-  askFollowUp, launchAskPrompt, waitForAnswer, type AskSessions, type Unanswered,
-} from "./ask-human";
+import { draftOrRead } from "./ask-human";
 
 /**
  * **接受一条已知风险**这个用例 —— 从 `handle()` 的 HTTP 分支里搬出来（BACKLOG §4.1·J）。
@@ -25,12 +23,6 @@ import {
  * 全部含义。
  */
 
-/**
- * 起一个新会话去问人，带上这次要说的提示词。**会话怎么起是 `web/` 那层的事** ——
- * 这一层不知道 argv、不知道插件怎么注册，也就不会被那些细节绑住。
- */
-export type LaunchAsk = (input: { phase: Phase; prompt: string }) => void;
-
 export type WaiveOutcome =
   /** 没有这个 Change。调用者翻成 404。 */
   | { readonly kind: "no_such_change" }
@@ -42,14 +34,8 @@ export type WaiveOutcome =
   }
   /** 一条可接受的都没有 —— 一道没有选项的题比不问更糟（`domain/question.ts`）。 */
   | { readonly kind: "nothing_waivable"; readonly phase: Phase }
-  /** 问出去了，但没答上来。 */
-  | {
-    readonly kind: "unanswered";
-    readonly phase: Phase;
-    readonly questionId: string;
-    readonly reason: Unanswered | "session_died_before_asking";
-    readonly threadId: string | null;
-  }
+  /** 题摆在页面上了。答落库时 `/api/answer` 会再走一遍这个用例。 */
+  | { readonly kind: "asked"; readonly phase: Phase; readonly questionId: string }
   /** 答了，但一条都没接受（没选、按了 Esc、或者理由留空）。 */
   | { readonly kind: "none_accepted"; readonly phase: Phase; readonly questionId: string }
   /** 他看见的那份证据在他想的时候被人动过了。 */
@@ -81,15 +67,12 @@ export interface WaiveResult {
 
 export async function waive(input: {
   database: Database.Database;
-  sessions: AskSessions;
   changeId: string;
   /** 现在能不能问人。判据在 `web/` 那层（它要看活进程和账本），这里只消费结论。 */
   cannotAskNow: (phase: Phase) =>
     { reason: string; busy: string; jobId?: string } | null;
-  launch: LaunchAsk;
-  timeoutMs: number;
 }): Promise<WaiveResult> {
-  const { database, sessions, changeId } = input;
+  const { database, changeId } = input;
   const changes = new ChangeStore(database);
   let phase: Phase;
   try {
@@ -105,45 +88,48 @@ export async function waive(input: {
   const waivable = gaps.all(changeId, phase).filter((gap) =>
     gap.status === "open" && gap.kind === "finding" && gap.severity === "P1");
   // round：标题上「第几轮提的」的分母 —— 和派发、裁决同一份算法。
-  const question = waiveQuestion({
+  const freshQuestion = waiveQuestion({
     phase, waivable, round: roundFromLedger(changes.ledger(changeId), phase),
   });
+  const gate = new CommandStore(database).gateFor(changeId);
+  const questions = new QuestionStore(database);
+  // 同裁决和 brief：答案是持久事实，等待它的 HTTP 协程不是。重启后续旧题，不重问。
+  const interrupted = questions.answered(changeId, "waive").find((record) =>
+    record.phase === phase && !record.id.endsWith("-x"));
+  const question = interrupted?.question ?? freshQuestion;
   if (!question) {
     return { outcome: { kind: "nothing_waivable", phase }, closeSession: false };
   }
 
-  const gate = new CommandStore(database).gateFor(changeId);
-  const questionId = `W-${changeId}-${phase}-${Date.now()}`;
-  const questions = new QuestionStore(database);
-  questions.ask({
-    id: questionId, changeId, phase, kind: "waive",
-    question, expectedSnapshot: gate.snapshot,
-  });
-
-  const askPrompt = launchAskPrompt("它会把「哪几条风险可以带着走」交给我来选。",
-    "不要替我做决定，不要评价这些风险，调用完就停下。");
-  input.launch({ phase, prompt: askPrompt });
-
-  const waited = await waitForAnswer({
-    database, questions, sessions, changeId, phase, questionId,
-    timeoutMs: input.timeoutMs,
-    // 「turn 已死」探测认的就是这句话装在哪一轮里（ask-human.ts）。
-    prompt: askPrompt,
-  });
-  if (!waited.answered) {
-    /*
-     * **这条路原来漏了 `settle`。** 裁决和录需求都补过（2026-08-03 那次 63 分钟的
-     * 死题），这第四份拷贝没有 —— 现在收题在 `waitForAnswer` 里，只此一份。
-     */
+  /*
+   * 已经有一道 open 的 waive 题挂着，就把它还回去 —— 再 `ask` 会把它 supersede
+   * 掉，人正对着的那张表就作废了。（`-x` 由下面 interrupted 那条路接。）
+   */
+  const alreadyOpen = questions.open(changeId);
+  if (
+    alreadyOpen !== null && alreadyOpen.kind === "waive"
+    && alreadyOpen.phase === phase && !alreadyOpen.id.endsWith("-x")
+  ) {
     return {
-      outcome: {
-        kind: "unanswered", phase, questionId,
-        reason: waited.reason, threadId: waited.threadId,
-      },
-      closeSession: true,
+      outcome: { kind: "asked", phase, questionId: alreadyOpen.id },
+      closeSession: false,
     };
   }
-  const answer = waited.answer;
+
+  const questionId = interrupted?.id ?? `W-${changeId}-${phase}-${Date.now()}`;
+  /*
+   * 起草或捡答案，**不等** —— 「哪几条风险可以带着走」这张表是 StagePass 自己算
+   * 的，题落进库、面板画到浏览器上，人什么时候答都行；答落库时 `/api/answer`
+   * 会再把这个用例喊回来，从账本里捡起答案接着走。
+   */
+  const first = draftOrRead({
+    questions, changeId, phase, kind: "waive",
+    question, questionId, expectedSnapshot: gate.snapshot,
+  });
+  if (first.kind === "pending") {
+    return { outcome: { kind: "asked", phase, questionId }, closeSession: false };
+  }
+  const answer = first.answer;
 
   /*
    * **第二趟：只问真被接受的那几条要理由。**
@@ -154,21 +140,22 @@ export async function waive(input: {
   let full = answer;
   const moreWaive = waiveFollowUpQuestion(waivable, answer);
   if (moreWaive) {
-    const second = await askFollowUp({
-      database, questions, sessions, changeId, phase, question: moreWaive,
+    const second = draftOrRead({
+      questions, changeId, phase, question: moreWaive,
       kind: "waive",
       questionId: `${questionId}-x`, expectedSnapshot: gate.snapshot,
-      timeoutMs: input.timeoutMs,
+      settleOnAnswer: true,
     });
-    if (typeof second === "string") {
+    if (second.kind === "pending") {
       return {
-        outcome: {
-          kind: "unanswered", phase, questionId, reason: second, threadId: null,
-        },
-        closeSession: true,
+        outcome: { kind: "asked", phase, questionId: `${questionId}-x` },
+        closeSession: false,
       };
     }
-    full = { action: answer.action, content: { ...answer.content, ...second.content } };
+    full = {
+      action: answer.action,
+      content: { ...answer.content, ...second.answer.content },
+    };
   }
 
   const accepted = waiveFrom(waivable, full);

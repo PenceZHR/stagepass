@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { missingSections, renderTemplate, templateFor } from "./phase-template";
+import { missingSections, parseTemplateSections, renderTemplate, templateFor } from "./phase-template";
 
 /*
  * 覆盖面 = 环 v3 主线的八个阶段（每个都有产出文档 —— Build/Test 交 commit 的
@@ -83,4 +83,91 @@ test("标题必须逐字相等，只是包含不算", () => {
       : `## ${each.title}\n有内容\n`)
     .join("\n");
   assert.deepEqual(missingSections(filled, sections), [sections[0]!.key]);
+});
+
+/*
+ * 模板正文文本储存（用户 2026-08-13 拍板：提示词要模块化、文本储存）。
+ *
+ * `src/prompts/templates/<Phase>.md` 是**源头**，这个模块启动时解析它。解析器
+ * 必须**响亮地拒绝坏文件**：静默吞掉一节，红方就会收到一份缺格的清单然后照缺的
+ * 写 —— 和「空模板」同一个坑（模块头上那段写过为什么 null ≠ 空模板）。
+ */
+test("解析：`<!-- section: key -->` + `## 标题` + 正文，一节一块", () => {
+  const sections = parseTemplateSections([
+    "<!-- section: problem -->",
+    "## 要解决谁的什么问题",
+    "谁在用、他今天怎么受阻。",
+    "",
+    "<!-- section: outcome -->",
+    "## 做完之后什么变了",
+    "可观察的结果。",
+  ].join("\n"));
+  assert.deepEqual(sections, [
+    { key: "problem", title: "要解决谁的什么问题", asks: "谁在用、他今天怎么受阻。" },
+    { key: "outcome", title: "做完之后什么变了", asks: "可观察的结果。" },
+  ]);
+});
+
+test("解析：多行正文按行保留 —— 文件里一行就是字符串里一行", () => {
+  const sections = parseTemplateSections([
+    "<!-- section: graph -->",
+    "## 机器可读的架构图",
+    "第一行说形状：",
+    "`concepts`（数组）；",
+    "`relations`（数组）。",
+  ].join("\n"));
+  assert.equal(
+    sections[0]!.asks,
+    "第一行说形状：\n`concepts`（数组）；\n`relations`（数组）。",
+  );
+});
+
+test("解析：第一个节标记之前的东西是文件头注释，不进任何一节", () => {
+  const sections = parseTemplateSections([
+    "<!--",
+    "  这份文件是模板的源头；这段是给编辑它的人看的说明。",
+    "-->",
+    "",
+    "<!-- section: only -->",
+    "## 唯一的一节",
+    "正文。",
+  ].join("\n"));
+  assert.deepEqual(sections.map((each) => each.key), ["only"]);
+  assert.equal(sections[0]!.asks, "正文。");
+});
+
+test("解析：正文首尾的空行修掉，中间的保留原样", () => {
+  const sections = parseTemplateSections([
+    "<!-- section: s -->",
+    "## 标题",
+    "",
+    "第一段。",
+    "",
+    "第二段。",
+    "",
+  ].join("\n"));
+  assert.equal(sections[0]!.asks, "第一段。\n\n第二段。");
+});
+
+test("解析：坏文件要响亮地拒绝，不许静默吞节", () => {
+  // 一节都没有 —— 文件路径错了或整个被清空了，都不该变成「这个阶段没模板」。
+  assert.throws(() => parseTemplateSections("只有散文，没有节标记"), /没有任何节/);
+  // 节标记后面没有标题行。
+  assert.throws(
+    () => parseTemplateSections("<!-- section: s -->\n正文没有标题"),
+    /没有 `## 标题`/,
+  );
+  // 标题有了但正文是空的 —— 空 asks 的节和缺节一样害红方。
+  assert.throws(
+    () => parseTemplateSections("<!-- section: s -->\n## 标题\n\n"),
+    /正文是空的/,
+  );
+  // key 重复 —— rubric 挂在 key 上，两节同 key 会互相认领。
+  assert.throws(
+    () => parseTemplateSections([
+      "<!-- section: dup -->", "## 甲", "正文。",
+      "<!-- section: dup -->", "## 乙", "正文。",
+    ].join("\n")),
+    /key 重复/,
+  );
 });

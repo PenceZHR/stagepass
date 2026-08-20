@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, sep } from "node:path";
 
-import { selectCode } from "./code-selection";
+import { selectCode, type Selection } from "./code-selection";
 import { layout, overlayPlan, type PlanOverlay, type SceneModel } from "./graph-layout";
 import {
   ingredientsFor, ModuleNotInGraphError, type IngredientList,
@@ -37,6 +37,14 @@ export type WorkspaceGraph =
   | { readonly ok: true; readonly scene: SceneModel; readonly plan?: PlanReading }
   | { readonly ok: false; readonly reason: "not-a-repo" };
 
+export type WorkspaceModuleGraph =
+  | {
+    readonly ok: true;
+    readonly graph: ReturnType<typeof parseModuleGraph>;
+    readonly selection: Selection;
+  }
+  | { readonly ok: false; readonly reason: "not-a-repo" };
+
 /**
  * 读不到的文件跳过而不抛：一个 tracked 但已从工作树删掉（还没 commit）的文件
  * 不该挡住整张图 —— 它的缺席会以 `dangling` 边的形式**在图上现形**，这比一个
@@ -63,6 +71,23 @@ function codeFiles(input: {
   return files;
 }
 
+export function readWorkspaceModuleGraph(input: {
+  root: string;
+  excluded: readonly string[];
+  trackedFiles: (cwd: string) => readonly string[] | null;
+  readFile?: (absolute: string) => string | null;
+}): WorkspaceModuleGraph {
+  const tracked = input.trackedFiles(input.root);
+  if (tracked === null) return { ok: false, reason: "not-a-repo" };
+  const selection = selectCode(tracked, input.excluded);
+  const files = codeFiles({
+    root: input.root,
+    code: selection.code,
+    readFile: input.readFile ?? readOrSkip,
+  });
+  return { ok: true, graph: parseModuleGraph(files), selection };
+}
+
 export function readWorkspaceGraph(input: {
   root: string;
   excluded: readonly string[];
@@ -75,12 +100,10 @@ export function readWorkspaceGraph(input: {
    */
   planFile?: string;
 }): WorkspaceGraph {
-  const tracked = input.trackedFiles(input.root);
-  if (tracked === null) return { ok: false, reason: "not-a-repo" };
-  const selection = selectCode(tracked, input.excluded);
+  const modules = readWorkspaceModuleGraph(input);
+  if (!modules.ok) return modules;
+  const { graph, selection } = modules;
   const readFile = input.readFile ?? readOrSkip;
-  const files = codeFiles({ root: input.root, code: selection.code, readFile });
-  const graph = parseModuleGraph(files);
   const scene = layout(graph, selection);
 
   if (input.planFile === undefined) return { ok: true, scene };

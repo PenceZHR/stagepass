@@ -1,9 +1,20 @@
 import type { Job } from "./job-store";
 import type { TurnOutcome, TurnRunner } from "./turn-loop";
-import { runRubricRound, type RubricRoundDependencies } from "./rubric-round";
+import {
+  prepareRubricRound, resumePreparedRubricRound, rubricIdsOf, settleRubricRound,
+  type RubricRoundDependencies,
+  type RubricRoundRequest, type RubricRoundSettled,
+} from "./rubric-round";
+import { dispatchRound } from "./round-runner";
 import { join } from "node:path";
 
 import { artifactHome, blueDocPath, redDocPath } from "../domain/artifact-home";
+import {
+  isRepoRelativePath,
+  type ArtifactRole,
+  type StageArtifactFile,
+  type StageArtifactUpstream,
+} from "../domain/stage-artifact";
 import {
   commitsWholeTree, parallelTwinOf, producesCommit, requiresHumanEdit,
   upstreamOf, type Phase,
@@ -17,7 +28,20 @@ import type { BindingStore } from "../store/binding-store";
 import type { ChangeStore } from "../store/change-store";
 import type { EvidenceStore } from "../store/evidence-store";
 import type { RoundNoteStore } from "../store/round-note-store";
+import type { HandedRoundFiles } from "../store/handoff-store";
 import { looksLikeSha, type RepoOps } from "./repo";
+
+/**
+ * 备那一刻记下来的东西 —— 结算时原样交回来。
+ *
+ * **形状从 store 那边借**（`HandedRoundFiles`），不在这儿再定义一份：两份同形状的
+ * 类型必然漂移，而漂移的表现是「存进去的和读出来的对不上」——那正好是这条路唯一
+ * 承重的东西。
+ */
+export type HandedRound = HandedRoundFiles & {
+  readonly envelope: string;
+  readonly scriptPath: string;
+};
 
 /**
  * 把一个阶段「跑一次」变成**跑一轮对抗**。
@@ -88,10 +112,164 @@ export interface RoundTurnRunnerOptions extends RubricRoundDependencies {
 const describeArtifact = (id: string): string =>
   looksLikeSha(id) ? `commit ${id}（用 \`git show ${id}\` 看这一轮的改动）` : id;
 
+interface ProducedRound {
+  readonly artifactIds: readonly string[];
+  readonly commit: string | null;
+}
+
+function roleOf(changeId: string, phase: Phase, round: number, path: string): ArtifactRole {
+  if (path === redDocPath(changeId, phase, round)) return "producer";
+  if (path === blueDocPath(changeId, phase, round)) return "critic";
+  if (path === `${artifactHome(changeId)}/arch.graph.json`) return "structured";
+  return "delivery";
+}
+
+function roundFiles(input: {
+  changeId: string;
+  phase: Phase;
+  round: number;
+  reported: readonly string[];
+  produced: ProducedRound;
+  cwd: string | null;
+  repo: RepoOps;
+}): readonly StageArtifactFile[] {
+  const files = new Map<string, StageArtifactFile>();
+  if (input.produced.commit !== null && input.cwd !== null) {
+    const changed = input.repo.changedFiles(input.cwd, input.produced.commit);
+    if (changed === null) {
+      throw new Error(`round_commit_unreadable:${input.produced.commit}`);
+    }
+    for (const file of changed) {
+      files.set(file.path, {
+        path: file.path,
+        ...(file.previousPath === undefined ? {} : { previousPath: file.previousPath }),
+        role: roleOf(input.changeId, input.phase, input.round, file.path),
+        change: file.change,
+      });
+    }
+  }
+
+  const fixed = [
+    redDocPath(input.changeId, input.phase, input.round),
+    blueDocPath(input.changeId, input.phase, input.round),
+  ];
+  const fallback = input.produced.commit === null
+    ? [...fixed, ...input.reported.filter(isRepoRelativePath)]
+    : fixed;
+  for (const path of fallback) {
+    if (files.has(path)) continue;
+    files.set(path, {
+      path,
+      role: roleOf(input.changeId, input.phase, input.round, path),
+      change: "modified",
+    });
+  }
+  return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export class RoundTurnRunner implements TurnRunner {
   constructor(private readonly options: RoundTurnRunnerOptions) {}
 
+  /**
+   * 排一轮活儿：**备 → 派 → 收**，一条龙。
+   *
+   * 三步各自还有单独的入口（`prepare` / `settle`）—— 2026-08-19 定案「甲」之后，
+   * 人可以把中间那一步拿去自己跑。**三条路共用同一份 `plan`**：抄开必然分叉，
+   * 而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」。
+   */
   async run(job: Job): Promise<TurnOutcome> {
+    const plan = this.plan(job);
+    const prepared = prepareRubricRound(plan.request, plan.dependencies);
+    const { delivery, before } = await dispatchRound(
+      plan.request, plan.dependencies, prepared,
+    );
+    const settled = await settleRubricRound(
+      plan.request, plan.dependencies, delivery, prepared, before,
+    );
+    return this.afterRound(job, plan, settled);
+  }
+
+  /**
+   * **备一轮，但不派**（2026-08-19 定案「甲」）。
+   *
+   * 交出信封和这一轮写出去的那几个路径 —— 上层把它们记进 `handed_rounds`，人拿着
+   * 信封去自己的会话里跑。这里**一个 turn 都不派、一个字都不写进账本**：StagePass
+   * 这时候确实什么都没在跑，装作在跑会让「这个阶段有活儿」这句话变成假的。
+   */
+  prepare(job: Job): { readonly round: number } & HandedRound {
+    /*
+     * **这一轮是「下一轮」。** `plan` 数出来的是账本上已经开过的轮数，而这条路
+     * 不建 job —— 那个 start 要到结算时才写。不加一，信封上就写着「第 0 轮」，
+     * 名单和题面文件也全落在 0 上（2026-08-19 真机第一次点就是这样）。
+     */
+    const counted = this.plan(job).round;
+    const plan = this.plan(job, counted + 1);
+    const prepared = prepareRubricRound(plan.request, plan.dependencies);
+    return {
+      round: plan.round,
+      envelope: prepared.envelope,
+      scriptPath: prepared.scriptPath,
+      worklist: prepared.worklist ?? null,
+      blueRubric: prepared.blueRubric ?? null,
+      rubricIds: rubricIdsOf(prepared),
+    };
+  }
+
+  /**
+   * 人跑完了，**收这一轮**。
+   *
+   * `delivery` 是从他那条线程上读回来的（裁判最后说的那段话 + 线程 id），`prepared`
+   * 是备那一刻记下来的路径 —— 两样都由上层从 `handed_rounds` 取出来交进来。
+   * 这一层不去认线程：认线程要问 Codex，而这个类连接都没有。
+   *
+   * **`before` 是空的**：人开的是一条新线程，这一轮是它的第一轮，所以它现在挂着的
+   * 子 Agent 全是这一轮生的。
+   */
+  async settle(
+    job: Job,
+    delivery: { readonly threadId: string; readonly text: string },
+    stored: HandedRound & { readonly round: number },
+  ): Promise<TurnOutcome> {
+    // **用备的时候记下的那个号，不重数。** 名单、题面、格子文件全落在它上面。
+    const plan = this.plan(job, stored.round);
+    const prepared = resumePreparedRubricRound(plan.request, plan.dependencies, {
+      envelope: stored.envelope,
+      scriptPath: stored.scriptPath,
+      worklist: stored.worklist ?? undefined,
+      blueRubric: stored.blueRubric ?? undefined,
+      rubricIds: stored.rubricIds,
+    });
+    const settled = await settleRubricRound(
+      plan.request, plan.dependencies, delivery, prepared,
+    );
+    /*
+     * **人手跑的那一轮不报越界文件。**
+     *
+     * 那份报告靠「轮前的脏文件快照」把模型写的和人本来就没提交的分开。而这一轮
+     * 从备到收之间隔着人的几小时，那段时间里他自己也在这个仓库上动手 —— 拿一个
+     * 几小时前的快照去做差集，只会把他自己写的东西指认成模型的违规。
+     *
+     * 报不出来就不报。真有文件留在家外面，Build 的干净树预检还会兜底列给他
+     * （`workspace_dirty`）。
+     */
+    return this.afterRound(job, { ...plan, dirtyBefore: null }, settled);
+  }
+
+  /**
+   * 这一轮的上下文和那份请求。**备、派、收三处共用。**
+   *
+   * 它是纯读的：算轮次、查上游、拼任务书，一个字都不写。所以「只备不派」那条路
+   * 走它一遍不会在库里留下任何痕迹。
+   */
+  private plan(job: Job, roundIs?: number): {
+    readonly phase: Phase;
+    readonly round: number;
+    readonly cwd: string | null;
+    readonly dirtyBefore: ReadonlySet<string> | null;
+    readonly upstream: StageArtifactUpstream[];
+    readonly request: RubricRoundRequest;
+    readonly dependencies: RubricRoundDependencies;
+  } {
     const change = this.options.changes.read(job.changeId);
     // 这条活儿自己说它跑在哪个阶段（批 3：并行座位）。老行没有这一格，走主线。
     const phase = (job.phase ?? change.state.phase) as Phase;
@@ -129,10 +307,23 @@ export class RoundTurnRunner implements TurnRunner {
      * `roundFromLedger` 数不到它。当前这条活儿在 `queueTurn` 里已经排进去了，
      * 所以数出来的正是当前这一轮 —— 和账本那条路同一个性质。
      */
-    const round = job.phase !== null && job.phase !== change.state.phase
+    /*
+     * **人手跑的那一轮不能自己数**（2026-08-19 真机抓到的）。
+     *
+     * 上面那段成立的前提是「`queueTurn` 已经把这一轮的 start 写进账本了」。取题面
+     * 那条路**不建 job**（StagePass 那时确实什么都没在跑），于是数出来的是
+     * **上一轮的号**：真机上第一次取题面，信封写着「第 0 轮」，名单和题面文件也都
+     * 落在 0 上。而结算时 `queueTurn` 会补上那个 start，同一段代码数出 1 ——
+     * 名单读回来是空的，题面文件对不上号，**而账本上看不出哪里错了**。
+     *
+     * 所以这两条路各自说清楚自己是第几轮：备那一次数「下一轮」（+1），结算那一次
+     * **用备的时候记下的那个号**，不重数。重数就是把同一个问题换个地方再犯一遍。
+     */
+    const counted = job.phase !== null && job.phase !== change.state.phase
       ? this.options.parallelRound?.(job.changeId, phase)
         ?? roundFromLedger(this.options.changes.ledger(job.changeId), phase)
       : roundFromLedger(this.options.changes.ledger(job.changeId), phase);
+    const round = roundIs ?? counted;
 
     /*
      * **轮前把脏文件拍个快照** —— 轮末的越界报告靠差集把「模型这一轮写的」和
@@ -172,7 +363,14 @@ export class RoundTurnRunner implements TurnRunner {
       }),
     };
 
-    const settled = await runRubricRound({
+    const upstream: StageArtifactUpstream[] = upstreamOf(
+      phase, this.options.changes.graphOf(job.changeId),
+    ).map((each) => ({
+      phase: each,
+      artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
+    })).filter((entry) => entry.artifactIds.length > 0);
+
+    const request: RubricRoundRequest = {
       projectId: change.projectId,
       changeId: job.changeId,
       phase,
@@ -221,31 +419,12 @@ export class RoundTurnRunner implements TurnRunner {
           `requirement-${job.changeId}.md`,
           `# ${job.changeId}：人自己答出来的需求\n\n${change.brief}\n`,
         )}`,
-        ...(() => {
-          /*
-           * **喂给红方的上游产物 = 真正的上游**（`upstreamOf`，§8.6·①）。
-           *
-           * 这里原来自己取主线顺序的前缀，于是 TestPlan 的红方会收到一份 Plan
-           * 的文档当输入 —— 而 TestPlan 从来没消费过 Plan 的任何东西。同一个错
-           * 想法在 `upstreamOf` 里有第一份拷贝，两处现在读同一张 `CONSUMES` 表。
-           *
-           * 顺带修掉一件更小的：原来数的是 `PHASES`（全序，还含 Fix），不是这个
-           * Change 自己的图。
-           */
-          const upstream = upstreamOf(
-            phase, this.options.changes.graphOf(job.changeId))
-            .map((each) => ({
-              phase: each,
-              artifactIds: this.options.evidence.read(job.changeId, each).artifactIds,
-            }))
-            .filter((entry) => entry.artifactIds.length > 0);
-          return upstream.length === 0 ? [] : [
-            "",
-            "已批准的上游产物（先看完再动手，它们是这一阶段的输入）：",
-            ...upstream.map((entry) =>
-              `- ${entry.phase}: ${entry.artifactIds.map(describeArtifact).join("、")}`),
-          ];
-        })(),
+        ...(upstream.length === 0 ? [] : [
+          "",
+          "已批准的上游产物（先看完再动手，它们是这一阶段的输入）：",
+          ...upstream.map((entry) =>
+            `- ${entry.phase}: ${entry.artifactIds.map(describeArtifact).join("、")}`),
+        ]),
         /*
          * **输出路径由 StagePass 指定，不让红方自己起名**（E，用户 2026-08-04 拍板）。
          *
@@ -290,13 +469,31 @@ export class RoundTurnRunner implements TurnRunner {
       // 同一个 (Change, 阶段) 复用同一个裁判线程。
       //
       // **必须看 status。** 一条 detached 的绑定仍然留着 threadId —— 直接拿它去
-      // resume，等于把 turn 送进一个已经被明确放开的线程。codex/turn-runner.ts
-      // 一直是这么判的，这里先前漏了。
+      // resume，等于把 turn 送进一个已经被明确放开的线程。
       judgeThreadId: (() => {
         const bound = this.options.bindings.find(job.changeId, phase);
         return bound?.status === "bound" ? bound.threadId : null;
       })(),
-    }, { ...this.options, transport });
+    };
+
+    return {
+      phase, round, cwd, dirtyBefore, upstream, request,
+      dependencies: { ...this.options, transport },
+    };
+  }
+
+  /**
+   * 一轮收完之后要记的东西：**绑线程、记产物、开编辑门、报越界。**
+   *
+   * 派出去的那条路和人手跑的那条路走到这里就合流了 —— 它们记的账必须逐字相同，
+   * 否则「这一轮怎么来的」会变成账本上一个看不见的分叉。
+   */
+  private afterRound(
+    job: Job,
+    plan: Omit<ReturnType<RoundTurnRunner["plan"]>, "request" | "dependencies">,
+    settled: RubricRoundSettled,
+  ): TurnOutcome {
+    const { phase, round, cwd, dirtyBefore, upstream } = plan;
 
     this.options.bindings.bind(job.changeId, phase, settled.judgeThreadId);
     this.recordNotes(job.changeId, phase, round, settled);
@@ -311,7 +508,7 @@ export class RoundTurnRunner implements TurnRunner {
         this.options.gaps.all(job.changeId, phase), round));
     }
 
-    const artifactIds = this.producedBy(job.changeId, phase, round, settled.artifactIds);
+    const produced = this.producedBy(job.changeId, phase, round, settled.artifactIds);
 
     /*
      * **越界的文件当场报出来，不自动收拾**（用户 2026-08-04 拍板）。
@@ -337,7 +534,26 @@ export class RoundTurnRunner implements TurnRunner {
     }
 
     return {
-      artifactIds,
+      artifactIds: produced.artifactIds,
+      artifactManifest: {
+        changeId: job.changeId,
+        phase,
+        round,
+        jobId: job.id,
+        artifactIds: produced.artifactIds,
+        commit: produced.commit,
+        source: "recorded",
+        files: roundFiles({
+          changeId: job.changeId,
+          phase,
+          round,
+          reported: settled.artifactIds,
+          produced,
+          cwd,
+          repo: this.options.repo,
+        }),
+        upstream,
+      },
       // 空的，理由见文件开头 —— 这一轮的问题已经落库了。
       blockers: [],
       verdicts: {},
@@ -508,12 +724,12 @@ export class RoundTurnRunner implements TurnRunner {
    */
   private producedBy(
     changeId: string,
-    phase: string,
+    phase: Phase,
     round: number,
     reported: readonly string[],
-  ): readonly string[] {
+  ): ProducedRound {
     const cwd = this.options.workspaceFor(changeId);
-    if (cwd === null) return reported;
+    if (cwd === null) return { artifactIds: reported, commit: null };
     if (!producesCommit(phase)) {
       /*
        * **设计/报告类阶段轮末把产物目录窄提交掉**（E，2026-08-05）。
@@ -529,9 +745,9 @@ export class RoundTurnRunner implements TurnRunner {
        * 提交失败（不是 git 仓库、目录是空的）也照样返回路径 —— 记账失败不该
        * 吃掉一轮真产出。
        */
-      this.options.repo.commitPaths(
+      const commit = this.options.repo.commitPaths(
         cwd, [artifactHome(changeId)], `StagePass ${changeId} ${phase} 第 ${round} 轮`);
-      return reported;
+      return { artifactIds: reported, commit };
     }
     /*
      * **Test 窄提交**（批 4 · 案 B）：产物目录 + 红方报的落点文件，逐个点名 ——
@@ -542,7 +758,7 @@ export class RoundTurnRunner implements TurnRunner {
       const sha = this.options.repo.commitPaths(
         cwd, [artifactHome(changeId), ...reported],
         `StagePass ${changeId} ${phase} 第 ${round} 轮`);
-      return sha === null ? [] : [sha];
+      return { artifactIds: sha === null ? [] : [sha], commit: sha };
     }
     /*
      * **Build 整树提交前的挡门**（批 4 · 案 B）：对轨（Test）正在跑一轮时，
@@ -556,6 +772,6 @@ export class RoundTurnRunner implements TurnRunner {
     }
     const sha = this.options.repo.commitAll(
       cwd, `StagePass ${changeId} ${phase} 第 ${round} 轮`);
-    return sha === null ? [] : [sha];
+    return { artifactIds: sha === null ? [] : [sha], commit: sha };
   }
 }

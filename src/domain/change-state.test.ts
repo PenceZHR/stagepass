@@ -16,7 +16,6 @@ import {
   assertStateValid,
   CHANGE_ACTIONS,
   IllegalTransitionError,
-  INITIAL_STATE,
   InvalidStateError,
   approvalTargets,
   ApprovalTargetError,
@@ -49,6 +48,14 @@ function representable(state: ChangeState): boolean {
     return false;
   }
 }
+
+/** 这些测试共用的起点夹具。生产的起点归项目的图管（`ChangeStore.create` 取
+ *  `graphFor(projectId).order[0]`），全序图下就是 PRD。 */
+const INITIAL_STATE: ChangeState = {
+  phase: "PRD",
+  status: "pending",
+  returnStack: [],
+};
 
 describe("L0 · the state machine is exhaustively decided", () => {
   /**

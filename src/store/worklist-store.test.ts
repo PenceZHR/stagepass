@@ -241,3 +241,79 @@ describe("worklist · 两条并行轨互不相扰", () => {
     assert.equal(store.next(CHANGE, "Build")?.prompt, "第二轮的");
   });
 });
+
+/**
+ * 名单走文件之后的落答路径（2026-08-19）。
+ *
+ * 和 `answer()` 的区别是**寻址**：那条答的是「游标当前那一项」，这条按序号答。
+ * 裁判可能跳着答（第 2 条答了、第 1 条没答），游标那条会把第 2 条的答案记到
+ * 第 1 条头上 —— 静默地、事后查不出来的那一种错。
+ */
+describe("L3 · 按序号落答（名单走文件）", () => {
+  it("按序号记，跳着答也落在对的那一条上", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "第一个"), gap("G-2", "第二个")]);
+
+    const problems = store.recordAnswers(CHANGE, "PRD", 1, [
+      { ordinal: 2, answer: "closed", reason: "第二个修了" },
+    ]);
+
+    assert.deepEqual(problems, []);
+    const read = store.read(CHANGE, "PRD", 1);
+    assert.equal(read[0]!.answer, null);
+    assert.deepEqual(
+      { answer: read[1]!.answer, reason: read[1]!.reason },
+      { answer: "closed", reason: "第二个修了" },
+    );
+  });
+
+  it("两种条目各按自己的选项验 —— criterion 收不下 gap 的答案", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [criterion("C-1", "这条标准满足了吗")]);
+
+    const problems = store.recordAnswers(CHANGE, "PRD", 1, [
+      { ordinal: 1, answer: "closed", reason: "串台了" },
+    ]);
+
+    assert.deepEqual(problems, ["worklist_answer_not_a_choice:1"]);
+    assert.equal(store.read(CHANGE, "PRD", 1)[0]!.answer, null);
+  });
+
+  it("**库里没有那一条就不写** —— 序号对不上号要说出来，不能静默丢掉", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "只有一条")]);
+
+    const problems = store.recordAnswers(CHANGE, "PRD", 1, [
+      { ordinal: 9, answer: "closed", reason: "无处安放" },
+    ]);
+
+    assert.deepEqual(problems, ["worklist_answer_out_of_range:9"]);
+  });
+
+  it("理由是空的不算 —— 和 answer() 同一条判据", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "第一个")]);
+
+    const problems = store.recordAnswers(CHANGE, "PRD", 1, [
+      { ordinal: 1, answer: "closed", reason: "   " },
+    ]);
+
+    assert.deepEqual(problems, ["worklist_answer_has_no_reason:1"]);
+    assert.equal(store.read(CHANGE, "PRD", 1)[0]!.answer, null);
+  });
+
+  it("已经答过的那一条不许被改写 —— 一轮里只答一次", () => {
+    const { store } = open();
+    store.open(CHANGE, "PRD", 1, [gap("G-1", "第一个")]);
+    store.recordAnswers(CHANGE, "PRD", 1, [
+      { ordinal: 1, answer: "closed", reason: "修了" },
+    ]);
+
+    const problems = store.recordAnswers(CHANGE, "PRD", 1, [
+      { ordinal: 1, answer: "still_open", reason: "又改主意" },
+    ]);
+
+    assert.deepEqual(problems, ["worklist_answer_already_recorded:1"]);
+    assert.equal(store.read(CHANGE, "PRD", 1)[0]!.answer, "closed");
+  });
+});

@@ -1,0 +1,215 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>stagepass · status</title>
+<style>
+/*
+ * 轻量状态面板 —— sp view 的产物。承 panel.html 的视觉语言，但不画环。
+ *
+ * 保留的三件（panel.html 头部那三条）：
+ *   1. 老式衬线 + 负字距的 wordmark；
+ *   2. 细描边、低饱和；
+ *   3. 活着的东西呼吸。
+ *
+ * 换掉的一件：**主屏不是环，是新鲜度图。**
+ *   新模型里阶段不流转（闸门已降成体检），在变的是「哪些结论还可信」——
+ *   上游动过，下游自动变可疑。那个有边有传播，是真的图。
+ *   session 是一条线，不配画图，所以它在下面当流水。
+ *
+ * 2026-07-29 四条仍然生效：
+ *   · 颜色不是唯一信号 —— 每处都另有形状（✓ / ○ / ·）和文案；
+ *   · 禁高饱和警示色；
+ *   · 新东西默认不进主屏，方向是减；
+ *   · 点节点弹这个阶段现在的问题（下一版接）。
+ */
+:root {
+  color-scheme: dark;
+  --background: oklch(0.175 0.035 295);
+  --foreground: oklch(0.94 0.022 74);
+  --border: oklch(0.89 0.025 75 / 17%);
+  --hair: oklch(0.89 0.025 75 / 11%);
+  --success: oklch(0.66 0.065 145);
+  --approved: oklch(0.74 0.055 152);
+  --problem: oklch(0.80 0.082 76);
+  --muted: oklch(0.94 0.022 74 / 46%);
+  --serif: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, "Songti SC", serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--background); color: var(--foreground);
+  font: 14px/1.6 ui-sans-serif, -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(180deg, oklch(0.12 0.035 300 / 74%) 0%, oklch(0.17 0.035 295 / 40%) 34%,
+      oklch(0.18 0.04 292 / 58%) 64%, oklch(0.115 0.035 285 / 82%) 100%),
+    radial-gradient(circle at 62% 40%, oklch(0.83 0.04 70 / 9%), transparent 42%);
+}
+
+.topbar {
+  display: flex; gap: 20px; align-items: center; justify-content: space-between;
+  min-height: 62px; padding: 0 28px; flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: oklch(0.16 0.035 295 / 70%); backdrop-filter: blur(20px);
+}
+.wordmark { font: 650 22px/1 var(--serif); text-transform: lowercase; letter-spacing: .17em; }
+.crumb {
+  text-align: center; color: var(--muted); font: 500 11px/1 var(--mono);
+  letter-spacing: .1em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.crumb b { color: oklch(0.94 0.022 74 / 88%); font-weight: 700; }
+.live { color: var(--muted); font: 600 10px/1 sans-serif; letter-spacing: .1em; white-space: nowrap; }
+.live i {
+  display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%;
+  background: var(--success); box-shadow: 0 0 12px oklch(0.66 0.065 145 / 70%);
+  animation: pulse 2.6s infinite;
+}
+@keyframes pulse { 50% { opacity: 1; transform: scale(1.2); } }
+
+main { flex: 1; min-height: 0; overflow: auto; padding: 26px 28px 40px; }
+section + section { margin-top: 26px; }
+h2 {
+  margin: 0 0 14px; font: 500 10px/1 sans-serif; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--muted);
+}
+
+/* ── 资产：唯一的即时回报，所以放最上面 ───────────────── */
+.assets {
+  display: grid; gap: 18px 34px; align-items: baseline;
+  grid-template-columns: repeat(auto-fit, minmax(148px, auto));
+}
+.stat b { font: 650 30px/1 var(--serif); letter-spacing: -.02em; }
+.stat span { margin-left: 8px; color: var(--muted); font-size: 12px; }
+.trigger {
+  justify-self: end; align-self: center; padding: 7px 13px; border: 1px solid var(--problem);
+  border-radius: 2px; color: var(--problem); font-size: 12px; letter-spacing: .04em; white-space: nowrap;
+}
+.trigger::before { content: "○ "; }
+
+/* ── 新鲜度：主屏 ──────────────────────────────────────── */
+.fresh { border: 1px solid var(--hair); border-radius: 3px; padding: 24px 20px 16px; }
+.fresh-scroll { overflow-x: auto; }
+.fresh svg { width: 100%; min-width: 700px; height: auto; display: block; }
+.fresh text { font-family: ui-sans-serif, sans-serif; }
+.n-label { font-size: 12px; fill: var(--foreground); }
+.n-mark  { font-size: 13px; }
+.n-note  { font-size: 11px; fill: var(--muted); }
+.edge { stroke: var(--hair); stroke-width: 1; fill: none; }
+.dot-ok   { fill: none; stroke: var(--approved); stroke-width: 1.2; }
+.dot-warn { fill: none; stroke: var(--problem);  stroke-width: 1.2; }
+.dot-none { fill: var(--muted); }
+.legend {
+  margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 22px;
+  color: var(--muted); font-size: 11px;
+}
+.legend span { white-space: nowrap; }
+
+/* ── 下半：两栏 ────────────────────────────────────────── */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+@media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+.rows { border: 1px solid var(--hair); border-radius: 3px; }
+.row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 11px 15px; border-bottom: 1px solid var(--hair);
+}
+.row:last-child { border-bottom: 0; }
+.id { font: 500 11px/1 var(--mono); color: var(--muted); letter-spacing: .04em; min-width: 78px; }
+.stage { font-size: 12px; letter-spacing: .06em; min-width: 74px; color: oklch(0.94 0.022 74 / 72%); }
+.say { font-size: 12.5px; }
+.say.ok   { color: var(--approved); }
+.say.warn { color: var(--problem); }
+.tail { margin-left: auto; font: 11px/1 var(--mono); color: var(--muted); }
+</style>
+
+<div class="topbar">
+  <div class="wordmark">stagepass</div>
+  <div class="crumb">MVP · <b>CHG-001</b> · 47 sessions</div>
+  <div class="live"><i></i>WATCHING</div>
+</div>
+
+<main>
+  <section>
+    <h2>资产</h2>
+    <div class="assets">
+      <div class="stat"><b>47</b><span>session</span></div>
+      <div class="stat"><b>12</b><span>LOG · 3 条 ×2 以上</span></div>
+      <div class="stat"><b>5</b><span>边界 · 1 条改过 4 次</span></div>
+      <div class="stat"><b>1/10</b><span>产出率</span></div>
+      <div class="trigger">接近转段扳机</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>新鲜度 —— 上游动过，下游的结论就可疑</h2>
+    <div class="fresh">
+      <div class="fresh-scroll">
+      <svg viewBox="0 0 760 168" role="img" aria-label="阶段新鲜度依赖图">
+        <path class="edge" d="M96 84 H150"/>
+        <path class="edge" d="M214 84 H268"/>
+        <path class="edge" d="M332 84 C356 84 356 40 380 40"/>
+        <path class="edge" d="M332 84 C356 84 356 128 380 128"/>
+        <path class="edge" d="M462 40 H516"/>
+        <path class="edge" d="M462 128 H516"/>
+        <path class="edge" d="M580 40 C604 40 604 84 628 84"/>
+        <path class="edge" d="M580 128 C604 128 604 84 628 84"/>
+
+        <text class="n-mark" x="72" y="88" text-anchor="middle" fill="var(--approved)">✓</text>
+        <text class="n-label" x="72" y="112" text-anchor="middle">PRD</text>
+
+        <text class="n-mark" x="182" y="88" text-anchor="middle" fill="var(--approved)">✓</text>
+        <text class="n-label" x="182" y="112" text-anchor="middle">Spec</text>
+        <text class="n-note"  x="182" y="128" text-anchor="middle">08-14 改过</text>
+
+        <circle class="dot-warn" cx="300" cy="84" r="7"/>
+        <text class="n-label" x="300" y="112" text-anchor="middle">Arch</text>
+        <text class="n-note"  x="300" y="128" text-anchor="middle">结论未重看</text>
+
+        <circle class="dot-warn" cx="422" cy="40" r="7"/>
+        <text class="n-label" x="422" y="24" text-anchor="middle">BuildPlan</text>
+
+        <circle class="dot-warn" cx="422" cy="128" r="7"/>
+        <text class="n-label" x="422" y="152" text-anchor="middle">TestPlan</text>
+
+        <circle class="dot-none" cx="548" cy="40" r="3"/>
+        <text class="n-label" x="548" y="24" text-anchor="middle">Build</text>
+
+        <circle class="dot-none" cx="548" cy="128" r="3"/>
+        <text class="n-label" x="548" y="152" text-anchor="middle">Test</text>
+
+        <circle class="dot-none" cx="660" cy="84" r="3"/>
+        <text class="n-label" x="660" y="112" text-anchor="middle">QA</text>
+      </svg>
+      </div>
+      <div class="legend">
+        <span>✓ 新鲜 —— 上游没动过</span>
+        <span>○ 可疑 —— 上游动过，结论没重看</span>
+        <span>· 还没有产物</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="split">
+    <section>
+      <h2>最近 session —— 声明 vs 实际</h2>
+      <div class="rows">
+        <div class="row"><span class="id">sess-0093</span><span class="stage">build</span><span class="say ok">✓ 对得上</span><span class="tail">3 commit</span></div>
+        <div class="row"><span class="id">sess-0092</span><span class="stage">build</span><span class="say warn">○ 漂移 · 动的是 arch 的文件</span><span class="tail">7 commit</span></div>
+        <div class="row"><span class="id">sess-0091</span><span class="stage">arch</span><span class="say ok">✓ 对得上</span><span class="tail">1 commit</span></div>
+        <div class="row"><span class="id">sess-0090</span><span class="stage">arch</span><span class="say ok">✓ 对得上</span><span class="tail">0 commit</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>要处理 —— 只列代码判得了的</h2>
+      <div class="rows">
+        <div class="row"><span class="id">sess-0089</span><span class="say warn">○ 关了，但实测结果是空的</span></div>
+        <div class="row"><span class="id">LOG:12</span><span class="say warn">○ 引用的 session 不存在</span></div>
+        <div class="row"><span class="id">边界 3</span><span class="say warn">○ 改过 4 次，没有任何 LOG 提到它</span></div>
+        <div class="row"><span class="id">最近 12</span><span class="say warn">○ 实测结果连续为「没测」</span></div>
+      </div>
+    </section>
+  </div>
+</main>

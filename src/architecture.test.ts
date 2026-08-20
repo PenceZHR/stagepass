@@ -46,6 +46,37 @@ const FILES = sourceFiles().map((path) => ({
  */
 const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "domain/phase.ts": 0,
+  "domain/stage-artifact.ts": 0,
+  /*
+   * 一轮的格子文件（C 方案的地基）。纯函数：铺结构、读回来、判合不合规，
+   * 除了 `domain/phase` 什么都不碰，所以和它同层。
+   */
+  /*
+   * 4，不是 0 —— 它 `import type { TemplateSection }` 够到 `domain/phase-template`（4）。
+   * **只进 `import type` 的边在图上仍然算数**，而层数是依赖顶出来的，不是挑的。
+   */
+  "system/project-home.ts": 0,
+  "domain/opening.ts": 4,
+  "domain/prd-doc.ts": 4,
+  "store/note-store.ts": 1,
+  "domain/round-slots.ts": 0,
+  /*
+   * MCP 那根电话线。**放最低层，因为它不许 import 我们自己的任何东西** ——
+   * 它一旦碰业务，「MCP server 按会话起、一台机器上三个进程各锁一份代码」那个坑
+   * 当场回来（TechSpec §四）。层数在这儿不是被依赖顶出来的，是被**禁令**压下去的：
+   * 0 意味着它没有任何东西可以依赖。有下面那条测试钉着。
+   */
+  "mcp/server.ts": 0,
+  /*
+   * 提问的形状和参数校验（BuildPlan T1）。纯函数，只 import `domain/phase` 的类型
+   * —— 和 `round-slots` 同族：一个形状加一套判据，不碰任何 IO。
+   */
+  "domain/ask.ts": 0,
+  /*
+   * 判据单答案文件的读回（BuildPlan T6）。和 `domain/worklist.ts` 的 reader 逐字
+   * 同构，但它一个 import 都没有 —— 所以比 worklist（3）低，落在最底层。
+   */
+  "domain/rubric-sheet.ts": 0,
   /*
    * 真依赖图的解析器（H 档第一块）。它**只 import `typescript`**，我们自己的
    * 东西一个都不碰 —— 所以放最低层，谁都够得着。
@@ -64,9 +95,12 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 不碰文件系统 —— 和上面同族，同层。
   "graph/code-selection.ts": 0,
   "graph/graph-layout.ts": 0,
+  "graph/stage-artifact-layout.ts": 0,
   // 图谱那条路上唯一碰盘的地方（git 清单 + 读正文）。git 是注入的，
   // 和 `work/repo.ts` 同一个形状、同一层。
   "graph/read-workspace.ts": 2,
+  "graph/reconstruct-stage-artifact.ts": 2,
+  "graph/read-stage-artifact.ts": 2,
   // 只依赖 phase 的纯路径生成（E：产物的家）。
   "domain/artifact-home.ts": 0,
   "domain/change-state.ts": 0,
@@ -75,6 +109,15 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // change-store 的收编要在同一个事务里读它的行。
   "store/parallel-store.ts": 0,
   "store/project-store.ts": 0,
+  /*
+   * 插件进程的库句柄（用 Node 内置 `node:sqlite` 顶 better-sqlite3 的形状）。
+   *
+   * 和 `graph/module-graph.ts` 同一个理由放最低层：**它运行时只 import `node:sqlite`，
+   * 我们自己的东西一个都不碰**（better-sqlite3 只进 `import type`，编译后就没了）。
+   * 谁都够得着，而它够不着任何人 —— 一个换驱动的垫片不该有话语权。
+   */
+  "web/sqlite-handle.ts": 0,
+
 
   "domain/gate.ts": 1,
   "domain/lease.ts": 1,
@@ -82,10 +125,40 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 编辑过门（批 6）：纯规则，只吃 gap 的类型 —— 和 gap 同层。
   "domain/edit-gate.ts": 1,
   "store/evidence-store.ts": 1,
+  "store/stage-artifact-store.ts": 1,
   "store/gap-store.ts": 1,
   // 旁路账本（彗星，2026-08-11）。它只依赖 better-sqlite3 的类型，我们自己的
   // 东西一个都不 import —— 和 gap-store 同一层，理由也一样：纯存储。
   "store/aside-store.ts": 1,
+  /*
+   * 提问留档（BuildPlan T2）：JSONL 追加 + 库索引 + `rebuildFrom`。它 import
+   * `domain/ask.ts`（0）的类型，别的什么都不碰 —— 和这一层其他纯存储同族。
+   */
+  "store/ask-store.ts": 1,
+  /*
+   * 插件跟着 Codex 的工作目录认项目。只读 `store/project-store`（0），别的什么都不碰
+   * —— 和这一层其他「薄薄一层规则盖在 store 上」的模块同族。
+   */
+  /*
+   * 座位 = 一个 (Change, 阶段) 绑着的 Codex 会话。它够得着的最高一层是
+   * `codex/app-server-transport`（2），所以住这儿 —— 层数是依赖顶出来的，不是挑的。
+   */
+  "web/seats.ts": 2,
+  /*
+   * 「这一轮跑完了没」的轮询判定（2026-08-18 让出订阅权之后唯一新写的那段）。
+   *
+   * 运行时它其实谁都不 import —— 历史接口和时钟全是注进来的，`AppServerHistory`
+   * 只进 `import type`。但那条边在图上仍然算数，而**层数是依赖顶出来的、不是挑的**，
+   * 所以它跟着 `app-server-history` 住在 2。
+   */
+  "web/await-turn.ts": 2,
+  /*
+   * 一轮跑完叫一声人（系统通知）。读 store（0）和 `system/process`（2），
+   * 不认识用例、不认识界面 —— 层数照旧是依赖顶出来的。
+   *
+   * 它**只读状态、只发一条通知**：不推闸门、不派轮、不替人做任何决定。
+   */
+  "web/nudge.ts": 2,
   "store/command-store.ts": 1,
   "work/job-store.ts": 1,
   "work/turn-loop.ts": 1,
@@ -94,13 +167,27 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "store/binding-store.ts": 2,
   "store/turn-store.ts": 2,
   "codex/transport.ts": 2,
-  "codex/invocation.ts": 2,
+  // App Server 的公开 JSONL 协议边界。protocol 只定义线上的最小形状；client 是
+  // 整棵树唯一会直接持有 Codex 子进程 stdin/stdout 的地方。
+  "codex/app-server-protocol.ts": 2,
+  "codex/app-server-client.ts": 2,
+  // 外部进程只从这一个缝里出去：codex app-server 与 osascript。
+  "system/process.ts": 2,
+  /*
+   * 格子文件落盘。持久路径（`~/.stagepass/rounds`），不是临时目录 —— 清掉之后
+   * 「模型没填」和「文件被清了」在账本上长得一模一样。它只认 domain 的形状，
+   * 不认识 Change 状态机和界面。
+   */
+  "system/slot-files.ts": 2,
+  // App Server 通知在这里收束成一条可重放的 thread 事件流；session 只在这层
+  // 持有 Codex thread/turn/item 生命周期，不认识 Change、phase 或界面。
+  "codex/stream-state.ts": 2,
+  "codex/app-server-session.ts": 2,
+  "codex/app-server-transport.ts": 2,
+  "codex/app-server-history.ts": 2,
   "codex/archive.ts": 2,
   // 目录信任。和 archive 同一个形状：读 Codex 自己的状态，整层可注入，只读不写。
-  "codex/trust.ts": 2,
-  "codex/rollout.ts": 2,
-  "codex/tui-transport.ts": 2,
-  "codex/turn-runner.ts": 2,
+  "codex/phase-instructions.ts": 2,
 
   "domain/round.ts": 4,
   // 「接受一条已知风险」这个用例（§4.1·J 从 `handle()` 里搬出来的第一个）。
@@ -120,6 +207,23 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // `domain/round.ts` 的来源名单，所以和它同层 —— 它不是 rubric 的东西，
   // 判定归 `rubric_assessments`，这两句谁都不判。
   "store/round-note-store.ts": 4,
+  /*
+   * 提问的组装（BuildPlan T3）：认当前备着的那一轮、序号换回备那一刻的判据、落档。
+   * 它够得着的最高一层是 `store/handoff-store` / `store/rubric-store` 那一族的
+   * 消费者，而它自己不进 `web/actions.ts`（5）—— 层数是它的依赖顶出来的。
+   */
+  /*
+   * 4 → 5（2026-08-19 晚）。**层数是依赖顶出来的，不是挑的。**
+   *
+   * 「提问挂在哪一轮」的判据降级成「挂在哪个 Change」之后，它要 `defaultChange`
+   * —— 那是面板挑默认 Change 用的同一个函数（`web/bind-project`，L5）。
+   * **共用它而不是抄一份**：抄出来的第二份会和面板慢慢分岔，而分岔的表现是
+   * 「模型问的那一条，和我在浏览器上看着的那一条，不是同一条」。
+   */
+  "web/brief-route.ts": 5,
+  "web/same-project.ts": 1,
+  "web/brief-routes.ts": 5,
+  "web/ask-route.ts": 5,
 
   "domain/rubric.ts": 5,
   "domain/rubric-gaps.ts": 5,
@@ -142,14 +246,10 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
 
   // The panel is not a new layer, but its two halves sit at different ones.
   //
-  // `pty-session` only carries bytes: that is L2's second launch implementation,
-  // the first being osascript + Terminal.app (PRD §6, the L2 row).
-  //
   // `panel-server` also puts gate decisions to a person and applies the answer,
   // and that IS L3. It was declared 2 while it only hosted terminals; the guard
   // caught the drift the moment the question path was wired in, which is
   // exactly what this rule is for.
-  "web/pty-session.ts": 2,
   /*
    * 面板那两屏读出来的东西（`/api/panel`、`/api/progress`）。
    *
@@ -162,11 +262,50 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   // 又提了一层，理由和当初 2 -> 3 一样：它开始承载 rubric 编辑（PRD §1.1 那个
   // 唯一的例外），而 rubric 是 L5。这不是豁免，是把已经发生的事写下来 —— 护栏
   // 在接口写进去的那一刻就会红。
-  "web/panel-server.ts": 5,
+  // Codex 四态到 StagePass binding 的唯一映射；只被 Panel 边界消费。
+  // 原生终端的 HTTP 边界只回归一化状态，不回 ANSI、输入或 JSON-RPC。
+  /*
+   * 插件那一面的数据装配（2026-08-18 定案：只做插件、网页端退休）。
+   *
+   * 和 `panel-server` 同层，理由也一样：它是**另一个界面的边界**——一边吃库，
+   * 一边吐 widget 要的形状。它调 `panel-view` 而不是自己再算一遍，所以不能比
+   * `panel-view` 低。
+   */
+  "web/panel-data.ts": 5,
+  /*
+   * 插件的数据口和进程边界，和 `panel-server` 同层同理由 —— 它俩是同一种东西的
+   * 两个版本：一个把库变成 HTTP 上的 JSON，一个把库变成 MCP 上的 JSON。
+   * 网页端退休后只剩后者。
+   */
+  "web/api.ts": 5,
+  /*
+   * 产物和图谱那四条路。和 `api.ts` 同层 —— 它是 `api.ts` 的一块，只因为要拖
+   * TypeScript 编译器才单独成文件（唯一的动态 import 边界，理由在文件开头）。
+   */
+  "web/repo-routes.ts": 5,
+  /*
+   * 会改库的那些路，和执行通道。
+   *
+   * `actions` 够得着 `app/decide-gate`（5），`runtime` 够得着整条跑轮链
+   * （`work/round-turn-runner` → rubric → …），所以都在这一层。`seats` 低一格：
+   * 它只认 App Server 和绑定表，不认识用例。
+   */
+  "web/actions.ts": 5,
+  "web/runtime.ts": 5,
+  /*
+   * 浏览器那一面的请求边界（2026-08-19 定案：状态流转回 WebUI）。和 `plugin/server`
+   * 同层同理由 —— 它俩是同一种东西的两个版本：一个把库变成 MCP 上的 JSON，一个变成
+   * HTTP 上的 JSON。**判据一条都不在它们里面。**
+   */
+  "web/serve.ts": 5,
+  /*
+   * 工作台绑在它所在的仓库上（2026-08-19 定案：依附一个项目，不再自己管项目）。
+   * 它调 `app/workspace` 的建项目用例（5），所以住这层 —— 层数是依赖顶出来的。
+   */
+  "web/bind-project.ts": 5,
   // 图谱的三条路（spec 2026-08-12）。它不进 panel-server 的闭包（注入接线，
   // 理由在 PanelOptions.graph 上），但它和 panel-server 住同一层：同样是
   // 「HTTP 进、JSON 出」的界面层，读的最高一层是 store（0）和 graph（0/2）。
-  "web/graph-api.ts": 5,
 
   "domain/question.ts": 3,
   "domain/brief.ts": 3,
@@ -184,13 +323,16 @@ const LAYER: Readonly<Record<string, 0 | 1 | 2 | 3 | 4 | 5>> = {
   "app/record-brief.ts": 3,
   // 批 2「模型起草，人改」：和 record-brief 同一族用例，同一层。
   "app/converge-brief.ts": 3,
-  "plugin/protocol.ts": 3,
-  "plugin/server.ts": 3,
-  // 「逐条问、只收内容」那套。**和 question 同层，理由也一样**：插件是唯一念它给
-  // 模型听的人，而插件在 L3 —— 这两个类型再高一层，L3 就 import 不到了。
+  /*
+   * C 方案：模型把问题填进格子文件，落进账本等人在浏览器里答。和 ask-human 同族、
+   * 同层，但**不认识会话** —— 没有人需要挂着一轮，所以也没有「会话死了」这种下场。
+   */
+  // 「逐条问、只收内容」那套。和 question 同层 —— 2026-08-17 拆掉 MCP 之后念它给
+  // 人听的是浏览器，但类型的位置没变。
   // 名单里装的是 gap（L1）和 criterion（L5），但装的是什么不决定它住哪层，
   // **谁必须够得着它**才决定。
   "domain/worklist.ts": 3,
+  "store/handoff-store.ts": 3,
   "store/worklist-store.ts": 3,
 
   // The schema is the union of every layer's storage, so it imports each
@@ -232,10 +374,11 @@ const GRAPH = parseModuleGraph(production);
  * reached, and one reachable from nowhere still does not.
  */
 const ENTRY_POINTS = [
-  "scripts/verify-rebuild.ts",
-  "scripts/verify-decision.ts",
-  "scripts/verify-round.ts",
-  "scripts/panel.ts",
+  /*
+   * 工作台。2026-08-19 定案之后这棵树只有一个产品出口：浏览器里的 StagePass。
+   * MCP 插件那一层（widget / 构建 / 热重载）当天全部删除 —— 一夜六种事故的根子。
+   */
+  "scripts/stagepass.ts",
 ].map((path) => ({
   path,
   text: readFileSync(join(process.cwd(), path), "utf-8"),
@@ -369,38 +512,26 @@ describe("standing · one name per concept", () => {
   });
 });
 
-describe("standing · pty output is never interpreted", () => {
-  /**
-   * The fifth guard, and the precondition the terminal panel was accepted on
-   * (PRD §9.3).
-   *
-   * It replaces "there is no rendering code in `src/`", which stopped being
-   * checkable once Codex began drawing inside a browser. The replacement has to
-   * be just as mechanical, because the thing it prevents is a slide, not a
-   * decision: first a highlight when a turn ends, then a hint when the selector
-   * scrolls away, and by then StagePass is parsing Codex's stream and drawing
-   * its own interface -- the approach the user rejected outright (§2.4, third
-   * row). The ONLY difference between the panel and that approach is "does not
-   * interpret", so it cannot be left to judgement.
-   *
-   * Whoever has to relax this: you are reopening a settled decision, not
-   * loosening a style rule.
-   */
-  const ptyModules = production.filter((file) => file.path.startsWith("web/"));
-
-  it("has pty modules at all, so this guard is not vacuously green", () => {
-    assert.ok(
-      ptyModules.length >= 2,
-      "expected the panel's modules under src/web -- a guard with nothing to guard is not a guard",
+describe("standing · Codex runtime is pure App Server", () => {
+  it("has no second browser-stream session owner", () => {
+    const forbidden = ["web/codex-" + "stream-api.ts", "web/" + "stream-session.ts"];
+    assert.deepEqual(
+      production.filter((file) => forbidden.includes(file.path)).map((file) => file.path),
+      [],
     );
   });
 
-  it("turns bytes into text nowhere on the pty path", () => {
-    // Each of these is a way to get a string out of bytes. None has a use in a
-    // module whose whole job is to forward them.
-    const forbidden = ["TextDecoder", ".toString(", "JSON.parse", "String.fromCharCode"];
+  it("production has no PTY, legacy multiplexer, rollout-file, or private-state path", () => {
+    const forbidden = [
+      "node-pty",
+      "@xterm",
+      "/pty/",
+      ["t", "mux"].join(""),
+      "state_5.sqlite",
+      "rollout-",
+    ];
     const found: string[] = [];
-    for (const file of ptyModules) {
+    for (const file of production) {
       const code = withoutComments(file.text);
       for (const token of forbidden) {
         if (code.includes(token)) found.push(`${file.path}: ${token}`);
@@ -409,38 +540,13 @@ describe("standing · pty output is never interpreted", () => {
     assert.deepEqual(found, []);
   });
 
-  it("asks node-pty for bytes rather than the string it defaults to", () => {
-    const session = production.find((file) => file.path === "web/pty-session.ts");
-    assert.ok(session, "web/pty-session.ts is missing");
-    const code = withoutComments(session.text);
-    // Without this, onData yields a decoded string -- which both hands callers
-    // the thing this rule withholds and corrupts any multi-byte character that
-    // happens to straddle a chunk boundary.
-    assert.match(code, /encoding:\s*null/);
-    // And the type it hands out is the narrow one.
-    assert.match(code, /onBytes\(listener:\s*\(bytes:\s*Uint8Array\)/);
-  });
-
-  /**
-   * **`node-pty` 只许用到才加载。**
-   *
-   * 它是原生模块，而且只带 darwin / win32 的预编译产物。一句模块顶部的值导入，
-   * 就让整条注入假 pty 的路一起废掉 —— 2026-08-06 CI 第一次真跑撞到：
-   * `panel-server.test.ts` 明明塞的是假的，却因为加载不了原生模块，114 条测试
-   * 一条都没执行。
-   *
-   * **注入点在、依赖却是硬加载的，那道缝就是假的。** 这条钉住它别再变回去。
-   * `import type` 不算 —— 它编译后一个字节都不留。
-   */
-  it("**不在模块顶部加载 node-pty** —— 那会让注入的那道缝重新变成假的", () => {
-    const session = production.find((file) => file.path === "web/pty-session.ts");
-    assert.ok(session, "web/pty-session.ts is missing");
-    const valueImports = [...withoutComments(session.text)
-      .matchAll(/^import\s+(?!type\b)[^;]*?from\s+["']node-pty["']/gm)];
-    assert.deepEqual(
-      valueImports.map((match) => match[0]), [],
-      "值导入会在加载模块时就要原生模块 —— 改成 import type + 用到才 require",
-    );
+  it("only the system process boundary calls Node spawn", () => {
+    const spawners = production
+      .filter((file) => /import\s*\{[^}]*\bspawn\b[^}]*\}\s*from\s*["']node:child_process["']/.test(
+        withoutComments(file.text),
+      ))
+      .map((file) => file.path);
+    assert.deepEqual(spawners, ["system/process.ts"]);
   });
 });
 
@@ -480,15 +586,111 @@ const FUNCTION_RATCHET: Readonly<Record<string, number>> = {
   // 2026-08-07：这一批加了四条路由（aside / brief-draft / brief-confirm /
   // parallel），债用 `serveArtifact` + `servePanel` 还的（579 → 553）；
   // 同日再抽 `serveParallel`、撤掉并行座位的入口（553 → 517）。
-  "web/panel-server.ts#handle": 484,
+
 };
 const CLOSURE_SHARE_CAP = 0.6;
 const CLOSURE_RATCHET: Readonly<Record<string, number>> = {
-  // 91% —— 它一个模块够得着全树。同上，拆一块钉一块。
-  // 2026-08-05 J 批：搬走五块之后 89%。**它掉得比配料单慢，而这是对的** ——
-  // 搬出去的模块仍然在它下游，闭包照样够得着；真正变小的是「改它一次要读多少」。
-  "web/panel-server.ts": 0.89,
+  /*
+   * 插件进程是整个产品**唯一的入口**（网页端 2026-08-18 退休后就它一个），所以它
+   * 够得着大半棵树 —— 那是入口的定义，不是 panel-server 那种「一个模块把业务逻辑
+   * 全吃了」。这条护栏原来没碰到过这种情况，因为上一个入口在 `scripts/` 里，不算
+   * production 模块。
+   *
+   * **不给豁免，给棘轮。** 闭包只能靠删依赖变小，搬代码没用；而这些依赖都是真的
+   * （数据口 + 产物 + 图谱）。钉在实测值上，**涨一点就红** —— 于是「又给入口多挂
+   * 了一条依赖」这件事永远要经过一次显式的抬手。
+   *
+   * 它本身仍然被另外两条护栏管着：配料单不许过三成、单个函数不许长成一层。
+   * 那两条才是「它有没有在变成第二个 panel-server」的真判据。
+   */
+  /*
+   * ## 2026-08-18 晚：接完剩下四条路，这两个数**又**涨了（92→95、73→77）
+   *
+   * 这是同一批数字的**第三次**抬手，而每一次的原因都一样：给路由器接一条界面本来
+   * 就在调的路，闭包必然涨一格。`actions.ts` 这次多够得着的是 `app/record-brief`
+   * 和 `app/converge-brief` —— 两个**用例**，判据在它们自己里面，各自有测试。
+   *
+   * **一条每次正常改动都必须抬一次的棘轮，它没在拦什么，只是在教人抬数字。**
+   * 交接 §六 提的出路（让这条护栏排除声明过的入口）没做，因为 `actions.ts` 不是
+   * 入口 —— 它是路由器，那条出路盖不住它。这件事该由人定，不该由这次改动顺手改掉。
+   *
+   * 在那之前仍然钉在实测值上（server 95.29%、actions 76.47%），再涨还是红。
+   * 而真正在管「它有没有在变成第二个 panel-server」的是另外两条，**这次都没红**：
+   * 配料单不许过三成、单个函数不许长成一层。
+   */
+    /*
+     * ## 2026-08-19 晚：72 → 73
+     *
+     * 接了题面和产物两条路（`/api/brief`、`/api/prd`，DESIGN-prd-phase-2026-08-19）。
+     * 它们**已经走了动态 import**（和图谱那条同一个办法），但闭包算的是图上的边，
+     * 动态与否不影响 —— 涨的这一格是真的：题面要 RubricStore、产物要 NoteStore。
+     *
+     * 要让它降下来只有一条路：**让 brief 不再自己去凑那四样**，改成由更上面一层
+     * 把它们喂进来。那是一次真重构，不是搬文件，所以先抬手记账。
+     *
+     * ## 同夜 73 → 74，而这一格**不是又喂了一口**
+     *
+     * 「项目对不对得上」那三个函数一度塞在 `ask-route` 里，`brief-route` 为了用它们
+     * 把整条 handoff 链拖进了闭包 —— 那次是真涨，护栏抓得对，已经抽成
+     * `web/same-project.ts`（只 import ProjectStore，谁都够得着而它谁都不拖）。
+     *
+     * 抽完还差一格，是**分母变了**：多一个产品模块，`total` 加一，于是每个人的占比
+     * 都动一点点。这个数会随着树长大自己漂 —— 它拦的是「谁又多够着了一大片」，
+     * 不是小数点后两位。
+     */
+    "web/api.ts": 0.74,
+  /*
+   * 它是**另一个入口的路由器**，够得着 api + actions 的并集 —— 和 `plugin/server`
+   * 一样是同义反复，不是坏味道。真正管着「有没有长成第二个 panel-server」的是另外
+   * 两条（配料单不许过三成、单个函数不许长成一层），这个文件 70 行、一个分支。
+   */
+  "web/serve.ts": 0.96,
+  "web/actions.ts": 0.80,
+  /*
+   * 题面／产物的组装点。73% —— 和 `api.ts` 同一批边，理由也同一条：它要同时够着
+   * 模板、rubric、意见、项目路径，才拼得出「模型现在该干什么」。
+   *
+   * **它是组装点，不是业务层**：判据全在 `domain/`（模板七节、缺哪节）和 `store/`
+   * （意见有没有下文）里，各自有测试。这里只负责把它们摆在一起。
+   */
+  "web/brief-routes.ts": 0.74,
 };
+
+/*
+ * ## 2026-08-18：`plugin/server.ts` 到了 92%，和当年的 panel-server 一个数
+ *
+ * **这个数字现在已经不说明问题了，得说清楚为什么。**
+ *
+ * 执行通道接上之后，插件入口够得着整条跑轮链（`round-turn-runner` → rubric →
+ * domain 全家）。而它是**整个产品唯一的入口** —— 一个入口够得着全树是同义反复，
+ * 不是坏味道。panel-server 当年 91% 的真问题是**它自己 2177 行、`handle()` 484 行**，
+ * 那才是「改一次要读小半棵树」。
+ *
+ * `plugin/server.ts` 现在 230 行，全是管道；拿主意的都在 `api` / `actions` /
+ * `runtime` / `seats` 里，各自有测试。
+ *
+ * **所以这条护栏对「入口」这个位置该退休，换成另外两条守：** 配料单不许过 30%
+ * （改它一次要读多少），单个函数不许长成一层。它们现在都没红。在没人动手改这条
+ * 护栏之前，棘轮至少保证「又给入口挂了一条依赖」要经过一次显式抬手。
+ */
+
+/*
+ * ## 关于上面这两条，得说清楚它们和 panel-server 那条不是一回事
+ *
+ * 网页端退休后（2026-08-18），插件是整个产品**唯一的入口**，而 `api.ts` 是它唯一的
+ * 路由器。**接一条路，就多够得着那条路要的那一片** —— 闭包涨是路由器的定义，不是
+ * 坏味道。panel-server 当年 91% 的问题不在够得着多少，在于它自己**长到 2177 行、
+ * 把业务逻辑吃进去了**。
+ *
+ * 真正在管这件事的是另外两条，而它们现在都没红：
+ *
+ *   - **配料单不许过 30%** —— 「改它一次要读多少」，那才是痛感的度量；
+ *   - **单个函数不许长成一层** —— panel-server 的 `handle()` 当年 484 行。
+ *
+ * 所以这里给的仍然是棘轮而不是豁免：数字钉在实测值上，**再涨就红**，于是「又给
+ * 路由器挂了一条依赖」永远要经过一次显式的抬手。但抬手时该问的是上面那两条，
+ * 不是这一条。
+ */
 
 describe("standing · 没有一个函数长成一层", () => {
   /** 用真编译器量，不用正则猜函数边界 —— 边界猜错一次这条护栏就静默失效。 */

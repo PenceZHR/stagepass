@@ -4,8 +4,9 @@ import { PHASES, isRetired, type Phase } from "../domain/phase";
 import type { Gap } from "../domain/gap";
 import type { ChangeState } from "../domain/change-state";
 import { jumpsFrom, optionsFrom } from "../domain/journey";
+import { MULTI_JOIN } from "../domain/question";
 import { roundFromLedger } from "../domain/round";
-import { createSubAgentLookup, threadContextUsage } from "../codex/subagent";
+import type { AppServerHistory } from "../codex/app-server-history";
 import { AsideStore } from "../store/aside-store";
 import { BindingStore } from "../store/binding-store";
 import { ChangeStore, type LedgerEntry } from "../store/change-store";
@@ -13,6 +14,7 @@ import { ParallelStore } from "../store/parallel-store";
 import { CommandStore } from "../store/command-store";
 import { EvidenceStore } from "../store/evidence-store";
 import { GapStore } from "../store/gap-store";
+import { HandoffStore } from "../store/handoff-store";
 import { ProjectStore } from "../store/project-store";
 import { QuestionStore } from "../store/question-store";
 import { RubricStore } from "../store/rubric-store";
@@ -37,13 +39,22 @@ import { JobStore } from "../work/job-store";
  */
 
 /**
- * 会话在这一层只需要一个动作：那个进程还活着吗。
+ * 会话在这一层只需要一个动作：那个 seat 是否已经打开。
  *
  * 结构类型而不是 `PanelSessions` —— 那个类住在 `panel-server.ts`，而这个文件
- * 被它 import。照着接口写，两边就没有环。
+ * 被它 import。照着接口写，两边就没有环；纯 App Server 分支里两者都来自
+ * 原生会话 owner。
  */
 export interface LiveSessions {
   has(changeId: string, phase: Phase): boolean;
+  /**
+   * 这个座位多久没有收到 App Server 事件（毫秒）。null = 会话还没打开。
+   *
+   * 「在跑」有三种：真在跑、进程死了（`processGone`）、**进程活着但卡死**
+   * （等许可、模型僵住）—— 第三种和第一种在界面上完全同形。typed notification
+   * 距今多久就是「多久没有可观察的动静」；不解析渲染文本。
+   */
+  quietForMs(changeId: string, phase: Phase): number | null;
 }
 
 /**
@@ -128,6 +139,7 @@ function phasesFor(input: {
   const gapStore = new GapStore(database);
   const evidence = new EvidenceStore(database);
   const rubricRounds = new RubricStore(database);
+  const handoffs = new HandoffStore(database);
   const questions = new QuestionStore(database);
   // 开着的并行座位（批 3）。一次读全，十一个格子各认各的。
   const seats = new Map(
@@ -173,6 +185,22 @@ function phasesFor(input: {
        * 界面靠它：座位开着的格子亮「跑这个阶段」（带 &phase=）、显示「并行」。
        */
       seat: seats.get(phase) ?? null,
+      /**
+       * 这个阶段有没有一轮**备着等人跑完**（2026-08-19 定案「甲」）。null = 没有。
+       *
+       * 它必须在这儿，因为工作台这时候**什么都没在跑** —— 没有 job、没有租约、
+       * `live` 是 false。少了这一格，人取完题面刷新一下页面，界面会重新长出
+       * 「取题面」这个按钮，而他手上那一轮还开着：再点一次就把名单和答案文件
+       * 全覆盖掉了。
+       */
+      handed: (() => {
+        const waiting = handoffs.waiting(changeId, phase);
+        return waiting === null ? null : {
+          round: waiting.round,
+          envelope: waiting.envelope,
+          preparedAt: waiting.preparedAt,
+        };
+      })(),
       mark: markOf(phase, ledger, state, gaps),
       gaps,
       /**
@@ -189,6 +217,13 @@ function phasesFor(input: {
       produced,
       /** 上次裁决的下场（§3.2·5）。留得住的状态，不是弹窗里一闪而过的那句。 */
       lastOutcome: questions.latestOutcomeFor(changeId, phase),
+      /**
+       * 此刻在等人答的那道题。
+       *
+       * C 方案之后人在**浏览器里**答，所以这道题必须发到浏览器 —— 以前它只活在
+       * Codex TUI 的 elicitation 表单里，面板这边一个字都看不到。
+       */
+      openQuestion: openQuestionOf(questions, changeId, phase),
     };
   });
 }
@@ -198,6 +233,83 @@ function phasesFor(input: {
  *
  * **只读**：选一个项目只是把 Change 列表收窄，它不起任何一轮、不动任何一道闸门。
  */
+/** 在等人答的那道题，摊平成浏览器直接能画的形状。没有就是 null。 */
+export function openQuestionOf(
+  questions: QuestionStore,
+  changeId: string,
+  /**
+   * 只画在**它自己那个阶段**的弹层里。
+   *
+   * 库里「在等的那道题」是 Change 级的（一个 Change 同时只等一道），但它记着自己
+   * 属于哪个阶段。不按阶段收窄的话，同一道 Build 的裁决会出现在 BuildPlan、Spec、
+   * QA 每一个弹层里 —— 人在哪一个上面答都一样，而屏幕说的是「这是这个阶段的事」。
+   */
+  phase: string,
+): {
+  readonly id: string;
+  readonly message: string;
+  readonly fields: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly options: readonly string[];
+    readonly multi: boolean;
+  }[];
+} | null {
+  const record = questions.open(changeId);
+  if (record === null || record.phase !== phase) return null;
+  const schema = record.question.requestedSchema;
+  return {
+    id: record.id,
+    message: record.question.message,
+    // 顺序就是 schema 里的顺序（对象按插入序），也就是组题时写下的顺序。
+    fields: Object.entries(schema.properties).map(([id, field]) => ({
+      id,
+      title: field.title,
+      options: [...(field.enum ?? [])],
+      multi: field.multi === true,
+    })),
+  };
+}
+
+/**
+ * 浏览器交回来的选择 → 落进账本的那份答案。
+ *
+ * 浏览器交的是**序号**，不是选项原文。理由和 `stagepass_next` 不收 id 是同一条：
+ * 长措辞（「先接受这个风险（问题还在，只是不再挡闸门）」）一旦要被谁抄一遍，
+ * 就迟早抄歪，而抄歪之后落进库里的是一个看起来合法的错答案。
+ *
+ * 对不上号就是 null —— 不猜、不取最近的一个。
+ */
+export function answerFromChoices(
+  question: {
+    readonly fields: readonly {
+      readonly id: string;
+      readonly options: readonly string[];
+      readonly multi?: boolean;
+    }[];
+  },
+  choices: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> | null {
+  const answer: Record<string, string> = {};
+  for (const field of question.fields) {
+    const raw = choices[field.id];
+    // `Number("")` 是 0 —— 空格子会静静地答成第一个选项。空的就是没答。
+    if (raw === undefined || raw.trim() === "") return null;
+    /*
+     * 多选交上来的是逗号连的序号（"0,2"）。逐个换回原文，按 `MULTI_JOIN` 连成
+     * 一个字符串落进账本 —— `Answer` 的形状不动。重复选同一项按抄歪算，拒。
+     */
+    const indices = (field.multi === true ? raw.split(",") : [raw])
+      .map((part) => Number(part.trim()));
+    if (indices.some((index) =>
+      !Number.isInteger(index) || index < 0 || index >= field.options.length
+    )) return null;
+    if (new Set(indices).size !== indices.length) return null;
+    answer[field.id] = indices.map((index) => field.options[index]!).join(MULTI_JOIN);
+  }
+  return answer;
+}
+
 export function panelView(input: {
   database: Database.Database;
   sessions: LiveSessions;
@@ -282,6 +394,16 @@ export function panelView(input: {
     /** 人答出来的需求，null = 还没录。界面靠它决定能不能跑。 */
     brief,
     /**
+     * MCP 已经收到完整回答，但面板在把它落成 brief 之前重启了。只读地把这张脸
+     * 摆出来：页面要让人明确选择“恢复上次回答”，不能悄悄重问，也不能悄悄套用。
+     */
+    briefAnswerPending: brief === null && new QuestionStore(database)
+      .answered(changeId, "clarification")
+      .some((record) =>
+        record.id.startsWith(`BR-${changeId}-`)
+        && !record.id.endsWith("-x")
+        && record.question.message.includes("先把这次改动要什么说清楚")),
+    /**
      * 这个 Change 最近的一条活儿（跑过的轮、或被预检拒掉的派发）。null = 一条
      * 都没有。界面靠它做两件事：`blocked` 时说出**这一次**失败的真原因（交接
      * §5.5.4 —— 原来 `jobs.error` 屏幕上一个字都没有），以及判断「有一轮在飞」
@@ -332,10 +454,8 @@ export function panelView(input: {
  *
  * ## 两条硬约束都守住
  *
- * - **不解析 pty 输出**（PRD §9.3）。这里一个字节都不碰 pty。
- * - 进度只来自**库**和**进程状态**，外加 Codex 自己的 `state_5.sqlite`
- *   （`codex/subagent.ts` 早就在读它，读的是「这个线程派生了哪几个子 Agent」，
- *   和读 rollout 同一类动作）。
+ * - **不从渲染文本推断状态**（PRD §9.3）。
+ * - 进度只来自**StagePass 库**、App Server turn 状态和 App Server 返回的子线程关系。
  *
  * ## 说不出来就说不出来
  *
@@ -345,12 +465,13 @@ export function panelView(input: {
  *
  * 只读，不写任何东西（M5）。
  */
-export function progressView(input: {
+export async function progressView(input: {
   database: Database.Database;
   sessions: LiveSessions;
+  history: Pick<AppServerHistory, "readThread">;
   changeId: string;
-}): unknown | null {
-  const { database, sessions, changeId } = input;
+}): Promise<unknown | null> {
+  const { database, sessions, history, changeId } = input;
   let state: ChangeState;
   try {
     state = new ChangeStore(database).read(changeId).state;
@@ -358,14 +479,27 @@ export function progressView(input: {
     return null;   // 没有这个 Change。调用者翻成 404。
   }
   const phase = state.phase;
-  const live = sessions.has(changeId, phase);
   const job = new JobStore(database).latestFor(changeId);
+  /*
+   * **「还有人在跑它吗」跨进程只有租约说得准。**
+   *
+   * 2026-08-19 真机：一轮跑了 47 分钟、租约 20 秒前还在续，而界面报「进程没了」——
+   * 因为判据问的是「**我这个进程**手上有没有」，而那一轮归另一个进程（工作台和插件
+   * 可以同时开着）。人照着那句话按「中止这一轮」，掐掉的是一轮真活儿。
+   *
+   * 手上有（`sessions.has`）当然算活；手上没有但**租约还在续**，同样算活。
+   */
+  const leased = job !== null
+    && (job.status === "running" || job.status === "queued")
+    && job.leaseExpiresAt !== null
+    && job.leaseExpiresAt > Date.now();
+  const live = sessions.has(changeId, phase) || leased;
 
   /*
    * 裁判派生了哪几个子 Agent —— 这是唯一能说出「红方在写 / 蓝方在挑」的信号。
    *
-   * 整段包在 try 里：它读的是别人的库，Codex 改了表名这里就该**报不知道**，
-   * 而不是把整个进度端点带崩。
+   * 整段包在 try 里：App Server 暂时不可用时这里应该**报不知道**，而不是把整个
+   * 进度端点带崩。
    */
   let spawned = 0;
   let stageKnown = false;
@@ -373,10 +507,12 @@ export function progressView(input: {
   try {
     const bound = new BindingStore(database).find(changeId, phase);
     if (bound?.status === "bound") {
-      spawned = createSubAgentLookup().spawnCount(bound.threadId);
-      stageKnown = true;
-      // 裁判线程离上下文墙多远（§3.3·11）。null = rollout 里还没有 token_count。
-      context = threadContextUsage({ threadId: bound.threadId });
+      const thread = await history.readThread(bound.threadId);
+      if (thread !== null) {
+        spawned = thread.childThreadIds.length;
+        stageKnown = true;
+        context = thread.contextUsage;
+      }
     }
   } catch {
     stageKnown = false; // 查不到就是查不到，不猜
@@ -415,5 +551,10 @@ export function progressView(input: {
      * 今天这一格会静默烧掉 30 分钟。它必须有名字，界面才说得出这句话。
      */
     processGone: state.status === "running" && !live,
+    /**
+     * 第三种「在跑」也要有名字：进程活着但多久没有可观察的动静了。
+     * 阈值不在这儿定 —— 这里只报数，几分钟算「卡住」由界面（和人）说。
+     */
+    quietForMs: sessions.quietForMs(changeId, phase),
   };
 }

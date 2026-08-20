@@ -1,10 +1,16 @@
+import { SubAgentNotFoundError } from "../codex/subagent";
 import { blockersFrom, type Gap, type Verdict } from "../domain/gap";
+import { TurnResultUnparsableError } from "../domain/turn";
+import { blueDocPath, redDocPath } from "../domain/artifact-home";
+import { BLOCKER_SHAPE, type SlotHeader } from "../domain/round-slots";
+import type { SlotFiles } from "../system/slot-files";
 import { isEditGateGap } from "../domain/edit-gate";
 import type { Blocker } from "../domain/gate";
 import type { Phase } from "../domain/phase";
 import { templateFor } from "../domain/phase-template";
 import {
-  judgePrompt, readConclusion, readRound, readVerdicts, renderOpenGaps,
+  judgePrompt, overallIn, readConclusion, readRound, readRoundFromSlots,
+  readVerdicts, renderOpenGaps, type RoundReading,
   renderSettled,
   type RoundAgents, type RoundConclusion,
 } from "../domain/round";
@@ -12,13 +18,15 @@ import { RESULT_CONTRACT_NOTES } from "../domain/turn";
 import type { CodexTransport } from "../codex/transport";
 import type { GapStore } from "../store/gap-store";
 import type { WorkItem, WorklistStore } from "../store/worklist-store";
-import type { WorkItemDraft } from "../domain/worklist";
+import {
+  readWorklistAnswers, renderWorklist, type WorkItemDraft,
+} from "../domain/worklist";
 
 /**
  * One adversarial round, from prompt to settled gaps.
  *
  * The four things this joins were each proved separately -- the judge's prompt,
- * finding a sub-agent's own rollout, reading three transcripts into an outcome,
+ * finding a sub-agent through App Server lineage, reading three transcripts into an outcome,
  * and writing that outcome to the gap store. What was missing was the wire
  * between them, and a wire is exactly the kind of thing the tree this replaces
  * had a hundred of: built, plausible, and never once run end to end.
@@ -34,7 +42,7 @@ import type { WorkItemDraft } from "../domain/worklist";
  *
  * ## Everything unproven is injected
  *
- * The transport and the rollout reader are parameters, so the whole of this runs
+ * The transport and the App Server history reader are parameters, so the whole of this runs
  * offline against `ScriptedCodexTransport` and a stub reader. What is left that
  * needs a real Codex is one thing only: whether a judge actually spawns two
  * sub-agents, one after the other.
@@ -55,7 +63,7 @@ export interface RoundRequest {
    * 这一层不知道 rubric 是什么，它只知道「名单上还有别人加的几条」。
    *
    * 必须和 gap 那些**在同一份名单里**：游标只有一个，两份名单就是两个游标，
-   * 而模型手上只有一个 `stagepass_next`。
+   * 而模型手上只有一份答案文件。
    */
   readonly extraWorkItems?: readonly WorkItemDraft[];
   /**
@@ -107,7 +115,7 @@ export interface RoundDependencies {
    *
    * 拿到 id 的那条路见 `childThreads` —— 这里只管「拿着 id 去读它说了什么」。
    */
-  readonly readThread: (threadId: string) => string;
+  readonly readThread: (threadId: string) => string | Promise<string>;
   /**
    * 一条线程派生的子 Agent，按出生先后排（`codex/subagent.ts` 的 `childThreadsOf`）。
    *
@@ -115,10 +123,12 @@ export interface RoundDependencies {
    * 放进了模型必须手抄的文本里，而抄错一个字符这一轮就作废、正反两方说的话谁也
    * 看不到（`02059a8` 实测过一次：它把自己的线程报成了子 Agent）。
    *
-   * 判据换成 rollout 里 `session_meta` 的 `parent_thread_id` —— 76/76 有值，
+   * 判据换成 App Server 返回的 thread lineage，不让模型手抄任何 id。
    * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md §三。
    */
-  readonly childThreads: (parentThreadId: string) => readonly string[];
+  readonly childThreads: (
+    parentThreadId: string,
+  ) => readonly string[] | Promise<readonly string[]>;
   /**
    * 裁判这一轮逐条表态的名单。
    *
@@ -150,6 +160,14 @@ export interface RoundDependencies {
    * 但数不对。人对这两件事该做的事完全不同（`readBlueRubricAnswers` 各给一句话）。
    */
   readonly readRoundFile: (path: string) => string | null;
+  /**
+   * 这一轮的格子文件（`domain/round-slots.ts`）。
+   *
+   * 给了就走格子那条路：派轮之前红蓝各铺一份，收轮之后从文件里读发现，
+   * **不再解析模型自己写的那段 json**。缺席就照旧解析 transcript ——
+   * 老调用方（和还没接上的测试）一个字不用改。
+   */
+  readonly slotFiles?: SlotFiles | undefined;
 }
 
 /** 这一轮认不出正反两方跑在哪两条线程上。 */
@@ -170,8 +188,8 @@ export interface RoundSettled {
   /**
    * 三个角色各自说了什么，原文交出来。
    *
-   * 这里已经读到了它们（红蓝各自的 rollout、裁判的返回），交出来是为了让上层不必
-   * 再读一次 —— 再读一次不只是浪费，而是**可能读到不同的东西**：rollout 是活的，
+   * 这里已经读到了它们（红蓝各自的会话、裁判的返回），交出来是为了让上层不必
+   * 再读一次 —— 再读一次不只是浪费，而是**可能读到不同的东西**：会话是活的，
    * 两次读之间它可以长。上层要对同一份文本做判定，就必须是这一份。
    */
   readonly transcripts: {
@@ -184,7 +202,7 @@ export interface RoundSettled {
    *
    * 交出来是为了让上层能去问那两条线程**收到过什么** —— 「反方没答」和「反方压根
    * 没收到契约」是两件必须分开的事，而后者只有拿着线程 id 才查得了
-   * （`codex/rollout.ts` 的 `allTextIn`）。
+   * （`AppServerHistory.readThread`）。
    */
   readonly agents: RoundAgents;
   /**
@@ -230,10 +248,194 @@ export interface RoundSettled {
   readonly blueOverall: string | null;
 }
 
-export async function runRound(
+/**
+ * 派轮之前把红蓝两份格子文件铺好。**必须在派轮之前** —— 题面里带的是它的路径，
+ * 模型打开的时候它得已经在那儿。`slotFiles` 缺席就是走老路（解析 transcript）。
+ */
+export type RoundSlots = {
+  readonly files: SlotFiles;
+  readonly heads: { readonly red: SlotHeader; readonly blue: SlotHeader };
+  readonly paths: { readonly red: string; readonly blue: string };
+};
+
+/**
+ * 这一轮红蓝两份格子文件的**把手**，一个字节都不写。
+ *
+ * ## 为什么它必须和 `laySlots` 分开
+ *
+ * 结算不再只发生在派轮那条路上了（2026-08-19 甲）：人在自己的会话里跑完之后，
+ * StagePass 从外面回来收这一轮。那时候格子文件里装着**这一轮唯一的产出** ——
+ * 而 `lay` 是覆盖写（重放要幂等，它本来就该覆盖）。结算时再 `lay` 一次，
+ * 等于把人刚跑出来的东西抹掉，然后报「模型没填」。
+ *
+ * 所以取路径走 `pathOf`，铺文件走 `lay`，两件事分开。
+ */
+function slotsFor(
+  request: Pick<RoundRequest, "changeId" | "phase" | "round">,
+  files: SlotFiles | undefined,
+): RoundSlots | null {
+  if (files === undefined) return null;
+  const common = {
+    changeId: request.changeId, phase: request.phase, round: request.round,
+    shape: BLOCKER_SHAPE,
+  };
+  const heads = {
+    red: {
+      ...common, role: "red" as const,
+      artifacts: [redDocPath(request.changeId, request.phase, request.round)],
+    },
+    blue: {
+      ...common, role: "blue" as const,
+      artifacts: [blueDocPath(request.changeId, request.phase, request.round)],
+      // 反方那份总要给一句整体判断（人裁决时看的那张表上并排显示）。
+      wantsOverall: true,
+    },
+  };
+  return {
+    files, heads,
+    paths: { red: files.pathOf(heads.red), blue: files.pathOf(heads.blue) },
+  };
+}
+
+/** 铺一份新的 —— **只在备一轮的时候叫**（它是覆盖写，见 `slotsFor`）。 */
+function laySlots(
+  request: RoundRequest,
+  files: SlotFiles | undefined,
+): RoundSlots | null {
+  const slots = slotsFor(request, files);
+  if (slots === null) return null;
+  slots.files.lay(slots.heads.red);
+  slots.files.lay(slots.heads.blue);
+  return slots;
+}
+
+/** 收轮之后从格子文件里读发现。哪一边不合规就说是哪一边。 */
+function collectSlots(
+  slots: NonNullable<ReturnType<typeof laySlots>>,
+  request: RoundRequest,
+  verdicts: Readonly<Record<string, Verdict>>,
+  blueOverall: string | null,
+): RoundReading {
+  const read = readRoundFromSlots({
+    phase: request.phase, round: request.round,
+    red: slots.files.collect(slots.heads.red),
+    blue: slots.files.collect(slots.heads.blue),
+    verdicts, blueOverall,
+  });
+  if (!read.ok) throw new TurnResultUnparsableError("slot_file_invalid", read.reason);
+  slots.files.discard(slots.heads.red);
+  slots.files.discard(slots.heads.blue);
+  return read.reading;
+}
+
+/**
+ * 把这一轮的题面落成文件，返回它的路径。
+ *
+ * **抽出来是为了「给我题面，我自己跑」那条路**（2026-08-19 定案）：准备一轮和派发
+ * 一轮是两件事，而它们原来长在同一个函数里 —— 想把题面交给人，就只能重复一份准备
+ * 逻辑，那是这棵树最恨的「同一规则两份拷贝」。
+ *
+ * 这一步是纯重构：行为一个字没变。
+ */
+function writeRoundScript(
+  request: RoundRequest,
+  dependencies: Pick<RoundDependencies, "writeRoundFile">,
+  prepared: {
+    readonly openGaps: Parameters<typeof judgePrompt>[0]["openGaps"];
+    readonly openGapsPath: Parameters<typeof judgePrompt>[0]["openGapsPath"];
+    readonly slots: { readonly paths: { readonly red: string; readonly blue: string } } | null;
+    readonly settledPath: string | undefined;
+    readonly contractNotesPath: Parameters<typeof judgePrompt>[0]["contractNotesPath"];
+    readonly worklist: Parameters<typeof judgePrompt>[0]["worklist"];
+  },
+): string {
+  return dependencies.writeRoundFile(
+    `round-script-${request.phase}-r${request.round}.md`,
+    judgePrompt({
+      phase: request.phase,
+      round: request.round,
+      task: request.task,
+      openGaps: prepared.openGaps,
+      openGapsPath: prepared.openGapsPath,
+      /*
+       * 有模板的阶段每一轮都带着它。**这一层不判「哪个阶段有」** —— 那归
+       * `domain/phase-template.ts`，它返回 null 就是没有，一行都不印。
+       */
+      ...(templateFor(request.phase) === null
+        ? {}
+        : { template: templateFor(request.phase)! }),
+      ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
+      ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
+      ...(prepared.slots === null ? {} : {
+        redSlotPath: prepared.slots.paths.red, blueSlotPath: prepared.slots.paths.blue,
+      }),
+      ...(prepared.settledPath === undefined ? {} : { settledPath: prepared.settledPath }),
+      ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
+      ...(prepared.worklist === undefined ? {} : { worklist: prepared.worklist }),
+      contractNotesPath: prepared.contractNotesPath,
+    }),
+  );
+}
+
+/**
+ * 会话里送的那个信封。**内容一个字不带** —— 身份和轮次、题面文件的路径、「先读它」。
+ *
+ * 裁判不读文件就没法开工（它连答案格式都不知道），读了才有全部指令。半份内容在
+ * 信封、半份在文件才是最坏的形状：那会让它觉得信封已经够了。
+ */
+function roundEnvelope(
+  request: Pick<RoundRequest, "phase" | "round">,
+  scriptPath: string,
+): string {
+  return [
+    `你是本轮的裁判。阶段：${request.phase}，第 ${request.round} 轮。`,
+    `这一轮的完整题面在这个文件里，**先读它，从头到尾**：${scriptPath}`,
+    "读完照它执行。要转达给正反两方的内容、答案的格式、停机条件都只在题面里 ——",
+    "题面之外没有第二份指令。",
+  ].join("\n");
+}
+
+
+/** 准备好的一轮：题面已经落成文件，名单已经开好，就差谁去跑。 */
+export interface PreparedRound {
+  /** 送进会话的那个信封 —— 内容一个字不带，只有身份、路径和「先读它」。 */
+  readonly envelope: string;
+  /** 题面文件的绝对路径。 */
+  readonly scriptPath: string;
+  /** 红蓝两方的格子文件。没有格子的阶段是 null。 */
+  readonly slots: ReturnType<typeof laySlots>;
+  /** 这一轮开给裁判的名单 —— 结算时要照它逐条对答案。 */
+  readonly items: readonly WorkItemDraft[];
+  /**
+   * 名单那两个文件在哪。**结算时要回来读 `answersPath`** —— 它在每轮一个随机的
+   * 临时目录里，推不出来，所以谁备的这一轮谁就得把它带着走。
+   *
+   * 空名单是 `undefined`（那时也没有文件）。
+   */
+  readonly worklist: {
+    readonly listPath: string;
+    readonly answersPath: string;
+    readonly count: number;
+  } | undefined;
+}
+
+/**
+ * 备一轮，**但不派**。
+ *
+ * ## 为什么它单独存在（2026-08-19 定案）
+ *
+ * StagePass 不再自己跑轮 —— 谁执行 turn，谁就占着那条 Codex 线程，于是人在 App 里
+ * 打不开它（真机反复撞到的 "This is open in another app"）。**改成把题面交给人，
+ * 他在自己的会话里跑**：那一轮从第一秒起就是他的，看得见、点得开、审批弹给他。
+ *
+ * 备的这些一样都不能少，而且**必须和真跑那条走同一份代码**：名单要在人开跑之前开好
+ * （裁判一起来就可能问「下一项」）、gap 名单要落文件、格子文件要铺好、契约说明要写。
+ * 抄一份出来迟早分叉，而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」。
+ */
+export function prepareRound(
   request: RoundRequest,
   dependencies: RoundDependencies,
-): Promise<RoundSettled> {
+): PreparedRound {
   // Only open gaps are put to the judge. A closed one is not a question, and
   // listing it would invite a verdict that reopens something already settled.
   // 编辑过门那条也不进（批 6）：它是人和机器之间的门 —— 红方修不了它，裁判
@@ -311,6 +513,8 @@ export async function runRound(
    * 只挪说明，骨架仍然原样印两遍 —— 判据在 `RESULT_CONTRACT` 那段注释里：
    * 骨架缺了整轮无法解析，说明缺了只是写得糙。
    */
+  const slots = laySlots(request, dependencies.slotFiles);
+
   const contractNotesPath = dependencies.writeRoundFile(
     "result-contract-notes.md",
     [
@@ -321,21 +525,9 @@ export async function runRound(
     ].join("\n"),
   );
 
-  /*
-   * **这一轮之前它已经有哪些孩子** —— 必须在 turn 之前问。
-   *
-   * 成功的轮复用裁判线程，所以一条裁判线程会累积多轮的子 Agent（实测见过一条挂着
-   * 7 个）。差集给出的正是「这一次派生的」，而且它不依赖任何时钟 —— 拿时间戳去比
-   * 要假设 StagePass 和 Codex 的钟对得上，差集不用。
-   *
-   * 新线程时 `judgeThreadId` 是 null，此时它还不存在，孩子当然也没有。
-   */
-  const before = request.judgeThreadId === null
-    ? []
-    : dependencies.childThreads(request.judgeThreadId);
 
   /*
-   * **名单要在 turn 之前开好** —— 裁判一起来就可能调 `stagepass_next`。
+   * **名单要在 turn 之前开好** —— 它的正文要落成文件，而那个文件的路径要进题面。
    *
    * 顺序也是这里定的：先所有 open gap，再 L5 追加的那几条标准。裁判影响不了它，
    * 那正是重点 —— 它连「现在答的是哪一条」都不知道。
@@ -356,9 +548,46 @@ export async function runRound(
   dependencies.worklist.open(request.changeId, request.phase, request.round, items);
 
   /*
+   * **名单印成文件，表态写回另一份文件**（2026-08-19）。
+   *
+   * 在这之前它走 MCP 工具（`stagepass_next` / `stagepass_answer`）。那两个工具随
+   * `src/plugin/` 一起删掉之后，树上**一个生产调用者都没有**了 —— 而题面还在叫
+   * 裁判去调它们。后果不是报错：`worklist.read` 读回一份全空的名单，于是 gap 的
+   * 表态全丢、每一条标准记 `not_assessed`，**而标了阻断的 `not_assessed` 是把闸门
+   * 关死的**。沉默地关死。
+   *
+   * 甲那条路（题面交给人，他在自己的会话里跑）让这件事没有退路：他的会话里从来
+   * 就没有那两个工具，也不该为了跑一轮去装一个 MCP server、每轮按一次许可。
+   *
+   * 空名单不写 —— 和 `openGapsPath` 同一条规矩：一个空文件只会让裁判去猜它是不是
+   * 该有内容。`judgePrompt` 那边 `count === 0` 也一行路径都不印。
+   */
+  const worklistFiles = items.length === 0 ? undefined : {
+    listPath: dependencies.writeRoundFile(
+      `worklist-${request.phase}-r${request.round}.md`,
+      renderWorklist(items),
+    ),
+    /*
+     * 答案那份**先写一个空壳**，只为了拿到路径 —— 和 `blueRubricFiles` 里那份
+     * 一模一样的理由：不预先建它，这一层就得自己拼路径，而那个目录是每轮一个
+     * 临时目录，不该由这一层知道。
+     */
+    answersPath: dependencies.writeRoundFile(
+      `worklist-answers-${request.phase}-r${request.round}.md`,
+      [
+        `# ${request.changeId} · ${request.phase} 第 ${request.round} 轮：逐条表态`,
+        "",
+        "（一行一条，形如 `3: closed —— 依据…`。序号见清单文件，可选项见清单里每条旁边。）",
+        "",
+      ].join("\n"),
+    ),
+    count: items.length,
+  };
+
+  /*
    * **这一轮不管怎么结束，名单都要收工。**
    *
-   * 名单在 turn 之前开（裁判一起来就可能调 `stagepass_next`），而收工原来只写在
+   * 名单在 turn 之前开（它的路径要进题面），而收工原来只写在
    * 顺利跑完那条路上。于是任何一种routine 失败 —— 超时、`deadline_reached`、
    * 「认不出两条子 Agent 线程」—— 都会留下一份 `status='open'` 的名单。
    *
@@ -368,36 +597,203 @@ export async function runRound(
    * （`worklist.read` 按 (阶段, 轮) 取）。下一次派轮会自愈，可那扇窗正好是
    * 「人在终端里查刚才为什么炸」的那段时间。
    */
-  let delivery;
+  /*
+   * **题面整体落成文件，会话里只送一个信封**（用户 2026-08-13：「提示词我不想
+   * 每次都大段地输进去……每次这么长的提示词，我感觉不太好看」）。
+   *
+   * 这是 2026-08-03「能文件化的就走文件」那条路走到头：requirement、名单、
+   * 裁定史、契约说明早就各自走文件了，最后裸奔的就是剧本主体。信封只有三样 ——
+   * 身份和轮次、题面文件的路径、「先读它」：**内容一个字不带**，于是裁判不读
+   * 文件就没法开工（它连答案格式都不知道），读了才有全部指令。半份内容在信封、
+   * 半份在文件才是最坏的形状 —— 那会让它觉得信封已经够了。
+   *
+   * 转达定律不因此松动：路径比段落难被改写（requirement 那份的实测先例 ——
+   * 段落会被裁判转述时改写丢，路径转坏了红方会大声说读不到）。
+   *
+   * 附带的机械收益：transport 认「自己那一轮」靠 App Server 返回的 turn id；
+   * 信封里的路径每轮都在新的临时目录里，提示词也更短、更独特。
+   */
+  const scriptPath = writeRoundScript(request, dependencies, {
+    openGaps, openGapsPath, slots, settledPath, contractNotesPath,
+    worklist: worklistFiles,
+  });
+  const envelope = roundEnvelope(request, scriptPath);
+
+  return { envelope, scriptPath, slots, items, worklist: worklistFiles };
+}
+
+/**
+ * 从库里存着的那几个路径**重建**「备好的一轮」—— 结算时用，一个字节都不写。
+ *
+ * ## 为什么不能「结算时重新备一次」
+ *
+ * 那是最诱人的省事办法，而它会**把人刚跑出来的东西抹掉**：备一轮要铺格子文件、
+ * 写一份空的答案文件外壳，两样都是覆盖写（重放要幂等，它们本来就该覆盖）。
+ * 结算时再备一次，人跑了一小时的产出就变成「模型没填」——**而账本上看不出区别**。
+ *
+ * ## 名单从库里读，不从存的那份读
+ *
+ * 名单本来就在 `round_worklist` 里，带着 `target` 和 `choices`。再存一份就是同一份
+ * 数据的第二份拷贝，而两份必然漂移。
+ */
+export function resumePrepared(
+  request: Pick<RoundRequest, "changeId" | "phase" | "round">,
+  dependencies: Pick<RoundDependencies, "worklist" | "slotFiles">,
+  stored: {
+    readonly envelope: string;
+    readonly scriptPath: string;
+    readonly worklist: PreparedRound["worklist"];
+  },
+): PreparedRound {
+  return {
+    envelope: stored.envelope,
+    scriptPath: stored.scriptPath,
+    worklist: stored.worklist,
+    // `slotsFor` 只取路径不铺文件 —— 见它自己那段注释。
+    slots: slotsFor(request, dependencies.slotFiles),
+    items: dependencies.worklist.read(
+      request.changeId, request.phase, request.round,
+    ),
+  };
+}
+
+/**
+ * 名单答成什么样 —— **读答案文件、落库、收工**，一步都不能少。
+ *
+ * ## 为什么它是一个单独的函数
+ *
+ * 结算不只发生在 `runRound` 里了（2026-08-19 甲）：人在自己的会话里跑完那一轮之后，
+ * StagePass 要从外面把同一件事再做一遍。抄一份出来必然分叉，而分叉的表现是
+ * 「人手跑的那一轮和 StagePass 记的账对不上」—— 那种错要到人裁决时才发作。
+ *
+ * ## 顺序：先落答，再收工
+ *
+ * `close` 之后名单就不在 `next()` 的视野里了，但 `recordAnswers` 按 (Change, 阶段,
+ * 轮, 序号) 直接寻址，收没收工都写得进去。之所以仍然先落答：**收工是「这一份问完
+ * 了」的意思**，而它问完的标志正是答案落库。反过来写，中间那一瞬间的库状态在说
+ * 一句假话。
+ *
+ * ## 「一条都没答」仍然单独报
+ *
+ * 那不是它的判断，是机制被绕过了 —— 题面明写着逐条表态，全不答只可能是它压根没
+ * 照做（没读那两个文件、或者自作主张写进了 json）。记进 `malformed`，于是线程被
+ * 放开，下一轮从干净的开。**答了一部分不算**：那是它的判断，沉默的那几条按老规矩
+ * 保持 open。
+ */
+function collectWorklist(
+  request: Pick<RoundRequest, "changeId" | "phase" | "round">,
+  dependencies: Pick<RoundDependencies, "worklist" | "readRoundFile">,
+  prepared: Pick<PreparedRound, "items" | "worklist">,
+): { readonly answered: WorkItem[]; readonly malformed: string[] } {
+  const malformed: string[] = [];
+
+  if (prepared.worklist !== undefined) {
+    const read = readWorklistAnswers(
+      dependencies.readRoundFile(prepared.worklist.answersPath),
+      prepared.items,
+    );
+    malformed.push(...read.problems);
+    malformed.push(...dependencies.worklist.recordAnswers(
+      request.changeId, request.phase, request.round, read.answers,
+    ));
+  }
+
+  dependencies.worklist.close(request.changeId, request.phase, request.round);
+  const answered = dependencies.worklist.read(
+    request.changeId, request.phase, request.round,
+  );
+  if (prepared.items.length > 0 && answered.every((item) => item.answer === null)) {
+    malformed.push("worklist_unanswered");
+  }
+  return { answered, malformed };
+}
+
+export async function runRound(
+  request: RoundRequest,
+  dependencies: RoundDependencies,
+): Promise<RoundSettled> {
+  const prepared = prepareRound(request, dependencies);
+  const { delivery, before } = await dispatchRound(request, dependencies, prepared);
+  return settleRound(request, dependencies, delivery, prepared, before);
+}
+
+/**
+ * 把备好的这一轮**派出去**，等它跑完。
+ *
+ * 抽出来是为了让 L5 也能走「备 → 派 → 收」这三步：`runRubricRound` 原来整个
+ * 套在 `runRound` 外面，于是它没法在备和派之间插自己那一段（rubric 的名单和
+ * 反方那两个文件都要在 turn 之前铺好）。
+ */
+export async function dispatchRound(
+  request: RoundRequest,
+  dependencies: RoundDependencies,
+  prepared: PreparedRound,
+): Promise<{
+  readonly delivery: { readonly threadId: string; readonly text: string };
+  readonly before: readonly string[];
+}> {
+  /*
+    * **裁判线程读不到 = 没有孩子可数**，不是这一轮的错。
+    *
+    * 真机链（2026-08-18 深夜）：绑定指着一条 Codex 里已不存在的线程（第一轮失败留下
+    * 的零轮次幽灵），这一步如实抛 `no App Server thread …` —— 于是每次派轮都死在
+    * turn 之前的同一句上，座位层「resume 不成就开新线程」的恢复根本没机会跑。
+    *
+    * 只接 `SubAgentNotFoundError`（明确的「没有这条线程」）；断线、超时那些照旧抛
+    * —— 那时装作基线为空会把别人的孩子当成这一轮新生的。
+    */
+  let before: readonly string[] = [];
+  if (request.judgeThreadId !== null) {
+    try {
+      before = await dependencies.childThreads(request.judgeThreadId);
+    } catch (error) {
+      if (!(error instanceof SubAgentNotFoundError)) throw error;
+    }
+  }
+
   try {
-    delivery = await dependencies.transport.runTurn({
-    threadId: request.judgeThreadId,
-    prompt: judgePrompt({
-      phase: request.phase,
-      round: request.round,
-      task: request.task,
-      openGaps,
-      openGapsPath,
-      /*
-       * 有模板的阶段每一轮都带着它。**这一层不判「哪个阶段有」** —— 那归
-       * `domain/phase-template.ts`，它返回 null 就是没有，一行都不印。
-       */
-      ...(templateFor(request.phase) === null
-        ? {}
-        : { template: templateFor(request.phase)! }),
-      ...(request.blueRubric === undefined ? {} : { blueRubric: request.blueRubric }),
-      ...(request.blueDocPath === undefined ? {} : { blueDocPath: request.blueDocPath }),
-      ...(settledPath === undefined ? {} : { settledPath }),
-      ...(request.sentBack === undefined ? {} : { sentBack: request.sentBack }),
-      contractNotesPath,
-    }),
+    const delivery = await dependencies.transport.runTurn({
+      threadId: request.judgeThreadId,
+      prompt: prepared.envelope,
     });
+    return { delivery, before };
   } catch (error) {
     // 派轮炸了 —— 名单先收工，再把错原样抛上去（失败仍然是失败）。
     dependencies.worklist.close(request.changeId, request.phase, request.round);
     throw error;
   }
+}
 
+/**
+ * 一轮跑完之后的那半截：**认出正反两方 → 读三方说的话 → 落 gap。**
+ *
+ * ## 为什么它单独存在（2026-08-19 定案「甲」）
+ *
+ * 这一轮不一定是 StagePass 派的了。**谁执行 turn，谁就占着那条 Codex 线程** ——
+ * 于是 StagePass 派的那一轮，人在 App 里打不开（真机反复撞到的
+ * "This is open in another app"）。改成把题面交给人，他在自己的会话里跑；跑完
+ * StagePass 从外面回来收这一轮。
+ *
+ * 收的这些一样都不能少，而且**必须和真跑那条走同一份代码**。抄一份出来迟早分叉，
+ * 而分叉的表现是「人手跑的那一轮和 StagePass 记的账对不上」—— 那种错要到人裁决时
+ * 才发作，那时两边的证据都已经落库了。
+ *
+ * ## `before` 是什么，为什么它可以是空的
+ *
+ * 裁判线程在这一轮**之前**挂着的子 Agent。差集是用来挑出「这一次派生的那两条」的
+ * （真实的裁判线程会越挂越多，2026-08-02 见过一条挂着 7 个）。
+ *
+ * 人自己开的那条线程是**新的**，这一轮是它的第一轮，所以基线就是空 —— 那不是
+ * 「省了一步」，是那条路上的事实。
+ */
+export async function settleRound(
+  request: RoundRequest,
+  dependencies: RoundDependencies,
+  delivery: { readonly threadId: string; readonly text: string },
+  prepared: PreparedRound,
+  before: readonly string[] = [],
+): Promise<RoundSettled> {
+  const { slots, items, worklist } = prepared;
   /*
    * 这一轮派生的那两条线程，然后读它们自己的话。
    *
@@ -408,7 +804,7 @@ export async function runRound(
    * 取最后两条：多出来通常是裁判重派了一次，那时最后两条是对的。这个判断连同实际
    * 派了几条一起交上去（`spawned`），不静默。
    */
-  const fresh = dependencies.childThreads(delivery.threadId)
+  const fresh = (await dependencies.childThreads(delivery.threadId))
     .filter((threadId) => !before.includes(threadId));
   if (fresh.length < 2) {
     // 同上：认不出两方也要先收名单，否则它开着毒下一个会话。
@@ -420,8 +816,8 @@ export async function runRound(
     blue: fresh[fresh.length - 1]!,
   };
 
-  const red = dependencies.readThread(agents.red);
-  const blue = dependencies.readThread(agents.blue);
+  const red = await dependencies.readThread(agents.red);
+  const blue = await dependencies.readThread(agents.blue);
 
   /*
    * 信封坏没坏，和「它给没给裁决」是两件事 —— 见 `VerdictReport.unreadable`。
@@ -436,19 +832,16 @@ export async function runRound(
    * 名单收工，读回它答成什么样。
    *
    * **一条都没答，而名单不是空的 —— 那是机制被绕过了**，不是它的判断。提示词明写着
-   * 逐条走工具，全不答只可能是它压根没调（工具没起来、或者它自作主张写进了 json）。
+   * 逐条写进答案文件，全不答只可能是它压根没照做（没读那两个文件、或者自作主张
+   * 写进了 json）。
    * 记进 `malformed`，于是线程被放开，下一轮从干净的开 —— 一条中毒的线程会把
    * 「不用那个工具」这件事也一起抄下去。
    *
    * **答了一部分不算**：那是它的判断，沉默的那几条按老规矩保持 open。
    */
-  dependencies.worklist.close(request.changeId, request.phase, request.round);
-  const answered = dependencies.worklist.read(
-    request.changeId, request.phase, request.round,
-  );
-  if (items.length > 0 && answered.every((item) => item.answer === null)) {
-    malformed.push("worklist_unanswered");
-  }
+  const collected = collectWorklist(request, dependencies, { items, worklist });
+  const answered = collected.answered;
+  malformed.push(...collected.malformed);
 
   const verdicts: Record<string, Verdict> = {};
   for (const item of answered) {
@@ -458,13 +851,15 @@ export async function runRound(
     };
   }
 
-  const reading = readRound({
-    phase: request.phase,
-    round: request.round,
-    red,
-    blue,
-    judge: delivery.text,
-  }, verdicts);
+  /*
+   * 走格子那条路时，产出从**文件**里读，不从 transcript 捞。哪一边不合规就说是
+   * 哪一边，理由原样进 `malformed` —— 那条通道本来就会带进下一轮。
+   */
+  const reading = slots === null
+    ? readRound({
+      phase: request.phase, round: request.round, red, blue, judge: delivery.text,
+    }, verdicts)
+    : collectSlots(slots, request, verdicts, overallIn(blue));
 
   const gaps = dependencies.gaps.settleRound(
     request.changeId, request.phase, reading.outcome,

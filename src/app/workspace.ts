@@ -1,5 +1,5 @@
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type Database from "better-sqlite3";
 
 import type { Phase } from "../domain/phase";
@@ -36,6 +36,18 @@ export type CreateProjectOutcome =
   | { readonly kind: "path_must_be_absolute" }
   | { readonly kind: "path_is_not_a_directory" }
   | { readonly kind: "path_does_not_exist" }
+  /**
+   * 不是 git 仓库（用户 2026-08-19：「所有项目必须先 git」）。
+   *
+   * **Codex 按仓库认 project** —— `codex_app__list_projects` 的返回里就带着
+   * `isGitRepository`。不是仓库的目录在 App 里根本不是一个项目，于是 StagePass
+   * 派出去的会话**无处显示**：2026-08-18 真机，一轮跑满 47 分钟，人去 Codex 里
+   * 找那条线程，扑空 —— 而同一套代码在 stagepass（是仓库）上一直好好的。
+   *
+   * StagePass 自己也处处要仓库：产物按 HEAD 比、旁路进出记 HEAD、图谱问
+   * `trackedFiles`。**不是仓库的项目从第一天起就是半残的**，只是以前没人说破。
+   */
+  | { readonly kind: "path_is_not_a_repository" }
   | {
     readonly kind: "created";
     readonly id: string;
@@ -52,7 +64,7 @@ export function createProject(input: {
   if (name === "") return { kind: "name_required" };
 
   /*
-   * 三条都查，因为错在这里发现比在 pty 里发现便宜得多：必须是绝对路径（相对路径
+   * 三条都查，因为错在这里发现比派出 Codex turn 后发现便宜得多：必须是绝对路径（相对路径
    * 相对谁？服务端的 cwd 吗 —— 那就又回到那个洞了）、必须存在、必须是目录。
    */
   const rawPath = input.path.trim();
@@ -67,6 +79,12 @@ export function createProject(input: {
     return { kind: "path_does_not_exist" };
   }
   if (!statSync(path).isDirectory()) return { kind: "path_is_not_a_directory" };
+  /*
+   * 判据是**这个目录自己**是不是仓库，不是「有没有祖先是仓库」—— 后者会把
+   * `~/Desktop/随便一个文件夹` 认成 StagePass 项目，只因为家目录碰巧被 git init 过。
+   * 而 Codex 认 project 也是按目录自己算的。
+   */
+  if (!existsSync(join(path, ".git"))) return { kind: "path_is_not_a_repository" };
 
   const projects = new ProjectStore(input.database);
   const id = mintId("PRJ", projects.list().map((entry) => entry.id));

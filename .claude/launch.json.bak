@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "panel",
+      "runtimeExecutable": "/usr/bin/env",
+      "runtimeArgs": [
+        "-C",
+        "/Users/zhanghr/Desktop/stagepass",
+        "pnpm",
+        "panel",
+        "--port",
+        "4173",
+        "--change",
+        "CHG-1"
+      ],
+      "port": 4173
+    }
+  ]
+}

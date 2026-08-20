@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/docs/app-server-schema/
 
 # next.js
 /.next/
@@ -53,6 +54,7 @@ server/db/ship.db-journal
 # local pipeline/runtime artifacts
 /.codex/
 /.agents/
+/.superpowers/
 /plugins/
 /.ship/changes/
 /.tmp/

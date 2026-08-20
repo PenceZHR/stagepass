@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/turn-runner";
+import { MINIMAL_PHASE_INSTRUCTIONS } from "../codex/phase-instructions";
 import { PHASES, isRetired } from "./phase";
 import { reportsFreeFormBlockers } from "./phase-play";
 import { templateFor } from "./phase-template";

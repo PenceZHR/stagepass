@@ -77,7 +77,7 @@ export function selectCode(
 
 /**
  * `POST /api/graph-excludes` 的 body。**解析放这层不放 `web/`** ——
- * pty 那条常驻护栏禁止 `web/` 出现 `JSON.parse`，而这本来就是判据的一部分：
+ * Web 边界的常驻护栏禁止任意解析未验证 JSON，而这本来就是判据的一部分：
  * 什么样的勾选算数，和勾选怎么作用于清单，是同一件事的两半。
  *
  * 形状不对返回 null（fail-closed，调用方答 400），不猜、不修剪成「差不多」。

@@ -223,3 +223,147 @@ describe("L1 · 一条没被满足的标准，waive 不掉", () => {
     assert.equal(unresolved(evidence({ blockers: [standard] })).length, 1);
   });
 });
+
+/**
+ * 第三条闸门：**判据单齐不齐**。
+ *
+ * ## 为什么它必须存在
+ *
+ * 在它之前，闸门只看两件事 —— 产物空不空、有没有未解决的 blocker。而 blocker 的
+ * severity 是**模型填的**，且 `unresolved()` 里 P2 一条都不挡：今天模型写一个词，
+ * 一条问题就从闸门上彻底消失，不需要任何人点头。
+ *
+ * 判据单把地基换掉：**齐不齐是代码判的**（`domain/rubric-sheet.ts` 数出来的
+ * `missing`），模型改不动。
+ *
+ * ## 为什么 `refusals` 非得说得出第几条
+ *
+ * 少了这一步，面板上是一个灰按钮和一句「判据单不全」，人不知道去补哪一条 ——
+ * 于是这条闸门从「挡住并指路」退化成「挡住」，而挡住而不指路的闸门最后都会被绕开。
+ * 所以 `RefusalReason` 从字符串枚举扩成带 payload 的联合类型，这一整节盯的就是
+ * payload 真的装上了东西。
+ */
+describe("L1 · 判据单不全就不许进下一阶段 —— 齐不齐是代码判的", () => {
+  it("判据单缺一条就不许批准，而且说得出缺的是第几条", () => {
+    const gate = computeGate(SETTLED, evidence({ sheetMissing: [2, 4] }));
+
+    assert.ok(!gate.permitted.includes("approve"));
+    const reason = gate.refusals.approve;
+    assert.ok(
+      reason !== undefined && typeof reason === "object",
+      `refusals.approve 还是一个字符串（${String(reason)}）—— 面板上装不下「缺哪几条」`,
+    );
+    assert.equal(reason.kind, "rubric_sheet_incomplete");
+    assert.deepEqual([...reason.missing], [2, 4]);
+  });
+
+  it("**拒绝里带的是那几条的原文，而且和序号一一对应** —— 序号本身指不了路", () => {
+    /*
+     * BuildPlan T7 要的是「序号 + 判据原文」。只有序号的话，人在面板上看到
+     * 「缺第 2、4 条」，还得去翻那份题面文件才知道要补什么 —— 而那份文件在每轮一个
+     * 随机临时目录里。
+     *
+     * 一一对应是这条的重点：`texts` 错位比没有 `texts` 更坏，人会照着第 4 条的
+     * 措辞去补第 2 条。
+     */
+    const sheetTexts = ["第一条的原文", "第二条的原文", "第三条的原文", "第四条的原文"];
+    const gate = computeGate(SETTLED, evidence({ sheetMissing: [2, 4], sheetTexts }));
+
+    const reason = gate.refusals.approve;
+    assert.ok(reason !== undefined && typeof reason === "object");
+    assert.deepEqual([...reason.texts], ["第二条的原文", "第四条的原文"]);
+  });
+
+  it("拿不到原文时不错位 —— 宁可给空串，也不能让第 4 条的措辞顶到第 2 条头上", () => {
+    const gate = computeGate(SETTLED, evidence({ sheetMissing: [2, 4], sheetTexts: [] }));
+    const reason = gate.refusals.approve;
+    assert.ok(reason !== undefined && typeof reason === "object");
+    assert.equal(reason.texts.length, reason.missing.length,
+      "texts 和 missing 长度对不上 —— 面板会把它们并排显示");
+  });
+
+  it("判据单齐了就不再挡 —— 空数组是「查过了，齐」，不是「没查」", () => {
+    const gate = computeGate(SETTLED, evidence({ sheetMissing: [] }));
+    assert.ok(gate.permitted.includes("approve"));
+    assert.equal(gate.refusals.approve, undefined);
+  });
+
+  it("reject / retry / sendBack 不受判据单影响", () => {
+    // 出口不能被证据不好挡住，否则 Change 会卡到没有合法动作 —— 判据单填不完的
+    // 那一天，人连「打回去重做」都点不了。
+    const incomplete = evidence({ sheetMissing: [1] });
+    const settled = computeGate(SETTLED, incomplete);
+    assert.ok(settled.permitted.includes("reject"));
+    assert.ok(settled.permitted.includes("sendBack"));
+    assert.ok(
+      computeGate({ ...SETTLED, status: "blocked" }, incomplete).permitted.includes("retry"),
+    );
+    assert.ok(
+      computeGate({ ...SETTLED, status: "running" }, incomplete).permitted.includes("fail"),
+    );
+  });
+
+  it("sheetMissing 进 snapshot —— 补完一条，旧的裁决围栏要失效", () => {
+    const complete = snapshotOf(SETTLED, evidence({ sheetMissing: [] }));
+    assert.notEqual(snapshotOf(SETTLED, evidence({ sheetMissing: [1] })), complete);
+    // 补掉一条也算地面动了：人是对着「缺 2 和 4」那张单子做的判断。
+    assert.notEqual(
+      snapshotOf(SETTLED, evidence({ sheetMissing: [2, 4] })),
+      snapshotOf(SETTLED, evidence({ sheetMissing: [4] })),
+    );
+  });
+
+  it("重排 sheetMissing 不动围栏 —— 顺序不是决策依据", () => {
+    // 和上面那条 "ignores ordering that carries no meaning" 同一条规矩：因为库里
+    // 换了个顺序返回就让人重新裁决一次，是被什么都没发生的事推翻了一个决定。
+    assert.equal(
+      snapshotOf(SETTLED, evidence({ sheetMissing: [2, 4] })),
+      snapshotOf(SETTLED, evidence({ sheetMissing: [4, 2] })),
+    );
+  });
+
+  it("**判据单不进 `unresolved()`** —— 它是另一条闸门，和 blocker 并列", () => {
+    /*
+     * 最省事的实现方式是把缺的那几条编成 blocker 塞进 `unresolved()`，那样
+     * `computeGate` 一个字都不用改。而那会把两件事混成一句话：人在面板上看到
+     * 「有未解决的问题」，去翻 gap 列表，一条都没有 —— 真正缺的是判据单上那两行。
+     */
+    assert.deepEqual([...unresolved(evidence({ sheetMissing: [1, 2, 3] }))], []);
+    assert.notEqual(
+      computeGate(SETTLED, evidence({ sheetMissing: [1] })).refusals.approve,
+      "blocking_problem_outstanding",
+    );
+  });
+});
+
+/**
+ * 回归：**`unresolved()` 这一期一个字不改。**
+ *
+ * 「P2 一条都不挡，而 severity 是模型填的」是 PRD §3.1 点名的病，但治它要先给每条
+ * rubric 定分量，这一期不做。判据单是**另一条**闸门，和它并列 —— 而并列的东西最容易
+ * 在实现时被顺手合并掉。
+ *
+ * 所以这里把它现在的真值表整张钉下来。上面那几条测试各自盯着一格，一张表才看得出
+ * 「有没有哪一格在加第三条闸门的时候被动过」。
+ */
+describe("L1 · 回归 —— 加第三条闸门没动 `unresolved()` 的任何一格", () => {
+  it("六种情形逐格不变", () => {
+    const table: Array<readonly [string, Evidence, readonly string[]]> = [
+      ["P0 永远挡", evidence({ blockers: [p0] }), [p0.id]],
+      ["P0 进了 waive 名单也照挡", evidence({ blockers: [p0], waivedBlockerIds: [p0.id] }), [p0.id]],
+      ["P1 默认挡", evidence({ blockers: [p1] }), [p1.id]],
+      ["P1 被人接受了就不挡", evidence({ blockers: [p1], waivedBlockerIds: [p1.id] }), []],
+      ["P2 一条都不挡（这一期不治它）", evidence({ blockers: [p2] }), []],
+      ["P2 进 waive 名单也还是不挡", evidence({ blockers: [p2], waivedBlockerIds: [p2.id] }), []],
+    ];
+    for (const [what, given, expected] of table) {
+      assert.deepEqual(unresolved(given).map((blocker) => blocker.id), [...expected], what);
+    }
+  });
+
+  it("判据单不全时，blocker 那一格的算法照旧", () => {
+    // 两条闸门同时不满足的那一格：`unresolved()` 的答案不该因为多了一张单子而变。
+    const both = evidence({ blockers: [p1, p2], sheetMissing: [1] });
+    assert.deepEqual(unresolved(both).map((blocker) => blocker.id), [p1.id]);
+  });
+});

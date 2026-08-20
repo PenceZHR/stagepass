@@ -3,6 +3,10 @@ import {
   TurnResultUnparsableError,
 } from "./turn";
 import { parseTurnResult } from "./turn";
+import {
+  BLOCKER_SHAPE, slotContract,
+  type FilledSlot, type SlotDocumentResult,
+} from "./round-slots";
 import { isHumanGap, templateGapId } from "./gap";
 import {
   missingSections, renderTemplate, type TemplateSection,
@@ -84,6 +88,29 @@ export interface RoundInstructions {
    * 缺席就照旧把正文印进去 —— 这一层是纯的，不知道文件是谁写的。
    */
   readonly openGapsPath?: string | undefined;
+  /**
+   * 裁判这一轮逐条表态的那两个文件在哪，一共几条。
+   *
+   * `listPath` 是带序号的清单（正文 + 每条自己的可选项），`answersPath` 是它把
+   * 表态写回来的地方。**`target` 一个字都不在里面** —— 身份留在库里，序号是模型
+   * 看得到的唯一标识（`domain/worklist.ts`）。
+   *
+   * 缺席 = 这一轮没有名单文件（离线测试、老调用点），那时这一节不印路径。
+   */
+  readonly worklist?: {
+    readonly listPath: string;
+    readonly answersPath: string;
+    readonly count: number;
+  } | undefined;
+  /**
+   * 红蓝两方各自那份**格子文件**的路径（`domain/round-slots.ts`）。
+   *
+   * 给了就不再把 json 骨架印进提示词 —— 结构在文件里由 StagePass 铺好，模型只填值。
+   * 判据也跟着反过来：骨架没被读到以前是「整轮无法解析」（不能赌），现在是
+   * 「它会大声说读不到那个文件」（可以赌）。
+   */
+  readonly redSlotPath?: string | undefined;
+  readonly blueSlotPath?: string | undefined;
   /**
    * 这个阶段是被下游打回来的 —— 谁打的、为什么、哪一轮打的（§5.9.1 的回边）。
    *
@@ -480,6 +507,49 @@ const redFixList = (
 };
 
 /**
+ * 裁判自己那份逐条表态 —— **两个路径，不经任何工具。**
+ *
+ * ## 缺席 = 这一轮没有名单文件，走老样子
+ *
+ * 离线的那些测试和还没接上的调用点不给这个字段，那时印的是没有载体的那句
+ * 「逐条表态」，和名单文件出现之前逐字一致。**不印一个假的路径** —— 一个指向
+ * 不存在的文件的路径，会让裁判花一轮去找它。
+ *
+ * ## 为什么可选项不在这儿印
+ *
+ * 两种条目的可选项不一样（gap 是 `closed`/`still_open`，标准是 `yes`/`no`），
+ * 而这一层不知道名单里混了哪几种。印在清单里每一条自己旁边，那份是造名单的那层
+ * 写的，它知道。这里只说「看它自己那一条旁边写的」。
+ */
+function worklistLines(
+  worklist: RoundInstructions["worklist"],
+): string[] {
+  if (worklist === undefined || worklist.count === 0) {
+    return ["1. 对下面这些**已经存在**的问题逐条表态："];
+  }
+  return [
+    `1. **逐条表态**，一共 ${worklist.count} 条 —— `
+    + "已经存在的问题，外加几条要你判的标准：",
+    "",
+    `   要表态的全部列在这个文件里，**先读它**：${worklist.listPath}`,
+    `   表态写进这个文件：${worklist.answersPath}`,
+    /*
+     * 形状写死，而且写得能自己数 —— 和反方那份判定同一条理由：序号是模型唯一要写
+     * 的精确东西，取值空间只有 `1..N`，缺号、重号、越界全都是可检测的。
+     */
+    "   那个文件一行一条，形如 `3: closed —— 依据…`：序号、那一条的选项、"
+    + "破折号后面写一句为什么。",
+    "   **可选项每条不一样**，印在清单里它自己那一条旁边 —— 不要跨条套用。",
+    `   序号 1 到 ${worklist.count}，一条只答一次；`
+    + "**答不上的那几条留空就是了，不要瞎填**（留空 = 你认为它还成立）。",
+    "   序号之外不要写任何编号，也不要把这些表态写进 json。",
+    "",
+    "   下面这份清单是给你看**来历和分量**的（谁提的、哪一条以人的话为准）——"
+    + "不要把它的编号抄进任何地方。",
+  ];
+}
+
+/**
  * 叫反方顺手把那几条标准也判了 —— **两个路径，抬头写明收件人。**
  *
  * 抬头是「原样转达给反方」，理由和任务、和 `RESULT_CONTRACT` 那两处一模一样：
@@ -675,9 +745,13 @@ export function judgePrompt(input: RoundInstructions): string {
     ]),
     ...redFixList(input.openGaps, input.openGapsPath),
     ...play.red.idRule,
-    `   要求它按下面的格式作答：`,
-    RESULT_CONTRACT,
-    ...contractNotes(input.contractNotesPath),
+    ...(input.redSlotPath === undefined
+      ? [`   要求它按下面的格式作答：`, RESULT_CONTRACT, ...contractNotes(input.contractNotesPath)]
+      : [
+        `   把这一轮的发现填进这份已经铺好的格子文件，**原样转达给${RED}**：`,
+        slotContract(input.redSlotPath, BLOCKER_SHAPE),
+        ...contractNotes(input.contractNotesPath),
+      ]),
     "",
     play.blue.task,
     /*
@@ -700,7 +774,20 @@ export function judgePrompt(input: RoundInstructions): string {
      * 指望它「参照上文」就是指望它转述 —— 只有原文加收件人才到得了。**
      */
     `   下面这段格式要求**原样转达给${BLUE}**，一个字都不要改：`,
-    ...(reportsFreeFormBlockers(input.phase)
+    ...(input.blueSlotPath !== undefined
+      ? [
+        slotContract(input.blueSlotPath, BLOCKER_SHAPE),
+        ...(reportsFreeFormBlockers(input.phase)
+          ? contractNotes(input.contractNotesPath)
+          /*
+           * 有模板的阶段：格子照铺（`overall` 那一格在里面），但问题清单不算数 ——
+           * 它这一阶段的判断全部走逐条判定。规则和旧解析器的 `discardBlockers`
+           * 一字不差，只是丢的地方从解析层挪到了 `readRoundFromSlots`。
+           */
+          : [`   **这个阶段不要在格子里列问题** —— 你的判断全部走下面那份逐条判定；`
+            + `格子文件里只填 \`overall\` 那一格。`]),
+      ]
+      : reportsFreeFormBlockers(input.phase)
       ? [RESULT_CONTRACT, ...contractNotes(input.contractNotesPath)]
       /*
        * 有模板的阶段不要问题清单了 —— **但仍然要那个 json 围栏**：`overall` 在
@@ -748,21 +835,23 @@ export function judgePrompt(input: RoundInstructions): string {
     "两个都做完之后，轮到你。**两件事**：",
     "",
     /*
-     * **表态改走工具，不再手抄 id**（2026-08-02）。
+     * **表态不手抄 id**（2026-08-02 立的规矩，2026-08-19 换了载体）。
      *
      * 原来这里印一份带 id 的清单，要裁判把那些 id 抄进一个 json 的 key 位置上 ——
      * 而 gap id 长 50 字符（`RB:critic:RBC-<uuid>`）、criterion key 长 40。抄漏一段，
      * 那一条的表态就凭空消失，人还看不出是「它说还在」还是「它抄错了」。
      * 实测过更糟的：同一个抄错的 UUID 连抄三轮。
      *
-     * 清单仍然印出来，但**它现在是给人和给上下文看的**，不是给它抄的 —— 它照样需要
-     * 知道这一轮要处理哪些问题才判得动。真正算数的是工具那一路。
+     * 载体从 MCP 工具（`stagepass_next` / `stagepass_answer`）换成了两个文件 ——
+     * 那两个工具随 `src/plugin/` 一起没了，而甲那条路上这一轮跑在**人自己的会话**里，
+     * 那里从来就没有它们。判据一个字没变：模型手上只有 `1..N` 的序号和散文，
+     * 身份留在库里。见 `domain/worklist.ts` 的 `renderWorklist`。
+     *
+     * 清单仍然印出来，而且**它印的和答案文件不是一回事**：这一节带来历和分量
+     * （谁提的、人的话优先、下游判给你的），那是它判得动的前提；答案文件只带
+     * 序号和可选项。
      */
-    "1. 对下面这些**已经存在**的问题逐条表态 —— **走工具，不要写进 json**：",
-    "",
-    "   反复调 `stagepass_next`（不带参数）取下一条，看完用 `stagepass_answer`",
-    "   回答，直到它说没有了。**你不需要、也无法指定答的是哪一条** —— StagePass 记着。",
-    "   下面这份清单是给你看背景的，不要把它们的编号抄进任何地方。",
+    ...worklistLines(input.worklist),
     "",
     gaps,
     "",
@@ -788,9 +877,9 @@ export function judgePrompt(input: RoundInstructions): string {
      */
     "最后用一个 ```json 块给出结论，**里面只放这一样东西**：",
     '{"conclusion": {"another_round": true | false, "reason": "<为什么>"}}',
-    "不要把逐条表态写进这个块 —— 那些走上面的工具，写在这里不算数。",
+    "不要把逐条表态写进这个块 —— 那些走上面那份答案文件，写在这里不算数。",
     "",
-    "沉默等于仍然存在 —— 你没用工具表过态的问题会继续挡住闸门。",
+    "沉默等于仍然存在 —— 你没在答案文件里表过态的问题会继续挡住闸门。",
     "关闭一个问题必须写清楚它为什么不再成立。",
   ].join("\n");
 }
@@ -1189,7 +1278,7 @@ export interface RoundReading {
  * 而**这一句缺席是完全合法的**（老的反方不会写它，`RESULT_CONTRACT` 里也没有它）。
  * 把它加进那个函数的形状检查，等于让一次没写整体判断的回答整轮作废，而它不挡任何东西。
  */
-const overallIn = (text: string): string | null => {
+export const overallIn = (text: string): string | null => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonAnswerIn(text) ?? "");
@@ -1242,7 +1331,8 @@ export function readRound(
    * json 的 key 位置上，而 StagePass 拿它做精确匹配。抄漏一段，那一条的表态就凭空
    * 消失（而 gap 保持 open，人看不出是「它说还在」还是「它抄错了」）。
    *
-   * 现在它调 `stagepass_next` / `stagepass_answer`，一条一条答，一个标识符都不写。
+   * 现在它读一份带序号的清单、把答案写进另一个文件，一条一条答，一个标识符都不写
+   * （载体 2026-08-19 从那两个 MCP 工具换成文件，判据没变）。
    * 见 docs/DESIGN-no-hand-transcription-2026-08-02.md。
    */
   verdicts: Readonly<Record<string, Verdict>>,
@@ -1310,5 +1400,63 @@ export function readRound(
       verdicts,
     },
     blueOverall: overallIn(transcript.blue),
+  };
+}
+
+/**
+ * 一轮的产出从**格子文件**读，不从自由文本里捞。
+ *
+ * 旧路让模型自己写一段 ```json，于是形状是它发明的：2026-08-02 反方发明了
+ * `{"id","question"}`（没有 severity）整轮作废；2026-08-05 红方把 blockers 交成
+ * 字符串数组，解析在「要不要用」之前就抛，蓝方同一轮 11 条有效发现陪葬；
+ * 2026-08-06 反方漏了 `artifactIds`，每一轮都整轮作废。
+ *
+ * 现在结构是 StagePass 铺的，模型只填值；`artifactIds` 也预填，根本不问它要。
+ * **哪一边不合规就说是哪一边** —— 这两件事人要做的完全不同。
+ */
+export function readRoundFromSlots(input: {
+  readonly phase: string;
+  readonly round: number;
+  readonly red: SlotDocumentResult;
+  readonly blue: SlotDocumentResult;
+  readonly verdicts: Readonly<Record<string, Verdict>>;
+  readonly blueOverall: string | null;
+}): { readonly ok: true; readonly reading: RoundReading }
+  | { readonly ok: false; readonly reason: string } {
+  if (!input.red.ok) return { ok: false, reason: `正方的格子文件：${input.red.reason}` };
+  if (!input.blue.ok) return { ok: false, reason: `反方的格子文件：${input.blue.reason}` };
+
+  const asFinding = (slot: FilledSlot) => ({
+    id: slot.id,
+    severity: slot.severity as "P0" | "P1" | "P2",
+    title: slot.title as string,
+    where: slot.where ?? null,
+    why: slot.why ?? null,
+    owner: slot.owner ?? null,
+  });
+
+  /*
+   * 红方的发现只在它评别人的阶段算数（Review / QA）—— 和旧解析器的
+   * `discardBlockers: !redReviewsOthers(phase)` 一字不差。换的是来源，不是规则。
+   */
+  /*
+   * 有模板的阶段，反方的自由问题清单**不算数** —— 它的判断全部走逐条判定。
+   * 规则和旧解析器的 `discardBlockers: !reportsFreeFormBlockers(phase)` 一字不差，
+   * 换的只是丢在哪一层。
+   */
+  const blueFound = reportsFreeFormBlockers(input.phase)
+    ? input.blue.filled.map(asFinding)
+    : [];
+  const found = redReviewsOthers(input.phase)
+    ? dedupeById([...input.red.filled.map(asFinding), ...blueFound])
+    : blueFound;
+
+  return {
+    ok: true,
+    reading: {
+      artifactIds: input.red.artifacts,
+      outcome: { round: input.round, found, verdicts: input.verdicts },
+      blueOverall: input.blueOverall,
+    },
   };
 }

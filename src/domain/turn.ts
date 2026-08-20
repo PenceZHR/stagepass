@@ -47,6 +47,7 @@ export class InvalidTurnRequestError extends Error {
 export class TurnResultUnparsableError extends Error {
   constructor(
     readonly code:
+      | "slot_file_invalid"
       | "turn_result_no_json"
       | "turn_result_not_an_object"
       | "turn_result_artifacts_invalid"

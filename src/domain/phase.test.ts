@@ -4,7 +4,6 @@ import { describe, it } from "node:test";
 import {
   advancesTo,
   DEFAULT_GRAPH,
-  FIRST_PHASE,
   InvalidPhaseGraphError,
   isRetired,
   PHASES,
@@ -135,7 +134,8 @@ describe("L0 · upstreamOf —— sendBack 的合法目标名单（按消费算�
   });
 
   it("第一个阶段没有上游 —— 空名单，问出去就是一道没有选项的题", () => {
-    assert.deepEqual(upstreamOf(FIRST_PHASE), []);
+    // 全序图的头一个阶段没有上游。（起点本身归项目的图管，见 ChangeStore.create）
+    assert.deepEqual(upstreamOf("PRD"), []);
   });
 
   it("Fix 退休且从不在主线上 —— 没有「上游」可言", () => {

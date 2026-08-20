@@ -5,7 +5,6 @@ import { computeGate, EMPTY_EVIDENCE, type Evidence } from "./gate";
 import {
   APPROVE_AS_RECOMMENDED,
   approveTargetFrom,
-  BadQuestionShapeError,
   clarificationQuestion,
   decisionFrom,
   decisionLabel,
@@ -55,6 +54,59 @@ function ask(state: ChangeState, evidence: Evidence): Question | null {
     summary: "第 2 轮已结算",
   });
 }
+
+/*
+ * **判据单挡着的时候，裁决卡不许说「没有问题挡着闸门」。**
+ *
+ * gap 清完而判据单没填完，`blocking` 是 0 —— 原来这里会说那句话然后返回，
+ * 字面为真，却让人以为 approve 该在而没在。而 approve 是**悄悄**不见的：
+ * `tsc` 不红（对象 !== 字符串是合法比较），别的测试也不红。
+ *
+ * 覆盖判据在 `system/refusal-words.test.ts`；这一条打的是真实症状。
+ */
+describe("L3 · 判据单挡着时，裁决卡说得出挡在哪", () => {
+  /*
+   * `sheetTexts` **按序号下标索引**（`texts[ordinal - 1]`），不是和 `missing` 并列的。
+   * 写成并列的会静默拿到别人的正文 —— 而那种错在屏幕上看着完全正常。
+   */
+  const SHEET_BLOCKED: Evidence = {
+    ...CLEAN,
+    sheetMissing: [2, 4],
+    sheetTexts: ["第一条的正文", "每条需求都写明了不做什么", "第三条的正文", ""],
+  };
+
+  it("不说「没有问题挡着闸门」", () => {
+    const question = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, SHEET_BLOCKED),
+      openGaps: [],
+      summary: "第 2 轮已结算",
+    })!;
+    assert.doesNotMatch(question.message, /没有问题挡着闸门/);
+  });
+
+  it("说得出缺的是第几条，有正文的连正文一起给", () => {
+    const question = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, SHEET_BLOCKED),
+      openGaps: [],
+      summary: "第 2 轮已结算",
+    })!;
+    assert.match(question.message, /第 2 条（每条需求都写明了不做什么）/);
+    // 拿不到正文的那条只给序号 —— 不许错位，也不许跳过
+    assert.match(question.message, /第 4 条/);
+  });
+
+  it("判据单齐了就恢复原话", () => {
+    const question = gateDecisionQuestion({
+      phase: "Spec",
+      gate: computeGate(SETTLED, CLEAN),
+      openGaps: [],
+      summary: "第 2 轮已结算",
+    })!;
+    assert.match(question.message, /没有问题挡着闸门/);
+  });
+});
 
 describe("L3 · the question offers exactly what the gate permits", () => {
   it("offers approve and reject on a clean settled phase", () => {
@@ -227,44 +279,34 @@ describe("L3 · a batch is one form, not a conversation", () => {
   });
 
   /*
-   * 下面两条钉住的是**客户端的行为**，2026-07-30 在 Codex TUI 上实测出来的。它们
-   * 不是风格约定：违反哪一条，人拿到的都是一张不对或者交不上去的表，而且屏幕上
-   * 什么都不说。
+   * 2026-07-30 在 Codex TUI 上实测出来的两条客户端约束（「显示顺序 = 字段名
+   * 排序」「最后一格必须能被回车提交」）已经随那个客户端一起退场 —— 表单只画在
+   * 自己的浏览器面板上，顺序就是书写顺序，提交键是真的按钮。
    */
-  it("**顺序不等于排序 —— 拒绝组题**", () => {
-    // 实测：客户端按字段名排序显示，不按 properties 的书写顺序。这里悄悄替它排掉，
-    // 组题的人写下的顺序就和人看到的顺序永远对不上，而他不会知道。
-    assert.throws(() => clarificationQuestion({
+  it("顺序就是书写顺序 —— 不再要求字段名排好序", () => {
+    const question = clarificationQuestion({
       title: "t",
       items: [
         { id: "B02", question: "第二题", options: ["甲", "乙", "丙"] },
         { id: "B01", question: "第一题", options: ["甲", "乙", "丙"] },
       ],
-    }), (error: unknown) => {
-      assert.ok(error instanceof BadQuestionShapeError);
-      assert.equal(error.code, "order_not_sorted");
-      return true;
-    });
+    })!;
+    assert.deepEqual(
+      Object.keys(question.requestedSchema.properties), ["B02", "B01"],
+      "写什么顺序就是什么顺序 —— 不悄悄替人排",
+    );
   });
 
-  it("**最后一格是可留空的自由文本 —— 拒绝组题**", () => {
-    /*
-     * 实测：光标停在一个空的自由文本格上按回车，屏幕上什么都不发生 —— optional
-     * 不管用、必填项全答完也不管用、底下写着 `enter to submit all` 也不管用。
-     * 而整张表只能从最后一格提交。所以这种表**交不上去**。
-     */
-    assert.throws(() => clarificationQuestion({
+  it("多选进 schema —— 浏览器据此画 checkbox", () => {
+    const question = clarificationQuestion({
       title: "t",
       items: [
-        { id: "B01", question: "第一题", options: ["甲", "乙", "丙"] },
-        { id: "B02x", question: "还有什么？", options: [], optional: true },
+        { id: "B01", question: "支持哪些平台？", options: ["iOS", "Web"], multi: true },
+        { id: "B02", question: "给谁用？", options: ["我", "团队"] },
       ],
-    }), (error: unknown) => {
-      assert.ok(error instanceof BadQuestionShapeError);
-      assert.equal(error.code, "last_field_unsubmittable");
-      assert.equal(error.detail, "B02x");
-      return true;
-    });
+    })!;
+    assert.equal(question.requestedSchema.properties.B01?.multi, true);
+    assert.equal(question.requestedSchema.properties.B02?.multi, undefined);
   });
 
   it("最后一格是**必填**的自由文本 —— 可以，人看得见「还差 1 个」", () => {

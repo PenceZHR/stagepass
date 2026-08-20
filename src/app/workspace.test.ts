@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -32,8 +32,16 @@ function freshDatabase(): Database.Database {
 }
 
 /** 一个真的临时目录 —— 路径校验查的是磁盘，给它一个假的就什么都没验到。 */
+/**
+ * 一个**是 git 仓库**的临时目录。
+ *
+ * 2026-08-19 起「项目必须先 git」（用户定案）—— 所以想建成项目的临时目录得先像个
+ * 仓库。只造 `.git` 目录、不跑 `git init`：判据看的就是它，而跑真 git 会让这一组
+ * 测试从「纯离线」变成「要装 git、要等进程」。
+ */
 function withTempDir(body: (dir: string) => void): void {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "stagepass-ws-")));
+  mkdirSync(join(dir, ".git"), { recursive: true });
   try {
     body(dir);
   } finally {
@@ -54,12 +62,16 @@ describe("app · 新建和删除（不经过 HTTP）", () => {
     withTempDir((dir) => {
       const file = join(dir, "不是目录.txt");
       writeFileSync(file, "x");
+      // 一个货真价实的非仓库目录 —— `withTempDir` 给的那个已经有 .git 了。
+      const bare = join(dir, "没有仓库");
+      mkdirSync(bare, { recursive: true });
       const cases = [
         [{ name: "", path: dir }, "name_required"],
         [{ name: "p", path: "  " }, "path_required"],
         [{ name: "p", path: "./relative" }, "path_must_be_absolute"],
         [{ name: "p", path: join(dir, "不存在") }, "path_does_not_exist"],
         [{ name: "p", path: file }, "path_is_not_a_directory"],
+        [{ name: "p", path: bare }, "path_is_not_a_repository"],
       ] as const;
       for (const [input, expected] of cases) {
         assert.equal(createProject({ database, ...input }).kind, expected);
@@ -68,6 +80,41 @@ describe("app · 新建和删除（不经过 HTTP）", () => {
         new ProjectStore(database).list(), [],
         "一条都不该建出来 —— 拒了就是拒了",
       );
+    });
+    database.close();
+  });
+
+  /**
+   * **一个项目必须先是 git 仓库**（用户 2026-08-19：「所有项目必须先 git」）。
+   *
+   * 这不是洁癖，是真机咬出来的：CHG-002 的项目 `海战小游戏` 不是仓库，于是
+   * Codex **根本不把那个目录当 project**（`codex_app__list_projects` 的返回里
+   * 就带着 `isGitRepository`）—— 派出去的会话在 App 里无处显示，人跑完 47 分钟
+   * 去找，扑空。同一套代码在 stagepass（是仓库）上一直好好的。
+   *
+   * 而且 StagePass 自己也处处要仓库：产物按 HEAD 比、旁路进出记 HEAD、图谱问
+   * `trackedFiles`。**不是仓库的项目从第一天起就是半残的**，只是以前没人说破。
+   *
+   * 拦在建项目这一步 —— 比在派轮时说便宜得多，也比让人自己发现诚实得多。
+   */
+  it("不是 git 仓库就不许建 —— 那样的项目在 Codex 里根本不是项目", () => {
+    const database = freshDatabase();
+    withTempDir((dir) => {
+      const bare = join(dir, "海战小游戏");
+      mkdirSync(bare, { recursive: true });
+
+      const outcome = createProject({ database, name: "海战", path: bare });
+
+      assert.equal(outcome.kind, "path_is_not_a_repository");
+      assert.deepEqual(new ProjectStore(database).list(), []);
+    });
+    database.close();
+  });
+
+  it("是仓库就照建", () => {
+    const database = freshDatabase();
+    withTempDir((dir) => {
+      assert.equal(createProject({ database, name: "有仓库的", path: dir }).kind, "created");
     });
     database.close();
   });

@@ -42,68 +42,45 @@ export interface RequestedSchema {
     readonly type: "string" | "boolean";
     readonly title: string;
     readonly enum?: readonly string[];
+    /** 这一格可以多选。答案是选中的原文用 `MULTI_JOIN` 连成的一个字符串。 */
+    readonly multi?: boolean;
   }>>;
 }
+
+/**
+ * 多选的答案在账本里是**一个字符串**：选中的选项原文按这个符号连起来。
+ * 不改 `Answer` 的形状 —— 老答案、老消费者一个都不用动。
+ */
+export const MULTI_JOIN = "；";
 
 export interface Question {
   readonly message: string;
   readonly requestedSchema: RequestedSchema;
 }
 
-/** 一格。`options` 空 = 自由文本；`optional` = 可以留空。 */
+/** 一格。`options` 空 = 自由文本；`optional` = 可以留空；`multi` = 可多选。 */
 interface Field {
   readonly id: string;
   readonly title: string;
   readonly options?: readonly string[] | undefined;
   readonly optional?: boolean | undefined;
-}
-
-export class BadQuestionShapeError extends Error {
-  constructor(
-    readonly code: "order_not_sorted" | "last_field_unsubmittable",
-    readonly detail: string,
-  ) {
-    super(`${code}: ${detail}`);
-    this.name = "BadQuestionShapeError";
-  }
+  readonly multi?: boolean | undefined;
 }
 
 /**
- * 一批格子变成一次 elicitation。**所有问题都从这里出去，只此一处。**
+ * 一批格子变成一道题。**所有问题都从这里出去，只此一处。**
  *
- * 它挡住两件 2026-07-30 在 Codex TUI 上实测出来的事。两条都是**客户端的行为**，
- * 不是产品选择 —— 所以判据放在这里，而不是靠每个组题的人自己记得。
+ * ## 顺序就是书写顺序
  *
- * ## 一、显示顺序 = 字段名排序，不是这里的书写顺序
- *
- * 实测：按 `B1, B1x, …, B8, B8x, B0` 写出去，选择器画出来的第一格是 `B0`。
- * 所以要控制顺序只能控制**名字**。这里要求传进来的顺序**已经等于排序后的顺序** ——
- * 不自己悄悄排：那样组题的人写下的顺序和人看到的顺序就永远对不上，而他不会知道。
- *
- * ## 二、最后一格必须能被回车提交
- *
- * 实测：光标停在一个**空的自由文本格**上按回车，屏幕上什么都不发生 —— `optional`
- * 不管用，必填项全答完也不管用，底下写着 `enter to submit all` 也不管用。而整张表
- * 只能从最后一格提交。**所以最后一格是「可留空的自由文本」= 这张表交不上去。**
- *
- * 选项格总有一个高亮着的候选值，回车提交得动；必填的自由文本会把「还差 1 个」显示
- * 出来，人知道该干什么。这两种都行，第三种不行。
+ * 这张表如今只画在自己的浏览器面板上（`openQuestionOf` 按 schema 里的插入顺序
+ * 摆格子）。以前这里有两条针对 Codex TUI elicitation 客户端的硬约束 ——
+ * 「显示顺序 = 字段名排序」和「最后一格必须能被回车提交」（都是 2026-07-30
+ * 真机行为）—— 那个客户端已经不在这条路上了，约束跟着拆掉。字段 id 不再需要
+ * 靠取名来排队。
  */
 function compose(message: string, fields: readonly Field[]): Question {
-  const ids = fields.map((field) => field.id);
-  const sorted = [...ids].sort();
-  if (ids.some((id, index) => id !== sorted[index])) {
-    throw new BadQuestionShapeError("order_not_sorted",
-      `${ids.join(",")} -> ${sorted.join(",")}`);
-  }
-
-  const last = fields[fields.length - 1];
-  if (last && (last.options ?? []).length === 0 && last.optional === true) {
-    throw new BadQuestionShapeError("last_field_unsubmittable", last.id);
-  }
-
   const properties: Record<string, {
-    type: "string"; title: string; enum?: readonly string[];
+    type: "string"; title: string; enum?: readonly string[]; multi?: boolean;
   }> = {};
   for (const field of fields) {
     const options = field.options ?? [];
@@ -111,7 +88,10 @@ function compose(message: string, fields: readonly Field[]): Question {
     // 一个零个选项的下拉框：人打不开、也填不进去，看着像界面坏了。
     properties[field.id] = options.length === 0
       ? { type: "string", title: field.title }
-      : { type: "string", title: field.title, enum: options };
+      : {
+        type: "string", title: field.title, enum: options,
+        ...(field.multi === true ? { multi: true } : {}),
+      };
   }
   return {
     message,
@@ -519,10 +499,33 @@ function stakesOf(gate: Gate, openGaps: readonly Gap[]): string {
   const blocking = standards.length + p0.length + p1.length;
 
   const lines: string[] = [];
-  if (gate.refusals["approve"] === "nothing_was_produced") {
+  const refusal = gate.refusals["approve"];
+  if (refusal === "nothing_was_produced") {
     lines.push("这个阶段还没有产出，所以没有「批准」可选 —— 驳回问题变不出产物来。");
   }
+
+  /*
+   * **挡门的东西有两类，而这张卡只数得到一类。**
+   *
+   * `blocking` 数的是 gap；判据单是另一条闸门（`gate.ts` 的第三条）。gap 清完而
+   * 判据单没填完时，原来这里会说「没有问题挡着闸门」然后返回 —— 那句话字面为真，
+   * 却让人以为 approve 该在而没在，而 approve 是**悄悄**不见的。
+   *
+   * 同一句谎话在面板上也说过一遍（`GATE_REFUSAL_WORDS` 漏了这一支，显示
+   * `[object Object]`）。两处都是精确字符串相等匹配撞上一个对象 —— TypeScript 不红、
+   * 测试不红。护栏在 `system/refusal-words.test.ts`。
+   */
+  const sheetLine = typeof refusal === "object" && refusal.kind === "rubric_sheet_incomplete"
+    ? `判据单还没填完 —— 还缺${refusal.missing
+      .map((n, i) => (refusal.texts[i] ? `第 ${n} 条（${refusal.texts[i]}）` : `第 ${n} 条`))
+      .join("、")}。这张表上处理不了：出口是回到判据单，把那几条交代上。`
+    : null;
+
   if (blocking === 0) {
+    if (sheetLine !== null) {
+      lines.push(sheetLine);
+      return lines.join("\n");
+    }
     lines.push(p2.length === 0
       ? "没有问题挡着闸门。"
       : `没有问题挡着闸门（另有 ${p2.length} 条 P2，不挡门）。`);
@@ -544,10 +547,12 @@ function stakesOf(gate: Gate, openGaps: readonly Gap[]): string {
       + "出口是网页「标准」页签里撤下那条标准。");
   }
   if (p2.length > 0) lines.push(`（另有 ${p2.length} 条 P2，不挡闸门。）`);
-  if (gate.refusals["approve"] === "blocking_problem_outstanding") {
+  if (refusal === "blocking_problem_outstanding") {
     lines.push("挡着的没清完就选「就这样批准」，会被拒；"
       + "你在上面各格的表态先落地再裁决，全清掉了这一次就放行。");
   }
+  // gap 和判据单可能同时挡着。清完 gap 还是批不了，那句解释必须在同一张卡上。
+  if (sheetLine !== null) lines.push(sheetLine);
   return lines.join("\n");
 }
 
@@ -801,6 +806,8 @@ export interface ClarificationItem {
   readonly id: string;
   readonly question: string;
   readonly options: readonly string[];
+  /** 可多选（「支持哪些平台」这类）。答案是原文用 `MULTI_JOIN` 连成的字符串。 */
+  readonly multi?: boolean;
   /**
    * 这一格可以留空吗。默认不可以 —— 一道问出去的题默认是要答的。
    *
@@ -837,6 +844,7 @@ export function clarificationQuestion(input: {
     title: item.question,
     options: item.options,
     optional: item.optional,
+    multi: item.multi,
   })));
 }
 
@@ -937,3 +945,29 @@ export function waiveFrom(
   });
   return out;
 }
+
+/**
+ * 模型这一轮起草的问题 → 一次 elicitation。
+ *
+ * 格子文件（`domain/round-slots.ts`）里模型只写了问句和理由；**可选项是这一侧的**，
+ * 每道题都一样，所以措辞在这个文件里，不在格子层。
+ *
+ * 字段 id 直接用格子 id（`G-01` … `G-15`，补过零），于是 `compose` 那条
+ * `order_not_sorted` 守卫天然满足 —— 那是 2026-07-30 在客户端上实测出来的排序行为。
+ */
+export function draftedQuestions(input: {
+  readonly phase: string;
+  readonly drafted: readonly Readonly<Record<string, string | null>>[];
+}): Question | null {
+  if (input.drafted.length === 0) return null;
+  return compose(`${input.phase}：这一轮它想问你的`, input.drafted.map((slot) => ({
+    id: String(slot.id),
+    title: [slot.question, slot.why].filter((part) => part).join("　—　"),
+    options: DRAFTED_OPTIONS,
+  })));
+}
+
+/** 每道题都是这四个。和 `responseFields` 用的是同一组措辞，不另发明一套。 */
+export const DRAFTED_OPTIONS = [
+  RESPONSE_AGREE, RESPONSE_DISMISS, RESPONSE_WAIVE, RESPONSE_OWN,
+] as const;

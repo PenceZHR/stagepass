@@ -4,31 +4,23 @@
   "private": true,
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
+    "start": "tsx scripts/stagepass.ts",
     "test": "node --import tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.src.json && tsc --noEmit -p tsconfig.panel.json",
     "check": "pnpm typecheck && pnpm test",
-    "verify:rebuild": "tsx scripts/verify-rebuild.ts",
-    "verify:decision": "tsx scripts/verify-decision.ts",
-    "verify:round": "tsx scripts/verify-round.ts",
-    "verify:rubric-round": "tsx scripts/verify-rubric-round.ts",
-    "panel": "tsx scripts/panel.ts",
-    "probe:all": "tsx scripts/probe-all.ts",
-    "probe:pty": "tsx scripts/probe-pty-elicitation.ts",
-    "probe:elicit": "tsx scripts/probe-elicit-run.ts",
-    "probe:sandbox": "tsx scripts/probe-sandbox.ts",
-    "probe:subagent": "tsx scripts/probe-subagent-input.ts",
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
+    "schema:app-server": "codex app-server generate-json-schema --experimental --out docs/app-server-schema",
+    "stagepass": "tsx scripts/stagepass.ts"
   },
   "dependencies": {
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^12.11.1",
-    "node-pty": "^1.1.0",
-    "three": "^0.185.1"
+    "three": "^0.185.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
+    "esbuild": "^0.28.2",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"
   }

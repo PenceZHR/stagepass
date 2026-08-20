@@ -157,14 +157,21 @@ export class JobStore {
     error: string | null;
     /** 跑在哪个阶段。null = 老行（或拒绝那类不分阶段的记录）。 */
     phase: string | null;
+    /**
+     * 租约到期的时刻（毫秒）。`null` = 没人领着。
+     *
+     * **这是「还有人在跑它吗」跨进程唯一说得准的东西。** 工作台和插件可能同时开着，
+     * 「我这个进程手上有没有」在另一个进程那里永远是假的 —— 而续租是谁都看得见的。
+     */
+    leaseExpiresAt: number | null;
   } | null {
     const row = this.database.prepare(
-      `SELECT id, status, attempt, created_at, error, phase FROM jobs
+      `SELECT id, status, attempt, created_at, error, phase, expires_at FROM jobs
         WHERE change_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     ).get(changeId) as
       | {
           id: string; status: JobStatus; attempt: number; created_at: string;
-          error: string | null; phase: string | null;
+          error: string | null; phase: string | null; expires_at: number | null;
         }
       | undefined;
     return row === undefined
@@ -172,6 +179,7 @@ export class JobStore {
       : {
           id: row.id, status: row.status, attempt: row.attempt,
           createdAt: row.created_at, error: row.error, phase: row.phase ?? null,
+          leaseExpiresAt: row.expires_at ?? null,
         };
   }
 
@@ -181,7 +189,7 @@ export class JobStore {
    * ## 为什么闸门不能只看「进程活着吗」
    *
    * 三条问人的路和派发那条路，判据一直是 `sessions.has()`（注册表里还有没有这个
-   * 阶段的 pty）。2026-08-03 真机撞出来它挡不住什么：
+   * 阶段的 App Server turn）。2026-08-03 真机撞出来它挡不住什么：
    *
    * 一轮跑完，会话结束、注册表里没了，**而库里那个 job 还是 `running`**（没人收尾，
    * 见下）。于是下一次派发畅通无阻，起了第二条裁判线程 —— 同一个 (Change, 阶段) 上
@@ -400,6 +408,32 @@ export class JobStore {
     this.assertOwner(input);
     this.markFailed(input.jobId, input.reason);
     return this.read(input.jobId);
+  }
+
+  /**
+   * 把超过现行 TTL 的租约按 `now + ttlMs` 重新计时，返回被动过的 job id。
+   *
+   * 给收尸人当第 0 步用的**对账**：判据是「这份租约比现行 TTL 还长」这个
+   * 现在时的不自洽，不是「谁刚刚批了一份长租约」。事件驱动的修法（只在批租约
+   * 那一刻管住 TTL）碰不到**已经躺在库里**的长租约 —— 租约短批上线前，活库里
+   * 每一份租约都是批满整轮 180 分钟的，收尸人对它们无能为力恰好 3 小时
+   * （`a187f06` → `985e48c` 同一课的又一次）。
+   *
+   * 对还活着的工人是无害的：它的心跳每一拍都把到期时间推回 `now + ttlMs`，
+   * clamp 到的数和心跳写的数是同一个。
+   */
+  clampLeases(now: number, ttlMs: number): string[] {
+    const cap = now + ttlMs;
+    const rows = this.database.prepare(
+      "SELECT id FROM jobs WHERE status = 'running' AND expires_at > ?",
+    ).all(cap) as { id: string }[];
+    if (rows.length === 0) return [];
+    const at = this.now().toISOString();
+    const update = this.database.prepare(
+      "UPDATE jobs SET expires_at = ?, updated_at = ? WHERE id = ?",
+    );
+    for (const row of rows) update.run(cap, at, row.id);
+    return rows.map((row) => row.id);
   }
 
   /**
